@@ -61,7 +61,7 @@ known-drift check.
 
 ## Prod no-op precondition (MIG-02 / SC-3)
 
-Prod (`lux.lan`) was at `alembic_version = '039'` as of the 2026-07-14 deploy. **Re-confirm
-via the read-only PG probe (`ssh datum@lux.lan`, `BEGIN TRANSACTION READ ONLY`) immediately
+Prod (`host-prod.lan`) was at `alembic_version = '039'` as of the 2026-07-14 deploy. **Re-confirm
+via the read-only PG probe (`ssh operator@host-prod.lan`, `BEGIN TRANSACTION READ ONLY`) immediately
 before the PR merges; if not `039`, the merge holds.** Result recorded on bead phaze-8hfu.4
 at merge time.

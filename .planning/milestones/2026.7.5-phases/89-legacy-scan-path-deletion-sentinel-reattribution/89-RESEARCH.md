@@ -29,7 +29,7 @@ The legacy trio (`run_scan` → `discover_and_hash_files` → `bulk_upsert_files
 
 ### Locked Decisions
 - **D-01:** Migration auto-detects target = single non-revoked `kind='fileserver'` agent (`SELECT id FROM agents WHERE revoked_at IS NULL AND kind='fileserver'`). Exactly 1 → use it. 0 → abort. >1 → abort unless override.
-- **D-02:** Override escape hatch `alembic upgrade head -x reattribute_to=<agent_id>`; validate id exists, `kind='fileserver'`, not revoked. Prod has one real fileserver (nox) → auto path resolves with no operator input.
+- **D-02:** Override escape hatch `alembic upgrade head -x reattribute_to=<agent_id>`; validate id exists, `kind='fileserver'`, not revoked. Prod has one real fileserver (host-store) → auto path resolves with no operator input.
 - **D-03:** Reattribution keys on `agent_id` (FK → `agents.id`, string PK); writes the target's `id` not `name`. Scope = ALL legacy-owned `files` AND `scan_batches`, **including the `status='live'` sentinel batch** created by migration 012. ⚠️ *See Pitfall 1 — the literal "including the live batch → reattribute" is infeasible; must be DELETE, not reattribute.*
 - **D-04:** Delete `routers/scan.py` wholesale (POST + GET). Unregister `include_router()` in `main.py`. Delete `tests/discovery/routers/test_scan.py`.
 - **D-05:** Contingent gate: confirm GET status has no live consumer before deleting. → **VERIFIED: no consumer** (see Surviving-Path & Consumer Sweep).
@@ -145,7 +145,7 @@ else:
         )
     target = rows[0][0]
 ```
-The legacy agent is **excluded automatically**: migration 012 seeds it with `revoked_at=NOW()` (VERIFIED at `012:...revoked_at, ... VALUES (..., NOW(), ...)`), and migration 024 backfills its `kind` to `'fileserver'`. So `revoked_at IS NULL` filters it out. In prod, nox (non-revoked fileserver) is the sole match → auto-resolves.
+The legacy agent is **excluded automatically**: migration 012 seeds it with `revoked_at=NOW()` (VERIFIED at `012:...revoked_at, ... VALUES (..., NOW(), ...)`), and migration 024 backfills its `kind` to `'fileserver'`. So `revoked_at IS NULL` filters it out. In prod, host-store (non-revoked fileserver) is the sole match → auto-resolves.
 
 **Transaction scope:** Alembic runs `upgrade()` inside a transaction (default `transaction_per_migration` via `context.begin_transaction()` in `env.py`). Any `raise` rolls the whole thing back — the `DELETE` is never reached if the `COUNT=0` assertion fails. This is exactly D-09's contract; no extra `BEGIN` needed.
 
@@ -160,7 +160,7 @@ The legacy agent is **excluded automatically**: migration 012 seeds it with `rev
 
 ## Pitfall 1 (CRITICAL): The `status='live'` sentinel-batch unique-index collision
 
-**What goes wrong:** D-03 says reattribute ALL legacy-owned `scan_batches` *including the `status='live'` sentinel batch* created by migration 012. But there is a **partial unique index** `uq_scan_batches_agent_id_live` — `UNIQUE (agent_id) WHERE status='live'` (VERIFIED at `012_add_agents_table_and_backfill.py:105-111`). The **target fileserver (nox) already owns its own `status='live'` sentinel batch** (every real fileserver gets one via `agent_bootstrap`/the watcher, and `agent_files.py:99` relies on a `scalar_one()` LIVE-batch lookup). Reattributing the legacy live batch to nox produces **two live rows for `agent_id='nox'` → `IntegrityError` on `uq_scan_batches_agent_id_live` → the migration aborts.**
+**What goes wrong:** D-03 says reattribute ALL legacy-owned `scan_batches` *including the `status='live'` sentinel batch* created by migration 012. But there is a **partial unique index** `uq_scan_batches_agent_id_live` — `UNIQUE (agent_id) WHERE status='live'` (VERIFIED at `012_add_agents_table_and_backfill.py:105-111`). The **target fileserver (host-store) already owns its own `status='live'` sentinel batch** (every real fileserver gets one via `agent_bootstrap`/the watcher, and `agent_files.py:99` relies on a `scalar_one()` LIVE-batch lookup). Reattributing the legacy live batch to host-store produces **two live rows for `agent_id='host-store'` → `IntegrityError` on `uq_scan_batches_agent_id_live` → the migration aborts.**
 
 **Why it happens:** The blanket-`UPDATE` reading of D-03 conflicts with the one-live-batch-per-agent invariant the same migration (012) established.
 
@@ -378,7 +378,7 @@ Low security surface — this is deletion + an internal data migration.
 | A1 | `normalize_path`/`classify_file` have no source callers → `ingestion.py` can be deleted wholesale | Deletion Completeness | LOW — grep-verified; if a dynamic import exists, keep the two functions |
 | A2 | `cfg.cmd_opts = argparse.Namespace(x=["reattribute_to=..."])` makes `get_x_argument` read the override in tests | Migration Test Pattern | MED — no in-repo precedent; validate during planning; alternative is a direct `env.py`-level test harness |
 | A3 | Single `UPDATE` over ~11,428 rows is sub-second, no batching/lock_timeout needed | Code Example Pattern 2 | LOW — indexed FK re-point; if slow, add a batched loop (still one txn) |
-| A4 | The target fileserver (nox) has its own `status='live'` batch, guaranteeing the Pitfall-1 collision | Pitfall 1 | LOW — the DELETE-the-legacy-live-batch fix is collision-proof either way (safe even if nox has no live batch) |
+| A4 | The target fileserver (host-store) has its own `status='live'` batch, guaranteeing the Pitfall-1 collision | Pitfall 1 | LOW — the DELETE-the-legacy-live-batch fix is collision-proof either way (safe even if host-store has no live batch) |
 
 ## Open Questions (RESOLVED)
 

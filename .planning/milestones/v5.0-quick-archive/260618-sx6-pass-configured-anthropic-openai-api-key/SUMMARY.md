@@ -44,5 +44,5 @@ the bare env var, which was never set. Every `generate_proposals` raised
 
 ## Scope
 
-phaze repo only. Bug B (nox panako/audfprint hostname-alias DNS failure) is a homelab
+phaze repo only. Bug B (host-store panako/audfprint hostname-alias DNS failure) is a homelab
 deploy fix handled separately.

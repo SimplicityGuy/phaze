@@ -17,7 +17,7 @@ expected: After deploying the phase and enqueueing a real stage backlog on the h
 why_human: Requires a live running backlog on the homelab Postgres broker with real agent workers consuming jobs — the ephemeral integration-test DB proves the SQL semantics but not end-to-end deployed behavior.
 result: blocked
 blocked_by: not-deployed
-reason: "User confirmed Phase 37 is not deployed — still on the unmerged local gsd/phase-37-… branch. Requires homelab deploy (PR → merge → release → redeploy via datum@nox / datum@lux) before this can be exercised."
+reason: "User confirmed Phase 37 is not deployed — still on the unmerged local gsd/phase-37-… branch. Requires homelab deploy (PR → merge → release → redeploy via operator@host-store / operator@host-prod) before this can be exercised."
 
 ### 2. Pause across reboot re-applies to Phase-32 re-enqueued jobs
 expected: After `POST /pipeline/stages/analyze/pause`, rebooting the phaze-api + phaze-worker containers, the Phase-32 reboot re-enqueue path re-parks jobs — re-enqueued `analyze` jobs have `scheduled = SENTINEL` in `saq_jobs` and do not dequeue until `POST /pipeline/stages/analyze/resume`.

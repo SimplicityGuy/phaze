@@ -631,7 +631,7 @@ def downgrade() -> None:
 **Analog:** `tests/test_models/__init__.py` (and `tests/test_services/__init__.py`).
 
 ```bash
-$ cat /Users/Robert/Code/public/phaze/tests/test_models/__init__.py
+$ cat <scratch>/phaze/tests/test_models/__init__.py
 # (empty file — package marker only)
 ```
 
@@ -1016,7 +1016,7 @@ None. Every Phase 24 file has at least a role-match analog in the codebase. The 
 - Existing test fixtures use `Base.metadata.create_all` and never exercise alembic; Phase 24 must add a separate `tests/test_migrations/conftest.py` to run real `alembic.command.upgrade()` against a dedicated test DB.
 
 ### File Created
-`/Users/Robert/Code/public/phaze/.planning/phases/24-schema-foundation-agent-registry/24-PATTERNS.md`
+`<scratch>/phaze/.planning/phases/24-schema-foundation-agent-registry/24-PATTERNS.md`
 
 ### Ready for Planning
 Pattern mapping complete. Planner can now reference analog file paths + line numbers + code excerpts in every PLAN.md task's `<read_first>` and `<code_shape>` sections.

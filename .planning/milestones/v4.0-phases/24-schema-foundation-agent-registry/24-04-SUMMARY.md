@@ -270,9 +270,9 @@ No new surface introduced beyond the planned trust boundaries; no `threat_flag` 
 
 ## Self-Check: PASSED
 
-- File `alembic/versions/013_enforce_agent_id_not_null_and_swap_uniqueness.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/alembic/versions/013_enforce_agent_id_not_null_and_swap_uniqueness.py` (60 lines).
-- File `tests/test_migrations/test_013_upgrade.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/tests/test_migrations/test_013_upgrade.py` (106 lines, 5 async test functions).
-- File `tests/test_migrations/test_downgrade.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/tests/test_migrations/test_downgrade.py` (147 lines, 3 async test functions).
+- File `alembic/versions/013_enforce_agent_id_not_null_and_swap_uniqueness.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/alembic/versions/013_enforce_agent_id_not_null_and_swap_uniqueness.py` (60 lines).
+- File `tests/test_migrations/test_013_upgrade.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/tests/test_migrations/test_013_upgrade.py` (106 lines, 5 async test functions).
+- File `tests/test_migrations/test_downgrade.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a9fd014fe88bc080f/tests/test_migrations/test_downgrade.py` (147 lines, 3 async test functions).
 - Commit `be5d60b` exists in git log (`feat(24-04): add migration 013 NOT NULL + composite UQ swap`).
 - Commit `ba944eb` exists in git log (`test(24-04): add 5 integration tests for migration 013`).
 - Commit `fda0b2b` exists in git log (`test(24-04): add 3 downgrade tests including D-16 dupe-detection error path`).

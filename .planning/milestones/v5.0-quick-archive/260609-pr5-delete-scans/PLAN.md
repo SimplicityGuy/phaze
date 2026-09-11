@@ -189,7 +189,7 @@ tests/test_services/test_companion.py.
     cross-batch companion file survives.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr5-delete-scans && uv run pytest tests/test_services/test_scan_deletion.py -x</automated>
+    <automated>cd <scratch>/phaze-pr5-delete-scans && uv run pytest tests/test_services/test_scan_deletion.py -x</automated>
   </verify>
   <done>delete_scan_cascade removes the batch + all descendant rows in one transaction, scoped strictly to the batch's files; a sibling batch and cross-batch companion files are provably untouched; returns per-table counts. Tests green.</done>
 </task>
@@ -238,7 +238,7 @@ tests/test_services/test_companion.py.
     for the deleted batch.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr5-delete-scans && uv run pytest tests/test_routers/test_pipeline_scans.py -x</automated>
+    <automated>cd <scratch>/phaze-pr5-delete-scans && uv run pytest tests/test_routers/test_pipeline_scans.py -x</automated>
   </verify>
   <done>DELETE endpoint returns 200 + re-rendered table for terminal scans, 404 unknown, 409 for live and running; cascade + commit + structlog INFO fire on success; dashboard re-renders via the shared build_recent_scans helper with no regression.</done>
 </task>
@@ -271,7 +271,7 @@ tests/test_services/test_companion.py.
     on one line; do not re-add removed badges.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr5-delete-scans && uv run pytest tests/test_routers/test_pipeline_scans.py -x && uv run ruff check . && uv run ruff format --check .</automated>
+    <automated>cd <scratch>/phaze-pr5-delete-scans && uv run pytest tests/test_routers/test_pipeline_scans.py -x && uv run ruff check . && uv run ruff format --check .</automated>
   </verify>
   <done>Terminal rows show an accessible delete button wired to DELETE with hx-confirm and #recent-scans outerHTML swap; running/live rows show none; error-row colspan is 7; docs/api.md and README document the new endpoint.</done>
 </task>
@@ -282,7 +282,7 @@ tests/test_services/test_companion.py.
 Full gate before PR:
 
 ```bash
-cd /Users/Robert/Code/public/phaze-pr5-delete-scans
+cd <scratch>/phaze-pr5-delete-scans
 uv run pytest --cov --cov-report=term-missing   # >= 85% coverage
 uv run ruff check .
 uv run ruff format --check .

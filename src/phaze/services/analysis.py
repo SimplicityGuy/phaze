@@ -543,7 +543,7 @@ _COARSE_CHUNK_WINDOWS = 30
 # RSS grow with file duration; teardown runs in ``finally`` and tolerates partial construction.
 # The measured cross-platform evidence and exact before/after values are preserved in
 # ``docs/design/0007-windowed-analysis.md`` and
-# ``docs/spikes/phaze-u1n7j-vox-fix-verification.md``.
+# ``docs/spikes/phaze-u1n7j-host-compute-fix-verification.md``.
 def _disconnect_network(algos: Sequence[Any]) -> None:
     """Sever every connection held by ``algos`` so essentia releases the C++ side (D-09).
 

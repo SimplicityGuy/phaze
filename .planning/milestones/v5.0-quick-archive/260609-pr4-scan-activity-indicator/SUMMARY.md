@@ -6,7 +6,7 @@ control-side cron that auto-fails genuinely-dead scans, all driven by one new
 
 - **Type:** quick task (PR4 of 5, scan-reliability series)
 - **Branch:** `feat/scan-activity-indicator`
-- **Worktree:** `/Users/Robert/Code/public/phaze-pr4-activity`
+- **Worktree:** `<scratch>/phaze-pr4-activity`
 - **Started:** 2026-06-09T16:08:09Z — **Completed:** 2026-06-09T16:35:31Z (~27 min)
 - **Tasks:** 6/6 complete, one atomic conventional commit each
 

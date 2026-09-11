@@ -64,8 +64,8 @@ created: 2026-06-26
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | OCI A1 brings up the compute agent over Tailscale | CLOUDDEPLOY-01 | Requires real OCI Always-Free A1 + Tailscale tailnet; no CI substrate | Follow `docs/cloud-burst.md` runbook on a provisioned A1; confirm worker registers + drains a cloud `process_file`. |
-| Tailscale ACL scopes A1 → `lux:{5432,6379,8000}` + `nox→A1:22` only | CLOUDDEPLOY-03 | Tailnet ACL is applied in the homelab tailnet, not in CI | Apply the spec'd ACL JSON; verify A1 can reach only those ports and `nox` can SSH A1. |
-| Least-privilege PG broker role connects + runs SAQ, no app-table access | CLOUDDEPLOY-03 | Live Postgres role grants; verified empirically during research, re-verify post-apply | Run the runbook role SQL on lux Postgres; confirm SAQ `queue.connect()` succeeds and the role cannot SELECT app tables. |
+| Tailscale ACL scopes A1 → `host-prod:{5432,6379,8000}` + `host-store→A1:22` only | CLOUDDEPLOY-03 | Tailnet ACL is applied in the homelab tailnet, not in CI | Apply the spec'd ACL JSON; verify A1 can reach only those ports and `host-store` can SSH A1. |
+| Least-privilege PG broker role connects + runs SAQ, no app-table access | CLOUDDEPLOY-03 | Live Postgres role grants; verified empirically during research, re-verify post-apply | Run the runbook role SQL on host-prod Postgres; confirm SAQ `queue.connect()` succeeds and the role cannot SELECT app tables. |
 
 ---
 

@@ -206,9 +206,9 @@ No new surface introduced beyond the planned trust boundaries; no `threat_flag` 
 
 ## Self-Check: PASSED
 
-- File `alembic/versions/012_add_agents_table_and_backfill.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a8f6358224d2f046d/alembic/versions/012_add_agents_table_and_backfill.py` (122 lines).
-- File `tests/test_migrations/test_012_upgrade.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a8f6358224d2f046d/tests/test_migrations/test_012_upgrade.py` (261 lines, 13 async test functions).
-- File `tests/test_migrations/conftest.py` modified at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a8f6358224d2f046d/tests/test_migrations/conftest.py` (+11 / -3, asyncio.to_thread wraps).
+- File `alembic/versions/012_add_agents_table_and_backfill.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a8f6358224d2f046d/alembic/versions/012_add_agents_table_and_backfill.py` (122 lines).
+- File `tests/test_migrations/test_012_upgrade.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a8f6358224d2f046d/tests/test_migrations/test_012_upgrade.py` (261 lines, 13 async test functions).
+- File `tests/test_migrations/conftest.py` modified at `<scratch>/phaze/.claude/worktrees/agent-a8f6358224d2f046d/tests/test_migrations/conftest.py` (+11 / -3, asyncio.to_thread wraps).
 - Commit `1d3cda1` exists in git log (`feat(24-03): add migration 012 agents table and legacy backfill`).
 - Commit `8f43f93` exists in git log (`fix(24-03): run alembic upgrade/downgrade in worker thread`).
 - Commit `5488ee0` exists in git log (`test(24-03): add 13 integration tests for migration 012`).

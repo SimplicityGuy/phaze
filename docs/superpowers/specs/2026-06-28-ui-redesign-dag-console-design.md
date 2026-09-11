@@ -121,7 +121,7 @@ Slide-in over the shell. Sections: header (name / path / format / size / sha256 
 ## 9. Global surfaces
 
 - **⌘K command palette** — unified search over files / tracklists / artists + commands (scan, jump to a Review queue, open Agents). Replaces the Search tab.
-- **Agents / Compute page** — local (nox) and A1 as healthy heartbeating agents; the **k8s burst lane is an ephemeral, Job-based identity** whose liveness derives from in-flight Kueue workloads — **never shown as perpetually-DEAD**. (Directly satisfies v6.0 KDEPLOY-04; this redesign is where that UI treatment properly lands.)
+- **Agents / Compute page** — local (host-store) and A1 as healthy heartbeating agents; the **k8s burst lane is an ephemeral, Job-based identity** whose liveness derives from in-flight Kueue workloads — **never shown as perpetually-DEAD**. (Directly satisfies v6.0 KDEPLOY-04; this redesign is where that UI treatment properly lands.)
 - **Empty / first-run + scan** — when there are no files, a centered "point phaze at your music" with a directory picker + agent selector + live scan progress.
 
 ## 10. Cloud / k8s integration

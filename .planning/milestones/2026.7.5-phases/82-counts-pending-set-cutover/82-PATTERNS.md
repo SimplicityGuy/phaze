@@ -236,7 +236,7 @@ Each MUTATION comment: reverting THAT reader's predicate to a `FileRecord.state`
 
 **EXPLAIN targets:** the 3 pending SELECTs + 3 `GROUP BY stage_status_case` + full `/pipeline/stats` endpoint. Verify Index/Index-Only Scan on the 032 partial indexes (`ix_fprint_success`, `ix_analysis_completed`, `ix_analysis_failed`, `ix_metadata_failed`, `ix_cloud_job_awaiting`) NOT Seq Scan. PASS budget `< ~1s` (D-07). Record the number in VERIFICATION regardless — it licenses the DENORM-01 YAGNI decision.
 
-**Env:** test-DB port **5433**, test-Redis **6380**; run perf seed/measure in ISOLATION (colima full-suite flake). Do NOT probe live lux (Alembic ~031, no 032 indexes → invalid plan).
+**Env:** test-DB port **5433**, test-Redis **6380**; run perf seed/measure in ISOLATION (colima full-suite flake). Do NOT probe live host-prod (Alembic ~031, no 032 indexes → invalid plan).
 
 ---
 

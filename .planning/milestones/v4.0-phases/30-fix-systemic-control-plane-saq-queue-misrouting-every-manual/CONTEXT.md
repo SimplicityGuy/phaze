@@ -1,16 +1,16 @@
 # Phase 30 Context — Systemic control-plane SAQ queue misrouting
 
-> Source: live incident triage on the nox/lux homelab (v4.0.6), 2026-06-09.
+> Source: live incident triage on the host-store/host-prod homelab (v4.0.6), 2026-06-09.
 > User clicked "Run analysis" on 11,428 discovered files; nothing happened.
 
 ## Root cause
 
 In the v4.0 distributed-agents split, task **consumption** moved to two named SAQ queues:
 
-- `controller` — lux `phaze-worker` (`src/phaze/tasks/controller.py:106`, `Queue.from_url(..., name="controller")`).
+- `controller` — host-prod `phaze-worker` (`src/phaze/tasks/controller.py:106`, `Queue.from_url(..., name="controller")`).
   Registers: `generate_proposals`, `match_tracklist_to_discogs`, `search_tracklist`,
   `scrape_and_store_tracklist`, `reap_stalled_scans` + cron `refresh_tracklists`.
-- `phaze-agent-<id>` — nox `phaze-agent-worker` (`src/phaze/tasks/agent_worker.py:179`, name from `PHAZE_AGENT_QUEUE`).
+- `phaze-agent-<id>` — host-store `phaze-agent-worker` (`src/phaze/tasks/agent_worker.py:179`, name from `PHAZE_AGENT_QUEUE`).
   Registers: `process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`,
   `scan_directory`, `execute_approved_batch`, `heartbeat_tick`.
 
@@ -61,7 +61,7 @@ Introduce a shared **enqueue-routing helper** that maps `task_name` → correct 
 - **Per-agent** (`process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`,
   `scan_directory`, `execute_approved_batch`) → `AgentTaskRouter.enqueue_for_agent` with
   **active-agent selection**: pick a non-revoked, recently-seen agent. `agents` table has
-  `revoked_at` (NULL = active) and `last_seen_at`. Today nox is the sole live agent;
+  `revoked_at` (NULL = active) and `last_seen_at`. Today host-store is the sole live agent;
   `legacy-application-server` is permanently revoked (token_hash NULL, revoked_at=created_at) —
   exclude it. Selection must handle 0 agents (surface a clear error/empty-state) and >1 agents
   (round-robin or least-loaded — keep simple; document choice).

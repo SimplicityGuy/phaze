@@ -2,7 +2,7 @@
 task: pr3-structlog-observability
 type: quick
 branch: feat/structlog-observability
-worktree: /Users/Robert/Code/public/phaze-pr3-structlog
+worktree: <scratch>/phaze-pr3-structlog
 scope: logging/observability only (NOT PR4 stall-heartbeat/reaper, NOT PR5 delete-scans)
 files_modified:
   - pyproject.toml
@@ -50,14 +50,14 @@ tests, and updated docs.
 </objective>
 
 <context>
-@/Users/Robert/Code/public/phaze-pr3-structlog/CLAUDE.md
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/config.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/main.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/tasks/agent_worker.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/tasks/controller.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/agent_watcher/__main__.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/src/phaze/tasks/scan.py
-@/Users/Robert/Code/public/phaze-pr3-structlog/tests/test_task_split.py
+@<scratch>/phaze-pr3-structlog/CLAUDE.md
+@<scratch>/phaze-pr3-structlog/src/phaze/config.py
+@<scratch>/phaze-pr3-structlog/src/phaze/main.py
+@<scratch>/phaze-pr3-structlog/src/phaze/tasks/agent_worker.py
+@<scratch>/phaze-pr3-structlog/src/phaze/tasks/controller.py
+@<scratch>/phaze-pr3-structlog/src/phaze/agent_watcher/__main__.py
+@<scratch>/phaze-pr3-structlog/src/phaze/tasks/scan.py
+@<scratch>/phaze-pr3-structlog/tests/test_task_split.py
 
 INTERFACES (extracted — use directly, no codebase exploration needed):
 

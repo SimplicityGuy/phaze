@@ -582,7 +582,7 @@ liveness) in `services/analysis_exec.py`. Rationale and cost analysis:
 `docs/essentia-analysis.md`. Measurements: **2026-08-12**, `docs/spikes/phaze-b2qs9-exhaustive-analysis-measurement.md`
 (before — confirms exhaustive coverage and end-to-end wall clock at **0.56–0.79× the file's own
 duration**, and *refuted* the duration-independent-peak claim) and
-**2026-08-13**, `docs/spikes/phaze-u1n7j-vox-fix-verification.md` (after — restores it, with the
+**2026-08-13**, `docs/spikes/phaze-u1n7j-host-compute-fix-verification.md` (after — restores it, with the
 mechanism, a byte-identical equivalence check, and §3 ruling out glibc arena fragmentation).
 
 ## Acceptance criteria, attribution, and verification fidelity

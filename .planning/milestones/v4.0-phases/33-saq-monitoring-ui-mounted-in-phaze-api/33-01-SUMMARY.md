@@ -47,7 +47,7 @@ Created the testable `phaze/web/saq_mount.py::build_saq_app(queues)` pure wrappe
 - **`src/phaze/config.py`::`Settings.enable_saq_ui`** — `Field(default=True, validation_alias=AliasChoices("PHAZE_ENABLE_SAQ_UI", "enable_saq_ui"), description=...)` placed next to `auto_migrate`. Reuses the existing `Field`/`AliasChoices` imports; no new import. Default-on (dashboard mounts with zero operator action); `PHAZE_ENABLE_SAQ_UI=false` disables it.
 - **`tests/test_web/test_saq_mount.py`** (+ package `__init__.py`) — four tests over a throwaway `FastAPI()` + sync `TestClient` + `FakeQueue` doubles (the default `client` conftest fixture skips the lifespan where the real mount lives, so these deliberately wire their own — RESEARCH Pitfall 2):
   - `test_build_saq_app_routes_and_root_renders` (`-k build`): `.routes` include `/` and `/api/queues`; `GET /saq/` → 200 with `/saq/static/` in the body.
-  - `test_api_queues_reuses_passed_instances_no_pool` (`-k reuse`): `GET /saq/api/queues` lists both `controller` and `phaze-agent-nox`; an AST-walk of `build_saq_app` asserts the only call is `saq_web` (no pool/Redis/from_url/connect construction).
+  - `test_api_queues_reuses_passed_instances_no_pool` (`-k reuse`): `GET /saq/api/queues` lists both `controller` and `phaze-agent-host-store`; an AST-walk of `build_saq_app` asserts the only call is `saq_web` (no pool/Redis/from_url/connect construction).
   - `test_enable_saq_ui_flag_defaults_true` (`-k flag`): `settings.enable_saq_ui is True`.
   - `test_saq_web_single_call_contract`: a second `build_saq_app` leaves `saq.web.starlette.QUEUES == {"b"}` — the globals-clobber, documenting mount-once-per-process.
 

@@ -26,7 +26,7 @@ The three enrich pending sets (`get_metadata_pending_files`, `get_fingerprint_pe
 - **D-03: Apply `~dedup_resolved_clause()` in all three enrich pending sets; keep `eligible()`/`eligible_clause()` dedup-agnostic.** Dedup is a file-level predicate composed at the `pipeline.py` query level, NOT baked into the eligibility primitives or the DERIV-04 harness.
 - **D-04: Extend `get_stage_progress` (not a new function).** Three enrich nodes return `{not_started, in_flight, done, failed, total}` via `stage_status_case(stage)`; downstream nodes keep `{done, total}`. (Rejected: a separate `get_enrich_stage_buckets()`.)
 - **D-05: Remove `get_pipeline_stats`'s linear `GROUP BY FileRecord.state` in full; derive all counts from output tables now.** Tail counts from output-table row existence (as `get_stage_progress` already does). `notYetEnriched` re-expressed as `metadata.total − metadata.done`. `stats_bar.html` key remap expected. Front-runs nothing in Phase 86. (Rejected: enrich-only removal leaving the tail on `state`.)
-- **D-06: Measure PERF-02 on a LOCAL synthetic-seed ~200K corpus at migration HEAD (`≥036`, so the 032 partial indexes exist), via EXPLAIN ANALYZE + full-endpoint timing** — NOT a live lux probe (prod at Alembic ~031 lacks 032 indexes → invalid plans). A live read-only COUNT may be a supplementary sanity check only.
+- **D-06: Measure PERF-02 on a LOCAL synthetic-seed ~200K corpus at migration HEAD (`≥036`, so the 032 partial indexes exist), via EXPLAIN ANALYZE + full-endpoint timing** — NOT a live host-prod probe (prod at Alembic ~031 lacks 032 indexes → invalid plans). A live read-only COUNT may be a supplementary sanity check only.
 - **D-07: PASS budget = full `/pipeline/stats` endpoint `< ~1s` at 200K.** Record the measured number in VERIFICATION regardless of pass/fail. DENORM-01 stays deferred unless over budget.
 
 ### Claude's Discretion
@@ -355,7 +355,7 @@ Because all three route through the shared helpers, narrowing the helper narrows
 **Method:** run `EXPLAIN (ANALYZE, BUFFERS, VERBOSE) <query>` via `session.execute(text("EXPLAIN (ANALYZE, BUFFERS) ..."))` or psql. Record actual time, rows, and — critically — confirm **Index Scan / Index Only Scan on the 032 partial indexes** (`ix_fprint_success`, `ix_analysis_completed`, `ix_analysis_failed`, `ix_metadata_failed`, `ix_cloud_job_awaiting`), NOT Seq Scan, for the `~exists` anti-joins. [VERIFIED: codebase — index names in `032_add_derived_status_schema.py:150-156`]. A Seq Scan on any of these at 200K is the signal DENORM-01 (D-07) may be needed.
 **Endpoint timing:** hit `GET /pipeline/stats` against the seeded DB with `httpx.AsyncClient` (or `time curl`) N times, record p50/p95. PASS = `< ~1s` (D-07). Record the number in VERIFICATION **regardless** of pass/fail (the number licenses the YAGNI decision to skip DENORM-01).
 
-**Env caveats:** test-DB on port **5433** (`test_db_port`), test-Redis **6380** (memory `reference_migrations_test_db_port`); the local full-suite flakes under colima VM pressure (memory `reference_local_fullsuite_colima_flake`) — run the perf seed/measure in isolation, not inside the full pytest run. Do NOT probe live lux (Alembic ~031, no 032 indexes → invalid plan, D-06). A live read-only COUNT (memory `reference_lux_readonly_pg_probe`) may only sanity-check the synthetic corpus's stage-coverage distribution.
+**Env caveats:** test-DB on port **5433** (`test_db_port`), test-Redis **6380** (memory `reference_migrations_test_db_port`); the local full-suite flakes under colima VM pressure (memory `reference_local_fullsuite_colima_flake`) — run the perf seed/measure in isolation, not inside the full pytest run. Do NOT probe live host-prod (Alembic ~031, no 032 indexes → invalid plan, D-06). A live read-only COUNT (memory `reference_host-prod_readonly_pg_probe`) may only sanity-check the synthetic corpus's stage-coverage distribution.
 
 ### OQ6 — The anti-drift guard (mutation-tested, dual-write-aware)
 
@@ -401,7 +401,7 @@ Four seams, small blast-radius per PR (milestone rule). Recommended dependency o
 **How to avoid:** keep the Alpine store keys stable; change only the server-side value source; assert the poll partial still emits the same three OOB ids.
 
 ### Pitfall 5: Live-vs-synthetic plan divergence for PERF-02
-**What goes wrong:** measuring on prod/lux (Alembic ~031) yields Seq Scans (no 032 indexes) → a false "too slow → build DENORM-01" conclusion.
+**What goes wrong:** measuring on prod/host-prod (Alembic ~031) yields Seq Scans (no 032 indexes) → a false "too slow → build DENORM-01" conclusion.
 **How to avoid:** measure ONLY on a local corpus at migration HEAD; verify `EXPLAIN` shows the 032 partial indexes in use (D-06).
 
 ## Runtime State Inventory
@@ -531,7 +531,7 @@ This is a reader cutover, not a rename/refactor/migration phase — but the CONT
 - `.planning/phases/82-counts-pending-set-cutover/82-CONTEXT.md`, `.planning/REQUIREMENTS.md` (READ-01/02, PERF-02, ELIG/DERIV/INFLIGHT/DENORM), `.planning/ROADMAP.md` (Phase 82 + upstream phases).
 
 ### Secondary (MEDIUM confidence — project auto-memory, cross-checked against code where possible)
-- `reference_migrations_test_db_port` (5433/6380 env), `reference_local_fullsuite_colima_flake`, `feedback_mutation_test_guard_tests`, `project_analyzed_invariant_red_on_deploy` (noted STALE per D-02), `reference_lux_readonly_pg_probe`.
+- `reference_migrations_test_db_port` (5433/6380 env), `reference_local_fullsuite_colima_flake`, `feedback_mutation_test_guard_tests`, `project_analyzed_invariant_red_on_deploy` (noted STALE per D-02), `reference_host-prod_readonly_pg_probe`.
 
 ### Tertiary (LOW confidence)
 - None — no web/library research was required for this code-internal phase.

@@ -3,9 +3,10 @@
 | | |
 | --- | --- |
 | **Status** | Accepted — energy weights confirmed unchanged by the operator's 20-set blind check (`phaze-z47n7`, 2026-09-11); see §10.3 |
-| **Date** | 2026-09-06 |
+| **Date** | 2026-09-05 planning origin; filed 2026-09-06 UTC |
 | **Bead** | `phaze-x1qr3.4` (epic `phaze-x1qr3`) |
 | **Supersedes / superseded by** | nothing |
+| **Provenance** | Filed from the epic's 2026-09-05 operator planning record, then synthesized after `phaze-x1qr3.1` and `.2` had shipped; the initial ADR was merged 2026-09-08. Sections 7 and 10 date later implementation judgments and amendments separately. This is a retrospective decision record, not a claim that its full text predated implementation. |
 
 ______________________________________________________________________
 

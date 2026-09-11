@@ -1,4 +1,4 @@
-# Graph Report - /Users/Robert/Code/public/phaze  (2026-06-12)
+# Graph Report - <scratch>/phaze  (2026-06-12)
 
 ## Corpus Check
 - 317 files · ~405,642 words
@@ -214,15 +214,15 @@
 
 ## Surprising Connections (you probably didn't know these)
 - `audit_log()` --conceptually_related_to--> `Audit log (execution operations)`  [INFERRED]
-  /Users/Robert/Code/public/phaze/src/phaze/routers/execution.py → src/phaze/templates/execution/audit_log.html
+  <scratch>/phaze/src/phaze/routers/execution.py → src/phaze/templates/execution/audit_log.html
 - `row_detail()` --references--> `GET /proposals/{id}/detail`  [INFERRED]
-  /Users/Robert/Code/public/phaze/src/phaze/routers/proposals.py → src/phaze/templates/proposals/partials/proposal_row.html
+  <scratch>/phaze/src/phaze/routers/proposals.py → src/phaze/templates/proposals/partials/proposal_row.html
 - `base.html (layout shell)` --semantically_similar_to--> `Phaze Design System Showcase`  [INFERRED] [semantically similar]
   src/phaze/templates/base.html → design/showcase.html
 - `Shared test doubles for Phase 30 control-plane queue routing tests.  Before this` --uses--> `Agent`  [INFERRED]
-  /Users/Robert/Code/public/phaze/tests/_queue_fakes.py → src/phaze/models/agent.py
+  <scratch>/phaze/tests/_queue_fakes.py → src/phaze/models/agent.py
 - `A minimal in-memory async Redis double for the maintained pipeline counters.` --uses--> `Agent`  [INFERRED]
-  /Users/Robert/Code/public/phaze/tests/_queue_fakes.py → src/phaze/models/agent.py
+  <scratch>/phaze/tests/_queue_fakes.py → src/phaze/models/agent.py
 
 ## Hyperedges (group relationships)
 - **Tracklist browsing/listing UI flow** — tracklists_list, stats_header, filter_tabs, tracklist_card, tracklists_pagination [INFERRED 0.80]

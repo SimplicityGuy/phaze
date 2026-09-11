@@ -57,7 +57,7 @@ completed: 2026-07-09
 - Added `get_metadata_failed_files(session)` to `services/pipeline.py` — a pure-ORM correlated `exists(select(FileMetadata.id).where(file_id == FileRecord.id, FileMetadata.failed_at.isnot(None)))` reusing the Phase-78 `failed_clause(Stage.METADATA)` shape (no f-string SQL, T-42-03).
 - Added `POST /pipeline/metadata-failed/retry` (`retry_metadata_failed`) to `routers/pipeline.py`, mirroring `retry_analysis_failed`'s Phase-30-hardened ordering minus the state flip: resolve the per-agent `meta`-lane queue once, catch `NoActiveAgentError` and return without enqueuing/mutating (no default-queue fallthrough), then re-enqueue via the shared `_enqueue_extraction_jobs` producer (COMPLETE `ExtractMetadataPayload`, central `extract_file_metadata:<file_id>` dedup key). NO `f.state` assignment (D-11).
 - Created the stage-labelled `metadata_retry_response.html` fragment (worded "…failed file(s) for metadata extraction." — never "for analysis").
-- Integration tests (5, all passing in `integration`-bucket isolation): re-enqueue count + complete payload on `phaze-agent-nox-meta`, failure rows survive a not-yet-succeeded retry (D-11), `NoActiveAgentError` enqueues nothing / mutates nothing / no default-queue fallthrough, zero-failed no-op, and `get_metadata_failed_files` returns exactly the failed set.
+- Integration tests (5, all passing in `integration`-bucket isolation): re-enqueue count + complete payload on `phaze-agent-host-store-meta`, failure rows survive a not-yet-succeeded retry (D-11), `NoActiveAgentError` enqueues nothing / mutates nothing / no default-queue fallthrough, zero-failed no-op, and `get_metadata_failed_files` returns exactly the failed set.
 
 ## Task Commits
 

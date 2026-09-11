@@ -22,7 +22,7 @@ Phase 26 does **not** introduce the watcher (Phase 27), does **not** implement d
 ### Role Selection & Settings Modules
 
 - **D-01:** `PHAZE_ROLE` env var values are exactly `control` and `agent` (per OPS-01). Compose entry point reads `PHAZE_ROLE` and selects between `phaze.tasks.controller.settings` and `phaze.tasks.agent_worker.settings`. The Dockerfile CMD is `uv run saq phaze.tasks.${PHAZE_ROLE}_worker.settings` for `agent`, and `uv run saq phaze.tasks.controller.settings` for `control` — the asymmetric name is acceptable; see D-02.
-- **D-02:** Module names: `phaze.tasks.controller` (fileless, control role) and `phaze.tasks.agent_worker` (file-bound, agent role). The roadmap's `phaze.tasks.lux_worker` name leaks the application server's hostname and is replaced everywhere; a tiny doc-only sweep updates ROADMAP.md Phase 26/27/28/29 entries, Phase 25 CONTEXT, REQUIREMENTS.md, STATE.md, and any past summaries that reference `lux_worker`. The chosen name `controller` reads naturally and pairs cleanly with `PHAZE_ROLE=control`.
+- **D-02:** Module names: `phaze.tasks.controller` (fileless, control role) and `phaze.tasks.agent_worker` (file-bound, agent role). The roadmap's `phaze.tasks.host-prod_worker` name leaks the application server's hostname and is replaced everywhere; a tiny doc-only sweep updates ROADMAP.md Phase 26/27/28/29 entries, Phase 25 CONTEXT, REQUIREMENTS.md, STATE.md, and any past summaries that reference `host-prod_worker`. The chosen name `controller` reads naturally and pairs cleanly with `PHAZE_ROLE=control`.
 - **D-03:** Both settings modules import only the task functions in their half. `phaze.tasks.controller.settings.functions` lists fileless task functions; `phaze.tasks.agent_worker.settings.functions` lists file-bound task functions. Cross-imports between halves are forbidden — agent_worker MUST NOT transitively import `phaze.database`, `phaze.tasks.session`, or any module that imports them. A test asserts this (importable in process-isolation, see D-25).
 - **D-04:** The legacy `phaze.tasks.worker` module is **deleted** in this phase and `docker-compose.yml` is updated in this phase to reference `phaze.tasks.controller.settings`. No back-compat shim. Phase 29 will add `docker-compose.agent.yml` for the agent role.
 
@@ -153,13 +153,13 @@ Phase 26 does **not** introduce the watcher (Phase 27), does **not** implement d
 
 ### Roadmap & Doc Sweep
 
-- **D-33:** Tiny doc-only commit at the end of Phase 26 (after all code lands): sweep `lux_worker` → `controller` in:
+- **D-33:** Tiny doc-only commit at the end of Phase 26 (after all code lands): sweep `host-prod_worker` → `controller` in:
   - `.planning/ROADMAP.md` — Phase 26/27/28/29 entries
-  - `.planning/REQUIREMENTS.md` — TASK-01, TASK-02 reference `lux_worker` / `agent_worker`; rename to `controller` / `agent_worker`
-  - `.planning/STATE.md` — accumulated decisions referencing lux_worker
+  - `.planning/REQUIREMENTS.md` — TASK-01, TASK-02 reference `host-prod_worker` / `agent_worker`; rename to `controller` / `agent_worker`
+  - `.planning/STATE.md` — accumulated decisions referencing host-prod_worker
   - `.planning/PROJECT.md` — milestone description
-  - `.planning/phases/25-internal-agent-http-api-bearer-auth/25-CONTEXT.md` — references to phaze-agent-<id> queue and lux_worker
-  Single commit message: `docs(v4.0): replace hostname-leaked lux_worker with role-neutral controller`.
+  - `.planning/phases/25-internal-agent-http-api-bearer-auth/25-CONTEXT.md` — references to phaze-agent-<id> queue and host-prod_worker
+  Single commit message: `docs(v4.0): replace hostname-leaked host-prod_worker with role-neutral controller`.
 
 ### Claude's Discretion
 

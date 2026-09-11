@@ -32,7 +32,7 @@
 **Primary analog (the build recipe):** `spike/arm64-essentia-analysis:spike/arm64-essentia/Dockerfile` — read with
 `git show spike/arm64-essentia-analysis:spike/arm64-essentia/Dockerfile`. This is the PROVEN 4-fix build. Transcribe it; do NOT merge the branch.
 
-**Secondary analog (runtime hardening + uv + non-root user):** root `/Users/Robert/Code/public/phaze/Dockerfile`.
+**Secondary analog (runtime hardening + uv + non-root user):** root `<scratch>/phaze/Dockerfile`.
 
 **Base + TF pin pattern** (from spike Dockerfile, lines verified this session):
 ```dockerfile
@@ -113,7 +113,7 @@ USER phaze
 
 ### `.github/workflows/docker-publish.yml` — add `build-arm64` + `parity-guard` jobs (config, event-driven CI)
 
-**Analog:** the existing `build-and-push` job in the SAME file (`/Users/Robert/Code/public/phaze/.github/workflows/docker-publish.yml` lines 19-145). Mirror it, changing only runner, dockerfile, platform, and tag suffix.
+**Analog:** the existing `build-and-push` job in the SAME file (`<scratch>/phaze/.github/workflows/docker-publish.yml` lines 19-145). Mirror it, changing only runner, dockerfile, platform, and tag suffix.
 
 **Runner + permissions** (NEW job — RESEARCH §Code Examples, verified `ubuntu-24.04-arm` label):
 ```yaml
@@ -175,7 +175,7 @@ USER phaze
 
 ### `.github/workflows/docker-validate.yml` — extend hadolint matrix (config, event-driven CI)
 
-**Analog:** the existing matrix + steps in the SAME file (`/Users/Robert/Code/public/phaze/.github/workflows/docker-validate.yml` lines 22-72).
+**Analog:** the existing matrix + steps in the SAME file (`<scratch>/phaze/.github/workflows/docker-validate.yml` lines 22-72).
 
 **Matrix-add pattern — COPY FROM lines 22-33** (add an `agent-arm64` entry):
 ```yaml
@@ -206,7 +206,7 @@ USER phaze
 
 ### `justfile` — add `image-build-arm64`, `image-push-arm64`, `parity-check`, `parity-golden-regen` (config, operator CLI)
 
-**Analog:** existing `image-push` recipe (lines 248-268) + `docker-validate` recipe (lines 237-246) in `/Users/Robert/Code/public/phaze/justfile`.
+**Analog:** existing `image-push` recipe (lines 248-268) + `docker-validate` recipe (lines 237-246) in `<scratch>/phaze/justfile`.
 
 **Image build/push recipe pattern — COPY FROM `image-push` lines 248-268** (bash shebang, `set -e`, derive OWNER/REPO from git remote, lowercase):
 ```just

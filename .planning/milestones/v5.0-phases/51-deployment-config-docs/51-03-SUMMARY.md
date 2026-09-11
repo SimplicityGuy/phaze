@@ -83,7 +83,7 @@ copies), and CLOUDDEPLOY-04 (master-toggle semantics).
 - Smoke-test checklist (agent registers, long file routes cloud, push transfers, compute drains
   `process_file`, scratch cleaned).
 - Toggle + runtime-state notes (OFF=dormant, restart-required, `AWAITING_CLOUD` release-on-enable,
-  nox `PHAZE_PUSH_KNOWN_HOSTS` re-provision). Links to `configuration.md` for the canonical knob
+  host-store `PHAZE_PUSH_KNOWN_HOSTS` re-provision). Links to `configuration.md` for the canonical knob
   table rather than duplicating it. Placeholders only — no real secrets/IPs.
 
 ### Task 3 — Pointers + index (commit a962706)

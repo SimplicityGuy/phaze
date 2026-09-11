@@ -176,7 +176,7 @@ ______________________________________________________________________
 12Gi`, `memory_limit: 16Gi`, concurrency 1, pending "a Linux measurement (spike follow-up C)".
 Decision point 4 states "Peak is uncorrelated with duration" without qualification.
 
-**What was tested.** `phaze-u1n7j`, [report](../spikes/phaze-u1n7j-vox-fix-verification.md), is
+**What was tested.** `phaze-u1n7j`, [report](../spikes/phaze-u1n7j-host-compute-fix-verification.md), is
 spike follow-up C: it re-measured this ADR's `_run_model_sets` pipeline on real Linux hardware —
 **`vox`, Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, 4 physical / 8 logical
 cores, 31.31 GiB, k0s burst node** — running the deployed job image **`job:2026.8.2`**, on the

@@ -10,7 +10,7 @@
   post-`phaze-rvcn`, post-`phaze-0582` pipeline — against the deployed `phaze-models` PVC
   (3.1 GB). Overlay verified by checksum **inside the container and again inside every child
   process** (§1c)
-- **Status:** measurement only. **No product code changed.** vox was never returned to the phaze
+- **Status:** measurement only. **No product code changed.** host-compute was never returned to the phaze
   backend registry
 
 ______________________________________________________________________
@@ -49,7 +49,7 @@ Reproduced deliberately so the two sweeps are directly comparable; every deviati
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node, **out of the phaze backend registry** for the whole run and left that way, otherwise idle |
+| **Host** | `host-compute` — Debian 13 (trixie), Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node, **out of the phaze backend registry** for the whole run and left that way, otherwise idle |
 | **Runtime** | deployed job image `job:2026.8.0`, Python 3.14.6, `essentia-tensorflow` 2.1-beta6-dev, numpy 2.5.1, with `release/2026.8.1-prep`'s `analysis.py` + `analysis_sizing.py` overlaid onto a `/scratch/src` copy (§1c) |
 | **Models** | the deployed `phaze-models` PVC, mounted **read-only** |
 | **Audio** | **synthesized with ffmpeg** — `phaze-esut`'s generator verbatim, stereo 44.1 kHz sine pairs at 192 kbps: 36 **distinct** files (12 worker slots × {180, 300, 420} s) plus 8 × 1200 s for §8 |
@@ -490,19 +490,19 @@ improvement, which is defensible but strictly worse on the axis the lane exists 
 gives back 8.4% and is not.
 
 The rest of the `phaze-3j67` §9 package is **unchanged and not re-litigated here**: `cpu_request
-1500m`, `memory_request 3Gi`, `memory_limit 4Gi`, `vox_kueue_cpu_quota 6`, `vox_kueue_mem_quota
+1500m`, `memory_request 3Gi`, `memory_limit 4Gi`, `host-compute_kueue_cpu_quota 6`, `host-compute_kueue_mem_quota
 12Gi`. The two lockstep constraints still land exactly:
 
 ```
-memory:  cap 4 x memory_request 3Gi  = 12Gi  <= vox_kueue_mem_quota 12Gi     (a 5th pod needs 15Gi — refused)
-cpu:     cap 4 x cpu_request 1500m   = 6     <= vox_kueue_cpu_quota 6        (a 5th pod needs 7.5 — refused)
+memory:  cap 4 x memory_request 3Gi  = 12Gi  <= host-compute_kueue_mem_quota 12Gi     (a 5th pod needs 15Gi — refused)
+cpu:     cap 4 x cpu_request 1500m   = 6     <= host-compute_kueue_cpu_quota 6        (a 5th pod needs 7.5 — refused)
 ```
 
 **The `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` ConfigMap entry that
 `phaze-3j67` recommendation 2 asked for is no longer needed and should not be set.**
 `phaze-rvcn` moved that derivation into the code, `apply_thread_env` runs it at import, and every
 one of the 222 children in this sweep derived `4 / 1 / 4` from the host with nothing set. Setting
-the env would pin vox to values the code already produces while *breaking* the portability the
+the env would pin host-compute to values the code already produces while *breaking* the portability the
 derivation exists to provide on any future burst node.
 
 ______________________________________________________________________
@@ -548,7 +548,7 @@ ______________________________________________________________________
 | | action | why |
 | --- | --- | --- |
 | 1 | **`cap = 4` — confirmed, not changed.** Proceed with `homelab-a2x` as planned | §10. 97% of the node's throughput ceiling at a third of cap 12's latency. The premise it rested on has now been re-measured on `release/2026.8.1-prep` rather than inherited from a decode-bound workload |
-| 2 | **Do not set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` in the `phaze-agent-env` ConfigMap** | §10. `phaze-rvcn` made this a runtime derivation; all 222 children derived `4 / 1 / 4` with nothing set. Pinning it would freeze vox's values onto every future burst node and undo the portability the module exists for. **This retires `phaze-3j67` recommendation 2** |
+| 2 | **Do not set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` in the `phaze-agent-env` ConfigMap** | §10. `phaze-rvcn` made this a runtime derivation; all 222 children derived `4 / 1 / 4` with nothing set. Pinning it would freeze host-compute's values onto every future burst node and undo the portability the module exists for. **This retires `phaze-3j67` recommendation 2** |
 | 3 | **Stop expecting the concurrency curve to move when the analysis code gets faster** | §3, §4. Three changes cutting long-file decode 17.9×, per-process memory 38% and thread footprint 42% moved the plateau **+1.4%** and the knee **not at all**. The curve is a property of four physical cores |
 | 4 | **Keep `memory_limit` set. It, not `cap`, is what bounds the `phaze-6ck1` risk** | §9b. Four pods bounded at 4Gi cannot reach a node-scoped OOM on a 31 GiB node; four unbounded pods can. The cap is a throughput/latency decision, not a safety one |
 | 5 | **When throughput on this lane becomes the binding problem, buy cores** | §4, §7. 30.6 files/hour is 4 Haswell cores. Memory now binds at W≈33 against CPU at W=2 — a 16× gap. There is nothing left to win with RAM or with concurrency |

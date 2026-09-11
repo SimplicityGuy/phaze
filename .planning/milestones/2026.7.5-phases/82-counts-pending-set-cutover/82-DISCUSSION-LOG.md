@@ -72,11 +72,11 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Local synthetic-seed 200K at HEAD + EXPLAIN ANALYZE | Seed local PG at ≥036 (with 032 indexes), EXPLAIN ANALYZE the pending + four-bucket queries, time the endpoint | ✓ |
-| Live read-only lux probe | Prod lacks 032 indexes → invalid plans | |
+| Live read-only host-prod probe | Prod lacks 032 indexes → invalid plans | |
 | Both: local plan + live row-count sanity | Local authoritative + live distribution check | |
 
 **User's choice:** Local synthetic-seed 200K at HEAD + EXPLAIN ANALYZE
-**Notes:** Landmine — prod/lux is at Alembic ~031, missing the 032 partial indexes the derived anti-joins ride; a live probe would exercise a pessimistic/invalid plan.
+**Notes:** Landmine — prod/host-prod is at Alembic ~031, missing the 032 partial indexes the derived anti-joins ride; a live probe would exercise a pessimistic/invalid plan.
 
 | Option | Description | Selected |
 |--------|-------------|----------|

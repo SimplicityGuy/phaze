@@ -32,7 +32,7 @@
     Search files, artists, tracklists… <span class="ml-auto mono text-xs px-1.5 py-0.5 rounded bg-[#1e293b] text-gray-400">⌘K</span></button>
   <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-400">
     <button onclick="go('firstrun')" class="px-2.5 h-8 rounded-lg bg-ps border bd hover:bg-[#16213a] text-gray-400">Empty/Scan state</button>
-    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>nox</span>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>host-store</span>
     <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>A1</span>
     <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-400"></span>k8s</span>
     <button onclick="go('agents')" class="jura tracking-wider px-3 h-8 rounded-lg bg-ps border bd hover:bg-[#16213a] text-gray-300">AGENTS · 3</button>
@@ -172,8 +172,8 @@ const SCREENS = {
   discover(){return head('Discover','198,442 files · last scan 4m ago · 12,602 not yet enriched',['SCAN','RECOVER'])
     + `<div class="p-6"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-2">Recent scans</div></div>`
     + table(['Path','Found','New','Status','When'],[
-      ['/media/coachella','41,208','312','<span class="text-emerald-300">complete</span>','4m ago'],
-      ['/media/edc','22,860','0','<span class="text-emerald-300">complete</span>','1h ago'],
+      ['<archive-mount>/<set-01>','41,208','312','<span class="text-emerald-300">complete</span>','4m ago'],
+      ['<archive-mount>/<set-02>','22,860','0','<span class="text-emerald-300">complete</span>','1h ago'],
       ['/incoming/dump','1,044','1,044','<span class="text-blue-300">scanning…</span>','now'],
     ]);},
 
@@ -192,7 +192,7 @@ const SCREENS = {
 
   analyze(){return head('Analyze','3,210 files in flight across 3 lanes',['ROUTE RULES','PAUSE'])
     + `<div class="grid grid-cols-3 gap-4 p-6">
-      ${lane('🖥️ Local · nox','8 / 8','bg-emerald-400','100%','short sets &lt; 90 min · saturated','bd')}
+      ${lane('🖥️ Local · host-store','8 / 8','bg-emerald-400','100%','short sets &lt; 90 min · saturated','bd')}
       ${lane('☁️ A1 · arm64','2 / 4','bg-blue-400','50%','long sets ≥ 90 min · headroom','bd')}
       ${lane('⎈ k8s · burst','12 pending','bg-amber-400','28%','Kueue quota wait · admitting','border-amber-500/30','text-amber-300')}
     </div>`
@@ -274,7 +274,7 @@ FILE "set.flac" WAVE
 
   agents(){return head('Compute / Agents','3 lanes · local, A1, and ephemeral k8s burst',['ADD AGENT'])
     + `<div class="p-6 grid grid-cols-3 gap-4">
-      ${agentCard('🖥️ nox','Local agent','emerald','HEALTHY','heartbeat 3s ago','8 / 8 slots · short sets')}
+      ${agentCard('🖥️ host-store','Local agent','emerald','HEALTHY','heartbeat 3s ago','8 / 8 slots · short sets')}
       ${agentCard('☁️ A1','Cloud agent · arm64 (OCI)','emerald','HEALTHY','heartbeat 5s ago','2 / 4 slots · long sets')}
       ${agentCardK8s()}
     </div>
@@ -288,8 +288,8 @@ FILE "set.flac" WAVE
       <p class="text-gray-500 mt-2">No files yet. Choose a directory on a file-server agent to scan — discovery unlocks metadata, analysis, and the rest of the pipeline.</p>
       <div class="mt-6 flex items-center gap-2 bg-pp border bd rounded-xl p-2">
         <span class="px-3 text-gray-500">📁</span>
-        <input value="/media/coachella" class="flex-1 bg-transparent outline-none text-gray-200 mono text-sm">
-        <select class="bg-ps border bd rounded-lg h-9 px-2 text-sm text-gray-300"><option>nox (local)</option><option>A1 (cloud)</option></select>
+        <input value="<archive-mount>/<set-01>" class="flex-1 bg-transparent outline-none text-gray-200 mono text-sm">
+        <select class="bg-ps border bd rounded-lg h-9 px-2 text-sm text-gray-300"><option>host-store (local)</option><option>A1 (cloud)</option></select>
         <button onclick="go('discover')" class="jura tracking-wider px-4 h-9 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-500">START SCAN</button>
       </div>
       <div class="mt-5 rounded-xl bg-pp border bd p-4 text-left">

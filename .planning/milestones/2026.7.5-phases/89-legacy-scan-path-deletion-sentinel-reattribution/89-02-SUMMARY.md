@@ -12,7 +12,7 @@ provides:
   - "An -x reattribute_to=<id> override (validated, parameterized) for the >1-fileserver case"
   - "A COUNT=0 pre-DELETE assertion inside one transaction (D-09) guaranteeing the RESTRICT FK is satisfiable"
 affects:
-  - "Prod ship-time: alembic upgrade head reattributes ~11,428 legacy-owned rows to nox and removes the sentinel"
+  - "Prod ship-time: alembic upgrade head reattributes ~11,428 legacy-owned rows to host-store and removes the sentinel"
   - "Any future head-migration test that inserts agent_id='legacy-application-server' post-038 will hit an FK violation (the sentinel is gone) -- must self-seed a real fileserver"
 tech-stack:
   added: []
@@ -57,7 +57,7 @@ Wrote Alembic migration `038` that reattributes every historical `legacy-applica
 **1. [Rule 3 - Blocking] Scenario 3 relies on the migration-012 legacy live batch instead of seeding a second one**
 - **Found during:** Task 2 first test run — seeding a second `status='live'` batch for `legacy-application-server` raised `UniqueViolationError` on `uq_scan_batches_agent_id_live` *in the seed itself*.
 - **Issue:** The plan's literal scenario-3 wording ("seed BOTH a legacy `status='live'` batch AND a target-agent live batch") is infeasible: migration 012 already seeds exactly one legacy live watcher batch at rev 037, so a second one collides before 038 ever runs.
-- **Fix:** Scenario 3 now seeds only the *target's* own live batch, asserts the pre-existing legacy live batch count is 1 (from 012), runs 038, and asserts it drops to 0 while nox keeps its single live batch. This is strictly more realistic — it exercises the actual production sentinel, not a synthetic duplicate. Intent (prove the legacy live batch is DELETED, not reattributed, with no `uq_scan_batches_agent_id_live` collision) is fully preserved.
+- **Fix:** Scenario 3 now seeds only the *target's* own live batch, asserts the pre-existing legacy live batch count is 1 (from 012), runs 038, and asserts it drops to 0 while host-store keeps its single live batch. This is strictly more realistic — it exercises the actual production sentinel, not a synthetic duplicate. Intent (prove the legacy live batch is DELETED, not reattributed, with no `uq_scan_batches_agent_id_live` collision) is fully preserved.
 - **Commit:** a4bbec8f
 
 ## A2 harness resolution (documented per plan Task-2 action)
@@ -74,7 +74,7 @@ The plan flagged A2 (no in-repo precedent for programmatic `-x`) and asked to do
 
 ## Notes for downstream
 
-- **Ship-time (out of this plan):** rehearse `alembic upgrade head` against a restore of the prod corpus — confirm 0 legacy-owned rows remain and the sentinel is deleted. Prod has one real fileserver (nox), so the auto-detect path resolves with no `-x` needed.
+- **Ship-time (out of this plan):** rehearse `alembic upgrade head` against a restore of the prod corpus — confirm 0 legacy-owned rows remain and the sentinel is deleted. Prod has one real fileserver (host-store), so the auto-detect path resolves with no `-x` needed.
 - **Head-migration test caution (RESEARCH):** any test using the `migrated_engine` fixture (upgrades to head, now including 038) that inserts `agent_id='legacy-application-server'` without seeding that agent will now hit an FK violation — the sentinel is deleted post-038. New head-level tests must self-seed a real fileserver. Historical migration tests pinned to revisions ≤ 037 are unaffected.
 - Phase 90 (destructive `034`/FileState work) is untouched here — 038 adds no DDL and never writes `files.state`.
 

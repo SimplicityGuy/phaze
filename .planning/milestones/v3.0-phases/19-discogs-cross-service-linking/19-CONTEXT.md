@@ -49,8 +49,8 @@ Link live set tracks to Discogs releases via the discogsography HTTP API. Store 
 **Downstream agents MUST read these before planning or implementing.**
 
 ### Discogs Integration Target
-- `/Users/Robert/Code/public/discogsography/api/routers/search.py` — discogsography `/api/search` endpoint: takes `q`, `types`, `genres`, `year_min`, `year_max`, `limit`, `offset`. Returns JSON with relevance-ranked results.
-- `/Users/Robert/Code/public/discogsography/api/queries/search_queries.py` — Search query implementation and `ALL_TYPES` constant (artist, label, master, release)
+- `<scratch>/discogsography/api/routers/search.py` — discogsography `/api/search` endpoint: takes `q`, `types`, `genres`, `year_min`, `year_max`, `limit`, `offset`. Returns JSON with relevance-ranked results.
+- `<scratch>/discogsography/api/queries/search_queries.py` — Search query implementation and `ALL_TYPES` constant (artist, label, master, release)
 
 ### Existing Patterns to Follow
 - `src/phaze/services/fingerprint.py` — httpx pattern for calling external services (discogsography adapter should follow this)

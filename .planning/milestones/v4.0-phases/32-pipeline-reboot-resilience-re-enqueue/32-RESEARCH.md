@@ -188,7 +188,7 @@ If `job.id` is **already a member of the `incomplete` set** (i.e. a job with thi
 
 **kwargs coexist with key:** YES (proven above). The existing `_enqueue_analysis_jobs` already passes `timeout=` / `retries=` alongside `**payload` (`routers/pipeline.py:72-83`) and works; adding `key=` is the same mechanism.
 
-**Existing default key:** `Job.key` default = `get_default_job_key()` = `uuid1()` (`job.py:22-23,120`); `job_id = f"saq:job:{name}:{key}"` (`redis.py:45,96-97`). This reproduces the live `saq:job:phaze-agent-nox:<uuid>` — queue name `phaze-agent-nox`, key a uuid1. Today `_enqueue_analysis_jobs` passes **no** `key` (`routers/pipeline.py:72`), so every job gets a random uuid → zero dedup. Overriding with `key="process_file:<file_id>"` is the entire fix.
+**Existing default key:** `Job.key` default = `get_default_job_key()` = `uuid1()` (`job.py:22-23,120`); `job_id = f"saq:job:{name}:{key}"` (`redis.py:45,96-97`). This reproduces the live `saq:job:phaze-agent-host-store:<uuid>` — queue name `phaze-agent-host-store`, key a uuid1. Today `_enqueue_analysis_jobs` passes **no** `key` (`routers/pipeline.py:72`), so every job gets a random uuid → zero dedup. Overriding with `key="process_file:<file_id>"` is the entire fix.
 
 **Per-queue scope (accepted edge case):** `job.id` embeds the queue name. The same key on two different agent queues = two different `job.id`s = NO cross-queue dedup. Matches CONTEXT's single-agent assumption (`32-CONTEXT.md` Specifics). Not a blocker.
 
@@ -268,7 +268,7 @@ Recommend BOTH: the dedup-aware fake for deterministic unit coverage of the no-o
 | Secrets/env vars | `redis_url` (`config.py:153`), `models_path` (`config.py:187`), `worker_max_retries` (`config.py:195`) — all read, none renamed. | None |
 | Build artifacts | None — no package rename; pure additive code. | None |
 
-**Existing-key collision check:** today `process_file` jobs carry random uuid1 keys (`saq:job:phaze-agent-nox:<uuid>`). After deploy, both producers switch to `process_file:<file_id>`. A re-enqueue running while a uuid-keyed legacy job is still in-flight for the same file would NOT dedup against it (different key) — a one-time, post-deploy transient that resolves on the first full cron cycle. Worth a one-line note in the plan; not a correctness risk (per-file re-run is idempotent — `put_analysis` replaces window rows, CONTEXT §domain).
+**Existing-key collision check:** today `process_file` jobs carry random uuid1 keys (`saq:job:phaze-agent-host-store:<uuid>`). After deploy, both producers switch to `process_file:<file_id>`. A re-enqueue running while a uuid-keyed legacy job is still in-flight for the same file would NOT dedup against it (different key) — a one-time, post-deploy transient that resolves on the first full cron cycle. Worth a one-line note in the plan; not a correctness risk (per-file re-run is idempotent — `put_analysis` replaces window rows, CONTEXT §domain).
 
 ## Common Pitfalls
 

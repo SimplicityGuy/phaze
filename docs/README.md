@@ -9,6 +9,8 @@ The documents listed below describe the current product. Dated design specificat
 the `.planning/` tree are historical evidence: retain their measurements and conclusions, but do
 not treat an old “current” label as the live backlog. The [documentation audit](documentation-audit-2026-08-19.md)
 records the complete reviewed/changed/unchanged inventory for this refresh.
+Unresolved repository-local targets in that snapshot are intentionally classified
+`historical_by_boundary`, not presented as current navigation.
 
 ## 🏁 Getting Started
 
@@ -29,6 +31,7 @@ records the complete reviewed/changed/unchanged inventory for this refresh.
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
 | **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |
 | **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
+| **[Historical Evidence Audit](historical-evidence-audit-2026-09-11.md)** | 🧾 Reproducible identifier, numeric-equivalence, archive-boundary, link, Mermaid, and graph-reference reconciliation |
 | **[UI Design Reference](ui-design-reference.md)** | 🎛️ Current production visual and interaction contract |
 
 ## 🚀 Operations

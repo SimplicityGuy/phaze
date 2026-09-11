@@ -1131,7 +1131,7 @@ not from a summary of it.
   (the measured refutation); `docs/design/0011-bug-hunt-cadence.md` (precedent for this document's
   form); `docs/design/0005-analyze-job-memory-limits.md` (the 4Gi limit).
 - **Spikes:** `docs/spikes/phaze-b2qs9-exhaustive-analysis-measurement.md`,
-  `docs/spikes/phaze-u1n7j-vox-fix-verification.md`.
+  `docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`.
 - **The site enumeration** *(added 2026-08-21, `phaze-d2hgv.10`)*: a whole-file, case-insensitive
   sweep for `operator[-\s#*>/]{1,40}(decision|confirmed|approved|directed|granted|chose|ruling)`
   over every tracked file under `src/`, `tests/`, `docs/`, `scripts/`, `alembic/`, `.planning/`,

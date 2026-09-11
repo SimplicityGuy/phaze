@@ -8,7 +8,7 @@ requires:
   - "config.py: cloud_target / kube_* / s3_* knobs (Phases 53/54/55, already shipped)"
 provides:
   - "docs/k8s-burst.md: authoritative cluster-admin runbook (Kueue manifests + namespaced RBAC + Secret) + transport notes + deploy ordering + smoke test"
-  - "56-HOMELAB-CHANGE-PROMPT.md: ready-to-paste homelab apply steps + deploy ordering (datum@nox/datum@lux)"
+  - "56-HOMELAB-CHANGE-PROMPT.md: ready-to-paste homelab apply steps + deploy ordering (operator@host-store/operator@host-prod)"
   - "docs/cloud-burst.md: pointer to k8s-burst.md (now A1-specific only)"
 affects:
   - "Operators standing up the v6.0 K8s (Kueue) burst target"
@@ -70,7 +70,7 @@ A1-specific. The Wave-0 runbook test (YAML-validity + RBAC-covers-call-graph) is
 - New `56-HOMELAB-CHANGE-PROMPT.md` mirroring the v5.0 51 headings: title → **Context for the
   homelab agent** (workspace boundary: phaze = spec, homelab = live infra, no live kubectl) →
   numbered apply steps (§1 Kueue objects, §2 RBAC, §3 token Secret, §4 control-plane env) →
-  **Deploy ordering** via `datum@nox` / `datum@lux` → **Done-when checklist**. References
+  **Deploy ordering** via `operator@host-store` / `operator@host-prod` → **Done-when checklist**. References
   applying the manifests from `docs/k8s-burst.md` (no live kubectl authored in the phaze repo).
 - `docs/cloud-burst.md`: replaced the two transitional inline k8s sections (the "Selecting the
   k8s target — required knobs" block and the "Kubernetes burst — submit/reconcile lifecycle"
@@ -87,7 +87,7 @@ A1-specific. The Wave-0 runbook test (YAML-validity + RBAC-covers-call-graph) is
   required kinds {ResourceFlavor, ClusterQueue, LocalQueue, ServiceAccount, Role, RoleBinding,
   Secret} + RBAC verb floor ⊇ the kr8s call graph).
 - Acceptance strings confirmed present: homelab prompt carries "Context for the homelab agent",
-  "Deploy ordering", "datum@nox", "datum@lux", "Done-when checklist"; cloud-burst.md has 5
+  "Deploy ordering", "operator@host-store", "operator@host-prod", "Done-when checklist"; cloud-burst.md has 5
   references to `k8s-burst.md` and no residual `## Kubernetes burst` inline runbook heading.
 - Pre-commit hooks ran clean on both commits (no `--no-verify`).
 

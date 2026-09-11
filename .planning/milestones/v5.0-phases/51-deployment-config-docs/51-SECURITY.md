@@ -20,9 +20,9 @@ created: 2026-06-26
 | Boundary | Description | Data Crossing |
 |----------|-------------|---------------|
 | operator config → control-plane routing | `cloud_burst_enabled` gates whether any file leaves the local trust boundary for a cloud target | file-routing decision (none when OFF) |
-| compute agent (A1) → lux Postgres | Compute agent reaches ONLY `saq_jobs`/`saq_stats`/`saq_versions` via `PHAZE_QUEUE_URL`; never the app ORM (DIST-04) | queue rows (no app data) |
+| compute agent (A1) → host-prod Postgres | Compute agent reaches ONLY `saq_jobs`/`saq_stats`/`saq_versions` via `PHAZE_QUEUE_URL`; never the app ORM (DIST-04) | queue rows (no app data) |
 | OCI A1 host → tailnet | Host `tailscaled` is the network trust boundary; container uses `network_mode: host` under a default-deny grants ACL | saq_jobs broker, Redis cache, HTTP API traffic |
-| nox → A1 | rsync-over-SSH push channel; only `nox:22` inbound to A1 | pushed long-file media to ephemeral scratch |
+| host-store → A1 | rsync-over-SSH push channel; only `host-store:22` inbound to A1 | pushed long-file media to ephemeral scratch |
 | documentation/spec → operator action | Docs + homelab spec instruct secret handling; must not leak real secrets or encourage insecure config | placeholder credentials only |
 
 ---
@@ -39,7 +39,7 @@ created: 2026-06-26
 | T-51-06 | Information disclosure (secrets-in-compose) | _FILE secrets | mitigate | No plaintext secrets inlined; env only `PHAZE_ROLE`/`PHAZE_AGENT_KIND` + `env_file: .env` (compose:39-41,48-51); `*_FILE` resolution via SECRET_FILE_FIELDS (config.py:79,452) | closed |
 | T-51-07 | Information disclosure | phaze_broker DB role | mitigate | Role granted USAGE+CREATE ON SCHEMA public + DML on 3 saq tables + sequence USAGE only, ZERO app-ORM grants; `SELECT * FROM files` probe MUST ERROR (cloud-burst.md:163-195; 51-HOMELAB:174-211) | closed |
 | T-51-08 | Elevation of privilege | broker role over-broad | accept (with note) | `CREATE ON SCHEMA public` empirically unavoidable (SAQ init_db unconditional `CREATE TABLE IF NOT EXISTS`); residual risk documented + optional dedicated-saq-schema hardening offered (cloud-burst.md:184-202; 51-HOMELAB:163-219) | closed |
-| T-51-09 | Spoofing / lateral movement | Tailscale ACL scope | mitigate | Default-deny grants: A1→lux `tcp:{5432,6379,8000}` + nox→A1 `tcp:22`, nothing else (51-HOMELAB:110-148; cloud-burst.md:113-143) | closed |
+| T-51-09 | Spoofing / lateral movement | Tailscale ACL scope | mitigate | Default-deny grants: A1→host-prod `tcp:{5432,6379,8000}` + host-store→A1 `tcp:22`, nothing else (51-HOMELAB:110-148; cloud-burst.md:113-143) | closed |
 | T-51-10 | Information disclosure | secrets in change prompt | mitigate | Placeholders only — `100.x.x.x`/`100.y.y.y`, `<strong-unique-password>`, `var.*`, image-OCID vars; real-IP/real-password scan returned zero hits (51-HOMELAB.md) | closed |
 | T-51-11 | Information disclosure | secrets in docs | mitigate | All ACL/SQL/.env examples use placeholders; config table flags `_FILE`-secret-bearing fields (cloud-burst.md, configuration.md:81-107); scan returned zero real secrets/IPs | closed |
 | T-51-12 | Tampering / misconfiguration | runbook completeness | mitigate | Runbook carries CREATE ON SCHEMA finding (cloud-burst.md:156-186), production guards https+passworded-redis (cloud-burst.md:246-249; configuration.md:288-289), and scratch-dir-match warning (cloud-burst.md:251-253; configuration.md:93-94) | closed |

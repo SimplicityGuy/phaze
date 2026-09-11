@@ -58,7 +58,7 @@ completed: 2026-06-09
 - `trigger_scan` gained a `session: AsyncSession = Depends(get_session)` and now resolves `resolve_queue_for_task("extract_file_metadata", app.state, session)` after path validation, passing `routed.queue` into `run_scan` exactly where `app.state.queue` used to flow. The dead `app.state.queue` reference is gone (grep count 0).
 - The zero-agent case (`NoActiveAgentError`) is translated to `HTTPException(503, ...)` — discovery has no consumer to feed, so the endpoint refuses rather than persisting files whose extraction step would silently strand.
 - `ingestion.run_scan`'s `queue` param docstring now states the contract: a consumed per-agent `phaze-agent-<id>` queue resolved by the caller via the enqueue router, never the removed default; `queue is None` remains honored for discovery-only callers/tests.
-- Regression coverage: a real `.mp3` in a temp dir drives the actual `run_scan` enqueue loop through a capture-queue fake and asserts `phaze-agent-nox` / `extract_file_metadata` with nothing on `default`; a second test proves the zero-agent path is a 503 with no enqueue.
+- Regression coverage: a real `.mp3` in a temp dir drives the actual `run_scan` enqueue loop through a capture-queue fake and asserts `phaze-agent-host-store` / `extract_file_metadata` with nothing on `default`; a second test proves the zero-agent path is a 503 with no enqueue.
 
 ## Task Commits
 
@@ -79,7 +79,7 @@ completed: 2026-06-09
 None - plan executed exactly as written. Rules 1-4 were not triggered; no auth gates occurred.
 
 ## Threat Mitigations Realized
-- **T-30-01 (DoS / data-integrity, default-queue enqueue loop):** `scan.py` carries zero `app.state.queue` references (grep gate) and the test asserts the enqueue lands on `phaze-agent-nox`, never `default`.
+- **T-30-01 (DoS / data-integrity, default-queue enqueue loop):** `scan.py` carries zero `app.state.queue` references (grep gate) and the test asserts the enqueue lands on `phaze-agent-host-store`, never `default`.
 - **T-30-04 (DoS, silent strand on zero agents):** `NoActiveAgentError` -> HTTP 503, asserted by `test_trigger_scan_no_active_agent_returns_503`.
 - **T-30-SC (package installs):** accepted — no new packages introduced.
 

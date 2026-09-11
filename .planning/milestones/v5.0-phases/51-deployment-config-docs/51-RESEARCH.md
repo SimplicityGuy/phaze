@@ -17,7 +17,7 @@
 - **D-07:** Scratch = a named docker volume mounted at `cloud_scratch_dir` (not a host bind mount). `MODELS_PATH` mounted `rw`; CA cert mounted `ro`.
 - **D-08:** Image line: `image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64`. The Phase 47 image is a SEPARATE `-arm64` tag (NOT multi-arch); the `-arm64` suffix is mandatory. Production pins `PHAZE_IMAGE_TAG=v5.0.0` → `v5.0.0-arm64`.
 - **D-09:** OCI A1 infra = OpenTofu IaC in the homelab repo (NOT the phaze repo — workspace boundary). Phase 51 delivers a ready-to-paste homelab change prompt (Phase 36 "Step D" precedent) specifying the OpenTofu OCI A1 module: Always-Free A1 Ampere, arm64 Ubuntu 24.04, boot volume, SSH key, networking/security-list.
-- **D-10:** Tailscale ACL + least-privilege Postgres queue-broker role are applied in homelab, spec'd by phaze. The change prompt carries the EXACT ACL JSON (A1→`lux:{5432,6379,8000}` + `nox→A1:22`) and the EXACT PG role SQL. phaze stays source-of-truth spec; live infra lives in homelab.
+- **D-10:** Tailscale ACL + least-privilege Postgres queue-broker role are applied in homelab, spec'd by phaze. The change prompt carries the EXACT ACL JSON (A1→`host-prod:{5432,6379,8000}` + `host-store→A1:22`) and the EXACT PG role SQL. phaze stays source-of-truth spec; live infra lives in homelab.
 - **D-11:** Least-privilege PG role = full SQL in the spec/runbook. Compute agent connects via `PHAZE_QUEUE_URL` for the `saq_jobs` table ONLY (NOT the app ORM — DIST-04). Document `CREATE ROLE` + minimal `GRANT`s. Grant-timing: pick the safer of (a) CREATE-on-first-boot vs (b) pre-create-table.
 - **D-12:** Full cloud-burst config table in `docs/configuration.md` (knob, env var, default, `_FILE`-secret?), plus master-toggle semantics. Source descriptions from the `Field(...)` descriptions in `config.py`.
 - **D-13:** ONE new `docs/cloud-burst.md` (compose/deploy walkthrough + runbook + homelab-OpenTofu reference + ACL JSON + PG role SQL copies + smoke test); config subsection stays in `configuration.md`; pointer from `deployment.md`; index entry in `docs/README.md`.
@@ -44,7 +44,7 @@
 |----|-------------|------------------|
 | CLOUDDEPLOY-01 | Cloud-agent compose brings up the compute agent: Tailscale connectivity, no media mount, scratch volume, arm64 image. | "Compose Pattern" section: new `docker-compose.cloud-agent.yml`, worker-only, `-arm64` image, named scratch volume, host-Tailscale via `network_mode: host`, mirror+extend `test_agent_compose.py`. |
 | CLOUDDEPLOY-02 | All cloud-burst params configurable via pydantic-settings with `_FILE`-secret support: threshold, max in-flight, agent concurrency, scratch dir, push SSH target, cloud queue name, master toggle. | "Config Knobs Audit" — full enumeration + 2 FLAGGED criterion-named knobs (`agent concurrency`=`WORKER_MAX_JOBS` exists; `cloud queue name`=`PHAZE_AGENT_QUEUE` is a raw `os.environ` read, NOT a pydantic field). |
-| CLOUDDEPLOY-03 | Runbook: OCI Always-Free A1 provisioning + Tailscale ACL scoping A1→`lux:{5432,6379,8000}`+`nox→A1:22` + least-privilege Postgres broker role. | "OCI A1 OpenTofu Spec", "Tailscale Grants ACL" (copy-paste block), "Least-Privilege Postgres Role" (empirically-verified SQL). |
+| CLOUDDEPLOY-03 | Runbook: OCI Always-Free A1 provisioning + Tailscale ACL scoping A1→`host-prod:{5432,6379,8000}`+`host-store→A1:22` + least-privilege Postgres broker role. | "OCI A1 OpenTofu Spec", "Tailscale Grants ACL" (copy-paste block), "Least-Privilege Postgres Role" (empirically-verified SQL). |
 | CLOUDDEPLOY-04 | Single config toggle disables the whole feature, reverting to all-local with no other change. | "Master Toggle Wiring" — exact short-circuit sites; one-line gate in `_route_discovered_by_duration`; cron no-op; backfill gate flag. |
 </phase_requirements>
 
@@ -75,11 +75,11 @@ The genuinely unfamiliar surface — Tailscale ACL JSON, OCI A1 OpenTofu, and th
 | Cloud staging cron gate | Control plane (`tasks/release_awaiting_cloud.py::stage_cloud_window`) | — | Single "stay one ahead" driver runs on the controller worker only. |
 | Backfill gate | Control plane (`routers/pipeline.py::trigger_backfill_cloud`) | — | Backfill is a control-side HTTP trigger that funnels through the same router seam. |
 | Compute-agent runtime (drain queue, analyze, push-receive, cleanup) | Compute agent (OCI A1, `agent_worker.py`, `kind=compute`) | — | Phase 48/50 already built this; Phase 51 only packages/deploys it. |
-| SAQ queue broker (`saq_jobs`) | Database (lux Postgres) | Control + Agent (psycopg3 clients) | Phase 36 made the broker Postgres; the compute agent connects via `PHAZE_QUEUE_URL` for `saq_jobs` only. |
-| Cache / rate-limit / counters (Redis) | Database (lux Redis) | Control + Agent | Redis is cache-plane only post-Phase-36. |
-| Network access control (A1↔lux, nox→A1) | Tailscale tailnet (homelab-applied) | — | Host-installed `tailscaled` (D-05); ACL spec authored by phaze, applied in homelab. |
+| SAQ queue broker (`saq_jobs`) | Database (host-prod Postgres) | Control + Agent (psycopg3 clients) | Phase 36 made the broker Postgres; the compute agent connects via `PHAZE_QUEUE_URL` for `saq_jobs` only. |
+| Cache / rate-limit / counters (Redis) | Database (host-prod Redis) | Control + Agent | Redis is cache-plane only post-Phase-36. |
+| Network access control (A1↔host-prod, host-store→A1) | Tailscale tailnet (homelab-applied) | — | Host-installed `tailscaled` (D-05); ACL spec authored by phaze, applied in homelab. |
 | OCI A1 instance + boot volume + VCN/security-list | OCI (homelab OpenTofu IaC) | — | Workspace boundary (D-09): infra authored in homelab, specced by phaze. |
-| Least-privilege broker DB role | Database (lux Postgres, homelab-applied) | — | Role SQL authored by phaze (D-10/D-11), applied in homelab. |
+| Least-privilege broker DB role | Database (host-prod Postgres, homelab-applied) | — | Role SQL authored by phaze (D-10/D-11), applied in homelab. |
 
 ## Standard Stack
 
@@ -97,14 +97,14 @@ This phase introduces **no new pip packages**. The relevant components already e
 | Component | Purpose | When to Use | Provenance |
 |-----------|---------|-------------|------------|
 | OpenTofu + `oracle/oci` provider | OCI A1 instance, VCN/subnet/security-list, boot volume, SSH key | Homelab change prompt (D-09) | `[CITED: registry.terraform.io/providers/oracle/oci]` |
-| Tailscale tailnet policy (grants) | ACL scoping A1↔lux + nox→A1 | Homelab change prompt (D-10) | `[CITED: tailscale.com/docs/reference/syntax/grants]` |
+| Tailscale tailnet policy (grants) | ACL scoping A1↔host-prod + host-store→A1 | Homelab change prompt (D-10) | `[CITED: tailscale.com/docs/reference/syntax/grants]` |
 | host `tailscaled` (apt) on Ubuntu 24.04 arm64 | A1 tailnet connectivity (D-05) | Runbook | `[ASSUMED — standard Tailscale install; verify at provision time]` |
 | `rsync` + `ssh` on the A1 | Receive pushed files into scratch (Phase 50 `push_file` target) | Runbook — must be present on the A1 host/image | `[VERIFIED: src/phaze/tasks/push.py uses rsync over ssh]` |
 
 ### Alternatives Considered
 | Instead of | Could Use | Tradeoff |
 |------------|-----------|----------|
-| `network_mode: host` for the compute container | bridge networking + tailnet IP literals in env | host networking gives MagicDNS + tailnet routing for free on a single-purpose VM; bridge requires hard-coding lux's `100.x` tailnet IP and loses MagicDNS resolution inside the container. Host mode is simplest here (only one service, no port conflicts). |
+| `network_mode: host` for the compute container | bridge networking + tailnet IP literals in env | host networking gives MagicDNS + tailnet routing for free on a single-purpose VM; bridge requires hard-coding host-prod's `100.x` tailnet IP and loses MagicDNS resolution inside the container. Host mode is simplest here (only one service, no port conflicts). |
 | Grant `CREATE ON SCHEMA public` to the broker role | Dedicated `saq` schema + `search_path` on both roles | the dedicated-schema approach is genuinely tighter (broker gets zero rights in `public`) but requires moving the *live* control-plane `saq_jobs` table and changing the full role's `search_path` — a riskier homelab change. Recommended as documented optional hardening, not the default. |
 | `docker-compose.cloud-agent.yml` (own file) | Profiles/overrides on `docker-compose.agent.yml` | a standalone file matches the existing `docker-compose.agent.yml` precedent and keeps the worker-only invariants testable in isolation. |
 
@@ -176,13 +176,13 @@ The module-level `settings = _build_default_settings()` singleton (`config.py:74
 ```yaml
 # docker-compose.cloud-agent.yml — OCI A1 compute-agent compose (Phase 51, CLOUDDEPLOY-01).
 # Worker-only: agent SAQ worker, kind=compute, NO watcher, NO fingerprint sidecars, NO media mount.
-# Host-installed tailscaled (D-05) provides connectivity to lux; network_mode: host gives the
+# Host-installed tailscaled (D-05) provides connectivity to host-prod; network_mode: host gives the
 # container MagicDNS + tailnet routing for free (single-purpose VM, no port conflicts).
 services:
   worker:
     image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64   # D-08: -arm64 suffix MANDATORY
     command: uv run saq phaze.tasks.agent_worker.settings
-    network_mode: host                       # reach lux via host tailnet + MagicDNS
+    network_mode: host                       # reach host-prod via host tailnet + MagicDNS
     env_file: .env
     environment:
       - PHAZE_ROLE=agent
@@ -207,9 +207,9 @@ volumes:
 ### `.env` for the compute agent (no-media, production)
 The compute agent's required + cloud-burst env (sourced from `config.py` `AgentSettings`):
 ```bash
-PHAZE_QUEUE_URL=postgresql://phaze_broker:<pw>@lux:5432/phaze   # libpq form; broker role (NOT phaze)
-PHAZE_REDIS_URL=redis://:<redis_pw>@lux:6379/0                  # production mode REQUIRES a password
-PHAZE_AGENT_API_URL=https://lux:8000                           # production mode REQUIRES https://
+PHAZE_QUEUE_URL=postgresql://phaze_broker:<pw>@host-prod:5432/phaze   # libpq form; broker role (NOT phaze)
+PHAZE_REDIS_URL=redis://:<redis_pw>@host-prod:6379/0                  # production mode REQUIRES a password
+PHAZE_AGENT_API_URL=https://host-prod:8000                           # production mode REQUIRES https://
 PHAZE_AGENT_ENV=production
 PHAZE_AGENT_KIND=compute
 PHAZE_AGENT_QUEUE=phaze-agent-<compute_agent_id>               # raw env, read at SAQ import time
@@ -229,9 +229,9 @@ Two production guards in `AgentSettings` (`config.py:648-680`) WILL fire if viol
                          Tailscale tailnet (default-deny grants ACL)
    ┌─────────────────────────────────────────────────────────────────────────┐
    │                                                                           │
-   │   nox (file server)                              OCI A1 (compute agent)   │
+   │   host-store (file server)                              OCI A1 (compute agent)   │
    │   ┌──────────────────┐   rsync over SSH (push)   ┌─────────────────────┐  │
-   │   │ docker-compose    │  ── nox → A1:22 ───────▶ │ host tailscaled      │  │
+   │   │ docker-compose    │  ── host-store → A1:22 ───────▶ │ host tailscaled      │  │
    │   │  .agent.yml       │                          │ docker-compose       │  │
    │   │  (worker+watcher  │                          │  .cloud-agent.yml    │  │
    │   │   +fprint+media)  │                          │  worker (kind=compute│  │
@@ -239,7 +239,7 @@ Two production guards in `AgentSettings` (`config.py:648-680`) WILL fire if viol
    │            │                                      │   volume, -arm64 img)│  │
    │            │ HTTP API + saq_jobs + cache          └──────────┬──────────┘  │
    │            ▼                                                  │             │
-   │   lux (application server)  ◀── A1 → lux:{5432,6379,8000} ────┘             │
+   │   host-prod (application server)  ◀── A1 → host-prod:{5432,6379,8000} ────┘             │
    │   ┌───────────────────────────────────────────────────────┐               │
    │   │ api(:8000)   Postgres(:5432: app ORM + saq_jobs broker) │               │
    │   │ controller worker (stage_cloud_window cron)   Redis(:6379 cache) │      │
@@ -273,7 +273,7 @@ Mirror `docker-compose.agent.yml` + `test_agent_compose.py` (pure `yaml.safe_loa
 |---------|-------------|-------------|-----|
 | Secret file mounting for the compute agent | Custom env-file reader | Existing `_FILE` machinery (`SECRET_FILE_FIELDS`, `_resolve_secret_files`) | Already supports `agent_token`, `queue_url`, `redis_url`, `push_ssh_key`, `push_known_hosts` — the compose just mounts `*_FILE` paths. |
 | SAQ table creation on the broker DB | Manual DDL replicating saq schema, or an Alembic step | Let the **full** `phaze` role (control plane) run SAQ's own `init_db()` first | SAQ owns the `saq_jobs`/`saq_stats`/`saq_versions` migration set; Alembic must never touch saq_jobs (Phase 36 principle). |
-| Compute-agent network restriction | iptables on the A1 | Tailscale grants ACL (default-deny) | The tailnet is the trust boundary; grants give exactly `A1→lux:{5432,6379,8000}` + `nox→A1:22` and nothing else. |
+| Compute-agent network restriction | iptables on the A1 | Tailscale grants ACL (default-deny) | The tailnet is the trust boundary; grants give exactly `A1→host-prod:{5432,6379,8000}` + `host-store→A1:22` and nothing else. |
 | OCI instance provisioning | Console click-path in phaze docs | Homelab OpenTofu module (D-09) | IaC is reproducible + lives in the correct workspace; phaze emits the spec only. |
 
 **Key insight:** This phase is mostly *wiring + specification*, not construction. The strongest failure mode is mis-specifying the broker DB role or the ACL — both verified below.
@@ -301,7 +301,7 @@ I tested a least-privilege role (`GRANT USAGE` on schema, table-DML on the three
 
 ### Recommended SQL (for the homelab change prompt + `docs/cloud-burst.md`)
 ```sql
--- Run as the phaze owner / a superuser on the lux Postgres, in the phaze database.
+-- Run as the phaze owner / a superuser on the host-prod Postgres, in the phaze database.
 -- The control plane (full 'phaze' role) must boot FIRST so SAQ has already created
 -- saq_jobs/saq_stats/saq_versions and migrated them to the current version.
 
@@ -321,7 +321,7 @@ GRANT USAGE, SELECT ON SEQUENCE saq_jobs_lock_key_seq TO phaze_broker;
 --   SET ROLE phaze_broker; SELECT * FROM files LIMIT 1;  -- must ERROR: permission denied
 ```
 
-**Postgres-version note** `[VERIFIED on PG18; CITED for general PG15+]`: On PostgreSQL **15+**, the `public` schema no longer grants `CREATE` to `PUBLIC` by default, so the explicit `GRANT … CREATE ON SCHEMA public` is genuinely required and meaningful. On PG **<15**, `PUBLIC` already had `CREATE` on `public`, so the grant is redundant there (and the role could already create tables). Confirm the lux Postgres major version in the runbook.
+**Postgres-version note** `[VERIFIED on PG18; CITED for general PG15+]`: On PostgreSQL **15+**, the `public` schema no longer grants `CREATE` to `PUBLIC` by default, so the explicit `GRANT … CREATE ON SCHEMA public` is genuinely required and meaningful. On PG **<15**, `PUBLIC` already had `CREATE` on `public`, so the grant is redundant there (and the role could already create tables). Confirm the host-prod Postgres major version in the runbook.
 
 **Optional stronger hardening (document, don't default):** dedicated `saq` schema — `CREATE SCHEMA saq; ALTER TABLE saq_jobs/saq_stats/saq_versions SET SCHEMA saq;` then `ALTER ROLE phaze SET search_path = saq, public;` and `ALTER ROLE phaze_broker SET search_path = saq;` with `GRANT USAGE, CREATE ON SCHEMA saq` (and NO rights in `public`). This gives the broker zero ability to touch `public` at all, but it relocates the **live** control-plane queue table and changes the full role's search_path — a riskier homelab change. Defer unless the operator wants strict public-schema lockdown.
 
@@ -333,31 +333,31 @@ GRANT USAGE, SELECT ON SEQUENCE saq_jobs_lock_key_seq TO phaze_broker;
 ```jsonc
 {
   // The A1 must come up tagged 'tag:cloud-agent' (tailscale up --advertise-tags=tag:cloud-agent,
-  // or auth-key with the tag). 'hosts' map lux/nox to their tailnet IPs (or use tags if preferred).
+  // or auth-key with the tag). 'hosts' map host-prod/host-store to their tailnet IPs (or use tags if preferred).
   "tagOwners": {
     "tag:cloud-agent": ["autogroup:admin"]
   },
   "hosts": {
-    "lux": "100.x.x.x",   // application server tailnet IP (Postgres queue + Redis cache + HTTP API)
-    "nox": "100.y.y.y"    // file server tailnet IP (push initiator)
+    "host-prod": "100.x.x.x",   // application server tailnet IP (Postgres queue + Redis cache + HTTP API)
+    "host-store": "100.y.y.y"    // file server tailnet IP (push initiator)
   },
   "grants": [
-    // A1 compute agent -> lux: saq_jobs broker (5432), Redis cache (6379), app HTTP API (8000).
+    // A1 compute agent -> host-prod: saq_jobs broker (5432), Redis cache (6379), app HTTP API (8000).
     {
       "src": ["tag:cloud-agent"],
-      "dst": ["lux"],
+      "dst": ["host-prod"],
       "ip": ["tcp:5432", "tcp:6379", "tcp:8000"]
     },
-    // nox file server -> A1: SSH for the rsync-over-SSH push (Phase 50 push_file target).
+    // host-store file server -> A1: SSH for the rsync-over-SSH push (Phase 50 push_file target).
     {
-      "src": ["nox"],
+      "src": ["host-store"],
       "dst": ["tag:cloud-agent"],
       "ip": ["tcp:22"]
     }
   ]
 }
 ```
-Notes: with default-deny, the A1 cannot reach anything else on the tailnet, and nothing else can reach the A1 except `nox:22`. `5432` is required because the SAQ broker is Postgres (Phase 36); the A1 still has NO `DATABASE_URL` (DIST-04 holds — it touches only `saq_jobs`). If `port 22` collides with Tailscale-SSH policy, use a normal `sshd` (plain `tcp:22` grant is sufficient; Tailscale SSH `ssh` rules are a separate construct and NOT needed here).
+Notes: with default-deny, the A1 cannot reach anything else on the tailnet, and nothing else can reach the A1 except `host-store:22`. `5432` is required because the SAQ broker is Postgres (Phase 36); the A1 still has NO `DATABASE_URL` (DIST-04 holds — it touches only `saq_jobs`). If `port 22` collides with Tailscale-SSH policy, use a normal `sshd` (plain `tcp:22` grant is sufficient; Tailscale SSH `ssh` rules are a separate construct and NOT needed here).
 
 ## OCI Always-Free A1 OpenTofu Spec (CLOUDDEPLOY-03, D-09)
 
@@ -391,15 +391,15 @@ resource "oci_core_instance" "phaze_compute_a1" {
 # Plus: oci_core_vcn, oci_core_subnet, oci_core_internet_gateway, oci_core_route_table,
 #       and a security list / NSG. Boot volume defaults are Always-Free within the 200GB total.
 ```
-**Security-list / NSG note:** Tailscale provides the actual A1↔lux / nox→A1 access control (the grants ACL above), so the OCI security list only needs to allow **outbound** (for `tailscaled` to reach the tailnet relays/DERP) and may keep inbound tightly closed except what the operator needs for first-boot SSH bootstrap (or bootstrap entirely over Tailscale once `tailscaled` is up). Document: install `tailscaled` + `rsync` in cloud-init / the runbook so the A1 can receive pushes and reach lux.
+**Security-list / NSG note:** Tailscale provides the actual A1↔host-prod / host-store→A1 access control (the grants ACL above), so the OCI security list only needs to allow **outbound** (for `tailscaled` to reach the tailnet relays/DERP) and may keep inbound tightly closed except what the operator needs for first-boot SSH bootstrap (or bootstrap entirely over Tailscale once `tailscaled` is up). Document: install `tailscaled` + `rsync` in cloud-init / the runbook so the A1 can receive pushes and reach host-prod.
 
-### Deploy ordering (Phase 36 "Step D" precedent — datum@nox / datum@lux)
+### Deploy ordering (Phase 36 "Step D" precedent — operator@host-store / operator@host-prod)
 1. **homelab:** OpenTofu apply → A1 up (Ubuntu 24.04 arm64, 2 OCPU/12 GB); cloud-init installs `tailscaled` + `rsync`; `tailscale up --advertise-tags=tag:cloud-agent`.
-2. **homelab:** apply the tailnet grants ACL (A1↔lux + nox→A1).
-3. **homelab (lux Postgres):** run the `phaze_broker` role SQL (control plane already booted → SAQ tables exist).
+2. **homelab:** apply the tailnet grants ACL (A1↔host-prod + host-store→A1).
+3. **homelab (host-prod Postgres):** run the `phaze_broker` role SQL (control plane already booted → SAQ tables exist).
 4. **phaze release:** ship v5.0.x → GHCR publishes `…:v5.0.0-arm64`.
 5. **A1:** populate `.env` (broker `PHAZE_QUEUE_URL`, agent token, scratch dir, `WORKER_MAX_JOBS=1`); `docker compose -f docker-compose.cloud-agent.yml up -d`.
-6. **lux control plane:** set `PHAZE_CLOUD_BURST_ENABLED=true`; restart the controller worker + api (toggle is startup-read).
+6. **host-prod control plane:** set `PHAZE_CLOUD_BURST_ENABLED=true`; restart the controller worker + api (toggle is startup-read).
 7. **smoke test:** see Validation Architecture.
 
 ## Config Knobs Audit (CLOUDDEPLOY-02, D-12)
@@ -440,9 +440,9 @@ Success criterion #2 names "**agent concurrency**" and "**cloud queue name**". C
 | Category | Items Found | Action Required |
 |----------|-------------|------------------|
 | Stored data | **`AWAITING_CLOUD` / `PUSHING` / `PUSHED` FileRecords** already exist in the live DB from Phase 49/50 deploys. On the v5.0 redeploy, `cloud_burst_enabled` defaults False ⇒ the staging cron stops topping the window; in-flight `PUSHING`/`PUSHED` drains (D-04); NEW long files route local. Held `AWAITING_CLOUD` rows from before the flip stay held until the operator turns cloud on (acceptable per D-04). | Doc note in `cloud-burst.md`: "off-by-default means the just-built cloud feature ships dormant; flip `PHAZE_CLOUD_BURST_ENABLED=true` after provisioning. Pre-existing AWAITING_CLOUD rows release once enabled." |
-| Live service config | **Tailscale tailnet ACL** (homelab-applied), **OCI A1 instance + VCN/security-list** (OpenTofu, homelab), **`phaze_broker` Postgres role** (lux, homelab). None of these live in the phaze repo (D-09/D-10 workspace boundary). | Emit the homelab change prompt carrying the exact ACL JSON + PG SQL + OpenTofu spec; homelab agent applies. |
+| Live service config | **Tailscale tailnet ACL** (homelab-applied), **OCI A1 instance + VCN/security-list** (OpenTofu, homelab), **`phaze_broker` Postgres role** (host-prod, homelab). None of these live in the phaze repo (D-09/D-10 workspace boundary). | Emit the homelab change prompt carrying the exact ACL JSON + PG SQL + OpenTofu spec; homelab agent applies. |
 | OS-registered state | **host `tailscaled`** on the A1 (apt + `tailscale up --advertise-tags=tag:cloud-agent`); **`rsync`/`ssh`** must be present on the A1 to receive pushes. | Runbook step (cloud-init or manual). The A1 host, not the container, runs tailscaled (D-05). |
-| Secrets / env vars | NEW: `phaze_broker` DB password (in the A1's `PHAZE_QUEUE_URL` / `_FILE`); the A1's agent token (`PHAZE_AGENT_TOKEN_FILE`); the compute agent's SSH host key must be in nox's `PHAZE_PUSH_KNOWN_HOSTS` (Phase 50 strict known_hosts). `PHAZE_CLOUD_BURST_ENABLED` is a new (non-secret) env on the lux control plane. | Document all in `cloud-burst.md`; nox's `push_known_hosts` must be re-provisioned with the A1's host key after the A1 is up. |
+| Secrets / env vars | NEW: `phaze_broker` DB password (in the A1's `PHAZE_QUEUE_URL` / `_FILE`); the A1's agent token (`PHAZE_AGENT_TOKEN_FILE`); the compute agent's SSH host key must be in host-store's `PHAZE_PUSH_KNOWN_HOSTS` (Phase 50 strict known_hosts). `PHAZE_CLOUD_BURST_ENABLED` is a new (non-secret) env on the host-prod control plane. | Document all in `cloud-burst.md`; host-store's `push_known_hosts` must be re-provisioned with the A1's host key after the A1 is up. |
 | Build artifacts | The `-arm64` image tag (`ghcr.io/simplicityguy/phaze:v5.0.0-arm64`) is published by the Phase 47 CI `build-arm64` job (already shipped). The cloud compose pins it. | No phaze build change; just pin `PHAZE_IMAGE_TAG` in the A1 `.env`. |
 
 **The canonical question — what runtime state still holds the old behavior after every repo file is updated?** The control plane's *behavior* changes only when the operator (1) provisions the A1 + broker role + ACL and (2) sets `PHAZE_CLOUD_BURST_ENABLED=true` and restarts the control plane. Until then, the redeploy is all-local (intended, D-01).
@@ -465,10 +465,10 @@ Success criterion #2 names "**agent concurrency**" and "**cloud queue name**". C
 
 ### Pitfall 4: production guards fire on the compute agent
 **What goes wrong:** `PHAZE_AGENT_ENV=production` with an `http://` API URL or passwordless Redis → `AgentSettings` raises at startup.
-**Avoid:** `PHAZE_AGENT_API_URL=https://lux:8000` and a passworded `PHAZE_REDIS_URL` (`config.py:648-680`).
+**Avoid:** `PHAZE_AGENT_API_URL=https://host-prod:8000` and a passworded `PHAZE_REDIS_URL` (`config.py:648-680`).
 
 ### Pitfall 5: scratch dir skew
-**What goes wrong:** `PHAZE_CLOUD_SCRATCH_DIR` (A1) ≠ `PHAZE_COMPUTE_SCRATCH_DIR` (lux control) → the control plane builds a `process_file` scratch_path the A1 never wrote to → sha256/transfer failure.
+**What goes wrong:** `PHAZE_CLOUD_SCRATCH_DIR` (A1) ≠ `PHAZE_COMPUTE_SCRATCH_DIR` (host-prod control) → the control plane builds a `process_file` scratch_path the A1 never wrote to → sha256/transfer failure.
 **Avoid:** document them as a matched pair; both must equal the named-volume mount path (e.g. `/scratch`).
 
 ### Pitfall 6: toggle flip without restart
@@ -577,15 +577,15 @@ max_in_flight = cfg.cloud_max_in_flight   # type: ignore[attr-defined]
 | V2 Authentication | yes | Agent bearer token (`_FILE` secret), hashed in `agents`; SSH key-based push auth (Phase 50). |
 | V4 Access Control | yes | DIST-04: compute agent reaches Postgres ONLY for `saq_jobs` (least-priv `phaze_broker` role); Tailscale default-deny grants; no app-ORM grants. |
 | V5 Input Validation | partial | New compose file passes yamllint/check-jsonschema; toggle is a typed bool. |
-| V6 Cryptography | yes | SSH key + known_hosts whitespace-preserved (`SECRET_FILE_PRESERVE_WHITESPACE`); TLS to lux:8000 (production https guard); never log secrets (D-13 discipline). |
-| V9 Communications | yes | All A1↔lux traffic over Tailscale (WireGuard); strict known_hosts on push; https + passworded Redis enforced in production. |
+| V6 Cryptography | yes | SSH key + known_hosts whitespace-preserved (`SECRET_FILE_PRESERVE_WHITESPACE`); TLS to host-prod:8000 (production https guard); never log secrets (D-13 discipline). |
+| V9 Communications | yes | All A1↔host-prod traffic over Tailscale (WireGuard); strict known_hosts on push; https + passworded Redis enforced in production. |
 
 ### Known Threat Patterns for this deploy
 | Pattern | STRIDE | Standard Mitigation |
 |---------|--------|---------------------|
 | Compute agent reads app data (FileRecord/metadata) | Information disclosure | least-priv `phaze_broker` role with ZERO app-table grants (verify `SELECT * FROM files` ERRORs); DIST-04. |
 | Over-broad DB role (broker can create/alter app tables) | Elevation of privilege | grant only `CREATE ON SCHEMA` (unavoidable for init_db) + saq-table DML; no ownership of app tables; optional dedicated `saq` schema for stricter lockdown. |
-| A1 reachable from the wider tailnet / internet | Spoofing/Tampering | Tailscale default-deny grants (only `nox:22` inbound, only `lux:{5432,6379,8000}` outbound); OCI security list outbound-mostly. |
+| A1 reachable from the wider tailnet / internet | Spoofing/Tampering | Tailscale default-deny grants (only `host-store:22` inbound, only `host-prod:{5432,6379,8000}` outbound); OCI security list outbound-mostly. |
 | Half-written / corrupt pushed file analyzed | Tampering | rsync `--partial-dir` + atomic rename + app-level sha256 verify (Phase 50, unchanged). |
 | Toggle left ON insecurely by default | — | default `False` (D-01) — feature ships dormant; opt-in only after provisioning. |
 
@@ -598,7 +598,7 @@ max_in_flight = cfg.cloud_max_in_flight   # type: ignore[attr-defined]
 | A3 | "agent concurrency" (criterion #2) = `WORKER_MAX_JOBS` and is sufficient as-is | Config audit | Low — it is already env-configurable; only a `PHAZE_*` alias is missing (cosmetic). |
 | A4 | `network_mode: host` is the right way to give the container host-Tailscale connectivity | Compose | If host networking is undesired, fall back to bridge + tailnet-IP env literals (loses MagicDNS). |
 | A5 | host `tailscaled` install + `rsync`/`ssh` presence on the A1 is standard and runbook-able | Env availability | Low — standard Ubuntu packages; documented in runbook. |
-| A6 | lux Postgres is v15+ (so `CREATE ON SCHEMA` grant is meaningful) | PG role | If <15, the grant is redundant (role already had CREATE); confirm major version in runbook. |
+| A6 | host-prod Postgres is v15+ (so `CREATE ON SCHEMA` grant is meaningful) | PG role | If <15, the grant is redundant (role already had CREATE); confirm major version in runbook. |
 | A7 | The compute agent's `queue.connect()` runs SAQ `init_db()` (the broker role hits the CREATE-on-schema requirement) | PG role | VERIFIED in code (`connect()`→`init_db()`); low risk. The empirical PG behavior is VERIFIED, not assumed. |
 
 ## Open Questions (RESOLVED)

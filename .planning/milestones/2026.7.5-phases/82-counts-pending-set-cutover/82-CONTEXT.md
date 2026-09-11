@@ -154,12 +154,12 @@ read queries right and proving they stay fast at scale.
 ### PERF-02 measurement (D-06, D-07 — LOCKED)
 
 - **D-06: Measure on a LOCAL synthetic-seed ~200K corpus at migration HEAD (`≥036`, so the 032 partial
-  indexes exist), via EXPLAIN ANALYZE + full-endpoint timing** — NOT a live lux probe. The three
+  indexes exist), via EXPLAIN ANALYZE + full-endpoint timing** — NOT a live host-prod probe. The three
   pending-set queries + the four-bucket `stage_status_case` GROUP BY are the hot paths; seed realistic
   per-stage output-table coverage, then EXPLAIN ANALYZE each and time the whole `/pipeline/stats`
   endpoint (which fans out many `_safe_count` reads).
 
-  ⚠ **Landmine:** prod/lux is at Alembic `~031` (auto-memory: "*Prod is at Alembic 031 — 032-035
+  ⚠ **Landmine:** prod/host-prod is at Alembic `~031` (auto-memory: "*Prod is at Alembic 031 — 032-035
   unreleased*"), so it **lacks 032's partial indexes** (`ix_fprint_success`, `ix_analysis_completed`,
   `ix_metadata_failed`, …) the derived `NOT EXISTS` anti-joins and `stage_status_case` ride — a live
   probe would exercise a pessimistic/invalid plan. A live read-only `COUNT` may be used only as a

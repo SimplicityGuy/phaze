@@ -2,7 +2,7 @@
 type: quick
 slug: pr4-scan-activity-indicator
 branch: feat/scan-activity-indicator
-worktree: /Users/Robert/Code/public/phaze-pr4-activity
+worktree: <scratch>/phaze-pr4-activity
 created: 2026-06-09
 pr: 4 of 5 (scan-reliability series)
 autonomous: true
@@ -131,7 +131,7 @@ revision="017", down_revision="016", Create Date 2026-06-09.
 No NOT NULL constraint. 016 is the current alembic head (verified) so 017 chains cleanly.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && uv run alembic heads 2>&1 | grep -q 017 && uv run python -c "import phaze.models.scan_batch as m; assert 'last_progress_at' in m.ScanBatch.__table__.c, 'column missing'" && echo OK</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && uv run alembic heads 2>&1 | grep -q 017 && uv run python -c "import phaze.models.scan_batch as m; assert 'last_progress_at' in m.ScanBatch.__table__.c, 'column missing'" && echo OK</automated>
   </verify>
   <done>`alembic heads` shows a single head 017; ScanBatch model exposes last_progress_at; mypy + ruff clean.</done>
   <commit>feat(scan): add scan_batches.last_progress_at heartbeat column (migration 017)</commit>
@@ -161,7 +161,7 @@ Stamp `last_progress_at = datetime.now(UTC)` (same style as PR2's completed_at) 
 No fenced code in this plan — follow the existing `datetime.now(UTC)` call sites already in each file.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && grep -v '^[[:space:]]*#' src/phaze/routers/agent_scan_batches.py | grep -c "last_progress_at = datetime.now(UTC)" | grep -q 1 && grep -v '^[[:space:]]*#' src/phaze/routers/pipeline_scans.py | grep -q "last_progress_at=datetime.now(UTC)" && grep -c "last_progress_at=datetime.now(UTC)" src/phaze/services/ingestion.py | grep -q 3 && uv run ruff check src/phaze/routers/agent_scan_batches.py src/phaze/routers/pipeline_scans.py src/phaze/services/ingestion.py && echo OK</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && grep -v '^[[:space:]]*#' src/phaze/routers/agent_scan_batches.py | grep -c "last_progress_at = datetime.now(UTC)" | grep -q 1 && grep -v '^[[:space:]]*#' src/phaze/routers/pipeline_scans.py | grep -q "last_progress_at=datetime.now(UTC)" && grep -c "last_progress_at=datetime.now(UTC)" src/phaze/services/ingestion.py | grep -q 3 && uv run ruff check src/phaze/routers/agent_scan_batches.py src/phaze/routers/pipeline_scans.py src/phaze/services/ingestion.py && echo OK</automated>
   </verify>
   <done>Agent PATCH stamps last_progress_at on real (non-no-op) PATCHes; both create paths stamp on create; run_scan stamps on create + both terminal updates. ruff/mypy clean.</done>
   <commit>feat(scan): stamp last_progress_at on every scan progress point</commit>
@@ -200,7 +200,7 @@ No fenced code in this plan — follow the existing `datetime.now(UTC)` call sit
     refresh_tracklists `"0 3 1 * *"`). Do NOT add this to agent_worker.py (control-vs-agent DB boundary).
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && uv run python -c "from phaze.config import get_settings; assert get_settings().scan_stall_seconds == 600" && uv run python -c "import phaze.tasks.scan_reaper as r; assert callable(r.reap_stalled_scans)" && grep -q "CronJob(reap_stalled_scans" src/phaze/tasks/controller.py && grep -q "reap_stalled_scans," src/phaze/tasks/controller.py && uv run ruff check src/phaze/config.py src/phaze/tasks/scan_reaper.py src/phaze/tasks/controller.py && echo OK</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && uv run python -c "from phaze.config import get_settings; assert get_settings().scan_stall_seconds == 600" && uv run python -c "import phaze.tasks.scan_reaper as r; assert callable(r.reap_stalled_scans)" && grep -q "CronJob(reap_stalled_scans" src/phaze/tasks/controller.py && grep -q "reap_stalled_scans," src/phaze/tasks/controller.py && uv run ruff check src/phaze/config.py src/phaze/tasks/scan_reaper.py src/phaze/tasks/controller.py && echo OK</automated>
   </verify>
   <done>scan_stall_seconds=600 default + env override works; reaper imports cleanly and uses ctx["async_session"]; registered as a function + every-minute CronJob in controller.py only. ruff/mypy clean.</done>
   <commit>feat(scan): add stall reaper cron + PHAZE_SCAN_STALL_SECONDS knob</commit>
@@ -244,7 +244,7 @@ UI warns at 300s.
     swaps halt polling). Keep `aria-live="polite"` on the card; the pulse dot is decorative (`aria-hidden`).
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && uv run python -c "from phaze.routers.pipeline_scans import seconds_since_progress, is_scan_stalled; print('helpers ok')" && grep -q "animate-pulse" src/phaze/templates/pipeline/partials/recent_scans_table.html && grep -q "_is_stalled" src/phaze/templates/pipeline/partials/recent_scans_table.html && grep -q "animate-pulse" src/phaze/templates/pipeline/partials/scan_progress_card.html && grep -q "is_stalled" src/phaze/templates/pipeline/partials/scan_progress_card.html && uv run ruff check src/phaze/routers/pipeline.py src/phaze/routers/pipeline_scans.py && echo OK</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && uv run python -c "from phaze.routers.pipeline_scans import seconds_since_progress, is_scan_stalled; print('helpers ok')" && grep -q "animate-pulse" src/phaze/templates/pipeline/partials/recent_scans_table.html && grep -q "_is_stalled" src/phaze/templates/pipeline/partials/recent_scans_table.html && grep -q "animate-pulse" src/phaze/templates/pipeline/partials/scan_progress_card.html && grep -q "is_stalled" src/phaze/templates/pipeline/partials/scan_progress_card.html && uv run ruff check src/phaze/routers/pipeline.py src/phaze/routers/pipeline_scans.py && echo OK</automated>
   </verify>
   <done>RUNNING rows/cards show a green pulsing dot + "·Ns ago"; flip to amber "stalled?" past the half-threshold; terminal branches unchanged (polling still halts). Dashboard + poll + trigger contexts all carry _seconds_since_progress/_is_stalled. ruff/mypy clean.</done>
   <commit>feat(ui): live activity indicator + stalled-scan affordance</commit>
@@ -277,7 +277,7 @@ files for the migration (test_017_upgrade.py) and reaper (test_scan_reaper.py). 
 harnesses — do not invent new DB plumbing. Target >=85% coverage on all changed modules.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && uv run pytest tests/test_tasks/test_scan_reaper.py tests/test_routers/test_agent_scan_batches.py tests/test_routers/test_pipeline.py tests/test_routers/test_pipeline_scans.py tests/test_template_helpers/test_progress_partial.py -q && uv run pytest --cov=phaze --cov-report=term-missing -q 2>&1 | tail -5</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && uv run pytest tests/test_tasks/test_scan_reaper.py tests/test_routers/test_agent_scan_batches.py tests/test_routers/test_pipeline.py tests/test_routers/test_pipeline_scans.py tests/test_template_helpers/test_progress_partial.py -q && uv run pytest --cov=phaze --cov-report=term-missing -q 2>&1 | tail -5</automated>
   </verify>
   <done>All new/extended tests pass; reaper untouched/stalled/live cases covered; migration up/down verified; stamping + UI attrs/renders asserted; overall coverage >=85%.</done>
   <commit>test(scan): cover last_progress_at, stall reaper, and activity indicator</commit>
@@ -303,7 +303,7 @@ Document the new knob + reaper behavior (repo rule: docs stay current with code)
    on one line; do not re-add removed badges; preserve the GSD marker on line 1 of docs.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr4-activity && grep -q "PHAZE_SCAN_STALL_SECONDS" .env.example && grep -q "SCAN_STALL_SECONDS" docs/configuration.md && grep -qi "stall" README.md && echo OK</automated>
+    <automated>cd <scratch>/phaze-pr4-activity && grep -q "PHAZE_SCAN_STALL_SECONDS" .env.example && grep -q "SCAN_STALL_SECONDS" docs/configuration.md && grep -qi "stall" README.md && echo OK</automated>
   </verify>
   <done>.env.example, docs/configuration.md, and README.md all document PHAZE_SCAN_STALL_SECONDS + the reaper/indicator behavior. yamllint/pre-commit doc hooks pass.</done>
   <commit>docs(scan): document PHAZE_SCAN_STALL_SECONDS + stall reaper / activity indicator</commit>
@@ -315,7 +315,7 @@ Document the new knob + reaper behavior (repo rule: docs stay current with code)
 Run the full gate before opening the PR (never use --no-verify):
 
 ```
-cd /Users/Robert/Code/public/phaze-pr4-activity
+cd <scratch>/phaze-pr4-activity
 uv run alembic upgrade head            # 017 applies cleanly on top of 016
 uv run ruff check .
 uv run ruff format --check .

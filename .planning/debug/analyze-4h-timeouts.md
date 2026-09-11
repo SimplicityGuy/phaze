@@ -2,7 +2,7 @@
 status: resolved
 trigger: |
   Analyze (process_file) jobs on the phaze pipeline time out at the 4h limit en masse.
-  Over ~57h on nox: 60 completions vs 72 timeouts. essentia windowed analysis of long
+  Over ~57h on host-store: 60 completions vs 72 timeouts. essentia windowed analysis of long
   DJ/concert sets routinely takes 2-4+ hours per file; the longest exceed the 14400s
   (4h) timeout, are killed, and retried. User wants a diagnosis + plan (NOT fixes applied
   yet) covering four questions (see Scope).
@@ -25,11 +25,11 @@ resolution: "Root cause (long-set analysis exceeds local capacity/timeout) is ad
 - **Reproduction:** Enqueue analysis over the long-set-heavy archive; watch SAQ UI + the
   ANALYZE card.
 
-## Evidence already gathered (live, read-only, on nox)
+## Evidence already gathered (live, read-only, on host-store)
 
-SSH: `datum@nox`. Worker container: `phaze-agent-worker` (Up ~2 days). Control plane
-(API + Postgres broker + Redis cache) is on **lux** (not yet queried — read-only access
-to lux NOT yet authorized; ask before touching).
+SSH: `operator@host-store`. Worker container: `phaze-agent-worker` (Up ~2 days). Control plane
+(API + Postgres broker + Redis cache) is on **host-prod** (not yet queried — read-only access
+to host-prod NOT yet authorized; ask before touching).
 
 1. **Counter is correct, not buggy.** ANALYZE "done" = `COUNT(DISTINCT AnalysisResult.file_id)`
    computed fresh every 5s in `get_stage_progress` (`src/phaze/services/pipeline.py`). It
@@ -83,11 +83,11 @@ process pool (a 24h job pins a pool slot for a full day). Risk: a genuinely-infi
 now wedges a slot for 24h instead of 4h. Recommend a value + any guardrail.
 
 **Q2 — Distribute analysis across machines + cloud free tiers (ROUGH OUTLINE ONLY).** phaze
-already has a distributed agent model (Phase 26+: control plane on lux, agent workers pull
+already has a distributed agent model (Phase 26+: control plane on host-prod, agent workers pull
 per-agent SAQ queues over HTTP via `/api/internal/agent/*`, `agents-add` CLN, `PhazeAgentClient`).
 So horizontal scale = "stand up more agents." Outline:
   - How a new agent registers + pulls work (reference the existing agent bootstrap/queue routing).
-  - The catch: agents need the audio files. nox reads `/data/staging/...` locally; a cloud agent
+  - The catch: agents need the audio files. host-store reads `/data/staging/...` locally; a cloud agent
     would need the file shipped to it (the payload carries `original_path`, not bytes — D-23
     "no read-back"). Flag this as the key design problem for remote agents.
   - **Cloud always-free tiers to research (verify current 2026 limits via WebSearch):**
@@ -99,9 +99,9 @@ So horizontal scale = "stand up more agents." Outline:
     - **AWS Free:** 12-month (not always-free) t2/t3.micro 1 vCPU — weak + expires.
     - **Azure Free:** 12-month B1S 1 vCPU + credits — weak + expires.
   - Honest verdict to include: free tiers are 1-vCPU micro instances that are **far slower than
-    nox's 5 active cores** and (for the most generous, OCI Arm) blocked by the x86-only essentia
+    host-store's 5 active cores** and (for the most generous, OCI Arm) blocked by the x86-only essentia
     wheel. Likely conclusion: free tiers won't meaningfully expedite this; the real levers are
-    (a) bound the per-file analysis cost, (b) add a second real x86 agent (e.g. lux or a spare
+    (a) bound the per-file analysis cost, (b) add a second real x86 agent (e.g. host-prod or a spare
     box). Still give the outline + a small comparison table; let the user decide.
   - Also research whether linux/arm64 essentia wheels now exist (would unlock OCI Arm) — verify,
     don't assume.
@@ -134,11 +134,11 @@ Trace the actual SAQ-Postgres state machine + phaze's re-enqueue paths:
     job. Explain whether that helps or blocks manual re-trigger.
   - Concrete answer: after restart, do the 72 resume automatically? If not, the exact operator
     action to requeue them (e.g. the dashboard "Run analysis" enqueue path / a CLI / which files
-    qualify = music/video FileRecords with no AnalysisResult row). Read-only verification on nox
+    qualify = music/video FileRecords with no AnalysisResult row). Read-only verification on host-store
     is fine; do NOT mutate anything.
 
 ## Constraints
-- Read-only on nox (`datum@nox`). NO destructive actions. lux not yet authorized — ask first.
+- Read-only on host-store (`operator@host-store`). NO destructive actions. host-prod not yet authorized — ask first.
 - Apply NO code changes this session (diagnose + plan only).
 - Repo rules: Python 3.14, `uv run` for everything, fixes (later) go via worktree + PR.
 
@@ -207,10 +207,10 @@ fix: (deferred — diagnose/plan only this session)
 verification: (n/a — plan only)
 files_changed: []
 
-## Live state snapshot (lux, read-only, 2026-06-17)
+## Live state snapshot (host-prod, read-only, 2026-06-17)
 
 Authorized read-only query of the control-plane Postgres (`postgres` container, db `phaze`):
-- `saq_jobs` process_file: **11356 queued · 8 active · 2 complete** (all on queue `phaze-agent-nox`;
+- `saq_jobs` process_file: **11356 queued · 8 active · 2 complete** (all on queue `phaze-agent-host-store`;
   the only registered agent). The 72 timed-out files ARE among the 11356 durable queued rows →
   **Q4 CONFIRMED: they auto-resume on restart, no operator action needed** (but re-time-out until
   cost is bounded).
@@ -249,7 +249,7 @@ Only consumers of the per-window series: BPM sparklines (`proposals.py:89`) + pr
 6. **SAQ timeout (Q1):** with bounded cost, lower to ~2h as a safety net (not 8/24h); inner timeout
    does the real killing.
 7. **Q2 capacity:** skip cloud free tiers (1 GB RAM disqualifies all; OCI Arm also lacks the wheel).
-   Real lever = a second on-prem x86 agent via `agents-add` (the single nox queue is 11356 deep).
+   Real lever = a second on-prem x86 agent via `agents-add` (the single host-store queue is 11356 deep).
 
 ## Implementation sequencing (gating order)
 

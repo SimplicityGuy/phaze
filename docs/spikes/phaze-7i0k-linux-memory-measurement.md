@@ -36,7 +36,7 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, **glibc 2.41**, x86_64, **8 cores, 31.2 GiB allocatable**, k0s burst node, taken out of the phaze backend for the duration |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, **glibc 2.41**, x86_64, **8 cores, 31.2 GiB allocatable**, k0s burst node, taken out of the phaze backend for the duration |
 | **Runtime** | the deployed job image `job:2026.8.0` verbatim — Python 3.14.6, `essentia-tensorflow` 2.1-beta6-dev, the same wheel `pyproject.toml` pins |
 | **Models** | the deployed `phaze-models` PVC mounted read-only: 34 graphs, 3.1 GB of `.pb` |
 | **Audio** | **synthesized with ffmpeg** — the spike's sine-pair generator at 200 / 600 / 3600 / 43200 s, plus one onset-dense pink-noise + click-train file to test content dependence |
@@ -359,7 +359,7 @@ throughput and node-arithmetic question, not a per-process memory question.
 > **Confirmed at 12-way post-`phaze-15sw` (`phaze-3j67` §3):** per-process peak is flat at
 > **2.074–2.151 GiB across W=1…12**, a 3.7% spread with no trend. The "only wall time moves" finding
 > also survives and sharpens — per-file wall rises **+115.9 s per added worker, R² 0.9997**. Note
-> that "8 cores" here is 8 *logical*: vox is a Xeon E3-1271 v3 with **4 physical cores** plus SMT,
+> that "8 cores" here is 8 *logical*: host-compute is a Xeon E3-1271 v3 with **4 physical cores** plus SMT,
 > which is what sets the ~30 files/hour node ceiling that spike measures.
 
 ### 6d. What the OOM distribution is not
