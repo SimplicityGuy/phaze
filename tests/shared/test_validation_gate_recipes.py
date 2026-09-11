@@ -105,7 +105,7 @@ def test_the_validation_test_step_does_not_suppress_the_pytest_header() -> None:
 
 
 def test_check_runs_lint_typecheck_and_the_validation_test_step() -> None:
-    """`check` is the per-bead beadhive gate; it must reach the coverage-producing step."""
+    """`check` is the manual/postland/union full gate; it must reach the coverage-producing step."""
     check = _dry_run("check")
 
     assert "uv run ruff check" in check
@@ -116,7 +116,7 @@ def test_check_runs_lint_typecheck_and_the_validation_test_step() -> None:
 
 
 def test_check_all_exists_and_is_a_strict_superset_of_check() -> None:
-    """`~/.beadhive/config.yaml` names `just check-all` at the molecule / merge-main boundary."""
+    """`~/.beadhive/config.yaml` names `just check-all` at the assembled-molecule boundary."""
     check_all = _dry_run("check-all")
 
     assert "uv run pre-commit run --all-files" in check_all

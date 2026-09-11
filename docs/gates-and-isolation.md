@@ -48,7 +48,7 @@ That is the lesson worth keeping: **an inference that a wrapper is measured beca
 was measured is still an inference — the composed command is its own claim.** A wrapper adds
 ordering, environment, error propagation and exit-code handling, and every one of those is a place
 the composition can fail while each part works. It is the same shape as
-[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) rule 3 (verify with
+[ADR-0012](design/0012-verification-fidelity-and-operator-attribution.md) rule 3 (verify with
 the artifact's real consumer, not the tool that produced it), and it will recur in this repo
 wherever a change argues it is equivalent because its parts are.
 
@@ -61,6 +61,12 @@ command under "Regenerating this table" below before citing a row. The version s
 rather than in the prose because the four `bh 0.14.0` citations this section used to carry went
 stale in silence — the version and the evidence lived apart, so nothing about the table's
 appearance changed when the tool moved underneath it (phaze-g9cus).
+
+**Re-verified against bh 0.15.1 on 2026-09-11.** The call-site scan below still returns 15 matches
+(14 executable sites plus one docstring), the seven boundary callers in this table are unchanged,
+and the live Phaze config still resolves check/submit/merge/merge-main to `just check-fast`,
+molecule to `just check-all`, and postland/union to `just check`. This appends current evidence; it
+does not rewrite the dated 0.15.0 measurement above.
 
 Every row below carries **two different kinds of evidence, kept apart on purpose**.
 `beadhive.config.validate_cmd` — imported live from the installed bh — was **executed** against
@@ -152,7 +158,7 @@ operator authority; only the label below is the operator's words, "(Recommended)
 it was part of that label): *"Keep postland on the full suite (Recommended)"*. Date: 2026-08-25.
 Durable record: `phaze-pv3kk`'s bead comments. *(The question above names bh 0.14.0 because that is
 the version whose source was read the day it was asked. It is quoted verbatim and is **not**
-updated to 0.15.0: [ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md)
+updated to 0.15.0: [ADR-0012](design/0012-verification-fidelity-and-operator-attribution.md)
 (verification fidelity and operator attribution) rule 2 requires the question **as it was put**,
 and editing it so the asker appears to have said something they did not would falsify the durable
 record this rule exists to protect. The same reasoning keeps the two dated measurements in the ledger section below
