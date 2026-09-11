@@ -434,7 +434,9 @@ def _recipe_body(name: str) -> str:
 def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
     body = _recipe_body("test-db-gc *flags:")
     assert "scripts/test-db-gc.sh" in body
-    assert "--apply" not in body.split("{{flags}}")[0], "the recipe must not force --apply itself"
+    command = next(line for line in body.splitlines() if "scripts/test-db-gc.sh" in line)
+    assert "--apply" not in command, "the recipe must not force --apply itself"
+    assert '"$@"' in body, "operator flags must be forwarded as discrete argv, never shell fragments"
 
 
 def test_the_gc_recipe_never_tears_anything_down() -> None:

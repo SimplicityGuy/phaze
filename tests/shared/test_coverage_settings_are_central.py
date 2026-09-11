@@ -55,7 +55,7 @@ REPOWISE_SCRIPT_PATH = REPO_ROOT / "scripts" / "repowise-coverage.sh"
 # The recipes that measure the WHOLE suite and must therefore leave a report every consumer can
 # read. `just branch-check` and scripts/coverage_floor.py read coverage.json; Codecov reads
 # coverage.xml. Neither should depend on which of these the developer happened to run (AC4).
-WHOLE_SUITE_RECIPES = ("test-ci", "test-cov")
+WHOLE_SUITE_RECIPES = ("test-cov",)
 
 # The CI shard is deliberately NOT in the list above; see `test_the_ci_shard_stays_report_free`.
 SHARD_RECIPE = "test-bucket"

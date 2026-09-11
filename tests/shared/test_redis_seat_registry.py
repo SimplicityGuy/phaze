@@ -1525,9 +1525,11 @@ def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> No
     validate = _recipe_commands("test-validate:")
     serial = _recipe_commands("test-validate-serial:")
     runner = (Path(__file__).resolve().parents[2] / "scripts" / "parallel_test_runner.py").read_text(encoding="utf-8")
+    resolver = (Path(__file__).resolve().parents[2] / "scripts" / "ensure-test-seat.sh").read_text(encoding="utf-8")
 
     assert "just test-cov-parallel" in validate
-    assert "scripts/provision-test-seat.sh" in serial
+    assert "scripts/ensure-test-seat.sh" in serial
+    assert "scripts/provision-test-seat.sh" in resolver
     assert "scripts/derive-validate-seat-name.sh" in serial
     assert "scripts/derive-validate-seat-name.sh" in runner
     assert '"test-db-for"' in runner

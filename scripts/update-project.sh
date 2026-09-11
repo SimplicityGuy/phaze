@@ -655,11 +655,11 @@ update_python_packages() {
   fi
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would run: just lock-upgrade && just sync"
+    print_info "[DRY RUN] Would run: just lock-upgrade && just setup"
     return
   fi
 
-  if just lock-upgrade && just sync; then
+  if just lock-upgrade && just setup; then
     print_success "Root packages updated"
     capture_package_changes
   else
@@ -677,7 +677,7 @@ update_python_packages() {
       echo "$outdated"
       echo ""
       print_info "Review versions above and update pyproject.toml constraints manually for major upgrades"
-      print_info "Then re-run: just lock-upgrade && just sync"
+      print_info "Then re-run: just lock-upgrade && just setup"
       print_info "Note: 'uv pip list --outdated' queries PyPI directly and ignores the"
       print_info "$EMOJI_VERIFY [tool.uv] exclude-newer cooldown — a release listed here that is newer"
       print_info "than the cooldown cutoff is held back by the window, not by a version cap."
@@ -881,7 +881,7 @@ PY
     while IFS= read -r line; do
       print_warning "${line#FLAG }"
     done < <(echo "$output" | grep -E "^FLAG ")
-    print_info "Raise the cap in pyproject.toml manually, then re-run: just lock-upgrade && just sync"
+    print_info "Raise the cap in pyproject.toml manually, then re-run: just lock-upgrade && just setup"
   else
     print_success "No capped dependencies have releases beyond their cap"
   fi

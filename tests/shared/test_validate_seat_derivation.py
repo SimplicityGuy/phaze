@@ -25,6 +25,7 @@ here provisions a real seat: that needs the shared Docker harness, which CI does
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -34,6 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 JUSTFILE_PATH = REPO_ROOT / "justfile"
 DERIVE_SCRIPT = REPO_ROOT / "scripts" / "derive-validate-seat-name.sh"
 PROVISION_SCRIPT = REPO_ROOT / "scripts" / "provision-test-seat.sh"
+ENSURE_SCRIPT = REPO_ROOT / "scripts" / "ensure-test-seat.sh"
 PARALLEL_RUNNER = REPO_ROOT / "scripts" / "parallel_test_runner.py"
 # scripts/derive-seat-name.sh's validation rule; the derived raw name must satisfy it or
 # `test-db-for`/`test-validate` die at CREATE DATABASE with a raw Postgres parse error.
@@ -89,7 +91,8 @@ def test_test_validate_derives_its_seat_through_the_shared_provisioning_script()
     assert "scripts/derive-validate-seat-name.sh" in runner
     assert '"test-db-for"' in runner
     assert "scripts/derive-validate-seat-name.sh" in serial
-    assert "scripts/provision-test-seat.sh" in serial
+    assert "scripts/ensure-test-seat.sh" in serial
+    assert "scripts/provision-test-seat.sh" in ENSURE_SCRIPT.read_text(encoding="utf-8")
     assert "scripts/provision-test-seat.sh" in _recipe_body("test-db-for name")
 
 
@@ -100,12 +103,49 @@ def test_test_validate_respects_an_exported_seat_verbatim() -> None:
     must select the retained serial primitive before the local parallel branch.
     """
     body = _recipe_body("test-validate")
-    guard = 'if [ -n "${TEST_DATABASE_URL:-}" ]; then'
+    guard = 'if [ -n "${TEST_DATABASE_URL:-}${MIGRATIONS_TEST_DATABASE_URL:-}${PHAZE_REDIS_URL:-}" ]; then'
 
     assert guard in body
     assert "SERIAL FALLBACK" in body
     assert "just test-cov" in body
     assert body.index(guard) < body.index("just test-cov") < body.index("elif")
+
+
+def test_the_seat_resolver_preserves_a_complete_caller_owned_triplet() -> None:
+    env = {
+        **os.environ,
+        "TEST_DATABASE_URL": "postgresql+asyncpg://example.invalid:5432/phaze_ci_test",
+        "MIGRATIONS_TEST_DATABASE_URL": "postgresql+asyncpg://example.invalid:5432/phaze_ci_migrations_test",
+        "PHAZE_REDIS_URL": "redis://example.invalid:6379/7",
+    }
+    result = subprocess.run(  # noqa: S603 - fixed in-repo executable
+        [str(ENSURE_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "Preserving caller-owned" in result.stderr
+
+
+def test_the_seat_resolver_refuses_a_partial_caller_owned_triplet() -> None:
+    env = {key: value for key, value in os.environ.items() if key not in {"TEST_DATABASE_URL", "MIGRATIONS_TEST_DATABASE_URL", "PHAZE_REDIS_URL"}}
+    env["PHAZE_REDIS_URL"] = "redis://example.invalid:6379/7"
+    result = subprocess.run(  # noqa: S603 - fixed in-repo executable
+        [str(ENSURE_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "must set TEST_DATABASE_URL, MIGRATIONS_TEST_DATABASE_URL, and PHAZE_REDIS_URL together" in result.stderr
 
 
 def test_the_provisioning_script_emits_only_exports_on_stdout() -> None:
