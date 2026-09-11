@@ -604,6 +604,17 @@ DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
 
 It is harmless if the row is already absent (e.g. on a fresh broker or after a `saq_jobs` truncate). This mirrors the prior Redis orphaned-cron-purge runbook, adapted to the Postgres broker.
 
+## Set-projection backfill (after an energy-weights or projection-version change)
+
+Changing the energy scalar's weights, or bumping `set_projection_writer.CURRENT_PROJECTION_VERSION` for any other reason, follows the four-step checklist in [docs/design/0018-set-projection-and-file-viewer.md](design/0018-set-projection-and-file-viewer.md) §4, "Adjusting the energy weights". The last of those four steps is a production backfill, run on the **app-server host** after the carrying release is deployed:
+
+```bash
+# On the app-server host:
+docker compose exec api uv run phaze backfill set-projection
+```
+
+The command is idempotent — it re-derives only the `SetProfile` rows whose `projection_version` is behind the code's current value, never the whole corpus, so re-running it costs nothing. It prints a report including files scanned/projected/skipped/failed and the wall-clock duration; record the derived rows/s and that wall-clock figure as a dated amendment under the ADR's §10, the same way prior version bumps were recorded.
+
 ## Historical: sidecar volume chown runbook (removed, phaze-0jpe)
 
 Prior revisions of this guide carried a one-time volume-ownership repair for the `audfprint`/
