@@ -34,6 +34,18 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from tests.shared.core._a11y_semantic_parser import (
+    CLASS_ATTRIBUTE_PATTERN as _CLASS_ATTR,
+    COMMENTS_PATTERN as _COMMENTS,
+    DARK_TEXT_COLOUR_PATTERN as _DARK_TEXT_COLOUR,
+    alpine_class_alternatives as _alpine_class_alternatives,
+    emitted_class_strings as _emitted_class_strings,
+    enclosing_if_predicate as _enclosing_block_predicate,
+    extract_literal_set_variables as _extract_set_vars,
+    extract_method_body as _method_body,
+    worst_case_dark_text_colour_count as _worst_case,
+)
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _SHELL = _TEMPLATES / "shell" / "shell.html"
@@ -439,51 +451,6 @@ def _detail_pane_component() -> str:
     return m.group(1)
 
 
-def _method_body(component: str, name: str) -> str:
-    """Return the brace-delimited body of the Alpine method ``name``."""
-    start = component.find(f"{name}()")
-    assert start != -1, f"expected an Alpine method {name}() on the detail-pane shell"
-    open_brace = component.find("{", start)
-    assert open_brace != -1, f"{name}() has no body"
-    depth = 0
-    for i in range(open_brace, len(component)):
-        if component[i] == "{":
-            depth += 1
-        elif component[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return component[open_brace + 1 : i]
-    raise AssertionError(f"unbalanced braces in {name}()")
-
-
-def _enclosing_block_predicate(body: str, index: int) -> str | None:
-    """Return the ``if (...)`` predicate of the innermost block enclosing ``body[index]``.
-
-    ``None`` means the statement sits at the method's top level (unconditional), or its
-    innermost enclosing block is not an ``if``.
-    """
-    stack: list[int] = []
-    for i in range(index):
-        if body[i] == "{":
-            stack.append(i)
-        elif body[i] == "}" and stack:
-            stack.pop()
-    if not stack:
-        return None
-    head = body[: stack[-1]].rstrip()
-    if not head.endswith(")"):
-        return None
-    depth = 0
-    for i in range(len(head) - 1, -1, -1):
-        if head[i] == ")":
-            depth += 1
-        elif head[i] == "(":
-            depth -= 1
-            if depth == 0:
-                return head[i + 1 : len(head) - 1] if re.search(r"\bif\s*$", head[:i]) else None
-    return None
-
-
 def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
     """onLoaded() must move focus to the pane heading ONLY on the closed->open transition.
 
@@ -598,8 +565,6 @@ def test_direct_surface_text_colours_use_semantic_tokens() -> None:
 # model Tailwind's whole conflict lattice (p-2 vs px-2, text-sm vs text-gray-500 -- `text-` is both
 # size and colour) and would be a false-positive engine. This checks one property, in one variant,
 # where a duplicate is unambiguously wrong.
-_DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
-
 # phaze-4yrle REDRIVE: the first version of this guard read the markup LINE BY LINE and skipped
 # any class attribute containing `{{` or `{%`. Both shortcuts made it blind exactly where
 # duplicates accumulate, and it passed on main with two live offenders present:
@@ -647,126 +612,9 @@ _DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
 # `dark:border-*`, which have the same duplicate-is-always-a-defect property and would be the
 # natural widening if either ever grows an offender.
 
-# `{% ... %}` / `{{ ... }}`; DOTALL because a wrapped attribute puts newlines inside both.
-_JINJA_BRANCH_TAG = re.compile(r"\{%-?\s*(if|elif|else|endif)\b.*?-?%\}", re.DOTALL)
-_JINJA_ANY_TAG = re.compile(r"\{%-?.*?-?%\}", re.DOTALL)
-_JINJA_EXPR = re.compile(r"(\{\{.*?\}\})", re.DOTALL)
-_SINGLE_QUOTED = re.compile(r"'([^']*)'")
-# Comments are prose, not markup: shell.html documents a superseded `:class="..."` binding in one,
-# and a guard that reads comments would flag the documentation instead of the code.
-_COMMENTS = re.compile(r"<!--.*?-->|\{#.*?#\}", re.DOTALL)
-# Both the plain attribute and Alpine's `:class` binding, which are parsed differently: a `class`
-# value is Jinja-templated markup, a `:class` value is one JS expression. A value can never contain
-# a `"` (that is what closes it), so `[^"]*` bounds the attribute exactly even across newlines.
-_CLASS_ATTR = re.compile(r'(?P<alpine>:)?class="(?P<value>[^"]*)"')
-
-# A same-file `{% set NAME = '...' %}` / `{% set NAME = "..." %}` bare-string-literal assignment.
-# Deliberately narrow: `NAME = other_var`, `NAME = a ~ b`, `NAME = a|filter`, and multi-target
-# `{% set a, b = ... %}` all fail to match and stay opaque (see the KNOWN LIMIT comment above) --
-# guessing a value here would risk manufacturing a false positive, which this guard must not do.
-_SET_STRING = re.compile(r"\{%-?\s*set\s+(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\")\s*-?%\}")
-# A `{{ ... }}` expression that is nothing but a bare variable reference -- no filter, no ternary,
-# no attribute/index access -- is the only shape resolved against `{% set %}` literals below.
-_BARE_VAR = re.compile(r"^\{\{\s*(\w+)\s*\}\}$")
-
-
-def _extract_set_vars(source: str) -> dict[str, list[str]]:
-    """Same-file `{% set NAME = '...' %}` string literals this template defines, by name.
-
-    A name `{% set %}` more than once (e.g. once per branch of an `{% if %}`/`{% elif %}` chain,
-    like ``lane_color`` in ``_lane_card.html``) collects every distinct literal it was ever
-    assigned, mirroring how this guard already treats `{% if %}` branches as alternatives: each
-    literal is one possible render, and a duplicate is flagged if ANY of them collides.
-    """
-    resolved: dict[str, list[str]] = {}
-    for match in _SET_STRING.finditer(source):
-        name = match.group(1)
-        value = match.group(2) if match.group(2) is not None else match.group(3)
-        values = resolved.setdefault(name, [])
-        if value not in values:
-            values.append(value)
-    return resolved
-
-
-def _expression_alternatives(expr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
-    """Class strings a `{{ ... }}` (or Alpine ternary) can contribute -- at most ONE quoted literal.
-
-    A bare `{{ NAME }}` reference to a same-file `{% set %}` string literal resolves to that
-    literal's alternatives (phaze-o8voj); anything else stays opaque, the "" no-contribution
-    alternative, exactly as before.
-    """
-    literals = _SINGLE_QUOTED.findall(expr)
-    if literals:
-        # "" covers the falsy/no-literal branch, so an expression never fabricates a duplicate on
-        # its own.
-        return [*literals, ""]
-    bare = _BARE_VAR.match(expr)
-    if bare and set_vars and bare.group(1) in set_vars:
-        return list(set_vars[bare.group(1)])
-    return [""]
-
-
-def _alpine_class_alternatives(expr: str) -> list[str]:
-    """Class strings an Alpine `:class` value can apply.
-
-    A `cond ? 'a' : 'b'` ternary applies exactly ONE side, so its literals are alternatives -- reading
-    them as one concatenated string is a false positive, and the shape is common enough in this tree
-    (rail.html, header.html, _dupe_group.html) to matter. The object/array forms
-    (`{'a': x, 'b': y}`) can apply several literals at once, so there they stay concatenated.
-    """
-    return _expression_alternatives(expr) if "?" in expr else [expr]
-
-
-def _expand_expressions(text: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
-    """Expand a branch-free fragment into every class string it can emit."""
-    emitted = [""]
-    for part in _JINJA_EXPR.split(text):
-        alternatives = _expression_alternatives(part, set_vars) if part.startswith("{{") else [_JINJA_ANY_TAG.sub(" ", part)]
-        emitted = [f"{done} {alternative}" for done in emitted for alternative in alternatives]
-    return list(dict.fromkeys(emitted))
-
-
-def _split_top_level_if(text: str) -> tuple[str, list[str], str] | None:
-    """Split on the FIRST top-level `{% if %}`: (always-emitted prefix, branches, remaining suffix)."""
-    depth = 0
-    opened: re.Match[str] | None = None
-    separators: list[re.Match[str]] = []
-    for tag in _JINJA_BRANCH_TAG.finditer(text):
-        keyword = tag.group(1)
-        if keyword == "if":
-            depth += 1
-            if depth == 1:
-                opened, separators = tag, []
-        elif keyword == "endif":
-            depth -= 1
-            if depth == 0 and opened is not None:
-                branches, cut = [], opened.end()
-                for separator in separators:
-                    branches.append(text[cut : separator.start()])
-                    cut = separator.end()
-                branches.append(text[cut : tag.start()])
-                if not any(separator.group(1) == "else" for separator in separators):
-                    branches.append("")  # an `{% if %}` with no `{% else %}` can also emit nothing
-                return text[: opened.start()], branches, text[tag.end() :]
-        elif depth == 1:
-            separators.append(tag)
-    return None
-
-
-def _emitted_class_strings(attr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
-    """Every class string this attribute can render as -- one per combination of branches taken."""
-    split = _split_top_level_if(attr)
-    if split is None:
-        return _expand_expressions(attr, set_vars)
-    prefix, branches, suffix = split
-    emitted = [
-        f"{before} {inside} {after}"
-        for before in _expand_expressions(prefix, set_vars)
-        for branch in branches
-        for inside in _emitted_class_strings(branch, set_vars)
-        for after in _emitted_class_strings(suffix, set_vars)
-    ]
-    return list(dict.fromkeys(emitted))
+# Delimiter balancing, branch expansion, and the deliberately narrow `{% set %}` resolution live
+# in `_a11y_semantic_parser`; the aliases imported above keep this contract focused on scanning the
+# real template tree while that parser's edge cases are exercised directly in its own test module.
 
 
 def test_no_element_carries_two_dark_text_colours() -> None:
@@ -802,12 +650,6 @@ def test_no_element_carries_two_dark_text_colours() -> None:
 # these fix the two blind spots as executable cases rather than as a comment nobody re-checks. Each
 # `_carries` case is a real shape lifted from this tree; each `_permits` case is the false positive
 # the narrowing must not produce.
-def _worst_case(attr: str, *, alpine: bool = False, set_vars: dict[str, list[str]] | None = None) -> int:
-    """Most `dark:` text colours any single render of this attribute puts on one element."""
-    renders = _alpine_class_alternatives(attr) if alpine else _emitted_class_strings(attr, set_vars)
-    return max(len(_DARK_TEXT_COLOUR.findall(emitted)) for emitted in renders)
-
-
 def test_the_duplicate_dark_utility_guard_sees_a_wrapped_class_attribute() -> None:
     # Blind spot 1: a per-LINE `class="([^"]*)"` never matches this at all, and long wrapped
     # attributes are precisely where a stray extra utility survives review (cue_row.html).
