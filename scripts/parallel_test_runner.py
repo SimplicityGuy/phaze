@@ -265,9 +265,13 @@ class ParallelTestSupervisor:
                     "TMPDIR": str(temp_dir),
                 }
             )
+            # The outer recipe already prepared this worktree's environment. Letting both lanes
+            # enter uv's sync path together can uninstall the same packages concurrently, so each
+            # worker must treat the shared environment as read-only.
             command = (
                 "uv",
                 "run",
+                "--no-sync",
                 "pytest",
                 f"@{manifest_path}",
                 "--cov",
