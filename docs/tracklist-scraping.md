@@ -236,6 +236,20 @@ the 180-day negative TTL. `LookupOutcome.is_transient` / `.is_definitive_negativ
 properties this distinction turns on downstream (`src/phaze/enums/tracklist_candidate.py`, consumed
 at `src/phaze/services/tracklist_lookup_cache.py:75-101`).
 
+## Tracklists index the stored set projection
+
+Scraping owns track labels and timestamps; it does not compute audio characteristics. Once a
+tracklist is attached, `src/phaze/services/track_segments.py` turns consecutive parsed timestamps
+into segments and joins them to the migration-`063` `AnalysisWindow` projection. Fine windows
+supply BPM and Camelot key; coarse windows supply energy and mood scores. Missing timestamps or
+missing projected values remain gaps rather than borrowed or fabricated measurements.
+
+The canonical record context in `src/phaze/routers/record.py` builds those segments once and shares
+them with the tracklist rows and the timeline boundary ticks. The Tracklists workspace uses the
+same helper from `src/phaze/routers/pipeline/tracklists.py`, so scraping, the record page, and the
+pipeline view do not maintain competing segment logic. This is a read-only consumer of the
+projection; no scrape or refresh re-runs analysis.
+
 ## The two TTL caches
 
 There are exactly two, at different layers, for different reasons:

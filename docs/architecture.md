@@ -50,46 +50,57 @@ Two deployment shapes share one container image. The **application server** stac
 remote **file-server agent** stack (`docker-compose.agent.yml`) runs an agent-role worker and
 a filesystem watcher — with **no database of its own**.
 
+Every dependency line in this maintained diagram carries an `evidence:` comment naming the live
+source that establishes it. `tests/shared/core/test_docs_ia_current.py` resolves those paths and
+checks the import claims; Mermaid CLI rendering is part of this document's focused validation.
+
 ```mermaid
-graph TD
-    UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>proposals · duplicates · admin/agents"]
-    API["🚀 FastAPI :8000<br/>UI + /api/v1 + /api/internal/agent"]
-    CTRL["🎛️ Control Worker<br/>SAQ queue: controller<br/>proposals · tracklists · discogs"]
-    PG[("🐘 PostgreSQL 18<br/>:5432 — DB + SAQ broker")]
-    REDIS[("🔴 Redis 8<br/>:6379 — cache")]
-    AGENT["🤖 Agent Worker + Watcher<br/>SAQ queue: phaze-agent-&lt;id&gt;<br/>scan · metadata · analyze · execute"]
-
-    UI --> API
-    API --> PG
-    API --> REDIS
-    API -->|HTTP /api/internal/agent| AGENT
-    CTRL --> REDIS
-    CTRL --> PG
-    AGENT -->|enqueue per-agent jobs| PG
-    AGENT -->|cache / progress| REDIS
-
-    style UI fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style API fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style CTRL fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style AGENT fill:#fff8e1,stroke:#f57f17,stroke-width:2px
-    style PG fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+flowchart LR
+    %% evidence: src/phaze/templates/shell/shell.html; src/phaze/main.py
+    browser["Browser UI"] --> api["FastAPI routers<br/>UI + internal agent API"]
+    %% evidence: src/phaze/routers/record.py; src/phaze/database.py
+    api --> orm["SQLAlchemy application ORM"]
+    %% evidence: src/phaze/models/__init__.py; alembic/versions/063_set_projection.py
+    orm --> appdb[("Postgres application tables")]
+    %% evidence: src/phaze/services/agent_task_router.py; src/phaze/tasks/_shared/queue_factory.py
+    api --> broker["SAQ PostgresQueue"]
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/_shared/queue_factory.py
+    controller["Controller worker"] --> broker
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/database.py
+    controller --> orm
+    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/_shared/queue_factory.py
+    agent["Agent lane worker"] --> broker
+    %% evidence: src/phaze/tasks/functions.py; src/phaze/services/agent_client.py
+    agent --> api
+    %% evidence: src/phaze/agent_watcher/poster.py; src/phaze/services/agent_client.py
+    watcher["Filesystem watcher"] --> api
+    %% evidence: src/phaze/tasks/functions.py; src/phaze/services/analysis_exec.py; src/phaze/analysis_child.py
+    agent --> child["Per-file analysis child"]
+    %% evidence: src/phaze/services/pipeline_counters.py; src/phaze/tasks/_shared/queue_factory.py
+    api --> redis[("Redis cache and progress")]
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/_shared/queue_factory.py
+    controller --> redis
+    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/_shared/queue_factory.py
+    agent --> redis
+    %% evidence: src/phaze/tasks/_shared/queue_factory.py; src/phaze/services/stage_control.py
+    broker --> jobs[("saq_jobs")]
 ```
 
-| Service | Port | Role | Reaches DB? | Entry point |
-| ------- | ---- | ---- | ----------- | ----------- |
-| **API** | 8000 | FastAPI app + UI + internal-agent API | Yes (direct) | `phaze.main:app` |
-| **Control Worker** | -- | Fileless SAQ jobs (LLM, tracklists, Discogs) | Yes (direct) | `saq phaze.tasks.controller.settings` |
-| **Agent Worker** | -- | File-bound SAQ jobs (scan, metadata, analyze, execute) | No (HTTP only) | `saq phaze.tasks.agent_worker.settings` |
-| **Watcher** | -- | Filesystem observer that POSTs settled files | No (HTTP only) | `python -m phaze.agent_watcher` |
-| **Postgres** | 5432 | Primary database + SAQ `PostgresQueue` broker (Phase 36) | -- | `docker-compose.yml` |
-| **Redis** | 6379 | LLM rate-limit cache, exec-progress hash, pipeline counters | -- | `docker-compose.yml` |
+| Service | Port | Role | Application ORM | SAQ broker | Entry point |
+| ------- | ---- | ---- | --------------- | ---------- | ----------- |
+| **API** | 8000 | FastAPI app, UI, internal-agent callbacks, and queue producers | Yes | Yes | `phaze.main:app` |
+| **Control Worker** | -- | Fileless SAQ jobs (LLM, tracklists, Discogs, recovery) | Yes | Yes | `saq phaze.tasks.controller.settings` |
+| **Agent Worker** | -- | File-bound SAQ jobs (scan, metadata, analyze, execute) | **No**; application state crosses HTTP | **Yes**; psycopg-backed `PostgresQueue` | `saq phaze.tasks.agent_worker.settings` |
+| **Watcher** | -- | Filesystem observer that POSTs settled files | No | No | `python -m phaze.agent_watcher` |
+| **Postgres** | 5432 | Application tables plus SAQ-owned `saq_jobs` | -- | -- | `docker-compose.yml` |
+| **Redis** | 6379 | Rate-limit cache, execution progress, and pipeline counters; not the task broker | -- | -- | `docker-compose.yml` |
 
-The **control / agent split is a hard import boundary**: `phaze.tasks.agent_worker`,
-`phaze.tasks.heartbeat`, and `phaze.agent_watcher` must not transitively import
-`phaze.database` or `sqlalchemy.ext.asyncio`. This is enforced by subprocess import-boundary
-tests (`tests/shared/core/test_task_split.py`) so an agent role can run on a host with no Postgres
-reachability (DIST-04).
+The **control / agent split is an application-persistence boundary, not a no-Postgres-socket
+claim**. `phaze.tasks.agent_worker`, `phaze.tasks.heartbeat`, and `phaze.agent_watcher` must not
+transitively import `phaze.database`, `phaze.models`, or SQLAlchemy at runtime. Agent tasks read and
+write application state through `/api/internal/agent/*`, while the worker separately connects to
+the SAQ broker through `PHAZE_QUEUE_URL` and SAQ's psycopg-backed `PostgresQueue`. The subprocess
+guards in `tests/shared/core/test_task_split.py` enforce the ORM-free import surface.
 
 ## 🔄 File-Processing Pipeline
 
@@ -431,10 +442,10 @@ controller fans out approved proposals across agents:
 
 ### Internal-agent HTTP API
 
-All agent → server communication funnels through **12** routers under
+All agent → server communication funnels through **13** routers under
 `/api/internal/agent/*` (registered in `main.py`): `files`, `metadata`,
 `execution`, `heartbeat`, `identity`, `analysis`, `push`, `s3`, `proposals`,
-`scan-batches`, `exec-batches`, and `tag-writes` (phaze-6bkk DIST-01 — the terminal outcome of
+`scan-batches`, `scratch`, `exec-batches`, and `tag-writes` (phaze-6bkk DIST-01 — the terminal outcome of
 an on-agent tag write; the only path by which a queued `TagWriteLog` row ever
 resolves). (`routers/agent_auth.py` is **not** a router — it exports
 the `get_authenticated_agent` dependency the handlers depend on.) The `agent_id` is always
@@ -677,6 +688,8 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
 | `FileRecord` | `file.py` | Central file record; **no** stored state column — per-stage status is derived on read (Phase 90 dropped the `state` column / file-state enum; now part of the `039` baseline schema) |
+| `AnalysisWindow` | `analysis.py` | Per-window time series; migration `063` adds the nullable `energy`, `camelot`, and `mood_scores` projection columns |
+| `SetProfile` | `set_profile.py` | Per-file projection sidecar (`file_id` is its PK/FK); 1:1 with `FileRecord` and `ON DELETE CASCADE` |
 | `Stage` + `Status` / `resolve_status` | `enums/stage.py` | 6-stage × 5-status derived per-stage status resolver (DB-free twin of `services/stage_status.py`) |
 | `CloudJob` + `CloudJobStatus` | `cloud_job.py` | Cloud-burst / tiered-drain sidecar row tracking the long-file detour off `analyze` |
 | `RenameProposal` + `ProposalStatus` | `proposal.py` | AI rename proposal (one active PENDING row, upserted in place) + approval status; partial unique index `uq_proposals_file_id_pending` |
@@ -698,7 +711,9 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | `execution_dispatch` helpers | `execution_dispatch.py` | Group / revoked-filter / chunk approved proposals |
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
 | `classify` / `sort_key` | `agent_liveness.py` | Agent liveness classification for admin UI |
-| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` + job policy (`timeout=7200` / `retries=2`); the central `before_enqueue` hook stamps the deterministic key `process_file:<file_id>` and records the effective `timeout`/`retries` in the scheduling ledger so recovery replays the same policy. Used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
+| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` and pins `timeout=0`, `retries=2`, and `heartbeat=analysis_job_heartbeat_sec`; the central hook stamps `process_file:<file_id>` and re-pins the same policy on recovery replay |
+| Set projection math / writer / backfill | `set_projection.py`, `set_projection_writer.py`, `set_projection_backfill.py` | Pure projection math, the live analysis-completion writer, and resumable stored-JSONB backfill; none re-runs analysis |
+| Timeline / journey / segments / facts / glyphs | `analysis_timeline.py`, `harmonic_journey.py`, `track_segments.py`, `record_facts.py`, `set_glyph_colors.py` | Presentation helpers over the narrow stored projection, shared by the record, proposal, pipeline, search, and review surfaces |
 
 ### Tasks (`src/phaze/tasks/`)
 
@@ -709,7 +724,7 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs; the liveness heartbeat runs as a startup asyncio background task (Phase 46), not a cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
 | `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
-| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) replays each orphaned scheduling-ledger row — payload **and** stored `timeout`/`retries` policy — through the identical keyed producers, so in-flight items dedup (no doubling) and a recovered long `process_file` keeps its 7200s bound instead of the 600s default. Startup + the manual `/pipeline/recover` button call the same producer |
+| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable broker restart; on genuine queue loss (or manual `force`) replays each orphaned ledger row through the keyed producers. `process_file` is always re-normalized to `timeout=0`, `retries<=2`, and the current derived heartbeat, even when a legacy row stored the retired 7200s bound |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `_heartbeat_loop` / `send_heartbeat` | `heartbeat.py` | 30s heartbeat POST run as a startup asyncio background task (Phase 46), not a SAQ cron; `heartbeat_tick` retained as a thin back-compat shim |
 

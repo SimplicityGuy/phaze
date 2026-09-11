@@ -1,6 +1,6 @@
 # Phaze UI Design Reference
 
-**Status:** Compatibility contract for the production UI as of 2026-08-19
+**Status:** Compatibility contract for the production UI as of 2026-09-11
 **Scope:** Visual identity and interaction language only; this is not a redesign specification
 **Fixture:** [Privacy-safe reference states](ui-reference-fixtures.html)
 
@@ -19,6 +19,8 @@ The served application remains authoritative. This contract was derived from:
 - `src/phaze/templates/pipeline/partials/_diff_row.html`: review diff language and compact controls.
 - `src/phaze/templates/pipeline/partials/files_table_view.html` and `_stage_pill.html`: tabular density and semantic stage states.
 - `src/phaze/templates/pipeline/partials/empty_state.html`, `inadmissible_card.html`, and `analysis_failed_card.html`: empty, warning, stalled, and terminal-error treatments.
+- `src/phaze/templates/ui/set_marks.html`, `record/partials/_harmonic_wheel.html`, and `proposals/partials/analysis_timeline.html`: the shared set glyph, harmonic journey, and projected analysis timeline.
+- `src/phaze/services/set_glyph_colors.py` and `analysis_timeline.py`: the shared Camelot/energy/mood color vocabulary behind those templates.
 - `src/phaze/static/favicon-32.svg`: compact favicon form of the brand mark.
 
 The older prototypes under `docs/superpowers/specs/2026-06-28-ui-redesign-assets/` explain the chosen direction, but production templates take precedence when prototype and shipped behavior differ.
@@ -41,6 +43,7 @@ These characteristics make the interface recognizably Phaze and must remain stab
 10. **Visible blue keyboard focus.** Interactive elements expose an approximately 2 px cyan-blue ring. Focus is an interaction state, not optional decoration.
 11. **State is never color alone.** Statuses combine color with a word and, where compact, a glyph or shape. For example, `✓ done`, `● in flight`, `✗ failed`, `⊘ skipped`, and `- not started` remain distinguishable without hue.
 12. **Restrained motion.** Motion communicates state changes: 200 ms color/opacity transitions, loading pulse, the lane-detail pane transition, and HTMX activity. It is functional, short, and never ambient spectacle.
+13. **Set marks share one semantic scale.** Camelot position determines hue and projected energy determines lightness through `services/set_glyph_colors.py`; glyphs, legends, and the harmonic wheel do not invent local formulas. Mood river bands, their legend, and track mood dots use the one palette in `services/analysis_timeline.py`.
 
 ### Components allowed to evolve
 
@@ -169,6 +172,22 @@ The stage matrix is the clearest reusable status grammar:
 | Not started | Gray, dash, `not started` | No stage work yet. |
 
 Additional operational states follow the same redundant-channel rule: emerald `ACTIVE`/`ALIVE`, amber `WAITING`/`STALE`/`STALLED`, gray `IDLE`/`NEVER`/offline, and red `DEAD`/failed. Warnings use `role="alert"` only when operator attention is required; routine progress uses status/live-region semantics or no announcement.
+
+### Set projection visuals
+
+The migration-`063` set projection drives a family of linked, non-decorative views:
+
+| Surface | Meaning | Live implementation |
+| ------- | ------- | ------------------- |
+| Set glyph | Coarse-window Camelot position by hue and energy by lightness | `templates/ui/set_marks.html`, `services/set_glyph_colors.py` |
+| Analysis timeline | Fine BPM/key lanes, coarse energy/mood lanes, coverage, and inspection state | `templates/proposals/partials/analysis_timeline.html`, `services/analysis_timeline.py` |
+| Harmonic journey | Flicker-filtered key path on the Camelot wheel | `templates/record/partials/_harmonic_wheel.html`, `services/harmonic_journey.py` |
+| Track segments | Tracklist intervals annotated with projected BPM, key, mood, and energy | `services/track_segments.py` and the record/tracklist templates |
+| Record facts | Stable eight-row summary with explicit gaps for unmeasured values | `templates/record/partials/_record_facts.html`, `services/record_facts.py` |
+
+These views must preserve the existing no-data grammar: an absent projection renders an explicit
+gap or empty explanation, never a zero that looks measured. Color remains redundant with labels,
+geometry, captions, and accessible text.
 
 ### Motion
 
