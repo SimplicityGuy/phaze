@@ -16,6 +16,7 @@ from scripts.parallel_test_runner import (
     Seat,
     SupervisorDependencies,
     _parse_seat_exports,
+    derive_parallel_seat_prefix,
     production_dependencies,
 )
 
@@ -136,6 +137,7 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
     monkeypatch.setenv("MIGRATIONS_TEST_DATABASE_URL", "postgresql+asyncpg://caller/keep-migrations")
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://caller/63")
     monkeypatch.setenv("PHAZE_TEST_DB_ALLOW_SHARED", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-n auto -m browser")
     harness = Harness()
 
     status, _ = _run(tmp_path, harness)
@@ -149,6 +151,8 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
         assert "caller" not in second.environment[key]
     assert "PHAZE_TEST_DB_ALLOW_SHARED" not in first.environment
     assert "PHAZE_TEST_DB_ALLOW_SHARED" not in second.environment
+    assert "PYTEST_ADDOPTS" not in first.environment
+    assert "PYTEST_ADDOPTS" not in second.environment
 
     for key in ("COVERAGE_FILE", "TMPDIR", "PYTHONPYCACHEPREFIX", "BH_TEST_REPORT_DIR"):
         assert first.environment[key] != second.environment[key]
@@ -164,6 +168,22 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
     first_command = next(index for index, event in enumerate(harness.events) if event.startswith("command:"))
     assert all(harness.events.index(event) < first_command for event in release_events)
     assert len([event for event in harness.events if event.startswith("command:")]) == 5
+
+    commands = [event.removeprefix("command:") for event in harness.events if event.startswith("command:")]
+    assert commands[0].startswith("uv run coverage combine ")
+    assert commands[1:] == [
+        "uv run coverage json --fail-under=0",
+        "uv run coverage xml --fail-under=0",
+        "uv run coverage report --fail-under=95",
+        "uv run python scripts/coverage_floor.py",
+    ]
+    assert commands[0].startswith("uv run coverage combine ")
+    assert commands[1:] == [
+        "uv run coverage json --fail-under=0",
+        "uv run coverage xml --fail-under=0",
+        "uv run coverage report --fail-under=95",
+        "uv run python scripts/coverage_floor.py",
+    ]
 
 
 def test_lane_failure_skips_coverage_commands_and_propagates_status(tmp_path: Path) -> None:
@@ -282,10 +302,19 @@ def test_canonical_seat_output_requires_exactly_three_exports() -> None:
         _parse_seat_exports('export TEST_DATABASE_URL="postgresql+asyncpg://test/a"\n', "seat-a")
 
 
+def test_parallel_seat_prefix_is_stable_and_worktree_derived() -> None:
+    first = derive_parallel_seat_prefix(Path.cwd())
+
+    assert first == derive_parallel_seat_prefix(Path.cwd())
+    assert first.startswith("auto-")
+    assert first.endswith("-parallel")
+
+
 def test_source_never_uses_shared_or_forced_cleanup_bypasses() -> None:
     source = Path("scripts/parallel_test_runner.py").read_text(encoding="utf-8")
 
     assert 'environment.pop("PHAZE_TEST_DB_ALLOW_SHARED", None)' in source
+    assert 'environment.pop("PYTEST_ADDOPTS", None)' in source
     assert 'environment["PHAZE_TEST_DB_ALLOW_SHARED"]' not in source
     assert "PHAZE_TEST_DB_FORCE_DOWN" not in source
     assert "test-db-down" not in source

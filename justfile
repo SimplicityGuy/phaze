@@ -322,58 +322,42 @@ test-cov:
     uv run pytest --cov {{cov_reports}}
     uv run python scripts/coverage_floor.py
 
-# `test-cov` plus the seat provisioning `check` used to carry inline, factored out here so
-# that BOTH gates (`check`, `check-all`) run the identical test step (phaze-nqawu). A fresh
-# worktree has no Postgres/Redis of its own -- a bare `uv run pytest` then dies at fixture
-# setup dialing tests/db_guard.py's resolve_test_dsn() default (localhost:5433, the local
-# ephemeral harness -- NOT the same as CI, which always exports its own TEST_DATABASE_URL
-# against its 5432 service container and never relies on this default) with nothing
-# listening there yet. This provisions the SHARED test harness (idempotently, via the
-# existing `test-db` recipe) and exports the matching env here, but never tears it down --
-# unlike `integration-test`, which runs against its own DEDICATED containers with an
-# auto-teardown EXIT trap (phaze-pik6), a gate must leave phaze-test-db/phaze-test-redis
-# running for other concurrent worktrees/sessions relying on them; explicit teardown is
-# `just test-db-down`.
-#
-# If the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a per-seat
-# `just test-db-for <name>` rig), respect it VERBATIM and provision nothing. CI depends on
-# that: it exports its own DSN against a 5432 service container and must not be re-pointed
-# at the local 5433 harness.
-#
-# WHAT THE FALLBACK USED TO DO, AND WHY IT WAS A BUG (phaze-bk9el.23). It exported the
-# SHARED `phaze_test` / `phaze_migrations_test` pair and Redis logical DB 0. That directly
-# contradicts CLAUDE.md's standing rule -- "Never share Postgres OR Redis between concurrent
-# agents" -- for the one command every bead is now required to run, because phaze-nqawu
-# wired BOTH gates (and therefore `bh work check` and `bh work submit`) to this recipe.
-# Any concurrent seat that forgot to export its own rig landed on that shared pair, where
-# phaze-ieqg's session advisory lock refuses the SECOND pytest: a red run that passes on
-# isolated re-run, which CLAUDE.md names as the worst possible shape because it trains
-# reviewers to dismiss reds.
-#
-# IT DERIVES; IT DOES NOT REFUSE. Refusing when TEST_DATABASE_URL is unset was proposed and
-# rejected: the auto-provision exists deliberately so a FRESH WORKTREE WITH NO SEAT still
-# works, and a hard refusal fixes the concurrent case by breaking the solo case. So the
-# fallback provisions a seat DERIVED from this worktree (branch name for legibility, a digest
-# of the absolute worktree root for uniqueness -- see scripts/derive-validate-seat-name.sh),
-# through the SAME scripts/provision-test-seat.sh that `just test-db-for` runs, so the gate's
-# seat and an operator's seat for one worktree can never disagree. Solo still just works;
-# concurrent seats get real isolation; the silent shared-seat path no longer exists.
-#
-# The derived seat is a normal registry allocation with an `--origin`, so it is visible in
-# `just test-db-seats` (prefixed `auto_`, marking it gate-provisioned rather than typed by an
-# operator) and reclaimable by `just test-db-reclaim` -- whose O1 rule frees it as soon as the
-# worktree that minted it is removed, which is the normal end of `bh work merge`.
-[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions a seat DERIVED from this worktree only when no TEST_DATABASE_URL is exported')]
+[doc('Run the default non-browser coverage gate in two isolated, order-preserving local lanes')]
+[group('test')]
+test-cov-parallel:
+    uv run python scripts/parallel_test_runner.py
+
+# The local default uses the reviewed two-worker runner. It derives two stable seats from the
+# worktree, provisions both through `test-db-for`, and releases them without stopping the shared
+# harness. A caller-exported TEST_DATABASE_URL is an explicit environment contract (including CI),
+# so it remains serial and is never re-pointed at the local harness. PHAZE_TEST_PARALLEL=0 is the
+# operator escape hatch for a host that cannot safely run both workers; that fallback is loud and
+# retains the existing per-worktree auto-provisioning path.
+[doc('Run the full coverage gate: two isolated local workers by default, loud serial fallback for caller-owned or disabled environments')]
 [group('test')]
 test-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${TEST_DATABASE_URL:-}" ]; then
+        echo "↩️  SERIAL FALLBACK: TEST_DATABASE_URL is caller-owned; preserving that explicit environment." >&2
+        just test-cov
+    elif [ "${PHAZE_TEST_PARALLEL:-1}" != "1" ]; then
+        echo "↩️  SERIAL FALLBACK: PHAZE_TEST_PARALLEL=${PHAZE_TEST_PARALLEL}; two-worker local execution is disabled." >&2
+        just test-validate-serial
+    else
+        echo "⚡ TWO-WORKER COVERAGE: provisioning two isolated local seats with exact ordered manifests." >&2
+        just test-cov-parallel
+    fi
+
+[doc('Run the serial full-coverage gate with the existing safe per-worktree auto-provisioning')]
+[group('test')]
+test-validate-serial:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -z "${TEST_DATABASE_URL:-}" ]; then
         just test-db
         seat="$(bash scripts/derive-validate-seat-name.sh)"
-        echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
-        # `eval` is safe here by contract: provision-test-seat.sh prints the three
-        # `export KEY="value"` lines on stdout and every human-readable line on stderr.
+        echo "🪑 Serial fallback is provisioning this worktree's own seat '${seat}'." >&2
         eval "$(bash scripts/provision-test-seat.sh \
             --seat "$seat" \
             --pg-container "{{test_db_container}}" \
