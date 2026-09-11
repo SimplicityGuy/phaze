@@ -3,7 +3,7 @@
 from datetime import date
 from unittest.mock import MagicMock
 
-from phaze.services.tag_proposal import compute_proposed_tags, parse_filename
+from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags, parse_filename
 
 
 class TestParseFilename:
@@ -32,6 +32,11 @@ class TestParseFilename:
     def test_no_year_returns_no_year_key(self) -> None:
         result = parse_filename("Artist - Title.mp3")
         assert "year" not in result
+
+    def test_out_of_range_year_is_ignored(self) -> None:
+        result = parse_filename("Artist - Title (0999).mp3")
+        assert "year" not in result
+        assert result["title"] == "Title"
 
     def test_strips_extension(self) -> None:
         result = parse_filename("Artist - Title.flac")
@@ -62,11 +67,12 @@ class TestComputeProposedTags:
         return tl
 
     def test_all_sources_tracklist_wins(self) -> None:
-        meta = self._make_metadata(artist="Meta Artist", title="Meta Title", genre="Electronic")
+        meta = self._make_metadata(artist="Meta Artist", title="Meta Title", album="Meta Album", genre="Electronic")
         tl = self._make_tracklist(artist="TL Artist", event="Coachella 2024")
         result = compute_proposed_tags(meta, tl, "File Artist - File Title.mp3")
         assert result["artist"] == "TL Artist"
         assert result["album"] == "Coachella 2024"
+        assert result["title"] == "Meta Title"
 
     def test_metadata_only(self) -> None:
         meta = self._make_metadata(artist="Meta Artist", title="Meta Title", year=2023, genre="House")
@@ -104,16 +110,21 @@ class TestComputeProposedTags:
         result = compute_proposed_tags(meta, tl, "file.mp3")
         assert result["year"] == 2020
 
+    def test_tracklist_date_does_not_override_filename_year(self) -> None:
+        """A parsed filename year also takes precedence over the fallback tracklist date."""
+        tl = self._make_tracklist(date=date(2024, 6, 15))
+        result = compute_proposed_tags(None, tl, "Artist - Title (2019).mp3")
+        assert result["year"] == 2019
+
     def test_none_values_omitted(self) -> None:
         result = compute_proposed_tags(None, None, "untitled.mp3")
         for val in result.values():
             assert val is not None
 
-    def test_only_core_fields(self) -> None:
+    def test_returned_key_set_is_exactly_core_fields(self) -> None:
         meta = self._make_metadata(artist="A", title="T", album="Al", year=2020, genre="G", track_number=1)
         result = compute_proposed_tags(meta, None, "file.mp3")
-        allowed = {"artist", "title", "album", "year", "genre", "track_number"}
-        assert set(result.keys()).issubset(allowed)
+        assert set(result) == set(CORE_FIELDS)
 
     def _make_discogs_link(self, **kwargs: object) -> MagicMock:
         """Create a mock DiscogsLink with given attributes."""
@@ -144,8 +155,9 @@ class TestComputeProposedTags:
     def test_discogs_link_none_fields_no_override(self) -> None:
         """DiscogsLink with None fields does not override lower-priority sources."""
         meta = self._make_metadata(artist="Meta Artist", title="Meta Title")
+        tl = self._make_tracklist(artist=None, event=None)
         dl = self._make_discogs_link(discogs_artist=None, discogs_title=None, discogs_year=None)
-        result = compute_proposed_tags(meta, None, "file.mp3", discogs_link=dl)
+        result = compute_proposed_tags(meta, tl, "File Artist - File Title.mp3", discogs_link=dl)
         assert result["artist"] == "Meta Artist"
         assert result["title"] == "Meta Title"
 
