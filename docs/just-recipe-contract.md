@@ -20,6 +20,7 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 
 | Recipe | Classification | Verified consumer or current operator use |
 |---|---|---|
+| `agent-down` | operator convenience | file-server agent topology teardown |
 | `bandit` | internal helper | `security-all`; focused local Python SAST |
 | `branch-check` | external contract | per-bead branch-coverage runbook |
 | `check` | external contract | Beadhive postland/union validation and manual full gate |
@@ -42,6 +43,8 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `docker-shell` | operator convenience | open an application API shell |
 | `docker-validate` | operator convenience | local Dockerfile lint mirror |
 | `down` | operator convenience | application-server topology teardown |
+| `down-all` | operator convenience | combined application/agent topology teardown |
+| `down-dev` | operator convenience | live-reload development topology teardown |
 | `download-models` | external contract | model provisioning runbooks and image parity workflows |
 | `fmt` | operator convenience | apply Ruff formatting |
 | `image-build-arm64` | operator convenience | native arm64 agent image fallback build |

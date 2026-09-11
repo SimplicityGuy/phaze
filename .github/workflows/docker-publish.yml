@@ -497,7 +497,7 @@ jobs:
         run: bash scripts/download-models.sh models
 
       - name: "📥 Install dependencies (for the comparator)"
-        run: just install
+        run: just setup
 
       - name: "📥 Download the x86 golden"
         if: github.event_name != 'pull_request'

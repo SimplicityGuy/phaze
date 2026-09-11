@@ -34,6 +34,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PRECOMMIT_CONFIG_PATH = REPO_ROOT / ".pre-commit-config.yaml"
 CODE_QUALITY_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "code-quality.yml"
+DOCKER_VALIDATE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "docker-validate.yml"
+CONTAINER_VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate-containers.sh"
 
 # `rev: <40-hex-sha>  # frozen: vX.Y.Z` on the hadolint repo entry.
 _FROZEN_REV_COMMENT_RE = re.compile(r"^\s*rev:\s*[0-9a-f]{40}\s*#\s*frozen:\s*(v[0-9]+\.[0-9]+\.[0-9]+)\s*$", re.MULTILINE)
@@ -59,18 +61,25 @@ def _precommit_hadolint_version() -> str:
     return match.group(1)
 
 
-def _code_quality_hadolint_version() -> str:
-    assert CODE_QUALITY_WORKFLOW_PATH.exists(), f"code-quality.yml missing at {CODE_QUALITY_WORKFLOW_PATH}"
-    data = yaml.safe_load(CODE_QUALITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
-    steps = data["jobs"]["code-quality"]["steps"]
+def _workflow_hadolint_version(path: Path, job_name: str) -> str:
+    assert path.exists(), f"workflow missing at {path}"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = data["jobs"][job_name]["steps"]
     arkade_steps = [s for s in steps if "arkade-get" in s.get("uses", "")]
-    assert len(arkade_steps) == 1, f"expected exactly one arkade-get step in code-quality.yml, found {len(arkade_steps)}"
+    assert len(arkade_steps) == 1, f"expected exactly one arkade-get step in {path.name}, found {len(arkade_steps)}"
     (arkade_step,) = arkade_steps
     version = arkade_step.get("with", {}).get("hadolint")
     assert isinstance(version, str) and version.startswith("v"), (
-        f"code-quality.yml's arkade-get `hadolint:` value must be a `vX.Y.Z` string; got {version!r}"
+        f"{path.name}'s arkade-get `hadolint:` value must be a `vX.Y.Z` string; got {version!r}"
     )
     return version
+
+
+def _script_hadolint_version() -> str:
+    text = CONTAINER_VALIDATOR_PATH.read_text(encoding="utf-8")
+    match = re.search(r'^hadolint_version="(v[0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+    assert match is not None, "validate-containers.sh must enforce an exact hadolint version"
+    return match.group(1)
 
 
 def test_precommit_config_pins_hadolint_with_a_frozen_version_comment() -> None:
@@ -81,7 +90,7 @@ def test_precommit_config_pins_hadolint_with_a_frozen_version_comment() -> None:
 
 def test_code_quality_workflow_installs_a_pinned_hadolint_version() -> None:
     """`code-quality.yml` must install a pinned (non-`latest`) hadolint release."""
-    version = _code_quality_hadolint_version()
+    version = _workflow_hadolint_version(CODE_QUALITY_WORKFLOW_PATH, "code-quality")
     assert version != "latest", "code-quality.yml must pin an exact hadolint version, never `latest` (phaze-b67d)"
     assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version), version
 
@@ -95,14 +104,26 @@ def test_hadolint_version_pins_agree_across_precommit_and_ci() -> None:
     silently linting Dockerfiles with two different hadolint releases in local vs. CI.
     """
     precommit_version = _precommit_hadolint_version()
-    workflow_version = _code_quality_hadolint_version()
+    code_quality_version = _workflow_hadolint_version(CODE_QUALITY_WORKFLOW_PATH, "code-quality")
+    docker_validate_version = _workflow_hadolint_version(DOCKER_VALIDATE_WORKFLOW_PATH, "validate-dockerfiles")
+    script_version = _script_hadolint_version()
 
-    assert precommit_version == workflow_version, (
-        "hadolint version pin has diverged between .pre-commit-config.yaml and code-quality.yml:\n"
-        f"  .pre-commit-config.yaml (# frozen: comment):        {precommit_version!r}\n"
-        f"  code-quality.yml (arkade-get `hadolint:`):          {workflow_version!r}\n"
-        "Bump BOTH together (this is phaze-b67d / phaze-ny3du recurring a third time if it fires)."
+    assert len({precommit_version, code_quality_version, docker_validate_version, script_version}) == 1, (
+        "hadolint version pin has diverged across executable lint sites:\n"
+        f"  .pre-commit-config.yaml (# frozen: comment): {precommit_version!r}\n"
+        f"  code-quality.yml (arkade-get):              {code_quality_version!r}\n"
+        f"  docker-validate.yml (arkade-get):            {docker_validate_version!r}\n"
+        f"  validate-containers.sh (runtime guard):      {script_version!r}\n"
+        "Bump all four together."
     )
+
+
+def test_shared_validator_lints_every_shipped_dockerfile() -> None:
+    """Local and docker-validate CI must cover every checked-in Dockerfile."""
+    shipped = {path.name for path in REPO_ROOT.glob("Dockerfile*") if path.is_file()}
+    script = CONTAINER_VALIDATOR_PATH.read_text(encoding="utf-8")
+    linted = set(re.findall(r"for dockerfile in ([^;]+); do", script)[0].split())
+    assert linted == shipped
 
 
 def test_code_quality_workflow_documents_the_system_hook_constraint() -> None:

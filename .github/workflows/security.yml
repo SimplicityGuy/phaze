@@ -43,7 +43,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 📦 Install dependencies
-        run: just install
+        run: just setup
 
       - name: 🔍 Run pip-audit
         run: just pip-audit

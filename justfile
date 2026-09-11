@@ -151,9 +151,9 @@ install: setup tailwind
 setup:
     uv sync
 
-[doc('Start all services in Docker (production topology: base compose only)')]
+[doc('Start the production application-server topology (base Compose file only)')]
 [group('dev')]
-up: tailwind
+up:
     # phaze-he8m: pre-create the ./certs bind-mount source owned by the invoking
     # operator (uid 1000). Without it, rootful dockerd auto-creates the missing
     # source dir as root:root and the uid-1000 cert bootstrap dies with
@@ -175,6 +175,11 @@ up-dev: tailwind
     mkdir -p certs
     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
+[doc('Stop the live-reload development topology (base plus dev overlay)')]
+[group('dev')]
+down-dev:
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
 [group('dev')]
 up-agent:
@@ -183,6 +188,11 @@ up-agent:
     # VALIDATES ./models (or whatever MODELS_PATH names) -- it never downloads into it.
     mkdir -p models certs
     docker compose -f docker-compose.agent.yml up -d
+
+[doc('Stop the standalone file-server agent topology')]
+[group('dev')]
+agent-down:
+    docker compose -f docker-compose.agent.yml down
 
 [doc('Start the OCI A1 cloud compute-agent stack (standalone docker-compose.cloud-agent.yml)')]
 [group('dev')]
@@ -205,19 +215,24 @@ up-all:
     mkdir -p certs models
     docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
 
-[doc('Stop all services')]
+[doc('Stop the combined local application-server and file-server agent topology')]
+[group('dev')]
+down-all:
+    docker compose -f docker-compose.yml -f docker-compose.agent.yml down
+
+[doc('Stop the production application-server topology (base Compose file only)')]
 [group('dev')]
 down:
-    docker compose down
+    docker compose -f docker-compose.yml down
 
-[doc('View logs for all services (follow mode)')]
+[doc('Follow production application-server logs')]
 [group('dev')]
 logs:
-    docker compose logs -f
+    docker compose -f docker-compose.yml logs -f
 
-[doc('Rebuild and restart services')]
+[doc('Rebuild and restart the production application-server topology')]
 [group('dev')]
-rebuild: tailwind
+rebuild:
     # phaze-ckui (phaze-476w class): pass -f docker-compose.yml EXPLICITLY, same as
     # `up`/`up-dev`/`up-all` -- a bare `docker compose up` auto-merges a stray
     # docker-compose.override.yml if one exists in the repo root.
@@ -1258,111 +1273,57 @@ bandit:
 [group('security')]
 security-all: pip-audit bandit
 
-[doc('View worker logs (follow mode)')]
+[doc('Follow the production application-server worker logs')]
 [group('worker')]
 worker-logs:
-    docker compose logs -f worker
+    docker compose -f docker-compose.yml logs -f worker
 
 [doc('Restart worker service')]
 [group('worker')]
 worker-restart:
-    docker compose restart worker
+    docker compose -f docker-compose.yml restart worker
 
 [doc('Check SAQ worker health')]
 [group('worker')]
 worker-health:
-    docker compose exec worker uv run saq phaze.tasks.controller.settings --check
+    docker compose -f docker-compose.yml exec worker uv run saq phaze.tasks.controller.settings --check
 
-[doc('Build Docker images')]
+[doc('Build the production application-server images')]
 [group('docker')]
 docker-build:
-    docker compose build
+    docker compose -f docker-compose.yml build
 
 [doc('Validate Dockerfiles with hadolint')]
 [group('docker')]
 docker-validate:
-    #!/usr/bin/env bash
-    set -e
-    for df in Dockerfile; do
-        echo "🔍 Validating ${df}..."
-        docker run --rm -i hadolint/hadolint < "${df}"
-        echo "✅ ${df} passed"
-    done
+    bash scripts/validate-containers.sh dockerfiles
 
 [doc('Push Docker images to GHCR (requires: gh auth token with packages:write)')]
 [group('docker')]
 image-push:
-    #!/usr/bin/env bash
-    set -e
-    REGISTRY="ghcr.io"
-    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
-    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
-    TAG="latest"
-    declare -A IMAGES=(
-        ["api"]="Dockerfile"
-    )
-    # Matches docker-publish.yml's image_suffix matrix (Phase 29 D-15): the api image
-    # publishes BARE (ghcr.io/<owner>/<repo>:<tag>, no sub-path -- docker-compose.agent.yml's
-    # watcher/worker services pull exactly that reference).
-    declare -A IMAGE_SUFFIX=(
-        ["api"]=""
-    )
-    for SERVICE in "${!IMAGES[@]}"; do
-        IMAGE="${REGISTRY}/${OWNER}/${REPO}${IMAGE_SUFFIX[$SERVICE]}:${TAG}"
-        echo "🐳 Building and pushing ${IMAGE}..."
-        docker build -f "${IMAGES[$SERVICE]}" -t "${IMAGE}" .
-        docker push "${IMAGE}"
-        echo "✅ ${SERVICE} pushed"
-    done
+    bash scripts/container-images.sh push api latest
 
 [doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job; BuildKit required -- the essentia compile runs through an sccache cache mount)')]
 [group('docker')]
 image-build-arm64 TAG="latest":
-    #!/usr/bin/env bash
-    set -e
-    REGISTRY="ghcr.io"
-    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
-    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
-    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
-    echo "🐳 Building ${IMAGE} (Dockerfile.agent-arm64, native arm64 essentia)..."
-    DOCKER_BUILDKIT=1 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
-    echo "✅ built ${IMAGE}"
+    bash scripts/container-images.sh build arm64 "{{TAG}}"
 
 [doc('Build + push the arm64 essentia agent image to GHCR (operator fallback; CI push is parity-gated in 47-04)')]
 [group('docker')]
 image-push-arm64 TAG="latest":
-    #!/usr/bin/env bash
-    set -e
-    REGISTRY="ghcr.io"
-    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
-    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
-    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
-    echo "🐳 Building and pushing ${IMAGE}..."
-    DOCKER_BUILDKIT=1 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
-    docker push "${IMAGE}"
-    echo "✅ ${IMAGE} pushed"
+    bash scripts/container-images.sh push arm64 "{{TAG}}"
 
 [doc('Regenerate the x86 parity golden JSON from the reference clip (operator path; CI in plan 47-04 is authoritative)')]
 [group('docker')]
 parity-golden-regen TAG="latest":
     #!/usr/bin/env bash
     set -e
-    REGISTRY="ghcr.io"
-    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
-    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
     # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
     # Phase 29 D-15) — ghcr.io/<owner>/<repo>:<tag>, NOT a /api sub-path. Match it.
-    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}"
+    IMAGE="$(bash scripts/container-images.sh ref "{{TAG}}" api)"
     # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
     #    never re-download a set that already exists); provision ./models only as a fallback.
-    if [ -n "${MODELS_PATH:-}" ]; then
-        MODELS_DIR="$(cd "${MODELS_PATH}" && pwd)"
-        echo "📂 Using provisioned models at ${MODELS_DIR} ..."
-    else
-        MODELS_DIR="$(pwd)/models"
-        echo "📥 Provisioning models into ./models (set MODELS_PATH to reuse an existing set) ..."
-        bash scripts/download-models.sh models
-    fi
+    MODELS_DIR="$(bash scripts/container-images.sh models-dir)"
     # 2. Run the SHARED dump tool inside the x86 api image over the committed reference clip.
     #    This writes scripts/parity/golden-x86.json for offline inspection.
     #    NOTE: CI (plan 47-04) is the AUTHORITATIVE golden producer; this is the operator regen path.
@@ -1415,40 +1376,30 @@ parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" INTERP="uv 
 parity-check TAG="latest":
     #!/usr/bin/env bash
     set -e
-    REGISTRY="ghcr.io"
-    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
-    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
-    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    IMAGE="$(bash scripts/container-images.sh ref "{{TAG}}" arm64)"
     # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
     #    never re-download a set that already exists); provision ./models only as a fallback.
-    if [ -n "${MODELS_PATH:-}" ]; then
-        MODELS_DIR="$(cd "${MODELS_PATH}" && pwd)"
-        echo "📂 Using provisioned models at ${MODELS_DIR} ..."
-    else
-        MODELS_DIR="$(pwd)/models"
-        echo "📥 Provisioning models into ./models (set MODELS_PATH to reuse an existing set) ..."
-        bash scripts/download-models.sh models
-    fi
+    MODELS_DIR="$(bash scripts/container-images.sh models-dir)"
     # 2. Dump the arm64 actual via the shared recipe — direct python3 for the agent image.
     just parity-dump "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json python3
     # 3. Compare against the committed/CI golden (non-zero exit on any parity break).
     echo "🔬 Comparing scripts/parity/actual.json against scripts/parity/golden-x86.json ..."
     uv run python scripts/parity/compare_analysis.py scripts/parity/golden-x86.json scripts/parity/actual.json
 
-[doc('Validate docker-compose.yml syntax')]
+[doc('Validate every shipped Compose shape (base, dev overlay, agent, cloud-agent, and telemetry example)')]
 [group('docker')]
 docker-compose-validate:
-    docker compose config --quiet && echo "✅ docker-compose.yml is valid"
+    bash scripts/validate-containers.sh compose
 
 [doc('Shell into the API container')]
 [group('docker')]
 docker-shell:
-    docker compose exec api bash
+    docker compose -f docker-compose.yml exec api bash
 
 [doc('View running containers')]
 [group('docker')]
 docker-ps:
-    docker compose ps
+    docker compose -f docker-compose.yml ps
 
 [doc('Run Alembic migrations')]
 [group('db')]
