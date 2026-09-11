@@ -1,87 +1,19 @@
-"""The 1001Tracklists drain: the engine that turns six built pieces into one resumable pass.
+"""Resumable 1001Tracklists lookup drain.
 
-WHAT THIS MODULE IS
--------------------
-Every stage below already exists and is separately tested. This module invents none of them; it
-sequences them, decides what each outcome MEANS, and makes the sequence survivable across months
-of restarts::
+Every host request uses ``tracklist_scraper.reserve_host_request_slot``; this module must not add a
+second limiter or bypass the host-wide 8-second schedule. The queue is rebuilt from cached corpus
+state on every run, cache state is rechecked immediately before each lookup, and each outcome is
+persisted in its own short transaction. No database connection may remain checked out during search
+or render network I/O.
 
-    build_drain_queue   candidates (phaze-fq9h.3) + derived queries (phaze-fq9h.2) + cache
-      -> perform_lookup    search (phaze-hu8v) -> select_result (.6) -> render (.1) -> parse (.4)
-      -> persist_lookup    tracklists/versions/tracks + PROPAGATION + the lookup cache (.3)
+Only definitive negatives receive the negative-cache TTL. Blocks, render failures, search failures,
+and parse failures remain transient so a temporary failure cannot become silent data loss. Canonical
+writes use the shared advisory transaction lock, propagated rows are matched by external id and file,
+and cache writes upsert by set key. These properties make restarts idempotent without a second
+checkpoint source of truth.
 
-THE THREE CONSTRAINTS THAT SHAPED IT
-------------------------------------
-
-**1. One request per 8 s, for the whole host, forever.** robots.txt asks for ``Crawl-delay: 8``
-against the 1001Tracklists HOST, so the entire system's budget is ~10,800 requests/day no matter
-how many workers run -- adding workers cannot raise it, only make us rude. This module therefore
-adds NO rate limiting of its own. Both network calls it makes reach the single module-level
-schedule in ``services.tracklist_scraper.reserve_host_request_slot``: ``TracklistScraper.search``
-delegates to it, and ``TracklistRenderer`` paces every navigation and every Turnstile reload
-through the same function. A second limiter here -- even a correct one -- would let the host see
-two independently-8s-paced streams at 4 s, which is exactly the defect phaze-wb1o fixed within one
-module and the phaze-fq9h.1 lift fixed across two.
-
-That ceiling is also why this is a DRAIN and not a pipeline stage: at ~2.5 requests per lookup the
-system completes ~4,300 lookups/day, so a ~250,000-file archive is months of best-effort
-background work. The levers are, in order: never spend a request twice (the cache), spend the
-early ones on the most valuable sets (the priority order), and never lose progress to a restart.
-
-**2. Dedup is a 3% lever, not "the big multiplier".** Measured over the live corpus
-(phaze-fq9h.11): 9,708 lookupable sets collapse to 9,419 unique -- a collapse ratio of **1.0307**,
-saving 289 requests. 97% of unique sets are singletons. Nothing here is sized on collapse, and
-``limit`` bounds a run in LOOKUPS (requests spent), never in files covered.
-
-The same measurement is why propagation gates where it does: **9,425 of the 9,451 collapsed links
-are byte-identical sha256**, already found by ``services/dedup.py`` without a heuristic. So gating
-propagation at :data:`~phaze.enums.tracklist_candidate.DuplicateConfidence.EXACT` costs ~0.3% of
-one drain pass (26 links) and removes the false-merge risk entirely. With audio fingerprinting
-gone (epic phaze-0jpe) the looser tiers are text-and-duration guesses, and phaze-fq9h.3's own
-worked example of a MEDIUM false merge -- two different nights of one residency -- is a shape this
-archive genuinely contains. See :data:`DEFAULT_PROPAGATION_MIN_CONFIDENCE`.
-
-**3. A transient failure must never be cached as a real negative.** Four different things produce
-"no tracklist", and only one of them is a fact about the world. ``select_result`` already returns
-its refusal as a ``LookupOutcome`` carrying ``is_definitive_negative`` / ``is_transient``, and
-``RenderResult.is_retryable`` says the same thing on the render side; :func:`perform_lookup`
-preserves both distinctions rather than flattening them into "found / not found". Getting this
-wrong converts a flaky Turnstile challenge into permanent, silent, un-noticed data loss -- the
-defect phaze-hu8v was bounced in review for, in a milder form.
-
-RESUMPTION AND IDEMPOTENCE
---------------------------
-There is no checkpoint file and no cursor, because both would be a second source of truth that can
-disagree with the database. Resumption is a property of the data:
-
-* The queue is REBUILT from the corpus on every run and is already cache-filtered
-  (``build_candidate_queue`` excludes positives forever, negatives for their TTL, and transients
-  inside their backoff). A restarted drain therefore resumes with a strictly shorter queue, having
-  re-spent nothing.
-* Each candidate's outcome is committed in its OWN short transaction, immediately after the
-  lookup. A crash loses at most the single in-flight request.
-* The queue snapshot can be hours stale by the time a long run reaches its tail, so
-  :func:`drain_once` RE-CHECKS the cache for each key immediately before spending on it. That one
-  extra round trip is what makes an overlapping restart, or a concurrently-answered set, cost zero
-  host requests instead of one.
-* Persistence itself is re-runnable: the canonical write takes the same
-  ``pg_advisory_xact_lock(hashtext(external_id))`` the legacy store path uses, propagated rows are
-  matched on ``(external_id, file_id)`` before being created, and ``record_outcome`` is an
-  ``ON CONFLICT (set_key) DO UPDATE`` upsert.
-
-This module does NOT take a distributed lock per set, and that is deliberate. The rate limiter it
-depends on is a PROCESS-wide serializer (see ``reserve_host_request_slot``), so a second concurrent
-drain process is already outside the politeness contract regardless of what this module does. The
-only correct cross-process fix is a shared limiter, and until that exists a per-set lock would buy
-a false sense of safety while the host saw double the agreed rate. Within one process the
-re-check + upsert make an overlap cost at most one duplicated request, never a corrupted row.
-
-CONNECTION DISCIPLINE
----------------------
-No database connection is ever held across network I/O (phaze-1bcc / phaze-igwi). Every phase --
-build queue, re-check, persist -- opens a short session and closes it; the search and the render
-happen with nothing checked out of the pool. A drain item can take 30+ seconds of wall clock, and
-an idle-in-transaction connection for that long, repeated for months, drains the pool.
+Propagation defaults to byte-identical ``EXACT`` duplicates. The measurement and rationale behind
+that threshold are preserved in ``docs/design/0014-tracklist-candidate-sets.md``.
 """
 
 from __future__ import annotations
@@ -151,9 +83,7 @@ pacing per lookup, 100 lookups is roughly 40 minutes of wall clock, which fits c
 an operator's attention span and inside a task timeout."""
 
 
-# --------------------------------------------------------------------------------------------
 # Collaborator boundaries
-# --------------------------------------------------------------------------------------------
 
 
 class SearchClient(Protocol):
@@ -174,9 +104,7 @@ class DetailRenderer(Protocol):
     async def render(self, url: str) -> RenderResult: ...
 
 
-# --------------------------------------------------------------------------------------------
 # Queue
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,9 +300,7 @@ def _newest(values: Iterable[datetime | None]) -> datetime | None:
     return max(known) if known else None
 
 
-# --------------------------------------------------------------------------------------------
 # One lookup
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,9 +522,7 @@ def _render_outcome(render: RenderResult) -> LookupOutcome:
     return LookupOutcome.RENDER_FAILED
 
 
-# --------------------------------------------------------------------------------------------
 # Persistence
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -890,9 +814,7 @@ async def _append_version(session: AsyncSession, tracklist: Tracklist, attempt: 
         )
 
 
-# --------------------------------------------------------------------------------------------
 # The pass
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(slots=True)

@@ -65,6 +65,22 @@ print(format_corpus_report(queue.stats))
 `format_corpus_report` is the single renderer the admin UI (phaze-fq9h.8) also uses, so the
 operator's live numbers and this document can never disagree about what "unique sets" means.
 
+## Implemented-drain measurements
+
+The completed drain measurement (phaze-fq9h.11) found 9,708 lookupable sets and 9,419 unique sets,
+a collapse ratio of **1.0307** that saves 289 requests; 97% of unique sets are singletons. Of the
+9,451 collapsed links, **9,425 are byte-identical sha256 links**. Requiring `EXACT` confidence for
+propagation therefore excludes only 26 links, about 0.3% of one drain pass, while eliminating the
+known false-merge shape at heuristic tiers.
+
+The parser selectors were checked against two captured pages containing 52 and 12 rows. The retired
+guesses (`.tp a`, `.tN`, `.tL`, `.cueTime`) matched zero nodes in both. In the 52-row capture, 10
+unidentified rows lacked `itemprop` microdata, while the visible `.trackValue` structure existed on
+every row. `.trackLabel` appeared on 38 rows and was legitimately absent on the other 14; another 14
+labels were absent across the second capture. Neither capture contained a populated cue or a mashup
+element, so positive cue parsing remains synthetic-test evidence and mashup detection remains marked
+unverified.
+
 ## The funnel
 
 ```

@@ -1,7 +1,6 @@
 """The per-enrich-stage orphaned/stuck (recovery-candidate) count and its off-request cache.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). The raising core, the
-degrade-safe wrapper, the module-scope cache and the off-request refresher are one unit by
+The raising core, degrade-safe wrapper, module-scope cache, and off-request refresher are one unit by
 construction: D-03's "keep the last-good value on failure" contract is only expressible with all
 four visible together.
 """
@@ -25,7 +24,7 @@ logger = structlog.get_logger(__name__)
 
 
 async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
-    """Return the per-enrich-stage orphaned/stuck (recovery-candidate) count, degrade-safe (Phase 87, UI-05/D-05).
+    """Return the per-enrich-stage orphaned/stuck (recovery-candidate) count, degrade-safe (UI-05/D-05).
 
     orphan(stage) = the number of ``scheduling_ledger`` rows for the stage's function that are NEITHER
     live (a queued/active ``saq_jobs`` key) NOR domain-completed NOR owned by an in-flight ``cloud_job``
@@ -135,7 +134,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     return out
 
 
-# HYG-01 / WR-02 orphan-count cache (Phase 91). The amber /pipeline/stats badge polls every 5s; the
+# HYG-01 / WR-02 orphan-count cache. The amber /pipeline/stats badge polls every 5s; the
 # full derivation above materializes the whole ``scheduling_ledger`` (~44.5K rows in the 2026-06-18
 # incident) + the per-stage done-sets, which must NEVER run inline on that hot request path (D-01/D-02).
 # A process/module-scope cache (NOT request-scoped -- D-04) is refreshed off-request by the FastAPI

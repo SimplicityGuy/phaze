@@ -1,4 +1,4 @@
-"""Maintained Redis per-pipeline-function counters (Phase 35, D-02 / D-03).
+"""Maintained Redis per-pipeline-function counters (D-02 / D-03).
 
 Two durable cumulative counters per pipeline function, keyed in a fixed, bounded
 namespace:
@@ -67,7 +67,7 @@ def _to_int(value: Any) -> int:
       :func:`phaze.routers.pipeline.dashboard_stats._read_pipeline_counters`, which passes
       ``app.state.redis`` (``main.py:161``, ``decode_responses=True``). That yields ``str``.
     * The byte-mode reader the decode branch was written for was the ``controller_queue.redis``
-      fallback, DELETED in Phase 36 -- ``dashboard_stats._read_pipeline_counters``'s own
+      fallback -- ``dashboard_stats._read_pipeline_counters``'s own
       docstring says so ("the former ``controller_queue.redis`` fallback is gone").
 
     So the bytes branch had no caller, and its only live effect was to make a client-mode

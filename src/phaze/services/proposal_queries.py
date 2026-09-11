@@ -547,7 +547,6 @@ async def get_proposals_page(
     order_by = sort.order_by() if sort is not None else (RenameProposal.confidence.asc(),)
     base = base.order_by(*order_by, RenameProposal.id.asc())
 
-    # Count total
     count_result = await session.execute(count_base)
     total = count_result.scalar_one()
 

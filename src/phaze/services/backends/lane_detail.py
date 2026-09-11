@@ -1,7 +1,6 @@
-"""Phase 88 (88-02, DRILL-01): the degrade-safe data helpers behind ``GET /pipeline/lanes/{backend_id}``.
+"""Degrade-safe data helpers behind ``GET /pipeline/lanes/{backend_id}`` (DRILL-01).
 
-Extracted from the former single-module ``services/backends.py`` (phaze-dr9df). Bounded, read-only,
-secret-free reads for the lane drill-in pane (``_lane_detail.html``): recent completions
+Bounded, read-only, secret-free reads for the lane drill-in pane (``_lane_detail.html``): recent completions
 (:func:`get_lane_recent_completions`), which agent's SAQ queues a lane actually uses
 (:func:`resolve_lane_queue_agent`) and that agent's per-tier depths
 (:func:`get_lane_queue_depths`). Everything here degrades to ``[]`` / a ``note`` rather than raising
@@ -11,8 +10,6 @@ Sits BELOW :mod:`~phaze.services.backends.lane_metrics` in the package DAG:
 ``_local_lane_queued_working`` binds the local lane through :func:`resolve_lane_queue_agent` so the
 lane cards and this pane can never disagree about WHICH agent's queue "the local lane" reads.
 
-Every body here is verbatim -- nothing in this file needed restructuring to meet the package's
-nesting budget.
 """
 
 from __future__ import annotations
@@ -44,8 +41,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- Phase 88 (88-02, DRILL-01): degrade-safe lane-detail data helpers ---------------------
-#
+# Degrade-safe lane-detail data helpers (DRILL-01)
 # Two bounded, read-only, secret-free reads that feed the `GET /pipeline/lanes/{backend_id}` body
 # (_lane_detail.html). Both degrade to [] / 0 on any error so they can NEVER 500 the drill-in pane's
 # own 5s tick (D-00b / PERF-01). Neither exposes any config/SecretStr/kube token -- only the CloudJob
@@ -286,7 +282,7 @@ async def resolve_lane_queue_agent(session: AsyncSession, backend_id: str, kind:
 async def get_lane_queue_depths(session: AsyncSession, app_state: Any, backend_id: str, kind: str) -> LaneQueueDepths:
     """Return per-lane-tier queue depth ``{analyze, meta, io}`` for a lane's backing agent.
 
-    Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
+    Mirrors the ``get_queue_activity`` idiom (``phaze.services.pipeline.agents``): each tier's depth is
     ``count("queued") + count("active")`` on the ``phaze-agent-<agent_id>-<lane>`` Queue of the agent
     :func:`resolve_lane_queue_agent` binds to this lane (read that docstring -- the binding IS the fix).
     Only the ``queued`` / ``active`` kinds are read (scheduled/cron jobs excluded). Every tier is isolated

@@ -1,31 +1,16 @@
-"""Control-plane Kubernetes (Kueue) Job-staging service (Phase 54, Plan 03 -- KSUBMIT-01/05/06).
+"""Kubernetes Job staging and Kueue admission reads for the control plane.
 
-The single home of every kr8s call in the system. The control plane builds the suspended
-``batch/v1`` Job manifest, submits it (idempotently), lists in-flight Jobs, resolves the paired
-Kueue ``Workload`` to read admission state, and deletes a finished Job -- but it carries NO
-analysis payload and reads NO result here. Kube credentials live on the control plane only
-(DIST-01); the file-server agent and the one-shot pod are kube-credential-free.
+This is the single home of kr8s calls. It builds and idempotently submits suspended Jobs, lists
+in-flight Jobs, resolves their Workloads, reads admission state, and deletes finished Jobs. It
+carries no analysis payload or result, and credentials remain control-plane-only.
 
-Structure mirrors ``s3_staging.py`` verbatim: ``__future__`` annotations, a ``TYPE_CHECKING``
-guard, a fail-loud custom error, a ``_require_kube()`` validation gate, an async client factory,
-and the idempotent-delete idiom (swallow already-absent). There are NO ORM imports here -- the
-service is pure kr8s keyed by ``file_id`` (reconcile-by-file_id; the deterministic Job name
-``phaze-analyze-<file_id>`` is the single object identity, no per-attempt suffixes).
+Every verb takes an explicit ``KubeConfig`` so one control plane can address distinct clusters.
+Clients authenticate from an in-memory kubeconfig derived from operator configuration; secrets are
+never logged. Deterministic Job names keyed by file id provide object identity, and an absent delete
+target is a successful idempotent outcome.
 
-Phase 70 (MKUE-01/D-04): every verb takes an explicit ``kube: KubeConfig`` (the module-global
-``active_kube`` read is RETIRED), so ONE control plane reaches N distinct clusters -- each verb
-authenticates against THIS file's backend cluster. The kr8s client is built via constructor-time auth
-from a synthesized in-memory kubeconfig dict (``kubeconfig``+``context`` parses the operator YAML;
-``api_url``+``sa_token`` synthesizes a minimal dict) -- the fragile post-construction bearer-token
-session-rebuild hack (kr8s private-API) is gone. Distinct kubeconfig dicts key distinct cached kr8s
-clients (verified). Credentials come from the ``_FILE``-resolved ``SecretStr`` fields and are never
-logged (T-54-07); the synthesized dict is in-memory only.
-
-phaze-202e adds the POD surface (:func:`list_pods_for_job`) and the pure wedge classifier
-(:func:`classify_job_pods`). The Job manifest no longer carries ``activeDeadlineSeconds`` by default,
-so nothing kills a long analyze; the question "is this Job wedged?" is answered from pod state
-instead, and a Running pod is never a wedge at any age. The classifier is deliberately pure and
-HTTP-free so the whole decision table is testable without a cluster.
+Jobs have no default ``activeDeadlineSeconds``. D-08 classifies wedges from pod state instead, and a
+running pod is never a wedge solely because of age. The classifier stays pure and HTTP-free.
 """
 
 from __future__ import annotations
@@ -63,10 +48,8 @@ JOB_TTL_SECONDS = 900
 # documented phaze-agent-env ConfigMap (docs/k8s-burst.md §6) does or does not carry.
 _ANALYZE_AGENT_KIND = "compute"
 
-# --------------------------------------------------------------------------- #
 # JOB-ENV-CONTRACT (phaze-frq98, seam F2) -- the env `job_runner.run` requires,
 # enumerated instead of hoped for.
-# --------------------------------------------------------------------------- #
 #
 # `build_job_manifest` references the agent-env ConfigMap and the token Secret BY NAME ONLY
 # (`envFrom`), because both are operator-created and phaze creates neither. That is the right
@@ -119,7 +102,7 @@ _QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"
 _MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 _MANAGED_BY_VALUE = "phaze"
 _FILE_ID_LABEL = "phaze.dev/file-id"
-# A2 (de-risked): the precise Workload->Job linkage label is a Phase-56 live-cluster verification
+# A2 (de-risked): the precise Workload->Job linkage label is a live-cluster verification
 # item; get_workload_for falls back to an owner-reference match when this label lookup misses.
 _JOB_UID_LABEL = "kueue.x-k8s.io/job-uid"
 # phaze-202e pod discovery. k8s >=1.27 stamps the prefixed key on Job-owned pods; older clusters use
@@ -346,8 +329,7 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     backward-compatibility posture already used for ``models_pvc_name`` /
     ``active_deadline_seconds``.
 
-    The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
-    KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
+    The internal CA is MOUNTED at runtime, not baked into the image (KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
     named by ``kube_ca_secret_name`` (key ``phaze-ca.crt``), mounted read-only at ``/certs``, and
     the container sets ``PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`` so the one-shot callback verifies
     the control-plane TLS chain (never ``verify=False``). CA rotation = Secret update + re-submit.
@@ -548,7 +530,7 @@ async def get_job(name: str, kube: KubeConfig) -> Any:
 
 
 async def get_local_queue(kube: KubeConfig) -> Any:
-    """GET ``kube``'s configured Kueue LocalQueue by name (Phase 56, KDEPLOY-04; MKUE-03 per-cluster probe).
+    """GET ``kube``'s configured Kueue LocalQueue by name (KDEPLOY-04; MKUE-03 per-cluster probe).
 
     Mirrors :func:`get_job`: construct-by-name + ``refresh()``. The LocalQueue lives in the same
     ``kueue.x-k8s.io`` group as the Workload, so it reuses ``kube_workload_api_version`` via
@@ -566,7 +548,7 @@ async def get_local_queue(kube: KubeConfig) -> Any:
 
 
 async def list_inflight_jobs(kube: KubeConfig) -> list[Any]:
-    """Reserved orphan-Job sweep on ``kube``'s cluster -- built + tested here, intentionally NOT invoked in Phase 54.
+    """Reserved orphan-Job sweep on ``kube``'s cluster -- built + tested here, intentionally NOT invoked by the scheduler.
 
     Reconcile iterates the ``cloud_job`` sidecar per D-02, NOT this label-list; this verb is the
     cross-check / orphan-Job sweep capability reserved for a future tick. Do NOT treat the unused
@@ -583,7 +565,7 @@ async def get_workload_for(job_uid: str, kube: KubeConfig) -> Any | None:
     scanning the namespace Workloads and returning the one whose ``metadata.ownerReferences[*].uid``
     equals ``job_uid``. Returns ``None`` only when BOTH the label lookup and the owner-ref scan
     miss -- so a wrong/changed live label key degrades to the fallback instead of silently leaving
-    admission state unreadable (the exact live label key is verified in Phase 56).
+    admission state unreadable (the exact live label key is verified against the live cluster).
     """
     api = await _api(kube)
     workload_cls = new_class(kind="Workload", version=kube.workload_api_version, namespaced=True)

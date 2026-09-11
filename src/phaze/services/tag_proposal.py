@@ -64,16 +64,13 @@ def parse_filename(filename: str) -> dict[str, str | int | None]:
     stem = PurePosixPath(filename).stem
     result: dict[str, str | int | None] = {}
 
-    # Extract year from (YYYY) pattern
     year_match = _YEAR_RE.search(stem)
     if year_match:
         year_val = int(year_match.group(1))
         if 1000 <= year_val <= 9999:
             result["year"] = year_val
-        # Remove year from stem for cleaner artist/title parsing
         stem = stem[: year_match.start()].strip()
 
-    # Split on " - " for artist/title
     if " - " in stem:
         parts = stem.split(" - ", maxsplit=1)
         artist = parts[0].strip()

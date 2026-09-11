@@ -1,7 +1,7 @@
-"""Dispatch grouping + revoked-agent filter + chunking helpers (Phase 28 D-09 steps 1-3).
+"""Dispatch grouping, revoked-agent filtering, and chunking helpers (D-09 steps 1-3).
 
 The controller-side helpers that :func:`phaze.routers.execution.start_execution`
-(Plan 28-04) calls to convert ``ProposalStatus.APPROVED`` rows into the per-agent,
+calls that convert ``ProposalStatus.APPROVED`` rows into the per-agent,
 per-chunk ``ExecuteApprovedBatchPayload`` payloads that flow through
 ``AgentTaskRouter.enqueue_for_agent``.
 
@@ -104,7 +104,7 @@ async def get_approved_proposals_grouped_by_agent(
             # "original_path should never change. it's the ORIGINAL location of the file.
             # the current_path is where the file is now." current_path is NOT NULL
             # (models/file.py:42) and required at the ingest boundary
-            # (schemas/agent_files.py:34), so there is no NULL case to fall back from.
+            # (``phaze.schemas.agent_files``), so there is no NULL case to fall back from.
             # phaze-xzjrr: the wire field is `source_path`, a ROLE name -- it was called
             # `original_path` while it carried that column, and kept the name for one bead
             # after phaze-xzjrr's parent switched the column, which is the misdescription

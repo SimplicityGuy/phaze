@@ -1,85 +1,15 @@
-"""Detail-page parser for 1001Tracklists (phaze-fq9h.4).
+"""Offline detail-page parser for captured 1001Tracklists HTML (phaze-fq9h.4).
 
-WHY THIS MODULE IS SEPARATE FROM THE RENDERER
-----------------------------------------------
-`tracklist_render.TracklistRenderer` hands back HTML; it deliberately knows only ONE selector
-(`TRACK_CONTAINER_SELECTOR`, imported below rather than re-literaled), which it uses purely as a
-readiness signal ("JS has delivered the listing"), not a parse. Per-track field selectors belong
-here instead, so a parser fix never costs a host request and a captured fixture (
-`tests/identify/fixtures/tracklist_render/`) can be re-parsed offline forever. This module does
-not render, retry, or touch the network.
+The renderer owns readiness and network behavior; this module owns the single verified set of
+per-track selectors so captured fixtures can be re-parsed without host requests. Position comes from
+``data-trno`` with a logged enumeration fallback. Artist, title, and remix text come from the visible
+``.trackValue`` spans; label uses ``.trackLabel`` and timestamp uses visible ``.cue`` text. Mashup
+detection remains unverified against a captured mashup row and defaults false.
 
-RE-DERIVED, NOT REUSED, FROM `TracklistScraper` -- AND NOW THE ONLY SET IN THE TREE
------------------------------------------------------------------------------------
-`services/tracklist_scraper.py` used to carry an older, EXPLICITLY UNVERIFIED guess at these same
-per-track selectors (`_TRACK_ARTIST_SELECTOR = ".tp a"`, `_TRACK_NAME_SELECTOR = ".tN"`,
-`_TRACK_LABEL_SELECTOR = ".tL"`, `_TRACK_TIME_SELECTOR = ".cueTime"`) -- its own docstring
-(phaze-mk6y) said the detail-page block was never checked against a live page, only the search-page
-selectors were. Checked against the two real captures phaze-fq9h.1 recorded (`25fhn7c9-ok.html`, 52
-rows; `19h6nw7t-ok.html`, 12 rows), every one of those four matched ZERO nodes in both files.
-
-phaze-2akf DELETED them, along with the httpx detail-scrape path they served, so this module is now
-the ONLY per-track selector set in the tree. That is the point rather than a side effect: two
-divergent sets cannot both be maintained, and the next site change would break whichever one nobody
-was testing. `tests/identify/services/test_tracklist_parser.py` fails the build if any selector here
-stops matching the captures.
-
-The site's actual per-track markup, as verified against those captures:
-
-* **Position** -- `data-trno` on the `.tlpItem` container itself (0-based; verified unique and
-  contiguous 0..N-1 across both fixtures). ``position = int(data-trno) + 1``. Falls back to a
-  running enumeration index if the attribute is ever missing or non-numeric, logged as a
-  warning since that would mean this verified invariant broke.
-* **Artist / title / remix** -- the schema.org ``<meta itemprop="name">`` block looked like the
-  obvious source (it carries the full "Artist - Title (Remix)" string) until an "ID - ID"
-  (unidentified-track) row turned up with NO ``itemprop`` microdata at all: 10 of the anchor's 52
-  rows are exactly this shape. The microdata block only exists once 1001TL has resolved the
-  track to its own catalogue; the visible ``.trackValue`` span structure is present on every row
-  regardless, so field extraction reads THAT instead. It is a flat run of ``<span>`` children,
-  exactly one of which has the literal stripped text ``"-"`` (the artist/title separator).
-  Everything before that span is artist credit, joined with a single space -- this reproduces
-  multi-artist joiners ("&", "vs.", "pres.", "aka") verbatim, because each joiner is already its
-  own span carrying its own surrounding text. The first non-empty span after the separator is the
-  title. A later span whose text is wrapped in parentheses is the remix/edit annotation (built
-  from the site's own `.remixValue` block) and is extracted separately rather than left attached
-  to the title.
-* **Label** -- ``.trackLabel``, present on 38 of the anchor's 52 rows. The other 14 (and 14 more
-  across the second fixture) legitimately carry no label -- self-released/unlabeled tracks are
-  common in this genre, so absence here is real signal, not selector drift.
-* **Timestamp** -- the VISIBLE text of ``.cue`` (not the old, zero-hit ``.cueTime``, and
-  deliberately not the hidden ``#..._cue_seconds`` input, which is an editor/debugging value that
-  reads literally ``"0"`` on every single row of BOTH captures, including position 1). Reading
-  the rendered text side-steps the "is 0 a real 0:00 or an unset cue" ambiguity entirely: the site
-  itself renders `.cue` blank when it has nothing to show -- on every row of both fixtures,
-  including position 1 -- so an empty `.cue` is "no cue", full stop, regardless of position.
-  Neither fixture contains a populated cue, so the positive path (a real timestamp string) is
-  exercised only by a synthetic unit test; see that test for why a synthetic fixture is honest
-  here (the same shape of caveat phaze-fq9h.1 documented for its own Turnstile-interstitial test).
-* **Mashup** -- UNVERIFIED against real markup. Neither capture contains a mashup row: the
-  ``mashupTrack`` class this parser keys off appears exactly once in each file, as a stylesheet
-  rule, applied to zero elements. Detected via that CSS class (the site's own naming for the
-  concept), defaulting False. Flag this comment for re-verification if a captured mashup row ever
-  turns up.
-
-PARTIAL PARSES ARE FAILURES, NOT SMALL SUCCESSES
---------------------------------------------------
-A page whose container selector matches 52 rows but whose field selectors only extract usable
-data from 3 of them is NOT "3 tracks, successfully". The downstream drain (phaze-fq9h.7) caches
-and propagates whatever this module returns, and phaze-fq9h.3's cache design explicitly
-distinguishes a real negative (`LookupOutcome.NOT_FOUND`) from a transient failure
-(`LookupOutcome.PARSE_FAILED` and friends, see `phaze.enums.tracklist_candidate`). A silently
-truncated tracklist returned as "success" would be indistinguishable from a genuinely short set
-and would poison that distinction forever (it gets cached, `FOUND`, and never retried).
-
-The threshold applied here is all-or-nothing: EVERY container matched by `TRACK_CONTAINER_SELECTOR`
-must yield a row with an artist or a title (or both) -- even an "ID - ID" row clears this bar,
-since "ID" is real, present text, not an extraction failure. If even one container fails to yield
-either field, `parse_tracklist_tracks` raises `TracklistParseError` and returns NOTHING, rather
-than handing back the rows it did manage to extract. This module never tries to guess "how much
-truncation is acceptable" -- given the whole point is that partial truncation is caused by
-selector drift, which affects rows unpredictably, there is no principled way to reason about
-that threshold. Zero containers (a genuinely empty tracklist) is not a partial-parse failure: it
-vacuously satisfies "every container yielded usable data" and returns an empty list.
+Every matched track container must yield an artist or title. A partial parse raises
+``TracklistParseError`` instead of caching a truncated tracklist as a permanent success; zero
+containers remains a valid empty result. Selector derivation and exact fixture measurements are
+preserved in ``docs/design/0014-tracklist-candidate-sets.md``.
 """
 
 from __future__ import annotations

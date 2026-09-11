@@ -144,9 +144,7 @@ class AnalysisDecodeError(RuntimeError):
     """
 
 
-# ---------------------------------------------------------------------------
 # Module-level caches for lazy loading in ProcessPoolExecutor workers
-# ---------------------------------------------------------------------------
 
 # _classifier_cache holds the ONE graph currently being swept across the coarse windows.
 #
@@ -169,9 +167,7 @@ _essentia_logging_suppressed = False
 # copies of a load-bearing constant can silently diverge, so this module has none.
 
 
-# ---------------------------------------------------------------------------
 # Helper functions
-# ---------------------------------------------------------------------------
 
 
 def _suppress_essentia_logging() -> None:
@@ -467,14 +463,12 @@ def _log_job_peak_rss() -> None:
     log.info("analyze job peak RSS (high-water mark): %.3f GiB", peak_gib)
 
 
-# ---------------------------------------------------------------------------
 # Observability signals -- one seam for progress + liveness (phaze-mp0op)
-# ---------------------------------------------------------------------------
 #
 # phaze-w55w1's heartbeat feature added exactly ONE signal (liveness) and had to thread an
 # optional callback param through six functions, each with its own hand-written
 # ``if cb is not None:`` guard, to do it -- on top of the ``progress_cb`` signal already
-# paying the same tax on a narrower path since Phase 57.1. AnalysisSignals collapses both
+# paying the same tax on a narrower path on the progress path. AnalysisSignals collapses both
 # into one object with two TOTAL methods: an unset channel is a no-op call, never a ``None``
 # a caller has to test, so the guards disappear from every call site instead of multiplying
 # with every new signal.
@@ -486,7 +480,7 @@ def _log_job_peak_rss() -> None:
 #
 # phaze-bp9kz WIDENED ``.progress()`` from ``(analyzed, total)`` (fine tier only) to
 # ``(fine_analyzed, fine_total, coarse_analyzed, coarse_total)``. The prior fine-only shape
-# (WORK-04, Phase 57.1) was a deliberate scope cut, not an oversight -- documented in
+# (WORK-04) was a deliberate scope cut, not an oversight -- documented in
 # ``analysis_child.py``'s protocol docstring and in ``AnalysisProgressPayload`` -- and this
 # bead's whole acceptance is to lift it: the coarse tier is 50.7-94.69% of wall clock
 # (duration-dependent, phaze-bg115) and was invisible on this channel, so the in-flight bar
@@ -523,11 +517,9 @@ def _noop() -> None:
     """Total default for ``_decode_windows``'s ``on_beat`` / ``_run_model_sets_over_windows``'s ``on_model_done``."""
 
 
-# ---------------------------------------------------------------------------
 # Main analysis function (synchronous, for ProcessPoolExecutor)
-# ---------------------------------------------------------------------------
 
-# Sample rates for the two analysis passes (locked by Plan 31-01 spike).
+# Sample rates for the two analysis passes (fixed by the windowed-analysis decision).
 _FINE_SAMPLE_RATE = 44100
 _COARSE_SAMPLE_RATE = 16000
 
@@ -537,167 +529,21 @@ _DEFAULT_FINE_WINDOW_SEC = 30
 _DEFAULT_COARSE_WINDOW_SEC = 180
 _DEFAULT_FINE_MIN_SEC = 15
 
-# ---------------------------------------------------------------------------
-# D-07 DECISION RECORD -- exhaustive analysis, bounded by CHUNK not by CAP (phaze-w55w1)
-# ---------------------------------------------------------------------------
-#
-# WHAT CHANGED. Phase 43 bounded per-file cost with a window CAP (`analysis_fine_cap` = 60 /
-# `analysis_coarse_cap` = 30) and an even stride (`_stride_to_cap`) across the whole file, so a
-# file past 30 min (fine) / 90 min (coarse) was SAMPLED, not analyzed. The operator reviewed that
-# trade on 2026-08-11 and removed it (ADR-0007 section 7): every file now gets EVERY natural
-# window in both tiers, and `sampled` / `_stride_to_cap` / the per-job cap overrides are gone.
-#
-# WHY THE CAPS COULD NOT SIMPLY BE DELETED. Both passes held ALL of a tier's kept windows' PCM
-# concurrently -- deliberately, because the coarse inference is MODEL-major (phaze-15sw: one TF
-# graph built, swept across every buffer, released before the next; the alternative held ~4 GiB of
-# co-resident graphs). The cap was what made "all kept windows" a CONSTANT. Delete the cap and
-# that retention becomes O(duration): ADR-0007 section 3 extrapolates ~7.3 GiB of fine PCM and
-# ~2.8 GiB of coarse PCM on a 12-hour set, against a measured whole-process floor of 1.7383 GiB
-# and the ADR-0005 pod memory limit sized from it. That is a cgroup OOMKill, not an analysis.
-#
-# THE REPLACEMENT. The tiers now process their windows in bounded CHUNKS: decode a chunk, analyze
-# it, release it, move on. Peak PCM residency is a function of the CHUNK SIZE and never of the
-# file's duration -- the same invariant the caps provided ("retention stays bounded by the CAP and
-# never by duration"), re-derived from a knob that no longer discards audio.
-#
-# ^ TRUE OF THE PCM, AND IT WAS NOT TRUE OF THE PROCESS UNTIL D-09. As shipped, this paragraph
-# was read as a statement about peak RSS and phaze-b2qs9 measured that it was not one: the chunk
-# GATE this design needs leaked its whole streaming network per chunk, so peak RSS was linear in
-# duration and breached the 4Gi pod limit at four hours. The live-PCM arithmetic below is correct
-# and always was; what it never covered is the network carrying the PCM. See D-09.
-#
-# THE CHUNK SIZES ARE THE OLD CAPS, ON PURPOSE. 60 fine / 30 coarse reproduce EXACTLY the
-# per-tier residency the pre-removal code was measured at, so the whole ADR-0005 / phaze-esut /
-# phaze-7i0k / phaze-0582 memory corpus stays valid unchanged rather than needing re-derivation:
-#
-#   FINE   60 windows x 30 s x 44 100 Hz x 4 B (float32)  ~= 317 MB peak PCM per chunk
-#   COARSE 30 windows x 180 s x 16 000 Hz x 4 B (float32) ~= 345 MB peak PCM per chunk
-#
-# The two never stack: the fine tier's chunk is released and `malloc_trim`ed before the coarse
-# tier runs, exactly as before. The model-major invariant is PRESERVED and is per-chunk, not
-# per-file: within a chunk exactly one `TensorflowPredict*` graph is ever resident. The price the
-# chunking DOES pay is that each of the 34 graphs is now constructed once per COARSE CHUNK
-# instead of once per file (34 x ceil(coarse_windows / 30) constructions), and each chunk needs
-# its own decode pass because `MonoLoader` cannot seek -- see `_decode_windows_streaming`'s
-# `stop_at_sec` gate for how much of that second cost is bought back.
-#
-# MEASURED SINCE. This was written as "NOT MEASURED HERE ... established by construction", and
-# that gap is exactly where the defect lived: phaze-b2qs9 did the owed measurement on vox and
-# found peak RSS linear in duration, and phaze-u1n7j then found the retention and closed it
-# (D-09). The per-window arithmetic above is still arithmetic, not a peak-RSS measurement -- but
-# the SHAPE it claims is now enforced by a test that runs the real streaming network rather than
-# argued from construction (`test_repeated_gated_chunk_decodes_do_not_grow_peak_rss`).
+# D-07: analysis is exhaustive and chunk-bounded, never capped (phaze-w55w1).
+# Every natural fine and coarse window is analyzed. Chunking bounds live PCM independently of
+# file duration while preserving model-major inference: only one TensorflowPredict graph is
+# resident within a chunk. The chunk sizes retain the measured 60-window fine and 30-window
+# coarse residency envelope. See ``docs/design/0007-windowed-analysis.md``.
 _FINE_CHUNK_WINDOWS = 60
 _COARSE_CHUNK_WINDOWS = 30
 
 
-# ---------------------------------------------------------------------------
-# D-09 DECISION RECORD -- a streaming network must be DISCONNECTED, not just dropped (phaze-u1n7j)
-# ---------------------------------------------------------------------------
-#
-# THE BUG D-07 SHIPPED. D-07 below claims the chunked passes make peak memory "a function of
-# the CHUNK SIZE and never of the total duration". phaze-b2qs9 measured that on real hardware
-# and real audio and it is FALSE of the process: whole-process peak RSS is LINEAR in duration,
-# `0.7634 + 0.3108 x n_fine_chunks` GiB (R^2 0.99959), reaching 4.1854 GiB at four hours and
-# 10.2768 GiB at twelve -- against a deployed `memory_limit` of 4Gi. Every file past ~3 hours
-# was an OOMKilled pod. D-07's live-PCM arithmetic is correct and simply does not describe the
-# process, because it accounts for the audio and not for the NETWORK that carries it.
-#
-# THE MECHANISM. `essentia.streaming` connections are C++-side. `>>` calls into
-# `_essentia.connect` / `_essentia.poolConnect`, which allocate a fixed-size ring buffer per
-# connected source (essentia's `BufferUsage::forLargeAudioStream`) and, for a Pool sink, an
-# entire `PoolStorage` algorithm that Python never holds a reference to at all -- `poolConnect`
-# returns it and the caller drops it on the floor. Dropping the Python proxies (`branches
-# .clear()`, `del loader, pool, gate`) frees the PROXIES and leaves all of that behind, because
-# essentia's Python bindings expose no network object and therefore no destructor that walks it.
-# `malloc_trim` cannot help: the pages are still live-referenced, not merely un-returned to the
-# OS. `gc.collect()` alone does not help either -- measured, it reclaims 210-231 objects per call
-# and leaves the curve unchanged -- but it turns out to be REQUIRED as the second half of the
-# fix, for the separate reason below.
-#
-# MEASURED, not inferred (macOS/arm64, essentia-tensorflow 2.1b6.dev1438, one process, RSS read
-# from `ps` / `ru_maxrss` after `gc.collect()`, repeated calls with the SAME file and window set,
-# so any growth is retention and not the audio):
-#
-#   leak per `_decode_windows_streaming` call = ~5 MiB x n_windows. It is per BRANCH, not per
-#   sample: 10 / 20 / 40 windows leak 50.2 / 100.4 / 200.9 MB, while 20 windows of 15 s, 30 s
-#   and 60 s all leak the same 100.4 MB. Per-branch retention held at 5.03-5.34 MiB at 44.1 kHz
-#   and 4.22-5.16 MiB at 16 kHz across every shape tried.
-#
-# AND IT IS THE CHUNK GATE THAT DOES IT -- the single most useful fact here, because it is what
-# makes the bug phaze-w55w1's and not phaze-5lop's. Holding file, window set and span fixed and
-# varying ONLY `stop_at_sec`: gated leaks 5.14 MiB/branch, ungated leaks 0.02. The gate is the
-# `Trimmer` hung STRAIGHT off the loader with no `Scale` interposer (see
-# `_decode_windows_streaming`'s docstring for why it must be), and a network that is merely
-# BUILT with one and never run already leaks the full amount, so the retention is created at
-# CONNECT time and not by the decode. A bare `MonoLoader`, a loader plus gate with no fan-out,
-# and unconnected `Trimmer`/`Scale` algorithms are all FLAT across rounds. That also explains
-# phaze-b2qs9 §2b's control cleanly: the pre-w55w1 capped code has no gate, and its peak moved
-# +1.3% across a 4x duration span.
-#
-# Two corollaries worth keeping, because both mislead:
-#   - The per-branch constant predicts BOTH of phaze-b2qs9's slopes from one number: 60 fine
-#     branches x ~5 MiB = ~0.29 GiB per fine chunk (measured +0.3108) and 30 coarse branches
-#     x ~5 MiB = ~0.15 GiB per coarse chunk (measured +0.13 +/- 0.02).
-#   - The near-match to the ~317 MB of live fine PCM is a COINCIDENCE. The leak does not scale
-#     with window length at all, and reading it as "the PCM is retained" sends the next
-#     investigation at the buffers instead of at the edges.
-#
-# THE FIX, AND IT HAS TWO HALVES -- EITHER ALONE LEAVES THE CURVE LINEAR.
-#
-#   1. DISCONNECT every edge before dropping the algorithms. `_StreamConnector.disconnect` wraps
-#      `_essentia.disconnect` / `poolDisconnect`, the only exposed calls that release the C++
-#      side, so `_disconnect_network` walks each algorithm's `connections` map and severs it.
-#   2. `gc.collect()` after the frame is gone. Every streaming algorithm is born into a
-#      reference CYCLE: `StreamingAlgo.__init__` builds a `_StreamConnector(self, self, name)`
-#      and stores it as a KEY of `self.connections`, so the algorithm reaches itself through its
-#      own connection map. Refcounting therefore never destroys the proxy, and the C++
-#      algorithm -- which owns buffers of its own -- dies only when the proxy does. The collect
-#      lives in `_decode_windows`, not in the `finally` below, because inside that `finally` the
-#      frame's own locals (`source` still holds the gate's connector) keep the network reachable
-#      and the collect would be a no-op.
-#
-# Measured on the same probe, 20 windows x 8 calls of the SHIPPED function: before, RSS
-# 650 -> 1181 MB still climbing +106 MB/call; after, high-water reaches 654.7 MB on call 1 and
-# does not move again through call 8. Decoded output is byte-identical (asserted in
-# `tests/analyze/services/pipeline/test_analysis_streaming_decode.py`).
-#
-# WHY IT RUNS IN A `finally` AND SWALLOWS. A half-built network -- the build raised partway
-# through the branch loop -- still holds edges, and that is exactly the path where leaking is
-# least affordable because `_decode_windows` is about to RETRY the same chunk ungated. The
-# teardown therefore runs on every exit and never raises: a disconnect that fails must not
-# replace the caller's exception with its own, so it is logged and the walk continues.
-#
-# VERIFIED ON VOX, 2026-08-13 -- the numbers above are macOS, and this paragraph is the reason
-# they are not the whole story. `docs/spikes/phaze-u1n7j-vox-fix-verification.md` has the full
-# record; the load-bearing results, all on the deployed image against the SAME real corpus files
-# phaze-b2qs9 measured, on the same node, peak from `wait4()` `ru_maxrss`:
-#
-#   band          fine chunks   before (GiB)   after (GiB)   wall delta
-#   1:00                    2        2.1107        1.4985       -0.22%
-#   4:00                    8        4.1854        1.6500       -0.52%
-#   12:04                  25       10.2768        1.6725       -0.83%
-#
-# Three things in that table are worth more than the headline. **The 12-hour file needed 2.57x
-# the deployed 4Gi limit and now sits at 41.8% of it.** **Wall clock did not move** -- this fix
-# recreates nothing per chunk, it severs edges the teardown already meant to release, and the
-# isolated chunk loop measured 60.0-60.7 s per gated chunk on both arms. And the same file
-# analyzed before and after returns a **byte-identical** 128 118-byte result payload, every
-# window and every feature, so the `gc.collect()` through the reference cycle perturbs nothing.
-#
-# READ THE RESIDUE CORRECTLY, because the obvious reading is wrong. 1:00 -> 12:04 is +11.6%, but
-# that is not a slope: `_COARSE_CHUNK_WINDOWS = 30` and the 1-hour file is the only one whose
-# coarse chunk is PART FULL (20 windows), so it sits one bounded step below every longer file.
-# Between the two bands that both have full coarse chunks the spread is **+1.4% for 3.1x the
-# fine chunks** -- a residual 0.0013 GiB/chunk against the defect's 0.3108, i.e. 99.6% of the
-# slope gone, and what is left is capped by the chunk size rather than by the file's length.
-#
-# AND IT IS NOT GLIBC. Arena fragmentation was the standing candidate a macOS-only diagnosis
-# could not rule out. Under Debian 13 / glibc 2.41 the shipped chunk loop retains 5.42 MiB per
-# window branch before this fix (macOS: 5.14) and 0.00 after, and `scripts/
-# essentia_gated_network_leak.py` -- which imports NO phaze at all -- shows the same 5.28 MiB
-# per branch and goes flat under `--teardown disconnect`. Two allocators, one constant. Its
-# `--no-gate` arm is flat on the broken teardown, which is what pins the retention to the GATE.
+# D-09: every streaming-network edge is explicitly disconnected before its Python proxy is
+# dropped (phaze-u1n7j). Merely clearing references retains ~5 MiB per branch and makes process
+# RSS grow with file duration; teardown runs in ``finally`` and tolerates partial construction.
+# The measured cross-platform evidence and exact before/after values are preserved in
+# ``docs/design/0007-windowed-analysis.md`` and
+# ``docs/spikes/phaze-u1n7j-vox-fix-verification.md``.
 def _disconnect_network(algos: Sequence[Any]) -> None:
     """Sever every connection held by ``algos`` so essentia releases the C++ side (D-09).
 
@@ -1174,7 +1020,7 @@ def _analyze_fine_windows(
     its own streaming decode (``MonoLoader`` cannot seek); the non-final chunks pass a
     ``stop_at_sec`` gate so their decode ends at the chunk boundary instead of at EOF.
 
-    Phase 57.1 (PROG-01) / phaze-bp9kz: ``signals.progress`` fires a START signal
+    PROG-01 / phaze-bp9kz: ``signals.progress`` fires a START signal
     ``signals.progress(0, len(natural), 0, coarse_total)`` BEFORE the loop and then
     ``signals.progress(len(fine_windows), len(natural), 0, coarse_total)`` after every
     successful append. ``coarse_total`` is the coarse tier's OWN natural window count,
@@ -1486,7 +1332,7 @@ def analyze_file(
     The main synchronous function called from ``run_in_process_pool``. Instead of
     decoding the whole file into one buffer (the latent OOM) and feeding long
     audio to ``RhythmExtractor2013`` (the ``OnsetDetectionGlobal`` overflow), it
-    analyzes the file as a set of short windows (Plan 31-01 locked strategy) so no
+    analyzes the file as a set of short windows (windowed-analysis strategy) so no
     essentia algorithm ever sees more than one window. Since phaze-5lop those windows
     come off ONE streaming decode pass per tier (:func:`_decode_windows`) instead of one
     non-seeking ``EasyLoader`` call per window: same windows, byte-identical PCM, but
@@ -1539,16 +1385,16 @@ def analyze_file(
     is none to express — they are the progress denominators the in-flight bar and the
     completion PUT share.
 
-    Phase 57.1 (PROG-01): an optional sync ``progress_cb(fine_analyzed, fine_total,
+    PROG-01: an optional sync ``progress_cb(fine_analyzed, fine_total,
     coarse_analyzed, coarse_total)`` is threaded into BOTH tiers' per-window loops
     (``_analyze_fine_windows`` / ``_analyze_coarse_windows``) — a START signal per tier then a
     per-window bump. The callback emits only an ``(int, int, int, int)`` count;
-    ``analyze_file`` itself does NO I/O and imports no HTTP client (the Phase 101 exec'd-child
+    ``analyze_file`` itself does NO I/O and imports no HTTP client (the exec'd-child
     JSON-protocol boundary, ``phaze.analysis_child`` / ``services.analysis_exec``, plus the
     ``tests/shared/core/test_task_split.py`` essentia import boundary, stay intact). Transport
     + throttle are the LANE's job.
 
-    **phaze-bp9kz widened this from fine-only.** WORK-04 (Phase 57.1) deliberately scoped
+    **phaze-bp9kz widened this from fine-only.** WORK-04 deliberately scoped
     ``progress_cb`` to the fine tier alone; that scope cut is what left the coarse tier — 50.7
     to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b / phaze-bg115 — invisible on
     this channel, so the in-flight bar and the pod log both read a false 100% for the rest of

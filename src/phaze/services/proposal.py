@@ -60,9 +60,7 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _ASCII_ART_RE = re.compile(r"^[\s\-=_*#~|/\\]{10,}$")
 
 
-# ---------------------------------------------------------------------------
 # Pydantic response models for structured LLM output
-# ---------------------------------------------------------------------------
 
 
 class FileProposalResponse(BaseModel):
@@ -133,9 +131,7 @@ class MalformedCompletionError(ValueError):
         self.mode = mode
 
 
-# ---------------------------------------------------------------------------
 # Prompt template loading
-# ---------------------------------------------------------------------------
 
 
 def load_prompt_template(name: str = "naming") -> str:
@@ -157,9 +153,7 @@ def load_prompt_template(name: str = "naming") -> str:
     return path.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # Companion content cleaning
-# ---------------------------------------------------------------------------
 
 
 def _sanitize_json(value: Any) -> Any:
@@ -200,9 +194,7 @@ def clean_companion_content(text: str, max_chars: int = MAX_COMPANION_CHARS) -> 
     return result
 
 
-# ---------------------------------------------------------------------------
 # File context assembly
-# ---------------------------------------------------------------------------
 
 
 def build_file_context(
@@ -263,9 +255,7 @@ def build_file_context(
     }
 
 
-# ---------------------------------------------------------------------------
 # Date-convention prompt guidance (phaze-5fta.4)
-# ---------------------------------------------------------------------------
 
 # The placeholder line in prompts/naming.md, INCLUDING its trailing newline. Substituting the empty
 # string therefore removes the whole line, leaving the prompt byte-identical to the pre-phaze-5fta.4
@@ -294,12 +284,7 @@ def _date_convention_guidance(files_context: list[dict[str, Any]]) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
 # ProposalService — LLM calling and confidence clamping
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Completion-parsing defences (phaze-02v1s half 2)
 #
 # Scope here is an OPERATOR decision taken 2026-08-22 on bead phaze-02v1s, and the two halves of
@@ -328,7 +313,6 @@ def _date_convention_guidance(files_context: list[dict[str, Any]]) -> str:
 # The measured behaviour these defend is in
 # tests/review/services/test_proposal_provider_wire_shapes.py, which drives the real litellm from
 # provider wire bytes. Read its docstring before changing anything here.
-# ---------------------------------------------------------------------------
 
 # A fenced code block, with or without a language tag. DOTALL so the payload may span lines;
 # non-greedy so the FIRST complete block wins rather than everything up to the last fence.
@@ -626,9 +610,7 @@ class ProposalService:
         return max(0.0, min(1.0, value))
 
 
-# ---------------------------------------------------------------------------
 # Rate limiting via Redis counter
-# ---------------------------------------------------------------------------
 
 
 # Rolling-window length (seconds) for the LLM requests-per-minute counter.
@@ -686,11 +668,9 @@ async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
         await asyncio.sleep(2.0)
 
 
-# ---------------------------------------------------------------------------
 # Proposal storage
-# ---------------------------------------------------------------------------
 #
-# Pipeline DB-write idempotency audit (Phase 35, D-04 / RESEARCH Q4):
+# Pipeline DB-write idempotency contract (D-04):
 #   * proposals      -> store_proposals (below) is now the partial-index upsert.
 #   * execution_log  -> already idempotent: routers/agent_execution.py:77 issues
 #                       `pg_insert(ExecutionLog).on_conflict_do_nothing(["id"])`
@@ -857,9 +837,7 @@ async def store_proposals(
     return count
 
 
-# ---------------------------------------------------------------------------
 # Companion content loading
-# ---------------------------------------------------------------------------
 
 
 async def load_companion_targets(

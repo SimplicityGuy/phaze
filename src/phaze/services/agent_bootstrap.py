@@ -1,4 +1,4 @@
-"""Dev-agent seeding for the api lifespan (Phase 27 UAT Gap 3).
+"""Dev-agent seeding for the API lifespan.
 
 Migration 012 (``012_add_agents_table_and_backfill.py``) seeds a
 ``legacy-application-server`` agent **only** when migrating from a populated v3.0
@@ -12,7 +12,7 @@ start. The seeded token is either:
 - The value of ``PHAZE_DEV_AGENT_TOKEN`` (if set) so the operator can bake the
   same token into the watcher's ``.env`` and skip the copy-paste step, OR
 - A freshly generated ``phaze_agent_<32 urlsafe-base64>`` value (matching the
-  Phase 25 D-01 wire format). The cleartext token is logged at INFO so the
+  D-01 wire format). The cleartext token is logged at INFO so the
   operator can scrape it from ``docker compose logs api``. This is intentional
   for the dev-seed path -- production deployments leave ``dev_seed_agent=false``
   and never trigger this code.
@@ -157,7 +157,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     else:
         raw_token = f"{settings.agent_token_prefix}{secrets.token_urlsafe(32)}"
 
-    # Phase 27 UAT Gap 10: prefer PHAZE_AGENT_SCAN_ROOTS (the canonical
+    # Prefer PHAZE_AGENT_SCAN_ROOTS (the canonical
     # agent-side scan roots env var, set per AgentSettings.scan_roots) over
     # ControlSettings.scan_path. In docker-compose mode SCAN_PATH is the HOST
     # path used by docker-compose's bind mount source (e.g.,

@@ -112,6 +112,21 @@ The badge and recovery share `is_domain_completed` by design; the parity is docu
 DEFINITIONAL. Every change here is inside that shared predicate, so both surfaces move together and
 the contract is preserved by construction rather than by a second assertion.
 
+## Scheduling-ledger reporting split (`phaze-2u8v.2`)
+
+A 2026-07-28 measurement of the `process_file`/analyze lane found 4,963 scheduling-ledger rows:
+2,583 also had a live queued/active `saq_jobs` row, 58 had no broker row but did have a busy
+`cloud_job`, 176 were domain-complete with a leaked ledger row, and 2,146 were running nowhere
+and not complete. Of those 2,146 orphaned rows, 2,145 were enqueued on 2026-06-21 during the
+2026-06-18 remediation window.
+
+That measurement established the reporting distinction now implemented by
+`src/phaze/services/stage_status.py`: a ledger row means scheduled and unresolved, not necessarily
+running. `running_ledger_clause` requires live broker or cloud corroboration;
+`orphaned_clause` means scheduled, running nowhere, and not domain-complete; and
+`resolved_ledger_clause` means scheduled, running nowhere, and domain-complete. These reporting
+predicates never weaken the ledger-only `inflight_clause` used by eligibility and recovery.
+
 ## The 328 ambiguous rows — classified, and left alone
 
 The bead identified 328 queued analyze jobs where the ledger entry is **newer than or equal to** the

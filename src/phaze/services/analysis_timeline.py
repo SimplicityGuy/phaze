@@ -398,9 +398,7 @@ def ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float, *, c
     return result
 
 
-# ---------------------------------------------------------------------------
 # Set-panel lanes (phaze-x1qr3.5): energy area, mood river, tracklist ticks, coverage chip
-# ---------------------------------------------------------------------------
 
 # A coarse step is ~180 s, so a second of slop between one window's end and the next's start
 # is float noise, not missing coverage. IMPORTED from ``set_projection.GAP_TOLERANCE_SEC``, not

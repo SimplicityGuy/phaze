@@ -1,11 +1,10 @@
 """``ComputeAgentBackend`` -- the rsync/push-over-Tailscale lane and its stranded-SUBMITTED reaper.
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df) -- no body
-was rewritten. :meth:`ComputeAgentBackend._reap_stranded_submitted` deliberately keeps its inline
+:meth:`ComputeAgentBackend._reap_stranded_submitted` deliberately keeps its inline
 per-row loop: its twin :meth:`phaze.services.backends.kueue.KueueBackend._reap_stranded_staging` had
 to shed one level (its post-commit S3 cleanup moved to a helper) to reach the nesting budget, but
 this method has no such tail and already sits inside it. Structural symmetry with the twin is NOT a
-reason to churn a reaper with a four-bug-fix history.
+reason to churn a reaper with a four-bug-fix history (phaze-dr9df).
 """
 
 from __future__ import annotations
@@ -55,15 +54,15 @@ class ComputeAgentBackend(_BaseBackend):
     :meth:`_reap_stranded_submitted`, the compute twin of ``KueueBackend._reap_stranded_staging``.
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
 
-    Phase 72 (MCOMP-01/D-02): ``is_available`` resolves THIS backend's bound ``agent_ref``
+    MCOMP-01/D-02: ``is_available`` resolves THIS backend's bound ``agent_ref``
     (``self._agent_ref()``) against ``Agent.id`` per-call -- the record-don't-rederive twin of
     ``KueueBackend._kube()`` -- replacing the retired ``select_active_agent(kind="compute")``
     single-active-compute pick. Each compute entry gates on ITS bound agent, not "the single active
-    compute agent" (Phase 73 builds dispatch/push/reconcile on this per-agent binding).
+    compute agent"; dispatch, push, and reconcile all use this per-agent binding.
     """
 
     def _agent_ref(self) -> str:
-        """Return THIS backend's bound ``agent_ref`` (the Phase-67 compute entry's dispatch node, D-02).
+        """Return THIS backend's bound ``agent_ref`` (the compute-backend entry's dispatch node, D-02).
 
         ``self.config`` is the ``ComputeBackend`` submodel bound in ``resolve_backends``; its
         ``agent_ref`` is the ``Agent.id`` this backend dispatches to. Fail-loud (``ValueError`` naming
@@ -138,7 +137,7 @@ class ComputeAgentBackend(_BaseBackend):
         # Gate on the fileserver agent (the push initiator) BEFORE mutating: absent -> clean hold, nothing written.
         fileserver_agent = await select_active_agent(session, kind="fileserver")
 
-        # D-03: upsert the cloud_job row in the caller's session. Phase 90 (D-09): the paired PUSHING
+        # D-03: upsert the cloud_job row in the caller's session. D-09: the paired PUSHING
         # files.state dual-write was removed; the cloud_job (status=SUBMITTED) is authority.
         stmt = pg_insert(CloudJob).values(
             # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).

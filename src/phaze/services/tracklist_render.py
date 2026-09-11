@@ -681,7 +681,6 @@ class TracklistRenderer:
         return float(base * (2 ** (attempt - 2))) if base > 0 else 0.0
 
 
-# ---------------------------------------------------------------------------------------------
 # Module-level render primitives.
 #
 # These five were `TracklistRenderer` staticmethods until phaze-bk9el.5: a repowise low_cohesion
@@ -693,7 +692,6 @@ class TracklistRenderer:
 # `TracklistRenderer._paced` / `._wait` are exercised directly by
 # tests/identify/services/test_tracklist_render.py; they moved with everything else, so those
 # call sites now read `_paced(...)` / `_wait(...)` off this module instead.
-# ---------------------------------------------------------------------------------------------
 
 
 def _classify(html: str, *, container_found: bool) -> RenderOutcome:

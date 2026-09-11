@@ -1,8 +1,7 @@
 """Cross-cutting pipeline read primitives -- the corpus scope, the cloud double-dispatch
 guard, and the degrade-safe COUNT wrapper every other pipeline read module composes against.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). These three are the
-only names shared by more than a couple of the domain modules; keeping them here is what lets each
+These three are the only names shared by more than a couple of domain modules; keeping them here lets each
 domain module stay narrow instead of re-deriving them.
 """
 

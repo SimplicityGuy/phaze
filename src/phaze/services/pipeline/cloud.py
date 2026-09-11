@@ -1,7 +1,6 @@
 """The cloud lane read model -- awaiting/inadmissible/admission-phase cards, the staged vs
 analyzing window split, the drain's candidate SELECT, and the long-failure backfill set.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr).
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ logger = structlog.get_logger(__name__)
 
 
 async def get_awaiting_cloud_count(session: AsyncSession) -> int:
-    """Return COUNT of genuinely-parked awaiting cloud_job rows, degrading to 0 on any DB error (Phase 83, D-15).
+    """Return the count of genuinely parked cloud jobs, degrading to 0 on any DB error (D-15).
 
     Drives the dashboard "Awaiting cloud" card. Re-anchored off the retired
     ``FileRecord.state == AWAITING_CLOUD`` display read onto the SAME clause the drain
@@ -68,7 +67,7 @@ async def get_inadmissible_count(session: AsyncSession) -> int:
 
     Drives the dashboard Inadmissible operator alert (D-06, KSUBMIT-04): a non-zero count means
     one or more Kueue Workloads are Inadmissible (a misconfigured LocalQueue/ClusterQueue), which
-    the reconcile cron (Plan 06) stamps onto the row. A healthy quota wait (``Pending``) never
+    the reconcile cron stamps onto the row. A healthy quota wait (``Pending``) never
     sets the flag, so this count stays 0 and the alert stays silent. Poll-safe via
     :func:`_safe_count` (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node
     to 0 and rolls back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll
@@ -180,7 +179,7 @@ def _cloud_window_clauses() -> tuple[ColumnElement[bool], ColumnElement[bool]]:
     A NULL / deregistered ``backend_id`` degrades to the STAGED side (never invisible, never claimed by
     both cards): both dispatch paths stamp ``backend_id`` in the SAME transaction as the write that
     would otherwise make a row's kind ambiguous (``ComputeAgentBackend.dispatch`` /
-    ``KueueBackend.dispatch`` in ``services/backends.py``), so an unattributed in-flight SUBMITTED row
+    ``KueueBackend.dispatch`` in ``phaze.services.backends.kueue``), so an unattributed in-flight SUBMITTED row
     is itself an anomaly, not the expected shape -- this is the SAME "unattributed cloud" fallback
     posture :func:`_project_analyze_rows` takes for the per-file lane badge.
 
@@ -219,7 +218,7 @@ async def get_pushing_count(session: AsyncSession) -> int:
     :func:`_safe_count` (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0
     and rolls back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is
     the OBSERVATIONAL per-card count -- the load-bearing backpressure is per-backend
-    ``Backend.in_flight_count`` (Phase 69, D-05), which the drain reads once per tick and which is
+    ``Backend.in_flight_count`` (D-05), which the drain reads once per tick and which is
     intentionally NOT degrade-safe so the drain never over-dispatches on a transient error.
     """
     staged, _analyzing = _cloud_window_clauses()
@@ -234,15 +233,14 @@ async def get_pushed_count(session: AsyncSession) -> int:
     implements (D-10, phaze-zyoag): SUBMITTED-on-kueue + RUNNING, NOT "landed" (a kueue row can sit
     here for hours waiting on cluster quota). Poll-safe via :func:`_safe_count`, exactly like
     :func:`get_pushing_count`. Observational only; the per-backend cap itself is enforced by
-    ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
+    ``Backend.in_flight_count`` (D-05) from committed cloud_job rows.
     """
     _staged, analyzing = _cloud_window_clauses()
     return await _safe_count(session, select(func.count(CloudJob.id)).where(analyzing), node="analyzing_cloud")
 
 
-# --- Phase 50 bounded cloud-window helpers (D-03/D-08, CLOUDPIPE-01) ---------------------
-#
-# Phase 69 (D-05, SCHED-02) retired the global FileState-window count in favor of per-backend
+# Bounded cloud-window helpers (D-03/D-08, CLOUDPIPE-01)
+# D-05/SCHED-02 uses per-backend counts instead of a global FileState window.
 # ``Backend.in_flight_count`` (a ``cloud_job``-derived COUNT scoped by ``backend_id``). The
 # ``stage_cloud_window`` drain now snapshots each backend's free capacity once per tick and SELECTs
 # candidates via ``get_cloud_staging_candidates`` below -- still ``FOR UPDATE SKIP LOCKED`` in ONE
@@ -255,7 +253,7 @@ async def get_cloud_staging_candidates(
     *,
     after: tuple[datetime, uuid.UUID] | None = None,
 ) -> list[tuple[FileRecord, datetime]]:
-    """Return up to ``limit`` oldest genuinely-parked cloud candidates + each row's staleness clock (Phase 83, D-05/D-06/D-07).
+    """Return up to ``limit`` oldest genuinely parked cloud candidates and their staleness clocks (D-05/D-06/D-07).
 
     Cut over from the retired ``FileRecord.state == AWAITING_CLOUD`` read (SC#1) to the ``cloud_job``
     sidecar + the derived ``in_flight(analyze)`` layer. A candidate is a file that:
@@ -269,7 +267,7 @@ async def get_cloud_staging_candidates(
       double-dispatch SC#3 forbids). AND
     * has NOT domain-completed its analyze (``~domain_completed_clause(ANALYZE)`` -- D-05 conjunct 3):
       ``FAILURE_IS_TERMINAL[analyze]`` is True, so a terminally-failed local analyze is domain-complete
-      and never re-driven (the Phase-81 twin the ROADMAP dep-note names).
+      and never re-driven (the corresponding local-retry contract).
 
     Composes the LOCKED ``inflight_clause`` / ``domain_completed_clause`` builders VERBATIM -- re-spelling
     either breaks the DERIV-04 equivalence test (``tests/integration/test_stage_status_equivalence.py``).
@@ -278,7 +276,7 @@ async def get_cloud_staging_candidates(
     pre-cutover query; a file discovered months ago but held today still sorts to the front). The per-row
     ``cloud_job.updated_at`` is surfaced alongside each candidate as the lane-entry staleness clock the
     caller passes into ``select_backend`` (D-07): it lives on the awaiting row rather than
-    ``file.updated_at`` so Phase 90's removal of the dual-written ``file.state`` cannot silently break the
+    ``file.updated_at`` so removal of the dual-written ``file.state`` cannot silently break the
     ``cloud_route_max_wait_sec`` spill clock.
 
     D-06: the lock moves to the candidacy table -- ``with_for_update(of=CloudJob, skip_locked=True)`` over
@@ -331,7 +329,7 @@ def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
     excluded; the ``duration >= threshold_sec`` filter then drops short failures. ``threshold_sec``
     is a bound int parameter (T-49-02) -- never interpolated SQL.
 
-    Phase 55 (L4 / D-03 / KROUTE-05): an ``EXISTS`` predicate against ``scheduling_ledger`` keyed
+    L4/D-03/KROUTE-05: an ``EXISTS`` predicate against ``scheduling_ledger`` keyed
     ``'process_file:' || file.id`` scopes candidates to **previously-scheduled work only**. A SAQ
     timeout abandons a long ``process_file`` job WITHOUT firing ``report_analysis_failed`` (which
     clears the row), so the orphaned ledger row persists into ``ANALYSIS_FAILED`` -- exactly the
@@ -350,12 +348,12 @@ def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
         select(FileRecord, FileMetadata.duration)
         .join(FileMetadata, FileMetadata.file_id == FileRecord.id)
         .where(
-            # Phase 90 (PR-A, D-09): DERIVED terminal analyze-failure via ``failed_clause(ANALYZE)`` (an
+            # PR-A/D-09: derived terminal analyze failure via ``failed_clause(ANALYZE)`` (an
             # analysis row with ``failed_at`` set), no longer ``files.state == ANALYSIS_FAILED``.
             failed_clause(Stage.ANALYZE),
             FileMetadata.duration >= threshold_sec,
             exists(select(SchedulingLedger.key).where(SchedulingLedger.key == "process_file:" + cast(FileRecord.id, String))),
-            # Phase 90 (PR-A) idempotency guard: exclude a file already routed to the cloud path (it
+            # PR-A idempotency guard: exclude a file already routed to the cloud path (it
             # carries an ACTIVE ``cloud_job`` sidecar). The retired ``state == ANALYSIS_FAILED`` gate WAS
             # the double-click guard -- a held file's state flipped ANALYSIS_FAILED -> AWAITING_CLOUD, so
             # a second backfill re-selected nothing. The derived ``failed_clause`` marker does NOT
@@ -384,7 +382,7 @@ async def count_backfill_candidates(session: AsyncSession, threshold_sec: int) -
 async def get_backfill_candidates(session: AsyncSession, threshold_sec: int) -> list[tuple[FileRecord, float | None]]:
     """Return ``(FileRecord, duration)`` for the same ANALYSIS_FAILED + duration>=threshold set.
 
-    The list form the backfill producer (Plan 03) iterates to re-route long failed files to a
+    The list form the backfill producer iterates to re-route long failed files to a
     cloud compute agent. duration is captured in-memory (FileRecord.file_metadata is
     ``lazy="noload"``) so a downstream background task never triggers a lazy load.
     """

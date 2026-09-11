@@ -1,7 +1,6 @@
 """The single ``cloud_job.status='awaiting'`` writer + the parked ``push_file`` enqueue machinery.
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df). Two closely
-related concerns live here, both of which are *admission* into (or spill back out of) the bounded
+Two closely related concerns live here, both of which are *admission* into (or spill back out of) the bounded
 cloud window rather than per-backend dispatch mechanics:
 
 * :func:`hold_awaiting_cloud` -- the SINGLE go-forward writer of ``cloud_job.status='awaiting'``
@@ -59,11 +58,11 @@ async def hold_awaiting_cloud(
 
     Shared by the hold path (``trigger_analysis``) and both over-cap spill paths
     (``report_upload_failed`` / ``report_push_mismatch``) so the hard shadow invariant
-    ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (verified pre-Phase-90 by the now-retired
+    ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (verified before the derived-state cutover by the now-retired
     ``shadow_compare.py`` migration-verification script) holds for every go-forward hold instead of
     three hand-copied writers. ``expect_status`` selects one of two modes:
 
-    * **Hold mode** (``expect_status is None``): the unconditional upsert. Phase 90 (D-09) removed the
+    * **Hold mode** (``expect_status is None``): the unconditional upsert. D-09 removed the
       former AWAITING_CLOUD files.state dual-write, so this upserts ONLY the sidecar row keyed on ``file_id``
       (``uq_cloud_job_file_id``) INSERTing ``status='awaiting'`` / ``attempts=0`` (or ``on_conflict``
       re-stamping an existing row). Always returns ``True`` (the hold always writes).
@@ -121,7 +120,7 @@ async def hold_awaiting_cloud(
 
     if expect_status is None:
         # Hold mode: the unconditional cloud_job upsert; always writes -> return True.
-        # Phase 90 (D-09): the AWAITING_CLOUD files.state dual-write was removed; the cloud_job row
+        # D-09: the AWAITING_CLOUD files.state dual-write was removed; the cloud_job row
         # (status='awaiting') is the sole derived authority PR-A reads.
         stmt = pg_insert(CloudJob).values(
             # Stamp the PK explicitly (CR-01 defensive; mirrors ComputeAgentBackend.dispatch).
@@ -231,7 +230,7 @@ def _build_push_file_enqueue_kwargs(
 
     Builds the four push-initiation ``PushFilePayload`` fields (the FileRecord's ``id`` /
     ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) AND stamps the
-    Phase-73 per-file destination (``dest_host`` / ``dest_scratch_dir`` / ``dest_ssh_user``, D-02: the
+    per-file destination (``dest_host`` / ``dest_scratch_dir`` / ``dest_ssh_user``, D-02: the
     dispatch-side record-don't-rederive stamp), then serializes via ``model_dump(mode="json")`` so the
     UUID round-trips as a string under ``extra="forbid"``. Split out from the old ``_enqueue_push_file``
     (phaze-s5sz) so ``ComputeAgentBackend.dispatch`` can PARK these kwargs instead of firing the enqueue
@@ -311,7 +310,7 @@ async def flush_pending_push_file_enqueues(session: AsyncSession) -> int:
     fired = 0
     for item in pending:
         try:
-            # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
+            # The PostgresQueue broker pool is built open=False; connect() is idempotent.
             await item.queue.connect()
             job = await item.queue.enqueue("push_file", **item.enqueue_kwargs)
             if job is None:

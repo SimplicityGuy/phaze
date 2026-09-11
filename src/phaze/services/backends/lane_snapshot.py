@@ -1,8 +1,6 @@
-"""Phase 71 (BEUI-01): the read-only backend-lane snapshot behind the 5s ``/pipeline/stats`` poll.
+"""Read-only backend-lane snapshot behind the 5 s ``/pipeline/stats`` poll (BEUI-01).
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df).
-
-A pure read over the Phase-67 registry + the ``cloud_job`` in-flight/admission substrate that feeds
+A pure read over the backend registry and ``cloud_job`` in-flight/admission substrate that feeds
 the BEUI-01 N-lane grid. Every leg is degrade-safe -- a DB hiccup or a hung Kueue probe can NEVER
 raise into the hot poll (T-71-03) -- and secret-free: only
 ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}`` (plus the phaze-5c6i2
@@ -163,7 +161,7 @@ async def _probe_availability(session: AsyncSession, backends: list[Backend]) ->
 
     The probes run one at a time in a plain ``for`` loop: each ``_probe_one`` is fully awaited before the
     next begins, so there is NEVER concurrent use of the shared ``AsyncSession`` -- Session-safety
-    (Pitfall 1) holds by CONSTRUCTION, guaranteed by the serial control flow. Since Phase 72 (MCOMP-01) retired the
+    (Pitfall 1) holds by CONSTRUCTION, guaranteed by the serial control flow. MCOMP-01 retired the
     single-active-compute assumption, N≥2 compute backends are legal and each compute probe touches the
     shared ``session`` via ``select_agent_by_id`` (``session.execute``); serializing the fan-out guarantees
     those ``session.execute`` calls can never overlap (SQLAlchemy forbids concurrent operations on one
@@ -198,7 +196,7 @@ def _kind_of(backend: Backend) -> str:
 async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None) -> list[dict[str, Any]]:
     """Return one rank-ascending, secret-free lane dict per registry backend for the BEUI-01 grid.
 
-    Resolves the Phase-67 registry, then composes one lane per backend from several degrade-safe reads:
+    Resolves the multi-backend registry, then composes one lane per backend from several degrade-safe reads:
     ``_admission_by_backend_id`` (per-``backend_id`` quota_wait/inadmissible, D-03), ``_probe_availability``
     (live bounded is_available probes, D-02), each backend's ``in_flight_count`` (the D-02 cloud_job
     substrate) and, since phaze-5c6i2, the queued/working/processed metrics below. Lanes are sorted
@@ -276,7 +274,7 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
 def derive_localqueue_unreachable(lanes: list[dict[str, Any]]) -> bool:
     """Return True iff ANY kueue lane in ``lanes`` is unreachable -- the K8s LocalQueue amber alert (D-05).
 
-    Phase 56/70 (KDEPLOY-04, MKUE-01/03) originally drove this from a cross-process Redis flag the
+    KDEPLOY-04/MKUE-01/03 originally drove this from a cross-process Redis flag the
     controller's startup probe wrote once at boot (D-05/D-06). phaze-6r39 retired that mechanism: the
     flag was a boot-time SNAPSHOT with no TTL and no other writer, so it (a) never cleared once
     connectivity was restored (the reported bug) and (b) never appeared at all for an outage that began

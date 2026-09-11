@@ -131,6 +131,5 @@ async def match_track_to_discogs(client: DiscogsographyClient, track: TracklistT
             }
         )
 
-    # Sort by confidence descending, return top 3
     scored.sort(key=lambda x: x["confidence"], reverse=True)
     return scored[:3]

@@ -42,7 +42,7 @@ _MAX_GROUP_MEMBERS = 500
 # /duplicates/groups "Load more" endpoint, and the Dedupe workspace template's button label all
 # derive the SAME number from ONE place rather than three independently-drifting literals.
 #
-# Pagination over this cap was deleted once already (phaze-y4s6, the Phase-62 /duplicates/ cutover
+# Pagination over this cap was deleted once already (phaze-y4s6, the bounded /duplicates/ cutover
 # documented in routers/duplicates.py's list_duplicates()) on the reasoning that there was no live
 # caller left for it -- correct at the time. GET /duplicates/groups (routers/duplicates.py) is that
 # caller now; do not delete this again on the same reasoning without checking for one.
@@ -291,7 +291,6 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = GROUP_PAGE_S
     """
     dup_hashes = _dup_hash_subquery(limit, offset)
 
-    # Main query: all non-resolved files matching those hashes
     stmt = (
         select(FileRecord)
         .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
@@ -301,7 +300,6 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = GROUP_PAGE_S
     result = await session.execute(stmt)
     files = result.scalars().all()
 
-    # Group by hash
     groups_map: dict[str, list[dict[str, Any]]] = {}
     for f in files:
         groups_map.setdefault(f.sha256_hash, []).append(
@@ -563,7 +561,7 @@ async def resolve_group(
 ) -> tuple[int, list[dict[str, Any]]]:
     """Mark non-canonical files in a duplicate group as resolved via the durable DedupResolution marker.
 
-    Returns (count_resolved, [{id}]) for undo tracking. Phase 90 (D-09): the DUPLICATE_RESOLVED
+    Returns (count_resolved, [{id}]) for undo tracking. D-09: the DUPLICATE_RESOLVED
     files.state dual-write was removed -- the DedupResolution marker (dedup_resolved_clause) is the sole
     derived authority, so the returned payload no longer carries a previous_state.
 
@@ -639,7 +637,7 @@ async def resolve_group(
     result = await session.execute(stmt)
     files = result.scalars().all()
 
-    # Phase 90 (D-09): the per-file DUPLICATE_RESOLVED files.state write (and its previous_state capture)
+    # D-09: the per-file DUPLICATE_RESOLVED files.state write (and its previous_state capture)
     # was removed as a matched set; the DedupResolution marker below is the sole resolution authority.
     # phaze-btix: the payload also echoes THIS call's ``canonical_id`` per entry, so ``undo_resolve``
     # can scope its DELETE to the (file_id, canonical_file_id) pair a marker was actually written

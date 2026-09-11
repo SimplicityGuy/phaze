@@ -1,7 +1,6 @@
 """The scannable per-file overview -- the bounded, per-row-derived files page plus the
 single-file stage matrix and orphan diagnostics behind the record slide-in.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr).
 """
 
 from __future__ import annotations
@@ -36,8 +35,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --------------------------------------------------------------------------------------------------
-# Phase 87 (87-04, UI-01 / D-02 / PERF-01): the scannable, per-row-derived files page.
+# The scannable, per-row-derived files page (UI-01 / D-02 / PERF-01).
 #
 # The operator's "where's this file at?" overview. Two anti-features are forbidden by the phase's
 # anti-feature table and BOTH are honoured here: (1) "rendering raw internal status strings" -- every
@@ -46,7 +44,6 @@ logger = structlog.get_logger(__name__)
 # an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The five correlated
 # stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
 # the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
-# --------------------------------------------------------------------------------------------------
 
 # The five pills the UI shows, in matrix order. The 6-stage -> 5-pill remap LANDMINE lives HERE and in
 # _stage_matrix.html: tracklist is omitted; Appr = REVIEW, Exec = APPLY. `.value` keys the row dict so
@@ -85,7 +82,7 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by
     ``sort`` (phaze-a6hm.3) -- or, absent a resolved sort, the ``FileRecord.id`` PK index -- and LIMITed
     to ``page_size + 1`` (the sentinel that yields ``has_next`` with NO COUNT). Each ``stage_status_case``
-    is a correlated CASE over the Phase-77 partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
+    is a correlated CASE over the stage-status partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
     / ``ix_analysis_failed``), so the derivation touches only the page rows. The
     optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
     ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
@@ -145,8 +142,7 @@ async def get_files_page(
     sentinel row, so pagination costs no COUNT. The five correlated ``stage_status_case`` columns are read
     back into each row's ``buckets`` dict keyed by ``Stage`` value (metadata/analyze/propose/review/apply) -- the derived buckets the ``_stage_pill`` cells render (never ``FileRecord.state``).
 
-    ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
-    wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
+    ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so the status filter bar remains templates-only. Passing only one of the pair is a no-op filter.
 
     ``sort`` (phaze-a6hm.3) is an already-resolved :class:`~phaze.routers.column_sort.SortState` from
     the router's ``FILES_SORT`` contract -- this layer never sees the raw wire ``sort``/``order``

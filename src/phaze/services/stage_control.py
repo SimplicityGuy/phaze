@@ -1,4 +1,4 @@
-"""Raw ``saq_jobs`` backlog-mutation helpers for the per-stage control plane (Phase 37).
+"""Raw ``saq_jobs`` backlog-mutation helpers for the per-stage control plane.
 
 The before-enqueue ``apply_stage_control`` hook (``phaze.tasks._shared.stage_control``) only
 stamps NEW jobs. These three helpers mutate the EXISTING queued backlog so an operator action
@@ -11,7 +11,7 @@ takes effect immediately on jobs already enqueued:
 
 ``saq_jobs`` has NO ``function`` column (the function name lives inside the serialized ``job``
 BYTEA blob), so each helper filters on the deterministic key prefix ``key LIKE '<fn>:%'`` --
-exact because Phase 35 made keys ``<function>:<file_id>``. The ``status = 'queued'`` guard on
+exact because keys are ``<function>:<file_id>``. The ``status = 'queued'`` guard on
 every UPDATE is what makes drain (active jobs untouched) AND the no-double-pickup guarantee
 safe: it contends with the dequeue's ``FOR UPDATE SKIP LOCKED`` on the same row lock, so a
 being-picked-up job is unmutatable (37-RESEARCH Concurrency Safety, T-37-03).

@@ -22,9 +22,7 @@ import os
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Type definitions for model registry
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -45,9 +43,7 @@ class ModelSetConfig:
     models: tuple[ModelConfig, ...]
 
 
-# ---------------------------------------------------------------------------
 # Model registry: 11 characteristic model sets (33 models) per D-02
-# ---------------------------------------------------------------------------
 
 
 def _make_standard_set(name: str, filename_prefix: str) -> ModelSetConfig:
@@ -92,9 +88,7 @@ GENRE_MODEL = ModelConfig(
 )
 
 
-# ---------------------------------------------------------------------------
 # TensorFlow inference batch size (phaze-0582)
-# ---------------------------------------------------------------------------
 
 # `TensorflowPredict*` batches patches before feeding the graph, and its `batchSize`
 # DEFAULTS to 64. phaze passed no override until phaze-0582, so every inference stood up
