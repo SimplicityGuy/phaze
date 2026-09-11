@@ -356,3 +356,26 @@ warned about; the documented fallback (no profile row → live recompute) is wha
 mid-backfill, not a live/stored disagreement on a current row. No migration: both columns stay,
 now read by their writers' own consumers. `models/set_profile.py`'s field comments point at the
 readers directly.
+
+### 10.3 Operator decision: 20-set blind check of the energy scalar (phaze-z47n7, 2026-09-11)
+
+Question as put (dispatcher, 2026-09-11, with the 20-set worksheet handed over): "judge each of
+the 20 sets against the live panel: does the named peak and the arc shape match your ear, yes or
+no, plus one phrase. Then give your overall answer to the question as the bead puts it: does the
+energy scalar agree with your ear on this 20-set blind check, and do the weights change?" Answer
+as given, verbatim: "all of the "peak and arc match my ear? (yes/no)one phrase" sound correct. i'm
+not sure what you mean by "one phrase". but I'm going to say that they all seem correct to me"
+Recorded 2026-09-11; the durable record is the `phaze-z47n7` bead's "Operator decision (Phase B)"
+comment and this section.
+
+The 20-set pick was drawn from a production pool of 5095 files carrying both `metadata.duration`
+and `analysis.style`, stratified across the four duration quartiles at 4/7/5/4 sets. Duration
+stratification held as intended; style stratification held only weakly, because `analysis.style`
+is truncated at 50 characters and so stores a truncated composite rather than the full
+genre-score string — 16 of the 20 picked sets carry a Psy-Trance-led truncated prefix (3
+Experimental-led, 1 Ambient-led). The truncation defect itself is filed separately as
+`phaze-z66hq`.
+
+Within the question asked, the directions document's kill criterion — "the energy scalar
+disagrees with the operator's ear on a 20-set blind check" — was not met: **`ENERGY_WEIGHTS` are
+unchanged, `projection_version` remains 2, and the backfill was not re-run.**
