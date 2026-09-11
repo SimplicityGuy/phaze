@@ -337,8 +337,9 @@ test-cov-parallel:
 test-validate:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -n "${TEST_DATABASE_URL:-}" ]; then
-        echo "↩️  SERIAL FALLBACK: TEST_DATABASE_URL is caller-owned; preserving that explicit environment." >&2
+    if [ -n "${TEST_DATABASE_URL:-}${MIGRATIONS_TEST_DATABASE_URL:-}${PHAZE_REDIS_URL:-}" ]; then
+        bash scripts/ensure-test-seat.sh
+        echo "↩️  SERIAL FALLBACK: the complete Postgres/Redis triplet is caller-owned; preserving that explicit environment." >&2
         just test-cov
     elif [ "${PHAZE_TEST_PARALLEL:-1}" != "1" ]; then
         echo "↩️  SERIAL FALLBACK: PHAZE_TEST_PARALLEL=${PHAZE_TEST_PARALLEL}; two-worker local execution is disabled." >&2
@@ -353,19 +354,16 @@ test-validate:
 test-validate-serial:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -z "${TEST_DATABASE_URL:-}" ]; then
-        just test-db
-        seat="$(bash scripts/derive-validate-seat-name.sh)"
-        echo "🪑 Serial fallback is provisioning this worktree's own seat '${seat}'." >&2
-        eval "$(bash scripts/provision-test-seat.sh \
-            --seat "$seat" \
-            --pg-container "{{test_db_container}}" \
-            --pg-port "{{test_db_port}}" \
-            --redis-container "{{test_redis_container}}" \
-            --redis-port "{{test_redis_port}}" \
-            --redis-capacity "{{test_redis_databases}}" \
-            --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
-    fi
+    seat="$(bash scripts/derive-validate-seat-name.sh)"
+    echo "🪑 Serial fallback resolves this worktree's seat '${seat}' without replacing caller-owned settings." >&2
+    eval "$(bash scripts/ensure-test-seat.sh \
+        "$seat" \
+        "{{test_db_container}}" \
+        "{{test_db_port}}" \
+        "{{test_redis_container}}" \
+        "{{test_redis_port}}" \
+        "{{test_redis_databases}}" \
+        "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
     just test-cov
 
 # THE CHANGE-DRIVEN TEST STEP (phaze-pv3kk). `just check-fast` runs this, and the phaze rig's
@@ -437,20 +435,15 @@ test-fast:
     # `pytest_sessionstart` still takes the session lock, and a transcript whose header reads
     # `unlocked (Postgres unreachable or bypass set)` is one CLAUDE.md trains readers to distrust.
     ensure_seat() {
-        if [ -n "${TEST_DATABASE_URL:-}" ]; then
-            return 0
-        fi
-        just test-db
         seat="$(bash scripts/derive-validate-seat-name.sh)"
-        echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
-        eval "$(bash scripts/provision-test-seat.sh \
-            --seat "$seat" \
-            --pg-container "{{test_db_container}}" \
-            --pg-port "{{test_db_port}}" \
-            --redis-container "{{test_redis_container}}" \
-            --redis-port "{{test_redis_port}}" \
-            --redis-capacity "{{test_redis_databases}}" \
-            --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
+        eval "$(bash scripts/ensure-test-seat.sh \
+            "$seat" \
+            "{{test_db_container}}" \
+            "{{test_db_port}}" \
+            "{{test_redis_container}}" \
+            "{{test_redis_port}}" \
+            "{{test_redis_databases}}" \
+            "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
     }
 
     # Kept INSIDE the worktree, which is per-bead by construction (phaze-rlshw): the scratchpad is
@@ -1129,104 +1122,15 @@ test-db-down:
     docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
 
-[doc('Stop and remove any leftover DEDICATED integration-test Postgres + Redis containers (matches the phaze-integration-test- name prefix, so it sweeps up every invocations containers; never the shared phaze-test-db/phaze-test-redis harness)')]
+[doc('Remove one selected, owned, stale dedicated integration-test run; refuses active or foreign runs')]
 [group('test')]
-integration-test-down:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # phaze-987z: container names now carry a per-invocation unique suffix, so there is no
-    # single fixed name left to `docker rm -f` -- sweep by name PREFIX instead. This is the
-    # explicit cleanup path for anything an EXIT trap missed (e.g. a killed -9 shell).
-    ids="$(docker ps -aq --filter "name=phaze-integration-test-" 2>/dev/null || true)"
-    if [ -n "$ids" ]; then
-        # shellcheck disable=SC2086  # $ids is a docker-generated, space-separated list of container IDs
-        docker rm -f $ids >/dev/null 2>&1 || true
-    fi
-    echo "🧹 Removed any leftover phaze-integration-test-* containers"
+integration-test-down RUN_ID:
+    PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_REDIS_PREFIX={{quote(integration_redis_container_prefix)}} bash scripts/integration-test-harness.sh cleanup {{quote(RUN_ID)}}
 
-[doc('Run the full suite against DEDICATED, disposable Postgres + Redis (auto teardown; phaze-pik6/phaze-987z -- per-invocation unique container names + dynamic ports so concurrent runs never race; never touches the SHARED phaze-test-db/phaze-test-redis harness other worktrees rely on)')]
+[doc('Run the validation-grade coverage suite against per-invocation Postgres and Redis containers; always tears down only its own run')]
 [group('test')]
 integration-test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # phaze-987z: a per-invocation unique token (this shell's PID + $RANDOM) so two concurrent
-    # `integration-test` runs never share a container name -- the EXIT trap below then only
-    # ever removes THIS invocation's own containers, never another run's.
-    token="$$_${RANDOM}"
-    container="{{integration_db_container_prefix}}-${token}"
-    redis_container="{{integration_redis_container_prefix}}-${token}"
-    fixed_db_port="{{integration_db_port}}"
-    fixed_redis_port="{{integration_redis_port}}"
-    trap 'docker rm -f "$container" "$redis_container" >/dev/null 2>&1 || true' EXIT
-    if [ "$fixed_db_port" = "0" ]; then
-        echo "🐘 Starting ${container} ({{postgres_image}}) on a dynamically-assigned host port..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze \
-            -e POSTGRES_PASSWORD=phaze \
-            -e POSTGRES_DB=phaze_test \
-            --shm-size {{postgres_shm_size}} \
-            -p 127.0.0.1::5432 \
-            {{postgres_image}} >/dev/null
-        port="$(docker port "$container" 5432/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
-    else
-        port="$fixed_db_port"
-        echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port} (pinned via PHAZE_INTEGRATION_TEST_DB_PORT)..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze \
-            -e POSTGRES_PASSWORD=phaze \
-            -e POSTGRES_DB=phaze_test \
-            --shm-size {{postgres_shm_size}} \
-            -p "{{test_db_bind_ip}}:${port}:5432" \
-            {{postgres_image}} >/dev/null
-    fi
-    if [ "$fixed_redis_port" = "0" ]; then
-        echo "🟥 Starting ${redis_container} (redis:7-alpine) on a dynamically-assigned host port..."
-        docker run -d --name "$redis_container" \
-            -p 127.0.0.1::6379 \
-            redis:7-alpine >/dev/null
-        redis_port="$(docker port "$redis_container" 6379/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
-    else
-        redis_port="$fixed_redis_port"
-        echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port} (pinned via PHAZE_INTEGRATION_TEST_REDIS_PORT)..."
-        docker run -d --name "$redis_container" \
-            -p "{{test_db_bind_ip}}:${redis_port}:6379" \
-            redis:7-alpine >/dev/null
-    fi
-    echo "⏳ Waiting for Postgres to accept connections..."
-    for _ in $(seq 1 30); do
-        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
-            db_ready=1
-            break
-        fi
-        sleep 1
-    done
-    if [ "${db_ready:-0}" != "1" ]; then
-        echo "❌ ${container} did not become ready within 30s" >&2
-        docker logs "$container" >&2 || true
-        exit 1
-    fi
-    echo "⏳ Waiting for Redis to accept connections..."
-    for _ in $(seq 1 30); do
-        if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
-            redis_ready=1
-            break
-        fi
-        sleep 1
-    done
-    if [ "${redis_ready:-0}" != "1" ]; then
-        echo "❌ ${redis_container} did not become ready within 30s" >&2
-        docker logs "$redis_container" >&2 || true
-        exit 1
-    fi
-    # phaze-hk8r: tolerate a lost create race -- see scripts/ensure-pg-database.sh's header.
-    # This container is per-invocation-unique, so the race is only theoretical here, but the
-    # ensure step stays consistent with the other two provisioning sites.
-    bash scripts/ensure-pg-database.sh "$container" phaze_migrations_test
-    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_test"
-    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_migrations_test"
-    export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"
-    uv run pytest tests/ -q
-
+    PHAZE_INTEGRATION_POSTGRES_IMAGE={{quote(postgres_image)}} PHAZE_INTEGRATION_POSTGRES_SHM_SIZE={{quote(postgres_shm_size)}} PHAZE_INTEGRATION_BIND_IP={{quote(test_db_bind_ip)}} PHAZE_INTEGRATION_DB_PORT={{quote(integration_db_port)}} PHAZE_INTEGRATION_REDIS_PORT={{quote(integration_redis_port)}} PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_REDIS_PREFIX={{quote(integration_redis_container_prefix)}} bash scripts/integration-test-harness.sh run
 [doc('Run ruff linter')]
 [group('lint')]
 lint:
