@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — energy weights pending the operator blind check (`phaze-x1qr3.12`) |
+| **Status** | Accepted — energy weights confirmed unchanged by the operator's 20-set blind check (`phaze-z47n7`, 2026-09-11); see §10.3 |
 | **Date** | 2026-09-06 |
 | **Bead** | `phaze-x1qr3.4` (epic `phaze-x1qr3`) |
 | **Supersedes / superseded by** | nothing |
@@ -112,21 +112,45 @@ outside that table so a weight can never quietly reappear as an inline constant 
 | `mood_sad` | `-0.15` | lowers energy |
 | `bpm_z` | `0.10` | a faster-than-the-file's-own-average window raises energy |
 
-**These magnitudes are the implementer's own choice.** They were picked for plausible sign and
-rough relative weight only, with no operator input and no measurement against real sets —
-nothing above should be read or cited as though the operator has already weighed in on them.
+**These magnitudes were the implementer's own choice**, picked for plausible sign and rough
+relative weight only, with no operator input and no measurement against real sets at the time
+this ADR was accepted. The operator has since weighed in — see immediately below.
 
-`phaze-x1qr3.12` is where the operator judges the resulting arcs and peaks against 20 real
-sets in a blind check, stratified across the duration and style distribution, and records the
-outcome in the form `docs/design/0012-verification-fidelity-and-operator-attribution.md`
-requires: the question as put, the answer as given, the date, and the durable record. If that
-blind check changes a value in the table above, `phaze-x1qr3.12` bumps `projection_version`,
-re-runs the backfill, and appends the result as a dated amendment below (§10) rather than
-editing the table above in place.
+The operator's blind check ran on 2026-09-11, under `phaze-z47n7` (the successor bead to
+`phaze-x1qr3.12`, filed after that bead was superseded): the operator judged the resulting
+arcs and peaks against 20 real sets, stratified across the duration and style distribution, in
+the form `docs/design/0012-verification-fidelity-and-operator-attribution.md` requires — the
+question as put, the answer as given, the date, and the durable record. All 20 sets were judged
+correct, so `ENERGY_WEIGHTS` are unchanged and `projection_version` was not bumped. The full
+record — the question, the answer, and a sampling caveat it surfaced — is §10.3 below and the
+`phaze-z47n7` bead's own comment. A *future* change that does move a value in the table above
+still follows the same rule: bump `projection_version`, re-run the backfill, and append the
+result as a dated amendment below (§10) rather than editing the table above in place — see
+"Adjusting the energy weights" immediately below.
 
 `tests/shared/test_adr_0018_weights.py` reads this table and `ENERGY_WEIGHTS` and fails the
 build the moment either the name set or a value drifts from the other — this document and the
 code are pinned together, not merely cross-referenced.
+
+### Adjusting the energy weights
+
+Changing a weight, or adding/removing one, touches four things, always in this order:
+
+1. **Edit `ENERGY_WEIGHTS`** in `src/phaze/services/set_projection.py` — the single source of
+   truth (see above).
+2. **Update this §4 table in the same change.** `tests/shared/test_adr_0018_weights.py` pins the
+   two together and fails the build the moment they drift.
+3. **Bump `CURRENT_PROJECTION_VERSION`** in `src/phaze/services/set_projection_writer.py`. This
+   is a different module the table above never names, and skipping the bump leaves rows computed
+   under the old weights indistinguishable from rows computed under the new ones — see §10.1 for
+   a worked example of a version bump (1 → 2) and why it was needed.
+4. **After the release carrying the new weights and version is deployed, run the production
+   backfill** — `phaze backfill set-projection`, executed inside the API container on the API
+   host. The command is idempotent: it re-derives only the `SetProfile` rows whose
+   `projection_version` is behind the code's current value, never the whole corpus, so re-running
+   it costs nothing if the affected population turns out to be empty. Record the observed rows/s
+   and wall-clock duration as a dated amendment under §10, the same way §10.1 and §10.3 were
+   recorded. See `docs/deployment.md` for the exact command shape run against a deployed host.
 
 ## 5. The Camelot table and the flicker filter
 

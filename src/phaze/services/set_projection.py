@@ -249,11 +249,11 @@ def positive_class_vector(features: Mapping[str, Any]) -> tuple[float | None, ..
 # ``projection_version`` bump if it ever changes.
 #
 # Signs: danceability, party and aggressive raise energy; relaxed and sad lower it; a
-# faster-than-the-file's-own-average BPM (positive z) raises it. Magnitudes here are the
-# implementer's own pick, not yet reviewed by the operator -- ``phaze-x1qr3.12``'s blind
-# check over 20 real sets is what settles that with the operator's own input and bumps
-# ``projection_version`` if the values change; nothing above should be read as though that
-# review already happened.
+# faster-than-the-file's-own-average BPM (positive z) raises it. Magnitudes here were the
+# implementer's own pick. The operator's 20-set blind check ran on 2026-09-11 under
+# ``phaze-z47n7`` (the successor bead to ``phaze-x1qr3.12``): all 20 sets were judged correct,
+# so these weights are unchanged and ``projection_version`` was not bumped -- see
+# ``docs/design/0018-set-projection-and-file-viewer.md`` Section 10.3 for the full record.
 ENERGY_WEIGHTS: Final[dict[str, float]] = {
     "danceability": 0.30,
     "mood_party": 0.30,
