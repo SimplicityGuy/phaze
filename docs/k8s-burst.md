@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Kubernetes Burst — Kueue Job target (v6.0)
 
 **Kubernetes burst** offloads analysis to **one or more** x64 Kubernetes clusters running

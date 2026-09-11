@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Operator Runbook — backend lanes, force-local revert & secrets
 
 This is the day-to-day operator runbook for the multi-cloud backend registry (2026.7.1). It
@@ -13,7 +12,7 @@ legacy `GET /pipeline/` 302-redirects there):
   backends by rank and cap.
 - **[Per-backend `_FILE` secrets](#per-backend-_file-secrets)** — where backend credentials live and
   the one rule: never print a secret value.
-- **[Stranded `active` SAQ jobs (phaze-o0n6)](#stranded-active-saq-jobs-phaze-o0n6)** — the
+- **[Stranded `active` SAQ jobs (phaze-o0n6)](#legacy-finite-timeout-active-saq-jobs-phaze-o0n6)** — the
   `phaze queue status` guard, what its non-zero exit means, and how to clear a pre-existing backlog.
 - **[Removing fingerprint-era data (phaze-0jpe)](#removing-fingerprint-era-data-phaze-0jpe)** — a
   one-time, manual, post-deployment cleanup of the retired `audfprint`/Panako sidecars' on-host
@@ -59,12 +58,10 @@ stateDiagram-v2
     [*] --> CLOUD_ROUTING
     CLOUD_ROUTING: CLOUD ROUTING
     CLOUD_ROUTING: backends dispatch by rank (multi-backend)
-    FORCED_LOCAL: FORCED LOCAL
-    FORCED_LOCAL: durable route_control row · reversible · no redeploy
     CLOUD_ROUTING --> FORCED_LOCAL: click pill (engage)
     FORCED_LOCAL --> CLOUD_ROUTING: click pill (revert)
 
-    state FORCED_LOCAL {
+    state "FORCED LOCAL<br/>durable route_control row · reversible · no redeploy" as FORCED_LOCAL {
         [*] --> Gates
         Gates: Two gates fire at once
         Gates --> Drain: stage_cloud_window no-ops (no stage/push)
@@ -487,7 +484,7 @@ docker compose exec api uv run phaze backfill reenqueue-incomplete-analyses
 ```
 
 > `uv run` is required here, not optional — see the phaze-u5k0d note under
-> ["Stranded `active` SAQ jobs"](#stranded-active-saq-jobs-phaze-o0n6) above for why.
+> ["Stranded `active` SAQ jobs"](#legacy-finite-timeout-active-saq-jobs-phaze-o0n6) above for why.
 
 The command prints, in order: the count of pre-Phase-43 legacy rows it is deliberately leaving
 alone (all four windows columns NULL — see the module docstring for why), the count of

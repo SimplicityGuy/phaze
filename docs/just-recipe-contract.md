@@ -47,6 +47,7 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `docker-ps` | operator convenience | inspect the application-server topology |
 | `docker-shell` | operator convenience | open an application API shell |
 | `docker-validate` | operator convenience | local Dockerfile lint mirror |
+| `docs-check` | operator convenience | deterministic maintained-document and Mermaid-rendering gate |
 | `down` | operator convenience | application-server topology teardown |
 | `down-all` | operator convenience | combined application/agent topology teardown |
 | `down-dev` | operator convenience | live-reload development topology teardown |

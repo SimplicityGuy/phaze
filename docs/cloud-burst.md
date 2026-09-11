@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Cloud Burst — OCI A1 compute agent (v5.0)
 
 **Cloud burst** offloads **long** audio sets to a free, always-on **OCI Ampere A1 (arm64)

@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Configuration
 
 All configuration is via environment variables (or a `.env` file). See [`.env.example`](../.env.example) for the operator-facing defaults.
@@ -170,7 +169,7 @@ flowchart TD
     E -->|yes| F[Fail fast:<br/>refuse to boot with no backend]
     E -->|no| G[_validate_registry model validator]
     G --> H{Per-variant + whole-registry<br/>invariants hold?}
-    H -->|no| I[Fail fast:<br/>id-tagged ValidationError<br/>compute→agent_ref+scratch_dir,<br/>kueue→[kube]+non-empty buckets,<br/>cluster-specific bucket ≤1 ref]
+    H -->|no| I["Fail fast:<br/>id-tagged ValidationError<br/>compute requires agent_ref + scratch_dir,<br/>kueue requires kube config + non-empty buckets,<br/>cluster-specific bucket ≤1 ref"]
     H -->|yes| J[Registry live<br/>logged secret-free as id/kind/rank/cap]
 ```
 

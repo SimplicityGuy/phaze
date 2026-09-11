@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Phaze Deployment Guide
 
 Production Phaze runs as **two compose files on two (or more) hosts**:

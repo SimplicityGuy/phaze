@@ -13,7 +13,7 @@ import re
 import subprocess  # nosec B404 -- fixed git argv, no shell, repository-local reads only
 import sys
 import tarfile
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 from urllib.parse import unquote, urlsplit
 
 
@@ -81,6 +81,14 @@ class AuditResult(TypedDict):
     graph_files_valid: int
     graph_reference_errors: list[str]
     errors: list[str]
+
+
+class MermaidBlock(NamedTuple):
+    """One Mermaid fence and its exact source location."""
+
+    lineno: int
+    body: str
+    closed: bool
 
 
 @dataclass
@@ -245,7 +253,8 @@ def _local_link_status(path: str, target: str) -> str | None:
     return "valid" if source_relative.exists() or root_relative.exists() else "historical_by_boundary"
 
 
-def _links(path: str, text: str) -> Iterator[tuple[int, str, str]]:
+def link_targets(path: str, text: str) -> Iterator[tuple[int, str]]:
+    """Yield link targets from Markdown/HTML prose outside code fences."""
     for lineno, line in _unfenced_lines(text):
         targets = [match.group(1) for match in _HTML_LINK.finditer(line)]
         if path.endswith(".md"):
@@ -255,12 +264,17 @@ def _links(path: str, text: str) -> Iterator[tuple[int, str, str]]:
             if reference:
                 targets.append(reference.group(1))
         for target in targets:
-            status = _local_link_status(path, target)
-            if status is not None:
-                yield lineno, target, status
+            yield lineno, target
 
 
-def _mermaid_blocks(text: str) -> Iterator[tuple[int, str]]:
+def _links(path: str, text: str) -> Iterator[tuple[int, str, str]]:
+    for lineno, target in link_targets(path, text):
+        if (status := _local_link_status(path, target)) is not None:
+            yield lineno, target, status
+
+
+def mermaid_blocks(text: str) -> Iterator[MermaidBlock]:
+    """Yield every Mermaid fence body, including an unclosed final fence."""
     lines = text.splitlines()
     index = 0
     while index < len(lines):
@@ -278,17 +292,25 @@ def _mermaid_blocks(text: str) -> Iterator[tuple[int, str]]:
                 break
             body.append(lines[index])
             index += 1
-        if index == len(lines):
-            yield start, "unclosed fence"
+        closed = index < len(lines)
+        yield MermaidBlock(start, "\n".join(body), closed)
+        if not closed:
             return
-        meaningful = [line.strip() for line in body if line.strip() and not line.lstrip().startswith("%%")]
-        if not meaningful or not _MERMAID_START.match(meaningful[0]):
-            yield start, "missing or unsupported diagram declaration"
-        elif sum(line.startswith("subgraph ") for line in meaningful) != sum(line == "end" for line in meaningful):
-            yield start, "unbalanced subgraph/end"
-        else:
-            yield start, "valid"
         index += 1
+
+
+def _mermaid_blocks(text: str) -> Iterator[tuple[int, str]]:
+    for block in mermaid_blocks(text):
+        if not block.closed:
+            yield block.lineno, "unclosed fence"
+            continue
+        meaningful = [line.strip() for line in block.body.splitlines() if line.strip() and not line.lstrip().startswith("%%")]
+        if not meaningful or not _MERMAID_START.match(meaningful[0]):
+            yield block.lineno, "missing or unsupported diagram declaration"
+        elif sum(line.startswith("subgraph ") for line in meaningful) != sum(line == "end" for line in meaningful):
+            yield block.lineno, "unbalanced subgraph/end"
+        else:
+            yield block.lineno, "valid"
 
 
 def _boundary_for(path: str) -> str | None:
@@ -328,7 +350,14 @@ def _match_renames(baseline_paths: set[str], current_paths: set[str]) -> dict[st
 
 
 def _forbidden_occurrences(text: str) -> int:
-    return sum(len(pattern.findall(text)) for pattern in _FORBIDDEN)
+    return sum(1 for _ in forbidden_identifiers(text))
+
+
+def forbidden_identifiers(text: str) -> Iterator[tuple[int, str]]:
+    """Yield forbidden local identifiers with their one-based source lines."""
+    for pattern in _FORBIDDEN:
+        for match in pattern.finditer(text):
+            yield text.count("\n", 0, match.start()) + 1, match.group(0)
 
 
 def _record_links_and_mermaid(state: CorpusAudit, path: str, text: str) -> None:
