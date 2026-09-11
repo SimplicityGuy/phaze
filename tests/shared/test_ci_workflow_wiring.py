@@ -43,6 +43,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tomllib
 from typing import Any
@@ -329,15 +330,45 @@ def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
     # `shared` bucket; a typo'd bucket segment here would silently stop running real tests.
     assert _BUCKETS_JSON.is_file(), f"missing canonical bucket list: {_BUCKETS_JSON}"
     known_buckets = set(json.loads(_BUCKETS_JSON.read_text(encoding="utf-8")))
+    selected_by_file: dict[Path, list[str]] = {}
     for shard in shards:
         assert shard.get("paths"), f"shard {shard.get('name')!r} has empty paths"
-        for token in shard["paths"].split():
+        tokens = shlex.split(shard["paths"])
+        for token in tokens:
             if token.startswith("--"):
                 # A pytest flag (e.g. --ignore=tests/shared/core), not a collection path.
+                assert token.startswith("--ignore=tests/"), f"shard {shard['name']!r} has unsupported pytest flag {token!r}"
                 continue
             assert token.startswith("tests/"), f"shard {shard['name']!r} path {token!r} must start with tests/"
             bucket = token.removeprefix("tests/").split("/")[0]
             assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"
+
+        ignored = [(_REPO_ROOT / token.removeprefix("--ignore=")).resolve() for token in tokens if token.startswith("--ignore=")]
+        selected: set[Path] = set()
+        for token in (token for token in tokens if not token.startswith("--")):
+            path = (_REPO_ROOT / token).resolve()
+            assert path.exists(), f"shard {shard['name']!r} path does not exist: {token!r}"
+            candidates = [path] if path.is_file() else list(path.rglob("*.py"))
+            selected.update(candidate for candidate in candidates if candidate.name.startswith("test_") or candidate.name.endswith("_test.py"))
+        for ignored_path in ignored:
+            selected = {candidate for candidate in selected if candidate != ignored_path and ignored_path not in candidate.parents}
+        for candidate in selected:
+            selected_by_file.setdefault(candidate, []).append(shard["name"])
+
+    browser_root = (_REPO_ROOT / "tests" / "browser").resolve()
+    expected = {
+        path.resolve()
+        for path in (_REPO_ROOT / "tests").rglob("*.py")
+        if (path.name.startswith("test_") or path.name.endswith("_test.py")) and browser_root not in path.resolve().parents
+    }
+    actual = set(selected_by_file)
+    assert actual == expected, (
+        "CI shards must collect every non-browser test file exactly once; "
+        f"missing={sorted(str(path.relative_to(_REPO_ROOT)) for path in expected - actual)!r}, "
+        f"extra={sorted(str(path.relative_to(_REPO_ROOT)) for path in actual - expected)!r}"
+    )
+    duplicates = {str(path.relative_to(_REPO_ROOT)): owners for path, owners in selected_by_file.items() if len(owners) != 1}
+    assert not duplicates, f"CI shard test files overlap: {duplicates!r}"
 
 
 def _assert_browser_group_is_exactly_pinned_playwright(browser_group: list[str]) -> None:
