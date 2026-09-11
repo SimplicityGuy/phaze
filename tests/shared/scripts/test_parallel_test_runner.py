@@ -158,8 +158,8 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
         assert first.environment[key] != second.environment[key]
     assert next(arg for arg in first.command if arg.startswith("--junitxml=")) != next(arg for arg in second.command if arg.startswith("--junitxml="))
     assert next(arg for arg in first.command if arg.startswith("cache_dir=")) != next(arg for arg in second.command if arg.startswith("cache_dir="))
-    assert first.command[:3] == ("uv", "run", "pytest")
-    assert first.command[3].startswith("@")
+    assert all(launch.command[:4] == ("uv", "run", "--no-sync", "pytest") for launch in harness.launches)
+    assert first.command[4].startswith("@")
     assert "--cov-fail-under=0" in first.command
     assert "--cov-report=" in first.command
 
