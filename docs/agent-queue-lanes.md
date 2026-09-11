@@ -2,11 +2,11 @@
 # Agent Queue Lanes
 
 **Status:** implemented (quick-260707-dh1) — code + compose only; a homelab redeploy lands it in prod.
-**Scope:** the file-server (nox) SAQ agent worker. **k8s burst clusters are unaffected** (burst pods are one-shot `phaze.job_runner`, not the persistent SAQ worker).
+**Scope:** the file-server (`host-store`) SAQ agent worker. **k8s burst clusters are unaffected** (burst pods are one-shot `phaze.job_runner`, not the persistent SAQ worker).
 
 ## Why
 
-The nox agent used to run a **single** SAQ worker with one shared concurrency pool
+The `host-store` agent used to run a **single** SAQ worker with one shared concurrency pool
 (`concurrency = worker_max_jobs`, default 8) serving every file-touching task. Two failures:
 
 1. **I/O offload starved.** `s3_upload` (httpx multipart PUT) and `push_file` (rsync-over-SSH)
@@ -16,7 +16,7 @@ The nox agent used to run a **single** SAQ worker with one shared concurrency po
    newly-enqueued `extract_file_metadata` wait behind it.
 
 Splitting into per-type **lanes** buys **fairness / no head-of-line blocking** — not unlimited
-parallelism. nox has **8 physical cores**; CPU-bound lanes must sum to ≈ cores -- which is
+parallelism. `host-store` has **8 physical cores**; CPU-bound lanes must sum to ≈ cores -- which is
 now derived rather than asserted (phaze-rvcn: `intra_op_threads x concurrency ~= physical_cores`).
 
 ## Lane topology
@@ -29,7 +29,7 @@ consumer (the lane worker settings) derive from it.
 
 | Lane          | Tasks                                                                                 | Bound by                        | Concurrency env                          | Default |
 |---------------|---------------------------------------------------------------------------------------|---------------------------------|------------------------------------------|---------|
-| `analyze`     | `process_file`                                                                        | Host CPU (essentia child)       | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | *derived* (nox: 2) |
+| `analyze`     | `process_file`                                                                        | Host CPU (essentia child)       | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | *derived* (`host-store`: 2) |
 | `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
 
@@ -44,7 +44,7 @@ I/O-light, so it costs little against the CPU budget.
 ### Core-budget rationale
 
 The `analyze` lane's default is **derived from the host** since phaze-rvcn:
-`physical_cores // min(4, physical_cores)`, which is 2 CPU-bound slots on nox's 8 physical
+`physical_cores // min(4, physical_cores)`, which is 2 CPU-bound slots on `host-store`'s 8 physical
 cores, each running a 4-thread extractor (phaze-0jpe removed the `fingerprint` lane's 2
 slots). That leaves headroom for the fast `meta` lane and the OS, and it keeps the lane in
 lockstep with the thread cap instead of restating a literal that can drift from it -- see
@@ -56,7 +56,7 @@ concurrency knob (`PHAZE_LANE_<LANE>_CONCURRENCY`) **governs** the worker's conc
 `WORKER_MAX_JOBS` acts only as an upper bound: `concurrency = min(lane knob, worker_max_jobs)`.
 So an explicit, lower `WORKER_MAX_JOBS` is authoritative and clamps every lane, but setting
 `WORKER_MAX_JOBS` alone does **not** raise a lane above its knob. On the file-server defaults
-(nox: derived analyze lane 2, `worker_max_jobs` 8) the ceiling never bites and behavior is
+(`host-store`: derived analyze lane 2, `worker_max_jobs` 8) the ceiling never bites and behavior is
 unchanged. The effective concurrency, the lane, and whether the ceiling clamped it are logged
 once at worker startup. **One interaction to know about on very large hosts (phaze-rvcn):**
 the derived analyze concurrency is `physical_cores // 4`, so past **32 physical cores** it
@@ -70,7 +70,7 @@ unused.
 `TF_NUM_INTRAOP_THREADS=1`, `TF_NUM_INTEROP_THREADS=1` in `docker-compose.agent.yml` so one
 slot ≈ one core. That fixed the load-18-on-8-cores oversubscription, but it wrote **one half
 of a relationship in a different file from the other half**: the compose file said 1 thread
-while `config.py`'s `lane_analyze_concurrency` said 4, so the product was 4 on nox's 8 physical
+while `config.py`'s `lane_analyze_concurrency` said 4, so the product was 4 on `host-store`'s 8 physical
 cores, and the extractor sat on the arm measured at **+172.8% wall for no memory saving**
 (`docs/k8s-burst.md`, "Thread sizing is derived, not configured").
 
@@ -78,15 +78,15 @@ Both halves now come from **one** function keyed on the host's schedulable *phys
 count (`services/analysis_sizing.py::derive_sizing`), applied before essentia is imported:
 
 ```
-intra_op_threads = min(4, physical_cores)   # nox: 4
+intra_op_threads = min(4, physical_cores)   # host-store: 4
 inter_op_threads = 1                        # constant -- this is the memory term
-omp_threads      = intra_op_threads         # nox: 4
-lane concurrency = physical_cores // intra_op_threads   # nox: 2
+omp_threads      = intra_op_threads         # host-store: 4
+lane concurrency = physical_cores // intra_op_threads   # host-store: 2
 
                    intra_op_threads x concurrency  ~=  physical_cores
 ```
 
-So on nox the analyze lane defaults to **2 slots × 4 threads** rather than 4 slots × 1 thread:
+So on `host-store` the analyze lane defaults to **2 slots × 4 threads** rather than 4 slots × 1 thread:
 the same 8-core budget, spent where the measurement says it is worth spending. The compose
 file passes all four variables through as bare names, so any value an operator exports still
 wins; `PHAZE_LANE_ANALYZE_CONCURRENCY` overrides the concurrency half exactly as before.
@@ -100,7 +100,7 @@ The liveness heartbeat (Phase 46 asyncio background task) runs in **every** lane
 This **replaced** the original quick-260707-dh1 convention (heartbeat on exactly `worker-analyze`,
 false on the others). Pinning the agent's entire liveness signal to one process meant that when
 that process stalled, the agent was classified DEAD after 300s while its other lanes were
-actively working (observed on nox, 2026-07-18). That was never only a display bug:
+actively working (observed on `host-store`, 2026-07-18). That was never only a display bug:
 `Agent.last_seen_at` is also the **work-routing key** — `enqueue_router.select_active_agent` orders by
 `last_seen_at DESC` — so a stale beat sorted the busiest machine in the fleet to the bottom and cost
 it work (`src/phaze/tasks/agent_worker.py`, `src/phaze/routers/agent_heartbeat.py`).
@@ -147,7 +147,7 @@ default 4). Without this pin the compute agent silently ran 4 concurrent ~8 GB j
 ## Migration / drain runbook
 
 New enqueues route to lane queues immediately on deploy. In-flight jobs on the legacy un-suffixed
-`phaze-agent-nox` queue must drain. The chosen mechanism is a **transitional all-mode consumer** — NOT a
+`phaze-agent-<agent>` queue must drain. The chosen mechanism is a **transitional all-mode consumer** — NOT a
 re-enqueue.
 
 Why not re-enqueue: re-driving an already-**active** multi-hour `process_file` onto a lane queue would
@@ -169,13 +169,13 @@ and — from phaze-6bkk — `write_file_tags:<log_id>`).
    ```bash
    docker compose -f docker-compose.agent.yml up -d worker-analyze worker-meta worker-io watcher
    ```
-   Producers now enqueue ONLY onto the lane queues, so `phaze-agent-nox` only drains (never grows).
+   Producers now enqueue ONLY onto the lane queues, so `phaze-agent-<agent>` only drains (never grows).
 2. Start the transitional drain consumer (all-mode: `PHAZE_AGENT_LANE` unset → every agent function on the
    legacy base queue; `PHAZE_AGENT_HEARTBEAT=false`):
    ```bash
    docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain
    ```
-3. Watch the legacy queue drain. When `phaze-agent-nox` reports **0 queued + 0 active** (visible in the
+3. Watch the legacy queue drain. When `phaze-agent-<agent>` reports **0 queued + 0 active** (visible in the
    `/saq` dashboard — the base queue is mounted for exactly this window), remove the drain service:
    ```bash
    docker compose -f docker-compose.agent.yml --profile drain rm -sf worker-drain

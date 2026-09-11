@@ -45,8 +45,8 @@ comparing any macOS RSS figure to the Linux baseline.
 > 120-minute pair on the development Mac, and declined every narrowing option in favour of
 > measuring on the burst node against real corpus files. Question as put, 2026-08-26: whether
 > to run a ~3 h 120-minute pair on the Mac or narrow criterion 6, given 10/30/60-minute macOS
-> pairs and an operation-count argument for duration-independence. Answer as given, verbatim:
-> *"I would recommend we take vox offline from phaze production, run the tests there selecting
+> pairs and an operation-count argument for duration-independence. Answer as given, with the host identifier replaced by its role description:
+> *"I would recommend we take the burst measurement host offline from phaze production, run the tests there selecting
 > a few long files from the current corpus of data. Feel free to do this anytime today."*
 > Durable record: a comment on bead `phaze-m1drf`.
 

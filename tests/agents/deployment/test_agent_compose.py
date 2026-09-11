@@ -37,6 +37,7 @@ import yaml
 
 
 COMPOSE_PATH = Path(__file__).resolve().parents[3] / "docker-compose.agent.yml"
+CLOUD_COMPOSE_PATH = Path(__file__).resolve().parents[3] / "docker-compose.cloud-agent.yml"
 PUBLISH_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "docker-publish.yml"
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
 CLEANUP_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "cleanup-images.yml"
@@ -736,3 +737,34 @@ def test_every_models_mount_is_read_only() -> None:
                 checked += 1
                 assert vol.endswith(":ro"), f"{svc_name} must mount /models :ro (phaze-ynv6w); got {vol!r}"
     assert checked >= 5, f"expected every worker + watcher to mount /models; found {checked}"
+
+
+def test_deployment_doc_matches_live_media_and_compute_scratch_mounts() -> None:
+    """Operator-facing mount claims stay derived from both shipped compose files."""
+    agent_services = _load_agent_compose()["services"]
+    expected_modes = {
+        "worker-analyze": "ro",
+        "worker-meta": "rw",
+        "worker-io": "ro",
+        "worker-drain": "rw",
+        "watcher": "ro",
+    }
+    assert {name: _scan_path_mode(agent_services[name]) for name in expected_modes} == expected_modes
+
+    cloud = yaml.safe_load(CLOUD_COMPOSE_PATH.read_text(encoding="utf-8"))
+    scratch_mounts = [
+        volume for volume in cloud["services"]["worker"].get("volumes", []) if isinstance(volume, str) and "PHAZE_CLOUD_SCRATCH_DIR" in volume
+    ]
+    assert len(scratch_mounts) == 1
+    assert re.fullmatch(
+        r"\$\{PHAZE_CLOUD_SCRATCH_DIR:\?[^}]+\}:\$\{PHAZE_CLOUD_SCRATCH_DIR\}:rw",
+        scratch_mounts[0],
+    ), "scratch source and target must use the identical host-path variable with a writable bind"
+
+    deployment = DEPLOYMENT_DOC_PATH.read_text(encoding="utf-8")
+    normalized_deployment = " ".join(deployment.split())
+    assert "`worker-meta` mounts it `rw`" in normalized_deployment
+    assert "`worker-drain` also mounts it `rw`" in normalized_deployment
+    assert "`worker-analyze`, `worker-io`, and `watcher` mount it `ro`" in normalized_deployment
+    assert "host-bound scratch" in deployment
+    assert "named scratch" not in deployment

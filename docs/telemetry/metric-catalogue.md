@@ -167,7 +167,7 @@ Reproduce with:
 
 ```bash
 docker compose -f docker-compose.telemetry.example.yml up -d
-uv run python scripts/measure_metric_contract.py --minutes 30 --models-dir <models>
+uv run python scripts/measure_metric_contract.py --minutes 30 --models-dir '<models-dir>'
 ```
 
 **Why against a real collector and not against the naming rules.** The OTLP → Prometheus
