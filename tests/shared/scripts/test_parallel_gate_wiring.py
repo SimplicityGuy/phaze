@@ -18,7 +18,7 @@ def _recipe(name: str) -> str:
 
 
 def test_parallel_recipe_and_two_worker_cap_are_explicit() -> None:
-    assert _recipe("test-cov-parallel").strip() == "uv run python scripts/parallel_test_runner.py"
+    assert _recipe("test-cov-parallel").strip() == "uv run python -m scripts.parallel_test_runner"
     assert [name for name, _ in LANE_BUCKETS] == ["lane-a", "lane-b"]
 
 

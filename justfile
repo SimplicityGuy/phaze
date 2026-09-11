@@ -325,7 +325,7 @@ test-cov:
 [doc('Run the default non-browser coverage gate in two isolated, order-preserving local lanes')]
 [group('test')]
 test-cov-parallel:
-    uv run python scripts/parallel_test_runner.py
+    uv run python -m scripts.parallel_test_runner
 
 # The local default uses the reviewed two-worker runner. It derives two stable seats from the
 # worktree, provisions both through `test-db-for`, and releases them without stopping the shared
