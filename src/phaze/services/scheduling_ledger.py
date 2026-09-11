@@ -1,4 +1,4 @@
-"""Control-only scheduling-ledger service (Phase 45 Plan 01, Task 2).
+"""Control-only scheduling-ledger service.
 
 CONTROL-ONLY BOUNDARY: this module imports ``phaze.models`` + SQLAlchemy, so it MUST
 NEVER be imported by ``phaze.tasks._shared`` or ``phaze.tasks.agent_worker`` (the agent
@@ -13,7 +13,7 @@ Six helpers:
   used by the WRITE hook). A repeat enqueue of a still-scheduled key refreshes
   ``payload`` / ``enqueued_at``.
 - :func:`insert_ledger_if_absent` -- ``INSERT ... ON CONFLICT (key) DO NOTHING`` (the Plan-04
-  backfill primitive; never overwrites a fresher hook-written row). Owned here so Plan 04
+  backfill primitive; never overwrites a fresher hook-written row). Owned here so the backfill
   adds no new contract and edits no Plan-01 test.
 - :func:`insert_ledger_rows_if_absent` -- the same ``ON CONFLICT (key) DO NOTHING`` primitive,
   batched: one (or a bounded few, chunked) multi-row INSERT for many rows instead of one
@@ -193,7 +193,7 @@ async def insert_ledger_rows_if_absent(session: AsyncSession, rows: Sequence[dic
 # saq_jobs write to land in -- so a key with a live (queued/active) saq_jobs row survives; only a
 # key with NO live row (the normal terminal-and-done case, OR a re-enqueue whose own saq_jobs write
 # has not landed yet -- see the docstring's residual-window note) is cleared. Mirrors the recovery
-# liveness definition 1:1 (``get_live_job_keys`` / ``_LIVE_KEYS_SQL`` in ``services/pipeline.py``):
+# liveness definition 1:1 (``get_live_job_keys`` / ``_LIVE_KEYS_SQL`` in ``phaze.services.pipeline.jobs``):
 # queued/active are the only LIVE statuses.
 _GUARDED_CLEAR_SQL = text(
     """

@@ -466,7 +466,6 @@ class TracklistScraper:
             href_str = str(link.get("href", ""))
             title = link.get_text(strip=True)
 
-            # Extract external_id from URL path
             match = self._EXTERNAL_ID_PATTERN.search(href_str)
             if match is None:
                 continue

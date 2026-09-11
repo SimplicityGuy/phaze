@@ -1,94 +1,21 @@
-"""THE paging contract for every operator-facing list in phaze (phaze-5462).
+"""Shared paging contract for every operator-facing list (phaze-5462).
 
-This module is the SINGLE owner of "how a list is bounded". Every list surface -- the enrich
-workspaces, search results, the audit log, duplicate groups, the CUE list -- composes the helpers
-here rather than re-deriving offsets, re-picking a page size, or re-inventing a ``has_next`` probe.
-Before adding a new paged read, read this docstring; it is the contract, not a suggestion.
+Every render-facing list composes these helpers rather than re-deriving offsets, limits, or
+``has_next``. The incident measurement that motivated the contract -- 10,132 rows, 12.7 MB,
+about 180 times the sibling tabs -- is preserved in ``docs/architecture.md`` under "List Paging
+Contract".
 
-WHY THIS EXISTS
----------------
-phaze-5462 found the Analyze workspace server-rendering its ENTIRE working set inline (10,132 rows
-/ 12.7 MB, ~180x its sibling tabs) behind a docstring that merely ASSERTED the set was "naturally
-bounded". Nothing enforced it. The same latent cliff sat under the metadata
-workspaces, whose pending-set reads are likewise unbounded and render zero rows today only because
-those backlogs happen to be empty. An assumption is not a bound. A bound is a ``LIMIT``.
+The contract:
 
-THE CONTRACT
-------------
-
-1. OFFSET PAGING, NOT CURSOR PAGING.
-   Offset is what every existing phaze pager already uses, it supports the Prev/Next affordance the
-   templates render, and it composes with arbitrary operator-chosen sort orders (a cursor must be
-   re-derived per sort key). The corpus is single-user and index-backed, so deep-offset cost is
-   acceptable; correctness and one consistent shape beat a micro-optimization. Do NOT introduce a
-   parallel cursor pager -- if a surface genuinely needs one, change it HERE for everyone.
-
-2. NEVER EMIT A WHOLE-CORPUS ``COUNT``.
-   ``has_next`` rides a ``page_size + 1`` SENTINEL row (:func:`paged_stmt` / :func:`split_sentinel`),
-   never ``SELECT count(*)``. A COUNT re-introduces a full scan on EVERY page render -- the T-87-11
-   DoS mitigation. This is why the UI shows "Page N" with Prev/Next and NEVER "page X of Y": the
-   total is deliberately unknown. Do not add a total to a template.
-
-3. ONE PAGE SIZE, OWNED HERE.
-   :data:`DEFAULT_PAGE_SIZE` is the default for every surface; :data:`MIN_PAGE_SIZE` /
-   :data:`MAX_PAGE_SIZE` clamp any caller- or request-supplied value. Routers must NOT spell their
-   own numeric default -- import the constant, so changing the page size is a ONE-line change here
-   rather than a grep across routers that silently misses one.
-
-4. MANDATORY UNIQUE TIEBREAKER ON EVERY ``ORDER BY``.  <-- the crux
-   SQL gives NO stability guarantee for rows that tie on the sort key. Under ``LIMIT``/``OFFSET``
-   Postgres may order tied rows differently between two queries, so a row can be SKIPPED entirely
-   or DUPLICATED onto two pages -- silently, with no error, and invisibly to tests that only ever
-   look at page 1. Any non-unique sort key (``ts_rank``, ``executed_at``, ``created_at``, a
-   group-name, a score) is therefore INSUFFICIENT ON ITS OWN.
-
-   :func:`paged_stmt` REQUIRES a ``tiebreaker`` argument and raises :class:`ValueError` if it is
-   missing, so the failure mode is a loud error at construction time rather than quiet data loss in
-   production. The tiebreaker MUST be a column (or column tuple) that is UNIQUE across the result
-   set -- in practice a primary key, e.g. ``FileRecord.id``. Its direction should match the primary
-   key's so the composite order stays intuitive.
-
-   Note that ``created_at`` is NOT a valid tiebreaker in phaze: Postgres timestamp defaults are
-   transaction-time constant, so every row inserted in one transaction ties exactly.
-
-5. OUT-OF-RANGE INPUTS CLAMP; THEY NEVER RAISE AND NEVER 422 INTO A RENDER.
-   :func:`clamp_page` maps anything below 1 (zero, negative, absurd) to page 1.
-   :func:`clamp_page_size` clamps into ``[MIN_PAGE_SIZE, MAX_PAGE_SIZE]``.
-   A page past the end is NOT an error -- it yields an EMPTY page with ``has_next=False``, which the
-   templates already render as the normal empty state. These reads ride hot render paths and must
-   degrade, never 500.
-
-   (phaze-hpo9 owns adding the matching request-layer validation for negative ``limit``/``offset``;
-   the defined answer it should apply is exactly this clamp, so the service layer stays safe even if
-   a route forgets a ``ge=`` guard. Clamping here is the belt; the route guard is the braces.)
-
-6. DEGRADE-SAFE READS.
-   A paged read on a render path wraps its execution in a SAVEPOINT (``session.begin_nested()``) and
-   returns an EMPTY :class:`Page` on any error rather than propagating. Rolling back the nested scope
-   alone keeps the outer request transaction usable for the rest of the page.
-
-7. A BOUNDED RENDER READ IS NEVER THE ENQUEUE SET.
-   Where a "pending" set feeds BOTH a table and a bulk-enqueue button, the render gets the bounded
-   page and the enqueue keeps the UNBOUNDED set. Bounding a shared reader would silently
-   under-enqueue -- a much worse bug than a long list. Keep the two readers separate and say so at
-   both call sites.
-
-USING IT
---------
-::
-
-    stmt = paged_stmt(
-        select(Thing).where(...),
-        page=page,
-        page_size=page_size,
-        order_by=(Thing.created_at.desc(),),   # the non-unique display order
-        tiebreaker=(Thing.id.desc(),),         # REQUIRED, unique -- rule 4
-    )
-    rows = (await session.execute(stmt)).all()
-    rows, has_next = split_sentinel(rows, page_size)
-
-``page``/``page_size`` are clamped inside :func:`paged_stmt`, so pass request values through
-directly; clamp once, here, not at each call site.
+1. Use OFFSET paging consistently; arbitrary operator-selected sort orders do not share one
+   reusable cursor shape.
+2. Derive ``has_next`` from a ``page_size + 1`` sentinel, never a whole-corpus ``COUNT``.
+3. Import the page-size constants from this module; request values clamp into their bounds.
+4. Every ``ORDER BY`` has a unique tiebreaker. Postgres does not stabilize ties, and
+   transaction-time ``created_at`` values are not unique.
+5. Out-of-range inputs clamp rather than failing a render; a page past the end is empty.
+6. Render reads use a SAVEPOINT and degrade to an empty :class:`Page` on database errors.
+7. A bounded render reader is never reused as an enqueue set, which must remain exhaustive.
 """
 
 from __future__ import annotations

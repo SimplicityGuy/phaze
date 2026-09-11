@@ -1,7 +1,6 @@
 """The proposal convergence gate -- one predicate, shared by the counter and the batching producer.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). The in-flight gate the
-trigger routes check (``get_proposal_busy_count``) is a ``saq_jobs`` probe and lives in
+The in-flight gate checked by trigger routes (``get_proposal_busy_count``) is a ``saq_jobs`` probe and lives in
 :mod:`phaze.services.pipeline.jobs` with its shape-identical siblings.
 """
 
@@ -42,7 +41,7 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
     interlock against the move a proposal ultimately performs; see its comment below.
     """
     return (
-        # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
+        # PR-A/Pitfall 4: the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
         # REPLACED by ``~done_clause(Stage.PROPOSE)`` -- a file with an existing proposal is a done
         # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two
         # convergence clauses below (metadata DONE and analysis DONE) still bound the set.
@@ -53,7 +52,7 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # (``routers/agent_metadata.py``'s ``report_metadata_failed``), so the previous bare
         # ``exists(FileMetadata)`` admitted a file whose metadata never landed. That was the
         # ASYMMETRY with the analysis conjunct below, which has required its own completion
-        # discriminator since Phase 57.1, and it was reachable rather than theoretical: such a file
+        # discriminator, and it was reachable rather than theoretical: such a file
         # could be proposed, approved and EXECUTED, and -- because ``done_clause(Stage.METADATA)``
         # stays False until real metadata lands -- it then sat in the metadata pending set FOREVER,
         # where all four ``ExtractMetadataPayload`` producers re-drive it at ``original_path``, the
@@ -68,7 +67,7 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # additive-only and "deliberately NOT ``done``", so a skipped file has no ``metadata`` row to
         # satisfy either form of this conjunct -- it was un-proposable before this change too.
         done_clause(Stage.METADATA),
-        # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
+        # D-03 KEY RISK: require the COMPLETION discriminator, not bare row-existence.
         # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
         # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
         # partial row into generate_proposals with NULL bpm/key/mood. `analysis_completed_at IS NOT
@@ -145,7 +144,7 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row, and since phaze-3542b with NEITHER
     enrich stage in flight -- the EXACT set the manual proposals triggers use), then SORTS the
     file-id strings before chunking into ``batch_size`` groups.
-    Phase 90 (PR-A, Pitfall 4): the propose-exclusion replaces the retired ``files.state`` membership,
+    PR-A/Pitfall 4: the propose-exclusion replaces the retired ``files.state`` membership,
     so an already-proposed file is never re-batched.
 
     Sorting BEFORE chunking makes a SINGLE call's batches deterministic (order-independent), which

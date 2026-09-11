@@ -1,79 +1,19 @@
-"""Shared async subprocess driver for essentia analysis (Phase 101, phaze-bo3p.2).
+"""Shared async subprocess driver for Essentia analysis (phaze-bo3p.2).
 
-The single parent-side entry BOTH lanes call — the one-shot pod (``phaze.job_runner``)
-and the SAQ worker (``phaze.tasks.functions``) — to run ``analyze_file`` in a real
-child process (``python -m phaze.analysis_child``). Because essentia's C++ holds the
-GIL of the process it runs in, moving it out of the parent keeps the parent's asyncio
-event loop free: ``progress_cb`` fires ON the loop as protocol lines arrive, so
-progress POSTs go out mid-analysis (the OBS-03 fix for the 0→100% bar jump).
+Both analysis lanes run ``python -m phaze.analysis_child`` through this database-free module so
+Essentia cannot block the parent's asyncio loop. Fixed-list argv spawning avoids a shell. The driver
+pumps JSONL progress and heartbeat messages, frames stderr into structured logs, and kills then reaps
+the child on stalls, cancellation, or exceptional exit.
 
-Responsibilities:
-- Spawn the child with a fixed list argv (never a shell — the push.py convention;
-  S603/B603-clean) and PIPE stdout/stderr.
-- Parse the stdout JSONL protocol: ``progress`` lines → ``progress_cb(analyzed,
-  total)`` (guarded — a callback error never kills the pump); ``heartbeat`` lines →
-  the stall watchdog (and ``heartbeat_cb``); the terminal ``result``/``error`` line
-  decides the outcome.
-- Frame every child stderr line into structlog (``analysis_child_output``) — this is
-  where essentia's C++ banners land after the child's fd 1 → fd 2 re-route, closing
-  the banner-capture TODO deferred from Phase 100.
-- Kill the child on stall, cancellation, or ANY other exceptional exit
-  (``proc.kill()`` + ``await proc.wait()``) so no orphan analysis process survives
-  its parent's interest.
+D-08 uses progress-based liveness, never a total wall-clock deadline. Fine/coarse window completion,
+chunk decoding, model sweeps, and any child output reset the stall watchdog; a long job that keeps
+making progress must run to completion. Pump settlement is awaited so callbacks cannot continue
+after the child is reaped. The incident and callback-timing measurements are preserved in
+``docs/design/0007-windowed-analysis.md``.
 
-D-08 DECISION RECORD — LIVENESS IS PROGRESS-BASED, NEVER WALL-CLOCK (phaze-w55w1)
----------------------------------------------------------------------------------
-This driver used to take a ``timeout`` and SIGKILL the child at
-``analysis_inner_timeout_sec`` (6 600 s) on the SAQ lane, with no bound at all on the
-burst lane. Both were wrong for the same reason, and the repo has the incident to prove
-it: ``phaze-1b39`` imposed a 3 h ``activeDeadlineSeconds`` and SIGTERM'd legitimate 2-6
-hour concert-set analyses, burned ``cloud_submit_max_attempts``, and stalled the whole
-burst lane (2026-07-28). **A wall clock cannot distinguish a long analysis from a hang.**
-Exhaustive analysis (ADR-0007 §7) makes that fatal rather than merely wasteful: a
-multi-hour set now legitimately runs for many hours, so any elapsed-time bound low enough
-to catch a hang is also low enough to kill real work.
-
-The replacement is a STALL watchdog. The child heartbeats every unit of progress it makes
-— fine and coarse window completions, chunk decode boundaries, each coarse model sweep —
-and this driver kills it only when NO such line has arrived for ``stall_timeout`` seconds.
-A job that keeps producing windows runs to completion however long that takes; a job that
-produces nothing dies in bounded time with a real, storable reason. The threshold is
-``analysis_stall_timeout_sec`` (config), sized against the longest legitimately silent
-stretch — one chunk's decode on a 12-hour file — not against total analysis time.
-
-Any child output resets the deadline, not just protocol lines: a child mid-essentia-banner
-is demonstrably alive, and treating an unparsed stderr line as silence would kill a
-healthy job for a cosmetic reason.
-
-That last rule is also why ``_settle`` AWAITS (phaze-2mz81, measured). An unsettled pump does
-not merely leak — it keeps calling ``_touch`` for a job nobody is waiting on, and a heartbeat
-is exactly what this watchdog reads as "live work". So an orphaned pump would hold the stall
-deadline open for CANCELLED work, on top of reporting that work alive to the SAQ broker
-through ``heartbeat_cb``. Both hazards were reproduced by reintroducing the pre-phaze-w55w1
-shape (cancel only the watchdog) and instrumenting the dispatch: 58 heartbeat callbacks landed
-AFTER the reap, spread across the child's whole remaining life. Settled, the count is zero.
-
-The boundary itself has a property worth naming, because it looks like that defect and is not.
-``cancel()`` is a REQUEST, not a barrier: a callback the event loop had already queued before
-the cancel arrived is still delivered, on the iteration after it, before this coroutine is
-resumed at all. Measured, such a callback lands 0.05-0.14 ms after ``cancel()`` and always
-before ``_kill_and_reap`` — one callback the loop already owed, never a stream of them. It is
-benign and it is not retractable from here; do not add a "suppress callbacks once cancellation
-is requested" fence to make it go away. Muting the channel would hide the orphaned pump above
-rather than prevent it, and it would defeat
-``test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_not_land``, whose gated
-child exists precisely to tell the two apart.
-
-Error contract (chosen to slot into the lanes' existing terminal handling):
-- stall              → :class:`AnalysisStalledError`, a ``TimeoutError`` subclass, so the
-  lanes' existing ``except TimeoutError`` terminal handling ("timeout" failure reason, no
-  blind re-run) applies unchanged while the stored message says stall, not elapsed time
-- child crash / nonzero exit / malformed protocol → :class:`AnalysisSubprocessError`
-  carrying the exit code and a stderr tail (replaces pebble's ``ProcessExpired``)
-- cancellation       → re-raised ``asyncio.CancelledError`` after the child is reaped
-
-This module imports neither essentia nor the DB — it stays inside the pod's
-import boundary (tests/shared/core/test_task_split.py).
+Stalls raise ``AnalysisStalledError`` (a ``TimeoutError`` subtype), child/protocol failures raise
+``AnalysisSubprocessError`` with exit code and stderr tail, and cancellation is re-raised after reap.
+The module must not import Essentia or the database.
 """
 
 from __future__ import annotations

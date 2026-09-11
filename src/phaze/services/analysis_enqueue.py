@@ -93,11 +93,11 @@ async def enqueue_process_file(
 
     Builds a COMPLETE ``ProcessFilePayload`` (the five required fields: the FileRecord's
     ``id`` / ``original_path`` / ``file_type`` plus the resolved ``agent_id`` and
-    ``models_path``, plus the optional Phase-50 ``expected_sha256`` / ``scratch_path``
+    ``models_path``, plus the optional cloud-push ``expected_sha256`` / ``scratch_path``
     cloud-push fields, both of which default ``None``) and serializes it via
     ``model_dump(mode="json")`` so the UUID round-trips as a string and the agent worker's
     ``ProcessFilePayload.model_validate`` (``extra="forbid"``) accepts it. Mirrors the working
-    ``agent_files.py`` pattern -- the pre-Phase-30 bug enqueued only ``file_id`` and
+    ``agent_files.py`` pattern -- the former routing bug enqueued only ``file_id`` and
     dead-lettered every job.
 
     Returns whatever ``queue.enqueue`` returns: a ``saq.Job`` normally, or ``None``
@@ -110,14 +110,14 @@ async def enqueue_process_file(
         file_type=file.file_type,
         agent_id=agent_id,
         models_path=models_path,
-        # Phase 50 (D-11): pin the pushed scratch copy + control-side expected sha256 for a cloud
+        # D-11: pin the pushed scratch copy + control-side expected sha256 for a cloud
         # file. Keyword-only + trailing + default None so the bulk local producer (_enqueue_analysis_jobs)
         # that passes neither stays byte-identical under extra="forbid"; when set, the worker reads/
         # verifies/cleans up the ephemeral scratch copy instead of original_path.
         expected_sha256=expected_sha256,
         scratch_path=scratch_path,
     )
-    # Phase 36: the PostgresQueue broker pool is built ``open=False`` and, unlike the old
+    # The PostgresQueue broker pool is built ``open=False`` and, unlike the old
     # redis-backed Queue, does NOT auto-connect on first enqueue. ``connect()`` is idempotent
     # (guarded by ``self._connected``) so this is a no-op after the first call. This path is
     # reached non-routed too (reboot re-enqueue, integration tests), so opening here covers
@@ -128,7 +128,7 @@ async def enqueue_process_file(
         # Deterministic key so a re-trigger (or the Wave-2 reboot re-enqueue) of an
         # already in-flight file dedups to a no-op (SAQ incomplete-set; 32-RESEARCH §Q4).
         key=process_file_job_key(file.id),
-        # phaze-w55w1: NO wall-clock net. Phase 43 pinned timeout=7200 as an outer bound under the
+        # phaze-w55w1: NO wall-clock net. The retired capped-analysis path used timeout=7200 above the
         # (removed) 6600s inner SIGKILL. Exhaustive analysis (ADR-0007 §7) makes any elapsed-time
         # bound wrong: a multi-hour concert set legitimately runs past both numbers, and a wall
         # clock cannot tell that apart from a hang -- phaze-1b39 is the incident where trying

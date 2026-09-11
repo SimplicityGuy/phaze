@@ -1,10 +1,8 @@
-"""Per-agent and whole-fleet live activity reads -- queue depth, lane depth, recent scans and
-the online-agent count.
+"""Per-agent and fleet activity reads for queue depth, lanes, scans, and liveness.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). What unites these is
-the SUBSTRATE and the degrade posture: they read the live broker through ``app.state`` handles (not
-the domain DB), they ride 5s polls, and a missing ``app.state`` attribute -- which is the normal
-shape under a lifespan-skipping test client -- must degrade to zero rather than 500 the poll.
+These hot poll-path readers use live broker handles from ``app.state`` rather than inferring queue
+activity from domain rows. Missing handles and individual source failures degrade to zero, so a
+lifespan-skipping test client or one unavailable queue cannot fail the whole dashboard poll.
 """
 
 from __future__ import annotations
@@ -209,7 +207,7 @@ async def count_active_agents(session: AsyncSession, kind: str | None = None) ->
     the DAG nodes' "Needs agent" gates -- a per-agent task raises ``NoActiveAgentError`` when no
     agent is online, so those buttons must stay disabled until one is.
 
-    Phase 58 (58-04, WORK-03): when ``kind`` is given (``"compute"`` / ``"fileserver"``) the count is
+    WORK-03: when ``kind`` is given (``"compute"`` / ``"fileserver"``) the count is
     scoped to agents of that ``Agent.kind`` -- the SAME liveness predicate, restricted to the kind.
     This mirrors :func:`phaze.services.enqueue_router.select_active_agent`'s ``kind`` arg (the canonical
     compute-online seam -- do NOT invent a second rule) and drives the Analyze A1 lane's ``computeOnline``

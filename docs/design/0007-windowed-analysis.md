@@ -443,6 +443,15 @@ false of this one.
 
 ______________________________________________________________________
 
+### Subprocess watchdog settlement evidence
+
+The D-08 subprocess driver awaits both output pumps when it reaps a child. Reintroducing the former
+cancel-only shape produced 58 heartbeat callbacks after reap, spread across the child's remaining
+life; awaiting settlement reduced that count to zero. A callback already queued by the event loop can
+still arrive 0.05–0.14 ms after `cancel()` and before the reap begins. That single owed callback is
+benign and must not be hidden by suppressing callbacks after cancellation, because suppression would
+also conceal a genuinely orphaned pump.
+
 ## Sources
 
 - `src/phaze/services/analysis.py` — `analyze_file`, `_iter_windows`, `_stride_to_cap`,

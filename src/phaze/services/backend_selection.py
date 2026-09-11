@@ -1,6 +1,6 @@
-"""The Phase-69 pure `select_backend` selection policy over the Phase-68 `Backend` substrate.
+"""Pure `select_backend` policy over the `Backend` substrate.
 
-This is the single genuinely-new artifact of Phase 69: the load-bearing routing *policy*,
+This is the load-bearing routing policy,
 isolated as a pure, synchronous, fully-typed decision function with NO I/O (no `await`, no DB,
 no network probe). The Plan-02 drain builds a once-per-tick `snapshot` (one `BackendSlot` per
 resolved backend) and calls this per FIFO candidate file; the function returns the `Backend` to
@@ -44,8 +44,8 @@ which `HOLD_CLOUD_ATTEMPTS_EXHAUSTED` explicitly does not.
 Signature note: attempts live on the file's `cloud_job` row, not on `FileRecord`, so the drain
 passes `cloud_attempts` explicitly rather than reading `file.cloud_attempts` (RESEARCH pseudocode
 used `file.cloud_attempts`; the real model has no such attribute). The staleness clock is likewise
-passed explicitly as `lane_entered_at` -- Phase 83 (D-07) moved it from `file.updated_at` to the
-awaiting `cloud_job.updated_at`, because Phase 90 removes the dual-written `file.state` (and thus the
+passed explicitly as `lane_entered_at` -- D-07 uses the awaiting `cloud_job.updated_at` rather than
+`file.updated_at`, because the dual-written `file.state` and its timestamp side effect are absent (and thus the
 `file.updated_at` lane-entry stamp), which would otherwise silently break `now - lane_entered_at` as
 the wait duration. FIFO ordering stays on the immutable `FileRecord.created_at` in the drain query.
 

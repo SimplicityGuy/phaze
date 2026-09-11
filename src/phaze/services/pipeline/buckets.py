@@ -1,8 +1,7 @@
 """The DERIVED per-stage reporting buckets -- the five ``stage_status_case`` counts plus the
 D-01a ``orphaned`` carve-out, corpus-wide and per-agent.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). The corpus-wide
-:func:`_safe_bucket_counts` and the per-agent :func:`_agent_stage_buckets` are DELIBERATELY kept in
+The corpus-wide :func:`_safe_bucket_counts` and the per-agent :func:`_agent_stage_buckets` are kept in
 ONE module: D-04 makes the second a one-conjunct clone of the first, and the drift between them is
 the hazard both docstrings are written against. Splitting them across modules would put the two
 halves of that invariant where a reader of either cannot see the other.
@@ -99,7 +98,7 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     ONE ``GROUP BY stage_status_case(stage)`` scoped to music/video files. Because every music/video
     file resolves to exactly one of the five :func:`phaze.services.stage_status.stage_status_case`
     buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``; ``skipped`` is the
-    Phase-87 force-skip marker, enrich-only), the five counts SUM to
+    force-skip marker, enrich-only), the five counts SUM to
     ``music_video_total`` on a healthy query. Reuses the LOCKED ``stage_status_case`` ``CASE`` ladder
     verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
     equivalence lock (and, transitively, the Python resolver).

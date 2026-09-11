@@ -1,21 +1,16 @@
-"""Controller-side per-agent SAQ enqueuer (Phase 26 D-19..D-21).
+"""Controller-side per-agent SAQ enqueuer (D-19..D-21).
 
-Replaces the inline ``Queue.from_url(...)`` + ``try/finally: queue.disconnect()``
-pattern at agent_files.py:99-117 with a reusable service. Queue instances
-are cached per-agent so the Redis connection pool is reused across enqueues.
+Queue instances are cached per agent so the broker connection pool is reused across enqueues.
 
 Lifecycle: instantiated once in ``main.py``'s lifespan as ``app.state.task_router``;
 shutdown calls ``close()`` to disconnect every cached queue.
 
-Phase 26 D-18 + quick-260707-dh1: queue name format is
+The D-18 queue name format is
 ``phaze-agent-<agent_id>-<lane>`` where ``agent_id`` is the kebab-case slug from
-Phase 24 D-01 (regex ``^[a-z0-9]+(-[a-z0-9]+)*$``) and ``<lane>`` is one of
+D-01 (regex ``^[a-z0-9]+(-[a-z0-9]+)*$``) and ``<lane>`` is one of
 ``analyze`` / ``meta`` / ``io`` (``enqueue_router.LANES``). The
 slug + lowercase lane guarantee Redis-safe key chars; no escaping needed.
 
-This module is opted into mypy strict checking via the
-``[[tool.mypy.overrides]] module = "phaze.services.agent_task_router"`` block in
-pyproject.toml (Plan 01).
 """
 
 from __future__ import annotations
@@ -75,7 +70,7 @@ class AgentTaskRouter:
             payload=...,
         )
 
-    Phase 30: :meth:`queue_for` exposes the cached per-agent Queue publicly so the
+    :meth:`queue_for` exposes the cached per-agent Queue publicly so the
     shared ``phaze.services.enqueue_router.resolve_queue_for_task`` can route to the
     same hook-applied Queue instance without touching the private ``_queue_for``.
     """
@@ -83,7 +78,7 @@ class AgentTaskRouter:
     def __init__(self, queue_url: str, cache_redis_url: str, ledger_sessionmaker: async_sessionmaker | None = None) -> None:
         self._queue_url = queue_url
         self._cache_redis_url = cache_redis_url
-        # Phase 45: OPTIONAL control-side scheduling-ledger sessionmaker. When provided, every
+        # Optional control-side scheduling-ledger sessionmaker. When provided, every
         # per-agent queue this router builds gets it attached so the before_enqueue WRITE hook
         # records the manual/recovery enqueue in the durable ledger. The control-side producers
         # (the API lifespan + the controller worker) pass it; nothing else does, so the agent
@@ -101,7 +96,7 @@ class AgentTaskRouter:
 
         ``lane`` is REQUIRED -- there is NO silent default. A default would strand
         io tasks (s3_upload / push_file) on the analyze queue, whose worker registers
-        only ``{process_file}`` (the Phase-30 / v4.0.8 stranding this design fixes),
+        only ``{process_file}`` (the queue-stranding class this design fixes),
         and would break the legacy-queue drain invariant. Producers resolve the lane
         via ``enqueue_router.lane_for_task(task_name)`` (fail-loud on an unmapped name).
         """
@@ -132,14 +127,14 @@ class AgentTaskRouter:
         """Return the cached Queue for ``(agent_id, lane)``, constructing on first access.
 
         Queue name format is ``phaze-agent-<agent_id>-<lane>`` (quick-260707-dh1;
-        base per Phase 26 D-18 + the lane suffix). Cached under ``(agent_id, lane)``.
+        base per D-18 plus the lane suffix). Cached under ``(agent_id, lane)``.
         """
         cache_key = (agent_id, lane)
         # quick-260707-dh1: the sentinel empty lane is the READ-ONLY legacy base queue
         # (phaze-agent-<id>, no suffix) used only for drain visibility; every real lane suffixes.
         queue_name = f"phaze-agent-{agent_id}" if lane == "" else f"phaze-agent-{agent_id}-{lane}"
         if cache_key not in self._queues:
-            # Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue
+            # Built via the single `build_pipeline_queue` seam -- a PostgresQueue
             # (broker = queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults +
             # apply_deterministic_key) already registered and a decoupled `cache_redis` handle.
             # The factory owns the hook chain, so the per-agent dispatch path no longer registers
@@ -204,7 +199,7 @@ class AgentTaskRouter:
         # task_name and the lane is resolved here.
         lane = lane_for_task(task_name)
         queue = self._queue_for(agent_id, lane)
-        # Phase 36: open the PostgresQueue broker pool (built open=False) before enqueueing.
+        # Open the PostgresQueue broker pool (built open=False) before enqueueing.
         # connect() is idempotent (guarded by self._connected) -- a no-op after the first call.
         await queue.connect()
         dumped = payload.model_dump(mode="json")
@@ -253,7 +248,7 @@ class AgentTaskRouter:
         timeout: int | None = None,
         retries: int | None = None,
     ) -> Any:
-        """Enqueue using ``file_record.agent_id`` (Phase 24 FK to agents.id).
+        """Enqueue using ``file_record.agent_id`` (the FK to ``agents.id``).
 
         ``timeout`` / ``retries`` pass through to :meth:`enqueue_for_agent` for
         consistency; ``None`` (default) leaves the policy defaults in place.
@@ -282,7 +277,7 @@ class AgentTaskRouter:
         anything missed would abandon the rest of the fleet's cleanup. Each logs at WARNING with
         ``exc_info=True``, so the traceback is preserved rather than swallowed.
         """
-        # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
+        # WR-01: close the factory-attached cache_redis handle too —
         # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
         cache_redis = getattr(queue, "cache_redis", None)
         if cache_redis is not None:

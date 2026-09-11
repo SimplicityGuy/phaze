@@ -103,7 +103,7 @@ async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> 
     a re-scrape) can legitimately create multiple tracklists per file. A ``scalar_one_or_none``
     here would raise ``MultipleResultsFound`` -> 500 the tags page and silently empty the tagwrite queue
     (services/review.py swallows it). Pick the highest-confidence link deterministically instead, mirroring
-    services/pipeline.py's ``max(match_confidence)`` per-file model.
+    ``phaze.services.pipeline.proposals``'s ``max(match_confidence)`` per-file model.
     """
     stmt = select(Tracklist).where(Tracklist.file_id == file_id).order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.id).limit(1)
     result = await session.execute(stmt)

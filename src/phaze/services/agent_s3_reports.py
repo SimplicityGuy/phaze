@@ -1,4 +1,4 @@
-"""Control-side protocols for the agent S3-staging upload callbacks (Phase 53, Plan 04).
+"""Control-side protocols for agent S3-staging upload callbacks.
 
 The control plane is the only place with the S3 credentials and the ORM, so the Postgres-free,
 SDK-free file-server agent reports its multipart-upload outcome through the token-authed internal
@@ -344,14 +344,14 @@ async def process_uploaded(
         await session.commit()
         return _uploaded_result(UploadedReason.UPLOAD_ID_CAS_MISS)
 
-    # Phase 55 (D-01b, KROUTE-03): on the kueue target the upload-complete callback is also the
+    # D-01b/KROUTE-03: on the kueue target the upload-complete callback is also the
     # post-staging seam -- it enqueues submit_cloud_job through enqueue_router on the controller queue
     # (NEVER a raw enqueue -- KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the
     # resolved-kind == "kueue" guard is defensive: a non-kueue target preserves today's cloud_job-only
-    # behavior. Phase 68 (D-09): registry-derived kind via the Backend registry helper (was the retired
+    # behavior. D-09: registry-derived kind via the Backend registry helper (not a
     # <=1-non-local accessor).
     if resolved_non_local_kind(settings) == "kueue":
-        # Phase 90 (D-09): the companion FileRecord PUSHING -> PUSHED CAS flip this seam used to perform
+        # D-09: the companion FileRecord PUSHING -> PUSHED CAS flip this seam used to perform
         # was removed (read + write deleted atomically in PR-B). Idempotency is carried solely by the
         # OUTER cloud_job CAS above (UPLOADING -> UPLOADED; rowcount==0 already returned) PLUS the
         # deterministic submit_cloud_job key -- a duplicate/late callback is already a no-op at the
@@ -371,7 +371,7 @@ async def process_uploaded(
         # cloud_job stays durably UPLOADED, and the file re-enters the drain on the next tick.
         await session.commit()
 
-        # Route submit_cloud_job onto the CONTROLLER queue via the single Phase-30 seam (never a raw
+        # Route submit_cloud_job onto the CONTROLLER queue via the single routed-queue seam (never a raw
         # controller_queue.enqueue / the default queue -- KROUTE-04, T-55-SEAM-03). Deterministic key
         # dedups a replayed submit (KSUBMIT-01). submit_cloud_job stays staging-free (rejected coupling).
         # Post-commit: a failed enqueue (controller pool down) is best-effort -- the control state is
@@ -432,7 +432,7 @@ async def _spill_failed_upload(
         )
 
     # cleared (helper CAS hit): gate S3 cleanup + ledger clear behind the CAS.
-    # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the cloud_job
+    # D-09: the former AWAITING_CLOUD FileRecord.state dual-write was removed; the cloud_job
     # sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
     # MKUE-02: act on the RECORDED staging bucket; a bucketless row (no S3 object) skips the S3 ops cleanly.
     # phaze-1v37: capture the bucket + upload_id into locals and COMMIT the spill CAS + ledger clear

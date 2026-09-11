@@ -1,4 +1,4 @@
-"""Control-plane S3 object-staging service (Phase 53, Plan 02 -- KSTAGE-01/03/04, DIST-01).
+"""Control-plane S3 object-staging service (KSTAGE-01/03/04, DIST-01).
 
 The single home of every S3 SDK call in the system. The control plane presigns a
 multipart upload, mints a just-in-time presigned GET, completes/aborts the upload, deletes

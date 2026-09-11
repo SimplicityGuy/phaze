@@ -1,17 +1,14 @@
-"""SQL ``ColumnElement`` half of the single-source per-stage predicate layer (Phase 78, D-04).
+"""SQL ``ColumnElement`` half of the single-source per-stage predicate layer (D-04).
 
 This module is the database-side twin of the DB-free :mod:`phaze.enums.stage` resolver. It exposes
 composable :class:`~sqlalchemy.ColumnElement` builders -- ``done_clause`` / ``failed_clause`` /
 ``inflight_clause`` per stage, and ``stage_status_case`` which composes them into the 4-way status
-CASE ladder -- so EVERY later-phase reader gets ONE place to drop a per-stage predicate into a
+CASE ladder -- so every reader gets one place to drop a per-stage predicate into a
 ``.where(...)``. The DERIV-04 equivalence test
 (``tests/integration/test_stage_status_equivalence.py``) locks these builders against the Python
 resolver so the two can NEVER drift.
 
-**PURELY ADDITIVE** (Phase 78): no existing reader or writer is wired to these builders here. The
-pending-set / counts / recovery / DAG readers cut over in Phase 82+ behind the shadow-compare gate.
-
-Per-stage semantics (locked in 78-CONTEXT.md, mirrored 1:1 in :func:`phaze.enums.stage.resolve_status`):
+Per-stage semantics, mirrored 1:1 in :func:`phaze.enums.stage.resolve_status`:
 - precedence ``in_flight ≻ done ≻ failed ≻ not_started`` (DERIV-02 -- the SAQ ledger wins).
 - ``done(analyze)`` requires ``analysis_completed_at IS NOT NULL`` (DERIV-03 -- a partial in-flight
   row upserted at analysis START has ``completed_at`` NULL and is NOT done).
@@ -26,16 +23,14 @@ All anti-joins use correlated ``~exists(...)`` -- never an outer-join-null or ne
 anti-pattern. Every operand is an ORM column or a bound param; the sole raw SQL is the
 SAVEPOINT-isolated ``saq_detail`` read (static status allowlist, no interpolation).
 
-================================================================================================
-D-01 DECISION RECORD (written record, INFLIGHT-03 / SC#5) -- the authoritative ``in_flight`` source
-================================================================================================
+D-01 / INFLIGHT-03 -- the authoritative ``in_flight`` source
+----------------------------------------------------------------
 The AUTHORITATIVE source of ``in_flight`` is the durable :class:`~phaze.models.scheduling_ledger.SchedulingLedger`:
 a ledger row on the ``(file, stage-function)`` key -- i.e. ``"<function>:<file_id>"`` -- means the
 stage is in flight. ``saq_jobs`` (the SAQ-owned broker table) is a CORROBORATING signal ONLY and
 NEVER flips the ``in_flight`` boolean.
 
-Rationale (durability): the scheduling ledger survives a broker truncate/restore (the only genuine
-post-Phase-36 Postgres-broker loss case). A file that crashed mid-run, or whose completion callback
+Rationale (durability): the scheduling ledger survives a broker truncate/restore. A file that crashed mid-run, or whose completion callback
 was lost, keeps its ledger row and therefore reads ``in_flight`` -- it is NEVER falsely
 ``not_started``. This directly guards the 2026-06-18 over-enqueue class (~44.5K jobs), where
 recovery re-queued never-scheduled work because there was no durable "was scheduled" fact.
@@ -46,42 +41,14 @@ Rejected alternatives:
 - ``saq_jobs`` alone: the pre-ledger design behind the over-enqueue incident. Rejected.
 
 Consequently ``saq_jobs`` is READ-ONLY here, detail-only, SAVEPOINT-isolated (``saq_detail``), and
-degrades to a safe default on ANY error; **Alembic NEVER references ``saq_jobs``** (Phase-77 banner
-carried forward -- this plan adds no migration).
-================================================================================================
+degrades to a safe default on ANY error; **Alembic NEVER references ``saq_jobs``**.
 
-================================================================================================
-D-01a AMENDMENT (phaze-2u8v.2) -- a ledger row means SCHEDULED, which is not the same as RUNNING
-================================================================================================
-D-01 above is UNCHANGED and still correct: :func:`inflight_clause` stays ledger-only, ``saq_jobs``
-still never flips it, and the locked ladder / :func:`eligible_clause` / recovery all keep reading
-exactly what they read before. This amendment adds the fact D-01 left unsaid, and the reporting
-predicates that fact requires.
+D-01a -- scheduled is not the same as running
+------------------------------------------------
 
-THE MEASUREMENT that forced it (live archive, ``process_file``/analyze lane, 2026-07-28)::
-
-    scheduling_ledger rows for 'process_file'                            4963   <- reported in_flight
-      of which a LIVE (queued/active) saq_jobs row exists                2583   <- SAQ's own truth
-      of which no saq_jobs row but a busy cloud_job (compute dispatch)     58   <- really in flight
-      of which the stage has DOMAIN-COMPLETED (done/skipped/failed)       176   <- resolved, leaked row
-      of which nothing is running and nothing completed                  2146   <- ORPHANED
-
-A ledger row is written at the ``before_enqueue`` chokepoint and deleted ONLY by a terminal-outcome
-callback. It carries no liveness corroboration and no expiry, and until this bead NOTHING anywhere
-reconciled one. So every job that dies without running its terminal clear leaks a ledger row that
-reads ``in_flight`` FOREVER, and the count is monotonically non-decreasing in those leaks. 2145 of
-the 2146 orphans above were enqueued on a single day (2026-06-21, the remediation window of the
-2026-06-18 over-enqueue incident); the 176 resolved rows accrue continuously, and one of their
-producers is ``reap_stuck_aborting_jobs`` itself, which DELETEs the ``saq_jobs`` row to release the
-deterministic key and deliberately leaves the ledger row standing.
-
-RELATION TO CLOSED EPIC phaze-qmc2 -- **NEVER-COVERED, not a regression.** That epic's charter was
-``saq_jobs`` / ``scan_batches`` / ``cloud_job`` status honesty, and all eight of its members touch
-only those three tables. ``scheduling_ledger`` was never brought under its "a row's status must
-describe reality" rule, so its guarantees did not regress here -- they simply stop one table short
-of the table this counter reads.
-
-THE SPLIT. "Scheduled and unresolved" (the ledger) is the union of three populations, and the
+The 2026-07-28 measurement and exact populations are preserved in
+``docs/design/0006-ledger-completion-coverage.md``. "Scheduled and unresolved" is the union of
+three populations, and the
 reporting layer must not call all three ``in_flight``:
 
 - RUNNING     -- a live ``saq_jobs`` key, or a busy ``cloud_job`` for compute dispatch that SAQ
@@ -107,7 +74,6 @@ ledger-only behavior. A broker truncate therefore still leaves those files readi
 never ``not_started`` -- which is the guarantee D-01's durability rationale actually protects.
 ``saq_jobs`` stays READ-ONLY, and it is referenced through a bare :func:`~sqlalchemy.table` clause
 that is NOT attached to ``Base.metadata``, so **Alembic still never sees it**.
-================================================================================================
 """
 
 from __future__ import annotations
@@ -147,8 +113,8 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     resolution is a corpus-hygiene fact about a file, not one of the pipeline stages. It takes NO
     ``stage`` argument and correlates to :class:`~phaze.models.file.FileRecord` in the enclosing query
     via a correlated ``exists(...)`` (never an outer-join-null / negated-membership anti-pattern),
-    identical in body to the Phase-90-retired ``shadow_compare._dedup_exists`` migration-verification
-    helper (the module was removed with ``files.state`` in Phase 90's writer-removal cleanup). Marker-row
+    identical in body to the retired ``shadow_compare._dedup_exists`` migration-verification
+    helper removed with the ``files.state`` writer. Marker-row
     existence means resolved; ``~dedup_resolved_clause()`` therefore means "not resolved" (the shape the Wave-2
     dedup readers consume).
 
@@ -158,7 +124,7 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     drift-locked to the Python resolver by ``tests/integration/test_stage_status_equivalence.py`` (D-13).
     A non-``Stage`` clause must not touch that test.
 
-    Consumers import this predicate from here (the single-source predicate module, Phase 78) --
+    Consumers import this predicate from this single-source module --
     ``services/dedup.py`` does so at module level. A consumer that sits on the agent side of the
     import boundary must import it INSIDE its function instead (D-00e).
     """
@@ -221,7 +187,7 @@ def done_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the correlated ``done`` predicate for ``stage`` (a ``ColumnElement[bool]``).
 
     Correlates to :class:`~phaze.models.file.FileRecord` in the enclosing query. Uses ``exists(...)``
-    only (never an outer-join-null / negated-membership anti-pattern). The Phase-77 partial indexes
+    only (never an outer-join-null / negated-membership anti-pattern). The stage-status partial indexes
     back each probe.
     """
     if stage is Stage.ANALYZE:
@@ -322,7 +288,7 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
 
     Only the two file-keyed enrich stages have a per-file ledger key. ``propose`` is keyed on a
     batch set-hash (``sha256(sorted file_ids)``), NOT per-file, so there is no per-file
-    ``in_flight(propose)`` -- scoped OUT of Phase 78 (RESEARCH Pitfall 5 / OQ1). The downstream
+    ``in_flight(propose)`` -- deliberately out of scope (RESEARCH Pitfall 5 / OQ1). The downstream
     presence stages likewise have no file-keyed enqueue, so they return a constant ``false()``,
     matching the Python twin (which defaults ``inflight`` to ``False`` for those stages).
     """
@@ -421,7 +387,7 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
 
 
 def awaiting_candidate_clause() -> ColumnElement[bool]:
-    """Return the single-source awaiting-cloud candidate predicate (Phase 80, D-08/D-09).
+    """Return the single-source awaiting-cloud candidate predicate (D-08/D-09).
 
     A file is an awaiting-cloud candidate iff it carries a ``cloud_job(status='awaiting')`` sidecar
     row AND is NOT analyze-in-flight AND has NOT domain-completed its analyze:
@@ -429,8 +395,8 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
         ``and_(CloudJob.status == 'awaiting', ~inflight_clause(ANALYZE), ~domain_completed_clause(ANALYZE))``
 
     -- the same three conjuncts, in the same order, as the two inline spellings this builder REPLACES
-    (``get_awaiting_cloud_count`` + ``get_cloud_staging_candidates`` in ``services/pipeline.py``), so the
-    card and the drain derive from ONE source and can NEVER disagree (D-08). (Plan 80-04 had added a third
+    (``get_awaiting_cloud_count`` + ``get_cloud_staging_candidates`` in ``phaze.services.pipeline.jobs``), so the
+    card and the drain derive from ONE source and can NEVER disagree (D-08). A former third
     consumer, ``recover_orphaned_work``'s ``_get_awaiting_cloud_ids``; 83-06 reversed D-09 and made the
     drain the single owner of held files, so recovery now EXCLUDES awaiting-cloud files via a plain
     ``cloud_job.status == 'awaiting'`` set rather than reusing this candidacy clause.)
@@ -457,7 +423,7 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
 
 
 # D-01a. ``saq_jobs`` is SAQ-owned and deliberately NOT an ORM model: a bare ``table()`` clause keeps
-# it out of ``Base.metadata`` (so Alembic never emits it -- the Phase-77 banner) while still letting the
+# it out of ``Base.metadata`` (so Alembic never emits it -- the migration boundary) while still letting the
 # probes below be built from real column objects rather than interpolated SQL. Mirrors the read-only
 # discipline of ``_SAQ_DETAIL_SQL`` / ``pipeline._LIVE_KEYS_SQL``.
 _saq_jobs = sa_table("saq_jobs", sa_column("key"), sa_column("status"))
@@ -717,7 +683,6 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     return case(*branches, else_=Status.NOT_STARTED.value)
 
 
-# ==================================================================================================
 # phaze-cvn6.1 -- the DISPLAY order for a stage-status column.
 #
 # READ THIS BEFORE REORDERING IT. This tuple is NOT the precedence ladder above and the two must
@@ -751,7 +716,6 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
 #
 # The stage/status FILTER lens (``?stage=…&bucket=failed``, ``_status_filter_bar.html``) remains the
 # direct way to ask for failures only; this ordering is for scanning, not for filtering.
-# ==================================================================================================
 STAGE_STATUS_DISPLAY_ORDER: tuple[Status, ...] = (
     Status.DONE,
     Status.IN_FLIGHT,
@@ -778,7 +742,7 @@ def stage_status_sort_case(stage: Stage) -> ColumnElement[int]:
     correlated ``CASE`` makes Postgres evaluate it for every candidate row, not just the page, so a
     stage sort is O(corpus) where a sort on ``current_path`` is index-ordered. That is accepted here
     on the same ground the ALREADY-SHIPPED filter rests on -- ``_files_page_stmt`` has evaluated
-    ``stage_status_case(stage) == bucket`` corpus-wide since Phase 87 -- and it stays off the hot
+    ``stage_status_case(stage) == bucket`` corpus-wide -- and it stays off the hot
     path because ``files_table_view.html`` carries NO self-poll (T-87-11 is about a poll scanning the
     corpus; this is a click).
 

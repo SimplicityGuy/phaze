@@ -1,4 +1,4 @@
-"""Degrade-safe reader for the Phase-71 force-local routing override (BEUI-02).
+"""Degrade-safe reader for the force-local routing override (BEUI-02).
 
 :func:`get_route_control` reads the single ``route_control`` ``'global'`` row and returns its
 ``force_local`` flag. It is on TWO hot paths -- the drain cron (``stage_cloud_window``) and the

@@ -1,4 +1,4 @@
-"""Agent liveness classification (Phase 29 D-12 + UI-SPEC §Status Pill Component).
+"""Agent liveness classification (D-12 + UI-SPEC §Status Pill Component).
 
 ``classify``/``sort_key`` are pure functions — no DB, no I/O. The router
 (``phaze.routers.admin_agents``) calls ``classify(agent, now)`` for every row and
@@ -150,7 +150,7 @@ any DB error (KDEPLOY-04).
 class ComputeLane:
     """One derived compute-lane identity for the two-section Agents page (COMPUTE-01).
 
-    A per-cluster liveness identity composed from the Phase-67 backend registry (one lane per
+    A per-cluster liveness identity composed from the multi-backend registry (one lane per
     NON-local entry) and the live in-flight ``CloudJob`` counts attributed to that backend. A lane
     is NEVER a heartbeating agent — its ``state`` is derived purely from in-flight work (``running`` /
     ``waiting``), so a configured-but-quiet cluster is ``IDLE`` (listed, never DEAD/red) and a DB
@@ -194,7 +194,7 @@ def _lane_state(running: int, waiting: int) -> ComputeLaneState:
 def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
     """Return ``{backend_id: kind}`` for every registry entry whose ``kind != "local"`` (COMPUTE-01).
 
-    A pure, session-free projection of the Phase-67 registry (``settings.backends``) — the shared
+    A pure, session-free projection of the multi-backend registry (``settings.backends``) — the shared
     helper the per-cluster lane derivation here and the later header-count / file-badge beads all
     consume so "which backends are cloud lanes?" is answered in exactly one place. Insertion order
     mirrors ``settings.backends`` so downstream lane ordering is registry-deterministic.
@@ -205,7 +205,7 @@ def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
 def _attribute_cloud_job_counts_to_lanes(kinds: dict[str, str], rows: Sequence[Any]) -> list[ComputeLane]:
     """Attribute one grouped ``CloudJob`` count row to each registry backend, and the NULL-backend remainder to one trailing lane.
 
-    ``kinds`` is the Phase-67 registry projection (``non_local_backend_kinds``) and ``rows`` is the
+    ``kinds`` is the multi-backend registry projection (``non_local_backend_kinds``) and ``rows`` is the
     ``GROUP BY backend_id`` result carrying ``(backend_id, running, waiting, queued, working)``. The two
     are joined on ``backend_id``: EVERY configured cluster gets a lane, IDLE and all-zero when it holds
     no in-flight work (liveness is work, never a reachability probe), and in-flight rows whose
@@ -254,7 +254,7 @@ def _attribute_cloud_job_counts_to_lanes(kinds: dict[str, str], rows: Sequence[A
 async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeLane]:
     """Return one :class:`ComputeLane` per non-local registry backend + a trailing unattributed lane (COMPUTE-01).
 
-    Composes the Phase-67 registry (``get_settings().backends``, non-local entries) with a SINGLE
+    Composes the multi-backend registry (``get_settings().backends``, non-local entries) with a SINGLE
     grouped ``CloudJob`` read (``GROUP BY backend_id`` with filtered counts — ``RUNNING`` → running,
     ``SUBMITTED AND inadmissible`` → waiting, plus the phaze-5c6i2 ``queued``/``working`` pair below),
     mirroring the ``_admission_by_backend_id`` idiom in ``services.backends``. Every configured cluster
@@ -323,8 +323,7 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
     return _attribute_cloud_job_counts_to_lanes(kinds, rows)
 
 
-# --- phaze-2u8v.5: burst-lane workload drill-down --------------------------------------------
-#
+# Burst-lane workload drill-down (phaze-2u8v.5)
 # The compute/burst-lane panel (Section 2 of /admin/agents) used to report only a bare count
 # ("3 workloads · 3 running") with no way to see WHAT was running -- an operator could see that
 # work existed but not act on it. This is the degrade-safe read behind that drill-down.

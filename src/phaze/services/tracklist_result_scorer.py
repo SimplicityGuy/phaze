@@ -98,9 +98,7 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------------------------
 # Calibration -- every number below is set against the six real captures, not invented
-# --------------------------------------------------------------------------------------------
 
 SELECTION_THRESHOLD = 70
 """Minimum confidence for a candidate to be selectable at all.
@@ -213,9 +211,7 @@ class ResultSelection:
         return self.selected.confidence if self.selected is not None else 0
 
 
-# --------------------------------------------------------------------------------------------
 # Signal extraction
-# --------------------------------------------------------------------------------------------
 
 
 def _parse_row_date(raw: str | None) -> _date | None:
@@ -307,9 +303,7 @@ def _confidence(*, result: TracklistSearchResult, row_date: _date | None, derive
     return score
 
 
-# --------------------------------------------------------------------------------------------
 # Entry points
-# --------------------------------------------------------------------------------------------
 
 
 def score_results(derived: DerivedQuery, results: Sequence[TracklistSearchResult]) -> tuple[ScoredResult, ...]:

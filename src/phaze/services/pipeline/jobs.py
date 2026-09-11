@@ -1,7 +1,6 @@
 """Read-only probes of the SAQ-owned ``saq_jobs`` broker table.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). Every read here is a
-static-SQL scan of the live broker with NO interpolated operator input, and every one degrades to a
+Every read is a static-SQL scan of the live broker with no interpolated operator input, and every one degrades to a
 zero/empty answer inside its own SAVEPOINT. They are grouped by SUBSTRATE rather than by domain
 because the four busy-count readers are shape-identical clones over ONE shared statement
 (:data:`_STAGE_BUSY_SQL`) -- the same "define it once so the copies cannot drift" argument the
@@ -26,10 +25,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# Per-stage in-flight gate (Phase 38 follow-up, t7k FIX2). ``saq_jobs`` has NO ``function`` column;
-# the deterministic key is ``<function>:<file_id>`` (Phase 35), so the per-stage in-flight count is
+# Per-stage in-flight gate (t7k FIX2). ``saq_jobs`` has NO ``function`` column;
+# the deterministic key is ``<function>:<file_id>``, so the per-stage in-flight count is
 # bucketed by the key's function prefix. Static SQL with NO interpolated operator input — the only
-# literals are ``split_part`` and the ``status`` allowlist (T-t7k-01, mirroring the Phase-37
+# literals are ``split_part`` and the ``status`` allowlist (T-t7k-01, mirroring the shared
 # stage_control discipline). One grouped scan covers all three agent stages.
 _STAGE_BUSY_SQL = text("SELECT split_part(key, ':', 1) AS fn, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn")
 
@@ -63,7 +62,7 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     return {stage: counts["queued"] + counts["active"] for stage, counts in activity.counts.items()}
 
 
-# Live-broker key set (Phase 45). ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the
+# Live-broker key set. ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the
 # live broker, never an Alembic-managed table (mirrors the _STAGE_BUSY_SQL / _INFLIGHT_COUNT_SQL
 # discipline). Recovery subtracts this set from the scheduling-ledger rows to find work that was
 # scheduled then lost; parked/paused jobs keep status='queued' and so correctly stay IN this live
@@ -94,10 +93,10 @@ async def get_live_job_keys(session: AsyncSession) -> set[str]:
     return {row[0] for row in rows}
 
 
-# Bulk match in-flight gate (Phase 41, REQ-41-3). match_tracklist_to_discogs is a CONTROLLER task --
+# Bulk match in-flight gate (REQ-41-3). match_tracklist_to_discogs is a CONTROLLER task --
 # NOT one of the agent stages tracked by get_stage_busy_counts (that function + its tests stay
 # untouched) -- but its jobs live in the SAME saq_jobs table, so the same key-prefix scan works. The
-# deterministic key is "match_tracklist_to_discogs:<tracklist_id>" (Phase 35), so the in-flight count
+# deterministic key is "match_tracklist_to_discogs:<tracklist_id>", so the in-flight count
 # is the bucket whose key prefix == the function-name constant. Reuses the SAME static
 # _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
 # split_part, the status allowlist, and the function-name constant below; T-41-01).
@@ -173,9 +172,8 @@ async def get_proposal_busy_count(session: AsyncSession) -> int:
     return 0
 
 
-# --- Queue-loss detector (Phase 42, REQ-42-2) -------------------------------------------
-#
-# Static SQL counting saq_jobs rows in flight. After Phase 36 the SAQ broker is Postgres
+# Queue-loss detector (REQ-42-2)
+# Static SQL counting saq_jobs rows in flight. The SAQ broker is Postgres
 # (saq_jobs), so queued/active jobs SURVIVE a controller restart -- a normal reboot loses
 # nothing. A genuine queue-loss is the rare asymmetry "saq_jobs has zero queued/active rows
 # while the domain DB still shows pending work" (truncate / restore-from-backup / fresh
@@ -190,8 +188,7 @@ async def count_inflight_jobs(session: AsyncSession) -> int:
     """Return COUNT(*) of ``saq_jobs`` rows with ``status IN ('queued', 'active')``, degrade-safe.
 
     The queue-loss detector for :func:`phaze.tasks.reenqueue.recover_orphaned_work`: a return of
-    ``0`` while the domain DB shows pending work signals a genuine broker wipe (Phase-36 durability
-    reframe). Parked/paused jobs (status still ``queued``) ARE counted, so a paused queue reads as
+    ``0`` while the domain DB shows pending work signals a genuine broker wipe (Postgres-broker durability contract). Parked/paused jobs (status still ``queued``) ARE counted, so a paused queue reads as
     present, not lost (42-RESEARCH Open Q4).
 
     Failure isolation (T-42-04): the read runs inside a SAVEPOINT (``session.begin_nested()``). On

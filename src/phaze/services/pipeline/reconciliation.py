@@ -1,7 +1,6 @@
 """Scanned / deduped / unique reconciliation -- the Discovery DAG-node subtitle and its
 per-agent annotations.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr).
 """
 
 from __future__ import annotations
@@ -23,8 +22,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- Scanned / deduped / unique reconciliation (quick 260622-i0w) -----------------------
-#
+# Scanned / deduped / unique reconciliation
 # The Discovery DAG node shows COUNT(files) while the agent scan total is SUM(scan_batches
 # .total_files). The two legitimately differ: an agent walks total_files paths but each path
 # upserts onto the NFC-normalized composite unique key (agent_id, original_path), so duplicate

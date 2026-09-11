@@ -1,22 +1,13 @@
-"""Control-plane cloud-staging producer + re-drive helper (Phase 53, Plan 04 -- KSTAGE-01).
+"""Control-plane S3 staging producer and re-drive helper (KSTAGE-01).
 
-The control-side orchestration of the S3 object-staging upload leg. ``stage_file_to_s3`` is the
-*upload-trigger seam*: in one transaction it creates the ``cloud_job`` row, initiates the
-multipart upload, presigns the part URLs, and enqueues exactly one ``s3_upload`` job through the
-single per-agent enqueue seam (``select_active_agent`` + ``task_router.queue_for`` --- the Phase 30
-invariant that no producer routes onto the consumer-less default queue). The file-server agent
-then PUTs the bytes to those presigned URLs; the control plane never touches file bytes (DIST-01).
+``stage_file_to_s3`` creates the cloud-job row, initiates multipart upload, presigns parts, and
+enqueues exactly one ``s3_upload`` job through the per-agent routing seam. The fileserver agent puts
+the bytes; the control plane never reads file content. Multipart upload bounds agent memory to one
+part at a time, and S3 SDK calls remain isolated in ``phaze.services.s3_staging``.
 
-D-01: a presigned MULTIPART upload (not a single PUT) so the agent streams one bounded part at a
-time and the control plane completes the object itself. The producer built here is wired into the
-live cloud-window routing seam via ``KueueBackend.dispatch`` (``phaze.services.backends``), which
-calls the no-commit ``_stage_file_to_s3`` core per candidate under the drain's advisory lock.
-
-Mirrors the ``agent_push.py`` producer idiom (queue_for -> connect -> enqueue with an explicit SAQ
-job-net timeout + a deterministic key) and the stateless-service conventions of ``enqueue_router``
-/ ``s3_staging`` (module-level async functions, ``__future__`` annotations, ``TYPE_CHECKING``
-guard). All S3 SDK calls are delegated to ``s3_staging`` (the single SDK home); this module holds
-the ORM + queue orchestration only.
+``KueueBackend.dispatch`` calls the no-commit ``_stage_file_to_s3`` core under the drain's advisory
+lock. The caller owns the transaction, which keeps the cloud-job state transition, upload setup, and
+queue intent ordered without an internal commit. Deterministic keys make enqueue retries idempotent.
 """
 
 from __future__ import annotations
@@ -195,7 +186,7 @@ async def flush_pending_s3_enqueues(session: AsyncSession) -> int:
     fired = 0
     for item in pending:
         try:
-            # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
+            # The PostgresQueue broker pool is built open=False; connect() is idempotent.
             await item.queue.connect()
             job = await item.queue.enqueue("s3_upload", **item.enqueue_kwargs)
             if job is None:
@@ -316,7 +307,7 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
     commits once. This is the form ``redrive_upload`` (``cloud_staging.py``) calls -- it owns its own
     single-file transaction, so the commit belongs here.
 
-    The bounded ``stage_cloud_window`` cron (Phase 55, KROUTE-02) instead calls the no-commit
+    The bounded ``stage_cloud_window`` cron (KROUTE-02) instead calls the no-commit
     :func:`_stage_file_to_s3` core PER CANDIDATE inside its advisory-locked loop and commits ONCE
     after the loop -- a per-candidate commit here would release ``pg_advisory_xact_lock`` mid-loop
     and re-open the over-stage class (Landmine L1). The two callers share the body; only the commit
@@ -353,7 +344,7 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
 
     1. Resolve the active FILESERVER agent (it owns the media mount and runs the upload). A
        :class:`NoActiveAgentError` is allowed to propagate for a clean hold --- nothing is written,
-       so the caller (Phase 55 / a re-drive) can retry once an agent appears.
+       so the caller (the scheduler or a re-drive) can retry once an agent appears.
     2. Refuse a ``file.file_size`` past S3's max object size, then initiate the multipart upload and
        presign its PUT URLs (:func:`_presign_multipart_parts`, which owns the phaze-wz1q part-count
        ceiling and the phaze-pq1fe TTL scaling). ``file.file_size`` is unvalidated agent wire input
@@ -407,7 +398,7 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
     agent = await select_active_agent(session, kind="fileserver")
 
     # phaze-wz1q: fail loud BEFORE initiating a multipart upload that can never complete. file.file_size
-    # is unvalidated agent wire input (schemas/agent_files.py:36-39 declines a storage-domain cap by
+    # is unvalidated agent wire input (``phaze.schemas.agent_files`` declines a storage-domain cap by
     # design); this is the point where it stops being a display value and becomes a loop bound, so it
     # gets re-bounded here rather than trusted as-is.
     if file.file_size > s3_staging.S3_MAX_OBJECT_SIZE_BYTES:
@@ -500,7 +491,7 @@ def _redrive_bucket(cfg: ControlSettings, existing: CloudJob | None, file: FileR
 
     A re-drive re-stages a file that already carries a ``cloud_job`` row, so its authoritative bucket is
     the recorded ``staging_bucket`` (MKUE-02 -- read it, never re-derive). Only when that column is absent
-    (a legacy row staged before Phase 70, or a row whose backend later cleared it) does it fall back to
+    (a legacy row staged before backend attribution, or a row whose backend later cleared it) does it fall back to
     re-picking deterministically over the file's backend's bound bucket set -- keeping the fresh multipart
     on the same D-06 bucket the presign/cleanup path will read.
 

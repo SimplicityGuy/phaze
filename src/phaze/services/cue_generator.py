@@ -83,7 +83,7 @@ def parse_timestamp_string(ts: str | None) -> float | None:
     1001Tracklists markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
     writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
     ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
-    contract, NOT raise -- callers (routers/cue.py ``_build_cue_tracks``, both single and batch
+    contract, NOT raise -- callers (``phaze.services.cue_review.build_cue_tracks_for_versions``, both single and batch
     generate) run this per track OUTSIDE their own try/except and rely on the documented None
     contract to route to the friendly "No tracks have timestamps" toast instead of a 500.
 
@@ -186,7 +186,6 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
         f'FILE "{safe_filename}" {cue_type}',
     ]
 
-    # Filter out tracks without timestamps and sort by position
     valid_tracks = sorted(
         [t for t in tracks if t.timestamp_seconds is not None],
         key=lambda t: t.position,
@@ -206,7 +205,7 @@ def retarget_cue_file_line(content: str, audio_filename: str) -> str:
     fact about where the sheet lands, which is decided by :func:`write_cue_file`, not by whoever
     rendered the text.
 
-    Those two were different machines and they disagreed. ``routers/cue.py::generate_cue`` renders
+    Those two were different machines and they disagreed. ``phaze.routers.cue.generate_cue`` renders
     ``FILE`` from the UNRESOLVED ``FileRecord.current_path`` while ``tasks/cue_write.py::_write_sync``
     containment-resolves that path and writes beside the RESOLVED file, so any entry whose
     ``current_path`` is a symlink into a differently-named target produced a sheet naming a sibling
@@ -254,7 +253,7 @@ def next_cue_path_and_version(audio_path: Path) -> tuple[Path, int]:
 
     phaze-9dwb: the version is returned alongside the path because the caller needs BOTH and the
     directory scan that computes them is the same scan. The previous shape returned only the Path
-    and the caller (``routers/cue.py::_get_cue_version``) re-ran an identical ``exists()`` +
+    and the caller (``phaze.routers.cue._get_cue_version``) re-ran an identical ``exists()`` +
     ``iterdir()`` sweep of the archive directory microseconds later purely to recover the number it
     had just thrown away -- doubling the syscall cost of every generate on a directory that, for a
     concert archive, can hold thousands of siblings.

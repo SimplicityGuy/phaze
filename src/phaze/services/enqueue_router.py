@@ -1,4 +1,4 @@
-"""Shared enqueue-routing foundation (Phase 30 Plan 01).
+"""Shared enqueue-routing foundation.
 
 Single source of truth that maps every control-plane task name to the SAQ queue an
 actual worker consumes, so no API code path can enqueue onto the consumer-less
@@ -26,7 +26,7 @@ union of every lane's frozenset, so existing membership checks are unchanged.
 :func:`lane_for_task` is the reverse lookup every agent-queue producer MUST call to
 resolve its lane (it raises ``ValueError`` for any non-agent / unmapped name -- the
 fail-loud guard that keeps a producer from ever building an un-suffixed / bad queue
-name and re-stranding jobs, Phase-30 class). Both the producer (this module) and the
+name and re-stranding jobs). Both the producer (this module) and the
 consumer (``phaze.tasks.agent_worker`` lane worker settings) derive from
 ``LANE_TASKS``, mirroring the "MUST mirror" contract between ``AGENT_TASKS`` and the
 agent worker's registered ``functions``.
@@ -88,7 +88,7 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         # phaze-5fta.3: the corpus-learned filename-convention full refresh. Operator-enqueued (no
         # cron), needs ctx["async_session"], so like the drain it MUST be routable.
         "learn_filename_conventions",
-        "submit_cloud_job",  # Phase 54: fast kube-submit producer (control-plane; kube creds live here)
+        "submit_cloud_job",  # Control-plane producer; kube credentials stay here.
     }
 )
 """Fileless tasks the application-server controller worker consumes.
@@ -118,8 +118,8 @@ LANE_TASKS: dict[str, frozenset[str]] = {
     # Network-bound offload (off the CPU budget).
     "io": frozenset(
         {
-            "s3_upload",  # Phase 53: agent httpx multipart-PUT upload to presigned S3 URLs (KSTAGE-02)
-            "push_file",  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
+            "s3_upload",  # Agent multipart-PUT upload to presigned S3 URLs (KSTAGE-02).
+            "push_file",  # Fileserver rsync-over-SSH push to the compute scratch directory.
         }
     ),
 }
@@ -173,7 +173,7 @@ def lane_for_task(task_name: str) -> str:
     is not in exactly one :data:`LANE_TASKS` lane (a controller task, a cron-only name, a
     typo) raises rather than silently defaulting -- the same fail-loud posture as
     :func:`resolve_queue_for_task`'s unroutable branch, and the invariant that keeps a
-    producer from ever stranding a job on an un-consumed / bad-suffixed queue (Phase-30).
+    producer from ever stranding a job on an un-consumed or bad-suffixed queue.
     """
     lane = _TASK_TO_LANE.get(task_name)
     if lane is None:
@@ -204,7 +204,7 @@ async def select_active_agent(session: AsyncSession, kind: str | None = None) ->
     ``last_seen_at DESC`` and takes the first row. The ``revoked_at IS NULL``
     predicate excludes ``legacy-application-server`` (permanently revoked).
 
-    Phase 49 (D-13): when ``kind`` is given (``"compute"`` / ``"fileserver"``) the
+    D-13: when ``kind`` is given (``"compute"`` / ``"fileserver"``) the
     selection is scoped to agents of that ``Agent.kind`` — the deterministic
     most-recently-seen rule still holds, but only within the requested kind.
     ``kind=None`` preserves the original behavior (any kind), so every existing
@@ -235,7 +235,7 @@ async def select_active_agent(session: AsyncSession, kind: str | None = None) ->
 async def select_agent_by_id(session: AsyncSession, agent_id: str, *, kind: str | None = None) -> Agent:
     """Return the specifically-bound agent whose ``Agent.id == agent_id`` iff it is live.
 
-    The per-entry-binding sibling of :func:`select_active_agent` (Phase 72, MCOMP-01 / D-01): it
+    The per-entry-binding sibling of :func:`select_active_agent` (MCOMP-01 / D-01): it
     reuses the SAME liveness filter (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``) and the
     optional ``kind`` scope, but keys on ``Agent.id == agent_id`` instead of ordering by
     ``last_seen_at`` — a compute backend resolves to ITS bound agent (``config.agent_ref``), not "the
@@ -322,7 +322,7 @@ async def resolve_queue_for_task(
             msg = f"controller task {task_name!r} is not agent-scoped; agent_id must be None"
             raise ValueError(msg)
         queue = app_state.controller_queue
-        # Phase 36: open the PostgresQueue broker pool (built open=False) before the caller
+        # Open the PostgresQueue broker pool (built open=False) before the caller
         # enqueues. connect() is idempotent (guarded by self._connected) -- a no-op after the
         # first call. Single chokepoint so every routed.queue.enqueue(...) site (and the
         # background tasks that receive routed.queue) finds an open pool.
@@ -334,7 +334,7 @@ async def resolve_queue_for_task(
             raise ValueError(msg)
         # phaze-5r8f: scope the pick to the FILESERVER kind. Every task routed through this branch
         # (process_file, extract_file_metadata) runs against the
-        # fileserver's local media mount, so it MUST land on a fileserver agent. Phase 48/49 compute
+        # fileserver's local media mount, so it MUST land on a fileserver agent. Compute
         # agents heartbeat through the same endpoint and run the same worker module, so an unscoped
         # pick (any kind, most-recently-seen) could route a fileserver-local task to a media-less
         # compute agent where the path does not exist -- an intermittent failure gated on heartbeat

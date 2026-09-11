@@ -1,14 +1,9 @@
-"""The internal ``Backend`` protocol + its three re-homed implementations (Phase 68, BACK-01/03).
+"""The internal ``Backend`` protocol and its three implementations (BACK-01/03).
 
-This is the phase's center of gravity. It houses one ``typing.Protocol`` (design §4.2 shape --
+The package houses one ``typing.Protocol`` (design §4.2 shape --
 ``is_available`` / ``in_flight_count`` / ``dispatch`` / ``reconcile``) and the three implementations
-``LocalBackend`` / ``ComputeAgentBackend`` / ``KueueBackend`` that **re-home** the existing staging /
-push / submit / reconcile bodies verbatim -- this is a behavior-preserving refactor, NOT a rewrite.
-
-Phase 68 was a **lay-and-prove** phase (D-02): it defined the protocol + the uniform per-backend
-``in_flight_count`` substrate and proved its equivalence to the (now Phase-69-retired) global
-FileState ``{PUSHING, PUSHED}`` window for the single-backend case. Phase 69 (SCHED-02) then flipped
-the drain (``release_awaiting_cloud.stage_cloud_window``) onto these per-backend caps: it snapshots
+``LocalBackend`` / ``ComputeAgentBackend`` / ``KueueBackend``. The drain
+(``release_awaiting_cloud.stage_cloud_window``) snapshots
 each backend's ``in_flight_count`` once per tick and enforces the per-backend ``cap``. The protocol
 methods are per-backend and unit-tested as such.
 
@@ -21,10 +16,9 @@ Decisions realized here:
 * **D-03** -- ``dispatch`` owns BOTH the ``FileState -> PUSHING`` flip AND the ``cloud_job`` upsert in the
   SAME caller-passed session, before/with the flip, NEVER after a separate commit (Pitfall 4 limbo guard).
 * **D-05** -- ``KueueBackend`` calls ``_stage_file_to_s3`` / ``kube_staging`` threaded THIS backend's
-  own ``KubeConfig`` + D-06 bucket (Phase 70 MKUE-01/02 retired the ``active_kube`` / ``active_bucket``
+  own ``KubeConfig`` + D-06 bucket (MKUE-01/02 retired the ``active_kube`` / ``active_bucket``
   module-global reads: one control plane dispatches to N distinct clusters/buckets).
-* **D-07** -- the raise-on-``>1``-non-local guard is Phase-69-retired from :func:`resolve_backends` (N
-  non-local backends now resolve; SCHED-01). Phase 70 (MKUE-01) further generalizes
+* **D-07** -- :func:`resolve_backends` supports N non-local backends (SCHED-01). MKUE-01 generalizes
   :func:`resolved_non_local_kind` to return ``"kueue"`` for ANY-kueue registry (N Kueue backends are the
   literal MKUE-01 scenario), retaining the fail-fast only for the ambiguous compute-only ``>1`` case;
   ``cloud_enabled`` stays in config as the registry on/off gate.
@@ -38,11 +32,9 @@ Secret hygiene (T-68-04): this package logs only ``{id, kind, rank, cap}``-level
 Layout (phaze-dr9df)
 --------------------
 
-Until 2026-08-17 all of the above lived in ONE 1,543-NLOC ``services/backends.py``: the four-bug-fix
-reap loops, the registry resolution, and ~740 lines of read-only lane telemetry that shares nothing
-with them but a file. It co-changed with 70 distinct files and carried 29 bug-fix commits. It is now
-a package, split along BOTH axes the bug-hunt retrospective named -- per backend kind, and
-dispatch / registry / read-path:
+The former 1,543-NLOC ``phaze.services.backends.kueue`` combined four-bug-fix reap loops, registry
+resolution, and ~740 lines of read-only telemetry; it co-changed with 70 files and carried
+29 bug-fix commits. The package separates backend kinds from dispatch, registry, and read paths:
 
 =========================== ==================================================================
 :mod:`~.base`               ``Backend`` protocol, ``_BaseBackend``, ``IN_FLIGHT`` / ``STAGING``
@@ -53,9 +45,9 @@ dispatch / registry / read-path:
 :mod:`~.kueue`              ``KueueBackend`` + its staging reaper and Job/Workload reconcile
 :mod:`~.registry`           ``resolve_backends`` / ``resolve_compute_backend`` /
                             ``resolved_non_local_kind``
-:mod:`~.lane_detail`        Phase 88 drill-in pane data (identity, depths, recent completions)
+:mod:`~.lane_detail`        drill-in pane data (identity, depths, recent completions)
 :mod:`~.lane_metrics`       phaze-5c6i2 queued / working / processed lane counters
-:mod:`~.lane_snapshot`      Phase 71 lane grid, availability probes, derived hold/unreachable
+:mod:`~.lane_snapshot`      lane grid, availability probes, derived hold/unreachable
 =========================== ==================================================================
 
 **This module is a pure re-export facade and the public import path stays

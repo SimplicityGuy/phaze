@@ -402,8 +402,7 @@ def write_and_verify_sync(
     ``asyncio.to_thread`` offload from its caller, instead of blocking the event loop directly.
     phaze-6bkk moved that caller from the api request handler to the agent worker's ``meta`` lane
     (``phaze.tasks.tag_write.write_file_tags``), where the media mount actually exists -- but the
-    offload discipline still matters there: the agent's event loop also runs the Phase-46 liveness
-    heartbeat, so an on-loop mutagen stall risks a false DEAD classification.
+    offload discipline still matters there: the agent's event loop also runs the agent liveness heartbeat, so an on-loop mutagen stall risks a false DEAD classification.
 
     Returns ``(status, discrepancies, error_message, before_tags)`` -- the four fields the
     control plane persists onto ``TagWriteLog``. ``before_tags`` is captured and returned on

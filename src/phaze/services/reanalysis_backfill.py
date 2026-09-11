@@ -1,134 +1,21 @@
-"""One-time re-enqueue of every file whose prior analysis did not cover the whole file (phaze-kj8dl).
+"""Re-enqueue analyses whose recorded windows do not cover the whole file (phaze-kj8dl).
 
-The payoff step of the exhaustive-analysis decision (ADR-0007 section 7, implemented by
-phaze-w55w1): every ``analyses`` row written under the old fine/coarse caps carries a partial,
-strided pass for any file whose natural window count exceeded the (now-removed) caps. This module
-is the selection + enqueue logic behind ``phaze.cli.backfill``'s ``reenqueue-incomplete-analyses``
-command, split out so it is independently unit-testable (mirrors ``services/text_repair_backfill.py``'s
-split from ``scripts/backfill_mojibake_filenames.py``).
+Deployment ordering belongs to ``docs/runbook.md`` under "One-time exhaustive-analysis re-enqueue
+backfill". The governing exhaustive-analysis and heartbeat-liveness decisions are in
+``docs/design/0007-windowed-analysis.md``.
 
-DEPLOYMENT ORDERING: see ``docs/runbook.md``, "One-time exhaustive-analysis re-enqueue backfill
-(phaze-kj8dl)" -- that section is the single authoritative copy of the five-step sequence (merge,
-release/build, deploy with the startup migration, run this command, watch the drain). Do not
-re-copy it here; it would drift.
+Selection uses only ``*_windows_analyzed < *_windows_total``; the retired ``sampled`` column must
+never be queried. SQL's three-valued comparisons intentionally exclude rows with all four window
+columns NULL, while a partially populated row remains eligible when its populated tier is
+incomplete. Applied/moved files are also excluded and counted because ``original_path`` is no
+longer analyzable after apply.
 
-SELECTION -- WINDOWS COLUMNS ONLY, NEVER ``sampled`` (binding constraint)
---------------------------------------------------------------------------
-By the time this module can run in a deployed environment, the ``analysis`` table's ``sampled``
-column has ALREADY been dropped by migration ``060_drop_analysis_sampled.py`` (shipped in
-phaze-w55w1, which this bead depends on and which the deploy ordering above guarantees runs
-first). The selection below therefore never references it -- doing so would be a hard runtime
-error against the deployed schema, not just a style violation.
-
-No signal is lost. ``sampled=True`` was set (Phase 43) exactly when a tier's natural window count
-exceeded its cap and the tier was strided instead of analyzed window-by-window; a strided pass
-always finished with fewer analyzed windows than the natural total for that tier. So
-``fine_windows_analyzed < fine_windows_total OR coarse_windows_analyzed < coarse_windows_total``
-identifies precisely the same rows ``sampled=True`` used to, without reading the dropped column --
-migration 060's docstring verifies this equivalence against the live schema, not just reasons
-about it.
-
-THE NULL-WINDOWS-COLUMNS DECISION -- explicit, and made once, here
---------------------------------------------------------------------------
-Rows written before Phase 43 (migration 021) predate the four ``*_windows_analyzed`` /
-``*_windows_total`` columns entirely and carry ``NULL`` in all four. **Decision: these rows are
-SKIPPED, not re-run.** There were no caps before Phase 43, so a pre-Phase-43 analysis was already
-exhaustive -- re-running it would spend an analysis pass to reproduce a result that is already
-complete. This is not extra logic to write: SQL's three-valued comparison makes ``NULL < NULL``
-and ``NULL < <int>`` both evaluate to UNKNOWN, which a ``WHERE`` clause treats as excluding the
-row, so :data:`_INCOMPLETE_COVERAGE_CLAUSE` already skips every fully-NULL row with no explicit
-NULL-check needed. :func:`count_null_windows_columns_rows` exists purely so the operator can see,
-before running the enqueue, how many such legacy rows are being deliberately left alone (an
-auditable count, not a gate on anything) -- it plays no part in the selection itself.
-
-A row CAN carry one tier's pair populated while the other tier's pair is still NULL: a fine-tier
-progress bump (``POST /agent/analysis/{id}/progress``, D-03) upserts ONLY
-``fine_windows_analyzed``/``fine_windows_total`` on the file's partial in-flight row, leaving the
-coarse pair NULL until that tier's own pass writes it. Such a row IS selected by
-:data:`_INCOMPLETE_COVERAGE_CLAUSE` whenever its populated tier is itself incomplete (``analyzed <
-total`` for that tier while the other tier reads NULL/NULL, i.e. UNKNOWN, which does not veto an
-``OR`` whose other arm is TRUE) -- correctly so: it enqueues a file that may already be
-mid-analysis. That is not a bug here, because :func:`enqueue_incomplete_reanalysis` never trusts
-"selected" to mean "not already running" -- the SAME deterministic-key dedup that makes a re-run
-of this whole module idempotent also classifies a collision against that file's own in-flight job
-as ``"in_flight"``/``"blocked"`` rather than double-enqueuing it. Only a row with ALL FOUR columns
-NULL (no progress upsert has ever run for it -- the pre-Phase-43 legacy case) is excluded by the
-predicate itself; a partially-NULL row is a live in-flight file, not a legacy one, and is meant to
-reach the enqueue call.
-
-THE ALREADY-EXECUTED/MOVED DECISION -- excluded, not attempted, and counted
---------------------------------------------------------------------------
-A file's ``original_path`` is where an agent last had it on disk; the human-approved apply
-workflow COPIES it to a new location and DELETES the original (``services/stage_status.py``'s
-``applied_clause`` -- ``exists(proposals WHERE status='executed')`` is the single authoritative
-apply-outcome source). A file with incomplete windows coverage that has ALSO been applied is
-un-re-analyzable at the path this module would enqueue against: the standard analyze producers
-never reach this case because :func:`~phaze.services.pipeline.get_discovered_files_with_duration`
-gates on ``eligible_clause(Stage.ANALYZE)`` (``~done`` -- and every row selected here already has
-``analysis_completed_at`` set, see below), which a normal live trigger never has to reconcile
-against ``applied_clause`` at all. This module deliberately bypasses that ``~done`` gate (that is
-the whole point of a backfill over rows the pipeline considers "done" under the OLD, non-exhaustive
-regime), so it is the one place that must add the apply exclusion by hand.
-
-:data:`_INCOMPLETE_COVERAGE_CLAUSE` combined with ``~applied_clause()`` in
-:func:`select_incomplete_analyses` therefore EXCLUDES every applied/moved row from the routed set;
-:func:`count_applied_incomplete_analyses_rows` is the diagnostic twin (mirrors
-:func:`count_null_windows_columns_rows`'s shape) that surfaces how many rows that exclusion
-applies to, so the operator can see the count without this module inventing a re-analyze-at-the-new-
-path feature it was not asked to build.
-
-CLOUD ROUTING -- duration-threshold semantics, never bypassed (CLOUDROUTE-02 / T-49-03)
---------------------------------------------------------------------------
-Every row selected here already carries ``analysis_completed_at IS NOT NULL`` (a strided Phase-43
-pass still stamped completion on write, ``routers/agent_analysis.py``'s state-advance) -- concert
-sets past the OLD ~30/90 min caps are exactly the multi-hour files CLOUDROUTE-02 exists for, so
-routing every candidate straight to the local fileserver queue (bypassing
-``routers/pipeline.py::_route_discovered_by_duration``'s duration gate entirely) would silently
-re-analyze the backfill's primary target on the wrong side of the pipeline AND risk a second,
-concurrent cloud-side analysis for a file the drain has already picked up (dedup keys are
-per-queue, not global).
-
-:func:`enqueue_incomplete_reanalysis` therefore applies the SAME decision function
-``_route_discovered_by_duration`` does (``is_long = cloud_enabled and duration is not None and
-duration >= cloud_route_threshold_sec``, itself gated on the force-local override via
-``route_control.get_route_control``) and the SAME single writer for the hold
-(``services.backends.hold_awaiting_cloud`` -- "A held long file is NEVER silently analyzed
-locally", T-49-03), inline and synchronous rather than imported. It cannot reuse
-``_route_discovered_by_duration`` verbatim: that helper BACKGROUNDS the local leg
-(``asyncio.create_task``, so an HTTP handler can return before a large enqueue finishes) and
-reports only aggregate counts, both wrong for a script that must ``await`` every enqueue to
-completion and print a per-file audit line. A file that already carries an ACTIVE ``cloud_job``
-(the same double-dispatch guard ``get_discovered_files_with_duration`` applies, via
-``phaze.services.pipeline._ACTIVE_CLOUD_STATUSES``) is skipped with its own outcome rather than
-routed again -- it is already being handled by the cloud pipeline.
-
-ENQUEUE -- the standard per-agent-routed funnel, no cap overrides, individually contained
---------------------------------------------------------------------------
-Short/null-duration candidates are grouped by owning agent and routed via
-``enqueue_router.resolve_queues_for_owned_files`` (the same ownership-affinity routing the
-dashboard "Run Analysis" trigger uses, phaze-c9w9) and enqueued one-by-one through
-``analysis_enqueue.enqueue_process_file`` -- the SAME funnel every other ``process_file`` producer
-uses, so the deterministic key (``process_file:<file_id>``), the complete payload, and the job
-policy (``timeout=0`` + heartbeat liveness, ADR-0007 section 8 / phaze-w55w1) are identical to a
-live analyze trigger. No cap override is passed because analysis is exhaustive by default now --
-there is nothing left to override.
-
-Each per-file enqueue is individually contained, mirroring ``routers/pipeline.py::
-_enqueue_analysis_jobs``'s two containment fixes so this producer cannot regress behind them:
-phaze-4ter (the enqueue call itself can raise -- a transient broker/pool error -- and is caught so
-ONE failure cannot abort every remaining file) and phaze-p2qvv (the diagnostic collision-classification
-probe is a SECOND await against the broker and can independently raise; its failure degrades that
-one file to an ``"unknown"`` outcome rather than escaping and losing the rest of the run). Outcomes
-are reported to the caller via the optional ``on_outcome`` callback AS THEY HAPPEN, not batched
-until the whole run returns -- so a crash partway through (this module's own containment aside, a
-KeyboardInterrupt or a truly unrecoverable error elsewhere) still leaves a durable, printed record
-of what was actually done, not silence.
-
-Operator decision (2026-08-11, phaze-kj8dl): enqueue every selected local-routed file AT ONCE and let the
-existing lane scheduling drain the queue over days. No throttling or batching here -- the
-deterministic-key dedup already makes a re-run of this module idempotent (a still in-flight file
-re-enqueues to a no-op), so there is no correctness reason to trickle the enqueue, and the lanes'
-own concurrency caps are what actually bound the drain rate.
+Routing retains the live duration threshold and force-local control. Active cloud jobs are skipped,
+long files use the shared awaiting-cloud writer, and local files pass through the standard
+ownership-affinity enqueue funnel. Deterministic job keys make reruns idempotent; enqueue and
+collision-classification failures are contained per file, and ``on_outcome`` reports each result as
+it happens. All selected local files are enqueued immediately; lane concurrency caps bound the
+drain rate.
 """
 
 from __future__ import annotations
@@ -203,7 +90,7 @@ async def select_incomplete_analyses(session: AsyncSession) -> list[tuple[FileRe
 
 
 async def count_null_windows_columns_rows(session: AsyncSession) -> int:
-    """Count ``analysis`` rows whose windows columns are all NULL (pre-Phase-43 legacy rows).
+    """Count ``analysis`` rows whose windows columns are all NULL (legacy rows predating window counters).
 
     Diagnostic only -- see the module docstring's NULL-windows-columns decision. These rows are
     deliberately never selected by :func:`select_incomplete_analyses`; this count lets the
@@ -460,7 +347,7 @@ async def enqueue_incomplete_reanalysis(
         return outcomes
 
     settings = cast("ControlSettings", get_settings())
-    # Phase 71 (BEUI-02, D-08) fold, same as every other duration-router caller: effective
+    # BEUI-02/D-08 fold, same as every other duration-router caller: effective
     # cloud_enabled is "registry cloud_enabled AND NOT force_local".
     cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     threshold = settings.cloud_route_threshold_sec

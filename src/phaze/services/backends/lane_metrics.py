@@ -1,7 +1,6 @@
 """phaze-5c6i2: the lane cards' four operator numbers -- total queued, queued, working, processed.
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df). These reads
-replace the misleading ``{in_flight}/{cap}`` numeral + saturation bar: ``in_flight`` conflates
+These reads avoid a misleading ``{in_flight}/{cap}`` saturation bar: ``in_flight`` conflates
 "enqueued" with "executing" (the scheduling-ledger row exists at ENQUEUE time), so a saturated-looking
 bar could mean nothing is actually running. Each figure comes from a source that ALREADY exists --
 SAQ's own queued/active counts for local, the phaze-zyoag staged/analyzing seam for cloud -- rather
@@ -9,7 +8,7 @@ than a third re-derivation.
 
 Every read degrades to ``None`` (an explicit unknown the template renders as an em-dash), NEVER to a
 fabricated 0: see :func:`_safe_count_or_none` for why this file deliberately does not reuse
-``pipeline._safe_count``'s 0-degrade.
+``pipeline.common._safe_count``'s 0-degrade.
 
 Consumed by :mod:`~phaze.services.backends.lane_snapshot`, which composes them into the per-lane
 dicts; builds on :mod:`~phaze.services.backends.lane_detail` for the local lane's agent binding.
@@ -39,8 +38,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- phaze-5c6i2: lane-card queued/working/processed metrics --------------------------------
-#
+# Lane-card queued/working/processed metrics (phaze-5c6i2)
 # Replaces the misleading ``{in_flight}/{cap}`` numeral + saturation bar with the operator's four
 # numbers: TOTAL QUEUED (analyze, global), QUEUED per lane, WORKING per lane, and PROCESSED per lane
 # (24h primary + lifetime caption). See the bead description for the full rationale; the short version:

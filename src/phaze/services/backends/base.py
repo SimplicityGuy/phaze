@@ -1,7 +1,6 @@
 """The ``Backend`` protocol, the shared ``_BaseBackend`` carrier, and the two in-flight status sets.
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df). This is the
-bottom of the package's dependency DAG: it imports nothing else from ``phaze.services.backends`` and
+This is the bottom of the package's dependency DAG: it imports nothing else from ``phaze.services.backends`` and
 every backend-kind module (:mod:`~phaze.services.backends.local`,
 :mod:`~phaze.services.backends.compute_agent`, :mod:`~phaze.services.backends.kueue`) builds on it.
 
@@ -48,7 +47,7 @@ class Backend(Protocol):
     """The single internal dispatch seam that removes the ``if kind == …`` cloud-target fork (§4.2).
 
     Structural (``typing.Protocol``): the three impls below conform by shape, no explicit subclassing.
-    ``id`` / ``rank`` / ``cap`` mirror the Phase-67 registry submodel fields (cost-tier rank, concurrency
+    ``id`` / ``rank`` / ``cap`` mirror the multi-backend registry submodel fields (cost-tier rank, concurrency
     cap); the four async methods are the per-backend dispatch lifecycle.
     """
 
@@ -69,7 +68,7 @@ class Backend(Protocol):
 
         Returns ``True`` when new dispatch work was actually enqueued (a genuine stage) and ``False``
         when the enqueue was a deterministic-key dedup no-op / a clean hold -- the drain counts the
-        former as ``staged`` and the latter as ``skipped`` (preserves the Phase-50 tally semantics).
+        former as ``staged`` and the latter as ``skipped`` (preserves the cloud-staging tally semantics).
         """
         ...
 
@@ -85,9 +84,9 @@ class Backend(Protocol):
 class _BaseBackend:
     """Shared ``id`` / ``rank`` / ``cap`` carrier + the uniform ``cloud_job``-derived ``in_flight_count``.
 
-    Each concrete backend binds to a single Phase-67 registry entry (``config``). The shared
+    Each concrete backend binds to a single multi-backend registry entry (``config``). The shared
     ``in_flight_count`` is the D-02/D-10 substrate: a pure DB COUNT filtered by ``backend_id`` + the
-    in-flight status set (the per-backend replacement for the Phase-69-retired global window count).
+    in-flight status set (the per-backend replacement for the retired global window count).
     """
 
     def __init__(self, *, id: str, rank: int, cap: int, config: BackendConfig | None = None) -> None:
