@@ -596,7 +596,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # CPU-bound analysis in a killable child process (D-23: original_path is in the payload).
     # phaze-w55w1: the child is bounded by SILENCE, not by elapsed time -- the driver kills it
     # only after settings.analysis_stall_timeout_sec with no reported progress, so an exhaustive
-    # multi-hour analysis runs to completion (ADR-0007 §7). Threaded from settings here so config
+    # multi-hour analysis runs to completion (``docs/design/0007-windowed-analysis.md`` §7). Threaded from settings here so config
     # drives it. There is no window cap left to thread: every file gets every window.
     cfg = _agent_settings()
 

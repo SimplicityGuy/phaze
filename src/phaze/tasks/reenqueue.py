@@ -190,8 +190,6 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- Phase 45: ledger-driven, gated, idempotent recovery producer -----------------------
-#
 # Recovery replays ``ledger MINUS live MINUS domain-completed``. A replay of any item still in
 # saq_jobs dedups against its deterministic key (apply_deterministic_key, the single
 # before_enqueue chokepoint) and returns None -> counted as skipped. SAFETY BACKSTOP
@@ -559,8 +557,6 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     return _is_metadata_domain_completed(fid, row.enqueued_at, done_sets)
 
 
-# --- The orphan predicate, spelled as three named tests (phaze-1i0h6.2) ------------------
-#
 # These three functions ARE the ``orphaned = ledger MINUS live MINUS domain-completed`` set builder
 # that :func:`recover_orphaned_work` used to carry as one four-clause comprehension condition. They
 # are pure and side-effect-free by construction: every input is an already-materialized in-memory set
@@ -641,7 +637,7 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
 
     phaze-w55w1: for ``process_file`` the replayed ``timeout`` no longer matters either way. That
     function now runs ``timeout=0`` (no wall clock at all -- exhaustive analysis legitimately runs
-    for hours, ADR-0007 §7) plus a progress ``heartbeat``, and BOTH are PINNED by
+    for hours, ``docs/design/0007-windowed-analysis.md`` §7) plus a progress ``heartbeat``, and BOTH are PINNED by
     ``apply_project_job_defaults`` on every enqueue including this replay. So a row carrying the
     old 7200s bound is corrected rather than honoured, which is the point: replaying that bound
     would put a wall clock back on a job that must not have one. The ledger never captured
@@ -727,9 +723,6 @@ async def _replay_row_isolated(queue: Any, row: SchedulingLedger, stages: dict[s
             function=row.function,
         )
         tally["errored"] += 1
-
-
-# --- phaze-71nz: regenerating replay for the time-limited producers ------------------------
 
 
 class UnreplayableRow(Exception):
@@ -937,8 +930,6 @@ async def _regenerate_row_isolated(
         tally["errored"] += 1
 
 
-# --- The pure replay planner: classify first, THEN act (phaze-1i0h6.2) -------------------
-#
 # Everything in this section is deterministic and side-effect-free: no session, no queue, no router,
 # no logging. It decides WHAT the run will replay and in WHICH order; the coroutines below decide
 # nothing and only carry it out. The split exists so the ordering rules -- which are the part with
@@ -1335,8 +1326,6 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 _ALL_KEYED_FUNCTIONS: tuple[str, ...] = tuple(_KEY_BUILDERS)
 
 
-# --- Phase 45 Plan 04: one-time idempotent startup ledger backfill (locked decision #3) --
-#
 # Between the 022 migration landing and the before_enqueue WRITE hook starting to populate the
 # ledger, jobs ALREADY in ``saq_jobs`` (the in-flight cohort + any residual incident jobs) have no
 # ledger row, so recovery could not see them. ``backfill_ledger_from_saq_jobs`` closes that gap ONCE

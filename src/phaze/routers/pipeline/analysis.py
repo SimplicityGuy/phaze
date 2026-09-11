@@ -484,7 +484,7 @@ async def retry_analysis_failed(
     ``process_file:<id>`` key). There is nothing per-job left to vary: since phaze-w55w1 every
     ``process_file`` analyzes every window of its file, so a retry and a first run are the same
     job (the Phase 44 ``fine_cap`` / ``coarse_cap`` levers and the deepen path they served are
-    gone -- ADR-0007 §7).
+    gone -- ``docs/design/0007-windowed-analysis.md`` §7).
 
     Ordering follows the Phase-30 / RESEARCH-Pitfall-3 guards:
     - Resolve the per-agent queue ONCE. ``process_file`` is an AGENT_TASK; if no agent is online
@@ -586,7 +586,6 @@ async def retry_analysis_failed(
     )
 
 
-# --------------------------------------------------------------------------------------------------
 # Per-file scoped retry variants (87-07 / UI-02 / D-04): the console's per-row Retry on a failed
 # enrich cell. Each re-drives ONE file through the SAME Phase-30-hardened guarded funnel the bulk
 # endpoints use (``enqueue_router.resolve_queue_for_task`` -> ``NoActiveAgentError`` guard ->
@@ -596,7 +595,6 @@ async def retry_analysis_failed(
 # FINGERPRINTED + clears ``analysis.failed_at`` in ONE transaction and commits BEFORE enqueue (the
 # Phase-81 CR-01 rule) so the file leaves the failed disjunct -- it NEVER creates an auto-retry loop
 # (the 44.5K over-enqueue guard, behavior 8).
-# --------------------------------------------------------------------------------------------------
 @router.post("/pipeline/files/{file_id}/analysis-failed/retry", response_class=HTMLResponse)
 async def retry_analysis_failed_file(
     request: Request,
@@ -663,8 +661,8 @@ async def retry_analysis_failed_file(
     await session.commit()
 
     # phaze-gcdih: the marker-clear above is ALREADY committed, so an exception raised by the enqueue
-    # itself (SAQ's job insert runs on its OWN psycopg3 pool, independent of this session -- see the
-    # two-pool analysis at ADR-0003 / pipeline.py:1576-1583) must not be allowed to propagate bare: that
+    # itself (SAQ's job insert runs on its OWN psycopg3 pool, independent of this session -- see
+    # ``docs/design/0003-backfill-ledger-race-residual-window.md``) must not propagate bare: that
     # would leave the file with no failure marker AND no replacement job, invisible to both the
     # ANALYSIS_FAILED bucket and recover_orphaned_work (ANALYZE is manual-only, D-00b). Mirror the bulk
     # twin's restore (`_retry_analysis_group`): re-stamp the marker on a failed enqueue and tell the

@@ -47,8 +47,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-# --- The classification (TOTAL over _KEY_BUILDERS, asserted in tests) ---------------------
-
 LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
     {
         "process_file",
@@ -91,8 +89,6 @@ so a function can never be marked "do not replay verbatim" with no alternative p
 silently drop the stage from recovery entirely.
 """
 
-
-# --- The content detector ---------------------------------------------------------------
 
 _PRESIGN_QUERY_PARAMS: frozenset[str] = frozenset(
     {

@@ -53,37 +53,13 @@ from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# Maps each DAG node whose ``done`` is DB-sourced to the maintained ``completed``
-# counter function(s) backing it (35-01). Used as a DOCUMENTED degrade-fallback (D-02):
-# when a node's ``get_stage_progress`` ``done`` reads 0 (its ``_safe_count`` degraded OR
-# the stage is genuinely empty) AND the mapped ``completed`` counter is > 0, the counter
-# value renders as the fallback ``done``. DB-truth ALWAYS wins when ``done > 0`` (D-03:
-# the DB reconcile is the authority; the counter is a backstop cache, never an override).
-# ``discovery`` and ``execute`` have no maintained counter (``scan_directory`` /
-# ``execute_approved_batch`` are deterministic-key-exempt), so they never fall back.
-# phaze-y0wz: the counter only exceeds 0 after real completions, but it is a durable, never-reset
-# INCR (services/pipeline_counters.py) that OUTLIVES the rows it counted — a full corpus delete
-# (``delete_scan``) cascades away FileRecord/metadata/analysis but never touches Redis. So
-# ``done==0`` does NOT imply "counter is also 0 there"; a genuinely-emptied corpus reads
-# ``done==0``/``total==0`` while the counter still carries the whole pre-delete completion count.
-# ``_reconciled_done`` (phaze-89tw) only renders the fallback when it is a genuine, boundable
-# partial progress signal — ``0 < fallback < stage_total`` — UNCONDITIONALLY, including
-# ``stage_total == 0``, where the fallback always degrades to ``stage_done``. A fallback at or
-# beyond ``stage_total`` never renders (not even capped to the total): the durable counters are
-# never-reset and routinely exceed a re-scanned/degraded node's current total, so rendering the
-# total itself would falsely claim 100% done exactly when the DB says nothing is done.
-# WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
-# ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
-# ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
-# counter counts batches, not files — mapping it here would render a batch count as a file
-# ``done`` (e.g. 1 batch of 10 files -> proposalsDone=1). It is therefore intentionally OMITTED;
-# proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number.
-# phaze-2akf: the former ``scan_search`` -> ``search_tracklist`` and ``scrape`` ->
-# ``scrape_and_store_tracklist`` entries are gone with those tasks. The ``tracklist`` node (the
-# renamed ``scan_search``) is deliberately NOT remapped onto ``drain_tracklists``: the WR-03 unit
-# constraint below requires a per-FILE SAQ function, and one drain job is a bounded SLICE covering
-# many files, so its ``completed`` counter counts slices. Mapping it here would render a slice count
-# as a file ``done``. The node falls back to DB-truth instead, which for this node is exact.
+# D-02/D-03: DB progress is authoritative; maintained completion counters are only a degraded-read
+# backstop. They are durable, never-reset INCRs, so phaze-89tw permits a fallback only for genuine
+# partial progress: ``0 < fallback < stage_total``. A value at the denominator would falsely report
+# 100% after a degraded read or corpus reset.
+# WR-03: mappings must be per-file tasks because ``done`` counts files. Batch/slice producers such as
+# ``generate_proposals`` and ``drain_tracklists`` are deliberately omitted; their counters use the
+# wrong unit. Discovery and execution are deterministic-key-exempt and have no maintained counter.
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
     "analyze": ("process_file",),
@@ -94,15 +70,8 @@ _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
 async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
     """Read the maintained per-function Redis counters, degrading to ``{}`` on any failure.
 
-    Mirrors :func:`get_queue_activity`'s failure isolation: a missing ``app.state``
-    handle (the test client skips the lifespan) or any Redis hiccup must degrade the
-    counter source to an empty dict so the 5s dashboard poll renders from DB-truth and
-    NEVER 500s (threat T-35-09). Reads the shared ``app.state.redis`` cache client
-    (decode_responses), which the lifespan always wires. Phase 36: the former
-    ``controller_queue.redis`` fallback is gone -- the broker is Postgres now and has no
-    Redis client to borrow. When ``app.state.redis`` is absent (the test client skips the
-    lifespan) the ``getattr`` returns ``None`` and ``read_counters(None)`` degrades via the
-    except below.
+    A missing lifespan-initialized cache client or any Redis error degrades to DB truth so the
+    five-second dashboard poll never fails (T-35-09). The Postgres broker is not a cache fallback.
     """
     try:
         redis = getattr(app_state, "redis", None)
@@ -115,30 +84,9 @@ async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
 def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dict[str, dict[str, int]]) -> int:
     """Return the DB-truth ``done`` (D-03), or the ``completed`` counter as a backstop.
 
-    DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
-    back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
-    if that sum is itself > 0.
-
-    phaze-89tw: the fallback is NEVER allowed to render as ``stage_total`` (100% done). The
-    Redis ``completed:<function>`` counters are durable, never-reset, plain ``INCR``s (see
-    ``services/pipeline_counters.py``) that OUTLIVE the rows they counted, so for any mature
-    archive the cumulative counter is routinely LARGER than the node's current ``total`` —
-    which used to make ``min(fallback, stage_total)`` collapse to exactly ``stage_total``
-    whenever ``stage_done == 0``, i.e. the backstop rendered the node 100% complete precisely
-    in the state where the DB says nothing is done (a degraded read, per phaze-89tw scenario
-    A, or a corpus re-scan after delete-scan, scenario B). ``stage_done == 0`` is an
-    overloaded sentinel here — ``_safe_count`` / ``_safe_bucket_counts`` return 0 for BOTH
-    "query failed" and "genuinely empty", so this function cannot tell degrade from empty and
-    must never manufacture a value equal to the denominator either way.
-
-    The fallback is therefore used ONLY when it represents genuine, boundable partial
-    progress: ``0 < fallback < stage_total``. Any fallback that is at or beyond the
-    denominator (including the ``stage_total == 0`` case carried over from phaze-y0wz, where
-    an emptied corpus must not render its pre-delete completion history) degrades to
-    ``stage_done`` — already known to be 0 from the guard above — rather than the misleading
-    ceiling value. This also covers ``tracklist``, whose ``total`` the DB layer documents as
-    ALWAYS ``None`` -> 0 (``get_stage_progress``); since phaze-2akf it maps to no counter at all,
-    so it can never render a phantom ``done`` from either direction.
+    DB truth wins whenever nonzero. Because zero means either an empty corpus or a degraded query,
+    phaze-89tw allows the durable, never-reset counter only when ``0 < fallback < stage_total``.
+    Values at or beyond the denominator would manufacture a misleading 100% result.
     """
     if stage_done > 0:
         return stage_done

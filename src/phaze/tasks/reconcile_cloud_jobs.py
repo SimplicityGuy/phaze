@@ -407,37 +407,12 @@ async def _spill_to_awaiting_at_ceiling(
     two ceilings deliberately share this one terminal, and why it is not a hard analyze failure.
     """
     file_id = row.cloud_job.file_id
-    # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Re-stamp the cloud_job sidecar to 'awaiting'
-    # ('awaiting' is NOT in IN_FLIGHT, so the row drops out of ``in_flight_count`` -- the
-    # reconcile-only-decrements invariant) and write NO FileRecord.state (D-04, the whole point of the
-    # cutover). ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it),
-    # so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local
-    # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
-    # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
-    # ``updated_at`` on the spill gives a fresh lane-entry clock (desirable).
-    #
-    # phaze-1q4g: the NODE-LOSS ceiling lands here too, and on purpose. ``attempts`` may well still be
-    # 0 on that path (node loss never charged it), so the ``attempts=cap`` stamp below is doing real
-    # work there rather than re-affirming a value: it is what makes ``select_backend`` stop offering
-    # this file to cloud at all. Cloud is finished with this row either way -- once because the
-    # analysis kept failing, once because the node kept dying under it -- and the row must land in the
-    # one state the drain can still act on.
-    #
-    # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
-    # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
-    # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
-    # the ``session.commit()`` that persists the 'awaiting' re-stamp (making the file a drain candidate)
-    # and thus RELEASES the lock. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
-    # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
-    # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
-    # object is gone before any re-stage can occur (the drain holds the same lock across its whole
-    # candidate claim, so it physically cannot pick up the file until this txn commits).
-    #
-    # Capture the OLD identity into locals BEFORE any mutation, resolve the RECORDED staging bucket
-    # (never re-derive -- Pitfall 4/T-70-04-04), and delete it UNDER the lock. The delete is best-effort
-    # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
-    # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
-    # (no staged object) resolves to None and skips the delete cleanly.
+    # SCHED-03/D-04/phaze-1q4g: either retry ceiling spends the cloud budget and spills to ``awaiting``
+    # without double-incrementing attempts or writing ANALYSIS_FAILED. This makes the next drain choose
+    # local even when node loss left attempts at 0.
+    # MKUE-04: delete the recorded old staged object before the status flip commits and releases
+    # advisory lock 5_000_504. Re-dispatch reuses the file-scoped S3 key, so deleting after unlock could
+    # destroy the new object. Cleanup is best-effort under the lock; the per-bucket TTL is its backstop.
     old_bucket_id = row.cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
     bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
     with contextlib.suppress(Exception):

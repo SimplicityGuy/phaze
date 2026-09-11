@@ -328,32 +328,23 @@ async def startup(ctx: dict[str, Any]) -> None:
         _lane or "<all-mode>",
     )
 
-    # Phase 36: dedicated cache-redis handle. The broker is Postgres now, so cache-plane
-    # readers must use a Redis client decoupled from the queue. Symmetric with the control
-    # role's ctx["redis"]; created here, closed in shutdown. from_url is lazy (no socket here).
+    # Cache Redis is independent of the Postgres broker and has a symmetric shutdown close.
+    # ``from_url`` is lazy, so startup opens no socket here.
     ctx["redis"] = redis_async.Redis.from_url(cfg.redis_url)
 
-    # Step 2: Construct PhazeAgentClient (shared bootstrap helper -- Phase 27 D-17).
+    # Construct the shared API client before the identity and provisioning guards.
     client = construct_agent_client(cfg)
     ctx["api_client"] = client
 
-    # Step 3: /whoami probe with bounded retry.
+    # Authentication fails through a bounded retry before local provisioning checks.
     identity = await _whoami_with_retry(client)
 
-    # Step 3a (phaze-ynv6w, supersedes Phase 29 D-21 / 260608-u8g): VALIDATE that the
-    # essentia weights are provisioned -- never download them. A pure local os.stat
-    # size-manifest check (zero network, no writes, so the /models mount is :ro);
-    # a missing or wrong-size file raises with the directory and file names, the
-    # container exits non-zero and restart: unless-stopped retries until the
-    # operator provisions the set. Placed AFTER whoami so auth fails fast (~60s).
-    # WORKER-ONLY (Phase 29 WARNING-7): the watcher does not call this. Since
-    # quick-260707-dh1 FOUR lane workers run this concurrently against the same
-    # read-only mount, which needs no serialization -- nothing writes any more.
-    # asyncio.to_thread keeps the 68 stats off the event loop; it propagates the
-    # sync callable's exceptions unchanged.
+    # phaze-ynv6w: validate the read-only model mount after whoami so auth fails first (~60s).
+    # Four lane workers may run the 68 local stat calls concurrently because nothing writes;
+    # offloading prevents them from blocking the event loop. Models are never downloaded here.
     await asyncio.to_thread(ensure_models_present, Path(cfg.models_path))
 
-    # Step 3b (Phase 50 D-14): compute-only scratch janitor. Sweep orphaned push scratch off the
+    # D-14: run the compute-only scratch janitor off-loop before accepting jobs. Sweep orphaned push scratch off the
     # event loop BEFORE the worker starts dispatching jobs, so a hard-killed prior worker cannot
     # leak disk. Gated on kind == "compute" + cloud_scratch_dir (the fileserver runs the same
     # module and owns no scratch dir). This is the agent-side analog of the controller's startup
@@ -363,7 +354,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # durable queued/active job still claims it -- see _maybe_sweep_scratch's docstring.
     await _maybe_sweep_scratch(cfg, client)
 
-    # Step 4: Queue-name mismatch guard (Pitfall 1). Compare the BASE (agent-level identity,
+    # Compare the base queue name (agent-level identity,
     # single across lanes) -- the lane suffix is orthogonal to the token->agent_id binding.
     expected_base = f"phaze-agent-{identity.agent_id}"
     if _base != expected_base:
@@ -377,29 +368,14 @@ async def startup(ctx: dict[str, Any]) -> None:
     # quick-260707-dh1: the effective consumed queue is the lane-suffixed name (or the base in all-mode).
     ctx["agent_queue_name"] = _queue_name
 
-    # Phase 46: launch the liveness heartbeat as an asyncio background task OUTSIDE the
-    # SAQ dispatch pool. As a CronJob it competed for the same worker_max_jobs slots as
-    # multi-hour process_file jobs and got starved (~50min gaps vs the 300s DEAD
-    # threshold), marking a healthy busy agent DEAD. The event loop is free (essentia
-    # runs in a pebble ProcessPool, Phase 43), so a plain task ticks reliably. It needs
-    # only api_client + agent_identity (already set); it reads ctx["worker"].queue lazily
-    # and degrades queue_depth to 0 if the worker is not yet attached.
-    #
-    # phaze-30fo: EVERY lane worker heartbeats, each tagging its own lane. This REPLACES the
-    # former quick-260707-dh1 convention (PHAZE_AGENT_HEARTBEAT=true on exactly the analyze
-    # worker, false on the other three) -- that made the agent's entire liveness signal, and
-    # therefore its work-routing rank via select_active_agent's ORDER BY last_seen_at DESC,
-    # depend on ONE process. When it stalled, the agent was classified DEAD and lost routing
-    # while its other three lanes were actively working (nox, 2026-07-18).
-    #
-    # last_seen_at is set to now() by whichever lane beats, so it is inherently the max
-    # across lanes; the server keeps the per-lane breakdown and sums an honest all-lane
-    # queue_depth (routers/agent_heartbeat.py). ~4 writes/30s per agent -- negligible.
+    # Heartbeats run outside the SAQ pool so multi-hour work cannot starve them (~50 min gaps versus
+    # the 300s DEAD threshold). phaze-30fo has every lane report its own depth; ``last_seen_at`` is
+    # naturally the maximum across lanes. The resulting ~4 writes/30s per agent are negligible.
     ctx["agent_lane"] = _lane
     if cfg.agent_heartbeat_enabled:
         ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
 
-    # Step 6: bound concurrent essentia analysis children (Phase 101). The exec'd
+    # Bound concurrent essentia analysis children. The exec'd
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
     # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
     ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
