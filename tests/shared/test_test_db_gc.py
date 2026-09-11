@@ -123,8 +123,7 @@ def throwaway_postgres() -> Iterator[str]:
         pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()}")
     try:
         for _ in range(160):
-            ready = _docker("exec", container, "pg_isready", "-U", "phaze", "-d", "postgres")
-            if ready.returncode == 0 and _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
+            if _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
                 break
             time.sleep(0.25)
         else:
@@ -144,24 +143,46 @@ def _psql(container: str, sql: str, *, database: str = "postgres") -> str:
 def postgres(throwaway_postgres: str) -> Iterator[str]:
     """Hand each test an empty Postgres: no ``phaze%`` databases and no backends left attached."""
     yield throwaway_postgres
-    for row in _psql(throwaway_postgres, "select datname from pg_database where datname like 'phaze%'").splitlines():
-        database = row.strip()
-        if not database:
-            continue
-        _psql(
-            throwaway_postgres,
-            "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
-            database=database,
-        )
-        _psql(throwaway_postgres, f'drop database if exists "{database}"')
+    _reset_postgres(throwaway_postgres)
+
+
+_POSTGRES_RESET = """
+for database in $(psql -U phaze -d postgres -tAc "select datname from pg_database where datname like 'phaze%'"); do
+  psql -U phaze -d "$database" -tAc \
+    "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()" >/dev/null
+  dropdb -U phaze --if-exists "$database"
+done
+"""
+
+
+def _reset_postgres(container: str) -> None:
+    """Clear test databases through one Docker boundary and real per-database psql processes."""
+    result = _docker("exec", container, "sh", "-ceu", _POSTGRES_RESET)
+    assert result.returncode == 0, result.stderr
+
+
+def _reset_registry(container: str) -> None:
+    result = _docker("exec", container, "redis-cli", "-n", "0", "FLUSHALL")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture(scope="module")
+def prepared_registry(throwaway_redis: str) -> Iterator[tuple[str, dict[str, bool]]]:
+    _reset_registry(throwaway_redis)
+    yield throwaway_redis, {"clean": True}
 
 
 @pytest.fixture
-def registry(throwaway_redis: str) -> Iterator[str]:
+def registry(prepared_registry: tuple[str, dict[str, bool]]) -> Iterator[str]:
     """Hand each test an empty registry, the container reused for speed."""
-    _docker("exec", throwaway_redis, "redis-cli", "-n", "0", "FLUSHALL")
-    yield throwaway_redis
-    _docker("exec", throwaway_redis, "redis-cli", "-n", "0", "FLUSHALL")
+    container, state = prepared_registry
+    assert state["clean"], "the previous registry cleanup failed; refusing to share dirty state"
+    state["clean"] = False
+    try:
+        yield container
+    finally:
+        _reset_registry(container)
+        state["clean"] = True
 
 
 def _register_seat(container: str, seat: str, index: int = 1) -> None:

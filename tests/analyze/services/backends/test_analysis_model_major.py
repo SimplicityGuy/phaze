@@ -547,11 +547,29 @@ def test_single_frame_activations_match_the_normal_multi_frame_mean() -> None:
 
 
 def test_release_classifier_evicts_and_is_idempotent() -> None:
+    # A non-mock cache entry takes the production cleanup path exactly once. This keeps the
+    # test-only mocked-Essentia seam honest: native classifiers must retain defensive cyclic GC.
     analysis_mod._classifier_cache["some-model"] = object()
-    analysis_mod._release_classifier("some-model")
+    with patch.object(analysis_mod.gc, "collect") as collect:
+        analysis_mod._release_classifier("some-model")
+        analysis_mod._release_classifier("some-model")  # safe in a finally, even when absent
+        analysis_mod._release_classifier("never-cached")
+    collect.assert_called_once_with()
     assert "some-model" not in analysis_mod._classifier_cache
-    analysis_mod._release_classifier("some-model")  # safe in a finally, even when absent
-    analysis_mod._release_classifier("never-cached")
+
+    # A classifier built by mocked Essentia owns no native graph. It still travels through
+    # the timed production wrapper and is evicted, while the test seam avoids a full-heap scan.
+    model = MODEL_SETS[0].models[0]
+    analysis_mod._classifier_cache[model.filename] = MagicMock()
+    with (
+        patch.object(analysis_mod, "es", MagicMock()),
+        patch.object(analysis_mod.gc, "collect") as mocked_collect,
+        patch.object(analysis_mod.otel, "timed_metric", wraps=analysis_mod.otel.timed_metric) as timed_metric,
+    ):
+        analysis_mod._release_classifier_timed(model)
+    mocked_collect.assert_not_called()
+    timed_metric.assert_called_once_with("phaze.analysis.model.graph.release.duration", **analysis_mod._model_labels(model))
+    assert model.filename not in analysis_mod._classifier_cache
 
 
 def test_sweep_releases_the_graph_even_when_the_sweep_raises() -> None:

@@ -98,7 +98,7 @@ jobs:
     uses: ./.github/workflows/code-quality.yml
 
   test:
-    needs: [detect-changes, quality]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/tests.yml
     # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- in-repo reusable workflow; inherit is intentional.

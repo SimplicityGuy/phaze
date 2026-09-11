@@ -21,9 +21,8 @@ A separate ``savepoint_degrade`` test proves the corroborating ``saq_jobs`` read
 safe default with NO raise, and ``in_flight`` still resolves ``True`` from the durable ledger
 (INFLIGHT-02).
 
-Real-PG harness idiom mirrors ``tests/integration/conftest.py`` (DSN derivation +
-connectivity-probe ``pytest.skip`` so a bare ``uv run pytest`` skips rather than errors when
-Postgres is down). Run with real PG via ``just integration-test`` (ephemeral PG ``:5433``).
+The root session fixture owns the real-Postgres schema lifecycle and guards the test-only DSN.
+Run with real PG via ``just integration-test`` (ephemeral PG ``:5433``).
 
 NOTE: ``phaze.services.stage_status`` is imported lazily INSIDE the runtime helpers (not at module
 top) so ``pytest --co`` collects the matrix even before Task 2 lands the builders -- the file is
@@ -39,12 +38,11 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -56,46 +54,29 @@ from phaze.models.tracklist import Tracklist
 from phaze.services.backends import ComputeAgentBackend, KueueBackend
 from phaze.services.pipeline import get_pushed_count, get_pushing_count
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
-from tests.db_guard import integration_dsns
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 
 pytestmark = pytest.mark.integration
 
-
-# Raw libpq broker DSN + SQLAlchemy async DSN, derived via the shared tests.db_guard resolver
-# (prefer PHAZE_QUEUE_URL / TEST_DATABASE_URL; default to the 5433 test harness, never 5432).
-BROKER_DSN, SA_DSN = integration_dsns()
 
 _LEGACY_AGENT_ID = "test-fileserver"
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
+async def db_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
     """Yield a real-PG ``AsyncSession`` with all ORM tables present and the FK agent seeded.
 
-    Probes broker connectivity first and ``pytest.skip``s when Postgres is down (bare ``uv run
-    pytest`` skips, not errors). ``Base.metadata.create_all`` makes the harness independent of
-    Alembic having run on the ephemeral DB. Each test runs in one transaction that is rolled back
-    at teardown, so the parametrized cells never contaminate one another.
+    The session-scoped ``async_engine`` fixture owns schema creation and teardown. Each test still
+    runs in one transaction that is rolled back at teardown, so the parametrized cells never
+    contaminate one another.
     """
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # The files.agent_id FK (ON DELETE RESTRICT) needs the default agent to exist. Seed it
         # IDEMPOTENTLY: under 92-03's session-scoped engine the shared ``async_engine`` fixture (and
@@ -111,7 +92,6 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 # --------------------------------------------------------------------------------------------------

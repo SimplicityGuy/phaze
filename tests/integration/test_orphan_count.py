@@ -32,11 +32,10 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -59,13 +58,15 @@ from tests.db_guard import integration_dsns, require_test_database
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 
 pytestmark = pytest.mark.integration
 
 
 # DSN derivation + destructive-DB guard, identical to test_stage_progress_buckets.py.
 # DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
-BROKER_DSN, SA_DSN = integration_dsns()
+_, SA_DSN = integration_dsns()
 _TARGET_DB = require_test_database(SA_DSN, context="orphan-count integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
@@ -97,22 +98,9 @@ async def _live_job(session: AsyncSession, key: str, *, status: str = "active") 
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
-    """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent (copied from the bucket harness)."""
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+async def db_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    """Yield a rolled-back session on the session-scoped real-Postgres schema."""
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         if await session.get(Agent, _LEGACY_AGENT_ID) is None:
             session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
@@ -122,7 +110,6 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 async def _file(session: AsyncSession) -> FileRecord:

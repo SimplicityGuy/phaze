@@ -1,46 +1,30 @@
 [
   {
-    "name": "discovery",
-    "paths": "tests/discovery"
+    "name": "ingest-pipeline",
+    "paths": "tests/discovery tests/metadata tests/identify tests/analyze/services/pipeline"
   },
   {
-    "name": "metadata",
-    "paths": "tests/metadata"
+    "name": "analyze-rest",
+    "paths": "tests/analyze --ignore=tests/analyze/services/pipeline"
   },
   {
-    "name": "analyze-core",
-    "paths": "tests/analyze --ignore=tests/analyze/services"
+    "name": "review-agents",
+    "paths": "tests/review tests/agents"
   },
   {
-    "name": "analyze-svc-pipeline",
-    "paths": "tests/analyze/services/pipeline"
+    "name": "integration-shared-services",
+    "paths": "tests/integration tests/shared/cli tests/shared/config tests/shared/core tests/shared/models tests/shared/routers tests/shared/schemas tests/shared/scripts tests/shared/services tests/shared/static tests/shared/tasks tests/shared/template_helpers tests/shared/ui tests/shared/utils tests/shared/web"
   },
   {
-    "name": "analyze-svc-backends",
-    "paths": "tests/analyze/services/backends"
+    "name": "shared-registry",
+    "paths": "tests/shared/test_redis_seat_registry.py"
   },
   {
-    "name": "identify",
-    "paths": "tests/identify"
+    "name": "shared-root",
+    "paths": "tests/shared --ignore=tests/shared/cli --ignore=tests/shared/config --ignore=tests/shared/core --ignore=tests/shared/models --ignore=tests/shared/routers --ignore=tests/shared/schemas --ignore=tests/shared/scripts --ignore=tests/shared/services --ignore=tests/shared/static --ignore=tests/shared/tasks --ignore=tests/shared/telemetry --ignore=tests/shared/template_helpers --ignore=tests/shared/ui --ignore=tests/shared/utils --ignore=tests/shared/web --ignore=tests/shared/test_redis_seat_registry.py"
   },
   {
-    "name": "review",
-    "paths": "tests/review"
-  },
-  {
-    "name": "agents",
-    "paths": "tests/agents"
-  },
-  {
-    "name": "integration",
-    "paths": "tests/integration"
-  },
-  {
-    "name": "shared-core",
-    "paths": "tests/shared/core"
-  },
-  {
-    "name": "shared-rest",
-    "paths": "tests/shared --ignore=tests/shared/core"
+    "name": "shared-telemetry",
+    "paths": "tests/shared/telemetry"
   }
 ]

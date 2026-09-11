@@ -1,7 +1,7 @@
 """Shared fixtures for the analyze-service tests.
 
-Holds one thing: the seam that keeps the mocked-essentia tests exercising the path
-production actually takes after phaze-5lop.
+Holds the seam that keeps mocked-Essentia tests on the production control flow without
+making their test doubles pay production-only native-resource cleanup costs.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ def streaming_decode_under_mocked_essentia() -> Iterator[None]:
     ``test_analysis_streaming_decode.py``.
     """
     real_streaming_decode = analysis_mod._decode_windows_streaming
+    real_release_classifier = analysis_mod._release_classifier
 
     def _stub(
         file_path: str,
@@ -72,5 +73,27 @@ def streaming_decode_under_mocked_essentia() -> Iterator[None]:
                 continue
         return decoded
 
-    with patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_stub):
+    def _release_classifier(model_filename: str) -> None:
+        """Evict mocked graphs without scanning pytest's full cyclic-GC heap.
+
+        Production TensorFlow classifiers own native sessions, so the real release path
+        retains its defensive ``gc.collect()``. A ``MagicMock`` constructed under the
+        mocked-Essentia seam owns no native graph; collecting pytest's large heap once per
+        model makes the mock several orders of magnitude more expensive than the behavior
+        under test. Keep the substitution narrower than either signal alone: real Essentia
+        or a non-mock cached classifier always delegates to the production cleanup path.
+
+        ``_release_classifier_timed`` remains untouched and calls this seam, so mocked
+        sweeps still execute the production timing wrapper around cache eviction.
+        """
+        classifier = analysis_mod._classifier_cache.get(model_filename)
+        if isinstance(analysis_mod.es, MagicMock) and isinstance(classifier, MagicMock):
+            analysis_mod._classifier_cache.pop(model_filename)
+            return
+        real_release_classifier(model_filename)
+
+    with (
+        patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_stub),
+        patch.object(analysis_mod, "_release_classifier", side_effect=_release_classifier),
+    ):
         yield

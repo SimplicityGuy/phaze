@@ -31,16 +31,20 @@ as of this split) can be represented by SEVERAL shards, each a space-separated s
 that bucket's subdirectories. Splitting the file (rather than overloading buckets.json's
 shape) keeps the partition guard's directory-membership invariant untouched.
 
-This guard is DB-free and subprocess-free: it parses ``justfile`` as text and
-``.github/workflows/tests.yml`` as YAML. It lives in ``tests/shared/`` so it rides the
-``shared-rest`` shard (see ``test_partition_guard.py`` for why bucket placement matters).
+This guard is DB-free. It parses ``justfile`` and the workflows directly; one root-aggregate
+contract executes that repository-owned shell fragment with synthetic job results to prove
+both required failure paths. It lives in ``tests/shared/`` so it rides the ``shared-rest``
+shard (see ``test_partition_guard.py`` for why bucket placement matters).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import tomllib
 from typing import Any
 
@@ -53,6 +57,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
 _WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_ROOT_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
 _BUCKETS_JSON = _REPO_ROOT / "tests" / "buckets.json"
 _CI_SHARDS_JSON = _REPO_ROOT / "tests" / "ci_shards.json"
@@ -80,6 +85,12 @@ def _load_workflow() -> dict[str, Any]:
     return loaded
 
 
+def _load_root_workflow() -> dict[str, Any]:
+    assert _ROOT_WORKFLOW_PATH.is_file(), f"missing workflow: {_ROOT_WORKFLOW_PATH}"
+    loaded: dict[str, Any] = yaml.safe_load(_ROOT_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    return loaded
+
+
 def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
     """Return every step in `job` whose text representation contains CODECOV_TOKEN."""
     hits: list[dict[str, Any]] = []
@@ -99,6 +110,54 @@ def _find_run_step(job: dict[str, Any], needle: str) -> dict[str, Any]:
     hits = [step for step in job["steps"] if needle in step.get("run", "")]
     assert len(hits) == 1, f"expected one browser step containing {needle!r}, found {len(hits)}"
     return hits[0]
+
+
+def test_root_ci_does_not_serialize_tests_behind_quality() -> None:
+    """Tests may start after change detection while quality runs independently.
+
+    The aggregate job owns the AND relationship between the two required results. Putting
+    quality in ``test.needs`` adds the quality duration to the critical path without making
+    the final verdict stricter.
+    """
+    jobs = _load_root_workflow()["jobs"]
+
+    assert jobs["test"]["needs"] == ["detect-changes"]
+    assert {"quality", "test"} <= set(jobs["aggregate-results"]["needs"])
+
+
+@pytest.mark.parametrize(
+    ("quality_result", "test_result", "failure_message"),
+    [
+        pytest.param("failure", "success", "Code quality did not pass", id="quality-fails"),
+        pytest.param("success", "failure", "Tests did not succeed", id="tests-fail"),
+    ],
+)
+def test_root_ci_aggregate_rejects_each_required_gate_failure(quality_result: str, test_result: str, failure_message: str) -> None:
+    """Either quality or tests failing must independently fail the aggregate verdict."""
+    aggregate = _load_root_workflow()["jobs"]["aggregate-results"]
+    gate = _find_run_step(aggregate, "Pipeline Results Summary")["run"]
+    env = {
+        **os.environ,
+        "CODE_CHANGED": "true",
+        "DETECT_RESULT": "success",
+        "QUALITY_RESULT": quality_result,
+        "TEST_RESULT": test_result,
+        "SECURITY_RESULT": "success",
+        "DOCKER_RESULT": "success",
+    }
+
+    result = subprocess.run(["/bin/bash", "-c", gate], env=env, capture_output=True, text=True, check=False)  # noqa: S603 - trusted in-repo workflow
+
+    assert result.returncode == 1, result.stdout
+    assert failure_message in result.stdout
+
+
+def test_root_ci_retains_pull_request_cancellation() -> None:
+    """Parallel startup must retain cancellation of superseded pull-request runs."""
+    assert _load_root_workflow()["concurrency"] == {
+        "group": "ci-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
 
 
 def test_bucket_recipe_defers_the_coverage_gate() -> None:
@@ -271,15 +330,45 @@ def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
     # `shared` bucket; a typo'd bucket segment here would silently stop running real tests.
     assert _BUCKETS_JSON.is_file(), f"missing canonical bucket list: {_BUCKETS_JSON}"
     known_buckets = set(json.loads(_BUCKETS_JSON.read_text(encoding="utf-8")))
+    selected_by_file: dict[Path, list[str]] = {}
     for shard in shards:
         assert shard.get("paths"), f"shard {shard.get('name')!r} has empty paths"
-        for token in shard["paths"].split():
+        tokens = shlex.split(shard["paths"])
+        for token in tokens:
             if token.startswith("--"):
                 # A pytest flag (e.g. --ignore=tests/shared/core), not a collection path.
+                assert token.startswith("--ignore=tests/"), f"shard {shard['name']!r} has unsupported pytest flag {token!r}"
                 continue
             assert token.startswith("tests/"), f"shard {shard['name']!r} path {token!r} must start with tests/"
             bucket = token.removeprefix("tests/").split("/")[0]
             assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"
+
+        ignored = [(_REPO_ROOT / token.removeprefix("--ignore=")).resolve() for token in tokens if token.startswith("--ignore=")]
+        selected: set[Path] = set()
+        for token in (token for token in tokens if not token.startswith("--")):
+            path = (_REPO_ROOT / token).resolve()
+            assert path.exists(), f"shard {shard['name']!r} path does not exist: {token!r}"
+            candidates = [path] if path.is_file() else list(path.rglob("*.py"))
+            selected.update(candidate for candidate in candidates if candidate.name.startswith("test_") or candidate.name.endswith("_test.py"))
+        for ignored_path in ignored:
+            selected = {candidate for candidate in selected if candidate != ignored_path and ignored_path not in candidate.parents}
+        for candidate in selected:
+            selected_by_file.setdefault(candidate, []).append(shard["name"])
+
+    browser_root = (_REPO_ROOT / "tests" / "browser").resolve()
+    expected = {
+        path.resolve()
+        for path in (_REPO_ROOT / "tests").rglob("*.py")
+        if (path.name.startswith("test_") or path.name.endswith("_test.py")) and browser_root not in path.resolve().parents
+    }
+    actual = set(selected_by_file)
+    assert actual == expected, (
+        "CI shards must collect every non-browser test file exactly once; "
+        f"missing={sorted(str(path.relative_to(_REPO_ROOT)) for path in expected - actual)!r}, "
+        f"extra={sorted(str(path.relative_to(_REPO_ROOT)) for path in actual - expected)!r}"
+    )
+    duplicates = {str(path.relative_to(_REPO_ROOT)): owners for path, owners in selected_by_file.items() if len(owners) != 1}
+    assert not duplicates, f"CI shard test files overlap: {duplicates!r}"
 
 
 def _assert_browser_group_is_exactly_pinned_playwright(browser_group: list[str]) -> None:
