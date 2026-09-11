@@ -14,7 +14,7 @@ provides:
   - "82-VERIFICATION.md — recorded PERF-02 numbers, index-scan evidence, DENORM-01 NO-GO call, D-02 deployment gate"
 affects:
   - "DENORM-01 decision (deferred; concurrent four-bucket reads recommended before the denorm bitmap column)"
-  - "homelab rollout — the D-02 read-only lux re-check (>=036 + zero analyzed-NULL) is gated here"
+  - "homelab rollout — the D-02 read-only host-prod re-check (>=036 + zero analyzed-NULL) is gated here"
 tech-stack:
   added: []
   patterns:
@@ -128,10 +128,10 @@ degrade-safe poll absorbs the current 1.4 s comfortably. See `82-VERIFICATION.md
 ## Notes
 
 - **Measurement provenance (Pitfall 5 / D-06):** local dedicated synthetic corpus at migration HEAD (036),
-  NOT live lux. Absolute ms are Apple-Silicon/colima host-relative; the transferable finding is the RELATIVE
+  NOT live host-prod. Absolute ms are Apple-Silicon/colima host-relative; the transferable finding is the RELATIVE
   story (four-bucket dominates; sequential; pending queries fast).
 - **D-02 deploy gate:** recorded DEPLOYMENT-GATED (≥036 + `COUNT(analyzed ∧ completed_at NULL ∧ failed_at
-  NULL)=0`), to be re-run READ-ONLY against lux at homelab rollout — NOT probed here (prod ~031; its EXPLAIN
+  NULL)=0`), to be re-run READ-ONLY against host-prod at homelab rollout — NOT probed here (prod ~031; its EXPLAIN
   would be invalid). The exact read-only SQL is in `82-VERIFICATION.md`.
 - **No production code touched:** this plan added only `scripts/` + `justfile` + planning docs; the seeder/bench
   are read-mostly and the seeder is hard-gated against non-perf DBs.

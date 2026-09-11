@@ -1502,7 +1502,7 @@ the fact; known drift is logged here instead, dated, without touching the rows t
 | `docs/spikes/phaze-mqq5-alternative-model-runtimes.md` | dated investigation evidence | unchanged |
 | `docs/spikes/phaze-p3hj.1-audfprint-total-outage-diagnosis.md` | dated investigation evidence | unchanged |
 | `docs/spikes/phaze-rc1q-streaming-vs-standard-mode.md` | dated investigation evidence | unchanged |
-| `docs/spikes/phaze-u1n7j-vox-fix-verification.md` | dated investigation evidence | unchanged |
+| `docs/spikes/phaze-u1n7j-host-compute-fix-verification.md` | dated investigation evidence | unchanged |
 | `docs/spikes/phaze-wcrb-oom-multiplier-forensics.md` | dated investigation evidence | unchanged |
 | `docs/spikes/phaze-ytgo.1-purpose-rubric.md` | dated investigation evidence | unchanged |
 | `docs/spikes/phaze-ytgo.2-essentia-embeddings.md` | dated investigation evidence | unchanged |

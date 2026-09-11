@@ -49,7 +49,7 @@ keyed on `Path(FPRINT_DB).exists()`, and a zero-byte file exists.
 ### 1a. From the database column (`fingerprint_results.error_message`)
 
 ```
-ssh -4 datum@host-prod 'docker exec postgres psql -U phaze -d phaze -c "..."'
+ssh -4 operator@host-prod 'docker exec postgres psql -U phaze -d phaze -c "..."'
 ```
 
 ```
@@ -93,7 +93,7 @@ these rows are unambiguously the **ingest** path.
 ### 1b. From the sidecar's own container log
 
 ```
-ssh -4 datum@host-store 'docker logs phaze-audfprint'
+ssh -4 operator@host-store 'docker logs phaze-audfprint'
 ```
 
 ```

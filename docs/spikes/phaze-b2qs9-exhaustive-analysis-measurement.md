@@ -43,11 +43,11 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node (k0s v1.36.2), **taken out of the phaze backend registry for the measurement window** and otherwise idle |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node (k0s v1.36.2), **taken out of the phaze backend registry for the measurement window** and otherwise idle |
 | **Runtime** | the deployed job image `job:2026.8.1` **for its wheels only** — Python 3.14.7, `essentia-tensorflow` 2.1b6.dev1438, numpy 2.5.1 — with **`main@75e7575d`'s `src/phaze`** (tree `93c846bc…`) overlaid at `/scratch/src` and put ahead of the image's own `/app/src` on `PYTHONPATH`. No image exists at that commit; see §1c |
 | **Models** | the deployed `phaze-models` PVC, mounted **read-only** (68 files, the 34 graphs + labels) |
 | **Thread sizing** | `derive_sizing()` on this node returns `physical_cores=4, intra_op=4, inter_op=1, omp=4, concurrency=1` (`source='sysfs:thread_siblings_list'`) — the production derivation, applied by `services/analysis.py` at import |
-| **Pod** | a bare `sleep infinity` pod on `vox`, **no Kueue queue label** (consumes no quota) and **no memory limit** — the limit is deliberately absent so a peak above ADR-0005's 4Gi tier would be *observed* rather than OOMKilled |
+| **Pod** | a bare `sleep infinity` pod on `host-compute`, **no Kueue queue label** (consumes no quota) and **no memory limit** — the limit is deliberately absent so a peak above ADR-0005's 4Gi tier would be *observed* rather than OOMKilled |
 | **Process model** | **one exec'd child per file** (`python -m phaze.analysis_child <file> --models-dir /models`), exactly as production; the harness is the parent that `analysis_exec` is in production |
 | **Peak RSS** | `wait4()`'s `ru_maxrss` for that one child — a kernel high-water mark, **not** a sampled curve, so it is immune to the `phaze-7i0k` §9 GIL trap. Cross-checked against a host-side 1 s sampler of the child's `/proc/<pid>/status:VmHWM` (a separate process, never GIL-starved). On Linux `ru_maxrss` is KiB |
 | **Wall clock / per-tier split** | every protocol line the child emits is timestamped by the harness against a monotonic clock. Tier boundaries come from the heartbeat stage names (`fine_decode`/`fine` → `coarse_decode`/`coarse_model`/`coarse`), so the split is read off the shipped liveness channel rather than from added instrumentation |
@@ -57,7 +57,7 @@ ______________________________________________________________________
 **No operator media is named anywhere in this document.** Files are referred to as `<set-01>` …
 `<set-07>` and characterized only by container, codec, sample rate, bit rate and duration. No
 filename, path, digest, file UUID or per-file metadata value appears here. Originals were never
-opened for write: each measured file is a read-only copy taken to `vox`'s local scratch, and the
+opened for write: each measured file is a read-only copy taken to `host-compute`'s local scratch, and the
 scratch tree is removed at the end.
 
 ### 1a. Sample — seven real corpus files, duration-stratified
@@ -519,7 +519,7 @@ ______________________________________________________________________
 
 ## 6. Against ADR-0005's limit tier
 
-The deployed tier is `memory_request: 3Gi`, `memory_limit: 4Gi` (`backends.toml`, vox), derived
+The deployed tier is `memory_request: 3Gi`, `memory_limit: 4Gi` (`backends.toml`, host-compute), derived
 from `phaze-5lop`'s **1.7383 GiB** end-to-end peak at 1.73× / 2.30× headroom. Measured against
 that tier:
 
@@ -551,7 +551,7 @@ ______________________________________________________________________
 
 ### FU-1 — BUG, P0: exhaustive analysis's peak RSS is linear in duration and breaches the 4Gi limit at 4 hours
 
-> **RESOLVED — `phaze-u1n7j`, 2026-08-13. See `phaze-u1n7j-vox-fix-verification.md`.** The cause was
+> **RESOLVED — `phaze-u1n7j`, 2026-08-13. See `phaze-u1n7j-host-compute-fix-verification.md`.** The cause was
 > none of the three guesses below: a chunk's essentia streaming network was **dropped but never
 > disconnected**, so each *gated* chunk retained ~5 MiB per window branch (D-09 in
 > `services/analysis.py`). Re-measured on this node, this image and these same files, the peaks
@@ -579,7 +579,7 @@ ______________________________________________________________________
   `_malloc_trim` is *already* called per chunk and is evidently not recovering this); and the
   `RhythmExtractor2013` / `KeyExtractor` instances that `phaze-ap8y` hoisted to live across all
   chunks.
-- **Acceptance:** peak RSS flat (within, say, 10%) between a 1-hour and a 12-hour file on vox,
+- **Acceptance:** peak RSS flat (within, say, 10%) between a 1-hour and a 12-hour file on host-compute,
   measured the way this spike measures it.
 
 ### FU-2 — DECISION: re-open ADR-0005's premise, and re-derive the tier
@@ -628,10 +628,10 @@ it was changed back.
 | what | opening the window | closing it |
 | --- | --- | --- |
 | in-flight cloud work | four analyses were **allowed to finish** (drained 23:13Z → 23:53Z); none was evicted, requeued or lost | — |
-| Kueue `vox-cluster-queue` | **held 2026-08-11T23:13:35Z** — `stopPolicy: None` → **`Hold`** (stops admitting; never `HoldAndDrain`, which would have evicted running work) | **released 2026-08-12T21:56:07Z** — back to **`None`**; the queue drained 82 pending → 0 within minutes and resumed analyzing |
-| phaze backend registry | **removed 2026-08-11T23:54:20Z** — the `vox` `[[backends]]` block commented out in the deployed `backends.toml`, `phaze-api` + `phaze-worker` restarted, registry logged as `local` only with `cloud_enabled: false` | **restored 2026-08-12T21:55:39Z** — file put back **byte-identical** from a capture taken *before* removal (`diff -q` clean; the capture then deleted), both services restarted, registry logged back as `vox` + `local` with `cloud_enabled: true`. Verified in §8a |
-| the measurement pod | a `sleep infinity` pod on `vox`, **no Kueue queue label** (consumed no quota), no memory limit | deleted |
-| scratch | 3.3 GB under a vox-local `/scratch` path — read-only copies of seven files, the harness, the outputs | removed entirely |
+| Kueue `host-compute-cluster-queue` | **held 2026-08-11T23:13:35Z** — `stopPolicy: None` → **`Hold`** (stops admitting; never `HoldAndDrain`, which would have evicted running work) | **released 2026-08-12T21:56:07Z** — back to **`None`**; the queue drained 82 pending → 0 within minutes and resumed analyzing |
+| phaze backend registry | **removed 2026-08-11T23:54:20Z** — the `host-compute` `[[backends]]` block commented out in the deployed `backends.toml`, `phaze-api` + `phaze-worker` restarted, registry logged as `local` only with `cloud_enabled: false` | **restored 2026-08-12T21:55:39Z** — file put back **byte-identical** from a capture taken *before* removal (`diff -q` clean; the capture then deleted), both services restarted, registry logged back as `host-compute` + `local` with `cloud_enabled: true`. Verified in §8a |
+| the measurement pod | a `sleep infinity` pod on `host-compute`, **no Kueue queue label** (consumed no quota), no memory limit | deleted |
+| scratch | 3.3 GB under a host-compute-local `/scratch` path — read-only copies of seven files, the harness, the outputs | removed entirely |
 
 ### 8a. Restoration, verified
 
@@ -647,15 +647,15 @@ The control plane's **own** lane snapshot (`services/backends.get_backend_lane_s
 degrade-safe probe the operator lane grid renders) after restoration, secret-free projection:
 
 ```
-REGISTRY: [{"id":"vox","kind":"kueue","rank":10,"cap":4},{"id":"local","kind":"local","rank":99,"cap":1}]
-LANE:     {"id":"vox","kind":"kueue","rank":10,"cap":4,"available":true,
+REGISTRY: [{"id":"host-compute","kind":"kueue","rank":10,"cap":4},{"id":"local","kind":"local","rank":99,"cap":1}]
+LANE:     {"id":"host-compute","kind":"kueue","rank":10,"cap":4,"available":true,
            "in_flight":4,"working":4,"quota_wait":0,"inadmissible":0}
 ```
 
 `available: true` is the live availability probe, not a config echo. And the lane is not merely
 reachable — **work routed to it and is running**: `in_flight`/`working` climbed 2 → 4, i.e. the lane
 is saturated at its `cap = 4`, with four healthy analyze pods on the node (ages 4m42s–20m at the
-final check) and `cloud_job` showing `running: 4` for `backend_id = vox`. The Kueue queue drained
+final check) and `cloud_job` showing `running: 4` for `backend_id = host-compute`. The Kueue queue drained
 from 82 pending to 0 within minutes of the un-hold.
 
 No completion landed inside the observation window, and that is expected rather than a gap: the

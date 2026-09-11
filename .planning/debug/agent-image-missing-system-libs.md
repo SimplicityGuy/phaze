@@ -17,8 +17,8 @@ resolution: "Fixed in v4.0.9 — the agent Dockerfile gained the audio system de
 
 ## Live evidence (2026-06-10)
 
-- nox `phaze-agent-worker` on `ghcr.io/simplicityguy/phaze:v4.0.8`. **0** `ProcessFilePayload` validation errors — payload fix confirmed working; jobs carry full payload (`file_id, original_path, file_type, agent_id, models_path`).
-- Triggered `POST /api/v1/analyze` → `{"enqueued":5000,...}`. Jobs routed correctly to `phaze-agent-nox`, processed, and ALL failed on the essentia import.
+- host-store `phaze-agent-worker` on `ghcr.io/simplicityguy/phaze:v4.0.8`. **0** `ProcessFilePayload` validation errors — payload fix confirmed working; jobs carry full payload (`file_id, original_path, file_type, agent_id, models_path`).
+- Triggered `POST /api/v1/analyze` → `{"enqueued":5000,...}`. Jobs routed correctly to `phaze-agent-host-store`, processed, and ALL failed on the essentia import.
 - DB unchanged after trigger: `public.files` 5000 rows all `discovered`; `public.analysis` 0 rows.
 - In-container probe of `phaze-agent-worker`: `ffmpeg MISSING, ffprobe MISSING, fpcalc MISSING, libatomic.so.1 MISSING, libsndfile.so.1 MISSING, libchromaprint.so.1 MISSING`.
 
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libatomic1 ffmpeg libsndfile1 libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 ```
-Then release v4.0.9 and redeploy nox + lux. Even once essentia imports, ffmpeg/fpcalc would be the next failures downstream, so install all four together.
+Then release v4.0.9 and redeploy host-store + host-prod. Even once essentia imports, ffmpeg/fpcalc would be the next failures downstream, so install all four together.
 
 ## Verification plan
 
@@ -51,5 +51,5 @@ Then release v4.0.9 and redeploy nox + lux. Even once essentia imports, ffmpeg/f
 ## Eliminated
 
 - Payload shape (v4.0.8) — ELIMINATED: 0 validation errors, full payload present.
-- Queue misrouting (Phase 30) — ELIMINATED: jobs reach `phaze-agent-nox` and execute.
+- Queue misrouting (Phase 30) — ELIMINATED: jobs reach `phaze-agent-host-store` and execute.
 - Deploy/version skew — ELIMINATED: both hosts on v4.0.8.

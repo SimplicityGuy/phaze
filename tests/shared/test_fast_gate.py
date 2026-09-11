@@ -309,7 +309,7 @@ def _modified(*paths: str) -> str:
         "README.md",
         "CONVENTIONS.md",
         "docs/design/0012-verification-fidelity-and-operator-attribution.md",
-        "docs/spikes/phaze-u1n7j-vox-fix-verification.md",
+        "docs/spikes/phaze-u1n7j-host-compute-fix-verification.md",
         ".planning/STATE.md",
         "design/DESIGN_SYSTEM.md",
     ],

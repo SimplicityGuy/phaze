@@ -157,7 +157,7 @@ outputs:
 All step names must use emoji prefixes matching the discogsography pattern.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && yamllint -d relaxed .github/actions/docker-build-cache/action.yml .github/workflows/docker-publish.yml && actionlint .github/workflows/docker-publish.yml</automated>
+    <automated>cd <scratch>/phaze && yamllint -d relaxed .github/actions/docker-build-cache/action.yml .github/workflows/docker-publish.yml && actionlint .github/workflows/docker-publish.yml</automated>
   </verify>
   <done>
   - docker-build-cache composite action exists with cache setup and actions/cache@v5
@@ -227,7 +227,7 @@ image-push:
 ```
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && yamllint -d relaxed .github/workflows/ci.yml .github/workflows/cleanup-images.yml && actionlint .github/workflows/ci.yml && just --list | grep image-push</automated>
+    <automated>cd <scratch>/phaze && yamllint -d relaxed .github/workflows/ci.yml .github/workflows/cleanup-images.yml && actionlint .github/workflows/ci.yml && just --list | grep image-push</automated>
   </verify>
   <done>
   - ci.yml has packages:write permission and docker-publish job after aggregate-results

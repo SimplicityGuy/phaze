@@ -45,8 +45,8 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), x86_64, **8 cores, 31 GiB RAM**. Confirmed idle before the session (`load avg 0.38`, no other agent's pods); arms run **strictly one at a time**, never concurrently |
-| **Placement** | a bare `sleep infinity` pod on the burst node, deployed job image, `phaze-models` PVC mounted **read-only**, host scratch dir, **no Kueue queue label** — consumes no quota, and vox stays out of the phaze backend registry |
+| **Host** | `host-compute` — Debian 13 (trixie), x86_64, **8 cores, 31 GiB RAM**. Confirmed idle before the session (`load avg 0.38`, no other agent's pods); arms run **strictly one at a time**, never concurrently |
+| **Placement** | a bare `sleep infinity` pod on the burst node, deployed job image, `phaze-models` PVC mounted **read-only**, host scratch dir, **no Kueue queue label** — consumes no quota, and host-compute stays out of the phaze backend registry |
 | **essentia** | `essentia-tensorflow` 2.1-beta6-dev (the pinned wheel), Python 3.14.6 |
 | **Runtimes compared** | bundled TensorFlow (essentia's own libtensorflow) vs **onnxruntime 1.28.0** |
 | **Converter** | `tf2onnx` 1.17.0 on `tensorflow-cpu` 2.21.0 / `onnx` 1.22.0, opset 18, in a **separate** py3.13 pod |
@@ -720,5 +720,5 @@ value is a configuration error, not a data point.
 **Teardown.** Both pods deleted, the host scratch dir removed, and the `python:3.13-slim`
 image this spike pulled removed from containerd. The `phaze-models` PVC is `Bound` and its 68
 files are byte-unchanged (it was mounted read-only throughout); the 18 phaze images and all
-k0s / JuiceFS / gateway configuration are untouched, and **vox remains out of the phaze backend
+k0s / JuiceFS / gateway configuration are untouched, and **host-compute remains out of the phaze backend
 registry** — nothing here re-enabled it.

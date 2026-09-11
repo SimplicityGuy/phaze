@@ -87,17 +87,17 @@ The CURRENT ASCII block in `docs/cloud-burst.md` (the verbatim content to conver
 token below must survive into the mermaid):
 
   Outer frame title: `Tailscale tailnet (default-deny grants ACL)`
-  Group 1 — `nox (file server)`: runs `docker-compose.agent.yml`
+  Group 1 — `host-store (file server)`: runs `docker-compose.agent.yml`
     (worker+watcher+fprint+media)
   Group 2 — `OCI A1 (compute agent)`: runs `docker-compose.cloud-agent.yml`,
     `worker (kind=compute`, `no media, scratch volume`, `-arm64 image)`
-  Group 3 — `lux (application server)`: `api(:8000)` ·
+  Group 3 — `host-prod (application server)`: `api(:8000)` ·
     `Postgres(:5432 app ORM + saq_jobs broker)` · `Redis(:6379)`;
     `controller worker (stage_cloud_window cron)`;
     `broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)`
   Edges:
-    - `nox → A1:22` labeled `rsync over SSH`
-    - `A1 → lux:{5432,6379,8000}` labeled `HTTP API + saq_jobs + cache`
+    - `host-store → A1:22` labeled `rsync over SSH`
+    - `A1 → host-prod:{5432,6379,8000}` labeled `HTTP API + saq_jobs + cache`
   Caption (move OUT of diagram to italic line below):
     `PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, staging cron no-ops,
      backfill rejected, A1 idle. (all-local)`
@@ -107,7 +107,7 @@ token below must survive into the mermaid):
 The CURRENT ASCII block in `docs/k8s-burst.md` (the verbatim content to convert):
 
   Outer frame title: `transport-agnostic mesh (Tailscale OR WireGuard)`
-  Group 1 — `lux (application server / control plane)`: `api(:8000)` · `Postgres` · `Redis`;
+  Group 1 — `host-prod (application server / control plane)`: `api(:8000)` · `Postgres` · `Redis`;
     `controller worker:` with children:
       `s3_staging`, `submit_cloud_job`, `reconcile_cloud_jobs (*/5 cron)`,
       `LocalQueue probe (startup)`
@@ -119,7 +119,7 @@ The CURRENT ASCII block in `docs/k8s-burst.md` (the verbatim content to convert)
     - `s3_staging` labeled `presign PUT/GET` → `S3 bucket`
     - `submit_cloud_job` labeled `kube POST` → `suspended batch Job`
     - `Kueue admits` → `one-shot pod`
-    - `one-shot pod` labeled `POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)` → `controller` (the `POST /api/internal/agent/analysis/{file_id}` callback target in the lux control plane)
+    - `one-shot pod` labeled `POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)` → `controller` (the `POST /api/internal/agent/analysis/{file_id}` callback target in the host-prod control plane)
   Caption (move OUT of diagram to italic line below):
     `PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, no kube submit, no S3 staging. (all-local)`
 </source_block_k8s_burst>
@@ -146,18 +146,18 @@ source_block_* contracts in context). For each of the two files:
    "POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)" (k8s-burst) —
    become mermaid edge labels via the `-->|"label"|` pipe form (always double-quoted because
    they contain spaces, slashes, parens, and braces). For the cloud-burst node-to-node edges,
-   keep the destination tokens `A1:22` and `lux:{5432,6379,8000}` somewhere in the label or
+   keep the destination tokens `A1:22` and `host-prod:{5432,6379,8000}` somewhere in the label or
    adjacent node text so the routing detail is not lost (e.g. edge label
-   `"rsync over SSH (nox → A1:22)"` and `"HTTP API + saq_jobs + cache (A1 → lux:{5432,6379,8000})"`),
+   `"rsync over SSH (host-store → A1:22)"` and `"HTTP API + saq_jobs + cache (A1 → host-prod:{5432,6379,8000})"`),
    matching the original semantics.
 
 3. Any node OR subgraph-title text containing special chars — `{file_id}`, `:`, `/`, `(`, `)`,
    `·`, `→`, `'`, `{`, `}`, `*`, `+`, `=` — MUST be a double-quoted label:
    `n1["api(:8000)"]`, and subgraph titles use the quoted id form
-   `subgraph lux["lux (application server)"]`. Escape any literal `<`/`>` as `&lt;`/`&gt;`
+   `subgraph host-prod["host-prod (application server)"]`. Escape any literal `<`/`>` as `&lt;`/`&gt;`
    per the project mermaid style. Use the `→` and `·` characters verbatim inside quoted
    labels (they are fine inside quotes). For the controller-worker children in k8s-burst
-   (s3_staging / submit_cloud_job / reconcile_cloud_jobs / LocalQueue probe) and the lux/cluster
+   (s3_staging / submit_cloud_job / reconcile_cloud_jobs / LocalQueue probe) and the host-prod/cluster
    one-shot-pod callback, model them as nodes inside their subgraph with the edges above.
 
 4. Move the `PHAZE_CLOUD_TARGET=local ⇒ ...` caption OUT of the diagram. Place it as a single
@@ -174,7 +174,7 @@ source_block_* contracts in context). For each of the two files:
 Do NOT inline-execute pre-commit with `--no-verify` at any point.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && \
+    <automated>cd <scratch>/phaze && \
       test "$(grep -c '```mermaid' docs/cloud-burst.md)" -ge 1 && \
       test "$(grep -c '```mermaid' docs/k8s-burst.md)" -ge 1 && \
       test "$(grep -c 'flowchart LR' docs/cloud-burst.md)" -ge 1 && \
@@ -201,7 +201,7 @@ passes with no `--no-verify`; nothing else in either file changed.
 </tasks>
 
 <verification>
-Final phase checks (run from repo root `/Users/Robert/Code/public/phaze`):
+Final phase checks (run from repo root `<scratch>/phaze`):
 
 1. Mermaid blocks present and ASCII gone:
    `grep -c '```mermaid' docs/cloud-burst.md docs/k8s-burst.md` — each ≥ 1.
@@ -211,7 +211,7 @@ Final phase checks (run from repo root `/Users/Robert/Code/public/phaze`):
    cloud-burst: `docker-compose.agent.yml`, `docker-compose.cloud-agent.yml`, `kind=compute`,
    `-arm64 image`, `scratch volume`, `api(:8000)`, `Postgres(:5432 app ORM + saq_jobs broker)`,
    `Redis(:6379)`, `stage_cloud_window cron`, `phaze_broker`, `saq_jobs ONLY`, `rsync over SSH`,
-   `A1:22`, `lux:{5432,6379,8000}`, `HTTP API + saq_jobs + cache`.
+   `A1:22`, `host-prod:{5432,6379,8000}`, `HTTP API + saq_jobs + cache`.
    k8s-burst: `namespace: phaze`, `ResourceFlavor phaze-cpu`, `ClusterQueue phaze-cq`,
    `LocalQueue phaze-lq`, `SA/Role/RoleBinding`, `Secret phaze-agent-token`,
    `s3_staging`, `submit_cloud_job`, `reconcile_cloud_jobs (*/5 cron)`, `LocalQueue probe (startup)`,

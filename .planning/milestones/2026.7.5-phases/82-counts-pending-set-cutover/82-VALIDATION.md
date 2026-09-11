@@ -72,7 +72,7 @@ updated: 2026-07-10
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | 200K poll-latency measurement | PERF-02 | Requires a seeded ~200K local corpus at migration HEAD + EXPLAIN ANALYZE; not part of the hermetic unit suite | `just test-db` → migrate to HEAD → `uv run python scripts/seed_perf_corpus.py --n 200000` → run the bench recipe → paste the endpoint timing + EXPLAIN ANALYZE index-scan evidence into VERIFICATION |
-| Deploy ≥036 + zero `analyzed`-NULL guard (D-02) | READ-01 | Live/shadow assertion against the deploy target; CI can't see prod rows | Read-only lux probe: `COUNT(files WHERE state='analyzed' AND analysis_completed_at IS NULL AND failed_at IS NULL) = 0`; confirm Alembic head ≥ 036 |
+| Deploy ≥036 + zero `analyzed`-NULL guard (D-02) | READ-01 | Live/shadow assertion against the deploy target; CI can't see prod rows | Read-only host-prod probe: `COUNT(files WHERE state='analyzed' AND analysis_completed_at IS NULL AND failed_at IS NULL) = 0`; confirm Alembic head ≥ 036 |
 
 ---
 

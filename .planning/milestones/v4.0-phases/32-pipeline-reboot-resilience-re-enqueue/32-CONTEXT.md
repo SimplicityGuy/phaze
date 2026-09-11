@@ -21,7 +21,7 @@
 
 ### Dedup: deterministic SAQ job key per file (operator, 2026-06-11)
 - Enqueue `process_file` with a **deterministic key** `key=f"process_file:{file_id}"` so SAQ no-ops a re-enqueue while that file's job is still incomplete (queued or active). This makes the cron safe to run frequently and prevents the reboot-cron from double-enqueuing files that "Run Analysis" or a prior tick already queued.
-- **CRITICAL**: the key MUST be added to the **shared** enqueue path so BOTH producers use it — the dashboard "Run Analysis" (`routers/pipeline.py::_enqueue_analysis_jobs`) AND the new reboot re-enqueue. Otherwise the two paths generate different keys and dedup fails. Today `_enqueue_analysis_jobs` enqueues with NO key (default = random uuid, verified: live Redis showed `saq:job:phaze-agent-nox:<uuid>`).
+- **CRITICAL**: the key MUST be added to the **shared** enqueue path so BOTH producers use it — the dashboard "Run Analysis" (`routers/pipeline.py::_enqueue_analysis_jobs`) AND the new reboot re-enqueue. Otherwise the two paths generate different keys and dedup fails. Today `_enqueue_analysis_jobs` enqueues with NO key (default = random uuid, verified: live Redis showed `saq:job:phaze-agent-host-store:<uuid>`).
 - RESEARCH MUST confirm the exact saq 0.26.4 API for a custom deterministic key + the dedup/no-op-on-duplicate-incomplete-key behavior (is it `enqueue(..., key=...)`? a `Job(key=...)`? does a duplicate incomplete key return `None` / the existing job?). This is the load-bearing primitive of the whole phase — see RESEARCH question 1.
 
 ### Location: controller worker (operator, 2026-06-11)
@@ -64,8 +64,8 @@
 <specifics>
 ## Specific Ideas / Evidence
 - Live reality (2026-06-10): the whole 11,428-file corpus sits at `DISCOVERED`; a homelab reboot currently requires a manual "Run Analysis" re-click. This phase makes that automatic.
-- `process_file` jobs currently enqueue with default uuid keys (`saq:job:phaze-agent-nox:<uuid>` in live Redis) — no dedup today.
-- Single-agent reality (`phaze-agent-nox`): per-queue key dedup is sufficient; cross-agent key dedup (same key on two different agent queues) is an accepted edge case, not a blocker.
+- `process_file` jobs currently enqueue with default uuid keys (`saq:job:phaze-agent-host-store:<uuid>` in live Redis) — no dedup today.
+- Single-agent reality (`phaze-agent-host-store`): per-queue key dedup is sufficient; cross-agent key dedup (same key on two different agent queues) is an accepted edge case, not a blocker.
 - Phase 30 already centralized control-plane routing so "Run Analysis" hits the agent queue, not the consumer-less default — reuse that, do not reinvent.
 </specifics>
 

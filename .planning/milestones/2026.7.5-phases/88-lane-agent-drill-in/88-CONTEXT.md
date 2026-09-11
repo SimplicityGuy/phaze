@@ -218,7 +218,7 @@ This discussion decided **how they render, survive the poll, and behave** — no
   ```
 - **Agent stage-grouping mock (D-04):**
   ```
-  Agent nox · owns 4,201 files
+  Agent host-store · owns 4,201 files
            done  ● infl  — not  ✗ fail
   Meta     4,201    0      0     0
   FP       4,180    9     12     0

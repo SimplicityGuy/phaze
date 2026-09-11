@@ -287,7 +287,7 @@ This is a code-only reader swap — no rename, no migration, no data mutation. S
 ## Live-Corpus / UAT Considerations
 
 - **How many applied files exist in prod?** Not directly countable from this branch (read-only research; no prod probe run here). Memory note "Prod is at Alembic 031" concerns the derived-model tables (dedup/fingerprint), NOT proposals — the apply path is old, so an applied backlog plausibly exists. The whole point of the phase is that this backlog is **currently invisible** (dead gate). **This is precisely why D-03 mandates the pagination guard** — a large first-time-visible backlog must not blow up the render at 200K scale.
-- **Prod probe recipe (if the planner/operator wants a count before UAT):** memory `reference_lux_readonly_pg_probe` — `ssh datum@lux.lan`, direct `:5432`, DB `phaze`, wrap in `BEGIN TRANSACTION READ ONLY`, base64 the SQL. Count: `SELECT count(DISTINCT file_id) FROM proposals WHERE status='executed';`.
+- **Prod probe recipe (if the planner/operator wants a count before UAT):** memory `reference_host-prod_readonly_pg_probe` — `ssh operator@host-prod.lan`, direct `:5432`, DB `phaze`, wrap in `BEGIN TRANSACTION READ ONLY`, base64 the SQL. Count: `SELECT count(DISTINCT file_id) FROM proposals WHERE status='executed';`.
 - **Live-UAT (deployment-gated, per D-03):** after cutover, Tags/Cue operator lists populate with real applied files; a single manual tag-write completes end-to-end. Defer to homelab rollout; record in phase VERIFICATION.
 
 ## Validation Architecture
@@ -372,7 +372,7 @@ Pure code/config change over the existing stack — no new external dependency. 
 
 ### Secondary
 - `.planning/phases/85-executed-gate-revival/85-CONTEXT.md` (D-01..D-04)
-- `.planning/REQUIREMENTS.md` (READ-05), `.planning/ROADMAP.md` (Phase 85 SC), memory landmines (get_session-never-commits, mutation-test-guards, bucket-isolation, lux PG probe)
+- `.planning/REQUIREMENTS.md` (READ-05), `.planning/ROADMAP.md` (Phase 85 SC), memory landmines (get_session-never-commits, mutation-test-guards, bucket-isolation, host-prod PG probe)
 
 ## Metadata
 

@@ -30,7 +30,7 @@ in comments.
 > token-stream comparison for a code identity; do not use an AST dump for either.
 
 **The rig is calibrated against a recorded value, not free-floating.**
-`docs/spikes/phaze-u1n7j-vox-fix-verification.md` records **1.50 GiB at 1:00** post-D-09, on
+`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md` records **1.50 GiB at 1:00** post-D-09, on
 this node, on the deployed image. This run measured **1.4956 GiB at 59 m 39 s** — agreement to
 **0.3%**. That is an independent reproduction of the post-D-09 baseline, and it is what makes
 every other number here trustworthy.
@@ -120,7 +120,7 @@ Nothing here resembles that.
 > rather than argued.** The same code, on a comparable duration, measures **1.4956 GiB on the
 > burst node** (§ header) against **4.48–5.00 GiB here**: a factor of three. The measured
 > post-D-09 Linux baseline is **1.50 / 1.65 / 1.67 GiB** at 1:00 / 4:00 / 12:04
-> (`docs/spikes/phaze-u1n7j-vox-fix-verification.md`). Thread sizing and the allocator differ,
+> (`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`). Thread sizing and the allocator differ,
 > and there is no cgroup here at all; ~4.7 GiB on this machine is **not** a breach of the 4Gi
 > pod limit, because nothing here runs under that pod. A reader who sees 4.7 next to 4 and
 > concludes there is a breach has been misled by the juxtaposition, which is why this warning

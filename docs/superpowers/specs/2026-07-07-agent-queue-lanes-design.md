@@ -2,11 +2,11 @@
 
 **Date:** 2026-07-07
 **Status:** Approved (design), pending implementation plan
-**Scope:** nox file-server agent worker only. **k8s burst clusters are unaffected** (burst pods are one-shot `phaze.job_runner`, not the persistent SAQ worker).
+**Scope:** host-store file-server agent worker only. **k8s burst clusters are unaffected** (burst pods are one-shot `phaze.job_runner`, not the persistent SAQ worker).
 
 ## Problem
 
-The nox agent runs a **single** SAQ worker with one shared concurrency pool
+The host-store agent runs a **single** SAQ worker with one shared concurrency pool
 (`concurrency = worker_max_jobs`, default 8) that serves every file-touching task
 (`agent_worker.py` `settings["functions"]`). Two consequences:
 
@@ -21,7 +21,7 @@ The nox agent runs a **single** SAQ worker with one shared concurrency pool
 
 ## Hard constraint
 
-nox has **8 physical cores** and is already at load ~18 (the current single pool
+host-store has **8 physical cores** and is already at load ~18 (the current single pool
 oversubscribes — essentia/TensorFlow spawns threads *inside* each slot).
 `process_file` (essentia, in-process) and `fingerprint_file` (drives the
 panako/audfprint **sidecar containers**, which burn CPU on the same 8 cores) are
@@ -66,8 +66,8 @@ the existing "MUST mirror" contract between `AGENT_TASKS` and
 
 ### Queue naming
 
-Per-agent, per-lane: `phaze-agent-<agent_id>-<lane>` (e.g. `phaze-agent-nox-analyze`).
-Derived from the existing `PHAZE_AGENT_QUEUE` base (`phaze-agent-nox`) + `-<lane>`
+Per-agent, per-lane: `phaze-agent-<agent_id>-<lane>` (e.g. `phaze-agent-host-store-analyze`).
+Derived from the existing `PHAZE_AGENT_QUEUE` base (`phaze-agent-host-store`) + `-<lane>`
 suffix. `enqueue_router` resolves `(agent, task) → lane → queue name`; the routed
 enqueue targets that lane's queue.
 
@@ -89,7 +89,7 @@ call, but the entry-point must remain a static top-level attribute).
 The liveness heartbeat (Phase 46 asyncio background task) is **agent-level, not
 lane-level** — it should run in exactly one lane worker (the `analyze` lane, or a
 dedicated flag) to avoid N duplicate heartbeats per agent. Registration
-(`agent_id = nox`) is unchanged and remains a single identity across lanes.
+(`agent_id = host-store`) is unchanged and remains a single identity across lanes.
 
 ### Deployment — homelab compose only
 
@@ -101,12 +101,12 @@ unchanged. **No k8s change** (burst pods are one-shot).
 
 Files: `docker-compose.agent.yml` (homelab), and the x86 `docker-compose.agent.yml` /
 `docker-compose.cloud-agent.yml` variants if they should mirror the lane split
-(confirm during planning — the arm64 nox homelab agent is the primary target).
+(confirm during planning — the arm64 host-store homelab agent is the primary target).
 
 ### Migration
 
 New enqueues route to lane queues immediately. In-flight jobs on the legacy
-`phaze-agent-nox` queue must drain: keep a transitional consumer of the legacy
+`phaze-agent-host-store` queue must drain: keep a transitional consumer of the legacy
 queue until it reports empty, then remove it. The scheduling-ledger and
 deterministic-key dedup (`s3_upload:<file_id>`, etc.) are keyed by file_id, not
 queue, so a job re-driven onto a lane queue collapses correctly. Nail the exact

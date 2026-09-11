@@ -147,8 +147,8 @@ None - no external service configuration required. The new fixture uses an addit
 
 ## Self-Check: PASSED
 
-- File `tests/test_migrations/__init__.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a25a16e446910803d/tests/test_migrations/__init__.py` (0 bytes).
-- File `tests/test_migrations/conftest.py` exists at `/Users/Robert/Code/public/phaze/.claude/worktrees/agent-a25a16e446910803d/tests/test_migrations/conftest.py` (109 lines).
+- File `tests/test_migrations/__init__.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a25a16e446910803d/tests/test_migrations/__init__.py` (0 bytes).
+- File `tests/test_migrations/conftest.py` exists at `<scratch>/phaze/.claude/worktrees/agent-a25a16e446910803d/tests/test_migrations/conftest.py` (109 lines).
 - Commit `c655d54` exists in git log (`test(24-01): add tests/test_migrations package marker`).
 - Commit `53f49e2` exists in git log (`test(24-01): add alembic-driven test DB fixture and step helpers`).
 - `uv run pytest tests/test_migrations/ --collect-only` exits 0.

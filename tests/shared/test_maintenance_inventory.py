@@ -40,4 +40,6 @@ def test_classification_precedence_for_special_documentation() -> None:
     assert inventory.documentation_class("docs/README.md", generated=generated) == "generated"
     assert inventory.documentation_class(".planning/old.md", generated=generated) == "generated"
     assert inventory.documentation_class("docs/spikes/result.md", generated=generated) == "historical-evidence"
+    assert inventory.documentation_class("docs/spikes/README.md", generated=generated) == "maintained"
+    assert inventory.documentation_class("docs/telemetry/measurements/README.md", generated=generated) == "maintained"
     assert inventory.documentation_class("README.md", generated=generated) == "maintained"

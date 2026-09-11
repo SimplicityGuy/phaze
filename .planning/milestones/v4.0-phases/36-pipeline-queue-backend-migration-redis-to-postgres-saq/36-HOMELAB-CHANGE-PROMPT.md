@@ -29,7 +29,7 @@ release:
   intentionally relaxed for the broker move.
 
 Apply the changes below to the homelab Phaze deployment (control host + each file-server
-agent host, `datum@nox` and `datum@lux`).
+agent host, `operator@host-store` and `operator@host-prod`).
 
 ---
 
@@ -107,7 +107,7 @@ broker role scoped to its own schema (do not hand it cross-schema or superuser r
 
 ## 4. New firewall rule: agents → control-host Postgres:5432 (relaxes D-25)
 
-The agents (`datum@nox`, `datum@lux`) must now reach the **control-host Postgres on TCP
+The agents (`operator@host-store`, `operator@host-prod`) must now reach the **control-host Postgres on TCP
 5432**. This is a new network edge — Phase 26's D-25 boundary kept agents Postgres-free, and
 that is intentionally relaxed here for the broker move.
 
@@ -170,7 +170,7 @@ lost, only re-derived.
 1. **Roll out the new image + env to the CONTROL host first.** On first boot the control
    worker's PostgresQueue creates `saq_jobs`/`saq_stats`/`saq_versions` (auto-DDL, §3) and the
    boot re-enqueue self-heals the queue from DB-truth.
-2. **Then redeploy each agent host** (`datum@nox`, `datum@lux`) with the new image + the
+2. **Then redeploy each agent host** (`operator@host-store`, `operator@host-prod`) with the new image + the
    `PHAZE_QUEUE_URL` env (§1) and confirmed Postgres reachability (§4).
 3. Verify the `/saq` monitor (control-host `phaze-api` at `/saq`) shows the Postgres-backed
    queues, and that an enqueue→dequeue smoke (e.g. trigger an analysis) lands and drains on

@@ -48,7 +48,7 @@ Fixed the `POST /tracklists/scan` dead-letter bug by building the complete `Scan
 
 ### Task 2 — Regression tests (`tests/test_routers/test_tracklists.py`)
 - Imported `ScanLiveSetPayload`.
-- Updated `test_trigger_scan`: seeds a real `FileRecord` via `_make_file` + `session.add` + `flush`, posts its id, and asserts exactly one captured `("scan_live_set", payload)` with `file_id` (== str id), `original_path` (== record path), `agent_id` (== "nox"), plus `ScanLiveSetPayload.model_validate(payload)` succeeds. Kept the `agent_id=nox` poll-URL assertion.
+- Updated `test_trigger_scan`: seeds a real `FileRecord` via `_make_file` + `session.add` + `flush`, posts its id, and asserts exactly one captured `("scan_live_set", payload)` with `file_id` (== str id), `original_path` (== record path), `agent_id` (== "host-store"), plus `ScanLiveSetPayload.model_validate(payload)` succeeds. Kept the `agent_id=host-store` poll-URL assertion.
 - Added `test_trigger_scan_skips_file_id_without_record`: random uuid with no record → `captured == []` (no dead-letter).
 - Added `test_trigger_scan_skips_malformed_file_id`: `"not-a-uuid"` → 200, `captured == []` (covers the `except ValueError` skip, lines 236-237).
 - `test_trigger_scan_no_active_agent` left unchanged.

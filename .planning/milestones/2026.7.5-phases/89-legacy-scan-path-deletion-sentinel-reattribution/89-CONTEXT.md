@@ -20,7 +20,7 @@ Retire the `legacy-application-server` FK sentinel. Three moves, in order:
 
 ### Reattribution Target Selection (LEGACY-02)
 - **D-01:** The migration **auto-detects** the target agent = the single non-revoked `kind='fileserver'` agent (`SELECT id FROM agents WHERE revoked_at IS NULL AND kind='fileserver'`). Exactly **1** row → reattribute to that `id`. **0** rows → **abort** the migration (no valid owner exists; the sentinel cannot be safely deleted). **>1** rows → **abort** with a clear operator message, *unless* an explicit override is supplied.
-- **D-02:** Ambiguity/override escape hatch: `alembic upgrade head -x reattribute_to=<agent_id>`. When provided, the migration validates the id exists, is `kind='fileserver'`, and is not revoked, then uses it. In current prod there is exactly one real fileserver (nox), so the auto path resolves with no operator input.
+- **D-02:** Ambiguity/override escape hatch: `alembic upgrade head -x reattribute_to=<agent_id>`. When provided, the migration validates the id exists, is `kind='fileserver'`, and is not revoked, then uses it. In current prod there is exactly one real fileserver (host-store), so the auto path resolves with no operator input.
 - **D-03:** Reattribution keys on `agent_id` (FK → `agents.id`, a string PK, operator-chosen). It writes the target agent's **`id`**, not its display `name`. Scope = all legacy-owned `files` AND all **non-live** legacy-owned `scan_batches`. **REFINED (Phase 89 research, 2026-07-11):** the single synthetic `status='live'`, `scan_path='<watcher>'` sentinel scan_batch created by migration 012 (`012:96-98`, 0 files, pure placeholder) is **DELETED, not reattributed** — the partial unique index `uq_scan_batches_agent_id_live` (`012:105-109` / `scan_batch.py:58`, one live batch per agent) makes reattributing it to the target collide with the target's own live batch (`IntegrityError`). Migration order: `UPDATE files`; `UPDATE scan_batches … WHERE status <> 'live'`; `DELETE FROM scan_batches WHERE agent_id='legacy-application-server' AND status='live'`. Intent (retire the sentinel) preserved.
 
 ### Router Disposition (LEGACY-01)
@@ -83,7 +83,7 @@ No external ADRs/design specs govern this phase — decisions fully captured abo
 
 ### Integration Points
 - The migration writes `files.agent_id` / `scan_batches.agent_id` and deletes one `agents` row under `ondelete=RESTRICT` — correctness hinges on the reattribute-before-delete ordering (D-09) inside one transaction.
-- Project memory: prod is at Alembic **031** (032+ unreleased); the sentinel + agent_id columns exist in prod from migration 012. The real fileserver in prod is **nox**.
+- Project memory: prod is at Alembic **031** (032+ unreleased); the sentinel + agent_id columns exist in prod from migration 012. The real fileserver in prod is **host-store**.
 
 </code_context>
 
@@ -91,7 +91,7 @@ No external ADRs/design specs govern this phase — decisions fully captured abo
 ## Specific Ideas
 
 - Abort-message contract for the ambiguous case should literally tell the operator the escape hatch: `pass -x reattribute_to=<id>`.
-- Target agent in current prod is the **nox** fileserver; the auto-detect (sole fileserver) is expected to resolve to it with zero operator input.
+- Target agent in current prod is the **host-store** fileserver; the auto-detect (sole fileserver) is expected to resolve to it with zero operator input.
 
 </specifics>
 

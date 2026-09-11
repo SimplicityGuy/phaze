@@ -6,7 +6,7 @@
 - **Tree:** branch `wt/bead/issue/phaze-zaf2l`, forked off `main` at `f9de77e6`
 - **Code under test:** the **deployed** production release — `ghcr.io/simplicityguy/phaze:2026.8.5`
   (API + worker on `host-prod`) and `ghcr.io/simplicityguy/phaze/job:2026.8.5` (the analyze job
-  image on `vox`). Nothing was overlaid, patched or rebuilt: every figure below comes from the
+  image on `host-compute`). Nothing was overlaid, patched or rebuilt: every figure below comes from the
   binaries the operator is running right now
 - **Status:** measurement only. **No product code changed.** All database access was read-only
   (`SET default_transaction_read_only = on` on every session; `SELECT` only)
@@ -34,7 +34,7 @@ ______________________________________________________________________
 
 **The analysis pipeline is where the wall clock goes, the coarse tier is where the analysis goes,
 and the operator can see none of it.** At the production operating point — `cap = 4` concurrent
-analyze pods on `vox` — one file costs **1.4951× its own duration** end to end, measured on a
+analyze pods on `host-compute` — one file costs **1.4951× its own duration** end to end, measured on a
 completed production run of a 4,761.835 s file that took **7,119.473 s**; a second, independent
 derivation from seven days of completions (**2.7183 audio-hours per wall-hour** across **410
 files**) predicts **1.4715×**, agreeing to **1.58%**. That does **not** contradict
@@ -69,11 +69,11 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Analysis host** | `vox` — Debian 13 (trixie), kernel 6.12.100+deb13-amd64, k0s v1.36.2, **8 logical CPU**, 32,829,576 KiB (31.31 GiB) capacity. The k0s burst node, **in the production registry and serving real traffic throughout** — it was *not* taken out for this measurement |
+| **Analysis host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100+deb13-amd64, k0s v1.36.2, **8 logical CPU**, 32,829,576 KiB (31.31 GiB) capacity. The k0s burst node, **in the production registry and serving real traffic throughout** — it was *not* taken out for this measurement |
 | **Control-plane host** | `host-prod` — Debian 13 (trixie), kernel 6.12.96+deb13-amd64, **14 cores, 125 GB RAM**. Runs `phaze-api`, `phaze-worker`, `phaze-redis` (redis:8-alpine) and `postgres` (**PostgreSQL 18.6**) as Docker containers |
 | **Fileserver host** | `host-store` — 8 cores, 62 GB. Runs the agent workers (`-meta` / `-io` / `-analyze`) and the watcher; it backs the registry's local catch entry — `kind = "local"`, `rank 99`, `cap 1` |
 | **Local host** | MacBookPro18,1, macOS 26.6.2, 10 cores, 34,359,738,368 B (32 GiB), Python 3.14.5 — used **only** for the SAQ burst of §5, never for any production figure |
-| **Concurrency** | `backends.toml` sets `vox` to `rank 10`, **`cap = 4`**, `cpu_request 1500m`, `memory_request 3Gi`, `memory_limit 4Gi`. The second Kueue backend, `xenolab`, is **commented out** (disabled 2026-07-14, power incident), so `cap 4` on `vox` plus `cap 1` local is the whole analysis capacity. Four analyze pods were running for the entire measurement window |
+| **Concurrency** | `backends.toml` sets `host-compute` to `rank 10`, **`cap = 4`**, `cpu_request 1500m`, `memory_request 3Gi`, `memory_limit 4Gi`. The second Kueue backend, `host-compute-alt`, is **commented out** (disabled 2026-07-14, power incident), so `cap 4` on `host-compute` plus `cap 1` local is the whole analysis capacity. Four analyze pods were running for the entire measurement window |
 | **Per-file analysis wall clock** | the job's **own** `job_runner_step_ok` line for `step=analyze`, whose `elapsed_ms` the runner takes from its own clock — not an inferred pod age, and not the `kubectl` `AGE` column |
 | **Tier split** | the timestamp of the last `job_runner_progress` line (`fine_windows_analyzed == fine_windows_total`) against `job_runner_analyze_begin` and the `analyze` step's own `elapsed_ms`. Both are shipped log lines; no instrumentation was added |
 | **Throughput** | `analysis.analysis_completed_at` joined to `metadata.duration`, over a 7-day window. This is the completion ledger the application itself writes |
@@ -90,7 +90,7 @@ requests issued against `phaze-api` were `GET`s that the admin UI itself issues 
 
 ### 1a. What this measurement CANNOT see, stated up front
 
-- **The solo (`W=1`) analysis ratio was not re-measured.** Taking `vox` out of the registry is a
+- **The solo (`W=1`) analysis ratio was not re-measured.** Taking `host-compute` out of the registry is a
   production mutation and is out of scope for a read-only spike. `phaze-b2qs9`'s 0.56–0.79× is
   therefore neither confirmed nor refuted here; §3c reconciles the two operating points instead.
 - **Peak RSS was not measured.** `_log_job_peak_rss` writes to the analysis child's stdout, which
@@ -291,7 +291,7 @@ pairs rather than real mp3. It is a cross-check, not a substitute for the two ro
 The reconciliation is the operating point, and it was already priced: `phaze-b2qs9` §1b states its
 runs were solo on an idle node, and `phaze-8r6t4` §10 measured **+83.6% per-file wall at W=4
 against W=2**. A solo 0.56–0.79× and a W=4 1.4951× are consistent with each other and with that
-correction. `vox` sat at **98–99% CPU** for the entire window (7,903–7,955 m of 8,000 m), which is
+correction. `host-compute` sat at **98–99% CPU** for the entire window (7,903–7,955 m of 8,000 m), which is
 the deliberate oversubscription `backends.toml` describes: 4 pods × 1 process × 4 TF threads = 16
 threads on 4 physical cores.
 

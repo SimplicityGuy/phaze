@@ -165,7 +165,7 @@ RESEARCH sketch (74-RESEARCH.md:107-121): two `ComputeAgentBackend` + one `Local
 **Agent-seeding fixture to reuse — do NOT hand-roll** (`tests/_queue_fakes.py:331`, already imported by
 `tests/shared/services/test_enqueue_router.py:39`):
 ```python
-async def seed_active_agent(session, agent_id="nox", *, kind="fileserver") -> Agent:
+async def seed_active_agent(session, agent_id="host-store", *, kind="fileserver") -> Agent:
     # inserts a non-revoked, recent-last_seen_at agent; COMMITS + refreshes (WR-03 canonical fixture)
 ```
 Usage (from `test_enqueue_router.py:150-151`): `await seed_active_agent(session, "compute-01", kind="compute")`.

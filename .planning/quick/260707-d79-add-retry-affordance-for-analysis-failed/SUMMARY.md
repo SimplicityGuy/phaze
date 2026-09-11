@@ -49,7 +49,7 @@ the terminal red bucket so it re-runs analysis, while leaving auto-recovery unto
 
 ## Tests (`tests/shared/routers/test_pipeline.py`, +4)
 
-- `test_retry_reenqueues_all_failed_and_flips_state` — N failed files → N captures on `phaze-agent-nox`
+- `test_retry_reenqueues_all_failed_and_flips_state` — N failed files → N captures on `phaze-agent-host-store`
   (never `default`), each a complete `ProcessFilePayload` with `fine_cap`/`coarse_cap` **None** (the
   retry-vs-deepen guard, whose deepen sentinel is 0); all files now `FINGERPRINTED`, 0 `ANALYSIS_FAILED`.
 - `test_retry_no_active_agent_enqueues_nothing_and_keeps_state` — no agent → zero captures, files STAY

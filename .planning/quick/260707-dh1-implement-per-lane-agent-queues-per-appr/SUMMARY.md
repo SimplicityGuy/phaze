@@ -1,6 +1,6 @@
 ---
 task: 260707-dh1
-title: Implement per-lane agent queues (nox agent) per the approved design spec
+title: Implement per-lane agent queues (host-store agent) per the approved design spec
 status: complete
 mode: quick-full
 date: 2026-07-07
@@ -35,7 +35,7 @@ metrics:
 
 # Quick 260707-dh1: Per-Lane Agent Queues Summary
 
-Split the nox file-server agent's single shared SAQ worker into 4 per-lane workers
+Split the host-store file-server agent's single shared SAQ worker into 4 per-lane workers
 (analyze / fingerprint / meta / io) so I/O offload and cheap analysis stop being
 head-of-line-blocked behind CPU-bound essentia backlog — implemented exactly to the
 approved design (`docs/superpowers/specs/2026-07-07-agent-queue-lanes-design.md`), no
@@ -110,7 +110,7 @@ lane-aware (`_lane_key`/`_lane_name`, `all_lane_queues`, `legacy_base_queue`), a
 assertions across `test_pipeline`, `test_routing_seam`, `test_main_lifespan`, `test_agent_push`,
 `test_tracklists`, `test_recovery`, `test_agent_task_router`, `test_reenqueue`, `test_staging_cron`,
 `test_backends`, `test_cloud_staging` were repointed to the correct lane queue key
-(`nox-analyze` / `nox-meta` / `nox-io`, etc.). These files were not in the plan's `files_modified`
+(`host-store-analyze` / `host-store-meta` / `host-store-io`, etc.). These files were not in the plan's `files_modified`
 but were required for the suite to stay green under the new routing.
 
 ## Environmental note
@@ -124,7 +124,7 @@ passing). The structural invariants the `config -q` check would catch are covere
 ## Ops follow-up (not code)
 
 Landing this in prod needs a homelab redeploy: bring up the 4 lane workers, start `worker-drain`
-(`--profile drain`), and remove it once `phaze-agent-nox` reports 0 queued + 0 active. Runbook in
+(`--profile drain`), and remove it once `phaze-agent-host-store` reports 0 queued + 0 active. Runbook in
 `docs/agent-queue-lanes.md`.
 
 ## Self-Check: PASSED

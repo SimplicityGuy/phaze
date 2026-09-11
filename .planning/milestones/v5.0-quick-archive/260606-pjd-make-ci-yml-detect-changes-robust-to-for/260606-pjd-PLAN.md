@@ -104,7 +104,7 @@ Constraints:
   spacing, and emoji step-name style already in the file.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && python -c "import yaml; s=[x for x in yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['detect-changes']['steps'] if x.get('id')=='filter'][0]['run']; assert 'git cat-file -e' in s and 'origin/main...' in s, 'fallback missing'; print('OK')"</automated>
+    <automated>cd <scratch>/phaze && python -c "import yaml; s=[x for x in yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['detect-changes']['steps'] if x.get('id')=='filter'][0]['run']; assert 'git cat-file -e' in s and 'origin/main...' in s, 'fallback missing'; print('OK')"</automated>
   </verify>
   <done>The filter step's `elif` fires for both the zero-SHA new-branch case and an unreachable BEFORE_SHA, falling back to `origin/main...HEAD`; all other branches unchanged.</done>
 </task>
@@ -125,7 +125,7 @@ Use a descriptive assertion message naming the force-push failure mode (as the t
 does) so a future refactor that drops the guard fails loudly.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && uv run pytest tests/test_deployment/test_agent_compose.py -q</automated>
+    <automated>cd <scratch>/phaze && uv run pytest tests/test_deployment/test_agent_compose.py -q</automated>
   </verify>
   <done>New guard test passes; it asserts the filter step references `git cat-file -e` and an `origin/main...` fallback, and would fail if the reachability fallback is removed.</done>
 </task>
@@ -134,8 +134,8 @@ does) so a future refactor that drops the guard fails loudly.
 
 <verification>
 Run the full target test file and pre-commit hooks (frozen SHAs, NEVER --no-verify):
-- `cd /Users/Robert/Code/public/phaze && uv run pytest tests/test_deployment/test_agent_compose.py -q`
-- `cd /Users/Robert/Code/public/phaze && pre-commit run --all-files` (actionlint shellcheck-clean on the new `git cat-file` guard, yamllint strict, check-jsonschema)
+- `cd <scratch>/phaze && uv run pytest tests/test_deployment/test_agent_compose.py -q`
+- `cd <scratch>/phaze && pre-commit run --all-files` (actionlint shellcheck-clean on the new `git cat-file` guard, yamllint strict, check-jsonschema)
 </verification>
 
 <success_criteria>

@@ -135,7 +135,12 @@ def documentation_class(path: str, *, generated: frozenset[str]) -> str | None:
         return "tool-local"
     if path in generated:
         return "generated"
-    if path in {".planning/README.md", "docs/superpowers/specs/README.md"}:
+    if path in {
+        ".planning/README.md",
+        "docs/spikes/README.md",
+        "docs/superpowers/specs/README.md",
+        "docs/telemetry/measurements/README.md",
+    }:
         return "maintained"
     if (
         path.startswith((".planning/", "docs/spikes/", "docs/superpowers/specs/", "docs/telemetry/measurements/"))

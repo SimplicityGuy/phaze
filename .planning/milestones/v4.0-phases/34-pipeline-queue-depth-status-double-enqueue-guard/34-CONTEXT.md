@@ -2,7 +2,7 @@
 
 **Gathered:** 2026-06-10
 **Status:** Ready for planning
-**Source:** Brainstorming session (operator-approved design) + live-system investigation (nox/lux)
+**Source:** Brainstorming session (operator-approved design) + live-system investigation (host-store/host-prod)
 
 <domain>
 ## Phase Boundary
@@ -13,7 +13,7 @@
 
 ## The bug being fixed (verified live, 2026-06-10)
 
-Operator clicked **Run Analysis**, refreshed, and all status vanished. Root cause: the dashboard only knows DB `FileState`. `process_file` does not move a file out of `DISCOVERED` until a worker finishes it, so after enqueue the page is byte-identical to before the click. Confirmed on the live stack: `phaze-agent-nox` SAQ queue held **11,429 incomplete / 11,421 queued** `process_file` jobs with **0 analyzed**, yet the button's `:disabled` (which only checks `discovered === 0`) stayed enabled — one more click would have enqueued another ~11,428 duplicate jobs.
+Operator clicked **Run Analysis**, refreshed, and all status vanished. Root cause: the dashboard only knows DB `FileState`. `process_file` does not move a file out of `DISCOVERED` until a worker finishes it, so after enqueue the page is byte-identical to before the click. Confirmed on the live stack: `phaze-agent-host-store` SAQ queue held **11,429 incomplete / 11,421 queued** `process_file` jobs with **0 analyzed**, yet the button's `:disabled` (which only checks `discovered === 0`) stayed enabled — one more click would have enqueued another ~11,428 duplicate jobs.
 
 The DB cannot distinguish "nothing queued" from "everything queued." The only authoritative signal is **live SAQ queue depth**.
 </domain>
@@ -94,8 +94,8 @@ Push `agent_busy` and `controller_busy` into `$store.pipeline` via the SAME `x-i
 
 <specifics>
 ## Specific Ideas
-- Live evidence captured 2026-06-10 from lux: `redis-cli` against `phaze-redis` (password from `phaze_redis_url` secret) showed `zcard saq:phaze-agent-nox:incomplete = 11429`, `llen saq:phaze-agent-nox:queued = 11421`.
-- Container topology: nox = file server (`phaze-agent-worker`, `phaze-agent-watcher`, panako, audfprint); lux = app server (`phaze-api`, `phaze-worker` controller, `phaze-redis`).
+- Live evidence captured 2026-06-10 from host-prod: `redis-cli` against `phaze-redis` (password from `phaze_redis_url` secret) showed `zcard saq:phaze-agent-host-store:incomplete = 11429`, `llen saq:phaze-agent-host-store:queued = 11421`.
+- Container topology: host-store = file server (`phaze-agent-worker`, `phaze-agent-watcher`, panako, audfprint); host-prod = app server (`phaze-api`, `phaze-worker` controller, `phaze-redis`).
 - The agent queue mixes `process_file`, `extract_file_metadata`, `fingerprint_file` (all AGENT_TASKS) — this is WHY per-task accounting is expensive (function name is inside each job hash, not the key) and coarse disable is the pragmatic choice.
 </specifics>
 

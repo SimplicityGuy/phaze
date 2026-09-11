@@ -193,7 +193,7 @@ UPDATE files f SET state = CASE
 
 Two layers:
 1. **Committed integration test** (`tests/integration/test_migrations/test_migration_039_*.py`) — mirror `test_migration_038`'s structure: `_reset_schema` → `upgrade_to("038")` → seed representative rows for every durable state + the mid-flight/soft cases → `upgrade_to("039")` → assert column/index gone + archive populated + guard behavior (seed a violation, assert `RuntimeError`; seed empty, assert clean pass) → `downgrade_to("038")` → assert column/index recreated + durable states restored → teardown via `_reset_schema`. **Export `MIGRATIONS_TEST_DATABASE_URL` at `:5433`.** Because `039`'s downgrade IS implemented (unlike `038`), a reversibility mirror is possible; still tear down with `_reset_schema` for isolation.
-2. **Operator rehearsal against a restore of the live corpus** (runbook step, satisfies "rehearsal against a restore of the real corpus passes") — use the read-only prod probe recipe (memory `reference_lux_readonly_pg_probe`: `ssh datum@lux.lan`, direct `:5432`, DB `phaze`) to `pg_dump`/restore a copy into a scratch DB, run `alembic upgrade 039` against it under the drain window, confirm the guard passes and row counts reconcile, then `alembic downgrade 038` and confirm durable-state restoration. Record the measured lock-acquisition/DDL timing in the VERIFICATION doc. `[CITED: memory reference_lux_readonly_pg_probe]`
+2. **Operator rehearsal against a restore of the live corpus** (runbook step, satisfies "rehearsal against a restore of the real corpus passes") — use the read-only prod probe recipe (memory `reference_host-prod_readonly_pg_probe`: `ssh operator@host-prod.lan`, direct `:5432`, DB `phaze`) to `pg_dump`/restore a copy into a scratch DB, run `alembic upgrade 039` against it under the drain window, confirm the guard passes and row counts reconcile, then `alembic downgrade 038` and confirm durable-state restoration. Record the measured lock-acquisition/DDL timing in the VERIFICATION doc. `[CITED: memory reference_host-prod_readonly_pg_probe]`
 
 ### Anti-Patterns to Avoid
 - **Importing `shadow_compare.py` (or any `phaze.services.*`) from the migration** — violates D-07 and the frozen-in-time rule; use raw `sa.text` like `038`.
@@ -348,7 +348,7 @@ Derived-target signatures (verified in `services/stage_status.py`) — the exact
 |------------|------------|-----------|---------|----------|
 | PostgreSQL (migrations test DB, `:5433`) | 039 integration test | via `just test-db` | 16+ | — (blocking for the migration test) |
 | `MIGRATIONS_TEST_DATABASE_URL` env export | 039 integration test | must be set manually | — | none — unset silently hits `:5432` |
-| Read-only prod probe (`ssh datum@lux.lan`, DB `phaze`) | rehearsal against real-corpus restore | operator-run | — | scratch restore of a `pg_dump` |
+| Read-only prod probe (`ssh operator@host-prod.lan`, DB `phaze`) | rehearsal against real-corpus restore | operator-run | — | scratch restore of a `pg_dump` |
 | uv / ruff / mypy / pytest | all work | ✓ | project-pinned | — |
 
 **Missing with no fallback:** none blocking code work; the operator rehearsal (Pattern 5 layer 2) is deployment-gated and runs against a live-corpus restore during the drain window.
@@ -397,7 +397,7 @@ Derived-target signatures (verified in `services/stage_status.py`) — the exact
 
 ### Primary (HIGH confidence)
 - Codebase (verified this session): `models/file.py`, `services/pipeline.py`, `services/stage_status.py`, `enums/stage.py`, `services/shadow_compare.py`, `services/backends.py`, `services/search_queries.py`, `routers/{pipeline,agent_push,agent_s3,agent_metadata,agent_analysis,agent_files}.py`, `services/dedup.py`, `alembic/versions/038_retire_legacy_sentinel.py`, `tests/integration/test_migrations/{conftest.py,test_migration_038_*}`, `.planning/{ROADMAP,REQUIREMENTS,STATE}.md`, `.planning/milestones/PARALLEL-ENRICH-DAG-DESIGN.md`, `90-CONTEXT.md`.
-- Project memory (auto-loaded): `project_prod_alembic_031_unreleased`, `reference_lux_readonly_pg_probe`, `reference_migrations_test_db_port`, `feedback_mutation_test_guard_tests`, `analyzed` invariant / table-name note.
+- Project memory (auto-loaded): `project_prod_alembic_031_unreleased`, `reference_host-prod_readonly_pg_probe`, `reference_migrations_test_db_port`, `feedback_mutation_test_guard_tests`, `analyzed` invariant / table-name note.
 
 ### Secondary (MEDIUM confidence)
 - Postgres `DROP COLUMN` lock/catalog-only + `lock_timeout` retry semantics: dev.to "Which ALTER TABLE Operations Lock Your PostgreSQL Table", leopard.in.ua "Safe and unsafe operations for high volume PostgreSQL".

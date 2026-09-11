@@ -46,7 +46,7 @@ human_verification:
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
 | `docs/k8s-burst.md` | Cluster-admin runbook with Kueue manifests, RBAC, Secret, transport notes, smoke test | VERIFIED | Contains all 7 manifest kinds; RBAC verb floor matches kr8s call graph; apiVersion lockstep rule + v1beta2 upgrade note; transport-agnostic section; smoke-test checklist |
-| `.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md` | Ready-to-paste homelab apply steps + deploy ordering | VERIFIED | Contains "Context for the homelab agent", numbered apply steps, "Deploy ordering" via datum@nox/datum@lux, done-when checklist |
+| `.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md` | Ready-to-paste homelab apply steps + deploy ordering | VERIFIED | Contains "Context for the homelab agent", numbered apply steps, "Deploy ordering" via operator@host-store/operator@host-prod, done-when checklist |
 | `docs/configuration.md` | Complete K8s/S3 knob table with _FILE flags | VERIFIED | PHAZE_KUBE_WORKLOAD_API_VERSION, PHAZE_S3_ENDPOINT_URL, PHAZE_KUBE_LOCAL_QUEUE, S3 knobs all present; _FILE central table extended |
 | `docs/deployment.md` | Single-toggle revert section + k8s-burst.md pointer | VERIFIED | "Revert / single-toggle" section with PHAZE_CLOUD_TARGET=local; two k8s-burst.md pointers |
 | `docs/README.md` | k8s-burst.md index row under Operations | VERIFIED | "Kubernetes Burst" row present under "## Operations" |

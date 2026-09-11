@@ -16,7 +16,7 @@ propose/execute stage — this is not a query, filter, or template bug.
 Per the brief, the one query that separates write-side from read-side:
 
 ```
-$ ssh -4 datum@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select count(*) from execution_log;"'
+$ ssh -4 operator@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select count(*) from execution_log;"'
  count
 -------
      0
@@ -62,7 +62,7 @@ So `execution_log` can only ever contain one row per **executed** `RenameProposa
 the question upstream: how many proposals exist to execute?
 
 ```
-$ ssh -4 datum@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select status, count(*) from proposals group by status;"'
+$ ssh -4 operator@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select status, count(*) from proposals group by status;"'
  status | count
 --------+-------
 (0 rows)
@@ -83,7 +83,7 @@ at `:2361-2362`) requiring files that have **both** metadata **and** analysis co
 at all**:
 
 ```
-$ ssh -4 datum@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select * from pipeline_stage_control;"'
+$ ssh -4 operator@host-prod 'docker exec postgres psql -U phaze -d phaze -c "select * from pipeline_stage_control;"'
     stage    | paused | priority
 -------------+--------+----------
  analyze     | f      |       50
@@ -97,14 +97,14 @@ gated behind an operator-facing "Generate Proposals" action. Corroborating evide
 action has genuinely never been taken, not merely that it ran and produced nothing:
 
 ```
-$ ssh -4 datum@host-prod 'docker exec postgres psql -U phaze -d phaze -c \
+$ ssh -4 operator@host-prod 'docker exec postgres psql -U phaze -d phaze -c \
     "select queue, status, count(*) from saq_jobs group by queue, status;"'
           queue          |  status  | count
 -------------------------+----------+-------
- phaze-agent-nox-analyze | active   |  1896
- phaze-agent-nox-analyze | complete |    90
+ phaze-agent-host-store-analyze | active   |  1896
+ phaze-agent-host-store-analyze | complete |    90
  controller              | queued   |     5
- phaze-agent-nox-analyze | queued   |   687
+ phaze-agent-host-store-analyze | queued   |   687
 (4 rows)
 ```
 

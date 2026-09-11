@@ -49,7 +49,7 @@ Redis key written at controller startup and read degrade-safe by a new
   namespace and applies. Mirrors v5.0 51 D-10/D-11 (phaze = authoritative spec, operator applies).
 - **D-02: Cluster setup also delivered as a ready-to-paste homelab change-prompt.** Per v5.0 D-09/D-10:
   phaze ships the runbook/manifests as source-of-truth SPEC AND emits a ready-to-paste homelab repo
-  change-prompt (deploy ordering via `datum@nox`/`datum@lux`, where manifests get applied, secret
+  change-prompt (deploy ordering via `operator@host-store`/`operator@host-prod`, where manifests get applied, secret
   provisioning). Workspace boundary holds: **phaze = spec, homelab = live infra**. No live `kubectl`/
   cluster mutation authored in the phaze repo.
 - **D-03: One new `docs/k8s-burst.md` holds the whole K8s feature.** Mirrors v5.0 `docs/cloud-burst.md`

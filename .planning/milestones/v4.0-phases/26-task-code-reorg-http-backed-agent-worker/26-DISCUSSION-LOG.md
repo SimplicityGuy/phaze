@@ -52,7 +52,7 @@
 | Parallel new modules during migration | Keep tasks/functions.py AND add tasks/agent_functions.py. Adds churn. | |
 
 **User's choice:** Flat layout, in-place rewrite
-**Notes:** User added: "avoid exposing hostnames. lux is the app server, nox is the file server" — flagging that the roadmap's `phaze.tasks.lux_worker` leaks the application server's hostname. Captured as D-02 (renaming + doc-sweep) and D-05 (flat layout).
+**Notes:** User added: "avoid exposing hostnames. host-prod is the app server, host-store is the file server" — flagging that the roadmap's `phaze.tasks.host-prod_worker` leaks the application server's hostname. Captured as D-02 (renaming + doc-sweep) and D-05 (flat layout).
 
 ### Naming for the fileless settings module
 
@@ -71,7 +71,7 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Rip out, update compose now | Delete tasks/worker.py; update docker-compose.yml in this phase. | ✓ |
-| Keep tasks/worker.py as alias to lux_worker.settings | One-liner re-export; delays compose touch. | |
+| Keep tasks/worker.py as alias to host-prod_worker.settings | One-liner re-export; delays compose touch. | |
 
 **User's choice:** Rip out now
 **Notes:** Captured as D-04, D-08.
@@ -80,7 +80,7 @@
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Yes — sweep all hostname leaks now | Tiny doc-only task at end of Phase 26 renames `lux_worker` → `controller` everywhere. | ✓ |
+| Yes — sweep all hostname leaks now | Tiny doc-only task at end of Phase 26 renames `host-prod_worker` → `controller` everywhere. | ✓ |
 | No — just override here | CONTEXT.md states canonical name; downstream agents follow it. | |
 
 **User's choice:** Yes

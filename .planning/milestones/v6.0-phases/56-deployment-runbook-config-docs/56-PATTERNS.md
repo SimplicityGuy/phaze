@@ -358,7 +358,7 @@ and a smoke test (doc checklist — discretion).
 **Headings to mirror** (from that file): `# Homelab Change Prompt — …` → `## Context for the homelab agent`
 → numbered `## 1. Provision …` / `## 2. Apply …` / `## 3. Create …` steps → `## Deploy ordering`
 → `## Done-when checklist`. Swap OCI/Tailscale/PG-role content for: apply the Kueue objects + RBAC + Secret
-(`kubectl apply`), provision the compute-agent token Secret, deploy ordering via `datum@nox` / `datum@lux`.
+(`kubectl apply`), provision the compute-agent token Secret, deploy ordering via `operator@host-store` / `operator@host-prod`.
 Workspace boundary (D-02): phaze = spec, homelab = live infra; NO live `kubectl` authored in the phaze repo.
 
 ---

@@ -88,7 +88,7 @@ deliberately left to self-retry.**
   optimistic). **fingerprint gets no manual retry control** (per-row or bulk) — it self-retries.
 - **Tests** (`tests/analyze/test_retry_affordances.py` + `tests/metadata/test_retry_affordances.py`,
   15 total): per-file + bulk route through the guarded funnel on the correct per-agent lane
-  (`nox-analyze` / `nox-meta`, never `default`); no-agent → amber ack + zero enqueues + no mutation
+  (`host-store-analyze` / `host-store-meta`, never `default`); no-agent → amber ack + zero enqueues + no mutation
   (Phase-30); the behavior-8 no-auto-loop predicate (`eligible({ANALYZE: FAILED})` is False, contrast
   metadata/fingerprint True); non-failed/unknown id no-op; independent-session read proving the analyze
   flip+clear committed; and Task-2 render assertions (per-row retry only on failed enrich cells, bulk

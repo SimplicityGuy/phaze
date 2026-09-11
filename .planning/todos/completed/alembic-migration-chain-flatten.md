@@ -47,7 +47,7 @@ DDL, zero risk. Ephemeral CI/test DBs build from scratch.
 ## Hard gate before merge
 
 Re-confirm prod `alembic_version.version_num == '039'` via the read-only PG probe
-(`ssh datum@lux.lan`, `BEGIN TRANSACTION READ ONLY`). If not at 039, hold.
+(`ssh operator@host-prod.lan`, `BEGIN TRANSACTION READ ONLY`). If not at 039, hold.
 
 ## Out of scope
 

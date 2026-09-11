@@ -41,13 +41,13 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Forensic source** | `vox`'s own kernel journal, all three relevant boots (`-2`, `-1`, `0`), 2026-07-24 → 2026-08-04. Read-only; nothing on vox was deleted or modified. |
+| **Forensic source** | `host-compute`'s own kernel journal, all three relevant boots (`-2`, `-1`, `0`), 2026-07-24 → 2026-08-04. Read-only; nothing on host-compute was deleted or modified. |
 | **What was mined** | not the `Out of memory: Killed process` one-liners `phaze-7i0k` used, but the **`Tasks state (memory values in pages)` table** the kernel dumps immediately before each kill — every process on the node, with `rss_anon`, `total_vm`, `pgtables_bytes`, `swapents` and `oom_score_adj`. 22 such tables survive. |
 | **Pod identity** | the `task_memcg=/kubepods/burstable/pod<UID>/…` field on each `oom-kill:` line joined against `k0scontroller`'s kubelet/containerd log to recover the **Job name** (`phaze-analyze-<cloud_job_id>-<suffix>`) and the pod's first appearance. |
-| **Live probe** | the deployed job image `ghcr.io/simplicityguy/phaze/job:2026.8.0` in a bare pod on vox, **`resources.limits.memory: 12Gi`**, no Kueue queue label (consumes no quota), the deployed `phaze-models` PVC read-only. Synthetic ffmpeg sine-pair audio only. |
+| **Live probe** | the deployed job image `ghcr.io/simplicityguy/phaze/job:2026.8.0` in a bare pod on host-compute, **`resources.limits.memory: 12Gi`**, no Kueue queue label (consumes no quota), the deployed `phaze-models` PVC read-only. Synthetic ffmpeg sine-pair audio only. |
 | **RSS sampling** | host-side, from outside the process, per `phaze-7i0k` §9. |
 
-**vox was not returned to the phaze backend registry, and no k0s / JuiceFS / gateway config was
+**host-compute was not returned to the phaze backend registry, and no k0s / JuiceFS / gateway config was
 touched.** The cluster was idle before and after; the probe pod's 12Gi limit means a runaway
 inside it is cgroup-OOMKilled rather than allowed to reach the node.
 
@@ -91,7 +91,7 @@ tables agree on the three python3 sizes to 0.03 GiB.)
 
 **Read the last column first.** `SUM` is 30.76–30.82 GiB in 22 independent dumps spanning three
 boots, twelve days and four jobs — a **0.06 GiB (0.2%) spread**. That is not a property of the
-workload; it is the node. vox has 31.2 GiB allocatable, and a global OOM (`constraint=
+workload; it is the node. host-compute has 31.2 GiB allocatable, and a global OOM (`constraint=
 CONSTRAINT_NONE`, on every record) is *by definition* the moment the sum reaches it.
 
 Therefore the victim's `anon-rss` is not an independent quantity at all:
@@ -365,7 +365,7 @@ ______________________________________________________________________
 ### 8a. The `12Gi` limit is still correctly sized, but for a different reason
 
 `phaze-7i0k` §7a chose 12Gi as "above anything measured, below the 15.27 GiB floor of the
-pathological population". That reasoning is now **void** — the floor is a property of vox's RAM,
+pathological population". That reasoning is now **void** — the floor is a property of host-compute's RAM,
 not of the fault, and on a bigger node the same runaway would first be *recorded* at a larger
 number. The limit is nonetheless right, and for a stronger reason: the fault is a single process
 in **unbounded** growth, so *any* limit above the working set converts it into a pod-scoped kill.
@@ -426,7 +426,7 @@ ______________________________________________________________________
 
 ## Appendix — reproducing this
 
-**Forensics.** Everything in §2–§5 comes out of `journalctl -k` on vox and needs no code:
+**Forensics.** Everything in §2–§5 comes out of `journalctl -k` on host-compute and needs no code:
 
 ```sh
 # the task tables (NOT just the one-line kill records)

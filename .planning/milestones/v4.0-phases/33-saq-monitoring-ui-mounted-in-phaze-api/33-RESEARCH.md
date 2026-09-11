@@ -151,7 +151,7 @@ For each agent id, call `app.state.task_router.queue_for(agent.id)` — this con
 
 The default `client` fixture (`tests/conftest.py:155-161`) constructs the app with `AsyncClient(transport=ASGITransport(app=app))` and **never enters the lifespan**, so `app.state.controller_queue`/`task_router` are absent AND the `/saq` mount (done in lifespan) is not present. This is the same limitation the Phase 30/34 work hit — those tests inject fakes via `tests/_queue_fakes.py::install_fake_queues(client)` / `wire_fakes(client)`. So Phase 33 needs two layers of test:
 
-1. **Unit-test the helper directly** (no lifespan, no DB, no Redis). `build_saq_app([FakeQueue("controller"), FakeQueue("phaze-agent-nox")])`:
+1. **Unit-test the helper directly** (no lifespan, no DB, no Redis). `build_saq_app([FakeQueue("controller"), FakeQueue("phaze-agent-host-store")])`:
    - Assert it returns a `starlette.applications.Starlette` whose `routes` include `/`, `/api/queues`, `/static`, etc.
    - Mount it on a throwaway `FastAPI()` and hit `/saq/api/queues` with `TestClient`; assert `200` and that the JSON lists both queue names. A `FakeQueue` needs an `async def info(self, jobs=False, ...)` returning a minimal `QueueInfo`-shaped dict — extend the existing `tests/_queue_fakes.py::FakeQueue` (it currently has `enqueue`/`job` but not `info`).
    - Assert `/saq/` returns `200` and the body contains `/saq/static/` (root_path correctly baked).

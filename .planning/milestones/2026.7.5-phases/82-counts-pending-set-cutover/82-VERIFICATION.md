@@ -170,7 +170,7 @@ DENORM-01 go/no-go call against the `< ~1s` budget (D-07).
 ### Measurement provenance (Pitfall 5 / D-06 — READ THIS FIRST)
 
 The numbers below were taken on a **LOCAL, dedicated, synthetic corpus at migration HEAD (036)**, NOT against
-live lux. This is mandatory: prod is at Alembic ~031 and **lacks** the 032 partial indexes, so a live EXPLAIN
+live host-prod. This is mandatory: prod is at Alembic ~031 and **lacks** the 032 partial indexes, so a live EXPLAIN
 would show pessimistic Seq Scans and misjudge the plan (D-06). The measurement is only valid where the
 indexes exist.
 
@@ -311,7 +311,7 @@ just perf-db-down                      # tear the dedicated container down
 
 ## D-02 — analyze pending-set flip deploy-target gate (DEPLOYMENT-GATED — re-run at homelab rollout)
 
-**Status: NOT satisfiable from the executor; must be re-run READ-ONLY against lux at homelab rollout.**
+**Status: NOT satisfiable from the executor; must be re-run READ-ONLY against host-prod at homelab rollout.**
 
 The analyze pending-set flip (`get_discovered_files_with_duration` cutover, Plan 82-02) is trusted in prod
 ONLY once the deploy target is BOTH:
@@ -323,11 +323,11 @@ ONLY once the deploy target is BOTH:
 
 Current known state (project memory, NOT re-probed here): **prod is at ~031** — it lacks 032 and the 036
 backfill, so this gate is NOT yet green in prod. Per D-06 / Pitfall 5 the executor deliberately does NOT probe
-live lux for this plan (a ~031 prod's EXPLAIN would be invalid anyway, and the read is a rollout-time check per
-the 82-VALIDATION Manual-Only table). At homelab rollout, after deploying ≥036, re-run read-only against lux:
+live host-prod for this plan (a ~031 prod's EXPLAIN would be invalid anyway, and the read is a rollout-time check per
+the 82-VALIDATION Manual-Only table). At homelab rollout, after deploying ≥036, re-run read-only against host-prod:
 
 ```sql
--- BEGIN TRANSACTION READ ONLY;  (read-only probe recipe: ssh datum@lux.lan, direct :5432, DB phaze)
+-- BEGIN TRANSACTION READ ONLY;  (read-only probe recipe: ssh operator@host-prod.lan, direct :5432, DB phaze)
 SELECT count(*) AS analyzed_null_completed
 FROM files
 WHERE state = 'analyzed' AND analysis_completed_at IS NULL AND failed_at IS NULL;   -- MUST be 0

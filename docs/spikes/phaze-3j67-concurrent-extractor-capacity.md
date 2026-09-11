@@ -47,7 +47,7 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node, out of the phaze backend registry, otherwise idle |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node, out of the phaze backend registry, otherwise idle |
 | **Runtime** | deployed job image `job:2026.8.0`, Python 3.14.6, `essentia-tensorflow` 2.1-beta6-dev, with `main`'s `analysis.py` overlaid onto a `/scratch/src` copy so the measured code is the shipped model-major pipeline |
 | **Models** | the deployed `phaze-models` PVC, mounted **read-only** |
 | **Audio** | **synthesized with ffmpeg** — the `phaze-esut` appendix generator, stereo 44.1 kHz sine pairs at 192 kbps: 36 **distinct** files (12 worker slots × {180, 300, 420} s), plus 8 × 1200 s for §8 and one 5400 s file for §9b's envelope check |
@@ -176,7 +176,7 @@ Core(s) per socket:  4          <- four physical cores
 L3 cache:            8 MiB (1 instance)
 ```
 
-**vox has four physical cores.** The bead's premise ("the node is 10 cores") is wrong twice over —
+**host-compute has four physical cores.** The bead's premise ("the node is 10 cores") is wrong twice over —
 it is 8 logical, and 4 real. Every number in §3 falls out of that one fact, and the cleanest way to
 see it is throughput per *busy logical core*:
 
@@ -381,19 +381,19 @@ ______________________________________________________________________
 
 | setting | where it lives | **recommended** | currently |
 | --- | --- | ---: | ---: |
-| `cap` | `backends.toml.j2`, vox `[[backends]]` | **4** | 3 (commented out) |
+| `cap` | `backends.toml.j2`, host-compute `[[backends]]` | **4** | 3 (commented out) |
 | `cpu_request` | `backends.toml.j2`, `[backends.kube]` | **`1500m`** (unchanged) | `1500m` |
 | `memory_request` | `backends.toml.j2`, `[backends.kube]` | **`3Gi`** | `8Gi` |
 | `memory_limit` | `backends.toml.j2`, `[backends.kube]` | **`4Gi`** | unset |
-| `vox_kueue_cpu_quota` | `homelab` `host_vars/vox.yml` | **`6`** | `7` |
-| `vox_kueue_mem_quota` | `homelab` `host_vars/vox.yml` | **`12Gi`** | `24Gi` |
+| `host-compute_kueue_cpu_quota` | `homelab` `host_vars/host-compute.yml` | **`6`** | `7` |
+| `host-compute_kueue_mem_quota` | `homelab` `host_vars/host-compute.yml` | **`12Gi`** | `24Gi` |
 | `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` | `phaze-agent-env` ConfigMap (`envFrom`, `kube_staging.py:345`) | **`4` / `1` / `4`** | unset |
 
 **Lockstep, both resources, both exact:**
 
 ```
-memory:  cap 4 x memory_request 3Gi  = 12Gi  <= vox_kueue_mem_quota 12Gi     (a 5th pod needs 15Gi — refused)
-cpu:     cap 4 x cpu_request 1500m   = 6     <= vox_kueue_cpu_quota 6        (a 5th pod needs 7.5 — refused)
+memory:  cap 4 x memory_request 3Gi  = 12Gi  <= host-compute_kueue_mem_quota 12Gi     (a 5th pod needs 15Gi — refused)
+cpu:     cap 4 x cpu_request 1500m   = 6     <= host-compute_kueue_cpu_quota 6        (a 5th pod needs 7.5 — refused)
 ```
 
 ### 9a. Why `cap = 4`
@@ -469,7 +469,7 @@ armed.
 Two follow-on conditions, both cheap to check and neither blocking:
 
 1. **Once the thread-cap env has been live for a real drain**, `memory_request` may drop to `2Gi`
-   and `memory_limit` to `3Gi` (`vox_kueue_mem_quota` → `8Gi`, `cap` unchanged at 4). The capped
+   and `memory_limit` to `3Gi` (`host-compute_kueue_mem_quota` → `8Gi`, `cap` unchanged at 4). The capped
    envelope maximum is **measured at 1.5535 GiB**, so 2Gi is peak × 1.29 and 3Gi is × 1.93 — the
    same margin shape one tier down. Confirm against `analyze_file`'s peak-RSS log line
    (`phaze-7qfd` added exactly that), so this is an observation, not another spike. Do **not** make
@@ -522,7 +522,7 @@ ______________________________________________________________________
 
 | | action | why |
 | --- | --- | --- |
-| 1 | **`cap = 4`, `memory_request: 3Gi`, `memory_limit: 4Gi`, `cpu_request: 1500m`, `vox_kueue_mem_quota: 12Gi`, `vox_kueue_cpu_quota: 6`** | §9. 98% of the node's throughput ceiling; both lockstep constraints exact; ~13 GiB of node headroom even at the limit-worst-case. Feeds `homelab-a2x`. |
+| 1 | **`cap = 4`, `memory_request: 3Gi`, `memory_limit: 4Gi`, `cpu_request: 1500m`, `host-compute_kueue_mem_quota: 12Gi`, `host-compute_kueue_cpu_quota: 6`** | §9. 98% of the node's throughput ceiling; both lockstep constraints exact; ~13 GiB of node headroom even at the limit-worst-case. Feeds `homelab-a2x`. |
 | 2 | **Set `TF_NUM_INTRAOP_THREADS=4 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=4` in the `phaze-agent-env` ConfigMap** | §5. **−42% per-process peak** (2.151 → 1.211 GiB) for **+0.9%** throughput at the operating point. `phaze-7i0k` recommended this at −14.4%; against the model-major code it is three times better. |
 | 3 | **Stop treating memory as the burst-lane constraint** | §7. It binds at W≈13; CPU binds at W=2. Every future capacity argument about this node is a CPU argument. |
 | 4 | **Do not raise `cap` past 4 on this node, and do not carry `cap = 4` to a different one** | §4, §10. The ceiling is 4 physical cores. `cap` is per-backend; each cluster in the mesh needs its own knee measured. Past the knee, `cap` only inflates per-file latency. |

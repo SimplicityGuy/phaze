@@ -181,6 +181,11 @@ compare numeric tokens before and after and confirm that any removed digit belon
 identifier being replaced. Group prose quantities with commas according to `CONVENTIONS.md`; do
 not reformat identifiers that merely look numeric.
 
+For the complete historical corpus, run the generic checker documented in the
+[2026-09-11 historical evidence audit](historical-evidence-audit-2026-09-11.md). It verifies
+identifier-only transformation, ordered numeric-token equivalence, archive boundaries, local
+links, Mermaid fences, and encoded graph-reference integrity against an immutable source revision.
+
 ## Executable-AST proof for Python comment work
 
 For uncommitted comment/docstring edits relative to the bead's starting commit:

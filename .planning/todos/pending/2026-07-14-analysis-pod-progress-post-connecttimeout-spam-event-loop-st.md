@@ -15,7 +15,7 @@ files:
 
 ## Problem
 
-During the 2026.7.6 cloud-burst drain, every analysis pod (both vox and xenolab Kueue
+During the 2026.7.6 cloud-burst drain, every analysis pod (both host-compute and host-compute-alt Kueue
 clusters) emits a continuous, bursty stream of warnings for the entire multi-minute
 analysis of each file:
 

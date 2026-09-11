@@ -11,7 +11,7 @@
 
 ## Reattribution Target
 
-First pass surfaced a clarifying question from the user ("is this using the name of the fileserver?"), answered by clarifying that `Agent.id` is a string PK (operator-chosen, e.g. `nox`) and `name` is a separate label — the FK reattribution writes the target's `id`. Re-asked with that framing.
+First pass surfaced a clarifying question from the user ("is this using the name of the fileserver?"), answered by clarifying that `Agent.id` is a string PK (operator-chosen, e.g. `host-store`) and `name` is a separate label — the FK reattribution writes the target's `id`. Re-asked with that framing.
 
 | Option | Description | Selected |
 |--------|-------------|----------|
@@ -20,7 +20,7 @@ First pass surfaced a clarifying question from the user ("is this using the name
 | Auto with explicit override | Hybrid; explicit id wins, else auto-detect sole fileserver | |
 
 **User's choice:** Auto: sole fileserver, else abort (selected preview retained the `>1 → ABORT: pass -x reattribute_to=<id>` escape hatch, so the ambiguous case accepts an explicit override).
-**Notes:** In current prod exactly one real fileserver (nox) exists, so the auto path resolves with no operator input. Reattribution scope is all legacy-owned files + scan_batches (incl. the 012 `status='live'` sentinel batch), per LEGACY-02.
+**Notes:** In current prod exactly one real fileserver (host-store) exists, so the auto path resolves with no operator input. Reattribution scope is all legacy-owned files + scan_batches (incl. the 012 `status='live'` sentinel batch), per LEGACY-02.
 
 ---
 

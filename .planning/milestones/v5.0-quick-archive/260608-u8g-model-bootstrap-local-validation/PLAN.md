@@ -68,7 +68,7 @@ structlog, activity indicator, delete-scans).
 </execution_context>
 
 <context>
-@/Users/Robert/Code/public/phaze-pr1-model-bootstrap/CLAUDE.md
+@<scratch>/phaze-pr1-model-bootstrap/CLAUDE.md
 
 <interfaces>
 <!-- Authoritative facts the executor needs. No codebase exploration required. -->
@@ -159,7 +159,7 @@ callable and propagates its return/exception, so those tests keep passing unchan
     - Update `test_download_to_creates_pb_and_json_pairs` to patch `download_models._ensure_present_local` (signature `(url, dest, expected_size)`) instead of the deleted `_ensure_present`; record (url, dest) and write a sentinel byte; assertions on the 68-file pb/json split are unchanged.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr1-model-bootstrap && uv run pytest tests/test_scripts/test_download_models.py tests/test_services/test_model_bootstrap.py -q</automated>
+    <automated>cd <scratch>/phaze-pr1-model-bootstrap && uv run pytest tests/test_scripts/test_download_models.py tests/test_services/test_model_bootstrap.py -q</automated>
   </verify>
   <done>download_models.py exposes MANIFEST (68 entries, correct sizes), _ensure_present_local, and a HEAD-free download_to; the three HEAD helpers are gone; download-path + model_bootstrap service tests pass.</done>
 </task>
@@ -182,7 +182,7 @@ callable and propagates its return/exception, so those tests keep passing unchan
     phaze.scripts.download_models (preserve the Postgres-free boundary).
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr1-model-bootstrap && uv run pytest tests/test_services/test_model_bootstrap.py tests/test_task_split.py::test_model_bootstrap_stays_postgres_free -q</automated>
+    <automated>cd <scratch>/phaze-pr1-model-bootstrap && uv run pytest tests/test_services/test_model_bootstrap.py tests/test_task_split.py::test_model_bootstrap_stays_postgres_free -q</automated>
   </verify>
   <done>model_bootstrap docstrings describe the local-validation contract; download_to is still called unconditionally; postgres-free import-boundary test passes.</done>
 </task>
@@ -204,7 +204,7 @@ callable and propagates its return/exception, so those tests keep passing unchan
     callable and propagates its return value and exceptions, so those tests stay green.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr1-model-bootstrap && uv run pytest tests/test_tasks/test_agent_startup_banner.py tests/test_phase04_gaps.py tests/test_task_split.py -q</automated>
+    <automated>cd <scratch>/phaze-pr1-model-bootstrap && uv run pytest tests/test_tasks/test_agent_startup_banner.py tests/test_phase04_gaps.py tests/test_task_split.py -q</automated>
   </verify>
   <done>agent_worker.startup awaits ensure_models_present via asyncio.to_thread; banner, phase04-gaps, and all import-boundary tests pass.</done>
 </task>
@@ -233,7 +233,7 @@ callable and propagates its return/exception, so those tests keep passing unchan
 Full suite, lint, types, and coverage must pass from the worktree root:
 
 ```bash
-cd /Users/Robert/Code/public/phaze-pr1-model-bootstrap
+cd <scratch>/phaze-pr1-model-bootstrap
 uv run ruff format .
 uv run ruff check .
 uv run mypy .

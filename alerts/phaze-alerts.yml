@@ -113,7 +113,7 @@ groups:
         # THRESHOLD PROVENANCE: the deployed pod limit is 4Gi = 4,294,967,296 B
         # (docs/design/0005-analyze-job-memory-limits.md, backends.toml). The measured
         # post-D-09 whole-process peak on the burst node is 1.50 / 1.65 / 1.67 GiB at
-        # 1:00 / 4:00 / 12:04 of audio (docs/spikes/phaze-u1n7j-vox-fix-verification.md).
+        # 1:00 / 4:00 / 12:04 of audio (docs/spikes/phaze-u1n7j-host-compute-fix-verification.md).
         # 3.5 GiB is 87.5% of the limit and more than TWICE the measured peak, so nothing
         # healthy reaches it and a breach is not yet an OOMKill.
         #

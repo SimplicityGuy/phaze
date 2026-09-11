@@ -63,7 +63,7 @@ created: 2026-06-11
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| `/saq` dashboard renders behind the reverse proxy | observability | Real proxy path-prefix + real Redis with live jobs | After redeploy: open `/saq` via the proxy, confirm the controller + `phaze-agent-nox` queues list with live job counts; confirm assets load under the proxy prefix |
+| `/saq` dashboard renders behind the reverse proxy | observability | Real proxy path-prefix + real Redis with live jobs | After redeploy: open `/saq` via the proxy, confirm the controller + `phaze-agent-host-store` queues list with live job counts; confirm assets load under the proxy prefix |
 
 *Unit/integration tests cover the mount, queue assembly, flag, and route isolation; the proxy-prefix asset resolution is inherently a manual check.*
 

@@ -104,7 +104,7 @@ has no opinion on it.
 MEASURED 2026-08-26: the corpus already splits on this, and it splits by **genre, not by author**.
 The six MEASUREMENT spikes are space-grouped —
 `docs/spikes/phaze-b2qs9-exhaustive-analysis-measurement.md` (105 space / 0 comma),
-`phaze-han03-essentia-seek.md` (61/0), `phaze-u1n7j-vox-fix-verification.md` (50/0),
+`phaze-han03-essentia-seek.md` (61/0), `phaze-u1n7j-host-compute-fix-verification.md` (50/0),
 `phaze-rc1q-streaming-vs-standard-mode.md` (36/0), `phaze-i93a-cpp-rewrite-evaluation.md` (33/1),
 `phaze-8r6t4-concurrency-knee-recheck.md` (10/0) — while the DIAGNOSIS spikes and the rest of the
 docs are comma-grouped: `phaze-p3hj.1-audfprint-total-outage-diagnosis.md` (0/13),

@@ -4,7 +4,7 @@ status: complete
 
 # Quick Task 260707-ser — Summary
 
-**Task:** Exclude `kind="compute"` agents (Kueue/burst backends like `k8s-vox`) from the
+**Task:** Exclude `kind="compute"` agents (Kueue/burst backends like `k8s-host-compute`) from the
 operator "Trigger Scan" agent-picker dropdown. Compute agents are media-less and cannot be
 scan targets, so listing them is a bug.
 
@@ -29,8 +29,8 @@ the template, the `Agent` model, or the compute-registration path.
 ### Task 2 — regression test (`b7de115e`)
 Added `test_dashboard_context_excludes_compute_agents_from_scan_picker` in
 `tests/shared/routers/test_pipeline.py` (next to `test_dashboard_context_binds_lanes`). It seeds
-one `kind="fileserver"` (`nox`) and one `kind="compute"` (`k8s-vox`) agent, calls
-`build_dashboard_context`, and asserts on agent **ids**: `nox` present, `k8s-vox` absent.
+one `kind="fileserver"` (`host-store`) and one `kind="compute"` (`k8s-host-compute`) agent, calls
+`build_dashboard_context`, and asserts on agent **ids**: `host-store` present, `k8s-host-compute` absent.
 
 **Harness note:** `build_dashboard_context` runs degrade-safe reads (`_safe_count`) that call
 `session.rollback()` when the SAQ `saq_jobs` broker table is absent (it is not part of

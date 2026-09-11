@@ -121,7 +121,7 @@ None - no external service configuration required.
 **Operator note (post-redeploy, one-time):** after deploying the Phase 46 agent image, run `DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';` against `PHAZE_QUEUE_URL` to purge the orphaned `unique=True` cron row left by the prior build. Harmless if absent. Documented in `docs/deployment.md`.
 
 ## Next Phase Readiness
-- Liveness is now guaranteed independent of job cost; the busy-agent-DEAD incident class is closed in code. Needs a release + nox/lux redeploy to take effect live, then the one-time cron-row cleanup.
+- Liveness is now guaranteed independent of job cost; the busy-agent-DEAD incident class is closed in code. Needs a release + host-store/host-prod redeploy to take effect live, then the one-time cron-row cleanup.
 - This is a homelab-reliability fix on a phase branch; open a PR per project workflow (no direct main commits).
 
 ## Self-Check: PASSED
