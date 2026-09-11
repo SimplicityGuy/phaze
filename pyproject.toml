@@ -13,19 +13,21 @@ dependencies = [
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
     # aioboto3 stopped at aiobotocore 2.x, so use aiobotocore's native session API directly.
-    "aiobotocore>=3.9.0",
-    "alembic>=1.19.1",
+    "aiobotocore>=3.9.1",
+    "alembic>=1.19.2",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.1",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
     # via the kube API, watches them to completion, and reconciles their status. Lives on the
     # control plane ONLY (kube creds never reach the agent/pod, mirroring aiobotocore). Verified
     # legitimate (kr8s-org, BSD-3-Clause, pure-Python) before install (T-54-SC).
     "kr8s>=0.20.15",
+
     # Capped on purpose: litellm had a supply-chain attack (malicious 1.82.7/1.82.8,
     # Mar 2026) and ships frequent breaking minors, so CLAUDE.md mandates aggressive
     # pinning. The cap confines uv to ONE vetted minor line; raise it deliberately.
@@ -42,16 +44,21 @@ dependencies = [
     # final aioboto3 release pins boto3 to the 1.40 line. Vetted at this raise: see the PR for
     # the pip-audit / osv-scanner / full-suite results.
     #
+    # Raised 1.98.x -> 1.100.x on 2026-09-11 by operator decision (bead phaze-dkqor), same
+    # deliberate step. Vetted at this raise: pip-audit clean on the moved pins, osv-scanner no
+    # issues on the 181-package lock, full suite green (see the bead comment for the run).
+    #
     # WHEN YOU RAISE THIS CAP, the raise is not complete until the guard moves with it.
     # tests/review/services/test_proposal_provider_wire_shapes.py measures the LLM->pydantic seam
     # against whatever litellm is pinned here and records that minor in MEASURED_LITELLM_MINOR.
     # Re-measure its verdicts and update that constant in the SAME commit as the bump. This comment
     # is a pointer, not a coupling -- nothing enforces it, and the cost of forgetting lands on
     # whoever gates next, ~23 minutes into a suite, in a file they did not touch (phaze-85zxu).
-    "litellm>=1.98.0,<1.99.0",
-    "lxml>=6.1.2",
+    "litellm>=1.100.0,<1.101.0",
+    "lxml>=6.1.3",
     "mutagen>=1.48.1",
-    "numpy>=2.5.2",
+    "numpy>=2.5.3",
+
     # phaze-m1drf.1: OpenTelemetry. THREE packages, deliberately -- api + sdk + the
     # OTLP **HTTP/protobuf** exporter. No `opentelemetry-instrumentation-*` package is
     # taken: phaze writes its own HTTP / SAQ / SQLAlchemy hooks so that every metric
@@ -67,6 +74,7 @@ dependencies = [
     "opentelemetry-api>=1.44.0",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
     "opentelemetry-sdk>=1.44.0",
+
     # phaze-fq9h.1: 1001Tracklists detail pages deliver their track listing via JS behind a
     # Cloudflare Turnstile widget, and spike phaze-dmvs proved a HEADFUL Patchright (a
     # CDP-patched Playwright fork) is the only non-evasive client that clears it -- vanilla
@@ -82,34 +90,38 @@ dependencies = [
     # Raised 1.61.x -> 1.62.x on 2026-08-18. The lockstep holds automatically: Dockerfile's
     # `python -m patchright install --with-deps chrome` runs from the venv this pin resolves,
     # so CI's docker-validate / docker-publish rebuild is what re-pairs image and client.
-    "patchright>=1.62.1,<1.63.0",
+    "patchright>=1.62.3,<1.63.0",
+
     # v4.1.1 hotfix: saq[postgres] pulls bare `psycopg` (pure-Python), which needs a
     # libpq backend at import. The v4.1.0 slim image had none (no C ext, no binary
     # wheel, no system libpq) -> `ImportError: no pq wrapper available` crash-looped
     # phaze-api. `psycopg[binary]` bundles libpq (cp314 wheels exist for linux x86_64/
     # aarch64 + macos arm64); the Dockerfile also installs `libpq5` as a belt-and-
     # suspenders fallback for the pure-Python path.
-    "psycopg[binary]>=3.3.4",
+    "psycopg[binary]>=3.3.5",
     "pydantic-settings>=2.15.0",
+
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
+
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
     # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
     # explicitly (hygiene) so a future kr8s dropping PyYAML cannot silently break the kubeconfig
     # parse. Floor at the currently-resolved 6.0.3.
     "PyYAML>=6.0.3",
-    "rapidfuzz>=3.14.5",
+    "rapidfuzz>=3.14.6",
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
     # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
     # pipeline counters). Declared explicitly so the import is not a transitive accident.
     "redis>=8.1.0,<9.0",
+
     # Phase 36: postgres extra pulls psycopg[pool]>=3.3.4 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
     "sqlalchemy>=2.0.52",
-    "sse-starlette>=3.4.8",
+    "sse-starlette>=3.4.11",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
     "uvicorn>=0.52.4",
@@ -406,6 +418,7 @@ dev = [
     "defusedxml>=0.7.1",
     "greenlet>=3.5.5",
     "httpx>=0.28.1",
+
     # phaze-frq98 (seam F1): validates `kube_staging.build_job_manifest`'s output against the REAL
     # Kubernetes Job schema -- the vendored, OpenAPI-derived artifact under
     # `tests/vendor/kubernetes-json-schema/`, which is the SAME artifact `kubeconform` consumes.
@@ -420,6 +433,7 @@ dev = [
     # the real consumer -- will accept. See ADR-0012 section 4, G3
     # (`docs/design/0012-verification-fidelity-and-operator-attribution.md`).
     "jsonschema>=4.26.0",
+
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
     # ThreadedMotoServer -- required because aiobotocore's async response parsing
@@ -434,7 +448,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]

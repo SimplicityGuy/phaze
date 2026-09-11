@@ -119,7 +119,7 @@ RUN apt-get update \
     && ffprobe -version | head -1
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 
 # Install dependencies first (cache layer)
 COPY pyproject.toml uv.lock ./

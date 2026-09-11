@@ -883,12 +883,13 @@ class TestModeFiveBIsNotRepaired:
 
 
 # The litellm minor line every verdict in this module was measured against -- originally 1.97
-# (``phaze-02v1s``), re-measured at 1.98 on 2026-08-23 (``phaze-o6wg7``); see the module docstring's
-# version note. **This is THIS FILE'S OWN provenance, not a copy of pyproject's pin string.** Editing
-# it is the act of claiming a re-measurement, which is why it is a hand-maintained literal and why it
-# is not derived from anything. Never "fix" a failure below by bumping it without re-running the
-# verdicts.
-MEASURED_LITELLM_MINOR = (1, 98)
+# (``phaze-02v1s``), re-measured at 1.98 on 2026-08-23 (``phaze-o6wg7``), re-measured at 1.100 on
+# 2026-09-11 (``phaze-dkqor``, all 48 verdict tests re-run unmodified against real litellm 1.100.1
+# and found identical); see the module docstring's version note. **This is THIS FILE'S OWN
+# provenance, not a copy of pyproject's pin string.** Editing it is the act of claiming a
+# re-measurement, which is why it is a hand-maintained literal and why it is not derived from
+# anything. Never "fix" a failure below by bumping it without re-running the verdicts.
+MEASURED_LITELLM_MINOR = (1, 100)
 
 # The compromised litellm releases (March 2026 supply-chain attack; CLAUDE.md, and the comment on the
 # pin in pyproject.toml). The floor must stay clear of these forever.
