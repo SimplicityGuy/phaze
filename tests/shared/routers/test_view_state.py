@@ -54,6 +54,51 @@ def test_every_parameter_round_trips() -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 7),
+        ("banana", 7),
+        ("-4", 1),
+        (str(MAX_PAGE + 1), MAX_PAGE),
+        ("23", 23),
+    ],
+)
+def test_page_parser_is_total_and_bounded(raw: str | None, expected: int) -> None:
+    """Absent, malformed, low, high and valid pages have stable total outcomes."""
+    query = "" if raw is None else f"page={raw}"
+    state = ListViewState.from_request(_FakeRequest(query), page=7)
+    assert state.page == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 50),
+        ("banana", 50),
+        (str(min(PAGE_SIZE_CHOICES) - 1), 50),
+        (str(max(PAGE_SIZE_CHOICES) + 1), 50),
+        ("100", 100),
+    ],
+)
+def test_page_size_parser_accepts_only_the_closed_choice_set(raw: str | None, expected: int) -> None:
+    """Out-of-set sizes fall back instead of being rounded or honoured."""
+    query = "" if raw is None else f"page_size={raw}"
+    state = ListViewState.from_request(_FakeRequest(query), page_size=50)
+    assert state.page_size == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, "desc"), ("sideways", "desc"), ("", "desc"), ("asc", "asc"), ("desc", "desc")],
+)
+def test_sort_direction_parser_is_total_and_closed(raw: str | None, expected: str) -> None:
+    """Only the two supported directions override a view-specific default."""
+    query = "" if raw is None else f"order={raw}"
+    state = ListViewState.from_request(_FakeRequest(query), order="desc")
+    assert state.order == expected
+
+
+@pytest.mark.parametrize(
     "query",
     [
         "page=banana",
