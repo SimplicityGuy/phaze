@@ -250,19 +250,29 @@ does **not** restate the field table.
 > Phaze masks `SecretStr` fields in logs and reprs and logs the resolved registry as a secret-free
 > `{id, kind, rank, cap}` projection at boot; keep that discipline in everything you write down.
 
-## Stranded `active` SAQ jobs (phaze-o0n6)
+## Legacy finite-timeout `active` SAQ jobs (phaze-o0n6)
 
 ### What the alarm means
 
 SAQ's `_enqueue` upsert only overwrites a conflicting key whose status is in
 `('aborted','complete','failed')`. `'active'` is not in that list, so **any** `saq_jobs` row left in
-`status='active'` holds its deterministic key `process_file:<file_id>` permanently, and every
+`status='active'` holds its deterministic key permanently. In the incident population that key was
+`process_file:<file_id>`, and every
 re-enqueue of that file — including via the Recover button and the recovery CLI — silently returns
 `None`. Rows get left there routinely: `PostgresQueue._dequeue` marks rows `active` in bulk and
 buffers them in an in-process `asyncio.Queue`, so a restart, deploy, OOM or kill abandons every
 buffered row with nothing alive to finalize it. SAQ's sweeper is the nominal remedy and does not keep
 up (it waits on each abort serially); on 2026-07-31 this had reached 2,413 rows on one analyze queue,
 keying 2,411 files that had never been analyzed.
+
+That incident population used the retired finite `process_file` timeout. Current `process_file`
+jobs are pinned at `timeout=0`, carry a heartbeat derived as `2 × analysis_stall_timeout_sec`, and
+use `retries=2`. An explicit zero timeout means unbounded in SAQ, so current rows are excluded from
+the generic `active` and `aborting` reapers and from the `stranded` count below; SAQ's heartbeat
+sweep owns their automatic liveness. This section therefore applies to other finite-timeout jobs and
+to legacy `process_file` rows whose serialized policy predates phaze-w55w1. For a current
+heartbeat-owned row reported as `blocked`, use the manual remediation in the exhaustive-analysis
+backfill section below.
 
 Read the queue:
 
@@ -280,7 +290,7 @@ docker compose exec api uv run phaze queue status --queue phaze-agent-<agent>-an
 > from memory; `uv run` is kept in this runbook anyway because it is correct independent of
 > that `PATH` env change.
 
-`stranded` is the count of rows past their own job timeout plus `PHAZE_ACTIVE_REAP_SLACK_SECONDS`
+`stranded` is the count of finite-timeout rows past their own job timeout plus `PHAZE_ACTIVE_REAP_SLACK_SECONDS`
 — exactly what `reap_stranded_active_jobs` will delete on its next minute tick. The command **exits
 1** when that count exceeds the lane's concurrency, which cannot happen in healthy operation: the lane
 runs at most `concurrency` jobs at once, so anything above that is abandoned claims. Run it from a
@@ -293,8 +303,9 @@ The controller runs `reap_stranded_active_jobs` every minute. It DELETEs each st
 the key — and deliberately leaves the file's `scheduling_ledger` row alone. That row is the **recovery
 source**, not a second block: `recover_orphaned_work` re-drives `ledger MINUS live-saq_jobs-keys MINUS
 domain-completed`, so freeing the key is precisely what turns the ledger row from invisible into an
-orphan the next recovery pass replays (with its stored 7200s timeout, onto the file's owning
-fileserver). **Never delete the `scheduling_ledger` rows** as part of a manual cleanup: doing so
+orphan the next recovery pass replays. Even when that row stores the retired 7200s timeout,
+`apply_project_job_defaults` repins the replay to the current `timeout=0`, derived heartbeat, and
+`retries=2` policy before it reaches the broker. **Never delete the `scheduling_ledger` rows** as part of a manual cleanup: doing so
 destroys the only durable record that the file was ever scheduled, and no path will ever pick it up
 again.
 
@@ -326,10 +337,12 @@ it needs one operator action. After deploying:
    move by the number of keys the reaper logged, and `phaze queue status` should show the lane running
    again.
 
-If `stranded` does **not** fall, the rows are inside their own timeout window: `process_file` carries a
-7200s timeout, so a row is not eligible until 7200s + `PHAZE_ACTIVE_REAP_SLACK_SECONDS` after its
-`started`. That bound is per-row and deliberate — it is what keeps the reaper from deleting the broker
-row of a job a worker is still executing. Wait it out rather than lowering the slack.
+If `stranded` does **not** fall, the finite-timeout rows are still inside their own timeout window.
+A legacy `process_file` row carrying the retired 7200s policy is not eligible until 7200s +
+`PHAZE_ACTIVE_REAP_SLACK_SECONDS` after its `started`. That bound is per-row and deliberate — it is
+what keeps the reaper from deleting the broker row of a job a worker is still executing. Wait it out
+rather than lowering the slack. A current `timeout=0` `process_file` row never appears in this count;
+inspect its heartbeat state and follow the `blocked` remediation below instead.
 
 ## Removing fingerprint-era data (phaze-0jpe)
 
@@ -512,7 +525,7 @@ unbounded, so a `process_file` row stuck in `status='aborting'` or stranded `sta
 **excluded** from both automatic key reapers (`aborting_reaper` / `active_reaper`, both built on
 the shared `timeout <> 0` guard in `tasks/_saq_reap.py`) and will **not** self-heal on any timer.
 Manual remediation, mirroring the DELETE-not-transition precedent those reapers use (vacates the
-key entirely so the next enqueue is a plain INSERT, never Robert's 2026-07-19 approved manual
+key entirely so the next enqueue is a plain INSERT, without repeating the operator's 2026-07-19 approved manual
 cleanup redone by hand each time):
 
 ```bash

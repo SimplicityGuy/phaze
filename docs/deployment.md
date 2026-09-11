@@ -4,7 +4,7 @@
 Production Phaze runs as **two compose files on two (or more) hosts**:
 
 - **Application server** (`docker-compose.yml`): API/UI, controller worker, Postgres, Redis. No music/model/output file mounts. HTTPS via an internal CA. Redis `requirepass` + LAN binding.
-- **File servers** (`docker-compose.agent.yml`, one per host): three per-lane agent workers (`worker-analyze`, `worker-meta`, `worker-io`) and a watcher. Holds music/video files locally; reaches the app-server over HTTPS for every state change.
+- **File servers** (`docker-compose.agent.yml`, one per host): three per-lane agent workers (`worker-analyze`, `worker-meta`, `worker-io`) and a watcher. Holds music/video files locally; reaches the app-server over HTTPS for application state, Postgres for the SAQ broker, and Redis for cache/counters.
 
 This guide walks through bringing up a fresh two-host deployment from a clean checkout, then covers the build pipeline, rollback, and monitoring.
 
@@ -26,12 +26,14 @@ flowchart TB
         cfg -. loaded by .-> ctl
     end
 
-    subgraph fs["File server(s) (docker-compose.agent.yml, one per host)"]
-        aw["worker-analyze/-meta/-io<br/>PHAZE_ROLE=agent (3 lanes)"]
+    subgraph fs["File server(s) (docker-compose.agent.yml, one per host; 3 lanes)"]
+        aro["worker-analyze + worker-io<br/>PHAZE_ROLE=agent (2 read-only lanes)"]
+        meta["worker-meta<br/>PHAZE_ROLE=agent (rw archive lane)"]
         wt["watcher"]
-        media[("/data/music (ro)")]
-        aw --- media
-        wt --- media
+        media[("/data/music")]
+        aro -->|"ro"| media
+        meta -->|"rw"| media
+        wt -->|"ro"| media
     end
 
     subgraph cloud["Cloud-compute agent (docker-compose.cloud-agent.yml)"]
@@ -50,7 +52,9 @@ flowchart TB
     fs -->|"HTTPS :8000 API (DIST-04)"| api
     fs -->|"Postgres :5432 SAQ broker"| pg
     fs -->|"Redis :6379 cache"| rd
-    cloud -->|"HTTPS :8000 API + Postgres :5432 broker"| api
+    cloud -->|"HTTPS :8000 API"| api
+    cloud -->|"Postgres :5432 SAQ broker"| pg
+    cloud -->|"Redis :6379 cache"| rd
     api -->|"submit/watch Jobs (kube API)"| k1
     api -->|"submit/watch Jobs (kube API)"| k2
     k1 -->|"callback HTTPS :8000 API"| api
@@ -65,7 +69,7 @@ The repo ships three deployment compose files plus a dev overlay:
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
 | `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-meta`, `worker-io` (three per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher` | All services pull from GHCR via `PHAZE_IMAGE_TAG` (`ghcr.io/simplicityguy/phaze`). See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
-| `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, named scratch. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
+| `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, host-bound scratch directory. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
 | `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
 ### Application-server services (`docker-compose.yml`)
@@ -85,9 +89,9 @@ The pinned Postgres image lives in **exactly three** places, and all three must 
 
 | # | Site | Form |
 |---|------|------|
-| 1 | `justfile:14` | `postgres_image := "postgres:18-alpine"` (test container) |
-| 2 | `docker-compose.yml:84` | `image: postgres:18-alpine` (production) |
-| 3 | `.github/workflows/tests.yml:48` | `image: postgres:18-alpine` (CI service) |
+| 1 | `justfile` (`postgres_image`) | `postgres_image := "postgres:18-alpine"` (test container) |
+| 2 | `docker-compose.yml` (`postgres.image`) | `image: postgres:18-alpine` (production) |
+| 3 | `.github/workflows/tests.yml` (`services.postgres.image`) | `image: postgres:18-alpine` (CI service) |
 
 `tests/agents/deployment/test_postgres_image_pin.py` fails the build if they disagree, so a
 partial bump is caught in CI rather than in production. This is the phaze-tcqq outcome: the tag
@@ -100,13 +104,22 @@ cannot read a `justfile` variable.
 
 | Service | Image / build | Command | Role |
 |---------|---------------|---------|------|
-| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; default concurrency 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all three lane workers, phaze-30fo). |
+| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; host-derived concurrency, replacing the retired fixed default 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all three lane workers, phaze-30fo). |
 | `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`execute_approved_batch`; default concurrency 2). Heartbeats with `lane=meta`. |
 | `worker-io` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `io` lane (`s3_upload`/`push_file`; default concurrency 4). Heartbeats with `lane=io`. |
 | `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. The only worker with `PHAZE_AGENT_HEARTBEAT=false`: it is unlaned, so an untagged beat would wipe the per-lane breakdown the three lane workers maintain. |
 | `watcher` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run python -m phaze.agent_watcher` | Always-on directory watcher (`PHAZE_ROLE=agent`). |
 
-The three lane workers and `watcher` all mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool. See [agent-queue-lanes.md](agent-queue-lanes.md) for the full lane topology, concurrency knobs, and the legacy-queue drain runbook.
+Every service uses the fail-fast `${SCAN_PATH:?SCAN_PATH required}` source. `worker-meta` mounts it `rw`
+because its lane owns archive mutations; the off-by-default all-mode `worker-drain` also mounts it
+`rw` because it registers those same functions. `worker-analyze`, `worker-io`, and `watcher` mount it
+`ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis
+(cache/counters) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker**
+directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still
+reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service;
+the agent's only Postgres connection is the SAQ broker pool. See
+[agent-queue-lanes.md](agent-queue-lanes.md) for the full lane topology, concurrency knobs, and the
+legacy-queue drain runbook.
 
 ## Cloud backends (`backends.toml`)
 
@@ -124,7 +137,7 @@ comments document the mount that replaces them.)
 | `kind` | Purpose | Requires |
 |--------|---------|----------|
 | `local` | On-prem file-server queues (the default). | nothing beyond `rank`/`cap` |
-| `compute` | Cloud-compute agent (rsync/push) — e.g. an OCI Ampere A1 (arm64) over Tailscale for **long** sets that would time out on a file server. | `agent_ref` + `scratch_dir` |
+| `compute` | Cloud-compute agent (rsync/push) — e.g. an OCI Ampere A1 (arm64) over Tailscale for **long** sets that would occupy a file-server analysis lane for an extended period. | `agent_ref` + `scratch_dir` |
 | `kueue` | A Kubernetes **Kueue** cluster that runs one-shot Jobs. **N clusters can be declared simultaneously**, each with its own LocalQueue and S3 staging bucket. | a nested `[backends.kube]` table (api_url / namespace / local_queue + `_file`-mounted kubeconfig/SA-token) |
 
 Per-backend S3 staging is declared in `[[buckets]]` entries bound to backends by id. Each bucket
@@ -542,7 +555,7 @@ Production-critical variables:
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
 | `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (for example, `2026.8.4`) in production rather than `latest`. |
-| `SCAN_PATH` | file-server | The music-library root, bind-mounted read-only into all agent services. Compose parse fails if unset. |
+| `SCAN_PATH` | file-server | The music-library root. Compose parse fails if unset. It is `rw` only for `worker-meta` and the profile-gated `worker-drain`; `worker-analyze`, `worker-io`, and `watcher` are `ro`. |
 
 ### Secrets via files (Docker secrets)
 
@@ -632,7 +645,7 @@ production outages the ADR cites.
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
 - **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention (phaze-30fo): pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
 - **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
-- **Logging:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. No external metrics/tracing exporter (Sentry, Datadog, OpenTelemetry) is configured in this repo. <!-- VERIFY: any external log aggregation, alerting, or metrics dashboard configured at the deployment level (outside the repo) is not represented here. -->
+- **Logging and optional telemetry:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. OpenTelemetry export is disabled when no OTLP endpoint is configured; set the standard `OTEL_EXPORTER_OTLP_*` variables to push metrics and traces to the operator-owned collector. `docker-compose.telemetry.example.yml` is a development illustration only, not part of the production topology. See [telemetry/exporter.md](telemetry/exporter.md).
 
 ## Filesystem-Isolation Smoke (D-20)
 
@@ -664,7 +677,7 @@ docker compose restart api            # cert_bootstrap regenerates + prints the 
 
 Every file-server agent will fail to connect until you re-distribute the new `phaze-ca.crt`. The loud banner is the only safeguard — do not delete the certs directory casually.
 
-> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from an operator-created `core/v1` Secret read-only at `/certs` (KDEPLOY-06; `PHAZE_KUBE_CA_SECRET_NAME`, default `phaze-internal-ca`). After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
+> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from the operator-created `core/v1` Secret named by `[backends.kube].ca_secret_name` (default `phaze-internal-ca`) read-only at `/certs` (KDEPLOY-06). After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
 
 ## Pinning the agent image for production
 

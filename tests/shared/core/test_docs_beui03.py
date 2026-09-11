@@ -28,6 +28,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]  # tests/shared/core/X.py -> re
 _DOCS = _REPO_ROOT / "docs"
 _RUNBOOK = _DOCS / "runbook.md"
 _CONFIGURATION = _DOCS / "configuration.md"
+_CONFIG_SOURCE = _REPO_ROOT / "src" / "phaze" / "config.py"
+_ANALYSIS_EXEC_SOURCE = _REPO_ROOT / "src" / "phaze" / "services" / "analysis_exec.py"
+_ANALYSIS_ENQUEUE_SOURCE = _REPO_ROOT / "src" / "phaze" / "services" / "analysis_enqueue.py"
+_QUEUE_DEFAULTS_SOURCE = _REPO_ROOT / "src" / "phaze" / "tasks" / "_shared" / "queue_defaults.py"
+_SAQ_REAP_SOURCE = _REPO_ROOT / "src" / "phaze" / "tasks" / "_saq_reap.py"
 
 
 def _read(path: Path) -> str:
@@ -38,6 +43,12 @@ def _contains_all(haystack: str, needles: list[str]) -> list[str]:
     """Return the needles (case-insensitive) that are MISSING from haystack."""
     lowered = haystack.lower()
     return [n for n in needles if n.lower() not in lowered]
+
+
+def _captured_int(text: str, pattern: str, label: str) -> int:
+    match = re.search(pattern, text, re.DOTALL)
+    assert match is not None, f"could not derive {label} from its runtime source"
+    return int(match.group(1))
 
 
 def test_runbook_exists() -> None:
@@ -152,3 +163,82 @@ def test_configuration_documents_cloud_target_to_backends_equivalence() -> None:
         ],
     )
     assert not missing, f"configuration.md is missing the 1:1 cloud_target->backends equivalence: {missing}"
+
+
+def test_process_file_policy_docs_match_runtime_and_replay_sources() -> None:
+    """Current operator docs derive the exceptional analysis policy from live source.
+
+    ``WORKER_JOB_TIMEOUT`` and ``WORKER_MAX_RETRIES`` remain valid generic defaults, so a prose-only
+    assertion for ``0``/``2`` could still pass while the producer or recovery hook drifted. Read the
+    producer, the replay chokepoint, the settings derivation, and the generic-reaper predicate first;
+    then require both maintained operator docs to state the values those sources actually encode.
+    """
+    enqueue = _read(_ANALYSIS_ENQUEUE_SOURCE)
+    queue_defaults = _read(_QUEUE_DEFAULTS_SOURCE)
+    config = _read(_CONFIG_SOURCE)
+    reaper = _read(_SAQ_REAP_SOURCE)
+
+    producer = re.search(
+        r'return await queue\.enqueue\(\s*"process_file".*?timeout=(\d+),.*?'
+        r"heartbeat=get_settings\(\)\.analysis_job_heartbeat_sec,.*?retries=(\d+),",
+        enqueue,
+        re.DOTALL,
+    )
+    assert producer is not None, "analysis_enqueue.py no longer exposes the process_file timeout/heartbeat/retry policy"
+    producer_timeout, producer_retries = (int(value) for value in producer.groups())
+
+    replay = re.search(r'"process_file": \((\d+), (\d+)\)', queue_defaults)
+    assert replay is not None, "queue_defaults.py no longer pins process_file replay policy"
+    replay_timeout, replay_retries = (int(value) for value in replay.groups())
+    assert (replay_timeout, replay_retries) == (producer_timeout, producer_retries)
+    assert '"process_file": "analysis_job_heartbeat_sec"' in queue_defaults
+
+    stall = _captured_int(
+        config,
+        r"analysis_stall_timeout_sec:\s*int\s*=\s*Field\(\s*default=(\d+)",
+        "analysis stall timeout",
+    )
+    multiplier = _captured_int(
+        config,
+        r"_ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER\s*=\s*(\d+)",
+        "analysis heartbeat multiplier",
+    )
+    heartbeat = stall * multiplier
+    assert "<> 0" in reaper, "generic SAQ key reapers no longer exclude explicit timeout=0 rows"
+
+    required = [
+        f"timeout={producer_timeout}",
+        f"retries={producer_retries}",
+        "heartbeat",
+        "derived",
+        "excluded",
+    ]
+    for path in (_CONFIGURATION, _RUNBOOK):
+        text = _read(path)
+        missing = _contains_all(text, required)
+        assert not missing, f"{path.name} is missing current process_file policy terms derived from source: {missing}"
+
+    configuration = _read(_CONFIGURATION)
+    assert f"`{heartbeat}` at the `{stall}` default" in configuration, (
+        "configuration.md must show the derived process_file heartbeat using the live stall default and multiplier"
+    )
+    assert "letting them time out on the local file server" not in configuration, (
+        "configuration.md must not describe cloud routing as a workaround for the retired process_file wall-clock timeout"
+    )
+
+
+def test_analyze_lane_concurrency_doc_matches_child_process_boundary() -> None:
+    """The analyze concurrency guidance reflects the live per-job child process boundary."""
+    source = _read(_ANALYSIS_EXEC_SOURCE)
+    assert '_CHILD_MODULE = "phaze.analysis_child"' in source
+    assert "await asyncio.create_subprocess_exec(" in source
+
+    configuration = _read(_CONFIGURATION)
+    analyze_row = next(
+        (line for line in configuration.splitlines() if "`PHAZE_LANE_ANALYZE_CONCURRENCY`" in line),
+        "",
+    )
+    assert "analysis_child" in analyze_row and "per active job" in analyze_row, (
+        "configuration.md must describe the analyze lane as one analysis_child subprocess per active job"
+    )
+    assert "in-process essentia" not in analyze_row.lower(), "configuration.md must not restore the retired in-process Essentia wording"
