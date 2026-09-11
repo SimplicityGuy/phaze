@@ -16,7 +16,6 @@ import sys
 import tempfile
 import time
 from typing import TYPE_CHECKING, Protocol
-import uuid
 
 from scripts.parallel_test_manifests import (
     DEFAULT_SHARDS_PATH,
@@ -157,6 +156,24 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
     )
 
 
+def derive_parallel_seat_prefix(repo_root: Path) -> str:
+    """Derive one stable, worktree-specific prefix for both parallel lanes."""
+
+    bash_binary = shutil.which("bash")
+    if bash_binary is None:
+        raise RuntimeError("the required 'bash' command is not installed")
+    result = subprocess.run(  # noqa: S603  # nosec B603 -- fixed in-repo derivation script and checkout path.
+        (bash_binary, str(repo_root / "scripts/derive-validate-seat-name.sh"), str(repo_root)),
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"parallel seat-name derivation failed: {(result.stderr or result.stdout).strip()}")
+    return f"{result.stdout.strip()}-parallel"
+
+
 class ParallelTestSupervisor:
     """Own two pytest process groups and their temporary test seats."""
 
@@ -238,6 +255,7 @@ class ParallelTestSupervisor:
 
             environment = dict(os.environ)
             environment.pop("PHAZE_TEST_DB_ALLOW_SHARED", None)
+            environment.pop("PYTEST_ADDOPTS", None)
             environment.update(seat.environment)
             environment.update(
                 {
@@ -271,9 +289,9 @@ class ParallelTestSupervisor:
         coverage_files = tuple(str(run_root / lane / ".coverage") for lane in ("lane-a", "lane-b"))
         commands = (
             ("uv", "run", "coverage", "combine", *coverage_files),
-            ("uv", "run", "coverage", "json"),
-            ("uv", "run", "coverage", "xml"),
-            ("uv", "run", "coverage", "report"),
+            ("uv", "run", "coverage", "json", "--fail-under=0"),
+            ("uv", "run", "coverage", "xml", "--fail-under=0"),
+            ("uv", "run", "coverage", "report", "--fail-under=95"),
             ("uv", "run", "python", "scripts/coverage_floor.py"),
         )
         for command in commands:
@@ -344,10 +362,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     counts = ", ".join(f"{lane.name}={len(lane.node_ids)}" for lane in plan.lanes)
     sys.stdout.write(f"Verified parallel test partition: {counts}; union={len(plan.canonical_node_ids)} nodes in canonical order.\n")
-    seat_prefix = f"parallel-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        seat_prefix = derive_parallel_seat_prefix(repo_root)
+        dependencies = production_dependencies(repo_root)
+    except RuntimeError as exc:
+        sys.stderr.write(f"parallel test runner error: {exc}\n")
+        return 2
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="phaze-parallel-tests-") as temporary:
-        supervisor = ParallelTestSupervisor(repo_root, production_dependencies(repo_root))
-        return supervisor.run(plan, Path(temporary), seat_prefix=seat_prefix)
+        supervisor = ParallelTestSupervisor(repo_root, dependencies)
+        status = supervisor.run(plan, Path(temporary), seat_prefix=seat_prefix)
+    elapsed = time.monotonic() - started
+    sys.stdout.write(f"Parallel coverage gate finished with status {status} in {elapsed:.2f} s.\n")
+    return status
 
 
 if __name__ == "__main__":
