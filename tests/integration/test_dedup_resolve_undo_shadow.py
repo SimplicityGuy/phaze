@@ -42,6 +42,8 @@ from tests.db_guard import integration_dsns, require_test_database
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 
 pytestmark = pytest.mark.integration
 
@@ -54,22 +56,9 @@ HASH_A = "a" * 64
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
-    """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent."""
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+async def db_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    """Yield a rolled-back session on the session-scoped real-Postgres schema."""
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # Seed the FK-parent IDEMPOTENTLY: a committed ``test-fileserver`` may already exist (the
         # ``committed_db`` fixture re-seeds one, and the session-scoped ``async_engine`` seeds one), so a
@@ -82,7 +71,6 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 async def _file(session: AsyncSession, *, sha256: str = HASH_A) -> FileRecord:

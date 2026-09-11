@@ -39,12 +39,11 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.enums.stage import Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.base import Base
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -56,12 +55,14 @@ from tests.db_guard import integration_dsns, require_test_database
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 
 pytestmark = pytest.mark.integration
 
 # DSN derivation + destructive-DB guard, identical to test_enrich_pending_independence.py.
 # DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
-BROKER_DSN, SA_DSN = integration_dsns()
+_, SA_DSN = integration_dsns()
 _TARGET_DB = require_test_database(SA_DSN, context="stage-progress-bucket integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
@@ -71,7 +72,7 @@ _FOUR_BUCKETS = (Status.NOT_STARTED.value, Status.IN_FLIGHT.value, Status.DONE.v
 
 
 @pytest_asyncio.fixture
-async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSession]:
+async def db_session(async_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSession]:
     """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent (copied from the pending harness).
 
     CLEAN-01 routing (92-02): the tests here seed rows via ``flush`` (NOT ``commit``) and roll back at
@@ -84,20 +85,7 @@ async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSes
     the 92-03 routing seam applied locally so the flush+rollback isolation still works. (92-03
     generalizes this to the whole suite via ``join_transaction_mode='create_savepoint'``.)
     """
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # Idempotent FK-agent seed: the shared ``*_test`` DB may already carry a committed agent row
         # (a sibling bucket's committing test) -- re-adding would raise UniqueViolationError at flush.
@@ -119,7 +107,6 @@ async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSes
             yield session
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:

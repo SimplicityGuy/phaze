@@ -152,8 +152,7 @@ def throwaway_postgres() -> Iterator[str]:
         pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()}")
     try:
         for _ in range(160):
-            ready = _docker("exec", container, "pg_isready", "-U", "phaze", "-d", "postgres")
-            if ready.returncode == 0 and _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
+            if _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
                 break
             time.sleep(0.25)
         else:
@@ -184,21 +183,22 @@ _BACKENDS_ON_THIS_DATABASE = (
 def postgres(throwaway_postgres: str) -> Iterator[str]:
     """Hand each test an empty Postgres: no ``phaze%`` databases and no backends left attached."""
     yield throwaway_postgres
-    for row in _psql(throwaway_postgres, "select datname from pg_database where datname like 'phaze%'").splitlines():
-        database = row.strip()
-        if not database:
-            continue
-        # Connected to the database being cleared, so `current_database()` names it; `pg_terminate_backend`
-        # cannot run from here against another database's backends, which is why this is a loop and not
-        # one sweep. Our own backend is excluded or we would terminate the connection issuing the query.
-        _psql(
-            throwaway_postgres,
-            "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
-            database=database,
-        )
-        # The drop runs from `postgres`: you cannot drop the database you are connected to, and the
-        # terminate above has already exited its own psql by now.
-        _psql(throwaway_postgres, f'drop database if exists "{database}"')
+    _reset_postgres(throwaway_postgres)
+
+
+_POSTGRES_RESET = """
+for database in $(psql -U phaze -d postgres -tAc "select datname from pg_database where datname like 'phaze%'"); do
+  psql -U phaze -d "$database" -tAc \
+    "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()" >/dev/null
+  dropdb -U phaze --if-exists "$database"
+done
+"""
+
+
+def _reset_postgres(container: str) -> None:
+    """Clear test databases through one Docker boundary and real per-database psql processes."""
+    result = _docker("exec", container, "sh", "-ceu", _POSTGRES_RESET)
+    assert result.returncode == 0, result.stderr
 
 
 def _psql(container: str, sql: str, *, database: str = "postgres") -> str:
@@ -231,26 +231,50 @@ def _attach_backend(container: str, database: str) -> None:
     pytest.skip(f"could not attach a Postgres backend to {database}")
 
 
+@pytest.fixture(scope="module")
+def prepared_registry(throwaway_redis: str) -> Iterator[tuple[str, dict[str, bool]]]:
+    """Establish the first clean state; per-test teardown maintains it thereafter."""
+    _reset(throwaway_redis)
+    yield throwaway_redis, {"clean": True}
+
+
 @pytest.fixture
-def registry(throwaway_redis: str) -> Iterator[str]:
+def registry(prepared_registry: tuple[str, dict[str, bool]]) -> Iterator[str]:
     """Hand each test an empty registry AND no parked clients; the container is reused for speed.
 
     Disconnecting matters as much as flushing: the L1 liveness signal is a connected client, so a
     ``BLPOP`` left parked by an earlier test would keep a later test's seat looking live and the
     sweep would correctly refuse to touch it — a false red that says nothing about the code.
     """
-    _reset(throwaway_redis)
-    yield throwaway_redis
-    _reset(throwaway_redis)
+    container, state = prepared_registry
+    assert state["clean"], "the previous registry cleanup failed; refusing to share dirty state"
+    state["clean"] = False
+    try:
+        yield container
+    finally:
+        _reset(container)
+        state["clean"] = True
+
+
+_REDIS_RESET = """
+redis-cli CLIENT KILL TYPE normal >/dev/null
+attempt=0
+while redis-cli CLIENT LIST | grep -q 'cmd=blpop'; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 40 ]; then
+    echo 'parked Redis client did not disconnect' >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+redis-cli FLUSHALL >/dev/null
+"""
 
 
 def _reset(container: str) -> None:
-    _redis(container, "CLIENT", "KILL", "TYPE", "normal")  # SKIPME defaults to yes, so this connection survives
-    for _ in range(40):
-        if "cmd=blpop" not in _redis(container, "CLIENT", "LIST"):
-            break
-        time.sleep(0.1)
-    _redis(container, "FLUSHALL")
+    """Disconnect clients and flush Redis through one fail-closed Docker boundary."""
+    result = _docker("exec", container, "sh", "-ceu", _REDIS_RESET)
+    assert result.returncode == 0, result.stderr
 
 
 def _redis(container: str, *args: str) -> str:

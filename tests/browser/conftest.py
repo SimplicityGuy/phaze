@@ -25,16 +25,20 @@ point; CI runs it as a separate job, blocking since 2026-08-21 (phaze-8p1uq).
 Fixture scoping -- why the server fixture is SYNCHRONOUS
 ========================================================
 
-``live_server`` is a plain sync fixture even though everything it does is I/O. Under
-``asyncio_mode = "auto"`` pytest-asyncio gives each test a FUNCTION-scoped event loop, so a
-session-scoped *async* fixture is created on the first test's loop and then awaited from a loop that
-no longer exists on every subsequent test. The observed symptom is not an error but a HANG, which
-cost this harness two full runs before the cause was found. Keeping the session-scoped work sync
-sidesteps the loop-scope problem entirely rather than papering over it with ``loop_scope`` markers
-that then have to be repeated on every test.
+``live_server`` is a plain sync fixture even though everything it does is I/O: it owns a subprocess,
+not an event-loop-bound client, and synchronous teardown remains the smallest reliable lifecycle.
+Playwright is different. Its driver and Chromium connection are asynchronous and bound to the loop
+that creates them, so ``chromium_browser`` declares both ``scope="session"`` and
+``loop_scope="session"``. The collection hook applies the same loop scope to every async browser
+test, and the function-scoped async fixtures declare it too. Without that alignment, a shared
+browser created on the first test's function loop is awaited from a loop that no longer exists on
+the next test; the observed symptom in this harness was a hang rather than a useful error.
 
-Playwright is launched per test for the same reason. It costs roughly a second per test and buys
-complete isolation: no shared browser state, no cross-test storage leakage, no loop reuse.
+Playwright and Chromium are session-scoped on one explicitly session-scoped event loop. Every
+browser test runs on that same loop; every call into the page fixtures still creates a fresh
+``BrowserContext``, which is Playwright's hermetic boundary for cookies, storage, routes, listeners
+and pages. Closing each context after its owning test retains that isolation without paying for a
+new operating-system browser process roughly 189 times per run.
 
 Database isolation
 ==================
@@ -119,6 +123,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import inspect
 import json
 import os
 from pathlib import Path
@@ -377,78 +382,109 @@ async def _pin_theme(context: Any, theme: str | None) -> None:
         await context.add_init_script(f"try {{ localStorage.setItem('phaze-theme', {json.dumps(theme)}); }} catch (e) {{}}")
 
 
-@contextlib.asynccontextmanager
-async def _browser_pages(live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
-    """Yield a factory that opens pages on ONE browser, closing every context on exit.
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def chromium_browser() -> AsyncGenerator[Any]:
+    """One Playwright driver and Chromium process for the browser-test session.
 
-    One Chromium per test, N contexts within it -- the launch is the expensive part (~1s) and the
-    context is what actually carries the isolation, so a test comparing two viewports or two themes
-    pays for one browser rather than two.
+    Playwright objects are bound to the event loop that owns their transport. The browser tests
+    and every async browser fixture therefore use the same explicit session loop; the collection
+    hook below applies that loop scope to each browser node.
+
+    Only the process is shared. :func:`_browser_pages` creates the contexts that carry observable
+    browser state, starts their traces, and closes them at the end of every owning test or
+    ``page_at`` block.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            yield browser
+        finally:
+            if browser.is_connected():
+                await browser.close()
+
+
+@contextlib.asynccontextmanager
+async def _browser_pages(chromium_browser: Any, live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
+    """Yield a factory that opens fresh contexts on the shared browser and closes them on exit.
+
+    The context is the isolation boundary: a test comparing viewports or themes can open several,
+    but no context survives the fixture or ``page_at`` block that owns it. Context teardown also
+    removes page routes and listeners along with cookies, local/session storage and open pages.
 
     Every context this factory opens carries a Playwright trace from the moment it is created. On
     exit, a context's trace is exported to ``test-results/traces/`` if the test that owns it failed,
     and discarded otherwise -- see the module docstring, "CI diagnosability", for why the failure
     check needs both an exception-based path and a stashed-report-based path.
     """
-    from playwright.async_api import async_playwright
-
-    # `_browser_pages` can be entered more than once per test (`page_at` opens a fresh browser per
+    # `_browser_pages` can be entered more than once per test (`page_at` opens fresh contexts per
     # call); this disambiguates their trace filenames.
     call_index = request.node.stash.get(_CALL_COUNTER_KEY, 0)
     request.node.stash[_CALL_COUNTER_KEY] = call_index + 1
 
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
-        contexts: list[Any] = []
-        raised = False
-        try:
+    contexts: list[Any] = []
+    raised = False
+    try:
 
-            async def _open(viewport: str | dict[str, Any] = "desktop", *, theme: str | None = None, **context_kwargs: Any) -> Any:
-                kwargs = _viewport_context_kwargs(viewport, theme) | context_kwargs
-                context = await browser.new_context(base_url=live_server, **kwargs)
-                contexts.append(context)
-                await context.tracing.start(screenshots=True, snapshots=True, sources=True)
-                await _pin_theme(context, theme)
-                return await context.new_page()
+        async def _open(viewport: str | dict[str, Any] = "desktop", *, theme: str | None = None, **context_kwargs: Any) -> Any:
+            if not chromium_browser.is_connected():
+                pytest.fail("the session-scoped Chromium process exited unexpectedly before a fresh context could be created", pytrace=False)
+            kwargs = _viewport_context_kwargs(viewport, theme) | context_kwargs
+            try:
+                context = await chromium_browser.new_context(base_url=live_server, **kwargs)
+            except Exception:
+                if not chromium_browser.is_connected():
+                    pytest.fail("the session-scoped Chromium process exited unexpectedly while a fresh context was being created", pytrace=False)
+                raise
+            contexts.append(context)
+            await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            await _pin_theme(context, theme)
+            return await context.new_page()
 
-            yield _open
-        except _NON_FAILURE_OUTCOMES:
-            # `pytest.skip()` / `pytest.xfail()` called from inside a `page_at` block: not a
-            # failure, so fall through without setting `raised` -- see `_NON_FAILURE_OUTCOMES`.
-            raise
-        except BaseException:
-            # `page_at`/`open_page_cm` wrap the test body directly, so a test failure propagates
-            # into this generator via `athrow` -- catch it here rather than relying solely on the
-            # stashed report, which is not populated yet at this point for that call shape.
-            raised = True
-            raise
-        finally:
-            failed = raised or _test_failed(request)
-            if failed and contexts:
-                _TRACE_DIR.mkdir(parents=True, exist_ok=True)
-            for context_index, context in enumerate(contexts):
-                with contextlib.suppress(Exception):
-                    if failed:
-                        trace_path = _trace_path(request, call_index=call_index, context_index=context_index)
-                        await context.tracing.stop(path=str(trace_path))
-                    else:
-                        await context.tracing.stop()
-                with contextlib.suppress(Exception):
-                    await context.close()
-            await browser.close()
+        yield _open
+    except _NON_FAILURE_OUTCOMES:
+        # `pytest.skip()` / `pytest.xfail()` called from inside a `page_at` block: not a
+        # failure, so fall through without setting `raised` -- see `_NON_FAILURE_OUTCOMES`.
+        raise
+    except BaseException:
+        # `page_at`/`open_page_cm` wrap the test body directly, so a test failure propagates
+        # into this generator via `athrow` -- catch it here rather than relying solely on the
+        # stashed report, which is not populated yet at this point for that call shape.
+        raised = True
+        raise
+    finally:
+        failed = raised or _test_failed(request)
+        if failed and contexts:
+            _TRACE_DIR.mkdir(parents=True, exist_ok=True)
+        for context_index, context in enumerate(contexts):
+            with contextlib.suppress(Exception):
+                if failed:
+                    trace_path = _trace_path(request, call_index=call_index, context_index=context_index)
+                    await context.tracing.stop(path=str(trace_path))
+                else:
+                    await context.tracing.stop()
+            with contextlib.suppress(Exception):
+                await context.close()
 
 
 @contextlib.asynccontextmanager
 async def open_page_cm(
-    live_server: str, request: pytest.FixtureRequest, *, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any
+    chromium_browser: Any,
+    live_server: str,
+    request: pytest.FixtureRequest,
+    *,
+    viewport: str = "desktop",
+    theme: str | None = None,
+    **context_kwargs: Any,
 ) -> AsyncGenerator[Any]:
     """A single page at a named viewport, optionally pinned to a theme before the first paint."""
-    async with _browser_pages(live_server, request) as factory:
+    async with _browser_pages(chromium_browser, live_server, request) as factory:
         yield await factory(viewport, theme=theme, **context_kwargs)
 
 
 @pytest_asyncio.fixture
-def page_at(live_server: str, request: pytest.FixtureRequest) -> Any:
+def page_at(chromium_browser: Any, live_server: str, request: pytest.FixtureRequest) -> Any:
     """Factory fixture: ``async with page_at(viewport=..., theme=...) as page``.
 
     A factory rather than a matrix of named fixtures because the caller decides how many pages one
@@ -457,35 +493,35 @@ def page_at(live_server: str, request: pytest.FixtureRequest) -> Any:
     """
 
     def _factory(*, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> Any:
-        return open_page_cm(live_server, request, viewport=viewport, theme=theme, **context_kwargs)
+        return open_page_cm(chromium_browser, live_server, request, viewport=viewport, theme=theme, **context_kwargs)
 
     return _factory
 
 
-@pytest_asyncio.fixture
-async def open_page(live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
+@pytest_asyncio.fixture(loop_scope="session")
+async def open_page(chromium_browser: Any, live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
     """Factory fixture: ``await open_page("tablet", theme="dark")`` -> a Playwright page.
 
     The general form the named fixtures below are built from. Use it directly when a test needs a
     width or theme that has no dedicated fixture, or needs two pages at once.
     """
-    async with _browser_pages(live_server, request) as factory:
+    async with _browser_pages(chromium_browser, live_server, request) as factory:
         yield factory
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def page(open_page: Any) -> Any:
     """A desktop-width page."""
     return await open_page("desktop")
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def tablet_page(open_page: Any) -> Any:
     """A tablet-width page (between ``md`` and ``lg``) with touch enabled."""
     return await open_page("tablet")
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def phone_page(open_page: Any) -> Any:
     """A phone-width page with touch enabled.
 
@@ -541,7 +577,7 @@ async def _reset_dispatch_keys(url: str) -> None:
         await client.aclose()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def seed(live_server: str, redis_url: str) -> AsyncGenerator[Any]:
     """A :class:`tests.browser.seed.Seeder` on the live app's database, on an empty corpus.
 
@@ -569,7 +605,7 @@ def redis_url() -> str:
 
 
 def pytest_collection_modifyitems(items: list[Any]) -> None:
-    """Mark everything under tests/browser, so a new file here cannot forget the marker.
+    """Mark browser tests and bind their Playwright work to the session event loop.
 
     Scoped by path deliberately. pytest calls this hook with the WHOLE session's item list even
     though it is defined in a subdirectory conftest, so marking unconditionally tags every test in
@@ -580,6 +616,10 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
     for item in items:
         if _BROWSER_DIR in Path(str(item.fspath)).resolve().parents:
             item.add_marker(pytest.mark.browser)
+            if isinstance(item, pytest.Function) and inspect.iscoroutinefunction(item.obj):
+                # pytest-asyncio's auto mode already appended an unscoped marker while creating
+                # the item. Prepend this one so its explicit session scope wins.
+                item.add_marker(pytest.mark.asyncio(loop_scope="session"), append=False)
 
 
 # --- Stray scratch-test guard (phaze-o7e3e) -------------------------------------------------------

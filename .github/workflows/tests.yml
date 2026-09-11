@@ -92,31 +92,18 @@ jobs:
         id: buckets
         run: echo "buckets=$(jq -c . tests/ci_shards.json)" >> "${GITHUB_OUTPUT}"
 
-  # phaze-crq9k (2026-08-11): measured per-bucket wall time on PR #417 before this split:
-  #   analyze 551s <- critical path, shared 301s, review 159s, agents 142s, identify 127s,
-  #   integration 112s, discovery 92s, metadata 61s (total ~1,545s across 8 jobs; flat mean
-  #   ~193s, so analyze ran ~2.9x and shared ~1.6x the mean).
-  #
-  # analyze and shared were each split into multiple tests/ci_shards.json entries, chosen
-  # from local `pytest --durations=0` timings on this snapshot and scaled to the CI numbers
-  # above (~3.05-3.1x the local machine):
-  #   - analyze-core   ~151s  tests/analyze --ignore=tests/analyze/services (core, models,
-  #                            routers, tasks dirs + the 3 tests/analyze/*.py root files)
-  #   - analyze-svc-pipeline ~200s  tests/analyze/services/pipeline/ (the analysis-exec test
-  #                            files: test_analysis*.py minus test_analysis_model_major.py)
-  #   - analyze-svc-backends ~200s  tests/analyze/services/backends/ (compute-backend /
-  #                            cloud-staging / queue-introspection test files) -- services/
-  #                            alone was ~68% of analyze's wall time, so it was physically
-  #                            split into these two subdirectories rather than left whole
-  #   - shared-core    ~144s  tests/shared/core (its largest single directory)
-  #   - shared-rest    ~157s  tests/shared --ignore=tests/shared/core (every other
-  #                            tests/shared/* subdirectory PLUS the tests/shared/*.py
-  #                            root-level files -- `--ignore` rather than an enumerated
-  #                            subdirectory list so a new subdirectory or root file added
-  #                            later is never silently dropped from CI)
-  # New matrix mean ~140s; every shard stays within ~1.5x of it. Re-measure and re-split
-  # when a shard's wall time drifts back above that -- this imbalance recurs as the suite
-  # grows.
+  # phaze-b907a.7 (2026-09-10): a serial local timing pass over the previous 11-way
+  # partition measured 893.23s total and an 81.20s mean, while shared-rest took 467.33s
+  # (5.75x mean). The seven lanes in tests/ci_shards.json were then measured serially on
+  # the same isolated Postgres + Redis seat: ingest-pipeline 124.26s, analyze-rest 103.42s,
+  # review-agents 121.65s, integration-shared-services 166.83s, shared-registry 172.03s,
+  # shared-root 72.18s, and shared-telemetry 160.91s. The 131.61s mean makes the slowest
+  # lane 1.31x mean, and lowers the expected test critical path by 63.2%. Keep every lane
+  # at or below 1.5x the measured mean; test_setup_job_reads_the_canonical_ci_shards_json
+  # also proves that the shard paths form an exact, non-overlapping partition of every
+  # non-browser test file.
+  # The operator accepted the measured 20.96% serial full-suite improvement
+  # (26:40 baseline to 21:04.57) for phaze-b907a.7 on 2026-09-10.
   test:
     name: Tests (${{ matrix.bucket.name }})
     needs: [setup]
