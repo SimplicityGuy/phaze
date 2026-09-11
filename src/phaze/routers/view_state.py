@@ -104,6 +104,35 @@ operator never chose.
 DEFAULT_PAGE_SIZE: Final[int] = PAGE_SIZE_CHOICES[0]
 """The page size a view starts at -- the smallest choice, so the default render is the cheapest."""
 
+_SORT_DIRECTIONS: Final[frozenset[str]] = frozenset({"asc", "desc"})
+
+
+def _parse_bounded_int(raw: str | None, *, default: int, minimum: int, maximum: int) -> int:
+    """Parse an integer into a closed range, returning ``default`` for unusable input."""
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return min(max(minimum, value), maximum)
+
+
+def _parse_page_size(raw: str | None, *, default: int) -> int:
+    """Return an allowed page size, or ``default`` for absent and unusable input."""
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value in PAGE_SIZE_CHOICES else default
+
+
+def _parse_sort_direction(raw: str | None, *, default: str) -> str:
+    """Return one of the two supported directions, or the view's default."""
+    return raw if raw in _SORT_DIRECTIONS else default
+
 
 @dataclass(frozen=True, slots=True)
 class ListViewState:
@@ -156,34 +185,13 @@ class ListViewState:
         base = cls(**defaults)
         params = request.query_params
 
-        page = base.page
-        raw_page = params.get("page")
-        if raw_page is not None:
-            try:
-                page = min(max(1, int(raw_page)), MAX_PAGE)
-            except ValueError:
-                page = base.page
-
-        page_size = base.page_size
-        raw_size = params.get("page_size")
-        if raw_size is not None:
-            try:
-                candidate = int(raw_size)
-            except ValueError:
-                candidate = base.page_size
-            page_size = candidate if candidate in PAGE_SIZE_CHOICES else base.page_size
-
-        order = params.get("order", base.order)
-        if order not in {"asc", "desc"}:
-            order = base.order
-
         return cls(
             status=params.get("status") or base.status,
             q=params.get("q") or base.q,
-            page=page,
-            page_size=page_size,
+            page=_parse_bounded_int(params.get("page"), default=base.page, minimum=1, maximum=MAX_PAGE),
+            page_size=_parse_page_size(params.get("page_size"), default=base.page_size),
             sort=params.get("sort") or base.sort,
-            order=order,
+            order=_parse_sort_direction(params.get("order"), default=base.order),
         )
 
     def with_(self, **overrides: Any) -> ListViewState:
