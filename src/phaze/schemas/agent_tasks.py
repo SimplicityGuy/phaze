@@ -1,80 +1,14 @@
-"""Typed SAQ-job payload models for file-bound tasks (Phase 26 D-22..D-24).
+"""Typed SAQ payloads carrying the minimum data a file-bound agent needs.
 
-Every payload carries the MINIMUM data the agent needs to execute the job
-without reading state back from the controller (D-23). `models_path` appears
-only in ProcessFilePayload (essentia needs the .pb files); metadata/scan tasks
-don't need it because their adapters point at local sidecars.
+Analysis, metadata, and scan jobs use ``original_path`` under a load-bearing pipeline invariant:
+execution cannot precede completed enrichment, and metadata completion requires a row whose
+``failed_at`` is NULL. Already-moved operations instead use role-named fields:
+``WriteFileTagsPayload.file_path``, ``WriteCueSheetPayload.audio_path``, and
+``ExecuteBatchProposalItem.source_path``. This does not eliminate enqueue-versus-execute or ledger
+replay races.
 
-NO `current_path` per D-24 -- analysis / metadata / scan tasks work off
-`original_path`, which was stamped at scan time and never changes.
-
-THREE payloads take an explicit, narrow exception to that, because each addresses a
-file that has ALREADY been moved, so `original_path` names nothing on disk:
-`WriteFileTagsPayload.file_path`, `WriteCueSheetPayload.audio_path`, and
-`ExecuteBatchProposalItem.source_path`. All three are ROLE names -- they say what the
-path is FOR, not which column filled it -- and that is exactly what keeps them true
-whichever column dispatch selects. `ExecuteBatchProposalItem.source_path` was named
-`original_path` until phaze-xzjrr: phaze-shzdj made it carry `current_path` and the old
-name then actively asserted the wrong thing, so the wire field was renamed while the
-at-risk population was still zero (see its own docstring for the measurement and the
-skew analysis). Each exception is documented where it is declared. `current_path` is
-otherwise the post-execution path, sent back via patch_proposal_state.
-
-WHAT D-24 RESTS ON, AND THE ASYMMETRY THAT ONCE BROKE IT (phaze-rhs6m, 2026-08-24).
-D-24 is sound only while the three enrich producers can never be handed a file that
-has already moved -- `original_path` is a valid on-disk location precisely until
-execution flips it. That precondition is NOT enforced in the producers; it is a
-PROPERTY OF THE PIPELINE ORDER, held up by the propose convergence gate
-(`services/pipeline/proposals.py::_proposal_pending_clauses`), because nothing can be
-executed that was not first proposed. The analyze and cloud-push seams hold it
-structurally: an executed file has `analysis_completed_at` set, migration 033's
-`analysis_completed_at XOR failed_at` CHECK makes done and failed mutually exclusive,
-and every analyze/push trigger selects on one or the other -- and the one producer
-that bypasses the `~done` gate, `services/reanalysis_backfill.py`, excludes applied
-files by hand (`~applied_clause()`).
-
-The METADATA seam did NOT hold, because the gate was ASYMMETRIC: analysis was gated on
-a completion discriminator (Phase 57.1) while metadata was gated on BARE ROW EXISTENCE.
-A metadata FAILURE is stored as a `metadata` row with `failed_at` set and payload NULL,
-so a file whose metadata never landed cleared the gate, could be proposed / approved /
-EXECUTED, and then -- since `done(metadata)` stays False until real metadata lands --
-sat in the metadata pending set PERMANENTLY, where all four `ExtractMetadataPayload`
-producers re-drive it at the `original_path` it had just been moved away from.
-
-RESOLUTION -- the rule is UNCHANGED and the exception list does NOT grow. Operator
-decision 2026-08-24 (phaze-rhs6m); question put as a choice among four mechanisms,
-answer as given, verbatim and in full: "Close the gate asymmetry: require metadata
-failed_at IS NULL". Durable record: the operator-decision comment on phaze-rhs6m. The
-metadata conjunct now composes `done_clause(Stage.METADATA)`, so an executed file can
-no longer BE metadata-pending and the producers keep shipping `original_path` under a
-precondition that now actually holds. Shipping `current_path` from the three enrich
-producers was considered and REFUSED -- it would have changed the read path for every
-analysis and metadata job in the archive to fix one producer of three.
-
-WHAT THIS DOES NOT COVER. The gate closes the state; it does not close a job that was
-already enqueued against a still-eligible file and runs after the move (enqueue-then-
-execute TOCTOU), nor `recover_orphaned_work` replaying a stored ledger payload whose
-`original_path` was minted before the move. Both are INFERENCE FROM CODE, NOT MEASURED,
-and are tracked separately as phaze-3542b, which carries that qualification verbatim. Do not
-read this section as a claim that either is handled.
-
-All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
-job payloads are validated as strictly as HTTP request bodies.
-
-Every model here inherits `WirePayload` (`schemas/wire_payload.py`), NOT `BaseModel`
-(phaze-ot3os): `model_dump()` on these is always JSON-mode, so a producer writing
-`**payload.model_dump()` is correct whether or not its author remembered `mode="json"`.
-Read that module's docstring before adding a payload -- and note what it does NOT
-cover. The per-class `model_config = ConfigDict(extra="forbid")` lines are now
-redundant with the base and are KEPT deliberately: D-16 is a property each of these
-models asserts about itself, and it should stay readable at the class rather than one
-inheritance hop away.
-
-Revision iteration 2 note (2026-05-12): ExecuteApprovedBatchPayload expanded
-from `proposal_ids: list[UUID]` to a full `proposals: list[ExecuteBatchProposalItem]`
-per checker B2 (user chose Option A: implement execute_approved_batch fully).
-Each item carries the per-proposal data the agent needs to perform a local
-file copy + verify + delete without DB access.
+Every model inherits :class:`WirePayload`, making ``model_dump()`` JSON-native for the broker, and
+declares ``extra="forbid"`` locally so strict agent-supplied validation remains visible at each schema.
 """
 
 from typing import Any, ClassVar
@@ -95,7 +29,7 @@ class ProcessFilePayload(WirePayload):
     file_type: str
     agent_id: str
     models_path: str  # essentia .pb files; only ProcessFile needs this
-    # Phase 50 D-11: cloud push pipeline integrity + scratch read-path. The control plane pins
+    # D-11: cloud push pipeline integrity + scratch read-path. The control plane pins
     # expected_sha256 from FileRecord.sha256_hash so the compute agent can verify the rsync'd
     # copy before analysis. `scratch_path is not None` is ITSELF the compute-read/ephemeral
     # signal (no separate boolean flag): when set, the worker reads/cleans up this ephemeral
@@ -104,14 +38,14 @@ class ProcessFilePayload(WirePayload):
     expected_sha256: str | None = None
     scratch_path: str | None = None
 
-    # ---- LEGACY-KEY SHIM (phaze-w55w1) — REMOVABLE, see the removal condition below ----
+    # Compatibility shim; remove only after all stored pre-window-cap-removal payloads have drained.
     @model_validator(mode="before")
     @classmethod
     def _drop_removed_window_cap_keys(cls, data: Any) -> Any:
-        """Accept-and-discard the Phase 44 ``fine_cap`` / ``coarse_cap`` keys.
+        """Accept-and-discard the  ``fine_cap`` / ``coarse_cap`` keys.
 
         These were the per-job "deepen" lever — a sentinel 0 disabling the window cap for one
-        file. phaze-w55w1 removed the caps (ADR-0007 §7), so the keys mean nothing and the
+        file. ``docs/design/0007-windowed-analysis.md`` removes the caps, so the keys mean nothing and the
         fields are gone.
 
         **Why tolerate them instead of letting ``extra="forbid"`` reject them.** Every
@@ -140,7 +74,7 @@ class ProcessFilePayload(WirePayload):
 class PushFilePayload(WirePayload):
     """SAQ job: rsync-over-SSH push of a single media file to the compute scratch dir.
 
-    Phase 50: enqueued by the bounded cloud-window cron and run on the fileserver agent
+    enqueued by the bounded cloud-window cron and run on the fileserver agent
     (which owns the media mount). The deterministic-key builder reads `k["file_id"]`, so
     file_id must be present. `original_path` is the media-mount source the fileserver reads.
     """
@@ -152,17 +86,16 @@ class PushFilePayload(WirePayload):
     file_type: str
     agent_id: str
 
-    # Phase 73 (D-01/D-02): the per-file rsync-push DESTINATION. dispatch (services/backends.py) stamps
+    # D-01/D-02: the per-file rsync-push DESTINATION. dispatch (services/backends.py) stamps
     # these off the resolved ComputeBackend (record-don't-rederive) so the fileserver reads the RECORDED
-    # target (Plan 02 rsync argv) rather than re-deriving it. Optional at the type level in this plan:
-    # the dispatch producer supplies them (Task 3) but the /mismatch re-drive producer is wired in Plan
-    # 03, so a four-field construction must still validate until then. They are NON-SECRET only (D-03):
+    # target rather than re-deriving it. Optional at the type level because legacy four-field payloads
+    # still validate. They are NON-SECRET only:
     # host/scratch/user, never key material -- SSH keys/known_hosts stay agent-side.
     dest_host: str | None = None
     dest_scratch_dir: str | None = None
     dest_ssh_user: str | None = None
 
-    # Phase 50 #sec argv-injection defense-in-depth: push_file hands original_path + file_type to
+    #  #sec argv-injection defense-in-depth: push_file hands original_path + file_type to
     # rsync as operands. A `--` terminator in the argv already blocks flag-smuggling, but reject
     # the dangerous shapes at the schema layer too (validated as strictly as an HTTP body).
     @field_validator("original_path")
@@ -226,7 +159,7 @@ class ExtractMetadataPayload(WirePayload):
 
 
 class ScanDirectoryPayload(WirePayload):
-    """SAQ job: walk a directory on the agent and stream FileRecord chunks back via HTTP (Phase 27 D-14).
+    """SAQ job: walk a directory on the agent and stream FileRecord chunks back via HTTP (D-14).
 
     Carries the per-job snapshot the agent needs to walk `scan_path`, post
     chunks of FileUpsertRecord to `POST /api/internal/agent/files` (binding
@@ -328,7 +261,7 @@ class WriteFileTagsPayload(WirePayload):
 
     ``log_id`` is the pre-minted ``TagWriteLog.id`` the control plane created in the ``queued``
     state. It makes the agent's result callback retry-stable: a SAQ retry PATCHes the SAME audit
-    row instead of appending a duplicate (the ``execution_log_id`` discipline from Phase 28 D-15).
+    row instead of appending a duplicate (the ``execution_log_id`` discipline from D-15).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -401,4 +334,4 @@ class ExecuteApprovedBatchPayload(WirePayload):
     batch_id: uuid.UUID
     agent_id: str
     proposals: list[ExecuteBatchProposalItem] = Field(min_length=1, max_length=500)
-    sub_batch_index: int = 0  # Phase 28 D-10 -- 0-based; default preserves legacy callers
+    sub_batch_index: int = 0  # D-10 -- 0-based; default preserves legacy callers

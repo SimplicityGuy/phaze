@@ -1,20 +1,19 @@
-"""Pipeline stage / status enums + DB-free per-row status resolver + eligibility DAG (Phase 78, D-04).
+"""Pipeline-stage enums, DB-free status resolution, and eligibility rules.
 
 Lives outside :mod:`phaze.models` (like :mod:`phaze.enums.execution`) so the Postgres-free
 compute / file-server agent worker can import it WITHOUT transitively pulling in SQLAlchemy /
-:mod:`phaze.database`. See Phase 26 D-03 (agent import boundary) and Phase 78 D-04 (the two-module
-split: this DB-free half is the CONTRACT the Wave-2 SQL twin ``services/stage_status.py`` is locked
-against by the DERIV-04 equivalence test).
+:mod:`phaze.database`. This DB-free contract is locked to the SQL twin in
+``services/stage_status.py`` by an equivalence test.
 
-Hard constraint (T-78-01, enforced by ``tests/shared/test_stage_resolver.py``): this module imports
+Hard constraint, enforced by ``tests/shared/test_stage_resolver.py``: this module imports
 ONLY the stdlib — NO ``phaze.models`` / ``phaze.database`` / ``sqlalchemy``. ``resolve_status`` and
 ``eligible`` are pure functions over plain scalars owned by the caller.
 
-Per-stage semantics (locked in 78-CONTEXT.md):
-- DERIV-02: precedence ladder ``in_flight ≻ done ≻ failed ≻ not_started`` (the SAQ ledger wins).
-- DERIV-03: ``done(analyze)`` requires ``analysis_completed_at IS NOT NULL`` — a partial in-flight
+Per-stage semantics:
+- Precedence is ``in_flight ≻ done ≻ failed ≻ not_started``; the SAQ ledger wins.
+- ``done(analyze)`` requires ``analysis_completed_at IS NOT NULL`` — a partial in-flight
   row upserted at analysis START has ``completed_at`` NULL and is NOT done.
-- D-03: ``done(metadata)`` requires a row present AND ``failed_at IS NULL`` — a failure-only row
+- ``done(metadata)`` requires a row present AND ``failed_at IS NULL`` — a failure-only row
   derives FAILED, not DONE.
 """
 
@@ -58,7 +57,7 @@ class Status(enum.StrEnum):
 
 # ELIG-01/02: upstream conjuncts per stage. Enrich stages (metadata/analyze) have NO upstream — a
 # discovered file is simultaneously eligible for both in any order.
-#
+
 # phaze-0jpe: TRACKLIST is upstream-INDEPENDENT. It used to read ``(Stage.FINGERPRINT,)`` — a file
 # became tracklist-eligible only once an audio fingerprint match landed. With fingerprinting removed,
 # the empty tuple is not a dangling upstream papered over; it is the correct end state. Tracklists are
@@ -75,16 +74,16 @@ ELIGIBILITY_DAG: dict[Stage, tuple[Stage, ...]] = {
 
 
 # D-15: two ORTHOGONAL axes for the two enrich stages — conflating them is a live trap.
-#
+
 # FAILURE_IS_TERMINAL answers "does a FAILED stage count as domain-complete, so recovery must NOT
 # re-run it?" (used by ``domain_completed`` + the ``domain_completed_clause`` SQL twin). A terminal
 # failure is the durable "we tried and it is un-processable" fact the 44.5K over-enqueue guard rests
 # on — analyze + metadata failures are both terminal (retry is operator-driven).
-#
+
 # ELIGIBLE_AFTER_FAILURE answers "is a FAILED stage still eligible to auto-retry?" (consumed by
 # ``eligible``). It is the exact negation of the analyze carve-out formerly inlined in ``eligible`` —
 # ANALYZE is False (ELIG-03 terminal, manual retry only), METADATA is True (ELIG-04).
-#
+
 # The two tables stay separate even though only METADATA now differs between them: they answer
 # different questions, and collapsing them would make the recovery guard and the retry rule a
 # coincidence two readers (the pure ``eligible`` path and the ``domain_completed`` recovery path)
@@ -93,9 +92,7 @@ FAILURE_IS_TERMINAL: dict[Stage, bool] = {Stage.ANALYZE: True, Stage.METADATA: T
 ELIGIBLE_AFTER_FAILURE: dict[Stage, bool] = {Stage.ANALYZE: False, Stage.METADATA: True}
 
 
-# --------------------------------------------------------------------------------------------------
-# Per-stage resolver twins — each applies the DERIV-02 precedence ladder with ``inflight`` first.
-# --------------------------------------------------------------------------------------------------
+# Per-stage resolver twins apply the precedence ladder with ``inflight`` first.
 def _analyze_status(*, completed_at: Any, failed_at: Any, inflight: bool, skipped: bool = False) -> Status:
     """analyze: done iff ``analysis_completed_at IS NOT NULL`` (DERIV-03 — completed_at NULL != done)."""
     if inflight:
@@ -192,7 +189,7 @@ def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
     ``DONE`` and ``SKIPPED`` (D-08 force-skip marker) are always domain-complete; a ``FAILED`` stage is
     domain-complete ONLY when the failure is terminal (:data:`FAILURE_IS_TERMINAL`) — which, for both
     surviving enrich stages (analyze / metadata), it is: retry is operator-driven. This is the DB-free twin of
-    :func:`phaze.services.stage_status.domain_completed_clause`; the two are drift-locked by the Phase 78
+    :func:`phaze.services.stage_status.domain_completed_clause`; the two are drift-locked by the
     equivalence test (``tests/integration/test_stage_status_equivalence.py``). It is the durable "we tried
     and it is un-processable" fact the 44.5K over-enqueue guard rests on (D-17).
 

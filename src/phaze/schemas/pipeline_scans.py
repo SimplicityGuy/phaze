@@ -1,7 +1,7 @@
-"""Form-body schema for POST /pipeline/scans (Phase 27 D-06).
+"""Form-body schema for ``POST /pipeline/scans``.
 
 The operator submits `{agent_id, scan_root, subpath}` from the Pipeline page's
-"Trigger Scan" card. The router (Plan 06) joins root + subpath, NFC-normalizes
+"Trigger Scan" card. The router joins root + subpath, NFC-normalizes
 the result, validates it starts with one of the agent's `scan_roots`, and
 contains no `..` path-traversal component (see `routers/pipeline_scans.py::trigger_scan`).
 
@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class TriggerScanForm(BaseModel):
-    """Operator-submitted trigger-scan form. Validated by router (D-06)."""
+    """Operator-submitted trigger-scan form validated by the router."""
 
     model_config = ConfigDict(extra="forbid")
 

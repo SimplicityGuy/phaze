@@ -1,9 +1,9 @@
-"""Pydantic schemas for the S3 object-staging upload leg (Phase 53, KSTAGE-02).
+"""Pydantic schemas for the S3 object-staging upload leg (KSTAGE-02).
 
 The file-server agent uploads file bytes by PUTting multipart parts to presigned
 URLs (the control plane initiates the multipart upload, presigns the part URLs,
 and completes it -- the agent holds NO S3 SDK or bucket credentials, D-01). Two
-control-plane callbacks bracket the byte transfer, mirroring the Phase 50 push
+control-plane callbacks bracket the byte transfer, mirroring the  push
 split (``agent_push.py``):
 
 - ``POST /api/internal/agent/s3/{file_id}/uploaded`` -- the agent reports the
@@ -14,9 +14,9 @@ split (``agent_push.py``):
 
 These models are ORM-free and S3-SDK-free (no database, ORM-engine, or object-store
 client imports) so they stay import-safe across the Postgres-free *and* SDK-free
-agent boundary (tests/test_task_split.py). Every REQUEST model declares
+agent boundary (``tests/shared/core/test_task_split.py``). Every REQUEST model declares
 ``extra="forbid"``; RESPONSE models stay loose (``extra="ignore"``) per the
-Phase 25 convention (``schemas/agent_identity.py``) — see ``UploadedResponse``
+ convention (``schemas/agent_identity.py``) — see ``UploadedResponse``
 / ``UploadFailedResponse`` below.
 
 AUTH-01 discipline: ``file_id`` rides the URL path on the callbacks, never the
@@ -45,7 +45,7 @@ from phaze.schemas.wire_payload import WirePayload
 class UploadFileS3Payload(WirePayload):
     """SAQ job: httpx multipart-PUT upload of a single media file to presigned part URLs.
 
-    Phase 53 (KSTAGE-02): enqueued by the control plane (which initiates+presigns
+    KSTAGE-02: enqueued by the control plane (which initiates+presigns
     the multipart upload) and run on the file-server agent (which owns the media
     mount). The deterministic-key builder reads ``file_id``, so it must be present.
     ``original_path`` is the media-mount source the agent reads; ``part_urls`` is
@@ -107,7 +107,7 @@ class UploadedResponse(BaseModel):
     """Echo confirming control completed the multipart upload (file moved forward).
 
     RESPONSE-only model the agent TRUSTS from the control plane -- not an
-    attacker-facing request body -- so it stays loose (Phase 25 convention,
+    attacker-facing request body -- so it stays loose ( convention,
     ``schemas/agent_identity.py``: only REQUEST schemas are strict). Mirrors the
     forward-compat rationale on ``PresignDownloadResponse``
     (``schemas/agent_analysis.py``): an additive field here must not hard-fail
@@ -140,7 +140,7 @@ class UploadFailedResponse(BaseModel):
     when control will re-drive the upload.
 
     RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
-    (Phase 25 convention) for the same forward-compat reason as ``UploadedResponse``.
+    ( convention) for the same forward-compat reason as ``UploadedResponse``.
     """
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)

@@ -16,7 +16,6 @@ convention = {
     # (`ck_cloud_budget_ck_cloud_budget_chains_spent_nonneg`), and past 63 bytes Postgres's identifier
     # limit truncates the result to a hash-suffixed stub. The other four keys carry no
     # %(constraint_name)s token, so they only fire on unnamed constraints and cannot double.
-    #
     # This applies to MIGRATIONS too, not just models: alembic builds the MetaData behind every
     # `op.create_table` / `op.create_check_constraint` with `target_metadata.naming_convention`
     # (alembic/operations/schemaobj.py, and alembic/env.py passes Base.metadata), so a pre-prefixed name

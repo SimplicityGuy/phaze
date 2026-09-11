@@ -1,9 +1,9 @@
-"""PipelineStageControl model - durable per-stage pause/priority operator intent (Phase 37).
+"""PipelineStageControl model - durable per-stage pause/priority operator intent.
 
 A standalone app table (NOT part of SAQ's auto-managed ``saq_jobs``) holding one row per
 agent pipeline stage (``metadata`` / ``analyze``). Each row records whether
-the stage is paused and its dequeue priority. The before-enqueue hook (Plan 37-02) stamps new
-jobs from this table, and the control endpoints (Plan 37-04) mutate it alongside the live
+the stage is paused and its dequeue priority. The before-enqueue hook stamps new
+jobs from this table, and the control endpoints mutate it alongside the live
 ``saq_jobs`` backlog UPDATE.
 
 The ``priority`` value maps DIRECTLY onto SAQ's ``saq_jobs.priority`` (SMALLINT, LOWER dequeues

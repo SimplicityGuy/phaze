@@ -1,4 +1,4 @@
-"""DedupResolution model -- per-file marker that a duplicate resolved to a canonical file (Phase 77, D-07).
+"""DedupResolution model -- per-file marker that a duplicate resolved to a canonical file (D-07).
 
 A new 1:1 sidecar (unique FK to ``files.id``) recording that a duplicate file has been resolved AND
 which file it resolves *to* (``canonical_file_id``) -- enabling a future "duplicate of X" UI, robust
@@ -13,7 +13,7 @@ sidecar shape. ``created_at`` / ``updated_at`` come from :class:`TimestampMixin`
 No extra ``__table_args__`` index: the unique ``file_id`` constraint's implicit index serves the
 marker-EXISTS lookup.
 
-scan_deletion dual-FK behavior (Phase 84, D-08 -- accepted, NOT a bug)
+scan_deletion dual-FK behavior (D-08 -- accepted, NOT a bug)
 ----------------------------------------------------------------------
 ``services/scan_deletion.py`` deletes markers matching EITHER foreign key -- both
 ``file_id IN batch`` AND ``canonical_file_id IN batch`` (the two-column ``FileCompanion`` precedent).
@@ -22,7 +22,7 @@ duplicates -- their markers are removed, so once the readers key on ``NOT EXISTS
 duplicates reappear in the dedup UI for re-review. This is deliberate and safe: the keeper is gone, so
 "keep this one, drop those" no longer holds, and re-review is the correct outcome (a wrongly-*kept*
 marker would instead hide a file forever with no operator path to fix it). ``canonical_file_id`` has
-been populated since ``032``'s backfill, so this already exists today; Phase 84's D-03 -- go-forward
+been populated since ``032``'s backfill, so this already exists today; 's D-03 -- go-forward
 writes populate ``canonical_file_id`` with the operator's actual pick -- merely exposes *every*
 go-forward resolution to it. Documented here so it is not later rediscovered as a bug;
 ``services/scan_deletion.py`` is intentionally left unchanged.
@@ -44,7 +44,7 @@ class DedupResolution(TimestampMixin, Base):
     __tablename__ = "dedup_resolution"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # Unique FK: one resolution marker per file (cloud_job.py:72 precedent) + the ON CONFLICT (file_id)
+    # Unique FK: one resolution marker per file plus the ON CONFLICT (file_id)
     # backfill target.
     file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), unique=True, nullable=False)
     # NULLABLE (RESEARCH Pitfall 4): the canonical pointer is best-effort -- the original human keeper is

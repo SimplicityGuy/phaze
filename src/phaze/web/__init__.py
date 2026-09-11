@@ -1,1 +1,1 @@
-"""Web-mount helpers for the phaze API (Phase 33: SAQ monitoring dashboard)."""
+"""Web-mount helpers for the phaze API (SAQ monitoring dashboard)."""

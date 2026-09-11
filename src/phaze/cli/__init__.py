@@ -13,7 +13,7 @@ sha256 hash is persisted) alongside the derived `phaze-agent-<id>` queue name.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
-exhaustive-analysis decision, ADR-0007 section 7 / phaze-w55w1). It lives HERE, not under
+exhaustive-analysis decision in ``docs/design/0007-windowed-analysis.md``). It lives HERE, not under
 `scripts/` (a bare repo-tree script is never COPYed into the `api` image -- see
 `docs/runbook.md`'s "One-time exhaustive-analysis re-enqueue backfill" section for the full
 deployment ordering and the Dockerfile COPY list this depends on), so `docker compose exec api
@@ -132,10 +132,10 @@ async def add_agent(session: AsyncSession, agent_id: str, name: str, scan_roots:
     sha256 hash (via :func:`hash_token`) is persisted. Callers MUST surface the
     returned cleartext to the operator exactly once -- it cannot be recovered.
 
-    ``kind`` is the agent capability marker (Phase 48): ``"fileserver"`` (the
+    ``kind`` is the agent capability marker: ``"fileserver"`` (the
     default) owns scan roots; ``"compute"`` is a media-less cloud agent with no
     scan roots. The value is constrained at the CLI (argparse ``choices=``) and
-    the DB (``ck_agents_kind_enum`` CHECK from Plan 01).
+    the DB through the ``ck_agents_kind_enum`` CHECK.
 
     Does NOT catch :class:`~sqlalchemy.exc.IntegrityError` (e.g. duplicate id);
     that is left to propagate so the caller can map it to a friendly message.
@@ -164,7 +164,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add = agents_sub.add_parser("add", help="Register an agent and mint a bearer token.")
     add.add_argument("--id", dest="agent_id", required=True, help="Agent id (kebab-case: ^[a-z0-9]+(-[a-z0-9]+)*$).")
     add.add_argument("--name", dest="name", default=None, help="Human-readable name (defaults to the titleized id).")
-    # Outer layer of the 3-layer kind defense (Phase 48): argparse `choices=`
+    # Outer layer of the 3-layer kind defense: argparse `choices=`
     # rejects any value other than fileserver/compute before a session opens.
     # Middle layer is AgentSettings.kind (Literal); inner is ck_agents_kind_enum.
     add.add_argument(
@@ -376,7 +376,7 @@ def _main_agents_add(args: argparse.Namespace) -> int:
 
     # Validate BEFORE any DB access so an invalid id never opens a session.
     # A compute agent owns no media and no scan roots, so the absolute-path
-    # requirement is enforced ONLY for fileserver agents (Phase 48); a fileserver
+    # requirement is enforced ONLY for fileserver agents; a fileserver
     # with no roots still fails (validate_scan_roots rejects the empty list path).
     try:
         validate_agent_id(agent_id)

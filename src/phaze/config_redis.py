@@ -27,7 +27,7 @@ class RedisPasswordSettingsMixin(PydanticBaseSettings):
     """
 
     # Redis
-    # Phase 29 CR-02: bind PHAZE_REDIS_URL via validation_alias so the agent-side
+    # CR-02: bind PHAZE_REDIS_URL via validation_alias so the agent-side
     # `_enforce_redis_password_in_production` validator actually sees operator-supplied
     # credentials. Without the alias the env var is silently ignored and the
     # production agent fails to start with the misleading "requires a password" error.

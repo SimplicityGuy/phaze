@@ -1,16 +1,16 @@
-"""Chunk-of-1 POST adapter for the always-on watcher (Phase 27 D-18, Pitfall 1).
+"""Single-record POST adapter for the always-on watcher.
 
 ``Poster.post_one`` is the asyncio-side terminal step: given a single settled
 path, it computes file size + SHA-256 off-loop (``asyncio.to_thread``), builds
 a one-record :class:`FileUpsertChunk`, and POSTs it via :class:`PhazeAgentClient`.
 
-Critical invariants:
+Invariants:
 
 - **D-18 (LIVE-sentinel resolution):** the chunk omits ``batch_id`` entirely.
   The controller's ``upsert_files`` handler resolves the calling agent's LIVE
   sentinel from the bearer token (see ``phaze.routers.agent_files``). Setting
   ``batch_id`` here would attribute watcher events to a stale scan batch.
-- **Pitfall 1 (vanished path):** rsync's atomic rename and transient unmounts
+- **Vanished path:** rsync's atomic rename and transient unmounts
   can race the debouncer's settle window. If ``stat`` or ``compute_sha256``
   raises :class:`OSError`, the entry is dropped with a WARNING (raised from
   DEBUG -- a DEBUG-level drop is invisible at the watcher's default INFO
@@ -30,7 +30,7 @@ Critical invariants:
 - **T-27-04 (no bearer leakage):** the only client surface exposed here is
   ``self._client.upsert_files(chunk)``. Exception logs go through
   ``logger.exception`` which captures the traceback for the AgentApiError
-  (already redacted to ``METHOD path -> status`` per Phase 26 D-13), never
+  (already redacted to ``METHOD path -> status``), never
   the client or chunk repr.
 """
 
@@ -60,9 +60,7 @@ class Poster:
 
     def __init__(self, client: PhazeAgentClient, agent_id: str) -> None:
         self._client = client
-        # ``agent_id`` is the resolved /whoami identity; kept for diagnostic
-        # log context (the controller binds agent_id from the bearer, never
-        # from request body, per AUTH-01).
+        # The controller binds identity from the bearer; this value is diagnostic context only.
         self._agent_id = agent_id
 
     async def post_one(self, path: str) -> None:
@@ -83,18 +81,16 @@ class Poster:
             file_size = await asyncio.to_thread(lambda: p.stat().st_size)
             sha256 = await asyncio.to_thread(compute_sha256, p)
         except OSError as exc:
-            # Pitfall 1: rsync atomic-rename, transient unmount -- but ALSO a
+            # Atomic rename and transient unmount -- but also a
             # permanently-mismatched handle (e.g. an NFD-named file on a
             # normalization-sensitive filesystem) looks identical from here.
-            # WARNING (raised from DEBUG): a DEBUG-level drop was invisible at
-            # the watcher's default INFO level, silently and permanently
-            # hiding non-transient cases with no operator-visible signal.
+            # Keep this at WARNING so non-transient drops remain operator-visible.
             logger.warning("watcher: path vanished before post; dropping path=%s err=%s", path, exc)
             return
 
         record = FileUpsertRecord(
             sha256_hash=sha256,
-            # Pitfall 3: NFC-normalize every path field independently so a future
+            # NFC-normalize every path field independently so a future
             # refactor that splits original_path from current_path stays correct.
             original_path=unicodedata.normalize("NFC", path),
             original_filename=unicodedata.normalize("NFC", p.name),

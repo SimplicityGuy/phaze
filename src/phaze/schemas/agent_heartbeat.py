@@ -15,7 +15,7 @@ from phaze.schemas.wire_bounds import INT32_MAX
 # bound a value past INT64_MAX survives validation, gets json.dumped into the JSONB, and blows up
 # the `::bigint` cast with NumericValueOutOfRange -- an unhandled 500 with no DB exception handler
 # on the route (phaze-s4r0).
-#
+
 # The cap below is NOT simply INT64_MAX: the SQL sums the field across every lane in
 # `last_status['lanes']`, so capping each lane at INT64_MAX would let the SUM itself overflow int8
 # once more than one lane is populated. There are 4 lanes today (phaze.services.enqueue_router.LANES)

@@ -1,19 +1,11 @@
-"""Phase 67 backend-registry schema (REG-01/02/03/05).
+"""Typed models for the declarative ``backends.toml`` registry.
 
 The declarative ``backends.toml`` surface parses into these typed models. This module is the
-additive, self-contained foundation: it introduces NO removals and touches no existing call site,
-so it lands green independently in Wave 1 and gives downstream plans (02+) a clean import target
-for the discriminated-union submodels.
-
-The registry is a ``list`` of a pydantic v2 discriminated union over ``kind``
+The registry is a ``list`` of a Pydantic discriminated union over ``kind``
 (``local`` / ``compute`` / ``kueue``). Each variant validates its own required fields at
 construction and fails fast with the offending entry ``id`` in the message (REG-02, Pitfall 3),
-replacing the three flat ``_enforce_*_when_*`` validators (``config.py``) with per-variant checks.
-
-``KubeConfig`` and ``BucketConfig`` are per-entry supersets of the former flat ``kube_*`` / ``s3_*``
-blocks (D-13 / D-07) so downstream staging-service reads have a per-entry home. ``BucketConfig``
-carries the per-bucket http(s) SSRF guard on ``endpoint_url`` (REG-05 / Security V5), lifted from
-``config.py``'s ``_validate_s3_endpoint_url``. Inline ``*_file`` secret paths resolve eagerly at
+``KubeConfig`` and ``BucketConfig`` keep staging values scoped per entry. ``BucketConfig``
+validates the per-bucket HTTP(S) SSRF surface. Inline ``*_file`` secret paths resolve eagerly at
 construction via the shared ``_read_secret_file`` helper (D-04/D-06), failing fast on an unreadable
 path.
 """
@@ -37,10 +29,9 @@ _PUSH_DEST_FORBIDDEN: frozenset[str] = frozenset(" \t\n\r;|&$`()<>")
 def _read_secret_file(path: str, *, preserve_whitespace: bool) -> str:
     """Read an inline ``*_file`` secret path eagerly, applying the shared strip-vs-verbatim rule.
 
-    This is the single whitespace rule Plan 02 also adopts in config.py's ``_resolve_secret_files``
-    ("factor, don't fork", D-06): key material (kubeconfig / SSH-style keys) is kept verbatim so its
+    The same rule applies to env-based secret resolution: key material is kept verbatim so its
     required trailing newline survives; tokens/access-keys are ``.strip()``ed so a heredoc/echo
-    trailing newline hashes/parses identically to an operator-typed value (mirrors config.py:143-145).
+    trailing newline hashes or parses identically to an operator-typed value.
     An unreadable path fails fast with a ValueError naming the path (never echoing file contents).
     """
     try:
@@ -96,13 +87,9 @@ class ComputeBackend(BaseModel):
     # (Pitfall 3) instead of pydantic's index-tagged "Field required".
     agent_ref: str | None = None
     scratch_dir: str | None = None  # was ControlSettings.compute_scratch_dir (D-13)
-    # Phase 73 (D-01): the rsync/ssh push destination host. Optional at the type level (like agent_ref /
-    # scratch_dir) so ``_require_dispatch_fields`` raises the id-tagged message rather than pydantic's
-    # index-tagged "Field required". It later lands in the ssh remote spec (Plan 02), so it is required.
-    # Registry-scoped mirror of the agent-side ``push_ssh_host`` (RESEARCH Open-Q3).
+    # Optional here so the model validator can report the offending registry id.
     push_host: str | None = None
-    # Optional ssh login user for the push (D-01: "an optional ssh_user"); NO fail-fast -- an omitting
-    # backend is valid and Plan 02 falls back to the fileserver's configured user.
+    # An omitted login user falls back to the fileserver's configured user.
     ssh_user: str | None = None
 
     @model_validator(mode="after")
@@ -122,22 +109,12 @@ class ComputeBackend(BaseModel):
             raise ValueError(f"backend {self.id!r} (kind=compute) requires a scratch_dir")
         if not self.push_host:
             raise ValueError(f"backend {self.id!r} (kind=compute) requires a push_host")
-        # WR-03 (73-REVIEW): push_host (required) and ssh_user (optional) land verbatim in the ssh
-        # remote spec push.py builds (`{ssh_user}@{push_host}:{scratch_dir}/...`). Reject whitespace /
-        # shell metacharacters here, id-tagged at config-load, instead of letting a malformed
-        # backends.toml surface as a pydantic.ValidationError deep inside the first push_file dispatch
-        # (mirrors PushFilePayload._dest_host_safe / _dest_ssh_user_safe). ssh_user stays optional.
+        # These values land verbatim in an SSH remote spec, so reject separators at config load.
         if any(ch in _PUSH_DEST_FORBIDDEN for ch in self.push_host):
             raise ValueError(f"backend {self.id!r} (kind=compute) push_host must not contain whitespace or shell metacharacters")
         if self.ssh_user and any(ch in _PUSH_DEST_FORBIDDEN for ch in self.ssh_user):
             raise ValueError(f"backend {self.id!r} (kind=compute) ssh_user must not contain whitespace or shell metacharacters")
-        # phaze-xoxvt: scratch_dir lands in the SAME ssh remote spec as push_host/ssh_user (WR-03's
-        # own comment says so) but, before this check, only got the truthiness check above -- so a
-        # scratch_dir with whitespace/shell metachars or a relative path validated here and then blew
-        # up as a pydantic.ValidationError on every dispatch, AFTER the CloudJob SUBMITTED upsert
-        # (services/backends.py), committing a phantom row with no push_file enqueue. Mirror
-        # PushFilePayload._dest_scratch_absolute (schemas/agent_tasks.py) exactly: absolute-path check
-        # plus the same forbidden-charset guard, id-tagged, so the misconfig fails at boot instead.
+        # Match the payload guard before a CloudJob can be persisted without its push enqueue.
         if not PurePosixPath(self.scratch_dir).is_absolute():
             raise ValueError(f"backend {self.id!r} (kind=compute) scratch_dir must be an absolute path")
         if any(ch in _PUSH_DEST_FORBIDDEN for ch in self.scratch_dir):
@@ -152,19 +129,10 @@ class KueueBackend(BaseModel):
     id: str
     rank: int = Field(ge=0, lt=1000)
     cap: int = Field(gt=0, lt=1000)
-    # Optional at the type level so the per-variant validator raises the id-tagged message (Pitfall 3).
-    # The full KubeConfig submodel is defined in Task 2.
+    # Optional here so the model validator can report the offending registry id.
     kube: "KubeConfig | None" = None
     buckets: list[str] = Field(default_factory=list)  # explicit id-list bind (D-08)
-    # NO agent_ref here, unlike ComputeBackend (REG-02). phaze-ifcr added an OPTIONAL one so the
-    # COMPUTE-01 admin-page dedupe could key the bearer-token kind='compute' Agent row of THIS cluster's
-    # one-shot job_runner callbacks; phaze-2u8v.4 made that dedupe structural (suppress kind='compute'
-    # AND status='never', reading no config at all) after the optional binding went unset in the deployed
-    # registry and the filter silently never fired. Nothing reads a kueue agent_ref any more, so the knob
-    # is gone rather than left advertising a behaviour it no longer has. Removal is load-compatible: this
-    # model does not set ``extra='forbid'``, so an already-deployed backends.toml still carrying the key
-    # keeps booting (pydantic ignores it). A kueue cluster dispatches by submitting Jobs, never by
-    # addressing an agent queue, so no dispatch path ever wanted this field.
+    # Kueue submits Jobs rather than addressing an agent queue, so it has no ``agent_ref``.
 
     @model_validator(mode="after")
     def _require_kube(self) -> "KueueBackend":
@@ -184,12 +152,7 @@ BackendConfig = Annotated[
 
 
 class KubeConfig(BaseModel):
-    """Per-entry kube config for a KueueBackend.
-
-    A per-entry superset of the former flat ``kube_*`` block (config.py:534-595) so Plan 04's
-    staging-service rewire has a home for every read (D-13). Credential fields are ``SecretStr`` so
-    accidental interpolation prints ``**********`` and they are never echoed in logs (T-67-01-02).
-    """
+    """Per-entry Kueue config whose credentials redact accidental interpolation."""
 
     api_url: str | None = None
     namespace: str | None = None
@@ -213,40 +176,20 @@ class KubeConfig(BaseModel):
     # PV/PVC and references the claim by name only. Unset (None) -> no models volume/mount is emitted
     # (byte-identical manifest, current behavior). The PVC carries ONLY model weights -- never secrets/certs.
     models_pvc_name: str | None = None
-    # ADR-0005 (phaze-k6d5): OPT-IN, and OFF by default. When set, build_job_manifest emits
+    # docs/design/0005-analyze-job-memory-limits.md keeps this opt-in. When set, build_job_manifest emits
     # ``resources.limits.memory`` on the analyze container so a runaway pod is cgroup-OOMKilled
     # (a predictable, pod-scoped fault) instead of the kernel choosing a victim node-wide
     # (``constraint=CONSTRAINT_NONE``) -- the failure mode that killed coredns/metrics-server/
     # local-path-provisioner in production (spike phaze-esut). This is a KERNEL bound only: it is
     # NEVER read by Kueue's quota accounting, which reads ``memory_request`` exclusively and is
-    # unaffected by this field (ADR-0005 keeps requests authoritative). Unset (None, the default)
+    # unaffected by this field (the design keeps requests authoritative). Unset (None, the default)
     # -> NO ``limits`` key is emitted at all -- the manifest is byte-identical to today's
     # (regression-guarded), the same backward-compatibility posture as ``models_pvc_name`` /
     # ``active_deadline_seconds``. Stays unset until a real Linux measurement (spike follow-up C)
     # calibrates a number; a guessed default risks OOMKilling legitimate work.
     memory_limit: str | None = None
-    # phaze-202e: OPT-IN, and OFF by default. Emitted as ``spec.activeDeadlineSeconds`` by
-    # ``build_job_manifest`` only when set; ``None`` (the default) emits NO key at all, so k8s applies
-    # no wall-clock bound to the analyze Job.
-    #
-    # History, because the reversal matters. phaze-1b39 introduced this field as a REQUIRED 3h bound
-    # (``int = 10800, gt=0`` -- not disableable) on the theory that it was the pipeline's only defence
-    # against an admitted-but-stalled pod holding a burst-lane cap slot forever. In production that
-    # theory cost more than the failure it guarded: a 2-6 h concert set is a legitimate analyze, so the
-    # deadline SIGTERM'd every long recording at exactly 3h, burned ``cloud_submit_max_attempts`` per
-    # file, and D-04 then barred those files from Kueue entirely -- stalling the whole burst lane (phaze
-    # incident 2026-07-28). A wall clock cannot tell a 4h analyze from a hang.
-    #
-    # The 1b39 protection is preserved WITHOUT a wall clock: ``reconcile_cloud_jobs`` now detects a
-    # wedged Job by POD STATE (``kube_staging.classify_job_pods`` -- ImagePullBackOff / ErrImagePull /
-    # InvalidImageName / CreateContainerConfigError, or PodScheduled=False/Unschedulable past a
-    # scheduling probe, or an unsuspended Job with zero active pods past a probe). A pod that is
-    # genuinely Running is NEVER terminalized, at any age.
-    #
-    # Left configurable (rather than deleted) so an operator with a genuinely runaway cluster can still
-    # opt a single backend back into a hard bound, and so an already-deployed backends.toml carrying the
-    # key keeps validating. Setting it re-arms exactly the behaviour that caused the incident -- do not
-    # set it as a matter of course.
+    # None emits no wall-clock deadline. Pod-state reconciliation handles wedged Jobs because a
+    # 2-6 h recording may run legitimately beyond 3 h; see docs/design/0007-windowed-analysis.md.
     active_deadline_seconds: Annotated[int, Field(gt=0)] | None = None
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
@@ -254,28 +197,11 @@ class KubeConfig(BaseModel):
     @field_validator(*QUANTITY_FIELDS)
     @classmethod
     def _validate_quantity_format(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """Reject a malformed Kubernetes Quantity AT CONFIG LOAD rather than at apiserver admission (phaze-frq98, F1).
+        """Validate Quantity syntax without judging values or making optional fields required.
 
-        These three fields reach ``build_job_manifest`` and are copied verbatim into the Job's
-        ``resources.requests`` / ``resources.limits``. Before this validator they were checked only
-        for truthiness, so ``"4GB"`` (for ``"4Gi"``) was accepted by phaze, asserted on by phaze's
-        own tests, and rejected only by a live cluster -- one full submit round-trip after the
-        operator typed it, with the error surfacing as an opaque ``KubeStagingError``.
-
-        **Schema validation does not cover this**, which is why the check lives here and not in the
-        manifest validator: the Kubernetes OpenAPI schema types a Quantity as a plain ``string``, so
-        ``"4GB"`` is schema-valid and ``kubeconform`` would pass it too (measured -- see
-        ``services/k8s_quantity.py``'s module docstring and the test it names).
-
-        ``None`` passes through untouched. All three fields are ``Optional`` and their unset-ness is
-        load-bearing -- ``memory_limit`` unset means "emit no ``limits`` key at all" (ADR-0005), and
-        an unset ``cpu_request`` / ``memory_request`` is caught later, by name, in
-        ``build_job_manifest``'s existing fail-loud check -- which names the offending backend entry,
-        a better message than this validator could produce. Validating a field's FORMAT must never
-        quietly promote it to REQUIRED.
-
-        FORMAT ONLY. No value is judged, clamped or normalised -- see the module docstring on why
-        that boundary matters for ``memory_limit`` specifically.
+        Kubernetes schemas type a Quantity as a plain string, so schema validation cannot reject
+        malformed values such as ``"4GB"``. ``None`` must pass through: an unset memory limit emits
+        no limit, while required request fields get backend-specific errors later.
         """
         if value is None:
             return None
@@ -290,7 +216,7 @@ class KubeConfig(BaseModel):
             {
                 # key material → verbatim (OpenSSH/kubeconfig parsers require the trailing newline)
                 "kubeconfig_file": ("kubeconfig", True),
-                # bearer token → stripped (mirrors config.py:145)
+                # Bearer tokens are stripped by the same secret-normalization rule as core settings.
                 "sa_token_file": ("sa_token", False),
             },
         )
@@ -299,10 +225,8 @@ class KubeConfig(BaseModel):
 class BucketConfig(BaseModel):
     """S3 staging-bucket entry (REG-05, D-07).
 
-    A per-entry superset of the former flat ``s3_*`` block (config.py:466-495) so s3_staging reads
-    each value per bucket. ``scope`` is a load-bearing sharing-cardinality invariant (D-09) whose
-    cross-entry enforcement lives in Plan 02's container validator. ``endpoint_url`` carries the
-    per-bucket http(s) SSRF guard lifted from ``_validate_s3_endpoint_url`` (config.py:597-613).
+    ``scope`` is a load-bearing sharing-cardinality invariant enforced across entries.
+    ``endpoint_url`` carries the per-bucket HTTP(S) SSRF guard.
     """
 
     id: str
@@ -346,17 +270,10 @@ def _default_local_registry() -> list[BackendConfig]:
     """Absent config → implicit all-local: one kind=local backend (id=local, rank=99) (D-03).
 
     A ``default_factory`` only fires when the ``backends`` key is entirely absent (D-03 zero-config).
-    A present-but-empty array is a distinct fail-fast case handled by the container validator (Plan 02).
+    A present-but-empty array is a distinct fail-fast case handled by the container validator.
 
-    phaze-rvcn: ``cap`` is **derived from the host**, not the hardcoded ``1`` it used to be. This is
-    the one concurrency phaze picks *without operator action*, so it is exactly where the
-    ``intra_op_threads x concurrency ~= physical_cores`` policy has to be read from rather than
-    guessed -- ``derive_sizing`` chooses both halves together (``services/analysis_sizing.py``), so
-    the local lane's concurrency can never drift out of step with the intra-op cap the analyze child
-    stamps on itself. On a 4-physical-core host that reproduces the previous ``cap=1``; on a
-    32-physical-core host it derives ``8`` instead of leaving 31 cores idle. An operator-supplied
-    ``backends.toml`` overrides it wholesale, as before -- this default fires only when there is no
-    registry at all.
+    ``derive_sizing`` chooses both concurrency and intra-op threads so their product tracks
+    physical cores. It yields cap 1 on a 4-core host and 8 on a 32-core host.
     """
     return [LocalBackend(kind="local", id="local", rank=99, cap=derive_sizing().concurrency)]
 

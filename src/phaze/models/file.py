@@ -1,6 +1,6 @@
 """FileRecord model - central file record.
 
-Phase 90 (MIG-04): the ``FileState`` StrEnum, the ``files.state`` column, and the
+MIG-04: the ``FileState`` StrEnum, the ``files.state`` column, and the
 ``ix_files_state`` index were removed. A file's stage/status is now DERIVED entirely from its
 output tables (``analysis`` / ``metadata`` / ``proposals`` markers, the
 ``cloud_job`` sidecar, and the ``dedup_resolution`` marker) via ``services/stage_status.py``. The
@@ -49,9 +49,9 @@ class FileRecord(TimestampMixin, Base):
     # ``phaze.tasks.controller`` -- 3 shared commits, 60% of that file's co-changes, with NO static
     # dependency (``controller.py`` never imports this model). Checked against the actual git
     # history rather than the score: every shared commit is a "Phase N" pipeline-feature landing
-    # (e.g. Phase 49 duration routing, Phase 69 tiered drain scheduling) that adds a new pipeline
+    # (e.g.  duration routing,  tiered drain scheduling) that adds a new pipeline
     # stage -- which means BOTH a new tracked-state signal here (a column, or previously a
-    # ``FileState`` member before Phase 90's MIG-04 removed that enum) AND a new task function that
+    # ``FileState`` member before 's MIG-04 removed that enum) AND a new task function that
     # ``controller.py`` must register in its ``settings["functions"]`` / ``settings["cron_jobs"]``
     # lists (see that module). ``controller.py`` never needs to import ``FileRecord`` directly --
     # it is a composition root that wires together the task modules under ``phaze.tasks`` which DO

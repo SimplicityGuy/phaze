@@ -1,4 +1,4 @@
-"""SetProfile model -- the per-file half of the set projection (phaze-x1qr3.1).
+"""Per-file half of the set projection.
 
 No ``from __future__ import annotations`` here, deliberately: with it, ``uuid`` is referenced only
 inside a ``Mapped[...]`` annotation, and ruff's TC003 then wants the import moved into a
@@ -17,12 +17,11 @@ from phaze.models.base import Base, TimestampMixin
 
 
 class SetProfile(TimestampMixin, Base):
-    """One row per file summarising its whole set, 1:1 with ``files`` (migration 063).
+    """One row per file summarising its whole set, 1:1 with ``files``.
 
-    THE PER-FILE HALF of section E's "one projection, then everything rides it". Its sibling
-    is the three nullable columns migration 063 adds to ``analysis_window`` (``energy`` /
+    Its sibling is the three nullable columns on ``analysis_window`` (``energy`` /
     ``camelot`` / ``mood_scores``, the per-WINDOW half). Together they are the narrow
-    projection every later surface in the file-viewer epic queries, so that no request has to
+    projection every viewer surface queries, so no request has to
     read the ~5 KB ``analysis_window.features`` JSONB back across millions of rows.
 
     WHY ITS OWN TABLE, not columns on ``analysis``. :class:`~phaze.models.analysis.
@@ -31,16 +30,15 @@ class SetProfile(TimestampMixin, Base):
     column here is a SUMMARY over the whole file. Two quantities that look alike, mean
     opposite things, and would sit one beside the other invite reading the wrong one. The
     separate table makes the mistake impossible to make silently, and follows the per-file
-    sidecar precedent already set by ``cloud_budget`` and ``stage_skip``.
+    sidecar pattern used by ``cloud_budget`` and ``stage_skip``.
 
     ``mean_vector`` is positional in :data:`phaze.services.set_projection.MOOD_ORDER` -- the
     same 11 fixed names, in the same fixed archive-wide order, that key
     ``AnalysisWindow.mood_scores``. That constant's docstring carries why the order is pinned
     as a literal and why a change to it is a ``projection_version`` bump rather than an edit.
 
-    NOTHING WRITES THIS YET. ``phaze-x1qr3.2`` computes the projection and ``phaze-x1qr3.3``
-    writes it at analysis completion plus backfills existing files from stored JSONB, with no
-    re-analysis. This bead is the schema alone.
+    The analysis-completion writer stores this projection and can backfill existing files from stored
+    JSONB without re-analysis.
     """
 
     __tablename__ = "set_profile"
@@ -63,7 +61,7 @@ class SetProfile(TimestampMixin, Base):
     # The cached set glyph: per-COARSE-window (camelot_number, energy) cells, from which the
     # `ui/primitives.html` macro renders hue and lightness. Cached rather than recomputed because
     # phaze-x1qr3.9 draws this glyph once per ROW in the Files table.
-    #
+
     # `list | dict | None`, not `dict | None` (phaze-x1qr3.3): the writer stores
     # `SetProfileProjection.glyph` (`list[dict[str, int | float | None]] | None`) here directly.
     # JSONB has no notion of "object vs array" as a Python-side type distinction -- both round-trip
