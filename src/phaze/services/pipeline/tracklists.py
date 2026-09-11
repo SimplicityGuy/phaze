@@ -22,6 +22,8 @@ from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
 
@@ -115,6 +117,26 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
     )
 
 
+def _project_tracklist_set_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
+    """Project ordered query tuples into the render-only per-set row shape."""
+    sets: list[dict[str, Any]] = []
+    for external_id, artist, event, file_id, filename, path, total, confident in rows:
+        matched = file_id is not None
+        set_name = filename if matched else (artist or event or external_id)
+        sets.append(
+            {
+                "set_name": set_name,
+                "path": path,
+                "tracklist_state": "matched" if matched else "candidate",
+                "file_id": file_id,
+                "tracks_confident": int(confident or 0),
+                "tracks_total": int(total or 0),
+                "matched_to_file": matched,
+            }
+        )
+    return sets
+
+
 async def get_tracklist_sets_page(
     session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
 ) -> Page[dict[str, Any]]:
@@ -154,22 +176,7 @@ async def get_tracklist_sets_page(
         return Page(rows=[], page=page, page_size=page_size, has_next=False)
 
     sentinel_rows, has_next = split_sentinel(raw, page_size)
-    sets: list[dict[str, Any]] = []
-    for external_id, artist, event, file_id, filename, path, total, confident in sentinel_rows:
-        matched = file_id is not None
-        set_name = filename if matched else (artist or event or external_id)
-        sets.append(
-            {
-                "set_name": set_name,
-                "path": path,
-                "tracklist_state": "matched" if matched else "candidate",
-                "file_id": file_id,
-                "tracks_confident": int(confident or 0),
-                "tracks_total": int(total or 0),
-                "matched_to_file": matched,
-            }
-        )
-    return Page(rows=sets, page=page, page_size=page_size, has_next=has_next)
+    return Page(rows=_project_tracklist_set_rows(sentinel_rows), page=page, page_size=page_size, has_next=has_next)
 
 
 async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
