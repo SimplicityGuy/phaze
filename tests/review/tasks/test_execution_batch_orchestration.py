@@ -1,4 +1,4 @@
-"""Contract tests for phaze.tasks.execution.execute_approved_batch (Phase 26 B2 Option A).
+"""Batch orchestration contracts for approved agent-side execution.
 
 Four scenarios:
 * Happy path: 3 proposals all succeed.
