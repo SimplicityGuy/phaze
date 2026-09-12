@@ -2,7 +2,7 @@
 
 All configuration is via environment variables (or a `.env` file). See [`.env.example`](../.env.example) for the operator-facing defaults.
 
-The canonical source of truth is [`src/phaze/config.py`](../src/phaze/config.py), a [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) hierarchy.
+The canonical public import surface is [`src/phaze/config.py`](../src/phaze/config.py). The [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) hierarchy lives behind that facade in [`config_base.py`](../src/phaze/config_base.py), [`config_control.py`](../src/phaze/config_control.py), and [`config_agent.py`](../src/phaze/config_agent.py).
 
 ## How settings are loaded
 
@@ -42,12 +42,12 @@ The secret-bearing fields and their `_FILE` siblings:
 > `redis_url` / `queue_url`) remain on the env `<VAR>_FILE` path. See
 > **[Backend registry (`backends.toml`)](#backend-registry-backendstoml)** below.
 
-Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
+Semantics (implemented by the shared `_resolve_secret_files` validator in `config_secrets.py`, which derives the `_FILE` names from each field's existing aliases):
 
 - **One `_FILE` per accepted env name.** A field bound to both `PHAZE_DATABASE_URL` and `DATABASE_URL` honors `PHAZE_DATABASE_URL_FILE` **and** `DATABASE_URL_FILE`.
 - **Precedence:** an explicitly-set direct env var always wins over its `_FILE` sibling. The file is read only when the direct var is unset.
 - **Newline stripping:** surrounding whitespace and trailing newlines are stripped (`.strip()`). This is critical for `PHAZE_AGENT_TOKEN` — the *entire* wire string (prefix included) is hashed by `phaze.routers.agent_auth.hash_token`, so a stray `\n` from a heredoc/`echo`-created secret file would otherwise make the hash never match (a permanent 401).
-- **Whitespace-preserved exceptions:** `push_ssh_key` and `push_known_hosts` are the **only** `_FILE` secrets kept **verbatim** (NOT stripped), because OpenSSH requires the trailing newline on key material / known_hosts lines — stripping it makes `ssh` reject the key (`invalid format` / `error in libcrypto`). They are members of `SECRET_FILE_PRESERVE_WHITESPACE` in `config.py`.
+- **Whitespace-preserved exceptions:** `push_ssh_key` and `push_known_hosts` are the **only** `_FILE` secrets kept **verbatim** (NOT stripped), because OpenSSH requires the trailing newline on key material / known_hosts lines — stripping it makes `ssh` reject the key (`invalid format` / `error in libcrypto`). They are members of `AgentSettings.SECRET_FILE_PRESERVE_WHITESPACE` in `config_agent.py`.
 - **Fail-fast:** if a `_FILE` var is set but the path is missing or unreadable, startup raises a `ValidationError` naming the variable and path — it never silently falls back to an empty secret.
 - Resolution runs **before** the required-field and production guards (`_enforce_required_agent_fields`, the HTTPS/Redis-password validators), so a `_FILE`-sourced `PHAZE_AGENT_TOKEN` satisfies the required-field guard. `SecretStr` fields stay `SecretStr` (masked in logs/reprs) after resolution.
 
@@ -215,7 +215,7 @@ The global tuning knobs below (route threshold, retry budgets, S3 presign/lifecy
 
 Cloud burst (Phase 49/50/51, v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of occupying a local file-server analysis lane for an extended period. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
 
-Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](../src/phaze/config.py). The `Class` column is the role the field lives on (`ControlSettings` = the application server that owns routing; `AgentSettings` = the compute agent). All knobs use the `PHAZE_*` (or bare-name) dual form described above unless noted.
+Descriptions are sourced from the `Field(...)` text in `config_base.py`, `config_control.py`, and `config_agent.py`, all exported through [`phaze.config`](../src/phaze/config.py). The `Class` column is the role the field lives on (`ControlSettings` = the application server that owns routing; `AgentSettings` = the compute agent). All knobs use the `PHAZE_*` (or bare-name) dual form described above unless noted.
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
@@ -547,7 +547,7 @@ These three are *parse-time* failures — Compose refuses to render the file at 
 
 ## Defaults
 
-Defaults are defined in `src/phaze/config.py`. Highlights:
+Defaults are defined in `src/phaze/config_base.py`, `src/phaze/config_control.py`, and `src/phaze/config_agent.py`. Highlights:
 
 - `database_url` → `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`
 - `queue_url` → `postgresql://phaze:phaze@postgres:5432/phaze` (libpq form for the SAQ Postgres broker)

@@ -28,7 +28,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]  # tests/shared/core/X.py -> re
 _DOCS = _REPO_ROOT / "docs"
 _RUNBOOK = _DOCS / "runbook.md"
 _CONFIGURATION = _DOCS / "configuration.md"
-_CONFIG_SOURCE = _REPO_ROOT / "src" / "phaze" / "config.py"
+_BASE_CONFIG_SOURCE = _REPO_ROOT / "src" / "phaze" / "config_base.py"
 _ANALYSIS_EXEC_SOURCE = _REPO_ROOT / "src" / "phaze" / "services" / "analysis_exec.py"
 _ANALYSIS_ENQUEUE_SOURCE = _REPO_ROOT / "src" / "phaze" / "services" / "analysis_enqueue.py"
 _QUEUE_DEFAULTS_SOURCE = _REPO_ROOT / "src" / "phaze" / "tasks" / "_shared" / "queue_defaults.py"
@@ -175,7 +175,7 @@ def test_process_file_policy_docs_match_runtime_and_replay_sources() -> None:
     """
     enqueue = _read(_ANALYSIS_ENQUEUE_SOURCE)
     queue_defaults = _read(_QUEUE_DEFAULTS_SOURCE)
-    config = _read(_CONFIG_SOURCE)
+    base_config = _read(_BASE_CONFIG_SOURCE)
     reaper = _read(_SAQ_REAP_SOURCE)
 
     producer = re.search(
@@ -194,12 +194,12 @@ def test_process_file_policy_docs_match_runtime_and_replay_sources() -> None:
     assert '"process_file": "analysis_job_heartbeat_sec"' in queue_defaults
 
     stall = _captured_int(
-        config,
+        base_config,
         r"analysis_stall_timeout_sec:\s*int\s*=\s*Field\(\s*default=(\d+)",
         "analysis stall timeout",
     )
     multiplier = _captured_int(
-        config,
+        base_config,
         r"_ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER\s*=\s*(\d+)",
         "analysis heartbeat multiplier",
     )
