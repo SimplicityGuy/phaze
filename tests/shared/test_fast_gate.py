@@ -120,8 +120,9 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 )
 
 # The floor exists to be fast; past this it is just the suite with extra steps. Measured
-# 2026-08-25 on seat `docsgate`: 11 modules, 193 tests, 9.4-9.9 s.
-MAX_DOCS_FLOOR_MODULES = 20
+# 2026-09-12 on seat `structural-audit`: 21 modules, 274 tests,
+# 164.37 s pytest / 185.61 s wall.
+MAX_DOCS_FLOOR_MODULES = 21
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the only gate a
