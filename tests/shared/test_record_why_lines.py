@@ -14,7 +14,7 @@ Stage-Eligibility row:
 
 Mirrors ``test_record_stage_pills.py``'s composition-level idiom (real endpoint, seeded markers).
 ``saq_jobs`` is SAQ-owned and absent from ``Base.metadata``, so the orphan tests pin the same
-module-controlled minimal table ``tests/integration/test_orphan_count.py`` documents.
+module-controlled minimal table ``tests/analyze/recovery_cloud/orphan_replay/test_orphan_count.py`` documents.
 
 Must pass in the ``shared`` bucket in isolation (consumes the DB fixtures -> auto-marked integration).
 """

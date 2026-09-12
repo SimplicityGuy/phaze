@@ -3,7 +3,7 @@
 Uses an inline smoke FastAPI app builder (mirrors ``test_agent_heartbeat.py``) so this suite
 is parallel-safe and does not depend on ``main.py``'s router registration order. ``saq_jobs``
 is SAQ-owned (not Alembic-managed) so it is created inline per test, matching the
-``tests/analyze/tasks/test_active_reaper.py`` precedent -- the same table
+``tests/analyze/recovery_cloud/orphan_replay/test_active_reaper.py`` precedent -- the same table
 ``get_live_job_keys`` (and therefore this endpoint) reads.
 """
 

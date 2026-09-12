@@ -25,8 +25,8 @@ a module makes the inventory fail until this page is reconciled.
 | `models/` | 26 | SQLAlchemy application schema, including migration-`063` `SetProfile` |
 | `routers/` | 52 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 20 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 114 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 38 | SAQ controller/agent jobs and shared queue policy |
+| `services/` | 122 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 44 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 11 | OpenTelemetry bootstrap and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -37,7 +37,7 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | ------ | ---- |
 | `main.py` | FastAPI composition root and lifespan |
 | `database.py` | Application SQLAlchemy engine/session construction |
-| `config.py`, `config_*.py` | Role-specific settings, secrets, Redis, and backend policy |
+| `config.py`, `config_*.py` | Public settings facade plus role-specific settings, secrets, Redis, and backend policy domains |
 | `entrypoint.py`, `cert_bootstrap.py` | Container entry and TLS bootstrap |
 | `job_runner.py` | One-shot Kueue analysis job |
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
@@ -57,9 +57,83 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
 | Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py` |
+| Settings | `config.py` is the public facade over `config_base.py`, `config_control.py`, `config_agent.py`, and the existing settings-policy collaborators |
+| Proposal generation | `services/proposal.py` is the stable facade over context, parsing, provider, and persistence modules |
+| Review workspaces | `services/review.py` is the stable facade over changes, cue, dedupe, and tag-write read models |
+| Approved execution | `tasks/execution.py` orchestrates SAQ and reporting; `tasks/execution_filesystem.py` owns guarded local moves |
+| Recovery orchestration | `tasks/reenqueue.py` is the facade over recovery backfill, policy, queries, and replay modules |
+| Cloud reconciliation | `tasks/reconcile_cloud_jobs.py` owns transitions and effects; `tasks/cloud_reconcile_observation.py` owns observation and classification |
 | Set projection | `services/set_projection.py`, `set_projection_writer.py`, `set_projection_backfill.py` |
 | Set views | `services/analysis_timeline.py`, `harmonic_journey.py`, `track_segments.py`, `record_facts.py`, `set_glyph_colors.py`, `set_similarity.py` |
 | Record composition | `routers/record.py`, `templates/record/`, `templates/proposals/partials/analysis_timeline.html`, `templates/ui/set_marks.html` |
+
+## Structural capability ownership
+
+The structural-maintenance follow-on kept six stable facades because each still has a production,
+framework-registration, or recorded compatibility consumer. Private names used by tests and
+diagnostics remain part of that compatibility surface when they intercept a real operation. The
+terminal audit found no shim that was consumer-free across Python imports, literal patch paths,
+runtime configuration, and maintained documentation, so it removed none.
+
+| Stable facade | Capability owners | Facade-owned contract |
+| ------------- | ----------------- | --------------------- |
+| `phaze.config` | `config_base.py`, `config_control.py`, `config_agent.py`; existing `config_backends.py`, `config_registry_policies.py`, `config_secrets.py`, and `config_redis.py` collaborators | Role dispatch, cached construction, LLM-key export, `Settings` alias, and the import-time control singleton |
+| `phaze.services.review` | `review_changes.py`, `review_tagwrite.py`, `review_dedupe.py`, `review_cue.py` | Router entry points, collaborator injection, bounded-scan patch points, and degrade-safe reader composition |
+| `phaze.services.proposal` | `proposal_context.py`, `proposal_parsing.py`, `proposal_persistence.py`, `proposal_provider.py` | `ProposalService`, provider/persistence injection, supported response models, and literal patch points |
+| `phaze.tasks.execution` | `execution_filesystem.py` | SAQ task identity, API reporting/progress/terminal ordering, and historical filesystem patch points |
+| `phaze.tasks.reenqueue` | `recovery_backfill.py`, `recovery_policy.py`, `recovery_queries.py`, `recovery_replay.py` | Recovery task identity, transaction sequencing, queue ownership, and service-private query/classification imports |
+| `phaze.tasks.reconcile_cloud_jobs` | `cloud_reconcile_observation.py` | Reconciliation effects, commit/cleanup/redrive ordering, Kueue's `_reconcile_one` import, and the deferred backend cycle break |
+
+The diagram records the live import direction. Capability modules do not import back through their
+facade; callers retain the stable path while each owner remains independently testable.
+
+```mermaid
+flowchart LR
+    %% evidence: src/phaze/config.py; src/phaze/config_base.py
+    config["phaze.config facade"] --> configBase["shared settings"]
+    %% evidence: src/phaze/config.py; src/phaze/config_control.py
+    config --> configControl["control settings"]
+    %% evidence: src/phaze/config.py; src/phaze/config_agent.py
+    config --> configAgent["agent settings"]
+    %% evidence: src/phaze/routers/shell/stage_context.py; src/phaze/services/review.py
+    reviewCallers["review routers"] --> review["services.review facade"]
+    %% evidence: src/phaze/services/review.py; src/phaze/services/review_changes.py
+    review --> reviewChanges["changes read model"]
+    %% evidence: src/phaze/services/review.py; src/phaze/services/review_tagwrite.py
+    review --> reviewTagwrite["tag-write read model"]
+    %% evidence: src/phaze/services/review.py; src/phaze/services/review_dedupe.py
+    review --> reviewDedupe["dedupe read model"]
+    %% evidence: src/phaze/services/review.py; src/phaze/services/review_cue.py
+    review --> reviewCue["CUE read model"]
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/services/proposal.py
+    proposalCallers["proposal tasks"] --> proposal["services.proposal facade"]
+    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_context.py
+    proposal --> proposalContext["context"]
+    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_parsing.py
+    proposal --> proposalParsing["parsing"]
+    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_persistence.py
+    proposal --> proposalPersistence["persistence"]
+    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_provider.py
+    proposal --> proposalProvider["provider edge"]
+    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/execution.py
+    agentWorker["agent worker registry"] --> execution["tasks.execution facade"]
+    %% evidence: src/phaze/tasks/execution.py; src/phaze/tasks/execution_filesystem.py
+    execution --> filesystem["filesystem engine"]
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/reenqueue.py
+    recoveryCallers["controller + recovery reads"] --> recovery["tasks.reenqueue facade"]
+    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_backfill.py
+    recovery --> recoveryBackfill["ledger backfill"]
+    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_policy.py
+    recovery --> recoveryPolicy["classification + planning"]
+    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_queries.py
+    recovery --> recoveryQueries["database queries"]
+    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_replay.py
+    recovery --> recoveryReplay["queue + regeneration"]
+    %% evidence: src/phaze/tasks/controller.py; src/phaze/services/backends/kueue.py; src/phaze/tasks/reconcile_cloud_jobs.py
+    reconcileCallers["controller + Kueue"] --> reconcile["cloud reconcile facade"]
+    %% evidence: src/phaze/tasks/reconcile_cloud_jobs.py; src/phaze/tasks/cloud_reconcile_observation.py
+    reconcile --> observation["observation + classification"]
+```
 
 ## Shell templates and `/s/<stage>` routing
 

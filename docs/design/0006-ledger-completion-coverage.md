@@ -23,7 +23,7 @@ investigation after an expiry problem that did not exist.
 
 `is_domain_completed` returns **`True`** for a `process_file` ledger row whose file carries a
 completed analysis; such a row is neither counted by the amber badge nor re-enqueued. Verified
-directly against Postgres (`tests/analyze/tasks/test_recovery.py::test_completed_analyze_row_is_neither_orphan_nor_reenqueued`).
+directly against Postgres (`tests/analyze/recovery_cloud/orphan_replay/test_recovery.py::test_completed_analyze_row_is_neither_orphan_nor_reenqueued`).
 
 What it reads is DERIV-03's discriminator:
 
@@ -153,9 +153,9 @@ out of scope here.
 
 ## Verification
 
-Local (both lanes, real Postgres): `tests/analyze/tasks/test_recovery.py` (completed vs partial
+Local (both lanes, real Postgres): `tests/analyze/recovery_cloud/orphan_replay/test_recovery.py` (completed vs partial
 analyze, completed vs pending `s3_upload`, the stale-row message), `tests/analyze/tasks/test_ledger_reaper.py`
-(the cloud-lane pass and its two liveness guards), `tests/integration/test_orphan_count.py`
+(the cloud-lane pass and its two liveness guards), `tests/analyze/recovery_cloud/orphan_replay/test_orphan_count.py`
 (badge/recovery parity). Full suite green.
 
 **Not verified locally, and left for the operator** — the acceptance criterion "a fresh recovery run

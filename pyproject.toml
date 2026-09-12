@@ -49,7 +49,7 @@ dependencies = [
     # issues on the 181-package lock, full suite green (see the bead comment for the run).
     #
     # WHEN YOU RAISE THIS CAP, the raise is not complete until the guard moves with it.
-    # tests/review/services/test_proposal_provider_wire_shapes.py measures the LLM->pydantic seam
+    # tests/review/capabilities/proposal_provider/test_wire_shapes.py measures the LLM->pydantic seam
     # against whatever litellm is pinned here and records that minor in MEASURED_LITELLM_MINOR.
     # Re-measure its verdicts and update that constant in the SAME commit as the bump. This comment
     # is a pointer, not a coupling -- nothing enforces it, and the cost of forgetting lands on

@@ -170,14 +170,14 @@ to `queue_fakes_test.py` on move so it reads as the test file it is.
 | tests/test_schemas/test_agent_proposals.py | review | tests/review/schemas/test_agent_proposals.py |
 | tests/test_services/test_cue_generator.py | review | tests/review/services/test_cue_generator.py |
 | tests/test_services/test_execution_dispatch_grouping.py | review | tests/review/services/test_execution_dispatch_grouping.py |
-| tests/test_services/test_proposal.py | review | tests/review/services/test_proposal.py |
+| tests/test_services/test_proposal.py | review | tests/review/capabilities/proposal_parsing/test_service.py (split; see `scenario_node_map.tsv`) |
 | tests/test_services/test_proposal_queries.py | review | tests/review/services/test_proposal_queries.py |
 | tests/test_services/test_tag_proposal.py | review | tests/review/services/test_tag_proposal.py |
 | tests/test_services/test_tag_writer.py | review | tests/review/services/test_tag_writer.py |
 | tests/test_tasks/test_execute_approved_batch.py | review | tests/review/tasks/test_execute_approved_batch.py |
 | tests/test_tasks/test_execute_approved_batch_progress.py | review | tests/review/tasks/test_execute_approved_batch_progress.py |
 | tests/test_tasks/test_execution.py | review | tests/review/tasks/test_execution.py |
-| tests/test_tasks/test_proposal.py | review | tests/review/tasks/test_proposal.py |
+| tests/test_tasks/test_proposal.py | review | tests/review/capabilities/proposal_provider/test_task_orchestration.py |
 | tests/test_cert_bootstrap.py | agents | tests/agents/core/test_cert_bootstrap.py |
 | tests/test_cli/test_agents_add.py | agents | tests/agents/cli/test_agents_add.py |
 | tests/test_config/test_agent_settings_kind.py | agents | tests/agents/config/test_agent_settings_kind.py |
@@ -272,11 +272,11 @@ to `queue_fakes_test.py` on move so it reads as the test file it is.
 | tests/test_phase03_gaps.py | shared | tests/shared/core/test_phase03_gaps.py |
 | tests/test_phase04_gaps.py | shared | tests/shared/core/test_phase04_gaps.py |
 | tests/test_pipeline_dag_context.py | shared | tests/shared/core/test_pipeline_dag_context.py |
-| tests/test_proposals_upsert.py | shared | tests/shared/core/test_proposals_upsert.py |
+| tests/test_proposals_upsert.py | review | tests/review/capabilities/proposal_persistence/test_upsert.py |
 | tests/test_rail_narrow_width.py | shared | tests/shared/core/test_rail_narrow_width.py |
 | tests/test_record_palette_agents.py | shared | tests/shared/core/test_record_palette_agents.py |
 | tests/test_redirect_resolution.py | shared | tests/shared/core/test_redirect_resolution.py |
-| tests/test_review_apply_workspaces.py | shared | tests/shared/core/test_review_apply_workspaces.py |
+| tests/test_review_apply_workspaces.py | review | tests/review/capabilities/changes/test_workspace.py (split; see `scenario_node_map.tsv`) |
 | tests/test_routers/test_pipeline.py | shared | tests/shared/routers/test_pipeline.py |
 | tests/test_routers/test_pipeline_inadmissible.py | shared | tests/shared/routers/test_pipeline_inadmissible.py |
 | tests/test_routers/test_pipeline_localqueue.py | shared | tests/shared/routers/test_pipeline_localqueue.py |

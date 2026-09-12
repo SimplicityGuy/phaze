@@ -51,8 +51,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, SecretStr
+from pydantic._internal._model_construction import ModelMetaclass
 import pytest
 
+import phaze.config as config
 from phaze.config import AgentSettings, BaseSettings, ControlSettings
 
 
@@ -74,6 +76,68 @@ _AGENT_MIN_ENV = {
 }
 
 _CLASSES = (BaseSettings, ControlSettings, AgentSettings)
+
+
+def test_public_settings_types_keep_their_facade_identity_and_metaclass() -> None:
+    """The public classes remain the exact objects exported by ``phaze.config``.
+
+    A settings-domain extraction must not leave wrapper classes or aliases whose runtime
+    identity, inheritance relation, or Pydantic metaclass differs from today's facade.
+    ``__module__`` is included because pickling and framework introspection use it as part of
+    the class's public identity.
+    """
+    assert (config.BaseSettings, config.ControlSettings, config.AgentSettings) == _CLASSES
+    assert [cls.__module__ for cls in _CLASSES] == ["phaze.config"] * 3
+    assert all(type(cls) is ModelMetaclass for cls in _CLASSES)
+    assert issubclass(ControlSettings, BaseSettings)
+    assert issubclass(AgentSettings, BaseSettings)
+    assert config.Settings is ControlSettings
+    assert type(config.settings) is ControlSettings
+
+
+def test_pydantic_validator_registration_order_is_unchanged() -> None:
+    """Pin the inherited decorator registry in the order Pydantic constructed it.
+
+    The existing value and error-message characterizations exercise the validators at
+    runtime; this pin catches a class move that happens to yield the same happy-path values
+    while changing inherited validator registration or shadowing a validator by name.
+    """
+    expected = {
+        "BaseSettings": {
+            "field": ["_strip_sqlalchemy_driver"],
+            "model": ["_apply_redis_password", "_resolve_secret_files"],
+        },
+        "ControlSettings": {
+            "field": ["_strip_sqlalchemy_driver"],
+            "model": [
+                "_apply_redis_password",
+                "_resolve_secret_files",
+                "_load_backend_registry",
+                "_validate_registry",
+                "_enforce_redis_password_in_production",
+            ],
+        },
+        "AgentSettings": {
+            "field": ["_strip_sqlalchemy_driver", "_split_scan_roots"],
+            "model": [
+                "_apply_redis_password",
+                "_resolve_secret_files",
+                "_enforce_required_agent_fields",
+                "_enforce_https_in_production",
+                "_enforce_redis_password_in_production",
+            ],
+        },
+    }
+
+    observed = {
+        cls.__name__: {
+            "field": list(cls.__pydantic_decorators__.field_validators),
+            "model": list(cls.__pydantic_decorators__.model_validators),
+        }
+        for cls in _CLASSES
+    }
+    assert observed == expected
+
 
 # The OpenSSH PEM armour, assembled rather than written out. The bytes matter -- the WR-01 rule
 # exists because OpenSSH's parser rejects a key whose final armour line has no trailing newline --

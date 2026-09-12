@@ -1,6 +1,6 @@
 """Tests for the gated convention-derived date fallback (phaze-5fta.4).
 
-Four paths, all covered here and in ``tests/review/tasks/test_proposal_date_convention.py``:
+Four paths, all covered here and in ``tests/review/capabilities/proposal_context/test_date_convention.py``:
 
 1. flag OFF -> nothing happens at all (no query, no context key, no stored key);
 2. a self-resolving date -> resolved from the filename, store never consulted;

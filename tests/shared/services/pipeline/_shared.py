@@ -9,7 +9,7 @@ test file never followed. This package mirrors that split, one test file per pro
 submodule this suite exercises (`common.py` and `orphans.py` have no direct unit test in this
 suite today -- `_safe_count` and the orphan-count helpers are exercised indirectly through the
 callers this suite DOES cover, and through `tests/shared/services/test_orphan_cache.py` /
-`tests/integration/test_orphan_count.py` for `orphans.py` specifically -- so no
+`tests/analyze/recovery_cloud/orphan_replay/test_orphan_count.py` for `orphans.py` specifically -- so no
 `test_common.py` / `test_orphans.py` exists here; adding direct coverage is a separate decision,
 out of scope for a pure restructuring).
 

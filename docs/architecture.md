@@ -701,11 +701,12 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
 | `scan_directory` | `tasks/scan.py` | Agent-side chunked directory walk + SHA-256 hash, POSTed to `/api/internal/agent/files` for upsert (rows only; no auto-enqueue). Phase 89 removed the older api-server-side `services/ingestion.py::run_scan` path. |
-| `ProposalService` / `store_proposals` | `proposal.py` | LLM calling, context build, confidence clamp, idempotent partial-index proposal upsert |
+| Proposal generation | `proposal.py`, `proposal_context.py`, `proposal_parsing.py`, `proposal_persistence.py`, `proposal_provider.py` | Stable service facade over context loading, response parsing, sequential transaction-neutral persistence, and the rate-limited provider edge |
+| Review read models | `review.py`, `review_changes.py`, `review_tagwrite.py`, `review_dedupe.py`, `review_cue.py` | Stable router facade over four degrade-safe operator workspace capabilities; each reader owns its nested transaction scope |
 | `get_stage_progress` / `_derive_stats` | `services/pipeline/stages.py` / `routers/pipeline/dashboard_stats.py` | Per-DAG-node DB-truth `COUNT(DISTINCT)` off each stage's output table (the rendering authority); `_derive_stats` re-expresses the former state-grouped `get_pipeline_stats` keys off this derived source (Phase 82, D-05) |
 | `get_global_reconciliation` / `get_agent_reconciliations` | `services/pipeline/reconciliation.py` | Scanned-vs-file-row dedup reconciliation (latest completed batch per agent); degrade-safe, hidden when `deduped == 0` |
 | `incr_*` / `read_counters` | `pipeline_counters.py` | Durable Redis per-function enqueued/completed counters (non-authoritative cache) |
-| `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
+| `execute_approved_batch` | `tasks/execution.py`, `tasks/execution_filesystem.py` | Agent task/reporting facade over the containment-safe copy → verify → delete and crash-replay filesystem engine |
 | `AgentTaskRouter` | `agent_task_router.py` | Per-agent SAQ enqueuer (`phaze-agent-<id>`) |
 | `execution_dispatch` helpers | `execution_dispatch.py` | Group / revoked-filter / chunk approved proposals |
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
@@ -723,8 +724,9 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs; the liveness heartbeat runs as a startup asyncio background task (Phase 46), not a cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
 | `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
-| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable broker restart; on genuine queue loss (or manual `force`) replays each orphaned ledger row through the keyed producers. `process_file` is always re-normalized to `timeout=0`, `retries<=2`, and the current derived heartbeat, even when a legacy row stored the retired 7200s bound |
-| `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
+| `recover_orphaned_work` | `reenqueue.py`, `recovery_policy.py`, `recovery_queries.py`, `recovery_replay.py`, `recovery_backfill.py` | Stable task facade over pure orphan/replay planning, database inputs, queue/regeneration effects, and startup ledger backfill. `process_file` is always re-normalized to `timeout=0`, `retries<=2`, and the current derived heartbeat |
+| `reconcile_cloud_jobs` | `reconcile_cloud_jobs.py`, `cloud_reconcile_observation.py` | Controller cron facade: observation/classification is read-only; the facade retains advisory-lock, commit, cleanup, redrive, and Kueue `_reconcile_one` ownership |
+| `execute_approved_batch` | `execution.py`, `execution_filesystem.py` | Per-chunk agent orchestration over the guarded destructive filesystem engine (`_resolve_and_check_containment` remains a compatibility patch point) |
 | `_heartbeat_loop` / `send_heartbeat` | `heartbeat.py` | 30s heartbeat POST run as a startup asyncio background task (Phase 46), not a SAQ cron; `heartbeat_tick` retained as a thin back-compat shim |
 
 ## 🖥️ User Interface / Information Architecture (v7.0)

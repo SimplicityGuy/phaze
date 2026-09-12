@@ -185,7 +185,7 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     #      gather changes which exception surfaces when more than one chunk fails, so the degraded
     #      behavior is observably different -- and every finding on this file sits inside this one
     #      function, which has no dedicated test file of its own (covered incidentally, chiefly by
-    #      tests/review/routers/test_cue.py and tests/review/services/test_review_degrade.py).
+    #      tests/review/routers/test_cue.py and tests/review/capabilities/cue/test_degrade.py).
     tracks: list[TracklistTrack] = []
     for chunk in _id_chunks(version_ids):
         tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(chunk))
