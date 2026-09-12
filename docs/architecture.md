@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # 🏛️ Architecture Overview
 
 This document covers Phaze's internals in depth: the full processing pipeline, how

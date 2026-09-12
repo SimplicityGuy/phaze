@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # 🦾 arm64 essentia Agent Image
 
 `Dockerfile.agent-arm64` builds the production **linux/arm64 (aarch64)** essentia

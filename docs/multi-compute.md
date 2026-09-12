@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Multi-Compute Agents — mixed arm64/x86 cost-tiered lanes
 
 This is the **"now add a 2nd+ compute agent, cost-tiered"** operator guide. Where

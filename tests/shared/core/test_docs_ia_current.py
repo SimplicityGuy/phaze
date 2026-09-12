@@ -14,6 +14,8 @@ from itertools import chain
 from pathlib import Path
 import re
 
+from scripts.check_documentation_integrity import migration_heads
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _README = _REPO_ROOT / "README.md"
@@ -99,34 +101,6 @@ def _missing_evidence_paths(claims: tuple[tuple[Path, tuple[str, ...]], ...]) ->
     return tuple(path for path in paths if not (_REPO_ROOT / path).is_file())
 
 
-def _annotated_literal(node: ast.stmt) -> tuple[str, object] | None:
-    if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name) or node.value is None:
-        return None
-    return node.target.id, ast.literal_eval(node.value)
-
-
-def _literal_assignments(path: Path) -> dict[str, object]:
-    assignments = map(_annotated_literal, ast.parse(_read_text(path)).body)
-    return dict(assignment for assignment in assignments if assignment is not None)
-
-
-def _string_assignment(assignments: dict[str, object], name: str) -> str | None:
-    value = assignments.get(name)
-    return value if isinstance(value, str) else None
-
-
-def _migration_revision_pair(path: Path) -> tuple[str | None, str | None]:
-    assignments = _literal_assignments(path)
-    return _string_assignment(assignments, "revision"), _string_assignment(assignments, "down_revision")
-
-
-def _migration_heads() -> set[str]:
-    pairs = tuple(map(_migration_revision_pair, (_REPO_ROOT / "alembic" / "versions").glob("*.py")))
-    revisions = {revision for revision, _ in pairs if revision is not None}
-    parents = {parent for _, parent in pairs if parent is not None}
-    return revisions - parents
-
-
 def _is_model_import(node: ast.AST) -> bool:
     return isinstance(node, ast.ImportFrom) and node.module is not None and node.module.startswith("phaze.models")
 
@@ -202,7 +176,7 @@ def test_documented_mermaid_claims_have_resolvable_live_evidence() -> None:
 
 def test_database_reference_tracks_migration_head_and_set_profile_relationship() -> None:
     """The database reference follows the live Alembic head and the 063 ORM relationship."""
-    heads = _migration_heads()
+    heads = migration_heads(_REPO_ROOT)
     text = _read_text(_DATABASE)
     assert heads == {"063"}
     assert "head, **`063`**" in text

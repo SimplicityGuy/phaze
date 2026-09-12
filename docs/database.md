@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Database
 
 phaze persists all state in PostgreSQL (18+) accessed asynchronously via SQLAlchemy 2.0
