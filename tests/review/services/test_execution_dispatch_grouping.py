@@ -46,9 +46,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Seed helpers
-# ---------------------------------------------------------------------------
 
 
 async def _seed_agent(
@@ -121,9 +119,7 @@ async def _seed_proposal(
     return prop
 
 
-# ---------------------------------------------------------------------------
 # get_approved_proposals_grouped_by_agent + count_revoked_skipped_proposals
-# ---------------------------------------------------------------------------
 
 
 async def test_empty_input_returns_empty_dict_and_zero_skipped(session: AsyncSession) -> None:
@@ -276,9 +272,7 @@ async def test_ordering_within_agent_group_by_created_at_then_id(session: AsyncS
     assert actual == [f"order-{i:02d}.mp3" for i in range(5)]
 
 
-# ---------------------------------------------------------------------------
 # chunk_proposals (pure / synchronous)
-# ---------------------------------------------------------------------------
 
 
 def _make_items(n: int) -> list[ExecuteBatchProposalItem]:
@@ -358,9 +352,7 @@ def test_chunk_count_matches_ceil_n_over_500(n: int, expected_chunks: int) -> No
         assert 1 <= len(result[-1]) <= 500
 
 
-# ---------------------------------------------------------------------------
 # Integration: grouping + chunking together (28-V-03)
-# ---------------------------------------------------------------------------
 
 
 async def test_1000_proposals_split_into_2_chunks(session: AsyncSession) -> None:

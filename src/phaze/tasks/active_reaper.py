@@ -84,7 +84,7 @@ it is additive on top of the row's own timeout. Being wrong is not data loss eit
 case is a duplicate analysis of one file -- but the wider default keeps that from being routine.
 
 phaze-w55w1: ``process_file`` was the motivating example and is no longer in scope here at all. It
-runs ``timeout=0`` (exhaustive analysis has no wall clock, ADR-0007 §7), and ``timeout: 0`` rows are
+runs ``timeout=0`` (exhaustive analysis has no wall clock, ``docs/design/0007-windowed-analysis.md`` §7), and ``timeout: 0`` rows are
 EXCLUDED from this statement by design (:mod:`phaze.tasks._saq_reap`). Its stranded-row liveness is
 owned by SAQ's own heartbeat-based ``Job.stuck`` sweep instead -- the division of labour
 ``scan_directory`` has had since phaze-mllxc. The reasoning above still governs every other long job.

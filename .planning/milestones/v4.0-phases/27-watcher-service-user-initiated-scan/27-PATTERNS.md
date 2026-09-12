@@ -58,7 +58,7 @@
 
 ### `src/phaze/agent_watcher/__main__.py` (process-entrypoint, event-driven)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/tasks/agent_worker.py` (startup hook + ctx wiring)
+**Analog:** `<scratch>/phaze/src/phaze/tasks/agent_worker.py` (startup hook + ctx wiring)
 
 **Imports pattern** (excerpt from `src/phaze/tasks/agent_worker.py:40-66`):
 ```python
@@ -196,7 +196,7 @@ class AgentApiServerError(AgentApiError):
 
 ### `src/phaze/tasks/_shared/agent_bootstrap.py` (shared helpers, request-response)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/tasks/agent_worker.py:69-89` — refactor target.
+**Analog:** `<scratch>/phaze/src/phaze/tasks/agent_worker.py:69-89` — refactor target.
 
 **Constant + helper to extract** (excerpt from `src/phaze/tasks/agent_worker.py:69-89`):
 ```python
@@ -490,7 +490,7 @@ async def trigger_analysis_ui(
 
 ### `src/phaze/services/agent_client.py` (M) — new `patch_scan_batch` method
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/services/agent_client.py:280-293` (`patch_proposal_state`).
+**Analog:** `<scratch>/phaze/src/phaze/services/agent_client.py:280-293` (`patch_proposal_state`).
 
 **Verbatim mirror** (excerpt from `src/phaze/services/agent_client.py:280-293`):
 ```python
@@ -534,7 +534,7 @@ Add `ScanBatchPatch, ScanBatchPatchResponse` to the `TYPE_CHECKING` block at the
 
 ### `src/phaze/tasks/scan.py` (M) — new `scan_directory` function
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/tasks/scan.py:40-83` (`scan_live_set` shape) + `/Users/Robert/Code/public/phaze/src/phaze/services/ingestion.py:45-88` (walk body).
+**Analog:** `<scratch>/phaze/src/phaze/tasks/scan.py:40-83` (`scan_live_set` shape) + `<scratch>/phaze/src/phaze/services/ingestion.py:45-88` (walk body).
 
 **Signature + ctx access pattern** (excerpt from `src/phaze/tasks/scan.py:40-46`):
 ```python
@@ -714,7 +714,7 @@ class ScanDirectoryPayload(BaseModel):
 
 ### `src/phaze/schemas/agent_scan_batches.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/schemas/agent_execution.py:41-71`.
+**Analog:** `<scratch>/phaze/src/phaze/schemas/agent_execution.py:41-71`.
 
 **Verbatim shape mirror** (excerpt from `src/phaze/schemas/agent_execution.py:41-71`):
 ```python
@@ -777,7 +777,7 @@ class ScanBatchPatchResponse(BaseModel):
 
 ### `src/phaze/schemas/pipeline_scans.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/schemas/agent_proposals.py:21-50` for `extra="forbid"` + `model_validator` pattern, though no validator is needed here.
+**Analog:** `<scratch>/phaze/src/phaze/schemas/agent_proposals.py:21-50` for `extra="forbid"` + `model_validator` pattern, though no validator is needed here.
 
 **For Phase 27**, planner writes:
 ```python
@@ -1016,7 +1016,7 @@ def test_agent_watcher_does_not_import_phaze_database() -> None:
 
 ### `tests/test_routers/test_agent_scan_batches.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/tests/test_routers/test_agent_proposals.py:1-247` — verbatim mirror.
+**Analog:** `<scratch>/phaze/tests/test_routers/test_agent_proposals.py:1-247` — verbatim mirror.
 
 **Smoke-app fixture pattern** (excerpt from `tests/test_routers/test_agent_proposals.py:25-35`):
 ```python
@@ -1093,7 +1093,7 @@ For Phase 27: PATCH `status=running` (the existing state) twice → both 200.
 
 ### `tests/test_routers/test_agent_files_batch_id.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/tests/test_routers/test_agent_files.py:1-200` — verbatim fixture mirror.
+**Analog:** `<scratch>/phaze/tests/test_routers/test_agent_files.py:1-200` — verbatim fixture mirror.
 
 **Test inventory:**
 - `test_batch_id_present_binds_files_to_that_batch` — pass `batch_id` in body; verify `FileRecord.batch_id == batch_id`.
@@ -1108,7 +1108,7 @@ The smoke-app fixture from `test_agent_files.py:52-65` works as-is (mock task_ro
 
 ### `tests/test_routers/test_pipeline_scans.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/tests/test_routers/test_pipeline.py:54-95` — dashboard-render + HTMX swap.
+**Analog:** `<scratch>/phaze/tests/test_routers/test_pipeline.py:54-95` — dashboard-render + HTMX swap.
 
 **Dashboard test pattern** (excerpt from `tests/test_routers/test_pipeline.py:54-69`):
 ```python
@@ -1144,7 +1144,7 @@ response = await client.post("/api/v1/analyze")
 
 ### `tests/test_tasks/test_scan_directory.py` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/tests/test_tasks/test_scan.py:15-87` (ctx mock + payload kwargs + AsyncMock api_client).
+**Analog:** `<scratch>/phaze/tests/test_tasks/test_scan.py:15-87` (ctx mock + payload kwargs + AsyncMock api_client).
 
 **ctx + payload fixture pattern** (excerpt from `tests/test_tasks/test_scan.py:15-30`):
 ```python
@@ -1274,7 +1274,7 @@ The `dashboard()` handler in `src/phaze/routers/pipeline.py:119-132` must additi
 
 ### `src/phaze/templates/pipeline/partials/scan_progress_card.html` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/templates/tracklists/partials/scan_progress.html` — byte-for-byte halt-on-terminal-state pattern.
+**Analog:** `<scratch>/phaze/src/phaze/templates/tracklists/partials/scan_progress.html` — byte-for-byte halt-on-terminal-state pattern.
 
 **Verbatim halt pattern** (excerpt from `tracklists/partials/scan_progress.html`):
 ```jinja
@@ -1304,7 +1304,7 @@ The `dashboard()` handler in `src/phaze/routers/pipeline.py:119-132` must additi
 
 ### `src/phaze/templates/pipeline/partials/scan_status_pill.html` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/templates/tracklists/partials/status_badge.html` — geometry mirror.
+**Analog:** `<scratch>/phaze/src/phaze/templates/tracklists/partials/status_badge.html` — geometry mirror.
 
 **Verbatim shape** (excerpt from `tracklists/partials/status_badge.html`):
 ```jinja
@@ -1334,7 +1334,7 @@ The `py-0.5` is the documented Phase 27 spacing exception (UI-SPEC §"Spacing Ex
 
 ### `src/phaze/templates/pipeline/partials/recent_scans_table.html` (NEW)
 
-**Analog:** `/Users/Robert/Code/public/phaze/src/phaze/templates/execution/partials/audit_table.html` — table + empty state + `overflow-x-auto`.
+**Analog:** `<scratch>/phaze/src/phaze/templates/execution/partials/audit_table.html` — table + empty state + `overflow-x-auto`.
 
 **Verbatim table-shell pattern** (excerpt from `execution/partials/audit_table.html`):
 ```jinja
@@ -1444,7 +1444,7 @@ Tone: terse, operator-grade, matches CLAUDE.md style. No emojis.
 
 ### Authentication
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_auth.py:62-84` (`get_authenticated_agent`)
+**Source:** `<scratch>/phaze/src/phaze/routers/agent_auth.py:62-84` (`get_authenticated_agent`)
 **Apply to:** `src/phaze/routers/agent_scan_batches.py` AND the modified `src/phaze/routers/agent_files.py` cross-tenant branch.
 
 ```python
@@ -1455,21 +1455,21 @@ Token format `phaze_agent_<32 urlsafe-base64>`; verification is one indexed SELE
 
 ### Cross-Tenant 403 Guard (BEFORE State Machine)
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_proposals.py:62-76`
+**Source:** `<scratch>/phaze/src/phaze/routers/agent_proposals.py:62-76`
 **Apply to:** `src/phaze/routers/agent_scan_batches.py` AND `src/phaze/routers/agent_files.py` (batch_id-bound branch).
 
 The 403 must be raised BEFORE any state-machine evaluation (409 timing oracle prevention). Cite Phase 26 D-08 in the inline comment.
 
 ### Idempotent Same-State PATCH (200 Echo, No DB Write)
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_proposals.py:81-95`
+**Source:** `<scratch>/phaze/src/phaze/routers/agent_proposals.py:81-95`
 **Apply to:** `src/phaze/routers/agent_scan_batches.py`.
 
 Re-PATCHing the same status echoes the current row and does NOT bump `updated_at`. Tested in `test_agent_proposals.py::test_same_state_idempotent_no_op` (verbatim mirror needed in `test_agent_scan_batches.py`).
 
 ### Pydantic `extra="forbid"` + AUTH-01 (agent_id from auth)
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/schemas/agent_files.py:25-43` + `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_files.py:60-63`
+**Source:** `<scratch>/phaze/src/phaze/schemas/agent_files.py:25-43` + `<scratch>/phaze/src/phaze/routers/agent_files.py:60-63`
 **Apply to:** every new schema (`ScanBatchPatch`, `ScanDirectoryPayload`, `TriggerScanForm`, updated `FileUpsertChunk`) AND the modified upsert handler (agent_id is NEVER read from body).
 
 ```python
@@ -1480,14 +1480,14 @@ data["agent_id"] = agent.id  # AUTH-01 -- stamped from auth, NEVER from body
 
 ### `AliasChoices` per-field env mapping
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/config.py:100-119`
+**Source:** `<scratch>/phaze/src/phaze/config.py:100-119`
 **Apply to:** `src/phaze/config.py` — the 4 new `AgentSettings` fields (D-03 + D-11).
 
 Both the `PHAZE_*` env var AND the bare field name resolve; tests can monkeypatch bare names.
 
 ### NFC Normalization on Path Input
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/services/ingestion.py:33` + `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_files.py:62`
+**Source:** `<scratch>/phaze/src/phaze/services/ingestion.py:33` + `<scratch>/phaze/src/phaze/routers/agent_files.py:62`
 **Apply to:** `agent_watcher/observer.py` (handler), `agent_watcher/poster.py` (record build), `tasks/scan.py` (`scan_directory` walk body), `routers/pipeline_scans.py` (path validation).
 
 ```python
@@ -1498,14 +1498,14 @@ Single source of truth. Drift between watcher and scan_directory would cause dup
 
 ### `ctx["api_client"]` resource handle
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/tasks/agent_worker.py:122-128` (writer) + `/Users/Robert/Code/public/phaze/src/phaze/tasks/scan.py:44` (reader)
+**Source:** `<scratch>/phaze/src/phaze/tasks/agent_worker.py:122-128` (writer) + `<scratch>/phaze/src/phaze/tasks/scan.py:44` (reader)
 **Apply to:** `src/phaze/tasks/scan.py` (`scan_directory` reads `ctx["api_client"]`).
 
 The agent_watcher process constructs its own `PhazeAgentClient` directly (no SAQ ctx).
 
 ### Per-Agent SAQ Queue Routing
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/services/agent_task_router.py:74-88` + `/Users/Robert/Code/public/phaze/src/phaze/routers/agent_files.py:111-121`
+**Source:** `<scratch>/phaze/src/phaze/services/agent_task_router.py:74-88` + `<scratch>/phaze/src/phaze/routers/agent_files.py:111-121`
 **Apply to:** `src/phaze/routers/pipeline_scans.py` (POST handler):
 ```python
 await request.app.state.task_router.enqueue_for_agent(
@@ -1517,21 +1517,21 @@ await request.app.state.task_router.enqueue_for_agent(
 
 ### HTMX Poll Partial With Final-State Halt
 
-**Source:** `/Users/Robert/Code/public/phaze/src/phaze/templates/tracklists/partials/scan_progress.html`
+**Source:** `<scratch>/phaze/src/phaze/templates/tracklists/partials/scan_progress.html`
 **Apply to:** `src/phaze/templates/pipeline/partials/scan_progress_card.html`.
 
 In-progress markup carries `hx-trigger="every 2s"` + `hx-swap="outerHTML"`. Terminal-state markup OMITS both — replacing the polling element ends polling.
 
 ### Subprocess Import-Boundary Test (D-25 invariant)
 
-**Source:** `/Users/Robert/Code/public/phaze/tests/test_task_split.py:19-59`
+**Source:** `<scratch>/phaze/tests/test_task_split.py:19-59`
 **Apply to:** new `test_agent_watcher_does_not_import_phaze_database` (D-22 extension).
 
 `subprocess.run([sys.executable, "-c", ...], timeout=20)` so sys.modules pollution doesn't poison the test session. Banned-set extended for Phase 27: add `"phaze.tasks.agent_worker"` to the forbidden tuple per RESEARCH Pitfall 5.
 
 ### Smoke-App + AsyncClient Test Pattern
 
-**Source:** `/Users/Robert/Code/public/phaze/tests/test_routers/test_agent_proposals.py:25-35` AND `/Users/Robert/Code/public/phaze/tests/test_routers/test_agent_files.py:52-96`
+**Source:** `<scratch>/phaze/tests/test_routers/test_agent_proposals.py:25-35` AND `<scratch>/phaze/tests/test_routers/test_agent_files.py:52-96`
 **Apply to:** `tests/test_routers/test_agent_scan_batches.py`, `tests/test_routers/test_agent_files_batch_id.py`.
 
 ```python
@@ -1546,7 +1546,7 @@ def _make_smoke_app(session: AsyncSession) -> FastAPI:
 
 ### Seed-Two-Agents-For-Cross-Tenant-Test Pattern
 
-**Source:** `/Users/Robert/Code/public/phaze/tests/test_routers/test_agent_proposals.py:208-217` (inline second-agent seeding)
+**Source:** `<scratch>/phaze/tests/test_routers/test_agent_proposals.py:208-217` (inline second-agent seeding)
 **Apply to:** `tests/test_routers/test_agent_scan_batches.py::test_cross_agent_403` and `tests/test_routers/test_agent_files_batch_id.py::test_batch_id_cross_agent_403`.
 
 ---
@@ -1567,16 +1567,16 @@ Files with no close in-repo match (planner uses RESEARCH.md patterns instead):
 ## Metadata
 
 **Analog search scope:**
-- `/Users/Robert/Code/public/phaze/src/phaze/routers/`
-- `/Users/Robert/Code/public/phaze/src/phaze/services/`
-- `/Users/Robert/Code/public/phaze/src/phaze/schemas/`
-- `/Users/Robert/Code/public/phaze/src/phaze/tasks/`
-- `/Users/Robert/Code/public/phaze/src/phaze/templates/`
-- `/Users/Robert/Code/public/phaze/tests/test_routers/`
-- `/Users/Robert/Code/public/phaze/tests/test_tasks/`
-- `/Users/Robert/Code/public/phaze/tests/test_task_split.py`
-- `/Users/Robert/Code/public/phaze/docker-compose.yml`
-- `/Users/Robert/Code/public/phaze/pyproject.toml`
+- `<scratch>/phaze/src/phaze/routers/`
+- `<scratch>/phaze/src/phaze/services/`
+- `<scratch>/phaze/src/phaze/schemas/`
+- `<scratch>/phaze/src/phaze/tasks/`
+- `<scratch>/phaze/src/phaze/templates/`
+- `<scratch>/phaze/tests/test_routers/`
+- `<scratch>/phaze/tests/test_tasks/`
+- `<scratch>/phaze/tests/test_task_split.py`
+- `<scratch>/phaze/docker-compose.yml`
+- `<scratch>/phaze/pyproject.toml`
 
 **Files read in full (or near-full):** 22
 - `src/phaze/tasks/agent_worker.py`

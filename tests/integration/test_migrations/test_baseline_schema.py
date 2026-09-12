@@ -222,9 +222,6 @@ def _canonical_diff(diff: object) -> tuple[str, str]:
     return (kind, str(diff[1].name))
 
 
-# --- Static contract (no DB required) ---
-
-
 def test_baseline_revision_contract() -> None:
     """The baseline reuses revision id 039 with no parent (the prod no-op contract)."""
     module = _load_baseline_module()
@@ -327,9 +324,6 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
         assert expected in sql, f"offline-mode SQL is missing a bound seed value ({expected!r}); got:\n{sql}"
     unbound_marker = "VALUES (NULL"
     assert unbound_marker not in sql, f"offline-mode SQL rendered an unbound seed INSERT ({unbound_marker!r}):\n{sql}"
-
-
-# --- Schema invariants (baseline-built DB via migrated_engine) ---
 
 
 @pytest.mark.asyncio
@@ -635,9 +629,6 @@ async def test_autogenerate_drift_is_frozen(migrated_engine: AsyncEngine) -> Non
     resolved = _FROZEN_AUTOGEN_DRIFT - drift
     assert not unexpected, f"NEW ORM<->schema drift (add a migration or update the ORM): {sorted(unexpected)}"
     assert not resolved, f"drift silently resolved (adjust _FROZEN_AUTOGEN_DRIFT deliberately): {sorted(resolved)}"
-
-
-# --- Round-trip (drives its own upgrade/downgrade; no fixture) ---
 
 
 @pytest.mark.asyncio

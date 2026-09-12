@@ -216,9 +216,7 @@ def _dashboard(uid: str, title: str, description: str, panels: list[dict[str, An
     }
 
 
-# ---------------------------------------------------------------------------
 # Shared query fragments
-# ---------------------------------------------------------------------------
 #
 # `$job` scopes every query to the selected service(s); `$__rate_interval` is Grafana's own
 # scrape-aware window, so these work unchanged against a homelab Prometheus whose scrape
@@ -254,9 +252,7 @@ _TS_LINE = {"lineWidth": 2, "fillOpacity": 8, "showPoints": "never"}
 _STAT = {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}, "textMode": "auto", "colorMode": "value"}
 
 
-# ---------------------------------------------------------------------------
 # 1. Analysis pipeline -- what is happening right now
-# ---------------------------------------------------------------------------
 
 
 def analysis_pipeline() -> dict[str, Any]:
@@ -357,9 +353,7 @@ def analysis_pipeline() -> dict[str, Any]:
     )
 
 
-# ---------------------------------------------------------------------------
 # 2. Analysis cost breakdown -- the phaze-8ifq8 dashboard
-# ---------------------------------------------------------------------------
 
 
 def analysis_cost() -> dict[str, Any]:
@@ -505,9 +499,7 @@ def analysis_cost() -> dict[str, Any]:
     )
 
 
-# ---------------------------------------------------------------------------
 # 3. Throughput and backlog
-# ---------------------------------------------------------------------------
 
 
 def throughput_backlog() -> dict[str, Any]:
@@ -633,9 +625,7 @@ def throughput_backlog() -> dict[str, Any]:
     )
 
 
-# ---------------------------------------------------------------------------
 # 4. Service health
-# ---------------------------------------------------------------------------
 
 
 def service_health() -> dict[str, Any]:

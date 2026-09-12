@@ -120,27 +120,9 @@ async def trigger_backfill_cloud(
             context={"request": request, "count": 0},
         )
 
-    # 83-06 (OPTION A, CONSCIOUSLY REVERSES D-09): make every cloud-routed backfill candidate a CLEAN
-    # drainable held file, for BOTH the compute AND the kueue target (the all-local case already
-    # returned early above). The hold (``hold_awaiting_cloud`` inside ``_route_discovered_by_duration``)
-    # and the two marker strips below MUST land in ONE transaction:
-    #   1. Clear ``analysis.failed_at`` / ``error_message`` (mirrors :func:`retry_analysis_failed`): a
-    #      RETAINED marker made the held file analyze-domain-completed, so ``~domain_completed_clause``
-    #      was False and the drain skipped it.
-    #   2. DELETE the orphaned ``process_file:<id>`` ledger row (the backfill candidate query REQUIRES
-    #      it): its presence made the file analyze-in-flight, so ``~inflight_clause`` was False.
-    # phaze-7g4t: STAGE the marker strips BEFORE routing (do NOT commit them separately). The old code
-    # committed the holds inside ``_route_discovered_by_duration`` and THEN committed the marker strips
-    # in a SECOND transaction -- an interruption (DB error on the UPDATE/DELETE, server restart, or
-    # handler-task cancellation) between the two commits left every candidate as
-    # {cloud_job='awaiting' + failed_at set + ledger row}, which every forward path excludes: the drain
-    # never picks it (retained ledger => in-flight, retained failed_at => domain-completed), the
-    # Awaiting-cloud card shows 0, re-running Backfill selects nothing (active cloud_job), Run Analysis
-    # skips it (~failed conjunct), and recovery excludes any awaiting cloud_job -- a permanent invisible
-    # strand. Staging the strips into the session first means the hold's single commit inside
-    # ``_route_discovered_by_duration`` flushes ALL THREE mutations atomically. Every backfill candidate
-    # is long (the query filters ``duration >= threshold``) and cloud is enabled here, so the router
-    # ALWAYS holds >=1 file and therefore ALWAYS commits -- the staged strips can never be left dangling.
+    # 83-06/phaze-7g4t: clear failure and stale-ledger markers in the SAME transaction that holds
+    # each candidate for cloud. Splitting the commit could make the row simultaneously completed and
+    # in-flight, excluding it from the drain, analysis, backfill, and recovery paths.
     # phaze-r7j9: both id/key lists below are array-bound as ONE Postgres array parameter
     # (`_analysis_file_ids_scope` / `_ledger_keys_scope`) rather than a bare `.in_(...)`, which
     # SQLAlchemy expands to one bind parameter per element and exceeds asyncpg's 32767-parameter
@@ -151,32 +133,10 @@ async def trigger_backfill_cloud(
         await session.execute(
             update(AnalysisResult).where(_analysis_file_ids_scope(candidate_ids, "candidate_ids")).values(failed_at=None, error_message=None),
         )
-        # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
-        # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
-        # this point, so a concurrent process_file enqueue (retry_analysis_failed's background loop,
-        # a recovery replay) for one of these EXACT candidates can land in the gap between that snapshot
-        # and this statement (each such gap is a single DB round trip wide). ``upsert_ledger_entry`` --
-        # the SAQ before_enqueue write hook every process_file producer shares -- refreshes
-        # ``enqueued_at`` on EVERY re-enqueue of a still-existing key, including that race. Conditioning
-        # the delete on the value just read here means a concurrent re-enqueue's ledger commit landing in
-        # that gap changes the row this DELETE is looking for, so it can never remove a ledger row a live
-        # producer has claimed -- the row survives, the file stays correctly in-flight, and this
-        # candidate is silently left for a later backfill click instead of being double-dispatched to
-        # local AND cloud.
-        #
-        # This closes the window where the CONCURRENT enqueue's ledger write itself lands here (the
-        # candidate's row visibly changes). It does NOT close the narrower "ledger already committed,
-        # the matching saq_jobs row insert still pending" interleaving the live_keys snapshot can also
-        # miss -- that shape is indistinguishable from a genuine stale orphan by ANY read of this row's
-        # own content (its enqueued_at never changes).
-        #
-        # phaze-8xbv (ADR-0003, docs/design/0003-backfill-ledger-race-residual-window.md): this
-        # residual window is a PERMANENT, DELIBERATE acceptance, not open follow-up work. Closing it
-        # would require intercepting SAQ's PostgresQueue.enqueue() to hold one advisory lock across
-        # its before_enqueue hook chain (our asyncpg ledger write) AND its internal job insert (SAQ's
-        # own psycopg3 pool) as a single unit -- a third-party-library-internals intrusion to close a
-        # window that is one DB round trip wide, never causes double-dispatch, and self-heals on the
-        # next backfill click. See the ADR for the full two-pool analysis.
+        # phaze-g31m: CAS the ledger delete on its observed ``enqueued_at`` so a concurrent enqueue's
+        # refreshed row survives and the file is not dispatched locally and to cloud. The narrower
+        # two-pool interval after the ledger commit but before SAQ's job insert is deliberately accepted;
+        # it self-heals on the next click. See ``docs/design/0003-backfill-ledger-race-residual-window.md``.
         ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
         observed_ledger_rows = (
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))

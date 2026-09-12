@@ -245,9 +245,6 @@ async def test_controller_ledger_rows_are_untouched(session: AsyncSession, make_
     assert f"submit_cloud_job:{file.id}" in await _ledger_keys(session)
 
 
-# --- phaze-k95r7: the cloud-lane pass -----------------------------------------------------
-
-
 async def test_resolved_s3_upload_row_is_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     """THE 17-ROW REGRESSION: an ``s3_upload`` row for an analyzed file with no ``cloud_job`` is cleared.
 
@@ -333,9 +330,6 @@ async def test_live_broker_row_spares_a_cloud_lane_row(session: AsyncSession, ma
 
     assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
     assert key in await _ledger_keys(session)
-
-
-# --- D-10 metadata retry gate (phaze-hr627) --------------------------------------------
 
 
 async def test_stale_terminal_metadata_row_is_still_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]

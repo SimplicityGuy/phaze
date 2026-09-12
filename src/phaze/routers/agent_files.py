@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 # Bug 260706-vqz (first live k8s cloud-burst E2E, 2026-07-07, image 2026.7.3): the staged object
 # lives in the bucket from UPLOADED through RUNNING until post-success cleanup, so all three are
-# downloadable. submit_cloud_job.py:117 stamps SUBMITTED at Kueue Job creation, BEFORE the analyze
+# downloadable. ``submit_cloud_job`` stamps SUBMITTED at Kueue Job creation, BEFORE the analyze
 # pod runs and calls presign-download, so a live pod NEVER observes UPLOADED -- an UPLOADED-only
 # guard was unreachable for the pod and cloud analysis could never complete. UPLOADING is not yet
 # fully staged, and terminal SUCCEEDED/FAILED may already be cleaned up -- all three 409. This is
@@ -76,8 +76,8 @@ async def upsert_files(
     """
     # Phase 27 D-09 + D-18 + D-21: resolve batch_id BEFORE the records loop.
     # Cross-tenant guard returns 403 BEFORE any FileRecord insert -- mirrors the
-    # Phase 26 D-08 placement in agent_proposals.py:62-76 (and the new
-    # agent_scan_batches.py PATCH handler). T-27-02 mitigation: a leaked
+    # D-08 authorization-first placement in ``agent_proposals.patch_proposal_state`` and
+    # ``agent_scan_batches.patch_scan_batch``. T-27-02: a leaked
     # batch_id cannot be probed by attempting an upsert, because the 403
     # rejection precedes the records loop.
     if body.batch_id is not None:
@@ -140,12 +140,12 @@ async def upsert_files(
     # giving the two lockers one global acquisition order and making the cycle impossible.
     records = sorted(deduped.values(), key=lambda rec: rec["original_path"])
 
-    # 3. UPSERT with insert-detection (RESEARCH Pattern 2; D-12 + D-21).
-    # Mirrors services/ingestion.py:103-117. `inserted` (xmax = 0) is retained so the
+    # UPSERT with insert-detection (RESEARCH Pattern 2; D-12 + D-21).
+    # Mirrors ``services.ingestion``. `inserted` (xmax = 0) is retained so the
     # response can report how many rows were newly INSERTed vs updated.
     base_stmt = pg_insert(FileRecord).values(records)
     upsert_stmt: Executable = base_stmt.on_conflict_do_update(
-        index_elements=["agent_id", "original_path"],  # composite UQ from models/file.py:61
+        index_elements=["agent_id", "original_path"],  # composite FileRecord natural key
         set_={
             "sha256_hash": base_stmt.excluded.sha256_hash,
             "file_size": base_stmt.excluded.file_size,

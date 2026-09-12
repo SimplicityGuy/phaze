@@ -26,7 +26,7 @@ re_verification: false
 |---|-------|--------|---------|
 | 1 | Every control-plane enqueue targets a consumed queue; default queue has no producers (QR-01) | VERIFIED | `app.state.controller_queue = Queue.from_url(..., name="controller")` in main.py:98; grep confirms 0 `app.state.queue` references across pipeline.py, tracklists.py, scan.py; `resolve_queue_for_task` raises `ValueError` for unknown task names (confirmed in enqueue_router.py:142) |
 | 2 | Per-agent routing uses active-agent selection; 0-agent surfaces a clear error (QR-02) | VERIFIED | `select_active_agent` filters `revoked_at.is_(None)` AND `last_seen_at.is_not(None)`, orders by `last_seen_at DESC LIMIT 1`; 6 per-agent pipeline handlers catch `NoActiveAgentError`; scan.py raises HTTP 503; tracklists.py renders no-agent fragment; scan_status polls per-agent queue via threaded `agent_id` |
-| 3 | Regression + guard tests assert queue targeting and prevent recurrence (QR-03) | VERIFIED | `tests/test_no_default_queue_producers.py` exists and 6 tests pass; static AST guard scans routers/services; meta-test proves guard is not vacuously green; per-site test suites assert named-queue targeting (phaze-agent-nox / controller) |
+| 3 | Regression + guard tests assert queue targeting and prevent recurrence (QR-03) | VERIFIED | `tests/test_no_default_queue_producers.py` exists and 6 tests pass; static AST guard scans routers/services; meta-test proves guard is not vacuously green; per-site test suites assert named-queue targeting (phaze-agent-host-store / controller) |
 
 **Score:** 3/3 truths verified
 
@@ -46,9 +46,9 @@ re_verification: false
 | `src/phaze/templates/tracklists/partials/scan_progress.html` | `agent_id` threaded into poll URL | VERIFIED | Line 28: `hx-get="/tracklists/scan/status?job_ids={{ job_ids }}&amp;agent_id={{ agent_id }}"` |
 | `tests/test_no_default_queue_producers.py` | Static guard test; fails on default-queue reintroduction | VERIFIED | AST-based `_ProducerVisitor` scans routers+services; meta-test proves guard catches both offense classes; 6 tests pass |
 | `tests/test_services/test_enqueue_router.py` | Unit tests for routing logic | VERIFIED | 11 tests pass covering all routing branches |
-| `tests/test_routers/test_pipeline.py` + `test_pipeline_fingerprint.py` | Named-queue targeting assertions | VERIFIED | 32 tests pass; asserts `phaze-agent-nox` for process_file/extract/fingerprint, `controller` for generate_proposals, 0-agent branch for per-agent handlers |
-| `tests/test_routers/test_tracklists.py` | Named-queue targeting assertions; agent_id poll round-trip | VERIFIED | 63 tests pass; asserts `controller` for scrape/search/match, `phaze-agent-nox` for scan_live_set, no-agent empty-state |
-| `tests/test_routers/test_scan.py` | Named-queue assertion; 503 for no-agent | VERIFIED | 8 tests pass; asserts `phaze-agent-nox` / `extract_file_metadata`; `assert response.status_code == 503` on no-agent path |
+| `tests/test_routers/test_pipeline.py` + `test_pipeline_fingerprint.py` | Named-queue targeting assertions | VERIFIED | 32 tests pass; asserts `phaze-agent-host-store` for process_file/extract/fingerprint, `controller` for generate_proposals, 0-agent branch for per-agent handlers |
+| `tests/test_routers/test_tracklists.py` | Named-queue targeting assertions; agent_id poll round-trip | VERIFIED | 63 tests pass; asserts `controller` for scrape/search/match, `phaze-agent-host-store` for scan_live_set, no-agent empty-state |
+| `tests/test_routers/test_scan.py` | Named-queue assertion; 503 for no-agent | VERIFIED | 8 tests pass; asserts `phaze-agent-host-store` / `extract_file_metadata`; `assert response.status_code == 503` on no-agent path |
 | `tests/test_main_lifespan.py` | Asserts `controller_queue` present; `queue` absent | VERIFIED | Lines 106-108: `assert hasattr(app.state, "controller_queue")` and `assert not hasattr(app.state, "queue")` |
 | `README.md` | "Task Queue Routing" subsection documenting routing model | VERIFIED | Lines 108-117: subsection covers controller-bound tasks, per-agent tasks, active-agent selection, fail-loud, guard test, and operational cleanup note; line 1 `<!-- generated-by: gsd-doc-writer -->` unchanged |
 

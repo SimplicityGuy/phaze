@@ -148,28 +148,10 @@ async def _run_boot_reconcile_with_retry(
 
 async def _probe_kueue_local_queues(control_cfg: ControlSettings) -> None:
     """Per-cluster LocalQueue reachability probe, warn-only (KDEPLOY-04, MKUE-01/03, D-05/D-06)."""
-    # Phase 56/70 (KDEPLOY-04, MKUE-01/03, D-05/D-06 -- REVISED phaze-6r39): PER-CLUSTER LocalQueue-
-    # reachability probe. This is a RUNTIME probe, distinct from the fail-fast kube config validators --
-    # for EACH configured Kueue backend it GETs THAT cluster's LocalQueue (threaded the backend's own
-    # KubeConfig) and logs a WARNING on failure. Phase 70 iterates every kueue backend (was a single
-    # global probe gated on a ≤1-non-local resolved kind), so N clusters each get their own reachability
-    # check. Each probe is INDEPENDENTLY guarded (its own broad try/except): a transient kube/mesh blip
-    # MUST NEVER abort controller boot (D-05 -- the control plane still boots Postgres/Redis/UI/local-
-    # analysis). Warnings name only the config surface; they never interpolate an SA token or kube DSN
-    # (T-56-LOG / T-54-07).
-    #
-    # phaze-6r39: this loop USED TO ALSO persist a cross-process Redis flag (D-05/D-06, the
-    # "LocalQueue-unreachable" key) for the dashboard to read. That flag was a
-    # boot-time SNAPSHOT with no TTL and no other writer: it never cleared once connectivity was
-    # restored (the reported bug) and never appeared at all for an outage that began AFTER boot (the
-    # silent, more dangerous half -- the alert was structurally incapable of firing for the exact class
-    # of event it exists to surface). The dashboard now derives the SAME alert LIVE, from the SAME probe
-    # already run on every 5s ``/pipeline/stats`` poll via ``get_backend_lane_snapshot`` ->
-    # ``derive_localqueue_unreachable`` (services/backends.py), so the Redis write is GONE -- there is no
-    # migration and no key to clear; a currently-stuck stale key simply becomes unread and inert the
-    # moment this deploy lands. This loop and its WARNING log are KEPT deliberately: they remain the
-    # operator's boot-time log signal that a configured cluster was unreachable at startup. Do NOT
-    # "restore" a Redis write here -- only the write was retired, the probe and its log were not.
+    # KDEPLOY-04/MKUE-01/03: probe each configured cluster independently and warn without aborting
+    # controller boot. Logs name configuration only, never credentials. phaze-6r39 keeps the alert
+    # live in the five-second dashboard probe; this startup check is log-only and must not persist a
+    # stale Redis reachability snapshot.
     kueue_kubes = [kube for entry in control_cfg.backends if entry.kind == "kueue" and (kube := getattr(entry, "kube", None)) is not None]
     for kube in kueue_kubes:
         try:
@@ -278,36 +260,15 @@ async def startup(ctx: dict[str, Any]) -> None:
     # ``ctx["async_session"]`` is the control-side sessionmaker bound to ``task_engine``.
     queue.ledger_sessionmaker = ctx["async_session"]  # type: ignore[attr-defined]
 
-    # Phase 32: per-agent task router for reboot re-enqueue routing. Built ONCE
-    # here and reused for the boot-time call + every cron tick (RESEARCH Pitfall 4 --
-    # never construct a fresh AgentTaskRouter per call, it would leak pools).
-    # Mirrors the discogs_client create/close lifecycle: created in startup, closed
-    # in shutdown. Phase 36: takes (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
-    # Phase 45: pass the ledger sessionmaker so each per-agent queue the router builds attaches it
-    # (the agent-routed recovery/startup enqueues record their ledger rows control-side).
+    # Build one per-agent task router for startup and cron use; constructing per call leaks pools.
+    # It owns the Postgres broker, Redis cache, and ledger hook and is closed during shutdown.
     ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url, ledger_sessionmaker=ctx["async_session"])
 
-    # Phase 42 DURABILITY REFRAME (D-01/D-02 -- DO NOT "restore" a steady-state re-enqueue cron):
-    # Phase 36 moved the SAQ broker from Redis to Postgres (``saq_jobs`` table). Queued/active jobs
-    # are now DURABLE across a controller restart -- SAQ re-dequeues the surviving rows itself, so a
-    # normal reboot loses NOTHING. The old every-5-min ``reenqueue_discovered`` auto-advance cron and
-    # its "Redis is empty after a reboot" premise are therefore OBSOLETE and were removed in Plan
-    # 42-02 (steady state now produces ZERO automatic enqueues). The ONLY automatic enqueue is this
-    # single gated boot recovery: ``recover_orphaned_work`` runs its ``count_inflight_jobs`` loss
-    # detector and no-ops on a durable restart, reconciling ALL stages only on a genuine queue-loss
-    # (truncate / restore-from-backup / fresh migration). The manual DAG "Recover" button calls the
-    # SAME producer (force=True), so the two paths cannot drift. Boot resilience is non-negotiable: a
-    # recovery failure must NEVER abort controller boot (RESEARCH Pitfall 3) -- broad try/except.
-    # Phase 45 Plan 04 (L-04/L-05, locked decision #3): ONE-TIME idempotent startup ledger backfill,
-    # run BEFORE recovery so the in-flight cohort already in saq_jobs (and any residual incident jobs)
-    # is recoverable on first boot -- no blind window between the 022 migration landing and the
-    # before_enqueue WRITE hook populating the ledger. This is a CONTROL-SIDE runtime reconcile, NOT
-    # an Alembic data step (Alembic must never touch saq_jobs). It is idempotent (ON CONFLICT DO
-    # NOTHING) so it stays safe on every boot and becomes a cheap no-op once the transition cohort
-    # drains. Boot resilience (T-45-14) is now bounded retry-with-backoff rather than a bare
-    # try/except -- see ``_run_boot_reconcile_with_retry`` (phaze-sekvl): a single failed attempt no
-    # longer strands the process for its whole lifetime if it landed while the api's migration was
-    # still in flight.
+    # D-01/D-02: Postgres-backed SAQ jobs survive restart, so no steady-state auto-advance cron is
+    # allowed. Boot recovery runs only after the queue-loss detector proves work is orphaned; the
+    # manual Recover action uses the same producer. Ledger backfill precedes recovery, is an
+    # idempotent runtime reconcile rather than an Alembic step, and retries without blocking boot
+    # (L-04/L-05, T-45-14, phaze-sekvl).
     async def _do_backfill() -> dict[str, int]:
         async with ctx["async_session"]() as session:
             tally = await backfill_ledger_from_saq_jobs(session)

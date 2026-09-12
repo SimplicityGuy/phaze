@@ -41,9 +41,7 @@ if TYPE_CHECKING:
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
 
 
-# --------------------------------------------------------------------------------------------
 # Date classification -- pure, no DB
-# --------------------------------------------------------------------------------------------
 
 
 class TestReadDateOrder:
@@ -128,9 +126,7 @@ class TestReadDateOrder:
             assert read_date_order(value).verdict in set(DateVerdict)
 
 
-# --------------------------------------------------------------------------------------------
 # Per-group evidence reduction -- pure, no DB
-# --------------------------------------------------------------------------------------------
 
 
 class TestGroupTally:
@@ -146,9 +142,7 @@ class TestGroupTally:
         assert GroupTally(ambiguous=12).evidence() == (None, 0, 0)
 
 
-# --------------------------------------------------------------------------------------------
 # Full refresh against real Postgres
-# --------------------------------------------------------------------------------------------
 
 
 def session_factory_for(session: AsyncSession) -> Callable[[], Any]:

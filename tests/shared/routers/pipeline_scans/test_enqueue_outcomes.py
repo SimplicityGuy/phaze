@@ -62,13 +62,11 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
     assert rows[0].error_message == "controller could not enqueue scan to agent worker"
 
 
-# ---------------------------------------------------------------------------
 # phaze-0dfj4: an AMBIGUOUS enqueue failure (the broker connection was already live when
 # ``enqueue_for_agent`` raised -- the ``saq_jobs`` INSERT may have already committed) must NOT be
 # treated the same as a definite one. Marking the batch FAILED here is a lie the operator acts on:
 # they re-trigger (the uq constraint only covers RUNNING rows), creating a second batch + job while
 # the phantom first job may still dequeue and walk the archive tree concurrently with the real scan.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

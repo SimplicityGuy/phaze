@@ -178,9 +178,6 @@ def test_the_other_dump_options_still_pass_through() -> None:
     assert payload.model_dump(exclude_unset=True).keys() == {"log_id", "file_id", "agent_id", "file_path", "tags"}
 
 
-# --- negative controls: the checks above can FAIL, so their passing means something ----------------
-
-
 class _PlainPayload(BaseModel):
     """A stand-in for the mistake this bead prevents: a broker payload that never inherited the base."""
 

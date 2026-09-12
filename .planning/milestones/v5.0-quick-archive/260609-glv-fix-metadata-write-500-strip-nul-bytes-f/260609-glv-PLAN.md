@@ -90,7 +90,7 @@ tests/test_services/test_metadata.py:
     Year/track parse to int and are unaffected — do not touch `_parse_year` or `_parse_track`. Match existing module style: double quotes, type hints, 150-char lines.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && uv run ruff check src/phaze/services/metadata.py && uv run mypy src/phaze/services/metadata.py && grep -n "_strip_nul" src/phaze/services/metadata.py</automated>
+    <automated>cd <scratch>/phaze && uv run ruff check src/phaze/services/metadata.py && uv run mypy src/phaze/services/metadata.py && grep -n "_strip_nul" src/phaze/services/metadata.py</automated>
   </verify>
   <done>`_strip_nul` exists and is referenced in both `_first_str` and `_serialize_tags`; ruff and mypy pass on the file; `_first_str(None)` still returns None.</done>
 </task>
@@ -113,7 +113,7 @@ tests/test_services/test_metadata.py:
     Import `_serialize_tags` and `extract_tags` from `phaze.services.metadata` (already imported at top of file). Add `_first_str` to that import if you also test it directly.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && uv run pytest tests/test_services/test_metadata.py -q && uv run ruff check tests/test_services/test_metadata.py</automated>
+    <automated>cd <scratch>/phaze && uv run pytest tests/test_services/test_metadata.py -q && uv run ruff check tests/test_services/test_metadata.py</automated>
   </verify>
   <done>New regression test(s) pass; full `test_metadata.py` suite green; ruff clean on the test file.</done>
 </task>
@@ -121,7 +121,7 @@ tests/test_services/test_metadata.py:
 </tasks>
 
 <verification>
-- `cd /Users/Robert/Code/public/phaze && uv run pytest tests/test_services/test_metadata.py -q` passes
+- `cd <scratch>/phaze && uv run pytest tests/test_services/test_metadata.py -q` passes
 - `uv run ruff check . && uv run ruff format --check .` clean
 - `uv run mypy .` passes
 - `pre-commit run --all-files` passes (NEVER bypass with --no-verify)

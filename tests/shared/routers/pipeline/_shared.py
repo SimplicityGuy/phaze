@@ -61,7 +61,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Phase 30 Plan 02: fake named-queue capture harness
 #
 # The lifespan is NOT run for the test client, so handlers read whatever we
@@ -71,7 +70,6 @@ if TYPE_CHECKING:
 # ``enqueue`` appends ``(queue_name, task_name, kwargs)`` to a shared capture list
 # so tests can assert the exact destination queue per endpoint -- proving the
 # v4.0.6 default-queue misrouting is gone.
-# ---------------------------------------------------------------------------
 
 
 # Registry fixtures driving the Phase-67 (D-14, REG-04) reduction the rewired pipeline reads:
@@ -184,7 +182,6 @@ def _make_file_with_convergence() -> tuple[FileRecord, AnalysisResult, FileMetad
     return file_rec, analysis, metadata
 
 
-# ---------------------------------------------------------------------------
 # Phase 49 Plan 02: per-file duration router (D-06/D-11/D-02/D-12).
 #
 # Long (>= cloud_route_threshold_sec) files route to a COMPUTE agent's queue
@@ -194,7 +191,6 @@ def _make_file_with_convergence() -> tuple[FileRecord, AnalysisResult, FileMetad
 # files with no fileserver are reported "skipped" without aborting the run. The
 # Run-analysis response reports the split counts, and the no-active-agent fragment
 # is surfaced ONLY when BOTH agent kinds are absent.
-# ---------------------------------------------------------------------------
 
 _LONG = 6000.0  # >= cloud_route_threshold_sec default (5400)
 _SHORT = 100.0  # < threshold
@@ -239,7 +235,6 @@ async def _persist_files_with_duration(session: AsyncSession, specs: list[float 
     return files
 
 
-# ---------------------------------------------------------------------------
 # Phase 49 Plan 03: POST /pipeline/backfill-cloud — "Backfill to cloud" action
 # (D-08/D-09/D-10). Selects EXACTLY the timed-out long files
 # (ANALYSIS_FAILED ∧ duration >= cloud_route_threshold_sec), resets them to
@@ -248,7 +243,6 @@ async def _persist_files_with_duration(session: AsyncSession, specs: list[float 
 # AWAITING_CLOUD with an explicit scheduling-ledger row. Never a whole-backlog
 # sweep; a double-click is a no-op (the candidates have already left the
 # ANALYSIS_FAILED state), and short/never-failed files are never touched.
-# ---------------------------------------------------------------------------
 
 
 async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None], *, with_ledger: bool = True) -> list[FileRecord]:
@@ -320,7 +314,6 @@ async def _reset_saq_jobs_minimal(session: AsyncSession) -> None:
     await session.execute(text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"))
 
 
-# --- 83-06 (reverses D-09): backfill produces a CLEAN drainable held file ---------------------
 # OPTION A: a backfill that routes a failed long file to a cloud path (compute OR kueue) now clears
 # the ``analysis.failed_at`` marker AND deletes the orphaned ``process_file:<id>`` scheduling-ledger
 # row in the same transaction, KEEPING only the awaiting ``cloud_job`` row. The held file then looks
@@ -407,7 +400,6 @@ _DEAD_DEEPEN_ARTIFACTS = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Phase 41 (REQ-41-2/REQ-41-4): the bulk match trigger routes to the controller queue (never
 # default), skips already-linked rows, and renders the tracklist-unit empty-state.
 #
@@ -418,7 +410,6 @@ _DEAD_DEEPEN_ARTIFACTS = (
 # Their routing invariant (a controller task must never land on the consumer-less default queue) is
 # still asserted below on the surviving sibling, and the endpoints' ABSENCE is asserted in
 # ``test_the_retired_bulk_scrape_triggers_are_gone``.
-# ---------------------------------------------------------------------------
 
 
 def _make_tracklist(n: int) -> Tracklist:
@@ -455,11 +446,9 @@ def _link_propagated_tracklist(file_rec: FileRecord, *, external_id: str, set_ke
     )
 
 
-# ---------------------------------------------------------------------------
 # phaze-fq9h.8: per-file prioritize/un-prioritize + the drain progress fragment / manual
 # slice trigger. drain_tracklists is a CONTROLLER task (Phase-30 rule); it must never land on
 # the consumer-less default queue.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_live_set_file(session: AsyncSession, *, duration: float = 7200.0) -> FileRecord:
@@ -472,7 +461,6 @@ async def _seed_live_set_file(session: AsyncSession, *, duration: float = 7200.0
     return file_rec
 
 
-# ---------------------------------------------------------------------------
 # phaze-71nz: the operator must be able to tell a recovery that COVERED the work
 # from one that knowingly skipped a stage. "Recovery started" cannot be the last word.
 #
@@ -482,7 +470,6 @@ async def _seed_live_set_file(session: AsyncSession, *, duration: float = 7200.0
 # started — re-enqueuing any orphaned work across all stages", identical to a clean run. Because the
 # producer is fire-and-forget, the POST response genuinely cannot know the outcome -- so the fragment
 # now polls GET /pipeline/recover/status, which does.
-# ---------------------------------------------------------------------------
 
 
 def _set_recovery_state(*, running: bool = False, failed: bool = False, result: dict[str, object] | None = None) -> None:
@@ -504,9 +491,7 @@ def _recovery_result(**stages: dict[str, int]) -> dict[str, object]:
     }
 
 
-# ---------------------------------------------------------------------------
 # PR4: dashboard activity indicator (green pulse / amber "stalled?")
-# ---------------------------------------------------------------------------
 
 
 async def _seed_running_scan(session: AsyncSession, *, seconds_quiet: int, scan_path: str) -> uuid.UUID:
@@ -528,13 +513,11 @@ async def _seed_running_scan(session: AsyncSession, *, seconds_quiet: int, scan_
     return batch_id
 
 
-# ---------------------------------------------------------------------------
 # Phase 55 (55-05, D-04, KROUTE-06): Cloud admission-state card. Carrier-always /
 # body-conditional: the #admission-state-card <section> ALWAYS renders (stable OOB
 # target), but the heading + four-tile grid render ONLY when any cloud_phase count
 # > 0. a1/local rows have NULL cloud_phase so all-zero leaves a quiet empty carrier.
 # Each tile is gated on its own count and finished uses GREEN (not amber/alert).
-# ---------------------------------------------------------------------------
 
 
 async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -> None:
@@ -554,11 +537,9 @@ async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # Analyze redesign: stable OOB carriers remain unique while cloud implementation detail lives
 # behind progressive disclosure. Structural regression guards use ids and disclosure boundaries,
 # not pixel-specific classes.
-# ---------------------------------------------------------------------------
 
 _ALL_SIX_CARD_IDS = (
     "admission-state-card",
@@ -570,13 +551,11 @@ _ALL_SIX_CARD_IDS = (
 )
 
 
-# ---------------------------------------------------------------------------
 # phaze-zyoag acceptance 5: a kueue cloud_job row in each of {uploading, uploaded, submitted, running}
 # must describe ITSELF consistently across the Staged / Analyzing / Admission panels on the SAME
 # rendered page -- no row may be claimed by two contradictory captions (the original bug report's
 # shape: one SUBMITTED row was simultaneously "Queued (quota)" on Admission AND "mid-transfer" on
 # Staged).
-# ---------------------------------------------------------------------------
 
 _VOX_KUEUE_ONLY_TOML = """
 [[backends]]
@@ -605,10 +584,8 @@ endpoint_url = "https://s3.example"
 """
 
 
-# ---------------------------------------------------------------------------
 # phaze-c9w9: multi-fileserver ownership routing -- bulk triggers route each file
 # to its OWNING agent, never one most-recently-seen pick for the whole set.
-# ---------------------------------------------------------------------------
 
 
 def _make_file_owned_by(agent_id: str) -> FileRecord:

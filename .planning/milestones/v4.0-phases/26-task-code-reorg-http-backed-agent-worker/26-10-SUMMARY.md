@@ -133,7 +133,7 @@ completed: 2026-05-12
 
 ## Next Phase Readiness
 
-- **Plan 12 / Plan 13 unblocked:** Phase 26's remaining plans (compose updates, lux_worker docs sweep) can reference `phaze.tasks.agent_worker.settings` as the canonical agent-side entry point.
+- **Plan 12 / Plan 13 unblocked:** Phase 26's remaining plans (compose updates, host-prod_worker docs sweep) can reference `phaze.tasks.agent_worker.settings` as the canonical agent-side entry point.
 - **Phase 29 (docker-compose.agent.yml)** can now confidently set `command: uv run saq phaze.tasks.agent_worker.settings` with `PHAZE_ROLE=agent`, `PHAZE_AGENT_QUEUE=phaze-agent-<id>`, `PHAZE_AGENT_API_URL=http://app-server:8000`, `PHAZE_AGENT_TOKEN=phaze_agent_<secret>`.
 - **No blockers.** All structural invariants for the agent-side surface are in place. The import-boundary test runs on every CI build forever — if a future plan reintroduces a `phaze.database` import into any module reachable from `phaze.tasks.agent_worker`, CI fails immediately with a clear message identifying the leaked module.
 

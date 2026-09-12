@@ -1,7 +1,7 @@
 # PR3 — structlog Observability Migration — SUMMARY
 
 **Task:** `260609-pr3-structlog-observability`
-**Branch:** `feat/structlog-observability` (worktree `/Users/Robert/Code/public/phaze-pr3-structlog`)
+**Branch:** `feat/structlog-observability` (worktree `<scratch>/phaze-pr3-structlog`)
 **Scope:** logging/observability only (NOT PR4 stall-heartbeat/reaper, NOT PR5 delete-scans)
 **Status:** All 10 tasks complete. Final gate green (except known Redis-only test errors — no Redis in sandbox).
 

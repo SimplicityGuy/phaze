@@ -412,14 +412,12 @@ def test_controller_startup_creates_proposal_service() -> None:
     assert "ProposalService" in source
 
 
-# ---------------------------------------------------------------------------
 # phaze-02v1s: correlating a malformed completion with the files it cost
 #
 # `services/proposal.py` logs the MODE and a content preview -- it is the only layer holding the
 # raw bytes. This layer is the only one holding the batch index and the file ids, and the seam
 # finding named their absence explicitly ("no file ids, no model name, no content snippet, no way
 # to tell which mode fired"). These two tests cover the half that lives here.
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)

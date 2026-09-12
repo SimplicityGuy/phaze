@@ -64,12 +64,10 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
     return file_id
 
 
-# --------------------------------------------------------------------------------------------------
 # Direct unit coverage for the three pure conjunct helpers extracted from
 # ``_eligibility_trace_context`` (phaze-bk9el.11, CCN 22 -> below 15). Each one is DB-free, so these
 # run as plain sync tests rather than through the router -- the async/DB tests above and below still
 # exercise the composed function end-to-end; these pin down every branch of the extraction itself.
-# --------------------------------------------------------------------------------------------------
 
 
 def test_upstream_verdict_apply_gated_on_approved_proposal() -> None:

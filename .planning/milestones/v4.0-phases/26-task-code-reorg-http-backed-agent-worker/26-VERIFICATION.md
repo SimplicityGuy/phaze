@@ -124,7 +124,7 @@ No blockers or warnings found. Key audit findings:
 - No stub `return null` / empty implementations.
 - No `async_session` in agent-worker code paths (verified by import-boundary test + grep).
 - `fingerprint.py` has a `TYPE_CHECKING`-guarded `AsyncSession` import for a controller-role helper (`get_fingerprint_progress`); this is NOT reachable from the agent import graph. The import-boundary test (subprocess) confirms it does not contaminate agent `sys.modules`.
-- `lux_worker` references: zero in source, tests, `docker-compose.yml`, `ROADMAP.md`, or `REQUIREMENTS.md`. Remaining occurrences are in Phase 26 audit-trail records (SUMMARY, CONTEXT, DISCUSSION-LOG) — explicitly preserved per Plan 26-13 Task 2 scope rule.
+- `host-prod_worker` references: zero in source, tests, `docker-compose.yml`, `ROADMAP.md`, or `REQUIREMENTS.md`. Remaining occurrences are in Phase 26 audit-trail records (SUMMARY, CONTEXT, DISCUSSION-LOG) — explicitly preserved per Plan 26-13 Task 2 scope rule.
 
 ---
 

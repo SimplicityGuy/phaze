@@ -77,35 +77,11 @@ def _pre_mutation_guard(batch: ScanBatch, cur: ScanStatus, body: ScanBatchPatch,
     caller returns it as-is); `None` means the caller should apply `set_fields`, stamp the
     heartbeat, and commit. Raises `HTTPException` (409) for every illegal transition.
     """
-    # 2b. phaze-v392: terminal-state guard, gated on the ROW STATE rather than on whether the
-    # PATCH body happens to carry `status`. `ScanBatchPatch` makes every field optional and the
-    # agent legitimately sends status-less progress PATCHes (`ScanBatchPatch(processed_files=...)`
-    # -- tasks/scan.py:236/302/309, no status field at all). Every guard below this point (the old
-    # steps 3-5) was conditioned on `body.status is not None`, so a status-less PATCH fell straight
-    # through into the unconditional setattr loop (step 6) with NO terminal check: a COMPLETED/
-    # FAILED batch could have `processed_files`/`total_files`/`error_message` silently overwritten
-    # and its heartbeat re-stamped -- e.g. a SAQ at-least-once retry re-running an already-completed
-    # `scan_directory` task and re-issuing its status-less progress PATCHes against the terminal row.
-    #
-    # Mirrors the `allowed_from` CAS idiom used by `update_proposal_status` / `update_proposal_fields`
-    # (services/proposal_queries.py, phaze-uu17/phaze-3tj4): mutation is gated on the row's CURRENT
-    # status being in an allowed set, evaluated before any write, regardless of which fields the
-    # caller happens to set. A genuinely no-op PATCH (nothing set at all, or only `status`
-    # re-affirming the row's own terminal value with no other mutating field) still gets the
-    # idempotent 200 echo -- everything else against a terminal row is refused with 409.
-    #
-    # phaze-01a3h: the echo test used to require the body carry NOTHING but `status` -- too
-    # narrow for the agent's real terminal PATCHes, which always carry extra fields
-    # (ScanBatchPatch(status="completed", total_files=N, processed_files=N) --
-    # tasks/scan.py:317-320; ScanBatchPatch(status="failed", error_message=...) --
-    # :296-299/:337-340). The client funnel retries on ANY httpx.TransportError, including a
-    # read timeout on a response whose request already committed server-side; the resulting
-    # retry resends that identical multi-field body, failed the old keys-only check, and hit an
-    # unwarranted 409 that crashed the (already-successful) scan task. Compare every
-    # EXPLICITLY-set field against the ORM attribute it would overwrite instead of the key set:
-    # a value-identical replay (every set field already matches the row) is a true no-op and
-    # gets the 200 echo; any field that actually differs from the current row still 409s below,
-    # so a genuine conflicting write is unaffected.
+    # phaze-v392: terminal protection is keyed to the row's current status, not whether an
+    # optional PATCH body includes ``status``. This also protects status-less progress retries.
+    # phaze-01a3h: an at-least-once retry may repeat the complete multi-field terminal payload after
+    # the first request committed. Treat it as an idempotent echo only when every explicitly set
+    # field already matches; any conflicting terminal-row mutation remains a 409.
     if cur in _TERMINAL_SCAN_STATUSES:
         is_pure_echo = not set_fields or all(getattr(batch, field) == value for field, value in set_fields.items())
         if is_pure_echo:
@@ -173,8 +149,8 @@ async def patch_scan_batch(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
 
     # 2. T-27-01 cross-tenant guard. Returns 403 BEFORE state-machine logic so
-    # a leaked batch_id cannot be probed via 409 vs 200 timing. Mirrors
-    # agent_proposals.py:62-76 byte-for-byte.
+    # a leaked batch_id cannot be probed via 409 vs 200 timing. Mirrors the
+    # authorization-first ordering in ``agent_proposals.patch_proposal_state``.
     if batch.agent_id != agent.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

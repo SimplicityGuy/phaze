@@ -55,7 +55,7 @@ REPOWISE_SCRIPT_PATH = REPO_ROOT / "scripts" / "repowise-coverage.sh"
 # The recipes that measure the WHOLE suite and must therefore leave a report every consumer can
 # read. `just branch-check` and scripts/coverage_floor.py read coverage.json; Codecov reads
 # coverage.xml. Neither should depend on which of these the developer happened to run (AC4).
-WHOLE_SUITE_RECIPES = ("test-ci", "test-cov")
+WHOLE_SUITE_RECIPES = ("test-cov",)
 
 # The CI shard is deliberately NOT in the list above; see `test_the_ci_shard_stays_report_free`.
 SHARD_RECIPE = "test-bucket"
@@ -120,9 +120,6 @@ def _repo_coverage(**overrides: object) -> coverage.Coverage:
     coverage.py ignores fails here rather than reading as configured (ADR-0012 rule 3).
     """
     return coverage.Coverage(config_file=str(PYPROJECT_PATH), **overrides)  # type: ignore[arg-type]
-
-
-# --- the settings that CAN be central, are, and are honored --------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -200,9 +197,6 @@ def test_the_json_and_xml_destinations_are_honored_not_merely_configured(tmp_pat
     assert (tmp_path / expected_xml).is_file(), f"xml_report() with no outfile did not honour the configured path {expected_xml!r}"
 
 
-# --- AC4: every whole-suite recipe emits BOTH artifacts ------------------------------------------
-
-
 @pytest.mark.parametrize("recipe", WHOLE_SUITE_RECIPES)
 @pytest.mark.parametrize("report", ["json", "xml"])
 def test_every_whole_suite_recipe_requests_both_file_reports(recipe: str, report: str) -> None:
@@ -248,9 +242,6 @@ def test_coverage_combine_emits_both_artifacts_before_it_gates() -> None:
     assert steps[-1].endswith("scripts/coverage_floor.py"), steps
 
 
-# --- AC6: no recipe may override a setting that has a central home -------------------------------
-
-
 def _all_coverage_sites() -> dict[str, str]:
     """Every command line in the repo that measures or reports coverage."""
     sites = {recipe: _pytest_command(recipe) for recipe in WHOLE_SUITE_RECIPES}
@@ -282,9 +273,6 @@ def test_no_coverage_site_overrides_a_setting_that_lives_in_pyproject(site: str)
         assert not pattern.search(command), f"{site} passes {flag}, which overrides {home}:\n{command}"
 
 
-# --- Operator instruction 2026-08-22: consistent, alphabetical parameter order --------------------
-
-
 @pytest.mark.parametrize("site", ["coverage-combine", *WHOLE_SUITE_RECIPES, SHARD_RECIPE])
 def test_every_coverage_site_orders_its_cov_flags_alphabetically(site: str) -> None:
     """Operator instruction, phaze-jktlb, 2026-08-22: "preferably in alphabetical order".
@@ -301,9 +289,6 @@ def test_every_coverage_site_orders_its_cov_flags_alphabetically(site: str) -> N
     flags = _cov_flags(command)
 
     assert flags == sorted(flags), f"{site} passes its coverage flags out of alphabetical order: {flags}"
-
-
-# --- AC7: the two load-bearing per-recipe settings survived centralization -----------------------
 
 
 def test_the_ci_shard_stays_report_free_and_keeps_its_two_deliberate_overrides() -> None:

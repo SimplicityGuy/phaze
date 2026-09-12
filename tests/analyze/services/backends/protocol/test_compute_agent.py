@@ -39,9 +39,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# === select_agent_by_id (per-entry binding, D-01) ========================================
-
-
 @pytest.mark.asyncio
 async def test_select_agent_by_id_returns_agent_matched_on_id(session: AsyncSession) -> None:
     """D-01: select_agent_by_id resolves the online agent whose Agent.id equals the arg."""
@@ -209,9 +206,6 @@ async def test_compute_in_flight_count_filters_by_backend_id_and_status(session:
     assert await backend.in_flight_count(session) == len(IN_FLIGHT_STATUSES)
 
 
-# === dispatch (3 impls; D-03 atomicity) ==================================================
-
-
 @pytest.mark.asyncio
 async def test_compute_dispatch_writes_cloud_job_in_txn(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """D-03: compute dispatch upserts a non-terminal cloud_job in the SAME session.
@@ -335,9 +329,6 @@ async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSe
     _task, payload = next((t, p) for t, p in router.queues["nox-io"].captured if t == "push_file")
     assert payload["dest_host"] == "a1.push.example"
     assert payload["dest_ssh_user"] is None
-
-
-# === phaze-s5sz: dispatch PARKS (never fires) the push_file enqueue =====================================
 
 
 @pytest.mark.asyncio

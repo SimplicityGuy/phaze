@@ -1,30 +1,12 @@
-"""Shared cue-eligibility query + cue-track-building helpers (phaze-b4u3p).
+"""Shared cue-eligibility queries and batched cue-track assembly.
 
-``eligible_tracklist_stmt``/``get_eligible_tracklist_query`` lived as private helpers on
-``routers/cue.py`` and were reached into directly by ``services/review.py``
-(``get_cue_review_cards``, ``count_cue_review_candidates``) -- a SERVICE importing a ROUTER's
-underscore-prefixed surface, the same layering inversion ``services/tag_comparison.py`` documents
-for the tag-review seam. Moved here so both ``routers/cue.py`` and ``services/review.py`` depend
-on ONE shared module. ``routers/cue.py`` re-imports the eligible-side names it still uses under
-the same identifiers, so its own routes and the existing white-box tests that import them via
-``phaze.routers.cue`` are unaffected.
+Routers and Review consume the same approved/applied predicates from this service module, avoiding
+a service-to-router dependency. ``_approved_applied_tracklist_base`` keeps eligible and gated sets
+aligned, including the required ``latest_version_id`` scope.
 
-``gated_tracklist_stmt`` (the sibling GATED predicate -- approved + applied, no timestamped
-track) previously lived on ``services/review.py`` itself as ``_gated_tracklist_stmt``, built from
-an inline COPY of the same join + first-three-predicates ``eligible_tracklist_stmt`` uses, which
-was the 14-line clone repowise flagged between the two files. ``_approved_applied_tracklist_base``
-factors that shared core out so the eligible and gated statements can never drift on the parts
-they're supposed to share (in particular the ``latest_version_id`` scoping phaze-dboy fixed once
-already -- see its note below).
-
-``build_cue_tracks_for_versions`` is the batched form of ``routers.cue._build_cue_tracks``: TWO
-queries for however many tracklist VERSIONS are asked for, instead of two PER version. Before this
-(phaze-b4u3p), ``get_cue_review_cards`` called the single-version form once per eligible tracklist
-inside its render loop -- a cross-function N+1 (up to ``2 * _MAX_REVIEW_ROWS`` round-trips for a
-full page). ``routers.cue._build_cue_tracks`` is now defined IN TERMS OF this function (a
-single-version call with the same query shape, just not batched), so there is exactly one
-implementation of "which tracks + accepted Discogs links belong to this version" between the
-router's three single-tracklist call sites and the review workspace's batched one.
+``build_cue_tracks_for_versions`` performs two queries for any number of versions; the router's
+single-version helper delegates here so the review workspace does not regress to two round trips per
+tracklist. Public router imports retain their established names.
 """
 
 from __future__ import annotations
@@ -144,7 +126,7 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     Batch form of the single-version track+Discogs-link build: one ``TracklistTrack`` query keyed
     by ``version_id IN (...)`` and one ``DiscogsLink`` query keyed by the resulting ``track_id``s,
     regardless of how many versions are asked for. Fixes the cross-function N+1
-    ``get_cue_review_cards -> routers/cue.py::_build_cue_tracks`` used to have: that call sat
+    that ``get_cue_review_cards`` avoids: that call sat
     inside the per-card render loop, so a page of N eligible tracklists issued 2N round-trips to
     build previews that are pure in-memory ``.cue`` text (T-60-CUE) -- no disk write, but the DB
     cost still scaled with the render, not with the page.

@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # 🚀 Quick Start
 
 Get Phaze running locally and walk a music file through the full pipeline — scan,
@@ -220,12 +219,17 @@ search or jump) or the documented HTTP endpoints.
 
 ## 🧪 Running the tests
 
-The suite needs a real Postgres and Redis. Bring the harness up, then run it:
+The suite needs real Postgres and Redis. The manual full gate starts the shared harness and
+automatically carves an isolated seat when the three resource exports are not already set:
 
 ```bash
-just test-db        # shared test harness: Postgres on 5433, Redis on 6380
-just check          # lint + typecheck + full suite (auto-provisions if nothing is exported)
+just check          # lint + typecheck + full suite + 95% line-coverage floor
 ```
+
+Beadhive uses `just check-fast` at the per-bead `check` and `submit` boundaries. It runs the
+change-selected tests plus the fixed documentation floor, escalating to the full suite when the
+coverage map cannot safely select. The assembled molecule runs `just check-all`, which adds every
+pre-commit hook to the full gate. The exact boundary map is maintained in [Agentic Git Flow](AGF.md).
 
 **One database, one pytest process.** `tests/conftest.py` creates the schema at session start and
 drops it at session teardown, so two pytest processes on the same database destroy each other —

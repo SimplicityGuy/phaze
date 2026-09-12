@@ -29,14 +29,14 @@ Requirements: CLOUDDEPLOY-01..04. **Depends on Phase 50** (deploys the full work
 - **D-04:** **In-flight cloud work drains; OFF only stops NEW cloud work.** Files already `PUSHING`/`PUSHED` finish their current transfer + analysis on the compute agent (no mid-transfer/mid-analysis abort, no scratch reclaim). Simplest + safest — avoids wasted transfers and partial-state cleanup. No new long files enter the cloud path once OFF.
 
 ### Cloud-agent compose & Tailscale (CLOUDDEPLOY-01)
-- **D-05:** **Host-installed `tailscaled`** on the OCI A1 (apt install + `tailscale up`, owned by the homelab OpenTofu / runbook), NOT a Tailscale sidecar container. The compose stack uses the host's Tailscale connectivity to reach lux's services. Simplest on a dedicated single-purpose VM we fully control; keeps the compose file clean (no `TS_AUTHKEY` secret, no `network_mode` sidecar wiring).
+- **D-05:** **Host-installed `tailscaled`** on the OCI A1 (apt install + `tailscale up`, owned by the homelab OpenTofu / runbook), NOT a Tailscale sidecar container. The compose stack uses the host's Tailscale connectivity to reach host-prod's services. Simplest on a dedicated single-purpose VM we fully control; keeps the compose file clean (no `TS_AUTHKEY` secret, no `network_mode` sidecar wiring).
 - **D-06:** **Worker-only compose.** Only the agent SAQ worker (`PHAZE_ROLE=agent`, `kind=compute`). **No watcher** (a compute agent owns no scan roots — `kind=compute` relaxes the empty-scan-roots gate, `config.py:470`), **no fingerprint sidecars**, **NO media mount** (DIST-04 — agents reach Postgres only via the queue + the app HTTP API, never a media bind). Mirrors `docker-compose.agent.yml`'s invariants minus the media-bound services.
 - **D-07:** **Scratch = a named docker volume** mounted at `cloud_scratch_dir` (not a host bind mount — no operator dir-create/chown step). `MODELS_PATH` mounted `rw` (auto-download); CA cert mounted `ro`. Matches the `docker-compose.agent.yml` volume conventions.
 - **D-08:** **Image line: `image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64`.** The Phase 47 image is **NOT multi-arch** — it is published as a separate `-arm64`-suffixed tag (`latest-arm64` on default branch, `<version>-arm64` on release tags; see `docs/arm64-agent-image.md:189-194`). The `${PHAZE_IMAGE_TAG:-latest}` convention from `docker-compose.agent.yml` is preserved, but the **`-arm64` suffix is mandatory**. Production pins `PHAZE_IMAGE_TAG=v5.0.0` → resolves to `v5.0.0-arm64`.
 
 ### OCI A1 + Tailscale-ACL + PG role (CLOUDDEPLOY-03)
 - **D-09:** **OCI A1 infra is OpenTofu IaC in the homelab repo**, NOT a phaze-docs console click-path and NOT authored in the phaze repo (workspace boundary — no cross-project deps). Phase 51 delivers a **ready-to-paste change prompt for the homelab repo agent** (the Phase 36 "Step D" precedent) specifying the OpenTofu OCI A1 module: Always-Free A1 Ampere, arm64 Ubuntu 24.04 image, boot volume, SSH key, networking/security-list.
-- **D-10:** **Tailscale ACL + least-privilege Postgres queue-broker role are applied in the homelab repo, spec'd by phaze.** The change prompt carries the **exact ACL JSON** (scoping A1 → `lux:{5432,6379,8000}` + `nox → A1:22`) and the **exact PG role SQL** as the authoritative spec; the homelab agent applies them (Tailscale provider for the ACL if available, else ACL JSON in homelab; PG role via homelab's Postgres provisioning). phaze's `docs/cloud-burst.md` keeps copies for reference. phaze stays the source-of-truth spec; all live infra lives in homelab.
+- **D-10:** **Tailscale ACL + least-privilege Postgres queue-broker role are applied in the homelab repo, spec'd by phaze.** The change prompt carries the **exact ACL JSON** (scoping A1 → `host-prod:{5432,6379,8000}` + `host-store → A1:22`) and the **exact PG role SQL** as the authoritative spec; the homelab agent applies them (Tailscale provider for the ACL if available, else ACL JSON in homelab; PG role via homelab's Postgres provisioning). phaze's `docs/cloud-burst.md` keeps copies for reference. phaze stays the source-of-truth spec; all live infra lives in homelab.
 - **D-11:** **Least-privilege PG role is full SQL in the spec/runbook.** Since Phase 36 migrated SAQ to the **Postgres queue backend**, the compute agent connects via `PHAZE_QUEUE_URL` for the `saq_jobs` table ONLY (NOT the app ORM — DIST-04). Document `CREATE ROLE` + minimal `GRANT`s scoped to `saq_jobs` + its sequence. **Grant-timing note:** SAQ auto-creates `saq_jobs` on first boot, so document either (a) the role needs `CREATE` on first boot, or (b) pre-create the table and grant table-scoped privileges only — researcher/planner picks the safer option.
 
 ### Config documentation (CLOUDDEPLOY-02)
@@ -83,7 +83,7 @@ Requirements: CLOUDDEPLOY-01..04. **Depends on Phase 50** (deploys the full work
 - `docs/README.md` — docs index; add the new `cloud-burst.md` entry.
 
 ### Cross-repo (homelab) deliverable
-- Phase 36's "Deliverable (Step D — homelab)" pattern in `.planning/ROADMAP.md` §"Phase 36" — the precedent format for the ready-to-paste homelab change prompt (D-09/D-10): env/service changes, deploy ordering via `datum@nox` / `datum@lux`.
+- Phase 36's "Deliverable (Step D — homelab)" pattern in `.planning/ROADMAP.md` §"Phase 36" — the precedent format for the ready-to-paste homelab change prompt (D-09/D-10): env/service changes, deploy ordering via `operator@host-store` / `operator@host-prod`.
 
 </canonical_refs>
 
@@ -115,7 +115,7 @@ Requirements: CLOUDDEPLOY-01..04. **Depends on Phase 50** (deploys the full work
 <specifics>
 ## Specific Ideas
 
-- The Tailscale ACL must scope the A1 to **exactly** `lux:{5432,6379,8000}` (postgres queue + redis cache + app API) + `nox → A1:22` (push SSH target) — no broader access.
+- The Tailscale ACL must scope the A1 to **exactly** `host-prod:{5432,6379,8000}` (postgres queue + redis cache + app API) + `host-store → A1:22` (push SSH target) — no broader access.
 - `5432` is required because Phase 36 made the SAQ queue Postgres-backed; the compute agent's `PHAZE_QUEUE_URL` connects there for `saq_jobs` only (still no app ORM / `DATABASE_URL` — DIST-04 holds).
 - Off-by-default master toggle is deliberate: the just-built Phase 49/50 cloud feature ships OFF and the operator opts in after provisioning. Capture this clearly so the v5.0 deploy/redeploy doesn't surprise.
 - v5.0 chose rsync-over-Tailscale push, NO object storage — the runbook/compose must not reintroduce any object-storage assumption.

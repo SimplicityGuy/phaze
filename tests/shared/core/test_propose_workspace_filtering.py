@@ -64,9 +64,7 @@ async def _seed_mixed(session: AsyncSession, seed_pending_proposal: Callable[...
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6hm.2 -- filter tabs + search
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -325,9 +323,7 @@ async def test_search_narrows_within_the_active_filter(
     assert "Approved 0.mp3" not in crossed
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6gsw -- the search box's hx-get must not bake render-time view state
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -483,9 +479,7 @@ async def test_history_restore_wins_even_with_a_list_hx_target(
     assert "<html" in body and 'id="stage-workspace"' in body
 
 
-# ---------------------------------------------------------------------------
 # Shape / id-uniqueness discipline
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -536,9 +530,7 @@ async def test_narrow_swap_is_the_list_only_not_the_whole_workspace(
     assert "<html" not in rail, "a rail swap is still a bare fragment (R-5)"
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6hm.9 -- pagination
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

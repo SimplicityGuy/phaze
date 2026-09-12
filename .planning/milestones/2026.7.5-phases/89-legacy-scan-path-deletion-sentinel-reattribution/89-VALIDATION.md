@@ -64,7 +64,7 @@ audited: 2026-07-11
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Live-corpus reattribution + sentinel delete against a restore of prod | LEGACY-02/03 | Prod corpus (~11,428 files, real nox agent) not reproducible in unit tests | Rehearse `alembic upgrade head` against a restore; confirm 0 legacy-owned rows remain and sentinel deleted (operational, at ship time) |
+| Live-corpus reattribution + sentinel delete against a restore of prod | LEGACY-02/03 | Prod corpus (~11,428 files, real host-store agent) not reproducible in unit tests | Rehearse `alembic upgrade head` against a restore; confirm 0 legacy-owned rows remain and sentinel deleted (operational, at ship time) |
 
 *All in-repo behaviors have automated verification via the migration test bucket.*
 

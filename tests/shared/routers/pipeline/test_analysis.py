@@ -642,7 +642,6 @@ def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless
     assert len(small_compiled.params) == len(large_compiled.params) == 2
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: POST /pipeline/files/{file_id}/deepen is REMOVED.
 #
 # Phase 44's per-file "deepen" re-enqueued one file at a cap of 0 to lift the
@@ -655,7 +654,6 @@ def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless
 # refusal, the complete-payload funnel, and phaze-ewen collision classification are all
 # exercised by the surviving process_file producers (`_enqueue_analysis_jobs` and the
 # operator-gated retry endpoints) in this same file.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -693,14 +691,12 @@ def test_no_live_reference_to_the_removed_deepen_surface() -> None:
     assert offenders == [], f"live references to the removed deepen surface: {offenders}"
 
 
-# ---------------------------------------------------------------------------
 # quick-260707-d79: operator-gated BULK retry of ANALYSIS_FAILED files.
 #
 # POST /pipeline/analysis-failed/retry re-drives EVERY ANALYSIS_FAILED file through the SAME
 # guarded funnel every producer uses (per-agent routing -> NoActiveAgentError guard ->
 # enqueue_process_file full payload + deterministic key). Each file leaves the red bucket immediately (the retired ``files.state`` flip that
 # accompanied this is gone since Phase 90). recover_orphaned_work / _select_done_analyze_ids stay unchanged.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -873,7 +869,6 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     ProcessFilePayload.model_validate(kwargs)
 
 
-# ---------------------------------------------------------------------------
 # Phase 75 Plan 02 (HYG-04): force-local duration-router gate regression region.
 #
 # Guards the T-71-08 regression class at all THREE live gate sites of the
@@ -892,7 +887,6 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
 # ``select(FileRecord).where(state == AWAITING_CLOUD)`` scalars check), NOT a bare enqueue/routing
 # count, so each case would FAIL if the ``and not await get_route_control(session)`` clause were
 # removed from its gate (a long file would then be held for the cloud drain).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

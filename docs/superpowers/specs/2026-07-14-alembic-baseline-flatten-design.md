@@ -20,7 +20,7 @@ deploy **prod is at `039`**. Ephemeral CI / test / migration-test DBs are always
 built from scratch, so they are irrelevant to re-stamping.
 
 **Pre-merge gate:** re-confirm prod's `alembic_version.version_num == '039'` via
-the read-only PG probe (`ssh datum@lux.lan`, direct `:5432`, `BEGIN TRANSACTION
+the read-only PG probe (`ssh operator@host-prod.lan`, direct `:5432`, `BEGIN TRANSACTION
 READ ONLY`, base64'd `SELECT version_num FROM alembic_version`) immediately
 before merge. If prod is not at `039`, the flatten holds.
 
@@ -141,7 +141,7 @@ id keeps prod a no-op in both directions.
 
 ## Out of scope
 
-- The 3 post-deploy cloud-burst bugs (orphan ledger / xenolab endpoint / empty
+- The 3 post-deploy cloud-burst bugs (orphan ledger / host-compute-alt endpoint / empty
   analysis) — separate hotfix track.
 - Any schema change. This is a pure migration-ledger collapse; the resulting
   schema is byte-identical to the `039` chain output.

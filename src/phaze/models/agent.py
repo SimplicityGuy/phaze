@@ -1,4 +1,4 @@
-"""Agent model - file-server identity for the v4.0 distributed-agents milestone."""
+"""Agent model for file-server and compute-worker identity."""
 
 from __future__ import annotations
 

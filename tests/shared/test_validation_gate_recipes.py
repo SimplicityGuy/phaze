@@ -105,7 +105,7 @@ def test_the_validation_test_step_does_not_suppress_the_pytest_header() -> None:
 
 
 def test_check_runs_lint_typecheck_and_the_validation_test_step() -> None:
-    """`check` is the per-bead beadhive gate; it must reach the coverage-producing step."""
+    """`check` is the manual/postland/union full gate; it must reach the coverage-producing step."""
     check = _dry_run("check")
 
     assert "uv run ruff check" in check
@@ -116,7 +116,7 @@ def test_check_runs_lint_typecheck_and_the_validation_test_step() -> None:
 
 
 def test_check_all_exists_and_is_a_strict_superset_of_check() -> None:
-    """`~/.beadhive/config.yaml` names `just check-all` at the molecule / merge-main boundary."""
+    """`~/.beadhive/config.yaml` names `just check-all` at the assembled-molecule boundary."""
     check_all = _dry_run("check-all")
 
     assert "uv run pre-commit run --all-files" in check_all
@@ -134,9 +134,6 @@ def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> N
 
     assert "-x" in recipe_body and "-q" in recipe_body
     assert "NOT the validation gate" in doc_line
-
-
-# --- phaze-bk9el.21: branch coverage is MEASURED everywhere and GATED per bead, not repo-wide ---
 
 
 def test_branch_coverage_is_enabled_repo_wide() -> None:
@@ -192,7 +189,6 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
     assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
 
 
-# --- Operator directive 2026-08-21: branch data in EVERY coverage recipe (phaze-bk9el.21) -------
 #
 # Question as put to the operator during phaze-bk9el.21, 2026-08-21: what should this epic do about
 # branch coverage being off? Answer as given (selected option label, verbatim): "Enable it, gate the
@@ -200,14 +196,14 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
 # all of the 'coverage' just recipes". Durable record: bead phaze-bk9el.21.
 #
 # The IMPLEMENTATION of that is one line -- `branch = true` in [tool.coverage.run] -- which every
-# recipe inherits: `test-cov`, `test-ci`, `test-bucket` (each CI shard) and `coverage-combine`. One
+# recipe inherits: `test-cov`, `test-bucket` (each CI shard) and `coverage-combine`. One
 # place, not four. But the whole thing then rests on a single config line, and a `branch = false`, a
 # stray `--no-branch`, or a recipe pointed at a different rcfile would take branch data out of every
 # recipe at once with NO visible failure -- the same shape as the `-x`/`-q` regression phaze-jnj90
 # exists to prevent. Hence these guards, and hence the last one, which checks the ARTIFACTS rather
 # than the config that is supposed to produce them.
 
-_COVERAGE_RECIPES = ("test-cov", "test-ci", "test-bucket", "coverage-combine")
+_COVERAGE_RECIPES = ("test-cov", "test-bucket", "coverage-combine")
 
 
 def test_no_coverage_recipe_disables_branch_measurement() -> None:

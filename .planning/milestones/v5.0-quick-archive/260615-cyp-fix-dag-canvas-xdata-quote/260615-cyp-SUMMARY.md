@@ -30,7 +30,7 @@ pr: 137
 
 ## Notes
 
-- Live incident: observed on the homelab dashboard (nox/lux, v4.2.0). The fix ships
+- Live incident: observed on the homelab dashboard (host-store/host-prod, v4.2.0). The fix ships
   in the next image build/redeploy — no DB or data migration involved.
 - Layout untouched: `NODE_LAYOUT`, `EDGES`, and canvas dimensions are unchanged.
 - Sibling finding from the same review (NOT in this PR): a stale SAQ

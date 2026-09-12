@@ -78,9 +78,7 @@ async def _seed_failed_file(session: AsyncSession) -> FileRecord:
     return file
 
 
-# --------------------------------------------------------------------------------------------------
 # behavior 8: terminal-analyze retry is MANUAL-ONLY (no auto-loop). Pure predicate — DB-free.
-# --------------------------------------------------------------------------------------------------
 def test_analyze_failure_is_never_auto_eligible() -> None:
     """behavior 8 / T-87-24: a FAILED analyze is terminal — the derived scheduler NEVER auto-retries it.
 
@@ -97,9 +95,7 @@ def test_analyze_failure_is_never_auto_eligible() -> None:
     assert eligible({Stage.METADATA: Status.FAILED}, Stage.METADATA) is True
 
 
-# --------------------------------------------------------------------------------------------------
 # Per-file scoped analyze retry.
-# --------------------------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     client: AsyncClient,
@@ -199,9 +195,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
     assert capture == []
 
 
-# --------------------------------------------------------------------------------------------------
 # Bulk "Retry all failed · Analyze" still routes through the guarded funnel (regression backstop).
-# --------------------------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_bulk_retry_reenqueues_all_failed_through_guarded_funnel(client: AsyncClient, session: AsyncSession) -> None:
     """The bulk endpoint re-drives EVERY failed analyze file on the per-agent queue (never default)."""
@@ -237,9 +231,7 @@ async def test_bulk_retry_no_active_agent_is_amber_no_enqueue(client: AsyncClien
     assert all(r.failed_at is not None for r in rows)
 
 
-# --------------------------------------------------------------------------------------------------
 # Task 2 render assertions (files_table_view.html + _stage_matrix.html).  `-k render`
-# --------------------------------------------------------------------------------------------------
 def _render_files_table(*, bucket: str, active_stage: str | None = None, active_bucket: str | None = None) -> str:
     """Render files_table_view.html with a single row whose stage cells carry ``bucket``.
 

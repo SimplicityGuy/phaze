@@ -166,9 +166,7 @@ def _make_progress_body(
     return body
 
 
-# ---------------------------------------------------------------------------
 # 28-V-10: Unauthenticated -> 401
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -195,9 +193,7 @@ async def test_unknown_token_403(session: AsyncSession, redis_client: redis_asyn
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
 # 28-V-11: Cross-tenant guard (body.agent_id != auth agent.id) -> 403 BEFORE Redis read
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -225,9 +221,7 @@ async def test_cross_tenant_agent_id_mismatch_403_before_state_read(
     assert "does not match" in r.text.lower() or "match" in r.text.lower()
 
 
-# ---------------------------------------------------------------------------
 # 28-V-12: Unknown batch_id -> 404
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -248,9 +242,7 @@ async def test_unknown_batch_404(
     assert "not found" in r.text.lower()
 
 
-# ---------------------------------------------------------------------------
 # 28-V-13: Non-participating agent (per-agent rollup absent) -> 403
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -273,9 +265,7 @@ async def test_non_participating_agent_403(
     assert "dispatch" in r.text.lower() or "not part" in r.text.lower()
 
 
-# ---------------------------------------------------------------------------
 # 28-V-14: Idempotent dup request_id -> 200, no double HINCRBY
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -307,9 +297,7 @@ async def test_duplicate_request_id_does_not_re_increment(
     assert completed == "1", f"completed counter should be 1 after dedup, got {completed!r}"
 
 
-# ---------------------------------------------------------------------------
 # 28-V-15: Counter math (D-07 rules) — all four terminal_step branches + 3 failed_at_step paths
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -474,9 +462,7 @@ async def test_counter_math_terminal_step_failed_at_delete(
     assert h["deleted"] == "0"
 
 
-# ---------------------------------------------------------------------------
 # 28-V-16: sub_batch_terminal promotes status to complete / complete_with_errors
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -567,11 +553,9 @@ async def test_sub_batch_terminal_does_not_promote_when_not_last_subjob(
     assert h["subjobs_completed"] == "1"
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6t8: the dedup marker must outlive an arbitrarily-delayed replay, the
 # promotion predicate must tolerate an overshoot, and apply+promote must be ONE
 # atomic round-trip so a concurrent sub-job cannot interleave between them.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -669,9 +653,7 @@ async def test_promotion_runs_inside_the_apply_script_not_a_second_round_trip(
     assert h["status"] == "complete"
 
 
-# ---------------------------------------------------------------------------
 # Issue #61: concurrent terminal sub-jobs must keep status consistent with failed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -769,9 +751,7 @@ async def test_concurrent_sub_batch_terminals_keep_status_consistent_with_failed
             )
 
 
-# ---------------------------------------------------------------------------
 # Cross-tenant: explicit two-agent variant matching test_agent_scan_batches T-27-01 idiom
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -805,9 +785,7 @@ async def test_cross_tenant_403_with_two_agents(
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
 # Wiring assertion (mirrors test_agent_scan_batches.test_router_registered_in_main_app)
-# ---------------------------------------------------------------------------
 
 
 def test_router_registered_in_main_app() -> None:
@@ -879,9 +857,7 @@ def test_compute_increments_is_pure_function_unit() -> None:
     }
 
 
-# ---------------------------------------------------------------------------
 # phaze-pyv3: the increment + promote scripts never resurrect a reaped exec hash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -918,10 +894,8 @@ async def test_apply_increments_and_promote_do_not_resurrect_reaped_key(
         agent_exec_batches._promote_status_script = None
 
 
-# ---------------------------------------------------------------------------
 # phaze-gtau: a crash BETWEEN the (old) marker-set point and the increments must
 # no longer burn the marker with the counters lost -- the retry must re-apply them.
-# ---------------------------------------------------------------------------
 
 
 def _make_client_capturing_errors(session: AsyncSession, redis_client: redis_async.Redis, token: str) -> AsyncClient:
@@ -1057,11 +1031,9 @@ async def test_mid_span_crash_on_terminal_event_recovers_promotion_on_retry(
     assert h["status"] == "complete", f"retry must promote the batch instead of stranding at 'running', got {h['status']!r}"
 
 
-# ---------------------------------------------------------------------------
 # phaze-j7u8: the claim-or-reconcile script -- the shared net under all three
 # exec:active wedges. A held sentinel whose named batch demonstrably cannot
 # release it is reclaimed; a genuinely in-flight one is refused.
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture

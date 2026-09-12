@@ -261,9 +261,7 @@ def _stale_database(postgres: str, name: str, *, hours: int = 48) -> None:
     _age_database(postgres, name, hours)
 
 
-# ---------------------------------------------------------------------------------------------
 # The three signals, combined and each in isolation
-# ---------------------------------------------------------------------------------------------
 
 
 def test_apply_drops_a_database_that_is_unregistered_backend_free_and_past_the_age_floor(postgres: str, registry: str) -> None:
@@ -337,9 +335,7 @@ def test_the_age_floor_is_overridable(postgres: str, registry: str) -> None:
     assert "phaze_middling_99887766_test" not in _database_names(postgres), "2h old must be dropped once the floor is lowered to 1h"
 
 
-# ---------------------------------------------------------------------------------------------
 # The shared canonical pair -- never a candidate, no matter what
-# ---------------------------------------------------------------------------------------------
 
 
 def test_the_shared_canonical_pair_is_never_a_candidate(postgres: str, registry: str) -> None:
@@ -358,9 +354,7 @@ def test_the_shared_canonical_pair_is_never_a_candidate(postgres: str, registry:
     assert {"phaze_test", "phaze_migrations_test"} <= _database_names(postgres), "the shared canonical pair must never be dropped"
 
 
-# ---------------------------------------------------------------------------------------------
 # Fail closed on missing evidence
-# ---------------------------------------------------------------------------------------------
 
 
 def test_refuses_outright_when_postgres_is_unreachable(registry: str) -> None:
@@ -382,9 +376,7 @@ def test_refuses_outright_when_the_redis_registry_is_unreachable(postgres: str) 
     assert "phaze_shouldsurvive_aabbccdd_test" in _database_names(postgres), "a refused sweep must drop nothing"
 
 
-# ---------------------------------------------------------------------------------------------
 # Never a container, never a stop/rm/create/run
-# ---------------------------------------------------------------------------------------------
 
 
 def test_no_container_is_stopped_removed_or_recreated_on_any_path(postgres: str, registry: str, tmp_path: Path) -> None:
@@ -419,9 +411,7 @@ def test_the_script_source_never_uses_a_docker_verb_other_than_exec() -> None:
         assert f"docker {verb}" not in source, f"scripts/test-db-gc.sh must never call `docker {verb}`"
 
 
-# ---------------------------------------------------------------------------------------------
 # Wiring -- the recipe an operator actually reaches for
-# ---------------------------------------------------------------------------------------------
 
 
 def _recipe_body(name: str) -> str:
@@ -434,7 +424,9 @@ def _recipe_body(name: str) -> str:
 def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
     body = _recipe_body("test-db-gc *flags:")
     assert "scripts/test-db-gc.sh" in body
-    assert "--apply" not in body.split("{{flags}}")[0], "the recipe must not force --apply itself"
+    command = next(line for line in body.splitlines() if "scripts/test-db-gc.sh" in line)
+    assert "--apply" not in command, "the recipe must not force --apply itself"
+    assert '"$@"' in body, "operator flags must be forwarded as discrete argv, never shell fragments"
 
 
 def test_the_gc_recipe_never_tears_anything_down() -> None:

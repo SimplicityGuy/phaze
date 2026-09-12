@@ -153,11 +153,9 @@ async def test_unknown_stage_degrades_safely(client: AsyncClient, session: Async
     assert "Trace unavailable this tick." in response.text
 
 
-# --------------------------------------------------------------------------------------------------
 # Task 3 render assertions: the right-pane expanded matrix (5 trace triggers) + enrich-only force-skip.
 # Rendered through the REAL record slide-in endpoint (GET /record/{id} -> record_body.html), so the
 # composition is verified end-to-end without touching record.py.
-# --------------------------------------------------------------------------------------------------
 
 _ENRICH = ("metadata", "analyze")
 _DOWNSTREAM = ("propose", "review", "apply")

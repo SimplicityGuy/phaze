@@ -60,9 +60,7 @@ def _make_agent(
     )
 
 
-# ---------------------------------------------------------------------------
 # classify(agent, now) — 5-state matrix
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -149,9 +147,7 @@ def test_classify_returns_literal_type() -> None:
     assert result in {"alive", "stale", "dead", "revoked", "never"}
 
 
-# ---------------------------------------------------------------------------
 # sort_key(agent, now) — ordering invariants
-# ---------------------------------------------------------------------------
 
 
 def test_sort_key_revoked_last() -> None:
@@ -216,9 +212,7 @@ def test_sort_key_never_after_dead_within_non_revoked() -> None:
     assert sort_key(dead, NOW) < sort_key(never, NOW)
 
 
-# ---------------------------------------------------------------------------
 # derive_compute_lane_identities(session) — degrade branch (D-05/D-07 / KDEPLOY-04)
-# ---------------------------------------------------------------------------
 
 
 class _RaisingSession:
@@ -234,9 +228,7 @@ class _RaisingSession:
         raise SQLAlchemyError("db down")
 
 
-# ---------------------------------------------------------------------------
 # non_local_backend_kinds(settings) — pure registry projection (COMPUTE-01)
-# ---------------------------------------------------------------------------
 
 
 def _backend(backend_id: str, kind: str) -> SimpleNamespace:
@@ -267,9 +259,7 @@ def test_non_local_backend_kinds_all_local_is_empty() -> None:
     assert non_local_backend_kinds(_settings(_backend("local", "local"))) == {}  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
 # derive_compute_lane_identities(session) — per-cluster identity derivation (COMPUTE-01)
-# ---------------------------------------------------------------------------
 
 
 def _file(i: int) -> FileRecord:
@@ -503,9 +493,7 @@ async def test_derive_degrades_to_all_idle_lanes_on_window_clauses_failure(sessi
     assert all((lane.running, lane.waiting, lane.queued, lane.working) == (0, 0, 0, 0) for lane in lanes)
 
 
-# ---------------------------------------------------------------------------
 # get_compute_lane_running_jobs(session, backend_id) — phaze-2u8v.5 burst-lane workload drill-down
-# ---------------------------------------------------------------------------
 
 
 async def _seed_named_job(session: AsyncSession, *, backend_id: str | None, filename: str, status: str = CloudJobStatus.RUNNING.value) -> FileRecord:

@@ -251,11 +251,9 @@ def test_analysis_write_payload_rejects_negative_coverage_count() -> None:
         AnalysisWritePayload.model_validate({"fine_windows_analyzed": -1})
 
 
-# ------------------------------------------------------------------------------------------------
 # phaze-01gh: the four coverage counts + window_index are capped at a realistic domain (the same
 # windows-per-file bound as the `windows` list DoS cap), not left to overflow the int4 columns they
 # write (wire_bounds rule 3).
-# ------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "field",
     ["fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total"],

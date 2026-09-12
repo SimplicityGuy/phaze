@@ -22,9 +22,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 async def create_test_file(
@@ -100,9 +98,7 @@ async def create_test_tracklist(
     return tracklist
 
 
-# ---------------------------------------------------------------------------
 # SearchResult dataclass
-# ---------------------------------------------------------------------------
 
 
 class TestSearchResult:
@@ -121,9 +117,7 @@ class TestSearchResult:
         assert r.artist == "DJ Test"
 
 
-# ---------------------------------------------------------------------------
 # search() — file results
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -205,9 +199,7 @@ async def test_search_ranks_by_relevance(session: AsyncSession) -> None:
         assert results[i].rank >= results[i + 1].rank
 
 
-# ---------------------------------------------------------------------------
 # search() — facet filters
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -377,9 +369,7 @@ async def test_search_date_to_at_date_max_does_not_overflow(session: AsyncSessio
     assert any(r.id == str(file_record.id) for r in file_results), "date_to=date.max must be an inclusive upper bound, not just non-crashing"
 
 
-# ---------------------------------------------------------------------------
 # search() — pagination
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -438,9 +428,7 @@ async def test_search_pagination_partitions_tied_ranks_without_loss_or_duplicati
     assert len(seen_ids) == len(set(seen_ids)), "no row may be duplicated across pages"
 
 
-# ---------------------------------------------------------------------------
 # search() — empty query
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -452,9 +440,7 @@ async def test_search_empty_query_returns_empty(session: AsyncSession) -> None:
     assert pagination.has_next is False
 
 
-# ---------------------------------------------------------------------------
 # get_summary_counts
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -469,9 +455,7 @@ async def test_get_summary_counts(session: AsyncSession) -> None:
     assert counts["tracklist_count"] == 1
 
 
-# ---------------------------------------------------------------------------
 # UNION result_type discriminator (SRCH-03)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -485,9 +469,7 @@ async def test_union_has_result_type(session: AsyncSession) -> None:
         assert r.result_type in ("file", "tracklist", "discogs_release")
 
 
-# ---------------------------------------------------------------------------
 # Discogs search helpers
-# ---------------------------------------------------------------------------
 
 
 async def create_test_discogs_link(
@@ -547,9 +529,7 @@ async def create_test_discogs_link(
     return link
 
 
-# ---------------------------------------------------------------------------
 # search() — Discogs results (DISC-03)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -656,9 +636,7 @@ async def test_get_summary_counts_includes_discogs(session: AsyncSession) -> Non
     assert counts["discogs_count"] == 1  # Only accepted
 
 
-# ---------------------------------------------------------------------------
 # distinct_artists() -- LIKE-escaping round trip (phaze-ba79)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -684,9 +662,7 @@ async def test_distinct_artists_backslash_artist_round_trips_into_search(session
     assert file_results[0].artist == "AC\\DC"
 
 
-# ---------------------------------------------------------------------------
 # distinct_artists() -- deterministic ORDER BY before LIMIT (phaze-p0ytz)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -716,9 +692,7 @@ async def test_distinct_artists_orders_alphabetically_across_tables(session: Asy
     assert artists == ["Alpha Artist", "Bravo Artist", "Charlie Artist"]
 
 
-# ---------------------------------------------------------------------------
 # glyph -- the ⌘K palette's set glyph field (phaze-x1qr3.9)
-# ---------------------------------------------------------------------------
 
 
 def _glyph_cells() -> list[dict[str, int | float | None]]:

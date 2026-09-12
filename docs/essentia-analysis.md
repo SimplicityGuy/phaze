@@ -27,7 +27,6 @@ Everything else that mentions essentia is plumbing:
 | ---- | ------------- |
 | `src/phaze/scripts/download_models.py` | Explicit provisioning tool: fetches the `.pb`/`.json` weights from `essentia.upf.edu` (~3.1 GB) into a named directory. Never called at runtime (phaze-ynv6w) |
 | `src/phaze/tasks/_shared/model_bootstrap.py` | Worker-boot validator: every manifest file present at its pinned size, or exit naming the directory and the missing files. Never downloads |
-| `src/phaze/tasks/_shared/model_bootstrap.py` | Auto-downloads weights when `/models` is empty |
 | `src/phaze/services/kube_staging.py` | Mounts the read-only models PVC at `/models` for Kueue Jobs |
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
 | `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | Phase 101 subprocess boundary: `analyze_file` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
@@ -110,13 +109,31 @@ chunk decodes, each coarse model sweep) and the supervising layer kills it only 
 | Layer | Before (Phase 43) | Now (phaze-w55w1) |
 | --- | --- | --- |
 | in-process child | `analysis_inner_timeout_sec` = 6600 s SIGKILL | stall watchdog in `services/analysis_exec.py` → `AnalysisStalledError` |
-| SAQ `process_file` job | `timeout=7200` | `timeout=0` (disabled) + `heartbeat=analysis_stall_timeout_sec`, touched by the lane |
+| SAQ `process_file` job | `timeout=7200` | `timeout=0`, `retries=2`, and `heartbeat=analysis_job_heartbeat_sec` (derived as 2× the inner stall threshold), touched from child progress |
 | k8s burst pod | no bound at all | the same stall watchdog (`job_runner` passes `stall_timeout`) |
 
 A wall clock cannot tell a long analysis from a hang — `phaze-1b39` (2026-07-28) is the incident
 where trying SIGTERM'd legitimate 2–6 hour concert sets and stalled the whole burst lane. A
 genuinely wedged child is still killed in bounded time, and the file gets a stored
 `error_message` naming the stall and the stage it died in.
+
+The two heartbeat mechanisms are distinct. `process_file`'s **job heartbeat** updates SAQ's
+`touched` timestamp from analysis progress and supervises that one queue row. The agent's
+30-second **liveness heartbeat** is a separate background HTTP task in `tasks/heartbeat.py`; it
+keeps reporting even while an analysis child is busy. `tasks/_shared/queue_defaults.py` re-pins
+the timeout/retry/job-heartbeat policy for fresh enqueues and recovery replays, so a legacy ledger
+row cannot restore the retired elapsed-time timeout.
+
+### Stored set projection
+
+Migration `063` adds a narrow presentation projection without changing the Essentia feature
+surface. The analysis callback derives `AnalysisWindow.energy`, `.camelot`, and `.mood_scores`
+and one `SetProfile` row through `services/set_projection_writer.py`; the pure math remains in
+`services/set_projection.py`. Existing rows can be processed by
+`services/set_projection_backfill.py` from stored `features`, `musical_key`, and `bpm` values,
+without decoding audio or re-running a model. Viewer helpers (`analysis_timeline.py`,
+`harmonic_journey.py`, `track_segments.py`, `record_facts.py`, and `set_glyph_colors.py`) consume
+that projection rather than turning the large raw feature JSONB into a request-time dependency.
 
 > **Removed, not essentia's concern:** audio **fingerprinting** was never part of essentia — it was
 > handled entirely by the `audfprint` and `panako` HTTP sidecars, which the app called over httpx.

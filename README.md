@@ -166,27 +166,32 @@ uv run pytest tests/shared/core/test_shell_routes.py
 uv run pre-commit run --all-files
 ```
 
-The full suite needs the shared PostgreSQL/Redis test harness:
+The manual full gate starts the shared PostgreSQL/Redis harness and carves an isolated seat when
+the three test-resource exports are not already set:
 
 ```bash
-just test-db
 just check
 ```
 
 `just check` runs lint, type checking, and the full pytest suite. A trustworthy pytest header names
 a database on port 5433 and says the session holds the exclusive lock. An unreachable harness or
 `PHAZE_TEST_DB_ALLOW_SHARED=1` produces an unlocked run whose failures are not concurrency-safe.
+Beadhive uses `just check-fast` for a bead's `check` and `submit` boundary and `just check-all` for
+the assembled molecule; see the [Agentic Git Flow guide](docs/AGF.md) for the complete mapping.
 
 For concurrent worktrees, never share PostgreSQL or Redis. Allocate a seat and copy all three
 exports printed by the recipe:
 
 ```bash
 just test-db-for my-seat
+# Copy all three exports printed by the command before running tests.
 ```
 
 The seat name is normalized and hashed, and Redis receives a dedicated logical database. Do not
 hand-construct these values. One database also supports only one pytest process; the session lock
 refuses a competing process before collection.
+When the worktree is finished, `just test-db-release my-seat` returns only that seat's Redis index.
+Never use `just test-db-down` for seat cleanup: the containers are shared by every active seat.
 
 Browser contracts are a separate real-application Playwright suite:
 

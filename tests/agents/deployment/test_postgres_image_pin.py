@@ -5,7 +5,7 @@ source of truth:
 
 1. ``justfile``'s ``postgres_image :=`` variable, interpolated at every justfile
    site that launches a Postgres container (``test-db``, ``integration-test``,
-   ``perf-db-up``) -- including the four ``echo`` lines that only *claim* the
+   ``benchmark-db-up``) -- including any log lines that only *claim* the
    version. That interpolation is what collapsed the former 8 separate literal
    pins to one.
 2. ``docker-compose.yml``'s ``postgres`` service ``image:``.

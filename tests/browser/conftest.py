@@ -146,7 +146,6 @@ _BROWSER_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BROWSER_DIR.parent.parent
 _BOOT_TIMEOUT_SEC = 180.0
 
-# --- CI artifacts: Playwright tracing on failure (phaze-17ni3) ----------------------------------
 
 _ARTIFACT_DIR = _REPO_ROOT / "test-results"
 _TRACE_DIR = _ARTIFACT_DIR / "traces"
@@ -317,7 +316,6 @@ def live_server() -> Iterator[str]:
             process.kill()
 
 
-# --- Viewports and themes (phaze-fk1ww + phaze-8p1uq, reconciled) -------------------------------
 #
 # NAMED, not hardcoded per fixture. The suite shipped with TWO inline page fixtures, 1440x900 and
 # 390x844: the two ends of the responsive contract with its middle missing. ADR-0009's breakpoint
@@ -537,9 +535,6 @@ def browser_dsn() -> str:
     return _browser_dsn()
 
 
-# --- Seeded application state --------------------------------------------------------------------
-
-
 # The Redis key families the execute-dispatch path owns. Swept per test alongside the database --
 # see `_reset_dispatch_keys` for why this is not optional.
 _DISPATCH_KEY_PATTERNS = ("exec:*", "execdispatch:*", "exec_progress_req:*")
@@ -622,7 +617,6 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
                 item.add_marker(pytest.mark.asyncio(loop_scope="session"), append=False)
 
 
-# --- Stray scratch-test guard (phaze-o7e3e) -------------------------------------------------------
 #
 # pytest's collection has no concept of "committed" -- every ``test_*.py`` dropped into this
 # directory joins the suite, including one written mid-investigation as throwaway scratch. Measured,

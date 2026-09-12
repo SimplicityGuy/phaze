@@ -392,9 +392,9 @@ resampling.
 > analysis instead of 80–90 times**, for byte-identical buffers.
 >
 > This section's exact quantity, wall time for ONE 180 s coarse window at 16 kHz, remeasured on
-> vox against the deployed image and current `main`:
+> host-compute against the deployed image and current `main`:
 >
-> | total file duration | §8 (macOS) | `phaze-rc1q` (vox) | **standard, remeasured** | s per minute of total file |
+> | total file duration | §8 (macOS) | `phaze-rc1q` (host-compute) | **standard, remeasured** | s per minute of total file |
 > | ---: | ---: | ---: | ---: | ---: |
 > | 10 min | 6.6 s | 7.91 s | **7.890 s** | 0.789 |
 > | 60 min | 45.9 s | 52.12 s | **52.070 s** | 0.868 |

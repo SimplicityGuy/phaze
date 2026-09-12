@@ -90,7 +90,7 @@ D-12's call passes `attempts=cap`, `expect_status=(SUBMITTED.value, RUNNING.valu
 
 `models/analysis.py:13` → `class AnalysisResult(TimestampMixin, Base)`. `scheduling_ledger.py:38` documents that `TimestampMixin` provides `updated_at`. So `a.updated_at` in D-13's SQL resolves.
 
-**Caveat the plan should record:** neither `updated_at` nor `created_at` is the *true* analyze-completion time (that datum was never persisted; the backfill exists precisely because of that gap). For an `analyzed` file the `analysis` row is written once at completion, so `updated_at ≈ created_at ≈ completion`. Because `done_clause(ANALYZE)` tests only `analysis_completed_at IS NOT NULL` (`stage_status.py:123`), the *value* is immaterial to recovery correctness — only NULL-ness matters. Recommend `updated_at` per D-13 (mirrors `032`).
+**Caveat the plan should record:** neither `updated_at` nor `created_at` is the *true* analyze-completion time (that operator was never persisted; the backfill exists precisely because of that gap). For an `analyzed` file the `analysis` row is written once at completion, so `updated_at ≈ created_at ≈ completion`. Because `done_clause(ANALYZE)` tests only `analysis_completed_at IS NOT NULL` (`stage_status.py:123`), the *value* is immaterial to recovery correctness — only NULL-ness matters. Recommend `updated_at` per D-13 (mirrors `032`).
 
 ### (b) "Zero `FileRecord.state` reads" guard — RESOLVED: copy the Phase-84 AST scanner
 

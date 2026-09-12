@@ -21,7 +21,7 @@ key-files:
     - docs/cloud-burst.md
     - docs/k8s-burst.md
 decisions:
-  - "Edge node→node routing detail (A1:22, lux:{5432,6379,8000}) folded into the quoted edge labels so the rsync/HTTP routing survives without standalone connector nodes"
+  - "Edge node→node routing detail (A1:22, host-prod:{5432,6379,8000}) folded into the quoted edge labels so the rsync/HTTP routing survives without standalone connector nodes"
   - "PHAZE_CLOUD_TARGET=local note placed as an italic markdown caption below each mermaid block — it is a config note, not topology"
 metrics:
   duration: ~6m
@@ -35,8 +35,8 @@ Replaced the two ASCII box-drawing "Architecture at a glance" blocks (docs/cloud
 
 ## What changed
 
-- **docs/cloud-burst.md** — the plain ``` ASCII topology under "## Architecture at a glance" is now a `mermaid flowchart LR` with three subgraphs (`nox (file server)`, `OCI A1 (compute agent)`, `lux (application server)`). The outer frame title `Tailscale tailnet (default-deny grants ACL)` is a `%%` comment line. Edges `rsync over SSH (nox → A1:22)` and `HTTP API + saq_jobs + cache (A1 → lux:{5432,6379,8000})` are quoted pipe-form labels carrying the original routing detail. The `PHAZE_CLOUD_TARGET=local ⇒ … (all-local)` note is now an italic `_…_` line below the block.
-- **docs/k8s-burst.md** — same conversion: `lux (application server / control plane)` and `x64 Kueue cluster` subgraphs, with controller-worker children (`s3_staging`, `submit_cloud_job`, `reconcile_cloud_jobs (*/5 cron)`, `LocalQueue probe (startup)`, the `POST /api/internal/agent/analysis/{file_id}` callback) and cluster objects (`ResourceFlavor phaze-cpu`, `ClusterQueue phaze-cq`, `LocalQueue phaze-lq`, `SA/Role/RoleBinding`, `Secret phaze-agent-token`, the suspended batch Job, the one-shot pod) as nodes. Edges `presign PUT/GET`, `kube POST`, `Kueue admits`, and `POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)` are quoted pipe-form labels. Italic caption relocated below the block.
+- **docs/cloud-burst.md** — the plain ``` ASCII topology under "## Architecture at a glance" is now a `mermaid flowchart LR` with three subgraphs (`host-store (file server)`, `OCI A1 (compute agent)`, `host-prod (application server)`). The outer frame title `Tailscale tailnet (default-deny grants ACL)` is a `%%` comment line. Edges `rsync over SSH (host-store → A1:22)` and `HTTP API + saq_jobs + cache (A1 → host-prod:{5432,6379,8000})` are quoted pipe-form labels carrying the original routing detail. The `PHAZE_CLOUD_TARGET=local ⇒ … (all-local)` note is now an italic `_…_` line below the block.
+- **docs/k8s-burst.md** — same conversion: `host-prod (application server / control plane)` and `x64 Kueue cluster` subgraphs, with controller-worker children (`s3_staging`, `submit_cloud_job`, `reconcile_cloud_jobs (*/5 cron)`, `LocalQueue probe (startup)`, the `POST /api/internal/agent/analysis/{file_id}` callback) and cluster objects (`ResourceFlavor phaze-cpu`, `ClusterQueue phaze-cq`, `LocalQueue phaze-lq`, `SA/Role/RoleBinding`, `Secret phaze-agent-token`, the suspended batch Job, the one-shot pod) as nodes. Edges `presign PUT/GET`, `kube POST`, `Kueue admits`, and `POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)` are quoted pipe-form labels. Italic caption relocated below the block.
 
 Both conversions are lossless — every host, service, object name, port, and edge phrase from the original ASCII survives verbatim.
 

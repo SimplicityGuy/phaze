@@ -25,32 +25,27 @@ jobs:
           - name: api
             dockerfile: Dockerfile
             context: .
-          # Phase 47 CLOUDIMG-02: hadolint-gate the arm64 agent Dockerfile. The
-          # real native build runs in docker-publish.yml's build-arm64 job — a
-          # full QEMU C++ compile on this x86 ubuntu-latest runner is forbidden
-          # (slow + flaky), so the "Test Docker build" + import-smoke steps below
-          # are guarded off for this entry (lint-only).
-          - name: agent-arm64
-            dockerfile: Dockerfile.agent-arm64
-            context: .
-
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔧 Install pinned hadolint
+        uses: alexellis/arkade-get@1eef818e467c387d3f50cfe0d2c565d1cbe82b03  # master
+        with:
+          hadolint: v2.15.1
+
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
 
-      - name: 🔍 Validate Dockerfile with hadolint
-        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
-        with:
-          dockerfile: ${{ matrix.dockerfile }}
-          failure-threshold: error
+      - name: 🔍 Validate every shipped Dockerfile
+        run: just docker-validate
 
-      # Skipped for agent-arm64: a native build runs in docker-publish.yml's
-      # build-arm64 job; a QEMU C++ compile here would be prohibitively slow.
       - name: 🐳 Test Docker build
-        if: matrix.name != 'agent-arm64'
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           CONTEXT: ${{ matrix.context }}
@@ -84,60 +79,10 @@ jobs:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: 🐳 Validate docker-compose.yml
-        run: |
-          echo "🔍 Validating application-server docker-compose.yml..."
-          # Phase 29 added fail-fast ${VAR:?} guards on REDIS_PASSWORD; the
-          # infra-hardening bugfix batch (phaze-rnh7) added the same on POSTGRES_PASSWORD.
-          # Supply placeholders so compose-parse can resolve interpolation.
-          printf '%s\n' \
-            'REDIS_PASSWORD=ci-validate-placeholder' \
-            'REDIS_BIND_IP=127.0.0.1' \
-            'POSTGRES_PASSWORD=ci-validate-placeholder' \
-            'POSTGRES_BIND_IP=127.0.0.1' \
-            > .env
-          docker compose -f docker-compose.yml config --quiet
-          echo "✅ docker-compose.yml is valid"
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🐳 Validate docker-compose.agent.yml
-        run: |
-          echo "🔍 Validating agent (file-server) docker-compose.agent.yml..."
-          # Phase 29 file-server compose requires SCAN_PATH on all 4 services;
-          # supply placeholders so compose-parse can resolve interpolation.
-          printf '%s\n' \
-            'SCAN_PATH=/tmp/phaze-ci-scan-placeholder' \
-            'MODELS_PATH=/tmp/phaze-ci-models-placeholder' \
-            'PHAZE_API_URL=https://app-server.example:8000' \
-            'PHAZE_REDIS_URL=redis://default:ci-placeholder@app-server.example:6379/0' \
-            'PHAZE_AGENT_TOKEN=phaze_agent_ci-placeholder' \
-            'PHAZE_AGENT_ID=ci-agent' \
-            > .env.agent
-          docker compose -f docker-compose.agent.yml --env-file .env.agent config --quiet
-          echo "✅ docker-compose.agent.yml is valid"
-
-      - name: 🐳 Validate docker-compose.dev.yml (merged with base)
-        run: |
-          echo "🔍 Validating dev overlay docker-compose.dev.yml merged with docker-compose.yml..."
-          # phaze-md8n: this overlay had NO CI validation — a syntax error or stale
-          # interpolation shipped silently. It is an overlay (never used standalone),
-          # so validate it exactly as `just up-dev` composes it: merged with the base.
-          # Placeholders mirror the base-compose step above; regenerated here so this
-          # step never depends on step ordering.
-          printf '%s\n' \
-            'REDIS_PASSWORD=ci-validate-placeholder' \
-            'REDIS_BIND_IP=127.0.0.1' \
-            'POSTGRES_PASSWORD=ci-validate-placeholder' \
-            'POSTGRES_BIND_IP=127.0.0.1' \
-            > .env
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
-          echo "✅ docker-compose.dev.yml is valid"
-
-      - name: 🐳 Validate docker-compose.cloud-agent.yml
-        run: |
-          echo "🔍 Validating cloud-agent docker-compose.cloud-agent.yml..."
-          # phaze-md8n: standalone compose for the OCI A1 host, previously unvalidated.
-          # PHAZE_CLOUD_SCRATCH_DIR carries a ${VAR:?} fail-fast guard; supply a
-          # placeholder inline so compose-parse can resolve interpolation.
-          PHAZE_CLOUD_SCRATCH_DIR=/tmp/phaze-ci-scratch-placeholder \
-            docker compose -f docker-compose.cloud-agent.yml config --quiet
-          echo "✅ docker-compose.cloud-agent.yml is valid"
+      - name: 🐳 Validate every shipped Compose shape
+        run: just docker-compose-validate

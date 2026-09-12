@@ -53,7 +53,7 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.3 GiB, k0s burst node, **out of the phaze backend registry and left that way**, otherwise idle (verified before the session; gated per run — §1c) |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.3 GiB, k0s burst node, **out of the phaze backend registry and left that way**, otherwise idle (verified before the session; gated per run — §1c) |
 | **Runtime** | deployed job image `job:2026.8.0` in a bare `sleep infinity` pod, **no Kueue queue label** (consumes no quota), `phaze-models` PVC mounted **read-only**, a host scratch dir for synthetic audio, Python 3.14.6, `essentia-tensorflow` 2.1-beta6-dev |
 | **Code** | the **real** `phaze.services.analysis.analyze_file` from `main`, imported out of a copy of the image's tree with `analysis.py` overlaid (sha256 `45a84a70…`) and patched **in memory** — no product code was modified |
 | **Audio** | **synthesized with ffmpeg** — the `phaze-esut` generator, stereo 44.1 kHz sine pairs at 192 kbps, `dur_600` and `dur_3600` |
@@ -61,7 +61,7 @@ ______________________________________________________________________
 | **Contention gate** | node CPU from host-side `/proc/stat` deltas across each run, recorded per run and reported in the appendix |
 
 **No operator media was read, copied, or referenced.** Every input is a synthesized sine pair. No
-filename, path, or per-file metadata value from the library appears in this document. vox was **not**
+filename, path, or per-file metadata value from the library appears in this document. host-compute was **not**
 re-enabled in the phaze backend registry; k0s, JuiceFS and the gateway config were not touched; the
 models PVC was mounted **read-only** and is intact. The only artefacts created are one scratch
 directory and one bench pod, both removed (appendix).

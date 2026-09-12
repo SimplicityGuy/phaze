@@ -52,9 +52,7 @@ class _RaisingSession:
         raise RuntimeError("db down")
 
 
-# ---------------------------------------------------------------------------
 # Degrade branches — assert BOTH the [] return AND the named warning (D-07)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -93,9 +91,7 @@ async def test_get_cue_review_cards_degrades_to_empty_and_logs(caplog: pytest.Lo
     assert any("cue_review_cards_degraded" in r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Pure formatters — exact / endswith / startswith return-value assertions
-# ---------------------------------------------------------------------------
 
 
 def test_format_size_edges() -> None:
@@ -111,7 +107,6 @@ def test_format_quality_with_and_without_bitrate() -> None:
     assert "kbps" not in _format_quality({"file_size": 22_400_000})  # covers the no-bitrate branch
 
 
-# ---------------------------------------------------------------------------
 # READ-05 / Plan 85-04 — applied() cutover + D-03 bound on get_tagwrite_review_rows
 #
 # These exercise the REAL predicate against the DB session fixture:
@@ -122,7 +117,6 @@ def test_format_quality_with_and_without_bitrate() -> None:
 #     because ``applied_clause()`` reads ``proposals.status``, not ``files.state``.
 #   * D-02 idempotency: an applied file with a COMPLETED ``TagWriteLog`` is excluded
 #     (the ``completed_subq`` anti-join is preserved).
-# ---------------------------------------------------------------------------
 
 
 async def _seed_applied_tagwrite_file(session: AsyncSession, *, completed_log: bool = False) -> uuid.UUID:
@@ -275,7 +269,6 @@ async def test_get_tagwrite_review_rows_has_prior_write_flag(session: AsyncSessi
     assert rows_by_id[discrepancy_id]["has_prior_write"] is True
 
 
-# ---------------------------------------------------------------------------
 # WR-01 (85-REVIEW): the SQL cap must bound QUALIFYING rows, not raw candidates.
 #
 # The old builder applied ``.limit(_MAX_REVIEW_ROWS)`` to a filename-ordered candidate set
@@ -283,7 +276,6 @@ async def test_get_tagwrite_review_rows_has_prior_write_flag(session: AsyncSessi
 # alphabetically first fully consumed the capped window, so a qualifying file behind them was
 # never surfaced (silent false-empty). These assert the qualifying file IS surfaced even when
 # it sorts behind >_MAX zero-change applied files.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_zero_change_applied_file(session: AsyncSession, *, filename: str) -> uuid.UUID:
@@ -390,9 +382,7 @@ async def test_get_tagwrite_review_rows_pages_across_scan_batches(session: Async
     assert qual_id in offered
 
 
-# ---------------------------------------------------------------------------
 # phaze-bto9 — the tag-write review scan's cost shape
-# ---------------------------------------------------------------------------
 
 
 class _CountingSession:
@@ -550,7 +540,6 @@ async def test_complete_scan_is_not_reported_partial(session: AsyncSession) -> N
     assert {row["file_id"] for row in page.rows} == {qual_id}
 
 
-# ---------------------------------------------------------------------------
 # phaze-a2ytu — the row-cap exit must also report ``partial``, not just the
 # batch-cap exit. Three shapes at the ``_MAX_REVIEW_ROWS`` boundary, matching
 # the adversarial finder's case split:
@@ -559,7 +548,6 @@ async def test_complete_scan_is_not_reported_partial(session: AsyncSession) -> N
 #       may still hold candidates, so this must still be reported partial);
 #   (c) row cap hit exactly as the candidate set itself is exhausted (a SHORT
 #       batch, fully consumed) -- the one true "not partial" case.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -612,9 +600,7 @@ async def test_row_cap_hit_exactly_as_candidates_exhausted_is_not_partial(sessio
     assert page.partial is False, "the short batch proves no candidates remain, even though the cap was hit"
 
 
-# ---------------------------------------------------------------------------
 # phaze-hcsb — per-card isolation in get_cue_review_cards
-# ---------------------------------------------------------------------------
 
 
 async def _seed_eligible_cue_tracklist(session: AsyncSession, *, artist: str) -> Tracklist:
@@ -710,9 +696,7 @@ async def test_get_cue_review_cards_isolates_one_bad_card_from_the_rest(session:
     assert any("cue_review_card_build_failed" in r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # phaze-dboy — get_cue_review_cards' gated set scoped to latest_version_id
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -25,7 +25,7 @@ evidence: "rc=0; token 'phaze_agent_…' printed to stdout only (INSERT logged t
 ### 3. Fileserver Still Requires Scan Roots (CLI guard)
 expected: `phaze agents add --kind fileserver` WITHOUT --scan-roots fails (non-zero exit) with a scan-roots-required message; no row inserted.
 result: pass
-evidence: "rc=1; 'error: --scan-roots is required for --kind fileserver (at least one absolute path)'; 0 rows for the rejected id. Valid fileserver (nox-fs, --scan-roots /data/music) registered fine."
+evidence: "rc=1; 'error: --scan-roots is required for --kind fileserver (at least one absolute path)'; 0 rows for the rejected id. Valid fileserver (host-store-fs, --scan-roots /data/music) registered fine."
 
 ### 4. Kind Badge on the Agents Admin Page
 expected: The Agents admin page shows a "Kind" column between Agent and Status; compute → indigo "COMPUTE" badge, fileserver → slate "FILE SERVER" badge; present on BOTH full page and the 5s HTMX poll partial; aria-labels "Kind: compute" / "Kind: file server".

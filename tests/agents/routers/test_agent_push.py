@@ -305,9 +305,7 @@ def _install_concurrent_scan_deletion(session: AsyncSession, file_id: uuid.UUID)
     session.execute = _execute_with_race  # type: ignore[method-assign]
 
 
-# ---------------------------------------------------------------------------
 # /pushed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -651,9 +649,7 @@ async def test_pushed_missing_auth_returns_401(
     assert r.status_code == 401
 
 
-# ---------------------------------------------------------------------------
 # /failed (phaze-c53x)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -805,9 +801,7 @@ async def test_push_failed_missing_auth_returns_401(
     assert r.status_code == 401
 
 
-# ---------------------------------------------------------------------------
 # /mismatch
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1344,7 +1338,6 @@ async def test_mismatch_missing_auth_returns_401(
     assert r.status_code == 401
 
 
-# ---------------------------------------------------------------------------
 # /mismatch — HARD-02 (D-05/D-06): push_attempt RMW atomicity under concurrency
 #
 # NOTE (92-04): the two cross-connection concurrency cells that lived here —
@@ -1353,7 +1346,6 @@ async def test_mismatch_missing_auth_returns_401(
 # tests/integration/test_agent_push_concurrency.py. They need two INDEPENDENT committed-visible
 # connections for real advisory-lock RMW serialization, which the hermetic single-connection
 # create_savepoint `session` fixture cannot provide. The boundary cell below stays (hermetic).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -270,11 +270,9 @@ async def test_put_metadata_uses_path_id_and_parses_response(client):  # type: i
     assert route.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # request_download_url -- presign-download client method (Phase 52, KJOB-02).
 # The SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
 # ships in Phase 53; here we test the CLIENT contract against a respx mock.
-# ---------------------------------------------------------------------------
 
 _PRESIGN_SHA = "a" * 64
 
@@ -400,11 +398,9 @@ async def test_request_download_url_token_absent_from_warning_logs_on_500(client
     assert _TOKEN not in warning_text, f"D-13 violation: bearer token appeared in WARNING log output: {warning_text!r}"
 
 
-# ---------------------------------------------------------------------------
 # post_analysis_progress -- counter-only mid-flight progress POST (Phase 57.1, 03).
 # Best-effort: routes through self._request (inherits retry + AgentApiError);
 # returns None; file_id rides the path only, body carries the counts.
-# ---------------------------------------------------------------------------
 
 
 @respx.mock

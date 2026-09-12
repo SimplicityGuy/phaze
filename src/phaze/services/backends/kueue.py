@@ -1,22 +1,10 @@
-"""``KueueBackend`` -- the S3-staging + k8s-Job lane, its Job/Workload reconcile, and its staging reaper.
+"""Kueue backend dispatch, reconcile, and stranded-staging recovery.
 
-Extracted from the former single-module ``services/backends.py`` (phaze-dr9df). Every body is
-verbatim except for ONE mechanical extract-method, which is the whole reason this file could meet the
-package's nesting budget:
-
-:meth:`KueueBackend._reap_stranded_staging`'s **post-commit S3 cleanup tail** now lives in
-:meth:`KueueBackend._cleanup_reaped_staging_object`. That block (phaze-jwz0 / phaze-wa9x /
-phaze-a6un6) was the single deepest thing in the whole 1,543-NLOC module -- ``for`` -> ``try`` ->
-``if bucket is not None`` -> ``try`` -> ``if upload_id``. It is also the most obviously separable:
-it runs strictly AFTER ``session.commit()`` has already made the spill durable, it takes only
-primitives the loop has already read into locals, and it returns nothing. Semantics are unchanged in
-both directions:
-
-* it is still CALLED from inside the per-row ``try``, so a raise out of ``resolve_bucket_config``
-  (which sat OUTSIDE the inner ``try`` before, and still sits outside it now) still lands in the
-  per-row ``except`` -> rollback + "stranded staging reap failed" warning; and
-* the inner ``try``/``except Exception`` that swallows S3 failures, and the ``try``/``finally``
-  around the pre-delete generation probe, moved with the block unchanged.
+The staging reaper commits the database recovery before deleting S3 state. Post-commit cleanup is
+factored into ``_cleanup_reaped_staging_object`` but remains inside the per-row containment boundary:
+bucket-resolution failures roll back and warn for that row, while S3 deletion failures remain
+best-effort after the durable database transition. This ordering is a transaction invariant, not
+an implementation detail.
 """
 
 from __future__ import annotations
@@ -78,7 +66,7 @@ class KueueBackend(_BaseBackend):
     ``reconcile_cloud_jobs`` cron body, made ``backend_id``-aware, under a per-row advisory lock.
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
 
-    Phase 70 (MKUE-01/D-04): every ``kube_staging`` call is threaded THIS backend's own
+    MKUE-01/D-04: every ``kube_staging`` call is threaded THIS backend's own
     ``KubeConfig`` (``self._kube()``) -- one control plane dispatches to N distinct clusters, each with
     its own constructor-time-authed kr8s client (the module-global ``active_kube`` read is retired).
     """
@@ -86,7 +74,7 @@ class KueueBackend(_BaseBackend):
     def _kube(self) -> KubeConfig:
         """Return THIS backend's ``KubeConfig`` (the bound kueue registry entry's ``[kube]`` table, D-04).
 
-        ``self.config`` is the Phase-67 ``KueueBackend`` submodel bound in ``resolve_backends``; its
+        ``self.config`` is the configured ``KueueBackend`` submodel bound in ``resolve_backends``; its
         ``kube`` field is the per-cluster connection surface every ``kube_staging`` verb now takes.
         Fail-loud (``KubeStagingError``) if a kueue backend somehow has no ``[kube]`` bound -- the
         config validator already guards this, so this is defense-in-depth.
@@ -115,7 +103,7 @@ class KueueBackend(_BaseBackend):
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Pick the D-06 bucket, run the no-commit S3-staging core, THEN flip ``file`` to PUSHING (MKUE-02).
 
-        Phase 70 (MKUE-02/D-06): pick the file's staging bucket deterministically over this backend's
+        MKUE-02/D-06: pick the file's staging bucket deterministically over this backend's
         bound bucket set (``self.config.buckets``), resolve its ``BucketConfig``, thread it into the
         shared ``_stage_file_to_s3`` core (which stamps ``staging_bucket`` on the upsert), and RECORD both
         ``backend_id`` AND ``staging_bucket`` in the SAME uncommitted session so this backend's
@@ -155,7 +143,7 @@ class KueueBackend(_BaseBackend):
         # Gate (fileserver agent) + stage BEFORE the state flip: _stage_file_to_s3 reads no file.state, so a
         # NoActiveAgentError / pre-upsert S3 raise touches nothing (CR-01 Pitfall 4 limbo guard).
         await _stage_file_to_s3(session, file, task_router, bucket)
-        # Phase 90 (D-09): the PUSHING files.state dual-write was removed; the cloud_job row (updated
+        # D-09: the PUSHING files.state dual-write was removed; the cloud_job row (updated
         # below with backend_id + staging_bucket) is the sole derived authority now that staging succeeded.
         # Record backend_id + the D-06 staging_bucket in the SAME uncommitted session (MKUE-02/D-01):
         # in_flight_count is backend_id-scoped, and presign/cleanup read staging_bucket authoritatively.

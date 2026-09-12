@@ -176,9 +176,7 @@ def _refusal(report: dict[str, Any]) -> tuple[str, str]:
     return excinfo.value.verdict, excinfo.value.reason
 
 
-# --------------------------------------------------------------------------------------------
 # The refusal rules. Each of these is a state repowise reports with exit 0.
-# --------------------------------------------------------------------------------------------
 
 
 def test_a_clean_report_selects_the_covered_tests_with_the_context_suffix_stripped() -> None:
@@ -279,12 +277,10 @@ def test_strip_context_only_strips_known_phases(raw: str, expected: str) -> None
     assert SELECTOR.strip_context(raw) == expected
 
 
-# --------------------------------------------------------------------------------------------
 # The docs allow-list (phaze-fqfds). A skip runs ZERO tests, so every assertion here is about
 # something REFUSING to skip. `docs_only` and `is_docs_path` are pure, so these exercise the
 # shipped functions over synthetic `git diff --raw -z` records -- the same precedent as the
 # refusal rules above: load the real script, call its real function, never restate the rule.
-# --------------------------------------------------------------------------------------------
 
 
 def _raw(*records: tuple[str, str, str] | tuple[str, str, str, str]) -> str:
@@ -313,7 +309,7 @@ def _modified(*paths: str) -> str:
         "README.md",
         "CONVENTIONS.md",
         "docs/design/0012-verification-fidelity-and-operator-attribution.md",
-        "docs/spikes/phaze-u1n7j-vox-fix-verification.md",
+        "docs/spikes/phaze-u1n7j-host-compute-fix-verification.md",
         ".planning/STATE.md",
         "design/DESIGN_SYSTEM.md",
     ],
@@ -529,9 +525,7 @@ def test_the_fast_step_honours_the_docs_verdict() -> None:
     )
 
 
-# --------------------------------------------------------------------------------------------
 # The floor.
-# --------------------------------------------------------------------------------------------
 
 
 def test_the_floor_is_non_empty_and_every_path_exists() -> None:
@@ -584,9 +578,7 @@ def test_every_floor_module_lives_in_a_known_bucket() -> None:
     assert not strays, f"floor modules outside any tests/buckets.json bucket: {strays}"
 
 
-# --------------------------------------------------------------------------------------------
 # The prose floor (phaze-fqfds). What a documentation-only diff runs, and all it runs.
-# --------------------------------------------------------------------------------------------
 
 
 def _read_docs_floor() -> list[str]:
@@ -768,9 +760,7 @@ def test_a_dirty_worktree_never_reaches_exit_4(tmp_path: Path) -> None:
     assert "uncommitted" in result.stdout
 
 
-# --------------------------------------------------------------------------------------------
 # The recipes. (The config half is unreachable from here — see the module docstring.)
-# --------------------------------------------------------------------------------------------
 
 
 def _dry_run(recipe: str) -> str:
@@ -836,9 +826,7 @@ def test_the_full_gate_is_unchanged() -> None:
         )
 
 
-# --------------------------------------------------------------------------------------------
 # Meta: prove the checks above are not vacuously green.
-# --------------------------------------------------------------------------------------------
 
 
 def test_the_classifier_under_test_is_the_shipped_one() -> None:

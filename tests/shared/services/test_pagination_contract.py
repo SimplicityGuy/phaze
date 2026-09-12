@@ -54,9 +54,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# --------------------------------------------------------------------------------------------------
 # Pure contract helpers -- no DB.
-# --------------------------------------------------------------------------------------------------
 
 
 def test_paged_stmt_refuses_a_missing_tiebreaker() -> None:
@@ -142,9 +140,7 @@ def test_page_pager_affordances() -> None:
     assert only_page.show_pager is False, "a single-page list renders no pager at all"
 
 
-# --------------------------------------------------------------------------------------------------
 # The bound: no enrich list may grow with its backlog.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -308,9 +304,7 @@ def test_bulk_enqueue_still_uses_the_unbounded_pending_set() -> None:
     assert "get_metadata_pending_files(session)" in router_src, "EXTRACT ALL must enqueue the UNBOUNDED pending set"
 
 
-# --------------------------------------------------------------------------------------------------
 # The tiebreaker: paging must be stable when the primary sort key ties.
-# --------------------------------------------------------------------------------------------------
 
 
 async def _walk_all_pages(fetch, page_size: int) -> list[str]:  # type: ignore[no-untyped-def]

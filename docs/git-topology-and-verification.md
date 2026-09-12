@@ -110,7 +110,7 @@
   - **Intersecting → rebase** (`git rebase --onto origin/main <old-base>`, the same fix as the
     bullet above), **re-run the guards it implicates, and state both in the submit report.** Run the
     guard; do not reason about whether it would have fired — that is rule 3 of
-    [ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) (verify with the
+    [ADR-0012](design/0012-verification-fidelity-and-operator-attribution.md) (verify with the
     artifact's real consumer) at the scale of one test.
   - **Two shapes make a disjoint file list the WRONG answer**, and the measured record above is one
     of each: a landed change to a **shared wire contract or schema your tests construct**
@@ -211,7 +211,7 @@ justified by an **argument** about equivalence or bounds; the argument is verifi
 **proxy that structurally cannot exhibit the failure**; green CI is then read as confirmation of
 the argument rather than of the proxy; and production is the first place the real input class ever
 meets the code. Each rule below is checkable against a diff, and
-[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) argues each one
+[ADR-0012](design/0012-verification-fidelity-and-operator-attribution.md) argues each one
 against all three incidents with an explicit would-have-caught / would-**not**-have-caught verdict.
 Read the verdicts before applying a rule: none of the five catches all three, and knowing which
 one is doing the work on a given change is the point.
@@ -277,7 +277,7 @@ wrong artifact?"*, answered by feeding it one. Measured: `ffprobe`, the obvious 
 for a `.wma` tag write, reported `TAG:artist=...` for the **wrong** file too, while
 `es.MetadataReader` returned every field empty for it. This **qualifies** rule 3 rather than
 replacing it; the argument, the evidence and the would-have-caught verdicts are in
-[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) §4 G3.
+[ADR-0012](design/0012-verification-fidelity-and-operator-attribution.md) §4 G3.
 
 **4. A change to a working production path owes a blast-radius statement.** Three sentences in the
 bead or PR before submit, with the population **measured, not adjectival**: *"This changes the path
@@ -327,7 +327,7 @@ verified does not vouch for an instance you did not observe.** Verify the mechan
 the case.
 
 **The catalogue lives in
-[ADR-0016](docs/design/0016-transferred-model-verification.md), not here** — it opens with the four
+[ADR-0016](design/0016-transferred-model-verification.md), not here** — it opens with the four
 instances measured on 2026-08-25 (pytest `addopts` env expansion; Darwin `Pages free` read as
 headroom; bh `work.py`'s length across 0.14.0 → 0.15.0; the gate count), each with its evidence
 intact, and grows from there under its §8. That split is deliberate: `CLAUDE.md` is read in full by every seat
@@ -345,4 +345,4 @@ above. This repo has already paid for three instances of it separately — `phaz
 a tool against the version you are running), the repowise 0.44-vs-0.45 entry under *Key concepts*
 below, and `phaze-g9cus`'s dangling caller line numbers — each fixed at its own site, none of which
 named the general form. Rule 5 above is the obligation those three were owed;
-[ADR-0016](docs/design/0016-transferred-model-verification.md) is the payment.
+[ADR-0016](design/0016-transferred-model-verification.md) is the payment.

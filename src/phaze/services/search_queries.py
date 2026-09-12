@@ -139,7 +139,7 @@ def _file_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[A
             file_display_filename.label("title"),
             FileMetadata.artist.label("artist"),
             FileMetadata.genre.label("genre"),
-            # Phase 90 (PR-A, D-11): the file branch no longer exposes the file pipeline-status column --
+            # PR-A/D-11: the file branch no longer exposes the file pipeline-status column --
             # the search status facet is removed with no derived replacement. The union ``state`` SLOT is
             # kept (a neutral NULL literal here) purely for column-parity so the tracklist/discogs branches
             # can still surface their own ``status`` in that slot.
@@ -289,7 +289,7 @@ async def search(
     """
     ts_query = func.plainto_tsquery("simple", query)
 
-    # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
+    # PR-A/D-11: files, tracklists, and Discogs always union; there is no pipeline-status facet.
     combined = union_all(_file_branch(ts_query, facets), _tracklist_branch(ts_query, facets), _discogs_branch(ts_query, facets)).subquery()
 
     # phaze-ezic: a whole-corpus COUNT used to run here on every call (`select(func.count())

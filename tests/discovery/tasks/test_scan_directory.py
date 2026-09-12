@@ -541,9 +541,7 @@ async def test_scan_directory_rejects_extra_kwargs(tmp_path: Path) -> None:
     assert ctx["api_client"].patch_scan_batch.await_count == 0
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap fills (Codecov PR #59): scan.py:212-225 — D-12 controller-down path
-# ---------------------------------------------------------------------------
 
 
 async def test_scan_directory_aborts_with_failed_patch_on_server_error(tmp_path: Path) -> None:
@@ -622,9 +620,7 @@ async def test_scan_directory_terminal_failed_patch_also_fails(tmp_path: Path, c
     assert "terminal failed-PATCH also failed" in text, f"missing inner-except log: {text!r}"
 
 
-# ---------------------------------------------------------------------------
 # Incident 260608: zero-access / partial-access walks (scan.py onerror handler)
-# ---------------------------------------------------------------------------
 
 
 async def test_scan_directory_root_unreadable_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -734,11 +730,9 @@ def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.
     assert "scan_directory" in func_names, f"scan_directory not registered: got {func_names}"
 
 
-# ---------------------------------------------------------------------------
 # phaze-bfd1: the synchronous pre-count os.walk must run OFF the event loop (via
 # asyncio.to_thread) so a long walk over a network mount cannot starve the
 # Phase-46 heartbeat and get a healthy agent classified DEAD.
-# ---------------------------------------------------------------------------
 
 
 def test_count_ingestible_counts_only_extractable(tmp_path: Path) -> None:
@@ -808,11 +802,9 @@ async def test_scan_directory_precount_runs_off_loop(tmp_path: Path, monkeypatch
     assert _count_ingestible in offloaded
 
 
-# ---------------------------------------------------------------------------
 # phaze-j54q: the synchronous, authoritative HASHING os.walk must also run OFF
 # the event loop (via asyncio.to_thread) -- phaze-bfd1 only fixed the pre-count
 # walk above and left this second walk iterating os.walk directly on the loop.
-# ---------------------------------------------------------------------------
 
 
 def test_walk_ingestible_collects_only_extractable_paths(tmp_path: Path) -> None:

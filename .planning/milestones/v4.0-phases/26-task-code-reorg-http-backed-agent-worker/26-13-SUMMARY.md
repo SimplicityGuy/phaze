@@ -18,7 +18,7 @@ provides:
   - "Deletion of src/phaze/tasks/worker.py (115 LOC, the legacy combined SAQ settings module)"
   - "Deletion of src/phaze/tasks/session.py (5 LOC, deprecated v1.0 session-helper stub)"
   - "docker-compose.yml worker service rewired: command=`uv run saq phaze.tasks.controller.settings`, env adds `PHAZE_ROLE=control`, depends_on no longer includes audfprint/panako (controller is fileless)"
-  - "Forward-looking lux_worker references replaced with controller in PROJECT.md + ROADMAP.md (D-33 doc sweep)"
+  - "Forward-looking host-prod_worker references replaced with controller in PROJECT.md + ROADMAP.md (D-33 doc sweep)"
   - "Phase 26 shippable — a fresh `docker compose up` boots controller.settings instead of failing on the deleted worker.py module"
 affects:
   - 27 (watcher service compose template can now be authored without back-compat shims for worker.settings)
@@ -52,7 +52,7 @@ key-decisions:
   - "D-04 honored: worker.py + docker-compose.yml updated in the same commit (atomic — no transient state where compose points at a deleted module)"
   - "D-06 honored: session.py deleted; both new SAQ settings modules construct their own session pool in their respective startup hooks"
   - "D-08 honored: no back-compat shim, no parallel re-exports"
-  - "D-33 honored: forward-looking lux_worker references replaced with controller; historical SUMMARY / CONTEXT / DISCUSSION-LOG / PLAN files preserved as audit-trail records (per Plan 26-13 Task 2 explicit scope rule)"
+  - "D-33 honored: forward-looking host-prod_worker references replaced with controller; historical SUMMARY / CONTEXT / DISCUSSION-LOG / PLAN files preserved as audit-trail records (per Plan 26-13 Task 2 explicit scope rule)"
 
 patterns-established:
   - "Old-module-import scan during legacy deletion: pre-flight grep for `from <legacy>` / `import <legacy>` catches missed callers in `src/` AND `tests/`. Plan 26-13 surfaced 6 test files that still imported phaze.tasks.worker — addressed by retargeting (3) or deletion (3)."
@@ -66,11 +66,11 @@ completed: 2026-05-12
 
 # Phase 26 Plan 13: Closing Housekeeping Summary
 
-**Closes Phase 26 by deleting the legacy `phaze.tasks.worker` (115 LOC) and `phaze.tasks.session` (5 LOC) modules, updating `docker-compose.yml` so the application-server worker boots `phaze.tasks.controller.settings` under `PHAZE_ROLE=control` (no longer depending on the audfprint/panako sidecars), and replacing forward-looking `lux_worker` references with the role-neutral `controller` in PROJECT.md + ROADMAP.md (D-33 doc sweep).**
+**Closes Phase 26 by deleting the legacy `phaze.tasks.worker` (115 LOC) and `phaze.tasks.session` (5 LOC) modules, updating `docker-compose.yml` so the application-server worker boots `phaze.tasks.controller.settings` under `PHAZE_ROLE=control` (no longer depending on the audfprint/panako sidecars), and replacing forward-looking `host-prod_worker` references with the role-neutral `controller` in PROJECT.md + ROADMAP.md (D-33 doc sweep).**
 
 ## One-liner
 
-Deleted `src/phaze/tasks/{worker,session}.py`, rewired `docker-compose.yml` worker service to `phaze.tasks.controller.settings` + `PHAZE_ROLE=control`, retargeted 6 legacy-importing test files to the new controller/agent_worker modules, and swept the hostname-leaked `lux_worker` name out of forward-looking planning docs.
+Deleted `src/phaze/tasks/{worker,session}.py`, rewired `docker-compose.yml` worker service to `phaze.tasks.controller.settings` + `PHAZE_ROLE=control`, retargeted 6 legacy-importing test files to the new controller/agent_worker modules, and swept the hostname-leaked `host-prod_worker` name out of forward-looking planning docs.
 
 ## Performance
 
@@ -84,7 +84,7 @@ Deleted `src/phaze/tasks/{worker,session}.py`, rewired `docker-compose.yml` work
 | Task | Name | Commit | Files |
 | ---- | ---- | ------ | ----- |
 | 1 | Delete legacy worker.py + session.py; rewire docker-compose; retarget legacy-importing tests | c76aff3 | docker-compose.yml, src/phaze/tasks/{worker,session}.py (deleted), tests/test_tasks/{test_pool,test_proposal,test_tracklist,test_worker,test_session}.py (last two deleted), tests/test_phase04_gaps.py, .planning/phases/26-…/deferred-items.md |
-| 2 | Doc sweep: lux_worker → controller across forward-looking planning docs | a86d039 | .planning/PROJECT.md, .planning/ROADMAP.md |
+| 2 | Doc sweep: host-prod_worker → controller across forward-looking planning docs | a86d039 | .planning/PROJECT.md, .planning/ROADMAP.md |
 
 ## What Was Built
 
@@ -134,13 +134,13 @@ Note: SCAN_PATH / MODELS_PATH / OUTPUT_PATH volume mounts are intentionally reta
 
 ### Task 2 — doc sweep (D-33)
 
-Replaced forward-looking `lux_worker` references with `controller`:
+Replaced forward-looking `host-prod_worker` references with `controller`:
 
 - `.planning/PROJECT.md:23` (v4.0 milestone task-code-reorg bullet)
 - `.planning/ROADMAP.md:131` (Phase 26 plan-13 description line)
-- `.planning/ROADMAP.md:164` (Phase 29 success-criterion #1 — `lux_worker` container reference)
+- `.planning/ROADMAP.md:164` (Phase 29 success-criterion #1 — `host-prod_worker` container reference)
 
-The remaining `lux_worker` mentions in `.planning/` are all in historical audit-trail records that are explicitly preserved per Plan 26-13 Task 2 ("DO NOT touch ... historical SUMMARY records ... that talks about what was actually shipped at that time"):
+The remaining `host-prod_worker` mentions in `.planning/` are all in historical audit-trail records that are explicitly preserved per Plan 26-13 Task 2 ("DO NOT touch ... historical SUMMARY records ... that talks about what was actually shipped at that time"):
 
 - `.planning/phases/26-…/26-13-PLAN.md` — this very plan describing the sweep itself
 - `.planning/phases/26-…/26-CONTEXT.md` — phase context documenting the D-02 / D-33 decisions
@@ -180,7 +180,7 @@ All checks passed!
 $ uv run pytest tests/test_task_split.py tests/test_tasks/ tests/test_phase04_gaps.py -x --no-cov
 ========================== 62 passed, 9 warnings in 3.48s ==========================
 
-$ grep -rn "lux_worker" .planning/ROADMAP.md .planning/REQUIREMENTS.md .planning/STATE.md .planning/PROJECT.md .planning/phases/25-internal-agent-http-api-bearer-auth/25-CONTEXT.md 2>/dev/null | wc -l
+$ grep -rn "host-prod_worker" .planning/ROADMAP.md .planning/REQUIREMENTS.md .planning/STATE.md .planning/PROJECT.md .planning/phases/25-internal-agent-http-api-bearer-auth/25-CONTEXT.md 2>/dev/null | wc -l
 0
 ```
 

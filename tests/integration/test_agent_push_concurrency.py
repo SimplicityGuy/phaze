@@ -142,9 +142,6 @@ async def _ledger_row(session: AsyncSession, key: str) -> SchedulingLedger | Non
     return (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
 
 
-# --- Gated router: parks request A mid-transaction so B genuinely contends on the advisory lock -----
-
-
 class _GatedQueue(FakeQueue):
     """A ``FakeQueue`` whose ``connect()`` parks the request mid-transaction (copied from the donor)."""
 
@@ -232,9 +229,6 @@ async def test_mismatch_concurrent_no_lost_update(
         row = await _ledger_row(session, ledger_key)
         assert row is not None
         assert row.redrive_attempt == 2, "two concurrent /mismatch must increment push_attempt to exactly 2"
-
-
-# --- Real before_enqueue hook: the under-cap re-drive must not self-deadlock ------------------------
 
 
 class _RealHookQueue(FakeQueue):

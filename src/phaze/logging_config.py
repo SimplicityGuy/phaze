@@ -16,7 +16,7 @@ formatter, see the stdlib source), so the two renderings can never drift apart o
 require a second log call site. Default is off, and with it off every process's
 output is byte-identical to before this existed.
 
-Import-boundary invariant (Phase 26 D-25 / tests/test_task_split.py):
+Import-boundary invariant (``tests/shared/core/test_task_split.py``):
     This module is imported transitively by the agent worker, the watcher, and the
     ``tasks/_shared`` bootstrap modules, all of which MUST run on a host with no
     Postgres reachable. It therefore imports ONLY the standard library + structlog --
@@ -55,7 +55,7 @@ class _ElevatePsycopgPoolConnectErrors(logging.Filter):
 
     ``psycopg_pool`` logs a total loss of its connection pool at WARNING
     (``psycopg_pool/pool_async.py``: ``logger.warning("error connecting in %r: %s", ...)``,
-    logger name ``"psycopg.pool"``). The 2026-08-08 nox incident: this is the SAQ broker
+    logger name ``"psycopg.pool"``). This is the SAQ broker
     pool underneath an agent worker's dispatch loop, and the warning sat unnoticed for 73
     of the 1h41m the worker silently dequeued nothing -- a total broker-connection loss is
     not a warning-level condition. This filter republishes matching records at ERROR

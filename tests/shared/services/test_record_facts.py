@@ -51,9 +51,6 @@ def _facts(**overrides: object) -> dict[str, str]:
     return {fact.label: fact.value for fact in build_record_facts(**_kwargs(**overrides))}  # type: ignore[arg-type]
 
 
-# --- the eight facts -------------------------------------------------------------------
-
-
 def test_the_eight_facts_are_always_present_and_in_the_sidebars_order() -> None:
     """The list's SHAPE never changes with the data; only the values do."""
     facts = build_record_facts(

@@ -1,12 +1,12 @@
-"""Pydantic schemas for /api/internal/agent/execution-log (phase-25 D-13, D-15).
+"""Pydantic schemas for ``/api/internal/agent/execution-log``.
 
 Two request schemas use `extra="forbid"` (D-16) to prevent agents from sneaking
 extra fields onto the wire. Response schemas remain loose so we can extend them
 non-breakingly. Status fields are typed `ExecutionStatus` so Pydantic validates
 the four allowed lifecycle values (`pending`, `in_progress`, `completed`, `failed`).
 
-Per D-13 the agent supplies `id` on POST so retries can be coalesced with
-`INSERT ... ON CONFLICT (id) DO NOTHING`. Per D-15 status transitions are
+The agent supplies `id` on POST so retries can be coalesced with
+`INSERT ... ON CONFLICT (id) DO NOTHING`. Status transitions are
 monotonic; the router enforces the ladder + terminal-state guard at PATCH time.
 """
 
@@ -22,7 +22,7 @@ from phaze.services.pg_text import contains_pg_invalid_chars
 class ExecutionLogCreate(SanitizedErrorMessageMixin):
     """Agent-supplied ExecutionLog row to insert.
 
-    Per D-13, the agent generates `id` (uuid.uuid4 on the agent) and persists
+    The agent generates `id` (uuid.uuid4 on the agent) and persists
     it in SAQ job state. Server does `INSERT ... ON CONFLICT (id) DO NOTHING`
     so retries are silent no-ops. `agent_id` is NEVER part of the body --
     handlers source it from `Depends(get_authenticated_agent)` only (AUTH-01).
@@ -47,7 +47,7 @@ class ExecutionLogCreate(SanitizedErrorMessageMixin):
     # (routers/agent_execution.py). REJECT rather than sanitize -- these are filesystem paths, and
     # silently stripping a NUL (services.pg_text.sanitize_pg_text) would point the row at a
     # DIFFERENT path than the agent actually operated on (same rationale as the
-    # pipeline_scans.py:497 subpath guard). `min_length=1` already runs first; this only rejects a
+    # pipeline-scans subpath guard). `min_length=1` already runs first; this only rejects a
     # PG-unstorable byte within an otherwise non-empty path.
     @field_validator("source_path", "destination_path", mode="after")
     @classmethod

@@ -31,26 +31,26 @@ class AnalysisResult(TimestampMixin, Base):
     fine_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coarse_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coarse_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Phase 57.1 completion discriminator (migration 028). NULL while a partial in-flight
+    # NULL while a partial in-flight
     # row exists (D-03 upserts one at analysis START); stamped via func.now() ONLY in the
     # put_analysis completion branch that flips FileState.ANALYZED. The proposal convergence
     # gate requires this IS NOT NULL so a partial row can never leak in with NULL aggregates.
     analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Phase 77 (D-01, migration 032): nullable analyze-stage failure markers on the 1:1 output table
+    # Nullable analyze-stage failure markers stay on the 1:1 output table
     # (NOT a generic stage_failure table -- preserves the <=1-row-per-file invariant). Stamped by the
     # go-forward writer + backfilled from FileState.ANALYSIS_FAILED; analysis_completed_at stays NULL
     # for a failed row so the future done-over-failed precedence holds.
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Phase 77 (PERF-01, migration 032): partial indexes mirroring what migration 032 creates, with
+    # Partial indexes mirror the migration with
     # byte-identical names + normalized IS-NOT-NULL predicate text -- the ORM half of the
     # empty-autogenerate-diff contract. AnalysisResult had no __table_args__ before this phase.
-    # Phase 81 (FAIL-01, migration 033): the analyze stage is done XOR failed, never both. Mirrored
+    # The analyze stage is done XOR failed, never both. Mirrored
     # here with the BARE name -- the ck_%(table_name)s_%(constraint_name)s convention renders it as
     # ck_analysis_analysis_completed_xor_failed, matching what migration 033 creates (the ORM half of
     # the empty-autogenerate-diff contract).
-    # phaze-5c6i2 (migration 058): a partial btree ON THE VALUE of ``analysis_completed_at`` (not just
+    # A partial btree ON THE VALUE of ``analysis_completed_at`` (not just
     # ``ix_analysis_completed``'s existence-only file_id index above) so the lane cards' rolling-24h
     # PROCESSED count (``analysis_completed_at >= :cutoff``) and the lifetime count (both gated
     # ``IS NOT NULL`` first) get an efficient range scan instead of a sequential one as the table grows
@@ -78,16 +78,11 @@ class AnalysisWindow(TimestampMixin, Base):
     populate ``mood``/``style``/``danceability``/``features``. All analysis
     columns are nullable so either tier can omit the other tier's fields.
 
-    phaze-x1qr3.1 (migration 063) adds three more nullable columns -- ``energy``,
-    ``camelot`` and ``mood_scores`` -- the per-window half of the set projection
-    (section E of the file-viewer epic). They are a NARROW PROJECTION of what
+    ``energy``, ``camelot`` and ``mood_scores`` are a narrow projection of what
     ``features`` already holds, not new measurement: reading a ~5 KB JSONB per row
     does not scale to the 4 million window rows the 200 000-file target implies, so
-    every viewer surface queries these columns instead. Nothing writes them yet --
-    ``phaze-x1qr3.2`` computes them and ``phaze-x1qr3.3`` writes them at analysis
-    completion and backfills existing rows from the stored JSONB with NO
-    re-analysis. Until then every row carries NULL, which is the honest reading of
-    "not yet projected" and is exactly what the lanes must render as a gap.
+    every viewer surface queries these columns instead. The projection writer fills them at analysis
+    completion and can backfill existing rows from stored JSONB without re-analysis.
 
     ``mood_scores`` keys are the 11 fixed names in the single fixed archive-wide
     order declared in :data:`phaze.services.set_projection.MOOD_ORDER` -- the same
@@ -117,16 +112,15 @@ class AnalysisWindow(TimestampMixin, Base):
     style: Mapped[str | None] = mapped_column(String(50), nullable=True)
     danceability: Mapped[float | None] = mapped_column(Float, nullable=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # --- Set projection (phaze-x1qr3.1, migration 063). All nullable; see the class docstring. ---
+    # Set-projection columns are nullable; see the class docstring.
     # The energy scalar in [0, 1], one per COARSE window (phaze-x1qr3.2 defines the weighted sum
     # over danceability/party/aggressive/relaxed/sad and the file-local BPM z-score). The range is a
-    # writer contract documented here rather than a CHECK constraint: this table carries millions of
-    # rows and the bead's whole premise is additive columns that rewrite nothing and take no
-    # validating scan.
+    # writer contract rather than a CHECK constraint because validating millions of rows would require
+    # an avoidable table scan.
     energy: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Camelot wheel position of this window's key -- "8A", "12B", at most 3 characters. FINE tier
     # (that is the tier carrying `musical_key`), derived from the "A minor" form via the 24-entry
-    # table phaze-x1qr3.2 adds, which also accepts essentia's sharp/flat spellings.
+    # conversion table, which also accepts Essentia's sharp/flat spellings.
     camelot: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # The 11 positive-class means for this COARSE window, averaged over the 3 model variants, keyed
     # and ordered by `services.set_projection.MOOD_ORDER`. A flat {name: float} object, ~200 bytes

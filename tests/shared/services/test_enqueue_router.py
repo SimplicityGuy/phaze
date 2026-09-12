@@ -48,9 +48,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Seed helpers
-# ---------------------------------------------------------------------------
 
 
 async def _seed_agent(
@@ -77,9 +75,7 @@ async def _seed_agent(
     return agent
 
 
-# ---------------------------------------------------------------------------
 # Task-set wiring
-# ---------------------------------------------------------------------------
 
 
 def test_task_sets_are_disjoint_frozensets() -> None:
@@ -94,9 +90,7 @@ def test_task_sets_are_disjoint_frozensets() -> None:
     assert "scan_directory" in AGENT_TASKS
 
 
-# ---------------------------------------------------------------------------
 # LANE_TASKS / lane_for_task / LANES (quick-260707-dh1)
-# ---------------------------------------------------------------------------
 
 
 def test_lanes_order_is_analyze_meta_io() -> None:
@@ -153,9 +147,7 @@ def test_lane_for_task_raises_on_unknown_task() -> None:
         lane_for_task("nonsense")
 
 
-# ---------------------------------------------------------------------------
 # select_active_agent
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -205,9 +197,7 @@ async def test_select_active_agent_excludes_never_seen(session: AsyncSession) ->
         await select_active_agent(session)
 
 
-# ---------------------------------------------------------------------------
 # select_active_agent — kind scoping (Phase 49 D-13)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -256,9 +246,7 @@ async def test_select_active_agent_kind_absent_raises(session: AsyncSession) -> 
         await select_active_agent(session, kind="compute")
 
 
-# ---------------------------------------------------------------------------
 # resolve_queue_for_task
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -342,10 +330,8 @@ async def test_resolve_unknown_task_raises_value_error() -> None:
         await resolve_queue_for_task("bogus_task", app_state, None)
 
 
-# ---------------------------------------------------------------------------
 # phaze-c9w9: ownership routing -- file-keyed agent tasks land on the file's
 # OWNING agent, never the most-recently-seen fileserver.
-# ---------------------------------------------------------------------------
 
 
 def _owned(agent_id: str) -> object:
@@ -463,9 +449,7 @@ async def test_resolve_owned_files_empty_set_is_a_noop(session: AsyncSession) ->
     assert skipped == []
 
 
-# ---------------------------------------------------------------------------
 # Phase 54: submit_cloud_job is a routable controller task
-# ---------------------------------------------------------------------------
 
 
 def test_submit_cloud_job_is_in_controller_tasks() -> None:
@@ -507,9 +491,7 @@ def test_controller_tasks_stay_in_sync_with_controller_functions() -> None:
     assert "submit_cloud_job" not in cron_names  # Phase 55 owns the trigger; no cron here
 
 
-# ---------------------------------------------------------------------------
 # select_agents_by_ids — the batched sibling (phaze-1i0h6.2)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
-"""Shared wire-format converters for essentia analysis features (Phase 52, KJOB-02).
+"""Shared wire-format converters for Essentia analysis features (KJOB-02).
 
 Relocated verbatim from ``phaze.tasks.functions`` so BOTH the SAQ ``process_file``
-task path AND the new one-shot ``job_runner`` (Plan 02) import the mood/style
+task path and the one-shot ``job_runner`` import the mood/style
 feature-to-dict converters from one place instead of re-deriving them.
 
 This module MUST remain stdlib + typing only -- no database, ORM-model, or

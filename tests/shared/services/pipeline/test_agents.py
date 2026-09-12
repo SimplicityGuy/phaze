@@ -199,10 +199,8 @@ async def test_get_queue_activity_isolates_one_failing_agent(session: AsyncSessi
     assert activity["controller_busy"] == 5
 
 
-# ---------------------------------------------------------------------------
 # get_agent_lane_depths (phaze-en7s7) — per-lane agent-activity-pane depths,
 # connect-before-count regression (the #217 fix, missed by this sibling reader)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -250,9 +248,7 @@ async def test_get_agent_lane_depths_isolates_one_failing_lane(session: AsyncSes
 # that shared shape under test.
 
 
-# ---------------------------------------------------------------------------
 # count_active_agents (Phase 40, REQ-40-2) — online-agent liveness count, degrade-safe
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -79,11 +79,10 @@ logger = structlog.get_logger(__name__)
 # and the window COUNT reads COMMITTED truth -- so two ticks could each read window=0, SKIP LOCKED
 # past each other's uncommitted PUSHING flips, and stage up to 2x cloud_max_in_flight. Holding this
 # lock across the count+claim makes the second tick block until the first commits, after which it
-# sees the committed window. Arbitrary stable constant (phase 50, plan 04); never collides because
-# no other code path takes an advisory lock.
+# sees the committed window. This stable key is private to the drain/reconcile protocol.
 _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY = 5_000_504
 
-# DRAIN-02 (Phase 98): the per-probe availability timeout for the once-per-tick snapshot. Mirrors the
+# DRAIN-02: the per-probe availability timeout for the once-per-tick snapshot. Mirrors the
 # read-path bound ``services.backends._PROBE_TIMEOUT_SEC`` (1.5s) VERBATIM in value; declared locally
 # (not imported) because ``backends`` imports THIS module (the advisory-lock key + push-job key), so a
 # top-level ``from ...backends import _PROBE_TIMEOUT_SEC`` would close the backends<->drain import cycle
@@ -96,21 +95,10 @@ _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY = 5_000_504
 # "unavailable" (0 slots this tick), so one hung cluster degrades to 0 slots instead of stalling the drain.
 _PROBE_TIMEOUT_SEC = 1.5
 
-# --- phaze-9sqa: head-of-line starvation guard ------------------------------------------------
-#
-# The drain used to fetch EXACTLY ``sum(free slots)`` candidates, FIFO. That makes the fetch window a
-# hostage of its own oldest rows: when all of them are unroutable (``select_backend`` -> ``None``), the
-# tick stages nothing, mutates nothing, and the NEXT tick fetches the SAME rows. Production 2026-07-27/28:
-# limit=3, the three oldest candidates all at the D-04 attempts cap while the local backend was full,
-# ``staged: 0, skipped: 3`` every 5 min for >24 h, a cloud backend sitting idle with free capacity, and
-# ~7,000 awaiting rows queued behind 14 poisoned heads.
-#
-# The fix is PAGINATION, not a smarter WHERE: the drain keeps fetching successive keyset pages until it
-# has filled its free slots or hit the scan bound, so an unroutable prefix of ANY length is stepped over
-# rather than re-read. Routability stays where it belongs -- in the pure ``select_backend`` policy over the
-# per-tick snapshot -- instead of being re-derived (and left to drift) in SQL against the DERIV-04-locked
-# candidate clause. It also generalizes: the attempts cap is only ONE hold reason, and a WHERE-clause fix
-# would have to grow a new conjunct, correctly, for every future one.
+# phaze-9sqa: keyset pagination steps past unroutable FIFO heads until free slots fill or the scan
+# bound is reached. Routability remains in ``select_backend`` rather than a duplicative SQL predicate.
+# This prevents the observed limit=3 stall (0 staged, 3 skipped every 5 min for >24 h) from hiding
+# ~7,000 awaiting rows behind 14 held heads.
 
 # Page size floor. Paging one free slot at a time would issue one round-trip per poisoned head; a floor
 # amortizes the walk over a long unroutable prefix (14 heads = ONE page, not 5). Rows fetched are also

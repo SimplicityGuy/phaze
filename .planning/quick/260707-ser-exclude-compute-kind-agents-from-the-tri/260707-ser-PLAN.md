@@ -13,7 +13,7 @@ requirements: [SER-01]
 must_haves:
   truths:
     - "The Trigger Scan agent-picker dropdown lists ONLY kind='fileserver' agents"
-    - "A kind='compute' agent (e.g. k8s-vox) never appears as a scan target option"
+    - "A kind='compute' agent (e.g. k8s-host-compute) never appears as a scan target option"
     - "build_dashboard_context returns only fileserver agents in context['agents']"
     - "The shell Analyze empty-state and Discover workspace return only fileserver agents"
   artifacts:
@@ -32,7 +32,7 @@ status: complete
 ---
 
 <objective>
-Exclude `kind="compute"` agents (Kueue/burst backends like `k8s-vox`, `k8s-xenolab`)
+Exclude `kind="compute"` agents (Kueue/burst backends like `k8s-host-compute`, `k8s-host-compute-alt`)
 from the operator "Trigger Scan" agent-picker dropdown. Compute agents are media-less and
 cannot be scan targets, so listing them is a bug. All three queries that build the
 `agents` list consumed by `trigger_scan_card.html` currently filter only on
@@ -66,7 +66,7 @@ Template (src/phaze/templates/pipeline/partials/trigger_scan_card.html:33-34):
 `{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }} ({{ agent.id }})</option>`
 
 Test helper (tests/_queue_fakes.py:366):
-`async def seed_active_agent(session, agent_id="nox", *, kind="fileserver") -> Agent`
+`async def seed_active_agent(session, agent_id="host-store", *, kind="fileserver") -> Agent`
 — pass `kind="compute"` to seed a compute agent.
 </interfaces>
 </context>
@@ -102,7 +102,7 @@ Test helper (tests/_queue_fakes.py:366):
   <name>Task 2: Regression test — compute agent absent, fileserver agent present in dropdown context</name>
   <files>tests/shared/routers/test_pipeline.py</files>
   <behavior>
-    - Seed one `kind="fileserver"` agent and one `kind="compute"` agent (use `seed_active_agent(session, agent_id="k8s-vox", kind="compute")`).
+    - Seed one `kind="fileserver"` agent and one `kind="compute"` agent (use `seed_active_agent(session, agent_id="k8s-host-compute", kind="compute")`).
     - `build_dashboard_context(app_state, session)` returns `ctx["agents"]` containing the fileserver agent id but NOT the compute agent id.
     - Assert on agent ids in the returned list (not just count) so the compute-exclusion is provable.
   </behavior>

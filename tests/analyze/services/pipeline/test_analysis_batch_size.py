@@ -123,9 +123,7 @@ def _ctor_kwargs(mock_es: MagicMock) -> dict[str, dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # The parameter is passed -- on the tunable graphs, at the measured knee
-# ---------------------------------------------------------------------------
 
 
 def test_default_batch_size_is_the_measured_knee() -> None:
@@ -183,9 +181,7 @@ def test_last_batch_mode_is_never_passed(mock_es: MagicMock, _labels: MagicMock)
         assert set(kwargs) == {"graphFilename", "batchSize"}
 
 
-# ---------------------------------------------------------------------------
 # Configurable, not a literal -- and unbreakable by a typo
-# ---------------------------------------------------------------------------
 
 
 def test_env_override_applies_to_tunable_models(monkeypatch: pytest.MonkeyPatch) -> None:

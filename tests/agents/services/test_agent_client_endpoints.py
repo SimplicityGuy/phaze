@@ -266,9 +266,7 @@ async def test_heartbeat_posts_to_correct_url_and_returns_none(client):  # type:
     assert sent_body["queue_depth"] == 3
 
 
-# ---------------------------------------------------------------------------
 # Terminal-ack / push endpoint wrappers (coverage for the thin POST adapters).
-# ---------------------------------------------------------------------------
 
 
 @respx.mock

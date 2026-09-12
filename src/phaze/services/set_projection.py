@@ -86,9 +86,7 @@ MOOD_ORDER: tuple[str, ...] = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Camelot wheel
-# ---------------------------------------------------------------------------
 
 # The 24-entry Camelot wheel, keyed by essentia's ``"<Note> <mode>"`` ``musical_key`` form
 # (``services/analysis.py`` writes ``f"{key} {scale}"``; the 8-char examples in
@@ -207,9 +205,7 @@ def wheel_adjacent(a: str, b: str) -> bool:
     return na == nb
 
 
-# ---------------------------------------------------------------------------
 # Positive-class vector
-# ---------------------------------------------------------------------------
 
 
 def positive_class_vector(features: Mapping[str, Any]) -> tuple[float | None, ...]:
@@ -238,9 +234,7 @@ def positive_class_vector(features: Mapping[str, Any]) -> tuple[float | None, ..
     return tuple(values)
 
 
-# ---------------------------------------------------------------------------
 # Energy scalar
-# ---------------------------------------------------------------------------
 
 # THE single place the energy weights live (acceptance: a test greps this module for
 # literal weight floats outside this table). ``bpm_z`` is not a ``MOOD_ORDER`` name -- it is
@@ -290,9 +284,7 @@ def energy(scores: Mapping[str, float | None], bpm_z: float) -> float:
     return _clamp01(total)
 
 
-# ---------------------------------------------------------------------------
 # Per-file profile
-# ---------------------------------------------------------------------------
 
 ARC_POINTS: Final[int] = 64
 # A genuine coverage hole is many multiples of a normal ~180s coarse-window step; anything

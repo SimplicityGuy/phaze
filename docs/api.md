@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # API Reference
 
 ## Console shell
@@ -10,13 +9,20 @@ The responsive console shell. `shell.py` owns the application root (`GET /`) and
 | GET    | `/`               | Console shell root with the actionable Summary selected                 |
 | GET    | `/s/{stage}`      | Single rail-node stage workspace (`stage` whitelisted via `STAGE_PARTIALS`; unknown stage 404s) |
 | GET    | `/record/{file_id}` | Per-file full-record read-only detail fragment (typed `uuid.UUID`, strictly `file_id`-scoped) |
-| GET    | `/files/{file_id}`  | Addressable full-record **page** for one file (same canonical record context, `record_presentation="page"`) |
+| GET    | `/files/{file_id}`  | Addressable full-record **page** for one file (same canonical record context, plus similar-set projection results) |
+| GET    | `/files/{file_id}/poster.svg` | Printable SVG poster from that same canonical context (energy arc, Camelot wheel, and tracklist) |
 
 `/record/{file_id}` and `/files/{file_id}` are the same record behind two presentations, both served by
 `record.py` off one `build_file_record_context` call: `/record/` returns the drawer *fragment* the shell
 swaps in place (`record_body.html`, `record_presentation="drawer"`), while `/files/` returns the
 standalone, linkable *document* (`record_page.html`, `record_presentation="page"`). Both 404 into their
 own presentation's not-found rendering rather than raising.
+
+The record context reads the narrow migration-`063` projection rather than decoding each window's
+large `features` JSONB: `SetProfile` plus `AnalysisWindow.energy`, `.camelot`, and `.mood_scores`
+feed the timeline, harmonic journey, record facts, track segments, glyph, poster, and deterministic
+similar-set ranking. There is no separate projection API; analysis completion writes it as part of
+the existing internal analysis callback, and the three record presentations are read-only.
 
 A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation, T-57-01).
 
@@ -57,6 +63,14 @@ Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) tha
 - `extract-metadata` → `extract_file_metadata` enqueues `ExtractMetadataPayload` (`file_id`, `original_path`, `file_type`, `agent_id`).
 
 The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook (35-01), letting a repeat enqueue of an in-flight file collapse to a no-op.
+
+**`process_file` liveness policy.** Every producer and recovery replay is normalized by
+`tasks/_shared/queue_defaults.py` to `timeout=0` (no elapsed-time kill), at most `retries=2`, and
+`heartbeat=analysis_job_heartbeat_sec`. That outer broker deadline is derived as twice
+`analysis_stall_timeout_sec`; the task touches it from child-process progress while
+`services/analysis_exec.py` independently kills the child only after the inner stall threshold of
+silence. A progressing multi-hour set therefore survives, while a silent child or dead worker is
+still bounded.
 
 **Routing & agent availability.** Both agent-task triggers resolve a target queue through `services.enqueue_router.resolve_queue_for_task`. When no non-revoked agent is active, the JSON triggers return `{"enqueued": 0, "message": "No active agent available — start an agent worker and retry"}` and the HTMX triggers render a `no_active_agent` fragment instead of enqueuing.
 
@@ -228,11 +242,11 @@ live caller of the offset plumbing in `services/dedup.py` — do not delete that
 
 ## Tracklists (`/tracklists`)
 
-The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s6); the tracklist workflow now lives in the shell's Track ID workspace (`/s/tracklist`). A single legacy route remains:
+The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s6); the tracklist workflow now lives in the shell's Tracklists workspace (`/s/tracklist`). A single legacy route remains:
 
 | Method | Path                                    | Description                          |
 |--------|-----------------------------------------|--------------------------------------|
-| GET    | `/tracklists/`                          | Legacy route: 302-redirects into the v7.0 shell's Track ID workspace (`/s/tracklist`) |
+| GET    | `/tracklists/`                          | Legacy route: 302-redirects into the v7.0 shell's Tracklists workspace (`/s/tracklist`) |
 
 ## Tags (`/tags`)
 
@@ -319,7 +333,7 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per Phase 35 D-06) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
 | POST   | `/api/internal/agent/metadata/{file_id}/failed`       | Terminal-ack for a retries-exhausted `extract_file_metadata` run (clears the ledger row) |
-| PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent audio-analysis upsert for a file                                 |
+| PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent analysis/window upsert; also derives and stores the migration-`063` set projection |
 | POST   | `/api/internal/agent/analysis/{file_id}/progress`     | Counter-only mid-flight progress upsert (fine-window counts; no completion side effects) |
 | POST   | `/api/internal/agent/analysis/{file_id}/failed`       | Mark a file's analysis terminally failed (`ANALYSIS_FAILED`)                |
 | PATCH  | `/api/internal/agent/proposals/{proposal_id}/state`   | Joint Proposal + FileRecord state transition in one transaction            |

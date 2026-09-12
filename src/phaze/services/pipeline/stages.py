@@ -1,13 +1,13 @@
 """The per-DAG-node stage progress fan-out and the stage pause/priority controls.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). The bounded fan-out
-machinery (:data:`_STATS_FANOUT` / :func:`_stats_fanout` / :func:`_read_in_own_session`) lives HERE,
+The bounded fan-out machinery (:data:`_STATS_FANOUT` / :func:`_stats_fanout` /
+:func:`_read_in_own_session`) lives here,
 beside its only consumer :func:`get_stage_progress`, rather than in a shared module: the semaphore
 cap's arithmetic is stated entirely in terms of that one function's read count, so separating them
 would leave the cap's rationale unreadable from either side.
 
-PATCH TARGET NOTE (phaze-vsqpr): ``_STATS_FANOUT`` is the per-test override seam. It moved with
-:func:`_stats_fanout`, so the target is now ``phaze.services.pipeline.stages._STATS_FANOUT`` --
+``_STATS_FANOUT`` is the per-test override seam. Patch
+``phaze.services.pipeline.stages._STATS_FANOUT`` directly;
 patching the ``phaze.services.pipeline`` package attribute no longer reaches it.
 """
 
@@ -44,14 +44,14 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# NOTE (Phase 82, D-05/READ-02): ``get_pipeline_stats`` -- the linear per-``FileRecord.state`` grouped
+# D-05/READ-02: ``get_pipeline_stats`` -- the linear per-``FileRecord.state`` grouped
 # counter -- was REMOVED here. The stats path no longer groups by (or reads) ``FileRecord.state``: its
 # three former callers
 # (``routers/pipeline.py`` ``_build_dag_context`` / ``build_dashboard_context`` /
 # ``pipeline_stats_partial``) now derive the seven consumed keys from :func:`get_stage_progress`'s
 # output-table counts (``discovered→discovery.done``, ``metadata_extracted→metadata.done``,
 # ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
-# ``approved→execute.total``, ``executed→execute.done``). Phase 90 (MIG-04) then removed the
+# ``approved→execute.total``, ``executed→execute.done``). MIG-04 removed the
 # ``FileState`` enum + ``files.state`` column entirely, so the former linear ``PIPELINE_STAGES`` list
 # (which enumerated the enum members) is gone -- stage membership derives from the output tables.
 
@@ -150,12 +150,12 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     The single-valued linear ``FileRecord.state`` (one enum per file) STRUCTURALLY cannot report
     parallel-stage done-counts; this query instead counts each stage's OUTPUT table. A file that is
     both metadata-extracted AND analyzed contributes to BOTH ``metadata.done`` and ``analyze.done``
-    here -- impossible to express through the single-valued state enum (RESEARCH Q5). Phase 82
+    here -- impossible to express through the single-valued state enum (RESEARCH Q5). READ-02
     (READ-02, D-05) removed the former state-grouped ``get_pipeline_stats`` entirely; the stats path
     now derives its seven keys from THIS function (no ``FileRecord.state`` read).
 
     Returns a dict keyed by DAG node. The two ENRICH nodes carry the FIVE-BUCKET shape
-    ``{not_started, in_flight, done, skipped, failed, total}`` (Phase 82 + Phase-87 ``skipped``); every OTHER node keeps
+    ``{not_started, in_flight, done, skipped, failed, total}``; every OTHER node keeps
     ``{"done": int, "total": int | None}``:
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
@@ -212,7 +212,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # instead of bare existence, so this no longer counts a mid-flight partial analysis row
     # (upserted at analysis START, NULL aggregates) or a terminally-failed analyze row (``failed_at``
     # set, ``analysis_completed_at`` NULL) neither of which get_proposal_pending_batches will ever
-    # batch. Phase 57.1 added that discriminator to the ready-set only; this fixes the drift
+    # batch. The completion discriminator used to exist only in the ready set; this fixes the drift
     # (phaze-nuyn) by composing from the shared ``done_clause`` builder so the two cannot drift again.
     convergence_stmt = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA)).where(done_clause(Stage.ANALYZE))
     tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
@@ -287,7 +287,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
-        # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the two enrich nodes are FIVE-BUCKET
+        # READ-02/D-04/D-05: the two enrich nodes are FIVE-BUCKET
         # ({not_started, in_flight, done, skipped, failed} + total) via one GROUP BY stage_status_case(stage)
         # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
@@ -313,7 +313,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     }
 
 
-# Per-stage pause/priority defaults (Phase 38, REQ-38-4). Mirror the Phase 37 control-table
+# Per-stage pause/priority defaults (REQ-38-4). Mirror the control-table
 # semantics for the two agent stages: unpaused, mid-range priority 50. Returned verbatim
 # whenever the control table is unreadable/absent so the 5s /pipeline/stats poll degrades to a
 # sane default instead of 500ing (T-38-DEGRADE — identical discipline to _safe_count above).

@@ -1,7 +1,6 @@
 """The per-stage PENDING sets -- the unbounded enqueue readers and their bounded render twins.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr). The paging contract's
-rule 7 split is the reason these live together: :func:`get_metadata_pending_files` /
+The paging contract's rule 7 split is why these live together: :func:`get_metadata_pending_files` /
 :func:`get_discovered_files_with_duration` are UNBOUNDED BY DESIGN because they are the enqueue
 membership, while :func:`get_pending_files_page` is the bounded RENDER read over the same predicate.
 Keeping the pair adjacent is what stops a future edit "unifying" them and silently under-enqueuing
@@ -40,10 +39,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- Phase 49 duration-routing read helpers (D-05, D-09/D-10) ---------------------------
-#
-# The primitives the per-file router (Plan 02), backfill (Plan 03), and release cron
-# (Plan 04) compose against. All three JOIN files -> metadata on FileMetadata.duration:
+# Duration-routing read helpers (D-05, D-09/D-10)
+# The primitives the per-file router router, backfill, and release cron compose against. All three JOIN files -> metadata on FileMetadata.duration:
 # FileRecord.file_metadata is lazy="noload" (models/file.py), so duration MUST be captured
 # in-memory via an explicit SELECT before any background task reads it (a later lazy access
 # off-session would raise). The backfill predicate filters ANALYSIS_FAILED *AND*
@@ -86,14 +83,12 @@ async def get_discovered_files_with_duration(session: AsyncSession) -> list[tupl
     return [(record, duration) for record, duration in result.all()]
 
 
-# --- Shared pending-set helpers (Phase 42, D-03 anti-drift) -----------------------------
-#
-# ONE definition of "pending" per stage, consumed by BOTH the Phase 39-41 manual DAG
-# triggers (routers/pipeline.py) AND the Phase-42 recovery producer
+# Shared pending-set helpers (D-03 anti-drift)
+# ONE definition of "pending" per stage, consumed by BOTH the manual DAG triggers (routers/pipeline.py) and the recovery producer
 # (tasks/reenqueue.recover_orphaned_work). Recovery and the manual triggers MUST read the
 # SAME query so the two paths cannot drift apart (D-03): an identical pending set funnelled
 # through the IDENTICAL keyed producer yields the IDENTICAL deterministic key, so a recovery
-# re-enqueue dedups cleanly against any surviving in-flight job (no doubling, Phase-32 class).
+# re-enqueue dedups cleanly against any surviving in-flight job (no doubling, deterministic-key class).
 # All queries are pure ORM / bound params -- NO f-string SQL (T-42-03).
 
 
@@ -101,7 +96,7 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     """Return the DERIVED metadata-extraction pending set -- music/video files eligible for metadata (READ-01).
 
     The EXACT set the manual metadata triggers (``trigger_metadata_extraction`` /
-    ``trigger_extraction_ui``) and the Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from
+    ``trigger_extraction_ui``) and the recovery producer enqueue. READ-01 cutover: DERIVED from
     ``eligible_clause(METADATA)`` (``~inflight ∧ ~done`` -- ``ELIGIBLE_AFTER_FAILURE[METADATA]`` is True,
     so a FAILED metadata row stays eligible for the ELIG-04 auto-retry) instead of the prior
     state-agnostic "every music/video file", and excludes dedup-resolved files. A file whose metadata is

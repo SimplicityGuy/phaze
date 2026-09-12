@@ -49,9 +49,7 @@ async def _add_proposal(session: AsyncSession, file_id: uuid.UUID, status: str) 
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # Fixtures: minimal valid audio files
-# ---------------------------------------------------------------------------
 
 
 def _make_mp3(path: Path) -> Path:
@@ -62,7 +60,6 @@ def _make_mp3(path: Path) -> Path:
     frame = header + b"\x00" * (frame_size - 4)
     # Write 10 frames so mutagen can sync properly
     path.write_bytes(frame * 10)
-    # Add ID3 tags via mutagen
     audio = MP3(str(path))
     audio.add_tags()
     audio.save()
@@ -110,10 +107,8 @@ class TestWriteTags:
         audio.delete()
         audio.save()
 
-        # Now write tags
         write_tags(str(mp3_file), {"artist": "New Artist"})
 
-        # Verify
         audio = MP3(str(mp3_file))
         assert audio.tags is not None
         assert str(audio.tags["TPE1"]) == "New Artist"
@@ -565,9 +560,7 @@ class TestEnqueueTagWrite:
     the ``tag_write_log.file_id`` foreign key the QUEUED insert now actually commits).
     """
 
-    # ------------------------------------------------------------------------------------------------
     # SC#2 guard behavior (real DB rows, mutation-checked) -- the load-bearing behavior-revival test.
-    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_applied_file_passes_guard(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """SC#2: an actually-applied file (executed proposal, ``state != 'executed'``) PASSES the guard.
@@ -600,9 +593,7 @@ class TestEnqueueTagWrite:
 
         router.enqueue_for_agent.assert_not_awaited()
 
-    # ------------------------------------------------------------------------------------------------
     # Dispatch contract -- the guard is explicitly admitted so routing is exercised in isolation.
-    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_creates_queued_tag_write_log(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """The audit row is created up front in ``queued``, with an EMPTY before-tags snapshot.
@@ -724,9 +715,7 @@ class TestEnqueueTagWrite:
         assert log_entry.status == TagWriteStatus.QUEUED
         assert log_entry.error_message is None
 
-    # ------------------------------------------------------------------------------------------------
     # phaze-ysnp: the QUEUED row must be DURABLE before the dispatch, not merely flushed.
-    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_queued_row_is_committed_before_the_dispatch(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """phaze-ysnp: the write-ahead commit must happen BEFORE ``enqueue_for_agent`` is awaited.
@@ -762,9 +751,7 @@ class TestEnqueueTagWrite:
         assert "enqueue" in events
         assert events.index("commit") < events.index("enqueue"), f"commit must precede the dispatch, got order {events}"
 
-    # ------------------------------------------------------------------------------------------------
     # phaze-lwqk: per-file mutual exclusion -- a second concurrent dispatch for the SAME file refuses.
-    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_second_enqueue_for_an_already_queued_file_raises(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """A file with an unresolved ``queued`` row refuses a second dispatch.

@@ -104,9 +104,7 @@ def _payload_from_call(call: object) -> object:
     raise AssertionError(msg)
 
 
-# ---------------------------------------------------------------------------
 # 28-V-06 — success path: ONE progress POST with terminal_step="deleted"
-# ---------------------------------------------------------------------------
 
 
 async def test_success_emits_one_deleted_progress_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,9 +135,7 @@ async def test_success_emits_one_deleted_progress_post(tmp_path: Path, monkeypat
     assert sent.batch_id == payload.batch_id
 
 
-# ---------------------------------------------------------------------------
 # 28-V-07 — failure path: terminal_step="failed" + failed_at_step derived from current_step
-# ---------------------------------------------------------------------------
 
 
 async def test_failure_emits_failed_progress_post_with_failed_at_step(
@@ -247,9 +243,7 @@ async def test_delete_failure_maps_to_failed_at_delete(
     assert sent.failed_at_step == "delete"
 
 
-# ---------------------------------------------------------------------------
 # 28-V-08 — sub_batch_terminal True only on the LAST item
-# ---------------------------------------------------------------------------
 
 
 async def test_sub_batch_terminal_set_on_last_item_only(
@@ -282,11 +276,9 @@ async def test_sub_batch_terminal_set_on_last_item_only(
     assert steps == ["deleted", "deleted", "deleted"]
 
 
-# ---------------------------------------------------------------------------
 # D-16 — TELEMETRY progress POST failure logs WARNING and does not raise.
 # phaze-j7u8 splits the rule: the sub_batch_terminal COMPLETION TOKEN re-raises instead
 # (covered in the phaze-j7u8 section further down).
-# ---------------------------------------------------------------------------
 
 
 def _fail_only_telemetry_posts() -> AsyncMock:
@@ -339,9 +331,7 @@ async def test_progress_post_failure_logs_warning_but_does_not_raise(
     assert any("progress POST failed" in record.getMessage() for record in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # L6/L22 + D-15 — SAQ-meta-backed UUIDs (execution_log_id + progress_request_id)
-# ---------------------------------------------------------------------------
 
 
 async def test_uuids_persisted_in_job_meta_on_first_run(
@@ -436,12 +426,10 @@ async def test_uuids_reused_from_job_meta_on_retry(
     assert progress_payload.request_id == preseeded_req_id
 
 
-# ---------------------------------------------------------------------------
 # phaze-ebpt — already-moved replay detection: a SAQ retry after a crash between
 # the committed file move and the success PATCHes must report COMPLETED (with a
 # current_path pointing at `proposed`), NOT flip an already-executed proposal to
 # FAILED with a stale current_path pointing at the now-deleted `original`.
-# ---------------------------------------------------------------------------
 
 
 async def test_crash_retry_already_moved_reports_completed_not_stale_failed(
@@ -655,12 +643,10 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
     assert progress_post.failed_at_step == "verify"
 
 
-# ---------------------------------------------------------------------------
 # phaze-ebb46 — the already-moved heuristic must not trust content identity ALONE.
 # A missing source with a byte-identical file already sitting at the destination
 # (a DIFFERENT proposal's completed move, or simply no evidence at all) must fail
 # loudly instead of being silently reported EXECUTED with a stolen current_path.
-# ---------------------------------------------------------------------------
 
 
 async def test_crash_retry_already_moved_uncorroborated_fails_loudly_not_silently(
@@ -797,14 +783,12 @@ async def test_duplicate_missing_source_is_not_silently_executed_onto_another_re
     assert destination.read_bytes() == content
 
 
-# ---------------------------------------------------------------------------
 # phaze-qx8z — cross-fs replay: a crash between the committed copy and the
 # pending ``original.unlink()`` leaves BOTH `original` and a distinct-inode
 # `proposed`. The replay must recognize the already-copied destination and
 # complete the move forward (delete `original`, report executed), NOT misfire
 # the phaze-yu2e clobber guard and flip the succeeded move to FAILED while
 # leaving the file duplicated. A genuinely foreign file is still refused.
-# ---------------------------------------------------------------------------
 
 
 async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
@@ -921,7 +905,6 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
     assert not execmod._committed_copy_marker_path(proposed, proposal_id).exists()
 
 
-# ---------------------------------------------------------------------------
 # phaze-v3b1e — a crash between the completed-forward `original.unlink()` and
 # its OWN marker cleanup leaves the marker orphaned: the NEXT replay sees
 # `original` gone + `proposed` present, takes the `already_moved` fast path
@@ -931,7 +914,6 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
 # crash edge -- before `original.unlink()` -- and assert the marker is cleaned
 # up when the move completes forward), this models the SECOND edge: the move
 # already completed on a PRIOR call, and this call is the already-moved replay.
-# ---------------------------------------------------------------------------
 
 
 async def test_already_moved_replay_cleans_up_orphaned_commit_marker(
@@ -1074,14 +1056,12 @@ async def test_cross_fs_foreign_file_at_destination_still_refused(
     assert proposed.read_bytes() == b"AN-UNRELATED-FILE"
 
 
-# ---------------------------------------------------------------------------
 # phaze-i7jo — a byte-identical DUPLICATE's own already-completed move must not be
 # mistaken for THIS proposal's residue. Reproduces the reported bug directly: two
 # distinct proposals (A and B) share a sha256 hash (a real dedup group) and the same
 # resolved destination; A's move already completed (no marker of B's own left behind
 # for that destination) when B's proposal executes. Content identity alone used to be
 # "proof enough" that `proposed` was B's own prior attempt -- it is not.
-# ---------------------------------------------------------------------------
 
 
 async def test_cross_fs_duplicates_own_already_completed_move_is_refused_not_deleted(
@@ -1162,13 +1142,11 @@ async def test_cross_fs_duplicates_own_already_completed_move_is_refused_not_del
     assert proposed.read_bytes() == content
 
 
-# ---------------------------------------------------------------------------
 # phaze-q2lg — a live ``original.unlink()`` failure AFTER a committed cross-fs
 # copy must leave a coherent, recoverable state: the copy at `proposed` is
 # complete (not a partial), the failure is reported distinctly at
 # failed_at_step="delete" (moved-but-source-not-removed), and a subsequent retry
 # completes the move WITHOUT re-copying the whole (multi-GB) file.
-# ---------------------------------------------------------------------------
 
 
 async def test_cross_fs_unlink_failure_leaves_complete_copy_and_retry_does_not_recopy(
@@ -1261,9 +1239,7 @@ async def test_cross_fs_unlink_failure_leaves_complete_copy_and_retry_does_not_r
     assert proposed.read_bytes() == content
 
 
-# ---------------------------------------------------------------------------
 # D-01 — error_message uses the "<step>: <reason>" prefix
-# ---------------------------------------------------------------------------
 
 
 async def test_error_message_uses_step_reason_prefix(
@@ -1295,10 +1271,8 @@ async def test_error_message_uses_step_reason_prefix(
     assert err.startswith("verify: "), f"expected 'verify: ' prefix, got: {err!r}"
 
 
-# ---------------------------------------------------------------------------
 # Sanity: progress request_id used on a single proposal matches what the POST sent
 # (covers the "ExecutionLog POST and progress POST use SEPARATE UUIDs" invariant).
-# ---------------------------------------------------------------------------
 
 
 async def test_execution_log_and_progress_use_distinct_uuids(
@@ -1327,11 +1301,9 @@ async def test_execution_log_and_progress_use_distinct_uuids(
     assert log_post.id != progress_post.request_id
 
 
-# ---------------------------------------------------------------------------
 # Sanity: legacy ctx (no 'job' key) still works -- backward-compat with Phase 26 tests.
 # This guarantees the regression test surface (test_execute_approved_batch.py) keeps
 # passing even though it predates the SAQ-meta lift.
-# ---------------------------------------------------------------------------
 
 
 async def test_legacy_ctx_without_job_does_not_break(
@@ -1359,9 +1331,7 @@ async def test_legacy_ctx_without_job_does_not_break(
     assert api.post_exec_batch_progress.await_count == 1
 
 
-# ---------------------------------------------------------------------------
 # Sanity check: the helper file actually rebuilt the file successfully.
-# ---------------------------------------------------------------------------
 
 
 async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1389,14 +1359,12 @@ async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest
     assert sent.failed_at_step is None
 
 
-# ---------------------------------------------------------------------------
 # Failure-resilience coverage (Phase 28 patch-coverage fill)
 #
 # These tests assert the WARN-and-continue contract of each best-effort
 # audit/PATCH/progress call inside ``_execute_one`` and the outer batch
 # scan_roots precondition. They round out coverage of the lines that
 # Codecov flagged as missing in PR #62.
-# ---------------------------------------------------------------------------
 
 
 async def test_empty_scan_roots_raises_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1632,10 +1600,8 @@ async def test_progress_post_failure_on_failure_path_is_swallowed(
     assert result["status"] == "completed_with_errors"
 
 
-# ---------------------------------------------------------------------------
 # bead phaze-uciu.6 — the success-path 'report' PATCH is guarded so a 5xx after
 # a committed move cannot flip the proposal to FAILED / misreport failed_at_step.
-# ---------------------------------------------------------------------------
 
 
 async def test_executed_state_patch_5xx_does_not_fail_proposal(
@@ -1696,11 +1662,9 @@ async def test_executed_state_patch_5xx_does_not_fail_proposal(
     assert any("reporting executed state failed" in r.message for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # phaze-j7u8 — the sub_batch_terminal COMPLETION TOKEN is NOT telemetry. Losing it
 # strands the batch at 'running' and holds exec:active for 24h, so it must re-raise
 # and let SAQ replay the job rather than be swallowed under the D-16 rule.
-# ---------------------------------------------------------------------------
 
 
 async def test_lost_completion_token_on_success_path_raises_for_saq_replay(
@@ -1811,12 +1775,10 @@ async def test_lost_completion_token_on_failure_path_also_raises(
     assert states == ["failed"]
 
 
-# ---------------------------------------------------------------------------
 # phaze-87ba — a failed write-ahead ExecutionLog POST must not erase the audit
 # record of a move that actually happened. CREATE is idempotent (D-13) but PATCH
 # is a monotonic-ladder UPDATE (D-15) that 404s on a missing row -- and a 404 is
 # a 4xx, so it is never retried and is swallowed.
-# ---------------------------------------------------------------------------
 
 
 def _failing_then_succeeding_post_execution_log() -> AsyncMock:

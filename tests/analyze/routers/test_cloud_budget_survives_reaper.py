@@ -219,9 +219,7 @@ async def _route(session: AsyncSession, file_id: uuid.UUID, now: datetime, cfg: 
     return (target.id if target is not None else ""), reason
 
 
-# ---------------------------------------------------------------------------
 # THE REGRESSION: the production shape, start to finish
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -311,9 +309,7 @@ async def test_reaper_still_deletes_the_awaiting_row_on_the_success_seam(seed_te
     assert await _budget(session, file.id) is not None, "and the durable budget must survive it too"
 
 
-# ---------------------------------------------------------------------------
 # The fold is EDGE-triggered -- a chain is charged once, and only a real chain
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -429,9 +425,7 @@ async def test_a_genuinely_new_chain_accumulates_and_restarts_the_cooldown(seed_
     assert second.budget_spent_at >= first_spent_at, "the cooldown clock measures from the MOST RECENT burnout"
 
 
-# ---------------------------------------------------------------------------
 # Policy: both failure directions, and the config-only escape hatch
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

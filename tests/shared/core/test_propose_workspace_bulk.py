@@ -64,9 +64,7 @@ async def _status_of(session: AsyncSession, proposal: RenameProposal) -> Proposa
     return fresh.status
 
 
-# ---------------------------------------------------------------------------
 # Endpoint compatibility -- the preparation workspace no longer exposes decision controls
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -125,9 +123,7 @@ async def test_bulk_reject_acts_on_exactly_the_selection(
     assert await _status_of(session, spared) == ProposalStatus.PENDING
 
 
-# ---------------------------------------------------------------------------
 # Acceptance 2 -- the response re-renders the list, on the SAME view it came from
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -182,9 +178,7 @@ async def test_generate_all_remains_distinct_from_review_decisions(
     assert 'href="/s/rename"' in body
 
 
-# ---------------------------------------------------------------------------
 # Concurrency: double-click / replay (phaze-fa2p double-dispatch, phaze-u28m TOCTOU)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -212,9 +206,7 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
         assert await _status_of(session, proposal) == ProposalStatus.APPROVED, "a replay must not corrupt the first result"
 
 
-# ---------------------------------------------------------------------------
 # One route, one response shape -- whatever HX-Target arrives
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

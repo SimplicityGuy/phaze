@@ -178,7 +178,7 @@ async def generate_cue(
         # phaze-bk9el.10 (error_handling finding, left broad on purpose): `enqueue_for_file` can
         # fail before the broker connection exists (network/DB errors of whatever type asyncpg or
         # the redis client raise out of `queue.connect()`) or after it (wrapped as
-        # `AmbiguousEnqueueError` by `AgentTaskRouter.enqueue_for_agent`, agent_task_router.py:230).
+        # `AmbiguousEnqueueError` by `AgentTaskRouter.enqueue_for_agent`).
         # From this handler's perspective every one of those is the SAME outcome -- the write was
         # never queued -- and gets the SAME operator-facing toast (retry after checking the agent
         # and the broker). Narrowing to a specific exception type would silently 500 on whichever

@@ -58,9 +58,7 @@ _BUCKET = "phaze-replay-safety"
 _CREDS = {"aws_access_key_id": "testing", "aws_secret_access_key": "testing"}
 
 
-# ---------------------------------------------------------------------------
 # 1. The classification is TOTAL and DISJOINT -- the anti-omission guard
-# ---------------------------------------------------------------------------
 
 
 def test_every_keyed_producer_is_classified() -> None:
@@ -107,9 +105,7 @@ def test_s3_upload_is_the_declared_time_limited_producer() -> None:
     assert "process_file" in LEDGER_REPLAY_TIME_INVARIANT
 
 
-# ---------------------------------------------------------------------------
 # 2. The content detector, against REAL presigned URLs
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -270,9 +266,7 @@ def test_detector_is_total_on_odd_payloads() -> None:
     assert find_time_limited_paths(deep) == []
 
 
-# ---------------------------------------------------------------------------
 # 3. The write-side chokepoint: DETECTS loudly, never blocks
-# ---------------------------------------------------------------------------
 
 
 class _FakeSession:

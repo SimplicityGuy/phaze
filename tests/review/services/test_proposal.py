@@ -8,9 +8,7 @@ import uuid
 import pytest
 
 
-# ---------------------------------------------------------------------------
 # FileProposalResponse tests
-# ---------------------------------------------------------------------------
 
 
 class TestFileProposalResponse:
@@ -78,9 +76,7 @@ class TestFileProposalResponse:
         assert resp2.confidence == -0.3
 
 
-# ---------------------------------------------------------------------------
 # BatchProposalResponse tests
-# ---------------------------------------------------------------------------
 
 
 class TestBatchProposalResponse:
@@ -109,9 +105,7 @@ class TestBatchProposalResponse:
         assert batch.proposals[1].file_index == 1
 
 
-# ---------------------------------------------------------------------------
 # load_prompt_template tests
-# ---------------------------------------------------------------------------
 
 
 class TestLoadPromptTemplate:
@@ -132,9 +126,7 @@ class TestLoadPromptTemplate:
             load_prompt_template("nonexistent_template_xyz")
 
 
-# ---------------------------------------------------------------------------
 # clean_companion_content tests
-# ---------------------------------------------------------------------------
 
 
 class TestCleanCompanionContent:
@@ -170,9 +162,7 @@ class TestCleanCompanionContent:
         assert "Source: SBD" in result
 
 
-# ---------------------------------------------------------------------------
 # build_file_context tests
-# ---------------------------------------------------------------------------
 
 
 def _make_file_record() -> MagicMock:
@@ -288,9 +278,7 @@ class TestBuildFileContext:
         assert ctx["original_filename"] == "999999999-Live_At_Boiler_Room-WEB-2019.mp3"
 
 
-# ---------------------------------------------------------------------------
 # Settings LLM fields tests
-# ---------------------------------------------------------------------------
 
 
 class TestSettingsLlmFields:
@@ -349,9 +337,7 @@ class TestSettingsLlmFields:
         assert s.llm_max_companion_chars == 3000
 
 
-# ---------------------------------------------------------------------------
 # ProposalService tests (Plan 02)
-# ---------------------------------------------------------------------------
 
 
 class TestProposalServiceInit:
@@ -468,9 +454,7 @@ class TestGenerateBatch:
             assert json.dumps(files_context, indent=2) in prompt
 
 
-# ---------------------------------------------------------------------------
 # check_rate_limit tests (Plan 02)
-# ---------------------------------------------------------------------------
 
 
 class _FakeRedis:
@@ -600,9 +584,7 @@ class TestCheckRateLimit:
         assert await fake.ttl(_FakeRedis.KEY) == 60
 
 
-# ---------------------------------------------------------------------------
 # store_proposals tests (Plan 02)
-# ---------------------------------------------------------------------------
 
 
 class TestFileProposalResponsePath:
@@ -774,7 +756,6 @@ class TestStoreProposals:
         file_record = MagicMock()
         file_record.state = "analyzed"
 
-        # Mock query to return file record
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = file_record
         session.execute.return_value = mock_result
@@ -829,7 +810,6 @@ class TestStoreProposals:
 
         with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
-            # Check confidence was clamped to 1.0
             row = mock_pg_insert.return_value.values.call_args.kwargs
             assert row["confidence"] == 1.0
 
@@ -923,9 +903,7 @@ class TestStoreProposals:
         assert "\x00" not in json.dumps(row["context_used"])
 
 
-# ---------------------------------------------------------------------------
 # load_companion_contents tests (Plan 02)
-# ---------------------------------------------------------------------------
 
 
 class TestLoadCompanionContents:

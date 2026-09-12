@@ -34,7 +34,6 @@ import tokenize
 
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "phaze"
 
-# --- Forbidden EXECUTABLE forms (matched against the comment/string-blanked token stream) ----------
 # 1. The bare ``FileState`` token: the class is deleted, so ANY executable reference is a reintroduction.
 _FILESTATE = re.compile(r"\bFileState\b")
 # 2. Scoped attribute reads/writes on the file record / table -- NOT a bare ``\w+\.state`` (that would

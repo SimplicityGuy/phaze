@@ -1,7 +1,6 @@
 """The Analyze workspace read model -- the bounded working set, the paged full listing, the
 shared row projection and the per-file lane derivation.
 
-Extracted from the former monolithic ``services/pipeline.py`` (phaze-vsqpr).
 """
 
 from __future__ import annotations
@@ -39,18 +38,17 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# --- Phase 58 (58-04, WORK-04 / D-03) all-in-stage Analyze file table read ----------------
-#
+# All-in-stage Analyze file table read (WORK-04 / D-03)
 # The rows surfaced in the D-03 "one table of ALL in-stage Analyze files" table are now DERIVED
-# (Phase 90 PR-A, no ``files.state`` read): any analysis row (``AnalysisResult.id IS NOT NULL`` --
+# PR-A, with no ``files.state`` read: any analysis row (``AnalysisResult.id IS NOT NULL`` --
 # which by the builders' definitions covers the done + failed + partial-57.1 buckets), the analyze
 # in-flight ledger (``inflight_clause(ANALYZE)``), and the active ``cloud_job`` lanes
 # (awaiting / pushing / pushed, D-12), so a running or cloud-held file appears even before it has an
 # analysis row.
 
 
-# Phase 95 (phaze-zqvh.2, CONSOLE-04): the per-file table is BOUNDED at the source. The
-# Phase-58 ``get_analyze_stage_files`` returned the ENTIRE analyze-stage membership -- which as the
+# The per-file table is BOUNDED at the source (phaze-zqvh.2, CONSOLE-04). The
+# The former ``get_analyze_stage_files`` returned the ENTIRE analyze-stage membership -- which as the
 # archive converges monotonically approaches the whole corpus (92,335 rows / ~105MB HTML at the seeded
 # 200K scale, phaze-zqvh.1 baseline). It is SPLIT here into two bounded reads that share ONE row
 # projection (identical per-row dict shape, so ``analyze_workspace.html`` row-building is unchanged):
@@ -63,19 +61,19 @@ logger = structlog.get_logger(__name__)
 #     bounded OFFSET pages with a ``page_size + 1`` sentinel for ``has_next`` (never a whole-corpus
 #     COUNT -- the same T-87-11 DoS mitigation ``get_files_page`` uses).
 #
-# The membership semantics are UNCHANGED from Phase 90 (PR-A): DERIVED, never ``files.state``. A file is
+# Membership is DERIVED, never read from ``files.state`` (PR-A). A file is
 # in the Analyze stage iff it carries ANY analysis row (``AnalysisResult.id IS NOT NULL`` -- SUPERSETS
 # done_clause + failed_clause + any partial 57.1 row) OR its analyze is in-flight (``inflight_clause``
 # over ``scheduling_ledger``) OR it carries an ACTIVE ``cloud_job`` sidecar. The correlated builders are
 # NOT composed against the OUTER-JOINED columns (SQLAlchemy would auto-correlate them out of the inner
-# ``exists(...)`` -- the Phase 90 blocking-fix); membership is spelled against the joined columns using
+# ``exists(...)``); membership is spelled against the joined columns using
 # the builders' EXACT semantics while ``inflight_clause`` (over the un-joined ledger) is composed verbatim.
 
 # Bounded recent-completions window on the DEFAULT view (phaze-zqvh.2). Small enough that the operator
 # sees "what just finished" without the whole (corpus-scale) completed set landing in the DOM.
 _ANALYZE_COMPLETIONS_WINDOW = 50
 
-# The ACTIVE cloud statuses that place a file in the Analyze working set -- the SAME five the Phase-58
+# The ACTIVE cloud statuses that place a file in the Analyze working set -- the same five the original
 # membership listed (awaiting/uploading/submitted/uploaded/running; NOT the terminal ``succeeded``,
 # which the completed-window / paged listing covers instead).
 _ANALYZE_ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
@@ -184,7 +182,7 @@ def _analyze_status_where(status: str | None) -> Any:
         return AnalysisResult.failed_at.is_not(None)
     if status == ANALYZE_FILTER_COMPLETED:
         return AnalysisResult.analysis_completed_at.is_not(None)
-    # ANALYZE_FILTER_ALL / None / unknown -> the full analyze-stage membership (the Phase-90 predicate).
+    # ANALYZE_FILTER_ALL / None / unknown -> the full analyze-stage membership (the derived-state predicate).
     return or_(
         AnalysisResult.id.is_not(None),
         inflight_clause(Stage.ANALYZE),
@@ -217,7 +215,7 @@ def derive_file_lane(cloud_job_id: Any, backend_id: str | None, kinds: dict[str,
 def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[dict[str, Any]]:
     """Project raw :func:`_analyze_files_select` rows into the per-file dict the template renders.
 
-    The IDENTICAL shape the Phase-58 ``get_analyze_stage_files`` produced (so ``analyze_workspace.html``
+    The identical shape the original ``get_analyze_stage_files`` produced (so ``analyze_workspace.html``
     row-building is unchanged): the RECORD-01 ``file_id`` opener key, the DERIVED boolean flags
     (``awaiting_cloud`` / ``analysis_failed`` / ``completed`` -- never a raw ``files.state``), the
     COMPUTE-03 lane derivation (:func:`derive_file_lane`), and the 57.1 windowed coverage. ``kinds``
@@ -228,12 +226,12 @@ def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[di
         lane, lane_kind = derive_file_lane(cloud_job_id, backend_id, kinds)
         files.append(
             {
-                # Phase 61 (RECORD-01): the row->record slide-in opener keys on this file_id
+                # RECORD-01: the row->record slide-in opener keys on this file_id
                 # (hx-get="/record/{file_id}"); str() so the template renders the UUID inline.
                 "file_id": str(file_id),
                 "filename": filename,
                 "path": path,
-                # Phase 90 (PR-A): derived boolean flags REPLACE the raw ``state`` key -- the template
+                # PR-A: derived boolean flags replace the raw ``state`` key -- the template
                 # renders off these, never a FileState string.
                 "awaiting_cloud": cloud_status == CloudJobStatus.AWAITING.value,
                 "analysis_failed": failed_at is not None,

@@ -48,7 +48,7 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.3 GiB, k0s burst node, **out of the phaze backend registry and left that way**, otherwise idle (0 pods in `phaze`, ~29 GiB available; verified before the run and enforced by an idle gate between every measurement) |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.3 GiB, k0s burst node, **out of the phaze backend registry and left that way**, otherwise idle (0 pods in `phaze`, ~29 GiB available; verified before the run and enforced by an idle gate between every measurement) |
 | **Runtime** | deployed job image `job:2026.8.0` in a bare `sleep infinity` pod, **no Kueue queue label** (consumes no quota), `phaze-models` PVC mounted **read-only**, a host scratch dir for synthetic audio |
 | **Window geometry** | driven by the **real** `phaze.services.analysis` internals — `_probe_duration_sec`, `_iter_windows`, `_stride_to_cap` — so both arms analyze exactly the windows production would |
 | **Audio** | **synthesized with ffmpeg** — the `phaze-esut` appendix generator, stereo 44.1 kHz sine pairs, libmp3lame 192 kbps, at 600 / 3600 / 10800 / 43200 s |
@@ -57,7 +57,7 @@ ______________________________________________________________________
 | **Identity metric** | sha256 over each decoded buffer's raw float32 bytes, plus sha256 + `cmp` on the whole `analyze_file` result — the bar `phaze-15sw` met |
 
 **No operator media was read, copied, or referenced.** Every input is a synthesized sine pair. No
-filename, path, or per-file metadata value from the library appears in this document. vox was **not**
+filename, path, or per-file metadata value from the library appears in this document. host-compute was **not**
 re-enabled in the phaze backend registry; k0s, JuiceFS and the gateway config were not touched; the
 models PVC was mounted read-only and is intact. The only artefacts created are a scratch directory
 and one bench pod, both removed (appendix).
@@ -313,7 +313,7 @@ marginally optimistic on the streaming side by about that much; 15.7× and 19.2�
 
 Wall time for one 180-second coarse window at 16 kHz — §8's exact quantity, remeasured here:
 
-| total file duration | §8 (macOS) | **vox (measured)** | s per minute of total file | linear prediction from the 60-min point |
+| total file duration | §8 (macOS) | **host-compute (measured)** | s per minute of total file | linear prediction from the 60-min point |
 | ---: | ---: | ---: | ---: | ---: |
 | 10 min | 6.6 s | **7.91 s** | 0.791 | — |
 | 60 min | 45.9 s | **52.12 s** | 0.869 | — |
@@ -471,7 +471,7 @@ apply them and re-measure rather than assuming they land.**
 > extracted instead of sinking into a pre-sized array. Same effect where it matters: nothing of
 > the `Pool` is alive when the model sweep starts.
 >
-> Measured end to end on vox against **current `main`** — which has moved twice since this
+> Measured end to end on host-compute against **current `main`** — which has moved twice since this
 > spike (`phaze-0582` batch 32, `phaze-rvcn` host-derived thread sizing), so the baseline here
 > is 1.3999 GiB rather than this section's 2.505 GiB. Same file, same caps, same node, one
 > variable at a time:
@@ -532,7 +532,7 @@ shipping `phaze-5lop` without recommendation 3 would force `phaze-3j67`'s sizing
 (4Gi/6Gi), which on a 31 GiB node costs a concurrency slot at `cap = 4`. Fixing the double-hold is
 cheaper than paying for it.
 
-The one consolation is that the direction is the right one for this node: `phaze-3j67` measured vox
+The one consolation is that the direction is the right one for this node: `phaze-3j67` measured host-compute
 **CPU-bound at W=2 with 13.1 GiB of memory it cannot use**. Trading 1.1 GiB of a resource with 13 GiB
 of slack for 42% of the wall clock on the binding resource is a good trade even unmitigated — it is
 just an unnecessary one.

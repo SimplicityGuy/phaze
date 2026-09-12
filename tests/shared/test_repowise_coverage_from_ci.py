@@ -249,5 +249,5 @@ def test_just_recipe_documents_default_and_explicit_run_wiring() -> None:
     justfile = _JUSTFILE.read_text(encoding="utf-8")
 
     assert 'repowise-coverage-ci run_id="":' in justfile
-    assert 'uv run python scripts/repowise_coverage_from_ci.py "{{run_id}}"' in justfile
+    assert "uv run python scripts/repowise_coverage_from_ci.py {{quote(run_id)}}" in justfile
     assert "newest successful `CI` push on main" in justfile

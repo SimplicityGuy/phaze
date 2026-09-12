@@ -1,23 +1,20 @@
 """Baseline the Analyze-workspace slowdown at 200K scale (Phase 95, phaze-zqvh.1).
 
 phaze-bcf1 (dead-code investigation, confidence 40%, in_degree=0): NOT dead. It has no
-justfile recipe and no import from product code, which is exactly the shape a repo-wide
-static scan flags -- but the same is true of its sibling ``scripts/analyze_browser_soak.py``,
-and both are standalone ``uv run`` operator tools invoked directly per their own docstrings
-(unlike ``scripts/perf_explain.py`` / ``scripts/seed_perf_corpus.py``, which the justfile
-does wire via ``just perf-explain`` / ``just perf-seed``). This script produced the numbers
+product-code caller, which is exactly the shape a repo-wide static scan flags. It is now exposed as
+``just benchmark-analyze`` beside ``scripts/perf_explain.py`` and
+``scripts/seed_perf_corpus.py``. This script produced the numbers
 cited in ``.planning/phases/95-analyze-view-browser-slowdown/95-BASELINE.md`` and was re-run
 unmodified for ``95-VERIFICATION.md`` (2026-07-16) -- both still on disk, still current.
 Confirmed still functional against a live schema during the phaze-bcf1 investigation
 (``get_analyze_working_set`` DIRECT timing runs clean end-to-end; ``/s/analyze`` and
 ``/pipeline/stats`` additionally require the app's SAQ-provisioned ``saq_jobs`` table, which
 the dedicated perf DB this script targets has and an ad hoc alembic-only test DB does not).
-Keep; do not wire into the justfile (matches the sibling script's own standalone pattern) and
-do not delete.
+Keep as supported benchmark tooling; do not delete.
 
 Standalone ``uv run`` companion to :mod:`scripts.perf_explain` / :mod:`scripts.seed_perf_corpus`
-(Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just perf-seed``) into the
-dedicated perf DB (``just perf-db-up``). It measures the THREE hot paths the phase-95 epic names
+(Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just benchmark-seed``) into the
+dedicated database (``just benchmark-db-up``). It measures the THREE hot paths the phase-95 epic names
 as suspects, so the fix/verify beads have concrete before/after numbers to cite:
 
 1. ``get_analyze_working_set`` (``services/pipeline.py``) -- DIRECT timing (no ASGI/template
@@ -37,7 +34,7 @@ Read-only: it issues only SELECT reads (route handlers) over the perf DB -- no s
 Usage::
 
     uv run python scripts/perf_analyze_workspace.py \\
-        --dsn postgresql://phaze:phaze@localhost:5545/phaze_perf82 --iterations 10
+        --dsn postgresql://phaze:phaze@localhost:5545/phaze_benchmark --iterations 10
 """
 
 from __future__ import annotations
@@ -56,7 +53,7 @@ from phaze.main import create_app
 from phaze.services.pipeline import get_analyze_working_set
 
 
-_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5545/phaze_perf82"
+_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5545/phaze_benchmark"
 
 # One marker per rendered Analyze file row (_file_table.html:52, emitted only when row_file_ids
 # is supplied -- which analyze_workspace.html always does for the file table, Phase 61 RECORD-01).

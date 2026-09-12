@@ -30,9 +30,7 @@ from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.tasks import push
 
 
-# ----------------------------------------------------------------------
 # Test doubles
-# ----------------------------------------------------------------------
 
 
 def _fake_cfg(**overrides: Any) -> SimpleNamespace:
@@ -66,9 +64,7 @@ def _payload() -> PushFilePayload:
     )
 
 
-# ----------------------------------------------------------------------
 # Phase 73 (Task 2): PushFilePayload per-file destination fields + validators
-# ----------------------------------------------------------------------
 _VALID_DEST = {"dest_host": "oci-a1.push.example", "dest_scratch_dir": "/srv/scratch"}
 
 
@@ -177,9 +173,7 @@ def _job(*, retryable: bool) -> SimpleNamespace:
     return SimpleNamespace(retryable=retryable)
 
 
-# ----------------------------------------------------------------------
 # argv builder — pure, no subprocess
-# ----------------------------------------------------------------------
 
 
 def test_rsync_argv_no_shell_pinned_known_hosts() -> None:
@@ -232,10 +226,8 @@ def test_rsync_argv_remote_dest_is_file_id_not_filename() -> None:
     assert "Some Long Set" not in argv[-1]
 
 
-# ----------------------------------------------------------------------
 # Phase 73 (Task 1): the remote_dest is payload-driven (per-file), D-04 retires the
 # fileserver's single-global remote-target env read.
-# ----------------------------------------------------------------------
 
 
 def test_rsync_argv_remote_dest_is_payload_driven_per_file() -> None:
@@ -368,9 +360,7 @@ def test_agent_settings_returns_the_agent_settings_instance_unchanged(monkeypatc
     assert push._agent_settings() is real_cfg
 
 
-# ----------------------------------------------------------------------
 # exit-code handling — subprocess mocked
-# ----------------------------------------------------------------------
 
 
 async def test_rsync_exit_code_zero_calls_report_pushed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,9 +437,7 @@ async def test_rsync_exit_code_stderr_truncated_no_key_leak(monkeypatch: pytest.
     assert "PRIVATE-KEY-DATA" not in msg
 
 
-# ----------------------------------------------------------------------
 # phaze-c53x — terminal-failure ack via report_push_failed
-# ----------------------------------------------------------------------
 
 
 async def test_rsync_exit_code_nonzero_retryable_attempt_no_terminal_report(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,9 +565,7 @@ async def test_cancellation_does_not_call_report_push_failed(monkeypatch: pytest
     assert api.failed == []
 
 
-# ----------------------------------------------------------------------
 # WR-03 — SAQ cancellation reaps the rsync child before shredding the key
-# ----------------------------------------------------------------------
 
 
 async def test_saq_cancellation_reaps_child_before_secret_shred(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -771,9 +757,7 @@ def test_require_push_config_rejects_empty_string_ssh_user() -> None:
         push._require_push_config(_fake_cfg(push_ssh_user=""))
 
 
-# ----------------------------------------------------------------------
 # compute-only startup janitor (Task 2 — converted from the Wave 0 stub there)
-# ----------------------------------------------------------------------
 
 
 def _import_agent_worker(monkeypatch: pytest.MonkeyPatch) -> Any:

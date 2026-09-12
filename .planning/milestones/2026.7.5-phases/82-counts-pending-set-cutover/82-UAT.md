@@ -65,5 +65,5 @@ skipped: 0
 - Tests 1–4 were driven live against isolated Postgres DBs via the real `get_metadata_pending_files` /
   `get_fingerprint_pending_files` / `get_discovered_files_with_duration` / `get_stage_progress` functions.
 - Two deployment-gated items remain outside UAT scope (tracked in `82-VALIDATION.md` Manual-Only):
-  the D-02 live-prod `analyzed`-NULL invariant (read-only lux probe at rollout ≥036) and the PERF-02
+  the D-02 live-prod `analyzed`-NULL invariant (read-only host-prod probe at rollout ≥036) and the PERF-02
   200K bench as a recurring measurement. Neither is a code defect.

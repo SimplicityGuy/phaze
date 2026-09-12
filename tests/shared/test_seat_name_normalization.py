@@ -88,9 +88,6 @@ def _derive_ok(raw_name: str) -> str:
     return derived
 
 
-# --- the original bug: a hyphenated name must succeed, never a raw Postgres syntax error -------
-
-
 @pytest.mark.parametrize(
     "raw_name",
     [
@@ -105,9 +102,6 @@ def test_hyphenated_name_succeeds_with_a_safe_identifier(raw_name: str) -> None:
     derived = _derive_ok(raw_name)
     assert _SAFE_UNQUOTED_IDENTIFIER.match(derived), f"{derived!r} derived from {raw_name!r} is not a safe unquoted Postgres identifier"
     assert "-" not in derived, f"derived identifier {derived!r} still contains a hyphen"
-
-
-# --- phaze-robzi.4: a dotted bead id must succeed too, not just a hyphenated one -----------------
 
 
 @pytest.mark.parametrize(
@@ -136,9 +130,6 @@ def test_dotted_name_derivation_is_idempotent_across_repeated_calls() -> None:
     assert first == second
 
 
-# --- invalid input is rejected with a message stating the rule, not a raw parse error -----------
-
-
 @pytest.mark.parametrize(
     "raw_name",
     [
@@ -159,9 +150,6 @@ def test_invalid_names_are_rejected_with_a_stated_rule(raw_name: str) -> None:
     assert "must be lowercase" in result.stderr
 
 
-# --- idempotency: the same raw name always derives the same identifier -------------------------
-
-
 def test_derivation_is_idempotent_across_repeated_calls() -> None:
     """Re-running for the same raw name must yield the identical derived identifier.
 
@@ -173,9 +161,6 @@ def test_derivation_is_idempotent_across_repeated_calls() -> None:
     second = _derive_ok("review-polite")
     third = _derive_ok("review-polite")
     assert first == second == third
-
-
-# --- collision safety: hyphen vs underscore variants must NOT land on the same identifier -------
 
 
 def test_hyphen_and_underscore_variants_do_not_collide() -> None:
@@ -222,9 +207,6 @@ def test_hyphen_underscore_and_dot_variants_do_not_collide() -> None:
     for value in derived:
         assert _SAFE_UNQUOTED_IDENTIFIER.match(value)
         assert value.startswith("phaze_o8sie_3_"), value
-
-
-# --- the 63-byte Postgres identifier limit: silently truncated, never rejected -------------------
 
 
 def test_generated_identifiers_stay_within_the_postgres_limit() -> None:

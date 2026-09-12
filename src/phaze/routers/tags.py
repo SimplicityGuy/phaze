@@ -8,7 +8,7 @@ shared ``_diff_row.html`` and explicitly shipped no inline-edit or comparison su
 deleted outright; ``GET /tags/`` now only resolves the legacy bookmark into the shell (SHELL-05), and
 ``write_file_tags``/``undo_tag_write`` always return the v7 ``_diff_row.html`` shape.
 
-phaze-tzy6s.11 / ADR-0008: the standalone tagwrite workspace
+phaze-tzy6s.11 / ``docs/design/0008-changes-review-approval-boundary.md``: the standalone tagwrite workspace
 (``pipeline/partials/tagwrite_workspace.html``) is itself gone now -- tag decisions were consolidated
 into Changes Review, whose "Tag Changes" section (``pipeline/partials/_changes_list.html``, the
 ``tagwrite-row`` block) is the only live renderer of this router's rows and the only UI surface that
@@ -331,7 +331,7 @@ async def _validate_tag_review_token(
 
 
 # phaze-nvll: the tag-write queue renders rows from the shared pipeline/partials/_diff_row.html
-# partial and hx-targets each row's own div. (phaze-tzy6s.11 / ADR-0008: that queue used to be the
+# partial and hx-targets each row's own div. (phaze-tzy6s.11 / ``docs/design/0008-changes-review-approval-boundary.md``: that queue used to be the
 # standalone tagwrite_workspace.html; it is now the "Tag Changes" section of Changes Review --
 # pipeline/partials/_changes_list.html, the tagwrite-row block. The row-id contract is
 # unchanged.) write_file_tags and
@@ -414,7 +414,7 @@ async def list_tags() -> RedirectResponse:
     cut") and no comparison page -- there was no live caller left to preserve any of that surface
     for, so it and the ``TAGS_SORT`` contract that fed it were deleted outright.
 
-    phaze-tzy6s.11 / ADR-0008: ``/s/tagwrite`` is itself now a compatibility alias rendering
+    phaze-tzy6s.11 / ``docs/design/0008-changes-review-approval-boundary.md``: ``/s/tagwrite`` is itself now a compatibility alias rendering
     ``pipeline/partials/changes_workspace.html`` (shell.py's ``_STAGE_PARTIALS``), so this redirect
     lands the bookmark on Changes Review -- the one workspace that authorizes tag writes -- rather
     than on a separate tag approval surface.
@@ -1037,11 +1037,11 @@ async def undo_tag_write(
         already_message = f"A tag write is already queued for {file_record.original_filename}. Wait for it to finish, then retry the undo if needed."
         return _tagwrite_diff_row_response(request, row_context, already_message)
     except ValueError:
-        # phaze-qe5y1: enqueue_tag_write's own is_applied guard (tag_writer.py:131-133) can fire
+        # phaze-qe5y1: ``enqueue_tag_write``'s own ``is_applied`` guard can fire
         # here -- the scan-deletion race (services/scan_deletion.py deletes RenameProposal,
         # TagWriteLog and FileRecord rows for a batch in one transaction) can revert the file's
         # executed proposal between our idempotency check above and this dispatch. Mirror
-        # write_file_tags' is_applied handling (tags.py:524-528): redraw the row unchanged
+        # ``write_file_tags``'s ``is_applied`` handling: redraw the row unchanged
         # (pending) alongside an honest toast, rather than letting the ValueError escape uncaught
         # as a 500 that htmx silently drops on this outerHTML-targeted row.
         row_context = await _tagwrite_row_context(session, file_record, row_state="pending")

@@ -1,4 +1,4 @@
-"""Application-server entrypoint shim (Phase 29 D-02 / RESEARCH Pattern 2).
+"""Application-server entrypoint shim (D-02 / RESEARCH Pattern 2).
 
 Invoked from the api container as ``uv run python -m phaze.entrypoint``.
 Runs ``phaze.cert_bootstrap.ensure_certs_present`` BEFORE uvicorn binds,
@@ -19,7 +19,7 @@ IMPORT-BOUNDARY INVARIANT (inherited from cert_bootstrap):
     MUST NOT import phaze.database, phaze.tasks.session, sqlalchemy.ext.asyncio,
     or phaze.config (no settings load at this layer -- the operator env vars
     are read directly via ``os.environ.get``). Verified transitively by
-    ``tests/test_task_split.py::test_cert_bootstrap_stays_postgres_free``.
+    ``tests/shared/core/test_task_split.py::test_cert_bootstrap_stays_postgres_free``.
 """
 
 from __future__ import annotations

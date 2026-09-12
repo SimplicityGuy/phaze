@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 import re
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 
 if TYPE_CHECKING:
@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from phaze.models.tracklist import Tracklist
 
 CORE_FIELDS = ("artist", "title", "album", "year", "genre", "track_number")
+_METADATA_FIELDS = tuple((field, field) for field in CORE_FIELDS)
+_TRACKLIST_FIELDS = (("artist", "artist"), ("album", "event"))
+_DISCOGS_FIELDS = (("artist", "discogs_artist"), ("title", "discogs_title"), ("year", "discogs_year"))
 
 
 class TagFieldSource(Protocol):
@@ -39,6 +42,17 @@ class TagFieldSource(Protocol):
 _YEAR_RE = re.compile(r"\((\d{4})\)")
 
 
+def _field_overlay(source: object | None, field_map: tuple[tuple[str, str], ...]) -> dict[str, str | int]:
+    """Return the mapped, non-missing tag fields supplied by one source."""
+    if source is None:
+        return {}
+    return {
+        target_field: value
+        for target_field, source_field in field_map
+        if (value := cast("str | int | None", getattr(source, source_field, None))) is not None
+    }
+
+
 def parse_filename(filename: str) -> dict[str, str | int | None]:
     """Extract artist, title, and year from a filename.
 
@@ -50,16 +64,13 @@ def parse_filename(filename: str) -> dict[str, str | int | None]:
     stem = PurePosixPath(filename).stem
     result: dict[str, str | int | None] = {}
 
-    # Extract year from (YYYY) pattern
     year_match = _YEAR_RE.search(stem)
     if year_match:
         year_val = int(year_match.group(1))
         if 1000 <= year_val <= 9999:
             result["year"] = year_val
-        # Remove year from stem for cleaner artist/title parsing
         stem = stem[: year_match.start()].strip()
 
-    # Split on " - " for artist/title
     if " - " in stem:
         parts = stem.split(" - ", maxsplit=1)
         artist = parts[0].strip()
@@ -94,34 +105,16 @@ def compute_proposed_tags(
 
     Returns dict with only non-None values, keys from CORE_FIELDS only.
     """
-    # Layer 1: filename parsing (lowest priority)
+    # Apply sparse overlays from lowest to highest priority. Missing values are absent from an
+    # overlay, so a source cannot erase a value supplied by an earlier source.
     merged = parse_filename(filename)
+    merged.update(_field_overlay(file_metadata, _METADATA_FIELDS))
 
-    # Layer 2: FileMetadata (overwrites filename for non-None fields)
-    if file_metadata is not None:
-        for field in CORE_FIELDS:
-            val = getattr(file_metadata, field, None)
-            if val is not None:
-                merged[field] = val
+    # Tracklist dates are fallback-only, unlike the tracklist artist and event overlay.
+    if tracklist is not None and tracklist.date is not None:
+        merged.setdefault("year", tracklist.date.year)
+    merged.update(_field_overlay(tracklist, _TRACKLIST_FIELDS))
 
-    # Layer 3: Tracklist
-    if tracklist is not None:
-        if tracklist.artist is not None:
-            merged["artist"] = tracklist.artist
-        if tracklist.event is not None:
-            merged["album"] = tracklist.event
-        # Tracklist date -> year is FALLBACK only (does not override existing year)
-        if tracklist.date is not None and "year" not in merged:
-            merged["year"] = tracklist.date.year
+    merged.update(_field_overlay(discogs_link, _DISCOGS_FIELDS))
 
-    # Layer 4: Accepted DiscogsLink (highest priority -- verified metadata)
-    if discogs_link is not None:
-        if discogs_link.discogs_artist is not None:
-            merged["artist"] = discogs_link.discogs_artist
-        if discogs_link.discogs_title is not None:
-            merged["title"] = discogs_link.discogs_title
-        if discogs_link.discogs_year is not None:
-            merged["year"] = discogs_link.discogs_year
-
-    # Filter to core fields only and remove None values
-    return {k: v for k, v in merged.items() if k in CORE_FIELDS and v is not None}
+    return {field: value for field, value in merged.items() if field in CORE_FIELDS and value is not None}

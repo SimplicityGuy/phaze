@@ -522,9 +522,7 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
     assert "timestamps" in response.text.lower()
 
 
-# ---------------------------------------------------------------------------
 # phaze-bg1dk: a vanished tracklist on the v7 cue-card surface must toast, not silently 404.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -558,9 +556,7 @@ async def test_generate_cue_not_found_on_default_target_still_404s(client: Async
     assert response.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # phaze-ce65s: the APPROVE version pin -- refuse to write content nobody reviewed.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -709,7 +705,6 @@ async def test_eligibility_scoped_to_latest_version_not_any_version(client: Asyn
     assert "timestamps" in response.text.lower()
 
 
-# ---------------------------------------------------------------------------
 # ``GET /cue/`` -- legacy bookmark redirect only (phaze-y4s6).
 #
 # The in-page HX list/pagination fragment this handler used to serve (``cue/partials/cue_list.html``)
@@ -717,7 +712,6 @@ async def test_eligibility_scoped_to_latest_version_not_any_version(client: Asyn
 # restore branches that used to distinguish a live htmx swap from a bookmark/restore. Every shape
 # now redirects unconditionally -- these tests pin that down across the header combinations the
 # old branching handler used to care about.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

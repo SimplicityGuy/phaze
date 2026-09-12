@@ -64,7 +64,7 @@ created: 2026-06-10
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Refresh-survival of the live progress card on the real stack | observability | Requires live SAQ queue with real in-flight jobs (nox agent worker) | After homelab redeploy: trigger Run Analysis, refresh `/pipeline/`, confirm progress card + "N queued" persists and Run Analysis is disabled until the queue drains |
+| Refresh-survival of the live progress card on the real stack | observability | Requires live SAQ queue with real in-flight jobs (host-store agent worker) | After homelab redeploy: trigger Run Analysis, refresh `/pipeline/`, confirm progress card + "N queued" persists and Run Analysis is disabled until the queue drains |
 
 *All unit-testable behaviors have automated verification; the live refresh-survival check is inherently integration/manual.*
 

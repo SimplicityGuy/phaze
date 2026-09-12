@@ -19,7 +19,7 @@ Phaze v6.0 adds a **Kubernetes (Kueue) burst** target: long audio sets (≥ the 
 threshold) are staged to an S3-compatible bucket and analyzed by an **ephemeral, one-shot
 Kueue `Job`** on an **x64 Kubernetes cluster**, instead of timing out on the local
 fileserver. This is the **third** `PHAZE_CLOUD_TARGET` (`local` | `a1` | `k8s`), alongside
-the v5.0 OCI A1 compute agent. The control plane (`lux`):
+the v5.0 OCI A1 compute agent. The control plane (`host-prod`):
 
 - submits a **suspended `batch/v1` Job** labeled `kueue.x-k8s.io/queue-name` into a
   **LocalQueue** the operator owns (Kueue admits it against the ClusterQueue quota),
@@ -42,9 +42,9 @@ repo / cluster must author/apply:
 4. **Control-plane env knobs** — `PHAZE_CLOUD_TARGET=k8s` + kube/S3 settings (§4).
 
 The feature ships **off by default** (`PHAZE_CLOUD_TARGET=local`); after the cluster objects
-below are applied, the operator sets the target and restarts the `lux` control plane (§5).
+below are applied, the operator sets the target and restarts the `host-prod` control plane (§5).
 
-Apply the changes below to the homelab Phaze deployment (`datum@nox` and `datum@lux`, plus
+Apply the changes below to the homelab Phaze deployment (`operator@host-store` and `operator@host-prod`, plus
 the operator-owned Kubernetes cluster).
 
 > **⚠ Confirm the Kueue version FIRST (load-bearing).** Phaze defaults to
@@ -109,13 +109,13 @@ The Role is `kind: Role` (not `ClusterRole`) and the RoleBinding binds it in the
 
 The one-shot pod authenticates its `/api/internal/agent/*` result callback with a
 compute-agent bearer token — the **same** mechanism as the v5.0 fileserver/compute agents.
-Mint it on the **`datum@lux` control plane** (this creates an `Agent` row so the callback
+Mint it on the **`operator@host-prod` control plane** (this creates an `Agent` row so the callback
 authenticates), paste it into the Secret `stringData`, and apply the Secret to the cluster.
 The pod consumes it via `PHAZE_AGENT_TOKEN_FILE` (the `_FILE` convention — never a plain env
 var or a log line).
 
 ```bash
-# On datum@lux (control plane): mint the token.
+# On operator@host-prod (control plane): mint the token.
 phaze agents add --kind compute
 # Paste the printed token into secret.yaml stringData.PHAZE_AGENT_TOKEN, then on a
 # cluster-admin context:
@@ -127,9 +127,9 @@ on the kube side — use the `*_FILE` convention end to end; placeholders only i
 
 ---
 
-## 4. Set the control-plane k8s / S3 env knobs (`datum@lux`)
+## 4. Set the control-plane k8s / S3 env knobs (`operator@host-prod`)
 
-On the `lux` control plane, set `PHAZE_CLOUD_TARGET=k8s` plus the kube client + S3 staging
+On the `host-prod` control plane, set `PHAZE_CLOUD_TARGET=k8s` plus the kube client + S3 staging
 knobs. These are **control-plane-only** (kube creds live on the control plane, DIST-01);
 secrets honor the `*_FILE` convention and **fail fast at startup** if the `cloud_target=k8s`
 requirements are unset. Do **not** duplicate the per-knob table here — the canonical reference
@@ -137,7 +137,7 @@ is [`docs/configuration.md` → Kube submit/reconcile settings] and [→ S3 obje
 settings]:
 
 ```bash
-# In the datum@lux .env (Kubernetes / Kueue target) — placeholders only:
+# In the operator@host-prod .env (Kubernetes / Kueue target) — placeholders only:
 PHAZE_CLOUD_TARGET=k8s
 PHAZE_KUBE_API_URL=https://kube-api.example:6443
 PHAZE_KUBE_NAMESPACE=phaze                          # == the LocalQueue namespace (§1)
@@ -156,7 +156,7 @@ PHAZE_S3_SECRET_ACCESS_KEY_FILE=/run/secrets/phaze_s3_secret
 
 Apply in this order (cluster objects **before** flipping the control plane to `k8s` — the
 LocalQueue must exist before the startup probe runs and before any Job submits). SSH targets
-`datum@nox` / `datum@lux`. Placeholders only — never inline real secrets.
+`operator@host-store` / `operator@host-prod`. Placeholders only — never inline real secrets.
 
 1. **Confirm the cluster's served Kueue version** and keep the manifest apiVersion +
    `PHAZE_KUBE_WORKLOAD_API_VERSION` in lockstep with it (v1beta1 by default).
@@ -164,10 +164,10 @@ LocalQueue must exist before the startup probe runs and before any Job submits).
    LocalQueue (§1).
 3. **Cluster (operator):** apply the namespaced RBAC — ServiceAccount + Role + RoleBinding
    (§2).
-4. **`datum@lux` control plane:** mint the compute-agent token
+4. **`operator@host-prod` control plane:** mint the compute-agent token
    (`phaze agents add --kind compute`); paste it into the Secret and apply it to the cluster
    (§3).
-5. **`datum@lux` control plane:** set `PHAZE_CLOUD_TARGET=k8s` + the kube/S3 knobs (§4), then
+5. **`operator@host-prod` control plane:** set `PHAZE_CLOUD_TARGET=k8s` + the kube/S3 knobs (§4), then
    **restart** the controller worker + api (`cloud_target` is a startup-read — setting the env
    on a running controller does nothing until it restarts).
 6. **Smoke test:** trigger analysis on a long set; confirm it stages to S3, a
@@ -185,9 +185,9 @@ LocalQueue must exist before the startup probe runs and before any Job submits).
 - **The `localqueues: get` RBAC verb is load-bearing** — without it the startup probe 403s and
   the dashboard falsely reports the LocalQueue unreachable forever. The phaze runbook test
   (`tests/test_deployment/test_k8s_runbook.py`) asserts the verb floor so it cannot be dropped.
-- **`datum@nox` (file server)** needs no change for the k8s target — the file server stages
+- **`operator@host-store` (file server)** needs no change for the k8s target — the file server stages
   bytes to S3 over HTTP (no SDK, no bucket credentials, DIST-01), exactly as for any
-  control-plane-orchestrated staging. The `datum@nox` work was the v5.0 A1 rsync path.
+  control-plane-orchestrated staging. The `operator@host-store` work was the v5.0 A1 rsync path.
 
 ---
 
@@ -196,8 +196,8 @@ LocalQueue must exist before the startup probe runs and before any Job submits).
 - [ ] Cluster's served Kueue version confirmed; manifest apiVersion + `PHAZE_KUBE_WORKLOAD_API_VERSION` in lockstep (v1beta1 default, or v1beta2 variants if the cluster is v1beta2-only)
 - [ ] Kueue admin objects applied from `docs/k8s-burst.md` §1–§3: CPU-only ResourceFlavor, no-preemption ClusterQueue (cpu+memory quota), LocalQueue named `PHAZE_KUBE_LOCAL_QUEUE` in `PHAZE_KUBE_NAMESPACE`
 - [ ] Namespaced RBAC applied from `docs/k8s-burst.md` §4: ServiceAccount + Role (jobs create/get/delete; workloads get/watch/list; localqueues get) + RoleBinding — **no cluster-wide grants**
-- [ ] Compute-agent token minted on `datum@lux` (`phaze agents add --kind compute`), pasted into the Secret, and applied to the cluster (`docs/k8s-burst.md` §5)
-- [ ] `datum@lux` env set: `PHAZE_CLOUD_TARGET=k8s` + kube/S3 knobs (`*_FILE` secrets), control plane restarted
+- [ ] Compute-agent token minted on `operator@host-prod` (`phaze agents add --kind compute`), pasted into the Secret, and applied to the cluster (`docs/k8s-burst.md` §5)
+- [ ] `operator@host-prod` env set: `PHAZE_CLOUD_TARGET=k8s` + kube/S3 knobs (`*_FILE` secrets), control plane restarted
 - [ ] Deploy order followed: confirm Kueue version → Kueue objects → RBAC → Secret → `PHAZE_CLOUD_TARGET=k8s` + restart → smoke test
 - [ ] Smoke test green: long set stages to S3, Job admitted, pod analyzes, result reconciles by `file_id`, **no** "K8s LocalQueue unreachable" alert on the pipeline dashboard
 

@@ -1,4 +1,4 @@
-"""Control-side protocols for the agent S3-staging upload callbacks (Phase 53, Plan 04).
+"""Control-side protocols for agent S3-staging upload callbacks.
 
 The control plane is the only place with the S3 credentials and the ORM, so the Postgres-free,
 SDK-free file-server agent reports its multipart-upload outcome through the token-authed internal
@@ -127,6 +127,20 @@ class UploadFailedResult:
         return self.outcome is ProtocolOutcome.SPILLED
 
 
+@dataclass(frozen=True)
+class _UploadFailureDecision:
+    """Pure retry-budget decision made from one serialized ledger read."""
+
+    ledger_key: str
+    attempt: int
+    cap: int
+
+    @property
+    def over_cap(self) -> bool:
+        """Whether this callback must spill instead of retrying."""
+        return self.attempt > self.cap
+
+
 class UnresolvableStagingBucketError(RuntimeError):
     """The persisted upload names a staging bucket absent from the current registry."""
 
@@ -136,6 +150,69 @@ class UnknownUploadFileError(LookupError):
 
 
 ResolveQueue = Callable[[str, Any, AsyncSession], Awaitable[Any]]
+
+
+_UPLOADED_OUTCOME_BY_REASON = {
+    UploadedReason.ABSENT_OR_LATE: ProtocolOutcome.NOOP,
+    UploadedReason.ENQUEUE_FAILED: ProtocolOutcome.HELD,
+    UploadedReason.MULTIPART_COMPLETED: ProtocolOutcome.COMPLETED,
+    UploadedReason.SUBMIT_ROUTED: ProtocolOutcome.COMPLETED,
+    UploadedReason.UPLOAD_ID_CAS_MISS: ProtocolOutcome.NOOP,
+}
+
+_UPLOAD_FAILED_OUTCOME_BY_REASON = {
+    UploadFailedReason.NO_AGENT: ProtocolOutcome.HELD,
+    UploadFailedReason.OVER_CAP_CAS_MISS: ProtocolOutcome.NOOP,
+    UploadFailedReason.REDRIVEN: ProtocolOutcome.COMPLETED,
+    UploadFailedReason.SPILLED: ProtocolOutcome.SPILLED,
+    UploadFailedReason.STAGING_UNAVAILABLE: ProtocolOutcome.HELD,
+    UploadFailedReason.UNDER_CAP_LATE: ProtocolOutcome.NOOP,
+}
+
+
+def _upload_id_to_complete(cloud_job: CloudJob | None) -> str | None:
+    """Return the live multipart generation, or decide that the callback is late."""
+    if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value:
+        return None
+    return cloud_job.upload_id
+
+
+def _uploaded_result(
+    reason: UploadedReason,
+    *,
+    spilled: bool = False,
+    cleanup_error: BaseException | None = None,
+    enqueue_error: BaseException | None = None,
+) -> UploadedResult:
+    """Pair an upload-success reason with its stable high-level outcome."""
+    outcome = ProtocolOutcome.SPILLED if spilled else ProtocolOutcome.NOOP
+    if reason is not UploadedReason.EMPTY_PARTS:
+        outcome = _UPLOADED_OUTCOME_BY_REASON[reason]
+    return UploadedResult(outcome, reason, cleanup_error=cleanup_error, enqueue_error=enqueue_error)
+
+
+def _decide_upload_failure(file_id: uuid.UUID, row: SchedulingLedger | None, cap: int) -> _UploadFailureDecision:
+    """Compute the next serialized retry attempt without performing I/O."""
+    current_attempt = int(row.redrive_attempt) if row is not None and row.redrive_attempt is not None else 0
+    return _UploadFailureDecision(ledger_key=f"s3_upload:{file_id}", attempt=current_attempt + 1, cap=cap)
+
+
+def _upload_failed_result(
+    reason: UploadFailedReason,
+    decision: _UploadFailureDecision,
+    *,
+    cleanup_error: BaseException | None = None,
+    hold_error: BaseException | None = None,
+) -> UploadFailedResult:
+    """Pair a failure decision with its retry coordinates and stable outcome."""
+    return UploadFailedResult(
+        _UPLOAD_FAILED_OUTCOME_BY_REASON[reason],
+        reason,
+        attempt=decision.attempt,
+        cap=decision.cap,
+        cleanup_error=cleanup_error,
+        hold_error=hold_error,
+    )
 
 
 async def _best_effort_cleanup(
@@ -181,10 +258,13 @@ async def process_uploaded(
     generation this callback completed.
     """
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    upload_id = _upload_id_to_complete(cloud_job)
     # No staging row, already past UPLOADING (completed/failed), or no multipart to complete:
     # idempotent no-op, never re-complete (T-53-15). The router renders this as a 200.
-    if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value or cloud_job.upload_id is None:
-        return UploadedResult(ProtocolOutcome.NOOP, UploadedReason.ABSENT_OR_LATE)
+    if upload_id is None:
+        return _uploaded_result(UploadedReason.ABSENT_OR_LATE)
+
+    assert cloud_job is not None
 
     # phaze-eo5x: an EMPTY parts list is a degenerate/zero-byte upload (the agent's _transfer_parts
     # returns [] for a 0-byte source: the first read yields b'' and breaks before any PUT). S3 multipart
@@ -202,7 +282,6 @@ async def process_uploaded(
         # NULL-GUARD: hold_awaiting_cloud's spill CAS dereferences file.id (mirrors the over-cap spill
         # branch); an absent file (unreachable -- cloud_job.file_id FKs files.id) takes the full no-op.
         file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
-        upload_id = cloud_job.upload_id
         cleared = file is not None and await hold_awaiting_cloud(
             session,
             file,
@@ -214,9 +293,9 @@ async def process_uploaded(
             await clear_ledger_entry(session, f"s3_upload:{file_id}")
         await session.commit()
         cleanup_error = await _best_effort_cleanup(file_id, upload_id, bucket) if cleared and bucket is not None else None
-        return UploadedResult(
-            ProtocolOutcome.SPILLED if cleared else ProtocolOutcome.NOOP,
+        return _uploaded_result(
             UploadedReason.EMPTY_PARTS,
+            spilled=cleared,
             cleanup_error=cleanup_error,
         )
 
@@ -236,7 +315,6 @@ async def process_uploaded(
     # took NO row lock (READ COMMITTED) and wrote nothing, so committing here just returns the connection
     # to the pool. The idempotent UPLOADING->UPLOADED CAS below re-opens a fresh transaction after the
     # S3 call, and its rowcount guard still makes a concurrent duplicate a clean no-op.
-    upload_id = cloud_job.upload_id
     await session.commit()
     await s3_staging.complete_multipart_upload(file_id, upload_id, parts, bucket)
 
@@ -264,16 +342,16 @@ async def process_uploaded(
     )
     if res.rowcount == 0:
         await session.commit()
-        return UploadedResult(ProtocolOutcome.NOOP, UploadedReason.UPLOAD_ID_CAS_MISS)
+        return _uploaded_result(UploadedReason.UPLOAD_ID_CAS_MISS)
 
-    # Phase 55 (D-01b, KROUTE-03): on the kueue target the upload-complete callback is also the
+    # D-01b/KROUTE-03: on the kueue target the upload-complete callback is also the
     # post-staging seam -- it enqueues submit_cloud_job through enqueue_router on the controller queue
     # (NEVER a raw enqueue -- KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the
     # resolved-kind == "kueue" guard is defensive: a non-kueue target preserves today's cloud_job-only
-    # behavior. Phase 68 (D-09): registry-derived kind via the Backend registry helper (was the retired
+    # behavior. D-09: registry-derived kind via the Backend registry helper (not a
     # <=1-non-local accessor).
     if resolved_non_local_kind(settings) == "kueue":
-        # Phase 90 (D-09): the companion FileRecord PUSHING -> PUSHED CAS flip this seam used to perform
+        # D-09: the companion FileRecord PUSHING -> PUSHED CAS flip this seam used to perform
         # was removed (read + write deleted atomically in PR-B). Idempotency is carried solely by the
         # OUTER cloud_job CAS above (UPLOADING -> UPLOADED; rowcount==0 already returned) PLUS the
         # deterministic submit_cloud_job key -- a duplicate/late callback is already a no-op at the
@@ -293,7 +371,7 @@ async def process_uploaded(
         # cloud_job stays durably UPLOADED, and the file re-enters the drain on the next tick.
         await session.commit()
 
-        # Route submit_cloud_job onto the CONTROLLER queue via the single Phase-30 seam (never a raw
+        # Route submit_cloud_job onto the CONTROLLER queue via the single routed-queue seam (never a raw
         # controller_queue.enqueue / the default queue -- KROUTE-04, T-55-SEAM-03). Deterministic key
         # dedups a replayed submit (KSUBMIT-01). submit_cloud_job stays staging-free (rejected coupling).
         # Post-commit: a failed enqueue (controller pool down) is best-effort -- the control state is
@@ -303,19 +381,18 @@ async def process_uploaded(
             routed = await resolve_queue("submit_cloud_job", app_state, session)
             await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
         except Exception as exc:
-            return UploadedResult(ProtocolOutcome.HELD, UploadedReason.ENQUEUE_FAILED, enqueue_error=exc)
-        return UploadedResult(ProtocolOutcome.COMPLETED, UploadedReason.SUBMIT_ROUTED)
+            return _uploaded_result(UploadedReason.ENQUEUE_FAILED, enqueue_error=exc)
+        return _uploaded_result(UploadedReason.SUBMIT_ROUTED)
 
     await session.commit()
-    return UploadedResult(ProtocolOutcome.COMPLETED, UploadedReason.MULTIPART_COMPLETED)
+    return _uploaded_result(UploadedReason.MULTIPART_COMPLETED)
 
 
 async def _spill_failed_upload(
     session: AsyncSession,
     file_id: uuid.UUID,
-    ledger_key: str,
     settings: ControlSettings,
-    next_attempt: int,
+    decision: _UploadFailureDecision,
 ) -> UploadFailedResult:
     """Conditionally spill an over-cap upload, then clean S3 after committing durable state.
 
@@ -349,15 +426,13 @@ async def _spill_failed_upload(
         # seams that own _delete_staged_object_if_cloud), NO ledger clear. Commit and report cleared=False
         # (mirrors report_push_mismatch's over-cap no-op exactly).
         await session.commit()
-        return UploadFailedResult(
-            ProtocolOutcome.NOOP,
+        return _upload_failed_result(
             UploadFailedReason.OVER_CAP_CAS_MISS,
-            attempt=next_attempt,
-            cap=settings.push_max_attempts,
+            decision,
         )
 
     # cleared (helper CAS hit): gate S3 cleanup + ledger clear behind the CAS.
-    # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the cloud_job
+    # D-09: the former AWAITING_CLOUD FileRecord.state dual-write was removed; the cloud_job
     # sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
     # MKUE-02: act on the RECORDED staging bucket; a bucketless row (no S3 object) skips the S3 ops cleanly.
     # phaze-1v37: capture the bucket + upload_id into locals and COMMIT the spill CAS + ledger clear
@@ -367,14 +442,12 @@ async def _spill_failed_upload(
     # reaper + sibling failure callbacks for the full botocore window.
     bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket) if cloud_job is not None else None
     upload_id = cloud_job.upload_id if cloud_job is not None else None
-    await clear_ledger_entry(session, ledger_key)
+    await clear_ledger_entry(session, decision.ledger_key)
     await session.commit()
     cleanup_error = await _best_effort_cleanup(file_id, upload_id, bucket) if bucket is not None else None
-    return UploadFailedResult(
-        ProtocolOutcome.SPILLED,
+    return _upload_failed_result(
         UploadFailedReason.SPILLED,
-        attempt=next_attempt,
-        cap=settings.push_max_attempts,
+        decision,
         cleanup_error=cleanup_error,
     )
 
@@ -416,11 +489,10 @@ async def process_upload_failed(
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(ledger_key))))
 
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
-    current_attempt = int(row.redrive_attempt) if row is not None and row.redrive_attempt is not None else 0
-    next_attempt = current_attempt + 1
+    decision = _decide_upload_failure(file_id, row, settings.push_max_attempts)
 
-    if next_attempt > settings.push_max_attempts:
-        return await _spill_failed_upload(session, file_id, ledger_key, settings, next_attempt)
+    if decision.over_cap:
+        return await _spill_failed_upload(session, file_id, settings, decision)
 
     # Under the cap: re-drive the upload, keeping the cloud_job UPLOADING. Load the FileRecord by the
     # PATH file_id (AUTH-01) so redrive_upload has the source path / size; an unknown file_id with a
@@ -441,11 +513,9 @@ async def process_upload_failed(
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
     if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value:
         await session.commit()
-        return UploadFailedResult(
-            ProtocolOutcome.NOOP,
+        return _upload_failed_result(
             UploadFailedReason.UNDER_CAP_LATE,
-            attempt=next_attempt,
-            cap=settings.push_max_attempts,
+            decision,
         )
 
     try:
@@ -453,11 +523,9 @@ async def process_upload_failed(
     except NoActiveAgentError:
         # No fileserver online: leave the cloud_job UPLOADING for a later re-drive; clean 200 hold.
         await session.commit()
-        return UploadFailedResult(
-            ProtocolOutcome.HELD,
+        return _upload_failed_result(
             UploadFailedReason.NO_AGENT,
-            attempt=next_attempt,
-            cap=settings.push_max_attempts,
+            decision,
         )
     except s3_staging.S3StagingError as exc:
         # phaze-kuhbu: redrive_upload's OWN setup leg raises S3StagingError on two reachable paths --
@@ -469,11 +537,9 @@ async def process_upload_failed(
         # matching the endpoint's documented never-500 posture (T-53-19) instead of 500ing the agent AND
         # losing the redrive_attempt stamp for every failure callback during the outage.
         await session.commit()
-        return UploadFailedResult(
-            ProtocolOutcome.HELD,
+        return _upload_failed_result(
             UploadFailedReason.STAGING_UNAVAILABLE,
-            attempt=next_attempt,
-            cap=settings.push_max_attempts,
+            decision,
             hold_error=exc,
         )
 
@@ -496,7 +562,7 @@ async def process_upload_failed(
     # explicit rollback puts the aborted-transaction session back into a usable state before the S3-only
     # drop call (which issues no SQL of its own).
     try:
-        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == decision.ledger_key).values(redrive_attempt=decision.attempt))
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -509,9 +575,7 @@ async def process_upload_failed(
     # row (the request-scoped session is discarded, dropping the parked entry).
     await cloud_staging.flush_pending_s3_enqueues(session)
 
-    return UploadFailedResult(
-        ProtocolOutcome.COMPLETED,
+    return _upload_failed_result(
         UploadFailedReason.REDRIVEN,
-        attempt=next_attempt,
-        cap=settings.push_max_attempts,
+        decision,
     )

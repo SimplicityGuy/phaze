@@ -154,9 +154,7 @@ async def test_rejects_extra_kwargs(mock_extract: MagicMock) -> None:
     api.put_metadata.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Phase 45 (L-02 / CR-02): terminal-failure ack discipline (mirrors process_file)
-# ---------------------------------------------------------------------------
 
 
 def _job_stub(*, retryable: bool) -> MagicMock:
@@ -258,11 +256,9 @@ async def test_success_path_does_not_ack(mock_extract: MagicMock) -> None:
     api.report_metadata_failed.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # phaze-j8bj: the synchronous mutagen tag parse must run OFF the agent worker's
 # event loop (via asyncio.to_thread) so a slow/hung media-mount read cannot freeze
 # the loop the Phase-46 liveness heartbeat runs on.
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")

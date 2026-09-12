@@ -263,9 +263,6 @@ def test_banner_emitted_via_logger_warning(tmp_path: Path, caplog: pytest.LogCap
         assert "PRIVATE KEY" not in r.getMessage(), f"banner record leaked private-key string: {r.getMessage()}"
 
 
-# --- phaze-0gu / issue #247: SAN-diff + near-expiry leaf re-issue, CA preserved -------------
-
-
 def test_leaf_reissued_when_sans_change_ca_preserved(tmp_path: Path) -> None:
     """Acceptance: changing PHAZE_API_TLS_SANS + restart re-issues the leaf with the new SANs;
     CA fingerprint (and key bytes) are unchanged."""

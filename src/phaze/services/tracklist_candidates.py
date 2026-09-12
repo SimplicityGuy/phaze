@@ -55,9 +55,7 @@ if TYPE_CHECKING:
     import uuid
 
 
-# --------------------------------------------------------------------------------------------
 # Tunables. Every value here trades drain budget against false merges; the comments say which.
-# --------------------------------------------------------------------------------------------
 
 SET_DURATION_MIN_SECONDS: float = 1200.0
 """20 minutes. At or above this a file is a set regardless of what its filename claims.
@@ -104,9 +102,7 @@ structurally via :func:`_disambiguate_key_collisions`, which re-keys every colli
 before any :class:`UniqueSet` reaches the cache or the drain."""
 
 
-# --------------------------------------------------------------------------------------------
 # Query normalization
-# --------------------------------------------------------------------------------------------
 
 _SCENE_TOKENS: frozenset[str] = frozenset(
     {
@@ -419,9 +415,7 @@ def _iter_text_values(value: Any) -> Iterable[str]:
                 yield item
 
 
-# --------------------------------------------------------------------------------------------
 # Inputs and outputs
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,9 +509,7 @@ class UniqueSet:
         return tuple(m for m in self.members if meets_confidence(m.confidence, minimum))
 
 
-# --------------------------------------------------------------------------------------------
 # Classification
-# --------------------------------------------------------------------------------------------
 
 
 def classify(signals: CandidateSignals) -> Classification:
@@ -588,9 +580,7 @@ def _filename_score(signals: CandidateSignals) -> tuple[int, list[str]]:
     return score, reasons
 
 
-# --------------------------------------------------------------------------------------------
 # Dedup to unique sets
-# --------------------------------------------------------------------------------------------
 
 
 class _UnionFind:

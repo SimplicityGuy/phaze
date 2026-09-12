@@ -285,10 +285,8 @@ async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 
-# ------------------------------------------------------------------------------------------------
 # phaze-bd4n: year/track_number/bitrate are capped at a realistic domain, not left unbounded (or
 # ge=0-only) against their int4 columns (wire_bounds rule 3).
-# ------------------------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
@@ -440,9 +438,7 @@ async def test_metadata_empty_put_is_noop_for_existing_row(
     assert row.title == "Xtal"
 
 
-# ---------------------------------------------------------------------------
 # 260707-rc4: guarded DISCOVERED -> METADATA_EXTRACTED state advance
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -502,9 +498,7 @@ async def test_metadata_put_does_not_disturb_later_derived_progress(
     assert meta_row.artist == "A", "metadata row must still be upserted regardless of the file's derived progress"
 
 
-# ---------------------------------------------------------------------------
 # Phase 45 (L-02): extract_file_metadata ledger clear on the success callback
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -562,9 +556,7 @@ async def test_metadata_put_clear_uses_path_file_id_not_redirected(seed_test_age
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared"
 
 
-# ---------------------------------------------------------------------------
 # Phase 45 (L-02 / CR-02): POST /{file_id}/failed terminal-failure ledger clear
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -627,9 +619,7 @@ async def test_metadata_failed_uses_path_file_id_not_redirected(seed_test_agent:
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared by the terminal ack"
 
 
-# ---------------------------------------------------------------------------
 # WR-02: MetadataFailureResponse.cleared is a Literal[True] invariant (no DB)
-# ---------------------------------------------------------------------------
 
 
 def test_metadata_failure_response_accepts_cleared_true() -> None:
@@ -650,10 +640,8 @@ def test_metadata_failure_response_rejects_cleared_false() -> None:
         MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=False)
 
 
-# ---------------------------------------------------------------------------
 # Phase 81 (FAIL-02 / D-01 / D-10 / D-13): report_metadata_failed persists a
 # durable failure marker (both body paths) + put_metadata clears it on success.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -995,14 +983,12 @@ async def test_metadata_failed_error_at_max_length_boundary_is_accepted(
     assert row.error_message.startswith("error: "), f"error_message must be composed as '<reason>: <error>', got {row.error_message!r}"
 
 
-# ---------------------------------------------------------------------------
 # phaze-1lnzo: a concurrently-deleted FileRecord (a scan deletion racing an in-flight
 # extract_file_metadata run) must hold with a clean 200, not FK-violate into an unhandled
 # 500. Each callback is exercised against a `file_id` that was NEVER seeded -- the exact shape
 # a vanished FileRecord leaves behind, since `services.scan_deletion.delete_scan_cascade`
 # removes the row entirely rather than leaving a tombstone (mirrors
 # tests/agents/routers/test_agent_analysis.py's phaze-wn1l coverage).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

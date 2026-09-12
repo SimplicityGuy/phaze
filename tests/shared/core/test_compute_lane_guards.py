@@ -42,9 +42,7 @@ def _template_files() -> list[Path]:
     return sorted(_TEMPLATES.rglob("*.html"))
 
 
-# ---------------------------------------------------------------------------
 # Guard 1: the stale 'a1' lane key / badge is gone from templates + lane logic.
-# ---------------------------------------------------------------------------
 
 # The old rendered A1 badge glyph string, e.g. `'a1': ('☁️ A1', ...)`.
 _A1_BADGE = "☁️ A1"
@@ -74,9 +72,7 @@ def test_no_a1_literal_lane_assignment_in_src() -> None:
     assert not offenders, f"stale '= \"a1\"' lane assignment still present in: {offenders}"
 
 
-# ---------------------------------------------------------------------------
 # Guard 2: the retired derivation symbol + template context key are gone.
-# ---------------------------------------------------------------------------
 
 
 def test_classify_compute_lanes_symbol_removed_from_src() -> None:
@@ -95,9 +91,7 @@ def test_compute_lane_state_context_key_removed_from_src() -> None:
     assert not offenders, f"retired context key 'compute_lane_state' still present in: {offenders}"
 
 
-# ---------------------------------------------------------------------------
 # Guard 3: the services/backends contract is untouched by the epic.
-# ---------------------------------------------------------------------------
 
 
 def test_backends_contract_symbols_still_present() -> None:

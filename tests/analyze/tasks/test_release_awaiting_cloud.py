@@ -43,9 +43,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
-# --- Stub backends whose snapshot/dispatch behavior is controllable ----------------------
-
-
 class _StubBackend:
     """A duck-typed ``Backend`` (kueue role) whose per-tick probe + dispatch can be made to raise.
 
@@ -195,9 +192,6 @@ async def _backend_ids_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[
     return dict(rows)
 
 
-# --- MKUE-03 / D-07: a flaky cluster's SNAPSHOT probe raising is isolated ------------------
-
-
 @pytest.mark.asyncio
 async def test_stage_cloud_window_isolation_is_available_raise_does_not_poison_tick(
     async_engine: AsyncEngine,
@@ -263,9 +257,6 @@ async def test_stage_cloud_window_isolation_in_flight_count_raise_treats_backend
     assert flaky.dispatch_calls == 0
 
 
-# --- MCOMP-05: a flaky COMPUTE lane degrades to 0 slots; a healthy sibling compute lane still dispatches ---
-
-
 @pytest.mark.asyncio
 async def test_mcomp05_flaky_compute_backend_degrades_to_zero_slots_healthy_compute_lane_still_dispatches(
     async_engine: AsyncEngine,
@@ -300,9 +291,6 @@ async def test_mcomp05_flaky_compute_backend_degrades_to_zero_slots_healthy_comp
     assert set((await _backend_ids_for(session, ids)).values()) == {"compute-b"}
     assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.SUBMITTED.value}
     assert flaky_compute.dispatch_calls == 0  # a 0-slot flaky lane is never selected
-
-
-# --- MKUE-03 / D-07: a GENERIC dispatch raise is a clean per-candidate hold (loop continues) ---
 
 
 @pytest.mark.asyncio
@@ -351,9 +339,6 @@ async def test_stage_cloud_window_isolation_generic_dispatch_raise_holds_candida
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
 
 
-# --- Preserved semantics: a dispatch NoActiveAgentError holds ALL remaining + BREAKS -----------
-
-
 @pytest.mark.asyncio
 async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and_breaks(
     async_engine: AsyncEngine,
@@ -386,9 +371,6 @@ async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
-
-
-# --- CR-02: an unexpected raise (poisoned txn) is caught by the tick safety net (cron NEVER raises) ---
 
 
 @pytest.mark.asyncio
@@ -432,9 +414,6 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
-
-
-# --- DRAIN-02 (Phase 98): a HUNG availability probe is bounded, not left to stall the tick ---------
 
 
 @pytest.mark.asyncio

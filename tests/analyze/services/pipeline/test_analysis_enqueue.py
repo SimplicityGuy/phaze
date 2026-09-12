@@ -136,10 +136,8 @@ async def test_enqueue_policy_survives_apply_project_job_defaults() -> None:
     assert job.retries == 2
 
 
-# ---------------------------------------------------------------------------
 # phaze-ewen: classify_process_file_collision -- distinguishing a genuinely in-flight
 # deterministic-key collision from one held by a dead/stuck job.
-# ---------------------------------------------------------------------------
 
 
 def _stub_job(status: str, *, stuck: bool = False) -> SimpleNamespace:

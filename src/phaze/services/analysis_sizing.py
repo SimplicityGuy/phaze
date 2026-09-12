@@ -67,9 +67,7 @@ import subprocess  # nosec B404  # sysctl(8) on Darwin only; fixed argv, no shel
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # The measured constants
-# ---------------------------------------------------------------------------
 
 # The intra-op cap. It is a WALL-CLOCK knee, not a memory knee -- and that attribution is a
 # correction, measured for phaze-rvcn against the CURRENT code (model-major + batch 32) on the
@@ -121,9 +119,7 @@ _INTRA_OP_KNEE_THREADS = 4
 _INTER_OP_THREADS = 1
 
 
-# ---------------------------------------------------------------------------
 # Environment surface (all optional -- a fresh host is correct with none of them set)
-# ---------------------------------------------------------------------------
 
 INTRA_OP_ENV = "TF_NUM_INTRAOP_THREADS"
 INTER_OP_ENV = "TF_NUM_INTEROP_THREADS"
@@ -159,9 +155,7 @@ class AnalysisSizing:
         }
 
 
-# ---------------------------------------------------------------------------
 # Physical-core detection
-# ---------------------------------------------------------------------------
 
 
 def _schedulable_cpus() -> set[int]:
@@ -396,9 +390,7 @@ def detect_physical_cores() -> tuple[int, str]:
     return max(1, detected), source
 
 
-# ---------------------------------------------------------------------------
 # The policy -- one function, both knobs
-# ---------------------------------------------------------------------------
 
 
 def derive_sizing(physical_cores: int | None = None, *, source: str | None = None) -> AnalysisSizing:
@@ -439,9 +431,7 @@ def derive_sizing(physical_cores: int | None = None, *, source: str | None = Non
     )
 
 
-# ---------------------------------------------------------------------------
 # Applying the derivation to the process environment
-# ---------------------------------------------------------------------------
 
 
 def apply_thread_env(env: dict[str, str] | None = None) -> AnalysisSizing:

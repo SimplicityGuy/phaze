@@ -416,7 +416,7 @@ async def put_analysis(
         stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=build_field_lww_set_clause(stmt, dumped))
     else:
         # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
-        # Avoids Postgres "SET clause empty" syntax error (matches agent_metadata.py:65-68).
+        # Avoids Postgres "SET clause empty" syntax error; matches ``agent_metadata.put_metadata``.
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     # phaze-wn1l: a concurrent scan deletion can remove this file's FileRecord between the
     # worker starting its (multi-hour) analysis and this callback landing. Run the upsert

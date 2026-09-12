@@ -121,9 +121,7 @@ def old_review() -> Iterator[ModuleType]:
             delattr(tags_module, name)
 
 
-# ---------------------------------------------------------------------------
 # Deliberate key renames since the pinned pre-refactor SHA (phaze-n8o9p)
-# ---------------------------------------------------------------------------
 #
 # These row dicts are compared with a raw ``==``, which is what gives this module its teeth: any
 # divergence at all, in any key or value, fails. The cost is that it also cannot tell a REGRESSION
@@ -160,9 +158,7 @@ def _strip_added(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return [{key: value for key, value in row.items() if key not in _ADDED_SINCE_PRE_REFACTOR} for row in rows]
 
 
-# ---------------------------------------------------------------------------
 # Changes Review / Propose / Rename-Move parity
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -223,9 +219,7 @@ async def test_proposal_workspace_page_parity(
     assert _rekey(old_page.rows) == new_page.rows
 
 
-# ---------------------------------------------------------------------------
 # Tag-write review parity
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -257,9 +251,7 @@ async def test_tagwrite_review_page_parity(session: AsyncSession, old_review: Mo
     assert old_by_id == {file_id: {k: v for k, v in row.items() if k not in _ADDED_SINCE_PRE_REFACTOR} for file_id, row in new_by_id.items()}
 
 
-# ---------------------------------------------------------------------------
 # Dedupe parity
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -277,9 +269,7 @@ async def test_dedupe_groups_parity(
     assert old_groups == new_groups
 
 
-# ---------------------------------------------------------------------------
 # Cue review parity -- the N+1 fix's own correctness proof, separate from its query-count proof
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -334,9 +324,7 @@ async def test_count_cue_review_candidates_parity(
     assert old_count == new_count == 3
 
 
-# ---------------------------------------------------------------------------
 # The N+1 fix's QUERY COUNT proof -- a different claim from parity above, kept in its own test.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

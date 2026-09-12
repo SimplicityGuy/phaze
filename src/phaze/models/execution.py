@@ -3,7 +3,7 @@
 ``ExecutionStatus`` is re-exported from :mod:`phaze.enums.execution` so the
 canonical definition can live in a DB-free module. Schemas under
 ``phaze.schemas.agent_*`` import the enum from the DB-free location without
-transitively dragging in SQLAlchemy / the ORM Base (Phase 26 D-03 / Plan 11).
+transitively dragging in SQLAlchemy or the ORM Base.
 """
 
 from datetime import datetime

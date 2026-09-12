@@ -59,9 +59,7 @@ def _render_matrix(*, buckets: dict[str, str] | None = None, legend: bool = Fals
     return response.body.decode()
 
 
-# ---------------------------------------------------------------------------
 # _stage_pill.html -- the five buckets (glyph + word + aria-label + semantic tone)
-# ---------------------------------------------------------------------------
 
 # (bucket, glyph, visible word fragment, aria-label suffix, a required tint, a required text tone)
 _BUCKET_CASES = [
@@ -109,9 +107,7 @@ def test_unknown_bucket_falls_back_to_not_started() -> None:
     assert "—" in html
 
 
-# ---------------------------------------------------------------------------
 # _stage_matrix.html -- 6-pill row + the 7->6 remap landmine
-# ---------------------------------------------------------------------------
 
 
 def test_matrix_renders_exactly_five_pills() -> None:

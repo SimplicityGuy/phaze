@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Kubernetes Burst — Kueue Job target (v6.0)
 
 **Kubernetes burst** offloads analysis to **one or more** x64 Kubernetes clusters running
@@ -57,8 +56,8 @@ own LocalQueue, and its own `buckets` staging set:
 ```mermaid
 flowchart LR
   %% transport-agnostic mesh (Tailscale OR WireGuard)
-  subgraph lux["application server / control plane"]
-    luxsvc["api(:8000) · Postgres · Redis"]
+  subgraph control["host-prod / control plane"]
+    controlsvc["api(:8000) · Postgres · Redis"]
     drain["stage_cloud_window (*/5 cron)<br/>tiered rank-first drain"]
     selbk["select_backend (rank-first + spillover)"]
     s3_staging["s3_staging (pick_bucket per file)"]
@@ -478,7 +477,7 @@ is not in the [provenance table](#provenance), check [Superseded values](#supers
 every dead figure is listed there with the reason it died, so a stale value found by `grep` is
 identifiable as stale rather than quotable.
 
-> **Every figure below is measured on ONE machine: `vox`, a Xeon E3-1271 v3 with 4 physical cores
+> **Every figure below is measured on ONE burst measurement host: a Xeon E3-1271 v3 with 4 physical cores
 > / 8 logical (SMT), 31.31 GiB RAM, Debian 13 + k0s.** `cap` is a **per-backend** setting and the
 > ceilings are a property of that silicon, not of the workload. See
 > [Validity: 4 physical cores](#validity-4-physical-cores) for what transfers to other hardware
@@ -489,7 +488,7 @@ identifiable as stale rather than quotable.
 This is the first question every operator asks, so here is the whole answer. There are **three
 different ceilings** on concurrent analysis, they are far apart, and only one of them binds:
 
-| ceiling | on vox (4 physical cores) | what sets it | measured by |
+| ceiling | on the measurement host (4 physical cores) | what sets it | measured by |
 | --- | ---: | --- | --- |
 | **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-chosen; recommended in [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
 | **Throughput knee** — where extra concurrency stops paying | **W=2** | 4 physical cores; node CPU is 85.4% busy at W=2 and ≥98.5% from W=4 | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md) — **63.7%** of everything concurrency buys arrives at W=2, **84.6%** by W=3 |
@@ -545,7 +544,7 @@ are derived by phaze at runtime and need no operator action at all:
 that; `phaze-rvcn` then moved the derivation into the code, and
 [`phaze-8r6t4` §10 / recommendation 2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires
 that recommendation**: all 222 analyze children in its sweep derived `4 / 1 / 4` from the host with
-nothing set. Pinning the values would freeze vox's numbers onto every future burst node and undo
+nothing set. Pinning the values would freeze the measurement host's numbers onto every future burst node and undo
 the portability the derivation exists to provide. phaze never overwrites an operator-set value, so
 setting them is silent rather than loud — which is what makes it a trap.
 
@@ -559,7 +558,7 @@ Two published numbers look like a contradiction and are not:
   `4 // 4` = 1.
 
 **They are different knobs at different layers, and they compose rather than compete.** Worked
-through on vox:
+through on the measurement host:
 
 ```
 lane concurrency = 1   -> ONE analyze process inside ONE pod,
@@ -589,7 +588,7 @@ wrong; neither is obvious from either number alone.
 **`cap` × `memory_request` ≤ ClusterQueue memory `nominalQuota`. `cap` × `cpu_request` ≤
 ClusterQueue cpu `nominalQuota`. Change one, change the other, in the same deploy.**
 
-On vox the two land exactly, which is deliberate — the quota is the enforcement point for `cap`,
+On the measurement host the two land exactly, which is deliberate — the quota is the enforcement point for `cap`,
 not a redundant copy of it:
 
 ```
@@ -616,7 +615,7 @@ generation:
 
 | figure | value | measured by | code generation |
 | --- | ---: | --- | --- |
-| **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | `phaze-5lop`, end to end through the real `analyze_file` on vox; `VmHWM` read once at process exit | the **shipped** pipeline — `phaze-0582` (batch 32), `phaze-rvcn` (host-derived threads), `phaze-ap8y`, and `phaze-5lop`'s streaming decode all present |
+| **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | `phaze-5lop`, end to end through the real `analyze_file` on the measurement host; `VmHWM` read once at process exit | the **shipped** pipeline — `phaze-0582` (batch 32), `phaze-rvcn` (host-derived threads), `phaze-ap8y`, and `phaze-5lop`'s streaming decode all present |
 | `memory_request` | **`3Gi`** | derived from the row above — **1.73×** the measured peak | same |
 | `memory_limit` | **`4Gi`** | derived from the row above — **2.30×**; opt-in, no code default (ADR-0005) | same |
 | `cpu_request` | **`1500m`** | [`phaze-3j67` §9](spikes/phaze-3j67-concurrent-extractor-capacity.md), unchanged | post-`phaze-15sw` image; not re-litigated by `phaze-8r6t4` §10 |
@@ -673,9 +672,9 @@ throughput plateau **+1.4%** and the knee **not at all**
 
 The pinning is load-bearing for the memory row. TensorFlow sizes both of its thread pools from the
 machine's core count and each pool thread carries allocation arena, so an *unpinned* analyze process
-peaks as a property of *the box*: on vox, halving the visible cores moved the unpinned peak
+peaks as a property of *the box*: on the measurement host, halving the visible cores moved the unpinned peak
 **1.3349 → 1.2936 GiB (−3.1%)** — the direction the mechanism predicts, and a magnitude that must
-**not** be extrapolated to 32 or 64 cores, which vox cannot measure. phaze therefore pins the pools
+**not** be extrapolated to 32 or 64 cores, which that host cannot measure. phaze therefore pins the pools
 from the host rather than inheriting the core count, which removes the extrapolation question
 instead of answering it. See
 [Thread sizing is derived, not configured](#thread-sizing-is-derived-not-configured) below for the
@@ -728,7 +727,7 @@ concurrency      = physical_cores // intra_op_threads
 
 > **`concurrency` here is phaze's internal LANE concurrency — it is not `cap`.** It says how many
 > analyze tasks one phaze worker runs at once *inside* a process, and phaze computes it; `cap` says
-> how many analyze *pods* Kueue admits, and the operator sets it. On vox they read **1** and **4**
+> how many analyze *pods* Kueue admits, and the operator sets it. On the measurement host they read **1** and **4**
 > respectively and both are correct. See
 > [`cap` is not lane concurrency](#cap-is-not-lane-concurrency) above for the worked example.
 
@@ -745,8 +744,8 @@ knobs together) or any individual variable (phaze never overwrites an operator v
 | host | physical | intra-op | concurrency |
 | --- | ---: | ---: | ---: |
 | a 2-core VM | 2 | 2 | 1 |
-| **vox (Xeon E3-1271 v3)** — the node every figure above was measured on | **4** | **4** | **1** |
-| nox (compose lanes) | 8 | 4 | 2 |
+| **burst measurement host (Xeon E3-1271 v3)** — the node every figure above was measured on | **4** | **4** | **1** |
+| host-store (compose lanes) | 8 | 4 | 2 |
 | a 32-core upgrade | 32 | 4 | 8 |
 
 #### What was measured (`phaze-rvcn`, 2026-08-06)
@@ -776,7 +775,7 @@ against essentia's default batch of 64 and attributed the saving to intra-op:
 1–8 range now that `phaze-0582` took the batch to 32 and removed the arena the pool was
 multiplying. The +8.5% wall for the full set reproduces `phaze-7i0k` §5's +8.2%.
 
-**2. The knee is a property of the derivation, not of vox** (inter-op pinned at 1, OMP =
+**2. The knee is a property of the derivation, not of the measurement host** (inter-op pinned at 1, OMP =
 intra-op). The wall-clock floor is reached at intra-op = physical cores at **both** core
 counts, which is what `min(4, physical_cores)` derives:
 
@@ -808,7 +807,7 @@ Unpinned peak is 1.2936–1.3371 GiB and sits 10.9–15.7% higher at every core 
 
 #### What this does not show
 
-- **It does not show what an unpinned process would do on a 32-core host.** vox can only be
+- **It does not show what an unpinned process would do on a 32-core host.** The measurement host can only be
   made smaller. Over the range it can span, the unpinned peak moves −3.1% for a 2× core
   reduction — the direction the per-thread-arena mechanism predicts, but a magnitude that must
   not be extrapolated eightfold. **That unmeasurability is the argument for pinning, not
@@ -1019,7 +1018,7 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
   derives all three from the host at import (`phaze-rvcn`, `apply_thread_env`) and **never
   overwrites an operator-set value**, so pinning them here silently replaces the derivation with
-  vox's numbers on every burst node the ConfigMap is copied to. `phaze-3j67` recommendation 2
+  the measurement host's numbers on every burst node the ConfigMap is copied to. `phaze-3j67` recommendation 2
   originally asked for `4 / 1 / 4` here; [`phaze-8r6t4` recommendation
   2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires that** — all 222 of its analyze
   children derived `4 / 1 / 4` with nothing set. See

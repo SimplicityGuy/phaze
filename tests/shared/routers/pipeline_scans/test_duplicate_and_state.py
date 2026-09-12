@@ -36,9 +36,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Unit: _elapsed_seconds must handle production TIMESTAMP WITH TIME ZONE
-# ---------------------------------------------------------------------------
 
 
 def test_elapsed_seconds_handles_tz_aware_created_at() -> None:
@@ -93,13 +91,11 @@ def test_no_router_uses_tz_naive_now_antipattern() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Seeded-mutation proof (phaze-7l8jh): a guard with branching logic that
 # cannot be shown to fail is worse than no guard, because it reads as
 # coverage. Both tests mutate a COPY of the routers tree -- the real one is
 # never touched -- following the same pattern as
 # tests/shared/core/test_route_reachability.py's seeded-mutation tests.
-# ---------------------------------------------------------------------------
 
 
 def test_copied_routers_tree_is_clean(tmp_path: Path) -> None:
@@ -428,9 +424,7 @@ async def test_post_scans_does_not_refresh_before_enqueue(
     assert refresh_calls == [], "trigger_scan must not refresh() the RUNNING batch before enqueueing (phaze-266lc)"
 
 
-# ---------------------------------------------------------------------------
 # PR4: seconds_since_progress / is_scan_stalled helpers (pure, tz-safe)
-# ---------------------------------------------------------------------------
 
 
 def test_seconds_since_progress_uses_last_progress_at() -> None:

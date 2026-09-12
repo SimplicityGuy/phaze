@@ -68,7 +68,7 @@ RESEARCH must determine the correct wiring that satisfies BOTH "reuse the same Q
 <specifics>
 ## Specific Ideas / Evidence
 - Verified at probe time: `from saq.web.starlette import saq_web` succeeds; `starlette` + `aiohttp` present; `aiohttp_jinja2` absent (starlette path shouldn't need it).
-- Live queue topology (from Phase 30/34 work): `controller` queue + `phaze-agent-nox` queue carry all the jobs worth watching; `process_file` (the bulk) is on `phaze-agent-nox`.
+- Live queue topology (from Phase 30/34 work): `controller` queue + `phaze-agent-host-store` queue carry all the jobs worth watching; `process_file` (the bulk) is on `phaze-agent-host-store`.
 - This phase pairs naturally with Phase 32 (reboot re-enqueue) and Phase 34 (queue-depth status) — the `/saq` dashboard is the deep operator view; the pipeline card is the at-a-glance view.
 </specifics>
 

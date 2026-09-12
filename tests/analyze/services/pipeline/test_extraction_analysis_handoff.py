@@ -315,9 +315,7 @@ async def test_the_duration_probe_never_goes_through_taglib(tmp_path: Path) -> N
         _unlink(audio_source.cleanup_path)
 
 
-# ---------------------------------------------------------------------------
 # Both lanes' handoff: the path each lane actually hands to the analysis driver
-# ---------------------------------------------------------------------------
 
 
 def _probe_at_the_seam(seen: dict[str, Any]) -> Any:
@@ -434,9 +432,7 @@ async def test_cloud_lane_reaches_analysis_with_a_probeable_path(
     assert seen["decoded"] == seen["windows"] >= 2
 
 
-# ---------------------------------------------------------------------------
 # Exhaustive coverage actually executing (phaze-w55w1, which has never run in prod)
-# ---------------------------------------------------------------------------
 
 
 async def test_a_plain_audio_file_analyzes_every_natural_window_across_more_than_one_chunk(tmp_path: Path) -> None:

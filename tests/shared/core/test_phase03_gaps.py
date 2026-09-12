@@ -16,9 +16,7 @@ from phaze.models.file_companion import FileCompanion
 from phaze.schemas.companion import AssociateResponse, DuplicateFile, DuplicateGroup, DuplicateGroupsResponse
 
 
-# ---------------------------------------------------------------------------
 # FileCompanion model
-# ---------------------------------------------------------------------------
 
 
 def test_file_companion_tablename() -> None:
@@ -86,9 +84,7 @@ def test_file_companion_fk_cascade_delete_media() -> None:
     assert fk.ondelete.upper() == "CASCADE"
 
 
-# ---------------------------------------------------------------------------
 # Pydantic schemas
-# ---------------------------------------------------------------------------
 
 
 def test_associate_response_required_fields() -> None:

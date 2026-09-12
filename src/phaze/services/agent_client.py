@@ -1,4 +1,4 @@
-"""PhazeAgentClient -- internal-agent HTTP wrapper (Phase 26 D-09..D-13).
+"""PhazeAgentClient -- internal-agent HTTP wrapper (D-09..D-13).
 
 Single httpx.AsyncClient wrapper every file-bound SAQ task on the agent uses
 to POST/PUT/PATCH state changes back to the application server.
@@ -17,11 +17,9 @@ Decisions:
   ``AgentApiServerError`` (5xx + network, after retry exhaustion).
 - D-13: DEBUG on success, WARNING on failure; bearer token NEVER logged.
 
-Schemas referenced in TYPE_CHECKING block live in ``phaze.schemas.agent_*`` --
-Phase 25 modules (files/metadata/execution/heartbeat) already exist;
-Phase 26 Plan 03 modules (identity/analysis/proposals) land in
-parallel. Endpoint methods import response schemas lazily inside the method
-body so this module loads independent of Plan 03's merge order.
+Schemas referenced in the ``TYPE_CHECKING`` block live in ``phaze.schemas.agent_*``.
+Endpoint methods import response schemas lazily so runtime loading does not depend on
+type-only imports.
 """
 
 from __future__ import annotations
@@ -38,7 +36,6 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 if TYPE_CHECKING:
     import uuid
 
-    # Phase 26 Plan 03 schemas (now merged; type: ignore tripwires retired).
     from phaze.schemas.agent_analysis import (
         AnalysisFailurePayload,
         AnalysisFailureResponse,
@@ -48,10 +45,8 @@ if TYPE_CHECKING:
         PresignDownloadMetadata,
     )
 
-    # Phase 28 schema (D-06).
+    # D-06 execution-batch schema.
     from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
-
-    # Phase 25 schemas (already exist).
     from phaze.schemas.agent_execution import (
         ExecutionLogCreate,
         ExecutionLogCreateResponse,
@@ -66,11 +61,7 @@ if TYPE_CHECKING:
         ProposalStatePatch,
         ProposalStateResponse,
     )
-
-    # Phase 50 push-pipeline callbacks (50-01 schemas).
     from phaze.schemas.agent_push import PushedResponse, PushFailedResponse, PushMismatchResponse
-
-    # Phase 53 S3 upload-leg callbacks (53-03 schemas).
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
@@ -88,7 +79,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Phase 99 OBS-01: short, hardcoded per-request timeout for the best-effort analysis
+# Short, hardcoded per-request timeout for the best-effort analysis
 # progress POST. 2s connect (the phase that stalls under event-loop/GIL starvation),
 # 5s read/write/pool. Deliberately NOT an AgentSettings knob -- the client is
 # settings-free by design; mirrors the hardcoded _DOWNLOAD_CONNECT_TIMEOUT_S /
@@ -144,7 +135,7 @@ def _resolve_verify(verify: ssl.SSLContext | str | bool) -> ssl.SSLContext | boo
     upstream.
 
     Doing it here rather than at each call site is deliberate. ``verify`` is phaze's ONLY TLS
-    trust anchor for agent callbacks (Phase 29 D-03/D-04 / AUTH-02) and every production caller
+    trust anchor for agent callbacks (D-03/D-04 / AUTH-02) and every production caller
     reaches it through this class -- ``construct_agent_client`` passes ``cfg.agent_ca_file``, a
     path string, and the analysis job pod inherits that. The failure mode of letting the
     deprecation run to removal is not a warning going away: it is a client that stops verifying
@@ -187,7 +178,7 @@ class PhazeAgentClient:
     ) -> None:
         """Construct the client.
 
-        Phase 29 D-03/D-04: ``verify`` is threaded through to
+        D-03/D-04: ``verify`` is threaded through to
         ``httpx.AsyncClient(verify=...)``. Accepts an ``ssl.SSLContext``,
         a file path string pointing at a CA bundle, or a bool. Default
         ``True`` preserves backwards compatibility with all existing
@@ -216,9 +207,7 @@ class PhazeAgentClient:
         """Close the underlying httpx.AsyncClient (releases connection pool)."""
         await self._client.aclose()
 
-    # ------------------------------------------------------------------
     # Retry funnel -- every endpoint method routes through here (D-11).
-    # ------------------------------------------------------------------
 
     async def _request(
         self,
@@ -244,7 +233,7 @@ class PhazeAgentClient:
 
         ``max_attempts`` and ``quiet_transport_errors`` are keyword-only, consumed
         here, and never forwarded to httpx. Defaults preserve the standard D-11
-        behavior for every endpoint; the analysis progress path (Phase 99 OBS-01)
+        behavior for every endpoint; the analysis progress path (OBS-01)
         opts out with ``max_attempts=1`` + ``quiet_transport_errors=True`` to stay
         cheap-to-fail and quiet under sustained transport failure. When
         ``quiet_transport_errors`` is set, the transport-error log line drops from
@@ -288,9 +277,7 @@ class PhazeAgentClient:
         # unreachable; keep it as a tripwire if tenacity behavior changes.
         raise AssertionError("AsyncRetrying loop exited without returning or raising")
 
-    # ------------------------------------------------------------------
     # Endpoint methods (D-10 -- one per /api/internal/agent/* resource).
-    # ------------------------------------------------------------------
 
     async def whoami(self) -> AgentIdentity:
         """GET /api/internal/agent/whoami -- resolve token -> agent identity."""
@@ -333,17 +320,17 @@ class PhazeAgentClient:
         return AnalysisWriteResponse.model_validate(response.json())
 
     async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
-        """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (Phase 52, KJOB-02).
+        """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (KJOB-02).
 
         Returns ``(download_url, expected_sha256, audio_ext, metadata)``: the short-TTL presigned
-        URL the DB-less one-shot pod (Plan 02) downloads the file bytes from, the
+        URL the DB-less one-shot pod downloads the file bytes from, the
         ``expected_sha256`` (server-sourced from ``FileRecord.sha256_hash``) it
         integrity-verifies those bytes against -- the only hash a Postgres-free pod
         can check (Pitfall 3) -- ``audio_ext``, the file's real dotless audio
         extension (server-sourced from ``FileRecord.file_type``) the pod uses to name
         the downloaded temp file so essentia's extension-based format detection can
         decode it (cloud-analyze-empty-no-ext), and ``metadata``, the optional
-        display-identity block (Phase 100, phaze-sfbx.1) the pod's console banner
+        display-identity block (phaze-sfbx.1) the pod's console banner
         (phaze-sfbx.3) uses for a human-readable frame. ``audio_ext`` is ``None`` against an
         older control plane that omits it; the pod then falls back to the URL suffix.
         ``metadata`` is likewise ``None`` (never an error) against a control plane that omits
@@ -357,7 +344,7 @@ class PhazeAgentClient:
         header only and is never logged (D-13; T-52-04). ``file_id`` rides the path only
         (AUTH-01); no body.
 
-        NOTE: the SERVER side ships in Phase 53 (KSTAGE-03); this defines the client.
+        The server endpoint is the KSTAGE-03 counterpart to this client method.
         """
         from phaze.schemas.agent_analysis import PresignDownloadResponse  # noqa: PLC0415
 
@@ -369,7 +356,7 @@ class PhazeAgentClient:
         return resp.download_url, resp.expected_sha256, resp.audio_ext, resp.metadata
 
     async def report_analysis_failed(self, file_id: uuid.UUID, payload: AnalysisFailurePayload) -> AnalysisFailureResponse:
-        """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report (Phase 43).
+        """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report.
 
         Marks the file ``ANALYSIS_FAILED`` on the control plane. Inherits the
         tenacity retry policy (D-11) + exception hierarchy (D-12) via the
@@ -386,7 +373,7 @@ class PhazeAgentClient:
         return AnalysisFailureResponse.model_validate(response.json())
 
     async def report_pushed(self, file_id: uuid.UUID) -> PushedResponse:
-        """POST /api/internal/agent/push/{file_id}/pushed -- rsync push success (Phase 50, 50-03).
+        """POST /api/internal/agent/push/{file_id}/pushed -- rsync push success.
 
         The fileserver agent calls this when ``push_file`` completes with rsync exit 0, so the
         control plane flips the file to ``FileState.PUSHED`` and enqueues ``process_file`` against
@@ -424,7 +411,7 @@ class PhazeAgentClient:
         return PushFailedResponse.model_validate(response.json())
 
     async def report_push_mismatch(self, file_id: uuid.UUID) -> PushMismatchResponse:
-        """POST /api/internal/agent/push/{file_id}/mismatch -- post-transfer sha256 mismatch (Phase 50, 50-03).
+        """POST /api/internal/agent/push/{file_id}/mismatch -- post-transfer sha256 mismatch.
 
         The compute agent calls this when the rsync'd scratch copy fails sha256 verification before
         analysis. Control either re-drives the push (keeps the PUSHING slot, D-12) or caps it to a
@@ -463,7 +450,7 @@ class PhazeAgentClient:
         return ScratchLivenessResponse.model_validate(response.json())
 
     async def report_upload_complete(self, file_id: uuid.UUID, parts: list[UploadedPart]) -> UploadedResponse:
-        """POST /api/internal/agent/s3/{file_id}/uploaded -- multipart upload success (Phase 53, 53-03).
+        """POST /api/internal/agent/s3/{file_id}/uploaded -- multipart upload success.
 
         The file-server agent calls this when ``upload_file_s3`` finishes PUTting every part to its
         presigned URL, passing the ordered ``(part_number, etag)`` list it collected (D-04). Control
@@ -482,7 +469,7 @@ class PhazeAgentClient:
         return UploadedResponse.model_validate(response.json())
 
     async def report_upload_failed(self, file_id: uuid.UUID, detail: str | None = None) -> UploadFailedResponse:
-        """POST /api/internal/agent/s3/{file_id}/failed -- multipart upload failure (Phase 53, 53-03).
+        """POST /api/internal/agent/s3/{file_id}/failed -- multipart upload failure.
 
         The file-server agent calls this on a terminal/transfer upload failure so control records the
         failure and tears down (or re-drives) the staging upload. Inherits the tenacity retry policy
@@ -499,7 +486,7 @@ class PhazeAgentClient:
         return UploadFailedResponse.model_validate(response.json())
 
     async def report_metadata_failed(self, file_id: uuid.UUID, payload: MetadataFailurePayload | None = None) -> MetadataFailureResponse:
-        """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02; Phase 81 FAIL-02).
+        """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal acknowledgement (L-02 / CR-02 / FAIL-02).
 
         The agent calls this on a retries-exhausted ``extract_file_metadata`` terminal
         failure so the control side (a) persists a durable metadata failure marker and
@@ -604,7 +591,7 @@ class PhazeAgentClient:
         batch_id: uuid.UUID,
         payload: ScanBatchPatch,
     ) -> ScanBatchPatchResponse:
-        """PATCH /api/internal/agent/scan-batches/{batch_id} -- update batch status/counts (Phase 27 D-10).
+        """PATCH /api/internal/agent/scan-batches/{batch_id} -- update batch status/counts (D-10).
 
         Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12)
         via the `_request` funnel -- 5xx retries, 4xx surface immediately.
@@ -623,11 +610,11 @@ class PhazeAgentClient:
         batch_id: uuid.UUID,
         payload: ExecBatchProgressPayload,
     ) -> None:
-        """POST /api/internal/agent/exec-batches/{batch_id}/progress -- per-proposal terminal progress (Phase 28 D-05).
+        """POST /api/internal/agent/exec-batches/{batch_id}/progress -- per-proposal terminal progress (D-05).
 
         Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12)
         via the ``_request`` funnel -- 5xx retries, 4xx surface immediately.
-        Caller in ``tasks/execution._execute_one`` (Plan 28-05) should swallow
+        The caller in ``tasks/execution._execute_one`` should swallow
         ``AgentApiError`` after retries (D-16); the underlying file ops are
         already committed and the per-proposal PATCH has already landed via
         ``patch_proposal_state``. Returns ``None`` (no response body -- the
@@ -641,12 +628,12 @@ class PhazeAgentClient:
         return None
 
     async def post_analysis_progress(self, file_id: uuid.UUID, payload: AnalysisProgressPayload) -> None:
-        """POST /api/internal/agent/analysis/{file_id}/progress -- counter-only mid-flight bump (Phase 57.1, 03).
+        """POST /api/internal/agent/analysis/{file_id}/progress -- counter-only mid-flight bump (PROG-03).
 
         Best-effort: the CALLER swallows ``AgentApiError`` (D-16) -- a dropped progress
         POST must NEVER fail the analysis job; the completion ``put_analysis`` writes
         the final count regardless, so the in-flight bar reaches 100% from completion
-        even if this POST is lost. Phase 99 OBS-01: unlike every other endpoint, this
+        even if this POST is lost. Unlike every other endpoint, this
         call makes a single attempt (``max_attempts=1``, no tenacity retry) against a
         short, hardcoded ``_PROGRESS_TIMEOUT`` (5s, 2s connect) instead of the client's
         30s default, and demotes its transport-error log to DEBUG

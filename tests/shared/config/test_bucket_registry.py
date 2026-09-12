@@ -34,9 +34,7 @@ def _clear_backends_env(monkeypatch: _pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PHAZE_BACKENDS_CONFIG_FILE", raising=False)
 
 
-# --------------------------------------------------------------------------- #
 # Task 1: implicit-local default + tomllib env-pointer loader
-# --------------------------------------------------------------------------- #
 def test_implicit_local_when_no_pointer_and_no_file(monkeypatch: _pytest.MonkeyPatch) -> None:
     """No PHAZE_BACKENDS_CONFIG_FILE + no default file → a single implicit kind=local backend (D-03).
 
@@ -123,9 +121,7 @@ def test_kueue_backend_with_kube_table_parses(backends_toml_env) -> None:  # typ
     assert kueue.buckets == ["bucket-a"]
 
 
-# --------------------------------------------------------------------------- #
 # Task 2: container cross-entry validator (empty / bucket-cardinality / scope)
-# --------------------------------------------------------------------------- #
 _KUEUE_KUBE = """
 [backends.kube]
 api_url = "https://kube.example.com"
@@ -312,9 +308,7 @@ def test_duplicate_bucket_id_within_one_kueue_backend_shared_rejected(backends_t
         ControlSettings()
 
 
-# --------------------------------------------------------------------------- #
 # Task 3: cloud_enabled + transitional accessors + secret-free startup log
-# --------------------------------------------------------------------------- #
 _ONE_COMPUTE = """
 [[backends]]
 kind = "compute"
@@ -427,9 +421,7 @@ def test_multiple_compute_backends_each_resolve_their_own_scratch_dir(backends_t
     assert backend_b.scratch_dir == "/scratch/b"
 
 
-# --------------------------------------------------------------------------- #
 # Phase 73 (D-01): ComputeBackend.push_host required (id-tagged fail-fast) + optional ssh_user
-# --------------------------------------------------------------------------- #
 def test_compute_backend_missing_push_host_fails_fast_with_id() -> None:
     """D-01: a compute entry with agent_ref + scratch_dir but NO push_host fails fast, id-tagged.
 

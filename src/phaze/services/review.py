@@ -1,49 +1,17 @@
-"""Phase 60 (REVIEW-01/REVIEW-02): degrade-safe read helpers for the Review diff workspaces.
+"""Degrade-safe read helpers for the Review diff workspaces.
 
-The Rename/Path and Move-files workspaces (Plan 60-02) render pending ``RenameProposal`` rows, and the
-Tag-write workspace (Plan 60-03) renders the computed tag comparison, all through the ONE shared
-``pipeline/partials/_diff_row.html`` partial (D-06). These helpers are their single read seam: each
-wraps its query in a ``session.begin_nested()`` SAVEPOINT and maps every ORM row to a plain dict, so
-the templates never touch an ORM object and the hot render/poll path can NEVER 500 (mirrors
-:func:`phaze.services.pipeline.get_analyze_working_set`). No enqueue, no commit, no schema change.
+Each public reader wraps its query in ``session.begin_nested()`` and maps ORM rows to plain dicts,
+so render and poll paths degrade without aborting the caller transaction. These functions do not
+enqueue work, commit, or change schema.
 
-* :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02),
-  bundled with the corpus-wide pending total and the >=90%-confidence match count (phaze-rw14) --
-  both real ``COUNT``s, never the length of the 200-row render cap.
-* :func:`get_proposal_workspace_page` -- the FILTERED, SEARCHED, PAGINATED sibling of the above,
-  plus the filter-tab counts, for the Propose workspace (phaze-a6hm.2 / .9). Same row dict shape,
-  so both feed ``_file_table.html`` interchangeably.
-* :func:`get_tagwrite_review_page`  -- applied files (``applied_clause()``, READ-05/D-01) with a
-  pending, >=1-change tag comparison (Tag-write, Plan 60-03; Pitfall 3 -- only applied files without
-  a COMPLETED ``TagWriteLog``). Each row also carries ``has_prior_write`` (phaze-o5rf) so the
-  workspace only surfaces UNDO where it can actually revert something.
-* :func:`get_dedupe_groups`         -- scored duplicate groups + keeper flag (Dedupe, Plan 60-04;
-  keeper == ``score_group``'s ``canonical_id``; review mints an opaque plan before confirmation).
-* :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
-  (Cue, Plan 60-04; ``generate_cue_content`` only -- NO ``write_cue_file``, the render never mutates disk).
+Proposal pages use real corpus counts rather than the render cap. Tag-write rows require an applied
+file, at least one proposed change, and no completed write; ``has_prior_write`` exposes undo only
+when it can succeed. Dedupe rows carry the scored keeper, and cue cards generate previews in memory
+without writing files.
 
-phaze-b4u3p: this module's DECOMPOSITION SEAM. Every public function above stays defined here with
-its signature and degrade-safe contract unchanged (every ``routers/*`` caller keeps importing the
-same names) -- what moved out is the query/computation surface each one leaned on:
-
-* The tag-comparison predicate + row-building helpers this module used to reach into
-  ``routers/tags.py``'s private (underscore-prefixed) surface for now live in
-  ``services/tag_comparison.py``, and ``routers/tags.py`` imports them right back -- see that
-  module's docstring for the full layering rationale. This resolves the SERVICE ->
-  ROUTER-private-helper inversion repowise flagged: both modules now depend on one shared service
-  module instead of one reaching into the other.
-* Likewise the cue-eligibility query surface previously reached into ``routers/cue.py``'s private
-  helpers now lives in ``services/cue_review.py``, alongside a NEW batched
-  ``build_cue_tracks_for_versions`` that fixes the ``get_cue_review_cards`` cross-function N+1 (see
-  that function's docstring) and a shared ``_approved_applied_tracklist_base`` that removes the
-  14-line clone this module's old ``_gated_tracklist_stmt`` shared with ``routers/cue.py``'s
-  eligible-set predicate.
-* Within each brain method (``get_changes_review_page``, ``get_tagwrite_review_page``,
-  ``get_cue_review_cards``), the per-row/per-batch dict-building logic is factored into private
-  helpers defined IN THIS MODULE (not relocated) so the public function's own body stays a short,
-  low-CCN orchestration of "fetch, then build rows" -- and so the existing
-  ``patch("phaze.services.review.generate_cue_content", ...)``-style tests keep working: that name
-  is resolved out of THIS module's globals at call time, wherever the calling function is defined.
+Shared tag-comparison and cue-eligibility queries live in ``phaze.services.tag_comparison`` and
+``phaze.services.cue_review``. Row builders remain in this module so public imports and tests that
+patch this module's collaborators retain their established interface.
 """
 
 from __future__ import annotations

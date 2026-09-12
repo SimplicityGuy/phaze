@@ -58,9 +58,6 @@ def _load_lint_module() -> ModuleType:
     return module
 
 
-# --- AC1: must catch the real historical instance -----------------------------------------------
-
-
 def test_catches_the_reconstructed_2026_08_20_regression(tmp_path: Path) -> None:
     """The literal reconstruction of the 2026-08-20 record_host.html incident must be flagged.
 
@@ -127,9 +124,6 @@ def test_passes_on_the_corrected_shape(tmp_path: Path) -> None:
     assert lint.scan_text(fixed.read_text(encoding="utf-8"), fixed) == []
 
 
-# --- AC2, made permanent: the real template tree must stay clean ---------------------------------
-
-
 def test_current_templates_have_no_truncated_directive_attributes() -> None:
     """A standing regression guard: every template in the tree, scanned with the shipped scanner.
 
@@ -146,9 +140,6 @@ def test_main_exits_zero_on_the_current_template_tree() -> None:
     """The CLI entry point pre-commit actually invokes, exercised end to end."""
     lint = _load_lint_module()
     assert lint.main([]) == 0
-
-
-# --- Coverage (AC3): each directive family is actually recognised --------------------------------
 
 
 def test_covers_x_show(tmp_path: Path) -> None:
@@ -203,9 +194,6 @@ def test_covers_hx_vals_when_double_quoted(tmp_path: Path) -> None:
     assert findings[0].attr == "hx-vals"
 
 
-# --- Deliberately out of scope (AC3's "what we did not cover") -----------------------------------
-
-
 def test_does_not_cover_single_quoted_attributes(tmp_path: Path) -> None:
     """The mirror-image hazard (a literal ``'`` truncating a single-quoted value) is out of scope."""
     lint = _load_lint_module()
@@ -231,9 +219,6 @@ def test_does_not_cover_ordinary_html_attributes(tmp_path: Path) -> None:
     assert lint.scan_text(path.read_text(encoding="utf-8"), path) == []
 
 
-# --- The other bug this same scan catches for free ------------------------------------------------
-
-
 def test_flags_an_unterminated_attribute(tmp_path: Path) -> None:
     lint = _load_lint_module()
     path = tmp_path / "unterminated.html"
@@ -241,9 +226,6 @@ def test_flags_an_unterminated_attribute(tmp_path: Path) -> None:
     findings = lint.scan_text(path.read_text(encoding="utf-8"), path)
     assert len(findings) == 1
     assert findings[0].unterminated
-
-
-# --- Escape hatch -----------------------------------------------------------------------------
 
 
 def test_escape_hatch_suppresses_a_single_attribute(tmp_path: Path) -> None:
@@ -254,9 +236,6 @@ def test_escape_hatch_suppresses_a_single_attribute(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert lint.scan_text(path.read_text(encoding="utf-8"), path) == []
-
-
-# --- Message quality (AC5) ------------------------------------------------------------------------
 
 
 def test_failure_message_names_file_line_attribute_and_mechanism(tmp_path: Path) -> None:

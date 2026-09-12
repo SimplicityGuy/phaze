@@ -1,4 +1,4 @@
-# phaze-u1n7j — the D-09 memory fix, verified on vox
+# phaze-u1n7j — the D-09 memory fix, verified on host-compute
 
 - **Bead:** `phaze-u1n7j` (bug — exhaustive analysis's peak RSS is linear in duration and
   breaches the 4Gi pod limit at ~4 hours)
@@ -43,10 +43,10 @@ comparable to its baselines and the baselines are the whole point.
 
 | | |
 | --- | --- |
-| **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, 4 physical / 8 logical cores, 31.31 GiB, k0s burst node, **taken out of the phaze backend registry for the measurement window** and otherwise idle |
+| **Host** | `host-compute` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, 4 physical / 8 logical cores, 31.31 GiB, k0s burst node, **taken out of the phaze backend registry for the measurement window** and otherwise idle |
 | **Runtime** | the deployed job image `job:2026.8.2` verbatim, with each arm's `src/phaze` overlaid at `/scratch/{leaky,fixed}/src` and put ahead of the image's own `/app/src` on `PYTHONPATH` |
 | **Models** | the deployed `phaze-models` PVC, mounted read-only |
-| **Pod** | a bare `sleep infinity` pod on `vox`, **no Kueue queue label** (consumes no quota, unaffected by the hold) and **no memory limit** — deliberately absent, so a peak above the 4Gi tier is *observed* rather than OOMKilled |
+| **Pod** | a bare `sleep infinity` pod on `host-compute`, **no Kueue queue label** (consumes no quota, unaffected by the hold) and **no memory limit** — deliberately absent, so a peak above the 4Gi tier is *observed* rather than OOMKilled |
 | **Process model** | one exec'd child per file (`python -m phaze.analysis_child <file> --models-dir /models`), exactly as production |
 | **Peak RSS** | `os.wait4()`'s `ru_maxrss` for that one child — a kernel high-water mark, not a sampled curve, so it is immune to the `phaze-7i0k` §9 GIL trap. Cross-checked against a 1 s sampler of the child's `/proc/<pid>/status:VmHWM` running in a **separate** process. The two agreed **to the kibibyte on every run** |
 | **Wall clock** | every protocol line the child emits, timestamped by the harness against a monotonic clock |
@@ -288,9 +288,9 @@ it was changed back.
 | what | opening the window | closing it |
 | --- | --- | --- |
 | in-flight cloud work | three analyses were **allowed to finish** (drained 01:51:57Z → 03:05:39Z, 73 min); none was evicted, requeued or lost | — |
-| Kueue `vox-cluster-queue` | `stopPolicy: None` → **`Hold`** at 01:51:57Z (stops admitting; never `HoldAndDrain`, which evicts running work) | back to **`None`** at 17:20:24Z; four analyses admitted to `vox` within seconds |
-| phaze backend registry | the `vox` `[[backends]]` block (681 bytes) commented out in the deployed `backends.toml` at 03:05:39Z; `phaze-api` + `phaze-worker` restarted; the lane snapshot served **`local` only** | file restored **byte-identical** at 17:19:26Z (`diff -q` clean, sha256 `3bc28653…` matched against the pre-removal capture); both services restarted; the lane snapshot served **`vox` + `local`** again |
-| the measurement pod | a `sleep infinity` pod on `vox`, no Kueue queue label, no memory limit | deleted |
+| Kueue `host-compute-cluster-queue` | `stopPolicy: None` → **`Hold`** at 01:51:57Z (stops admitting; never `HoldAndDrain`, which evicts running work) | back to **`None`** at 17:20:24Z; four analyses admitted to `host-compute` within seconds |
+| phaze backend registry | the `host-compute` `[[backends]]` block (681 bytes) commented out in the deployed `backends.toml` at 03:05:39Z; `phaze-api` + `phaze-worker` restarted; the lane snapshot served **`local` only** | file restored **byte-identical** at 17:19:26Z (`diff -q` clean, sha256 `3bc28653…` matched against the pre-removal capture); both services restarted; the lane snapshot served **`host-compute` + `local`** again |
+| the measurement pod | a `sleep infinity` pod on `host-compute`, no Kueue queue label, no memory limit | deleted |
 | scratch | 1.4 GB of read-only band-file copies plus the harness and outputs | removed entirely |
 
 - **No original file was opened for write**, and nothing was written back to the archive or the

@@ -17,7 +17,7 @@
 |--------|-------------|----------|
 | Kebab-case slug | e.g. `legacy-application-server`, `fileserver-01`. Human-readable, queue names like `phaze-agent-fileserver-01` stay readable. | ✓ |
 | UUID string | Globally unique, no naming collisions, but queue names become opaque. | |
-| Short ID (e.g. `lux`, `nox`) | Compact, terminal-friendly, but tight on collision space and feels arbitrary. | |
+| Short ID (e.g. `host-prod`, `host-store`) | Compact, terminal-friendly, but tight on collision space and feels arbitrary. | |
 
 **User's choice:** Kebab-case slug (Recommended)
 **Notes:** Aligns with the carried-forward decision to prefer role-based names over hostnames in planning artifacts (feedback_generic_server_names.md).

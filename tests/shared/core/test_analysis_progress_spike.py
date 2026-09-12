@@ -42,10 +42,8 @@ if TYPE_CHECKING:
     from phaze.models.agent import Agent
 
 
-# ===========================================================================
 # Task 2 -- crash-mid-run idempotency on the put_analysis replace path
 #           (group: idempotent; real Postgres via the `session` fixture)
-# ===========================================================================
 
 
 # Canonical "uninterrupted control" payload: the known-good final analysis a

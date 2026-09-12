@@ -1,7 +1,6 @@
 """Registry resolution: ``[[backends]]`` config entries -> :class:`Backend` impls, and the two inverses.
 
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df). This is the
-seam the 2026-08-08 bug hunt's duplicate-``[[backends]]``-id silent-last-wins defect lived in, so it
+This is the seam where the duplicate-``[[backends]]``-id silent-last-wins defect lived, so it
 is kept small and separately testable on purpose --
 ``tests/analyze/services/backends/test_registry_duplicate_ids.py`` characterizes exactly what each of
 the three functions does with a duplicated id and where the real guard now sits
@@ -35,14 +34,14 @@ logger = structlog.get_logger(__name__)
 
 
 def resolve_backends(settings: ControlSettings) -> list[Backend]:
-    """Build one :class:`Backend` impl per registry entry -- N non-local backends supported (Phase 69, SCHED-01).
+    """Build one :class:`Backend` per registry entry, supporting N non-local backends (SCHED-01).
 
-    Phase 69 (SCHED-01) removes the Phase-68 ``>1``-non-local boot guard: multi-backend simultaneous
+    SCHED-01 removes the ``>1``-non-local boot guard: multi-backend simultaneous
     dispatch is exactly this phase's job, so a registry with N non-local entries now resolves to a full
     ``list[Backend]`` of length N (+ any locals). The tiered drain
     (``release_awaiting_cloud.stage_cloud_window``) iterates this list, snapshots each backend's
     ``is_available`` / ``in_flight_count`` once per tick, and routes each candidate via the pure
-    ``select_backend`` policy. Each impl binds to its Phase-67 discriminated-union submodel (``config``).
+    ``select_backend`` policy. Each impl binds to its backend discriminated-union submodel (``config``).
 
     The historical ``>1``-non-local defense-in-depth is retained ONLY for the non-drain call sites that
     still assume a single non-local kind (pipeline dashboard / backfill, agent_s3) -- it lives in
@@ -86,13 +85,13 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
     backfill route): they only ask "is the cloud lane kueue?". ``"local"`` when ``cloud_enabled`` is
     False.
 
-    Phase 70 (MKUE-01, sibling of the Pitfall-1 ``active_compute_scratch_dir`` fix): the callers 500'd
+    MKUE-01, sibling of the Pitfall-1 ``active_compute_scratch_dir`` fix: callers returned 500
     the moment a 2nd Kueue backend was declared, because the old ``>1``-non-local blanket raise fired on
     the literal MKUE-01 scenario. Generalize: when ANY non-local backend is ``"kueue"``, return
     ``"kueue"`` -- this tolerates N Kueue backends AND a local + N-Kueue + 1-compute registry (the
-    callers degrade gracefully by construction, no per-site try/except needed). Phase 72 (MCOMP-01,
+    callers degrade gracefully by construction, no per-site try/except needed). MCOMP-01,
     D-03) retires the compute-only ``>1`` fail-fast too: the compute-only branch now returns ``"compute"``
-    for N compute backends (per-agent dispatch attribution lands in Phase 73). All-local -> ``"local"``,
+    for N compute backends. All-local -> ``"local"``,
     single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay byte-identical.
     """
     if not settings.cloud_enabled:
@@ -100,6 +99,6 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
     non_local = [backend for backend in settings.backends if backend.kind != "local"]
     if any(backend.kind == "kueue" for backend in non_local):
         return "kueue"
-    # No kueue backend -> compute-only. Phase 72 (D-03) retired the ambiguous >1-compute fail-fast; the
-    # compute-only branch returns "compute" for any N compute (per-agent attribution lands in Phase 73).
+    # No kueue backend -> compute-only. D-03 retired the ambiguous >1-compute fail-fast; the
+    # compute-only branch returns "compute" for any N compute.
     return non_local[0].kind

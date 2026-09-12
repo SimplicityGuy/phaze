@@ -85,7 +85,7 @@ failure isolation — is a successful analysis. These are file-level failures on
 **Where 3.5 GiB comes from.** The deployed pod limit is **4Gi = 4,294,967,296 B**
 (`docs/design/0005-analyze-job-memory-limits.md`, `backends.toml`). The measured post-D-09
 whole-process peak on the burst node is **1.50 / 1.65 / 1.67 GiB** at 1:00 / 4:00 / 12:04 of
-audio (`docs/spikes/phaze-u1n7j-vox-fix-verification.md`). 3.5 GiB is 87.5% of the limit and
+audio (`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`). 3.5 GiB is 87.5% of the limit and
 more than **twice** the measured peak: nothing healthy reaches it, and a breach is a warning
 rather than an OOMKill that already happened.
 
@@ -106,10 +106,10 @@ ______________________________________________________________________
 
 ### Backlog depth — a settled decision, not a fault
 
-> **Operator decision 2026-08-26** (bead `phaze-m1drf.5`). Question as put: *"The xenolab
+> **Operator decision 2026-08-26** (bead `phaze-m1drf.5`). Question as put, with host identifiers replaced by role descriptions: *"The disabled
 > burst backend has been commented out in `backends.toml` since 2026-07-14 (power incident;
 > nominal cap 7, last cap 2) and its Tailscale node has been offline 24 days. So the whole
-> archive drains through vox's cap=4 alone. Measured backlog: 8,079 `cloud_job` rows awaiting
+> archive drains through the burst measurement host's cap=4 alone. Measured backlog: 8,079 `cloud_job` rows awaiting
 > = 94-156 days at the observed 2.7183 audio-hours per wall-hour. How should this be
 > handled?"* Answer as given (the selected option LABEL, verbatim): **"Accept the drain
 > rate"**. Asked 2026-08-26T04:46:17Z, answered 2026-08-26T04:54:30Z. Durable record: repowise
@@ -144,7 +144,7 @@ a duration used as a **bound** is not, and the CI test enforces the distinction.
 ### The burst node unreachable — phaze cannot write this rule
 
 This is a legitimate thing to want and phaze **cannot** supply it from its own telemetry.
-"`vox` is unreachable" and "there is no analysis work right now" produce the **identical**
+"the burst measurement host is unreachable" and "there is no analysis work right now" produce the **identical**
 absence of series, so any rule phaze could write would either miss the outage or fire every
 idle night.
 

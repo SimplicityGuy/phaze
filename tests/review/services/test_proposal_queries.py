@@ -76,9 +76,7 @@ async def _create_proposal(
     return proposal
 
 
-# ---------------------------------------------------------------------------
 # Pagination dataclass
-# ---------------------------------------------------------------------------
 
 
 class TestPagination:
@@ -120,9 +118,7 @@ class TestPagination:
         assert p.end == 60
 
 
-# ---------------------------------------------------------------------------
 # ProposalStats
-# ---------------------------------------------------------------------------
 
 
 class TestProposalStats:
@@ -132,9 +128,7 @@ class TestProposalStats:
         assert stats.avg_confidence == 0.75
 
 
-# ---------------------------------------------------------------------------
 # get_proposal_stats
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -225,9 +219,7 @@ async def test_get_proposal_stats_counts_failed_separately(session: AsyncSession
     assert stats.total == 3
 
 
-# ---------------------------------------------------------------------------
 # get_proposals_page
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -398,9 +390,7 @@ async def test_get_proposals_page_clamps_to_page_one_when_the_corpus_is_empty(se
     assert pagination.end == 0
 
 
-# ---------------------------------------------------------------------------
 # update_proposal_status
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -427,14 +417,12 @@ async def test_update_proposal_status_not_found(session: AsyncSession) -> None:
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # update_proposal_status allowed_from guard (phaze-upnj)
 #
 # The guard is now folded INTO the UPDATE's WHERE clause (atomic conditional
 # write), not a Python check on a prior unlocked SELECT. These assert the
 # observable contract that closes the TOCTOU: a row outside the allowed set is
 # refused and left untouched, rather than silently overwritten.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -465,7 +453,6 @@ async def test_update_proposal_status_guard_not_found_returns_none(session: Asyn
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # update_proposal_status expected_updated_at guard (phaze-exivg)
 #
 # store_proposals is an idempotent upsert that overwrites a still-PENDING row's content in place
@@ -475,7 +462,6 @@ async def test_update_proposal_status_guard_not_found_returns_none(session: Asyn
 # expected_updated_at token closes that gap by folding INTO the same conditional UPDATE the
 # status guard already uses (phaze-upnj's one-statement pattern), mirroring how phaze-p35v closed
 # the confidence half of the bulk-approve predicate.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -546,9 +532,7 @@ async def test_update_proposal_status_no_token_preserves_legacy_behavior(session
     assert result.status == ProposalStatus.APPROVED
 
 
-# ---------------------------------------------------------------------------
 # bulk_update_status
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -585,9 +569,7 @@ async def test_bulk_update_status_empty_list(session: AsyncSession) -> None:
     assert count == 0
 
 
-# ---------------------------------------------------------------------------
 # bulk_update_status allowed_from guard (phaze-bg4w)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -611,9 +593,7 @@ async def test_bulk_update_status_allowed_from_skips_rejected(session: AsyncSess
     assert refetched.status == ProposalStatus.REJECTED
 
 
-# ---------------------------------------------------------------------------
 # count_pending_above_confidence (phaze-rw14)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -641,9 +621,7 @@ async def test_count_pending_above_confidence_zero_when_nothing_matches(session:
     assert await count_pending_above_confidence(session, threshold=0.9) == 0
 
 
-# ---------------------------------------------------------------------------
 # get_proposal_with_file
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -661,9 +639,7 @@ async def test_get_proposal_with_file_not_found(session: AsyncSession) -> None:
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # update_proposal_fields allowed_from guard (phaze-3tj4)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -699,7 +675,6 @@ async def test_update_proposal_fields_not_found_returns_none(session: AsyncSessi
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # bulk_approve_selected_above_confidence -- the batched per-row token predicate (phaze-r4am1)
 #
 # The per-proposal UPDATE loop collapsed into ONE `UPDATE ... FROM (VALUES ...)` round trip. The
@@ -707,7 +682,6 @@ async def test_update_proposal_fields_not_found_returns_none(session: AsyncSessi
 # concurrency token -- so the failure mode a batch invites is a naive `WHERE id = ANY(:ids)`, which
 # looks identical from the outside until a token goes stale. These pin that down from both sides:
 # a stale token must neither fail the batch nor ride along inside it.
-# ---------------------------------------------------------------------------
 
 
 async def _review_token_for(session: AsyncSession, proposal: RenameProposal) -> ProposalReviewToken:
@@ -809,7 +783,6 @@ async def test_bulk_approve_batch_keeps_the_token_predicate_inside_the_statement
     assert refused.status == ProposalStatus.PENDING
 
 
-# ---------------------------------------------------------------------------
 # bulk_approve_selected_above_confidence -- the set-based transition (phaze-1i0h6.4)
 #
 # The batched shape is only correct if BOTH halves hold: the Python classifier admits exactly the
@@ -825,7 +798,6 @@ async def test_bulk_approve_batch_keeps_the_token_predicate_inside_the_statement
 #     the only thing left standing. Deleting a WHERE clause from ``_bulk_approve_statement`` makes
 #     exactly one of these fail; that is what they are for. Do not "simplify" them into pre-seeded
 #     variants of the classifier tests, which would pass against a predicate-free UPDATE.
-# ---------------------------------------------------------------------------
 
 
 async def _live_status(session: AsyncSession, proposal_id: uuid.UUID) -> str:

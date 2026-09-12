@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # 🦾 arm64 essentia Agent Image
 
 `Dockerfile.agent-arm64` builds the production **linux/arm64 (aarch64)** essentia
@@ -246,7 +245,7 @@ flowchart LR
 | `scripts/parity/dump_analysis.py` | shared CLI — runs the real `analyze_file` over `reference.wav` + `/models` and emits the parity-projected JSON (run **inside** each image) |
 | `scripts/parity/compare_analysis.py` | compares golden vs actual — **BPM/key exact**, model scores within `--atol` epsilon; **non-zero exit on any break** |
 | `scripts/parity/reference.wav` | committed deterministic synthetic reference clip (the shared input both sides analyze) |
-| `just parity-dump IMAGE [MODELS] [OUT] [INTERP]` | the shared dump path both CI jobs delegate to; `INTERP` selects `uv run python` (x86) vs `python3` (arm64 `--system` 3.13) |
+| `just parity-dump IMAGE [MODELS] [OUT] [RUNTIME]` | the shared dump path both CI jobs delegate to; the closed `RUNTIME` enum selects `x86` (`uv run python`) or `arm64` (`python3` on the `--system` 3.13 image) |
 | `just parity-check [TAG]` | operator mirror of the CI parity-guard (provision models → dump arm64 actual → compare against golden) |
 | `just parity-golden-regen [TAG]` | regenerate `golden-x86.json` from the x86 api image (CI is authoritative) |
 

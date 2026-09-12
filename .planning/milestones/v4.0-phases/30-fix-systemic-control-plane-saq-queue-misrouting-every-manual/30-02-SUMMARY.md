@@ -79,7 +79,7 @@ completed: 2026-06-09
 None — plan executed exactly as written. The 4 listed files were the only files modified; the helper signatures from Plan 01 were used unchanged.
 
 ## Threat Register Outcomes
-- **T-30-01 (DoS / data-integrity, misrouted enqueues):** mitigated — 0 `app.state.queue` references remain; tests assert named-queue targeting (`phaze-agent-nox` / `controller`, never `default`).
+- **T-30-01 (DoS / data-integrity, misrouted enqueues):** mitigated — 0 `app.state.queue` references remain; tests assert named-queue targeting (`phaze-agent-host-store` / `controller`, never `default`).
 - **T-30-04 (DoS, silent 0-agent success):** mitigated — per-agent handlers return a visible empty-state and capture zero enqueues; covered by 5 dedicated 0-agent tests.
 - **T-30-SC (package installs):** accept — no new packages introduced.
 

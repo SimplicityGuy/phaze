@@ -159,9 +159,7 @@ def test_agent_settings_comma_splits_scan_roots(
     assert cfg.scan_roots == ["/a", "/b", "/c"], f"scan_roots mismatch: {cfg.scan_roots!r}"
 
 
-# ----------------------------------------------------------------------
 # Phase 27-01: Watcher / scan_chunk_size knobs on AgentSettings (D-03, D-11)
-# ----------------------------------------------------------------------
 
 
 def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,9 +224,7 @@ def test_agent_settings_watcher_env_var_aliases(
     assert getattr(cfg, field_name) == int(value), f"{field_name} != {value}"
 
 
-# ----------------------------------------------------------------------
 # Phase 27 UAT Gap 4: .env.example documents required + new env vars
-# ----------------------------------------------------------------------
 
 
 def _read_env_example() -> str:
@@ -296,9 +292,7 @@ def test_env_example_explains_host_vs_container() -> None:
     assert "docker compose" in text.lower(), ".env.example must reference docker compose context"
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: the analysis liveness deadlines' relationship to each other.
-# ---------------------------------------------------------------------------
 
 
 def test_outer_job_heartbeat_is_strictly_greater_than_the_inner_stall_threshold() -> None:

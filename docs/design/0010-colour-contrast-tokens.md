@@ -2,10 +2,11 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — decided 2026-08-18, not yet implemented |
+| **Status** | Accepted — implemented by `phaze-qvid8` on 2026-08-18 (`e561cf78`); the blocking browser contrast gate shipped with it |
 | **Date** | 2026-08-18 |
-| **Bead** | `phaze-qvid8` (implementation) · `phaze-coypu` (follow-up, blocked on it) |
+| **Bead** | `phaze-qvid8` (palette implementation, merged) · `phaze-coypu` (semantic-token follow-up, merged 2026-08-19 as `86305c65`) |
 | **Extends** | ADR-0009 §"Where each rule is enforced" — this closes the computed-contrast gap that ADR records |
+| **Supersession** | The contrast targets and repainted ramp still stand. `phaze-coypu` extended the implementation with intent-named, theme-resolved utilities; it superseded the raw colour-utility vocabulary, not this ADR's measured target or gate. |
 
 ## Decision
 

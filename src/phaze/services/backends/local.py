@@ -1,7 +1,4 @@
-"""``LocalBackend`` -- the on-prem lane that analyses on the fileserver agent and writes no ``cloud_job``.
-
-Extracted verbatim from the former single-module ``services/backends.py`` (phaze-dr9df).
-"""
+"""``LocalBackend`` -- the on-prem lane that analyses on the fileserver agent and writes no ``cloud_job``."""
 
 from __future__ import annotations
 
@@ -37,7 +34,7 @@ class LocalBackend(_BaseBackend):
     ``is_available`` is unconditionally True (local dispatch needs no remote cloud agent);
     ``in_flight_count`` is the REAL ledger-derived running count (phaze-xd8k, see below); ``reconcile``
     is a no-op (local completion is synchronous, no cron read). ``dispatch`` re-homes the ``process_file``
-    local enqueue path (Phase-69 scheduler uses it; unit-tested here, NOT wired into the single-path drain).
+    local enqueue path (backend scheduler uses it; unit-tested here, NOT wired into the single-path drain).
     """
 
     async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature; local needs no session probe
@@ -89,7 +86,7 @@ class LocalBackend(_BaseBackend):
         matching the cron no-op discipline -- never a raise.
 
         CR-01 (SCHED-01/03): AFTER the fileserver gate (so an absent agent leaves the file untouched) and
-        BEFORE the enqueue, the file is enqueued for local analysis in the caller-passed session. Phase 90
+        BEFORE the enqueue, the file is enqueued for local analysis in the caller-passed session. PR-A
         (D-09) removed the former LOCAL_ANALYZING files.state flip; the file leaves the cloud-staging
         candidate set via its ``process_file:<id>`` scheduling-ledger row (the derived inflight source), so a
         locally-spilled file is no longer a drain candidate and can NOT be double-dispatched to a cloud
@@ -104,7 +101,7 @@ class LocalBackend(_BaseBackend):
         except NoActiveAgentError:
             logger.info("LocalBackend.dispatch hold: no fileserver agent online", file_id=str(file.id))
             return False
-        # Phase 90 (D-09): the LOCAL_ANALYZING files.state dual-write was removed. The file leaves the
+        # D-09: the LOCAL_ANALYZING files.state dual-write was removed. The file leaves the
         # AWAITING_CLOUD candidate set via the process_file:<id> scheduling-ledger row that
         # enqueue_process_file's before_enqueue hook writes (the derived inflight_clause source PR-A reads).
         queue = task_router.queue_for(agent.id, lane_for_task("process_file"))

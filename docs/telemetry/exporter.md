@@ -63,7 +63,7 @@ binary wheel that would have to build for every platform in the essentia/TensorF
 and its channel keeps reconnection backoff across a shutdown call — the exact shape §4 has
 to bound for a pod that must exit.
 
-**Network reality for the burst node.** `vox` reaches the home server over **Tailscale**, so
+**Network reality for the burst node.** `host-compute` reaches the home server over **Tailscale**, so
 the endpoint given to an analyze Job is the collector's tailnet address. When the tailnet is
 down the export fails and the analysis is unaffected — see §4.
 
@@ -85,7 +85,7 @@ labels:
 > Prometheus `instance` label and it multiplies **every** series the service emits. The
 > analysis role emits ~1,700 series and runs as a k8s Job whose pod name is unique per
 > analyzed file, so a per-pod instance id would mint a fresh ~1,700-series block for each of
-> the archive's **11,428** files. Set it to the **HOST** (`host-prod`, `vox`) or leave it
+> the archive's **11,428** files. Set it to the stable **HOST ROLE** (`host-prod`, `host-compute`) or leave it
 > alone.
 
 Per-process identity is not thrown away — it is carried on **spans**, where it is stored

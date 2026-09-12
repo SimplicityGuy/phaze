@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Multi-Compute Agents — mixed arm64/x86 cost-tiered lanes
 
 This is the **"now add a 2nd+ compute agent, cost-tiered"** operator guide. Where
@@ -50,7 +49,7 @@ its **own** registered agent (`agent_ref`), pushes to its **own** host (`push_ho
 its **own** scratch dir — the two lanes never share a destination.
 
 ```toml
-# /etc/phaze/backends.toml on the control plane (lux).
+# /etc/phaze/backends.toml on the control plane (host-prod).
 # Two compute lanes at different cost tiers + the local safety net.
 
 # --- Tier 1: free arm64 OCI A1 — preferred, fills first ---
@@ -119,7 +118,7 @@ Give each agent its own:
 |-------------------|--------------------|---------------------|
 | `PHAZE_AGENT_QUEUE` | `phaze-agent-a1-arm64` | `phaze-agent-x86-spill` |
 | backend `agent_ref` (in `backends.toml`) | `a1-arm64` | `x86-spill` |
-| `PHAZE_CLOUD_SCRATCH_DIR` + scratch volume | `/var/lib/phaze/scratch` | `/var/lib/phaze/scratch` (separate host) |
+| `PHAZE_CLOUD_SCRATCH_DIR` + host-bound scratch directory | `/var/lib/phaze/scratch` | `/var/lib/phaze/scratch` (separate host) |
 | SSH push host (`push_host`) | `a1-arm64` | `x86-spill` |
 | compose project name (`-p`) | `-p phaze-a1` | `-p phaze-x86` |
 
@@ -144,16 +143,16 @@ must **not** pull the `-arm64` tag (there is no multi-arch manifest). Set `PHAZE
 > **Co-located agents collide on scratch + project name.** In this worked example the two agents
 > live on **different hosts** (a free A1 and a paid x86 box), so host isolation makes this a
 > non-issue. If you ever run two compute agents **on one host**, give each a distinct `-p <project>`
-> compose project name, a distinct `PHAZE_CLOUD_SCRATCH_DIR` / scratch volume, and a distinct
-> `PHAZE_AGENT_QUEUE` — otherwise the second agent shares or steals the first's scratch volume.
+> compose project name, a distinct `PHAZE_CLOUD_SCRATCH_DIR` / host-bound scratch directory, and a distinct
+> `PHAZE_AGENT_QUEUE` — otherwise the second agent shares or steals the first's scratch files.
 
 ### Secrets
 
 Never inline a token, SSH key, or `DATABASE_URL` in any example. Use the existing `*_FILE`
 pointers only (`PHAZE_QUEUE_URL_FILE`, `PHAZE_AGENT_TOKEN_FILE`, `PHAZE_PUSH_*_FILE`) read via
 `env_file: .env` — exactly as [cloud-burst.md](cloud-burst.md) documents. The compute agent reaches
-Postgres **only** via `PHAZE_QUEUE_URL` for the `saq_jobs` broker plus the HTTP API — never the app
-ORM (DIST-04).
+Postgres **only** via `PHAZE_QUEUE_URL` for the `saq_jobs` broker, Redis via `PHAZE_REDIS_URL` for
+cache/counters, and application state via the HTTP API — never the app ORM (DIST-04).
 
 ## Reading the lanes
 

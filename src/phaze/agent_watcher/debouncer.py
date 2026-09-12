@@ -1,12 +1,6 @@
-"""Asyncio-owned debouncer for the always-on watcher (Phase 27 D-01, D-02).
+"""Asyncio-owned debouncer for the always-on watcher.
 
-State machine:
-    touch(path)    -- insert or refresh ``_PendingEntry`` keyed by absolute path
-    sweep(...)     -- emit ready paths (settle_period elapsed) and evict
-                      stuck paths (older than max_pending)
-    pending_count() -- observability hook (debug logging / metrics)
-
-THREAD-SAFETY INVARIANT (RESEARCH Pitfall 2):
+Thread-safety invariant:
     The internal ``_pending`` dict is **asyncio-owned**. It MUST be mutated only
     from the asyncio event-loop thread. The watchdog Observer thread reaches
     ``touch`` exclusively via ``loop.call_soon_threadsafe(...)``, scheduled by
@@ -16,8 +10,7 @@ THREAD-SAFETY INVARIANT (RESEARCH Pitfall 2):
 
 Time source:
     ``time.monotonic()`` -- guaranteed non-decreasing, immune to wall-clock
-    adjustments (NTP, DST). Tests use the ``fake_clock`` fixture in
-    ``tests/discovery/agent_watcher/conftest.py`` to drive deterministic time.
+    adjustments such as NTP and DST.
 """
 
 from __future__ import annotations
@@ -51,12 +44,8 @@ class Debouncer:
     list-snapshot of the items view to permit safe in-loop deletion -- avoiding
     ``RuntimeError: dictionary changed size during iteration``.
 
-    Capacity (D-02): the pending dict has NO hard cap. Adversarial filesystem
-    activity (e.g., a rename loop) is contained by the stuck-file eviction in
-    ``sweep`` -- any entry that fails to settle within TWO consecutive
-    ``max_pending`` windows (phaze-kw36's one-shot grace extension, see
-    ``sweep``) is dropped from the dict WITHOUT being posted, yielding bounded
-    memory growth in the worst case (T-27-05 mitigation).
+    The dictionary has no count cap. A path that fails to settle across two
+    consecutive ``max_pending`` windows is evicted, bounding growth by time.
     """
 
     def __init__(self) -> None:
@@ -87,38 +76,11 @@ class Debouncer:
                         already used their one-shot cap grace extension (D-02
                         stuck-file cap; NEVER posted).
 
-        Settledness is checked BEFORE the stuck-file cap (phaze-w27e). A path
-        whose ``last_change_at`` is already >= ``settle_period`` in the past is
-        always ``ready``, even if its ``first_seen_at`` is also older than
-        ``max_pending`` -- it is quiet, not stuck. The cap's documented intent
-        (module docstring, class docstring) is to contain a path whose mtime
-        keeps changing (e.g. a rename loop) and therefore NEVER satisfies the
-        settle check; checking eviction first misfired on entries that had
-        simply settled but were not yet swept (e.g. a sweep loop stalled for
-        over an hour behind serial multi-GB hashing elsewhere in the pipeline
-        -- see ``_sweep_loop`` in ``agent_watcher/__main__.py``), silently
-        dropping ready files at the cap instead of posting them.
-
-        phaze-kw36: "not settled" does not imply "still changing forever" -- it
-        also matches an entry whose LAST write landed inside the final
-        ``settle_period`` before the ``max_pending`` crossing (e.g. a multi-hour
-        file copy that finishes seconds before the cap). Hard-dropping on the
-        very first cap crossing evicted that legitimately-completed write and,
-        since no further filesystem event ever re-inserts a completed path, it
-        was silently never posted. The cap branch now gives each entry ONE
-        grace extension: the first time it is found not-settled-but-capped,
-        ``first_seen_at`` is reset to ``now`` (via ``cap_grace_used``) instead
-        of evicting, buying it a full fresh ``max_pending`` window -- vastly
-        more than any realistic ``settle_period`` -- to either go quiet and
-        settle on a later sweep, or keep churning. A path that is genuinely
-        still changing (e.g. a rename loop) never satisfies the settle check
-        and is evicted the SECOND time it crosses the cap; a completed write
-        settles well within its grace window and is posted, never evicted.
-
-        Both buckets are removed from the pending dict before return. The
-        list-snapshot iteration pattern is the canonical safe-mutation idiom
-        -- Pitfall 2 mitigation against dict-size-changed RuntimeError on
-        Python 3.13.
+        Settledness is checked before age: a quiet path is ready even after an
+        unusually delayed sweep. The first age crossing grants one full grace
+        window because a long copy may have finished only seconds earlier; only
+        the second unsettled crossing evicts it. Both result buckets are removed
+        while iterating a list snapshot, so dictionary mutation is safe.
         """
         now = time.monotonic()
         ready: list[str] = []

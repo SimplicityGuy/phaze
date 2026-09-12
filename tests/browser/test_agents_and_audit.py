@@ -33,9 +33,6 @@ pytestmark = pytest.mark.browser
 _AGENTS_SECTION = "#agents-table-section"
 
 
-# --- Agents refresh --------------------------------------------------------------------------
-
-
 async def test_the_agents_table_refreshes_itself_and_picks_up_a_new_agent(page: Any, seed: Any) -> None:
     """The live-refresh path: a row written while the page is open arrives on the pane's own tick.
 
@@ -128,9 +125,6 @@ async def test_an_opened_agent_detail_stays_open_across_the_next_refresh(page: A
     )
     assert await page.get_attribute(trigger, "aria-expanded") == "true", "the refreshed trigger forgot that its row is expanded"
     assert await page.locator(_AGENTS_SECTION).count() == 1, "the refresh nested a second agents section while a detail was open"
-
-
-# --- Audit filters ---------------------------------------------------------------------------
 
 
 def _tab(status: str) -> str:

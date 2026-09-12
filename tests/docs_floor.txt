@@ -28,5 +28,10 @@ tests/shared/test_adr_0018_weights.py
 tests/shared/test_adr_citation_resolution.py
 tests/shared/test_adr_numbering.py
 tests/shared/test_change_gate.py
+tests/shared/test_developer_documentation.py
+tests/shared/test_documentation_integrity.py
 tests/shared/test_fast_gate.py
+tests/shared/test_historical_evidence_audit.py
+tests/shared/test_just_recipe_contract.py
+tests/shared/test_maintenance_inventory.py
 tests/shared/test_operator_attribution_citations.py

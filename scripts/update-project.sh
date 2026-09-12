@@ -80,7 +80,6 @@ EMOJI_GIT="🔀"
 # epic phaze-0jpe).
 SERVICE_DIRS=()
 
-# Print colored output with emojis
 print_info() {
   echo -e "\033[0;34m$EMOJI_INFO  [INFO]\033[0m $1"
 }
@@ -118,7 +117,6 @@ sed_inplace() {
   fi
 }
 
-# Parse command line arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
     --python)
@@ -152,13 +150,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Verify we're in the project root
 if [[ ! -f "pyproject.toml" ]] || [[ ! -f "uv.lock" ]]; then
   print_error "This script must be run from the project root directory"
   exit 1
 fi
 
-# Verify required tools
 for cmd in uv just pre-commit git curl jq; do
   if ! command -v "$cmd" &>/dev/null; then
     print_error "$cmd is required but not installed"
@@ -655,11 +651,11 @@ update_python_packages() {
   fi
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would run: just lock-upgrade && just sync"
+    print_info "[DRY RUN] Would run: just lock-upgrade && just setup"
     return
   fi
 
-  if just lock-upgrade && just sync; then
+  if just lock-upgrade && just setup; then
     print_success "Root packages updated"
     capture_package_changes
   else
@@ -677,7 +673,7 @@ update_python_packages() {
       echo "$outdated"
       echo ""
       print_info "Review versions above and update pyproject.toml constraints manually for major upgrades"
-      print_info "Then re-run: just lock-upgrade && just sync"
+      print_info "Then re-run: just lock-upgrade && just setup"
       print_info "Note: 'uv pip list --outdated' queries PyPI directly and ignores the"
       print_info "$EMOJI_VERIFY [tool.uv] exclude-newer cooldown — a release listed here that is newer"
       print_info "than the cooldown cutoff is held back by the window, not by a version cap."
@@ -881,7 +877,7 @@ PY
     while IFS= read -r line; do
       print_warning "${line#FLAG }"
     done < <(echo "$output" | grep -E "^FLAG ")
-    print_info "Raise the cap in pyproject.toml manually, then re-run: just lock-upgrade && just sync"
+    print_info "Raise the cap in pyproject.toml manually, then re-run: just lock-upgrade && just setup"
   else
     print_success "No capped dependencies have releases beyond their cap"
   fi
@@ -1060,7 +1056,6 @@ sweep_osv_scanner_ignores() {
 
   print_section "$EMOJI_VERIFY" "Sweeping osv-scanner Ignores"
 
-  # Extract vulnerability IDs
   local vuln_ids=()
   while IFS= read -r vid; do
     [[ -n "$vid" ]] && vuln_ids+=("$vid")

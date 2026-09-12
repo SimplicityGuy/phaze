@@ -1,198 +1,31 @@
-"""ffmpeg/ffprobe pre-analysis audio-track extraction (phaze-3ea41).
+"""Probe and, when needed, extract one audio stream before analysis (phaze-3ea41).
 
-D-09 DECISION RECORD -- pre-analysis audio extraction, not container-aware essentia
--------------------------------------------------------------------------------------
-Video containers (mkv, avi, mp4, ...) were already flowing into ``analyze_file`` unchanged
-(phaze-p0l9 widened the analyzable set to MUSIC + VIDEO), relying on essentia's ffmpeg-backed
-``MonoLoader``/``MetadataReader`` to demux *and* decode audio straight out of the container.
-That is opaque about WHICH stream gets picked when a container carries several (subtitles,
-commentary tracks, multiple camera angles' audio) and produces an essentia-internal error --
-not a clean, storable ``error_message`` -- when a container has no audio stream at all
-(concert B-roll, silent intro clips). This module makes stream selection and the no-audio
-case EXPLICIT and cheap, ahead of essentia ever running:
+``ffprobe`` is the authority on stream availability. No audio stream raises
+:class:`NoAudioTrackError`; other probe/extraction failures raise
+:class:`AudioExtractionError`, so callers can persist terminal failures without retrying a
+deterministically unusable file. Multiple streams select the default-flagged stream, falling
+back to the lowest index, and ``ffmpeg -c:a copy`` writes an ``.mka`` scratch file without
+decoding or re-encoding.
 
-    1. ``ffprobe`` lists the container's audio streams (never decodes PCM).
-    2. No audio streams -> :class:`NoAudioTrackError`; any OTHER ffprobe/ffmpeg failure
-       (corrupt container, missing binary, ...) -> :class:`AudioExtractionError`. BOTH are
-       clean typed failures the callers (``tasks/functions.py``, ``job_runner.py``) map
-       straight to a stored ``error_message`` and a TERMINAL outcome -- never a jam, and
-       never a blind retry of a deterministically-doomed file (T-43-08).
-    3. Multiple audio streams -> the stream ffprobe reports as the container's DEFAULT
-       (``disposition.default == 1``) is selected, falling back to the first (lowest-index)
-       stream when nothing is flagged default; every other track is logged at INFO so an
-       operator can tell a multi-angle recording picked the expected one without re-running
-       anything.
-    4. ``ffmpeg -c:a copy`` demuxes ONLY that stream to a scratch file. ``analyze_file``
-       then runs completely unchanged against the extracted audio path -- this module never
-       imports ``phaze.services.analysis`` or essentia.
+Operator decision, 2026-08-12, ``phaze-3ea41``: asked "which video containers should the
+analyze lane accept?", the operator selected "Probe-based, any container". This removes a
+video-extension whitelist; it does not authorize remuxing plain audio. Operator decision,
+2026-08-12, ``phaze-3ea41``: asked "where should audio extraction run?", the operator selected
+"Both lanes". Operator decision, 2026-08-12, ``phaze-3ea41``: asked which track to analyze when
+several exist, the operator selected "Default/first track"; logging the other streams was part
+of that option's description, not a separately authored answer. The recovered evidence and
+exact incident measurements are in
+``docs/design/0012-verification-fidelity-and-operator-attribution.md``.
 
-**OPERATOR DECISIONS OF RECORD (phaze-3ea41, 2026-08-12).** This block is the durable record
-for this module: three of its design choices are the OPERATOR's and the rest are the
-IMPLEMENTER's, and every other site in the tree that cites an operator decision for phaze-3ea41
-points HERE rather than restating the question. All three were put in a single question at
-2026-08-12T00:30:59Z and answered at 2026-08-12T00:31:36Z (Claude Code session 60b8bf47).
-Recovered from that primary record on 2026-08-20 by phaze-d2hgv -- which is why ADR-0012 section
-5, swept before the recovery, lists them as untraceable and why its section 7 R1 prescribes
-stripping them. Read this block, not that prescription.
+Plain audio is still probed but bypasses remuxing. Extracted intermediates remain compressed,
+so scratch use is O(concurrent extracted files), not O(archive size); D-07's chunk-bounded PCM
+contract remains in ``docs/design/0007-windowed-analysis.md``. Extraction runs before the
+analysis child's D-08 stall watchdog, so progress lines feed only the caller's outer heartbeat.
+Heartbeat callbacks are spawned rather than awaited inline, keeping the ffmpeg progress pipe
+drained even when a callback stalls. D-09 keeps the module lane-agnostic and database-free.
 
-  1. **Which VIDEO containers the analyze lane accepts.** Question as put: *"phaze-3ea41: which video
-     containers should the analyze lane accept?"* Answer, quoted: *"Probe-based, any
-     container"*, chosen over *"Common concert formats"* and *"mkv + avi only"*. **Scope limit,
-     and it is the whole of ADR-0012's Finding 1:** the question is about VIDEO containers, so
-     the answer licenses deleting the video-extension whitelist and making ``ffprobe`` the
-     authority on which containers are accepted. It does not license offering bare audio files
-     to extraction as well. That was the implementer's generalization -- see "Format scope"
-     below.
-  2. **Where extraction runs.** Question as put: *"phaze-3ea41: where should audio extraction
-     run?"* Answer, quoted: *"Both lanes"*. Carried by "Cloud lane vs local lane" below, and
-     that is the WHOLE of it. The dispatch that accompanied the question left the adjacent
-     disk-headroom question to the implementer in as many words -- *"Disk-headroom handling for
-     long sets remains yours to design"* -- and liveness during extraction was never put to the
-     operator at all. So "Disk headroom" and "Liveness during extraction" below are the
-     implementer's decisions and must not be re-stamped as the operator's.
-  3. **Which audio track gets analyzed.** Question as put: *"phaze-3ea41: when a container
-     carries multiple audio tracks, which one gets analyzed?"* What the operator AUTHORED is the
-     selection of the option LABELLED *"Default/first track"*. Beside that label stood a
-     DESCRIPTION, written by the dispatcher and not by the operator, reading *"Take the
-     container's default-flagged audio stream (falling back to the first), log the others'
-     existence in the analysis record."* The two are cited separately below because they do not
-     carry the same authority: default-then-first is what the operator selected BY NAME on
-     2026-08-12, whereas
-     logging the other streams is ACCOMPANYING CONTEXT that the operator accepted by selecting
-     that option -- it was never put as its own question and the operator never wrote the
-     sentence. Treat it as decided, and as the weaker of the two registers. Neither fixes the
-     logging MECHANISM -- that it is a structured INFO line keyed by ``file_id`` rather than a
-     row on the analysis record is the implementer's reading of "the analysis record", and is
-     open to challenge as such.
-
-**Format scope: probe-based container acceptance, no extension whitelist -- operator decision
-2026-08-12 (phaze-3ea41, record 1 above).** An earlier draft of this module gated extraction on a
-static ``VIDEO_FILE_TYPES`` set derived from ``EXTENSION_MAP``/``FileCategory.VIDEO``,
-extracting ONLY for a fixed list of recognized video extensions. ``ffprobe`` replaced that
-whitelist and is the sole authority on whether a given file has an audio stream at all, not a
-maintained extension list. This is why :func:`extract_audio_track` takes no file-type parameter
-and callers (``tasks/functions.py::process_file``, ``job_runner.py::run``) no longer branch on
-``payload.file_type``/``audio_ext`` before calling it.
-
-**NOT an operator decision: widening that from video containers to EVERY file.** The
-operator decision of 2026-08-12 covered video containers (phaze-3ea41, record 1). phaze-3ea41
-shipped ":func:`extract_audio_track` runs for EVERY file the callers hand it, regardless of
-extension" -- remuxing bare audio through ffmpeg into ``.mka`` as well -- and this docstring
-recorded the widening as the operator's. It was the IMPLEMENTER's: record 1 was asked and
-answered about video containers only, and the two propositions were fused. The distinction is
-not academic. The unconditional remux is what put a Matroska intermediate in front of the whole
-archive and stopped the pipeline dead for 11.5 hours; D-10 below is the narrowing that removed
-it, so the CODE no longer behaves this way. This paragraph exists so the widening cannot come
-back wearing an authority it never had. Two consequences of probe-based scope worth being
-explicit about:
-
-  * ``-c:a copy`` is a lossless stream copy (never a re-encode), so where a remux DOES happen
-    it produces bit-identical audio to what essentia would have decoded from the original --
-    "existing audio-file analysis is unchanged" is a claim about ANALYSIS OUTPUT.
-  * Discovery/scan (``services/pipeline.py``'s enqueue-time gate, ``tasks/functions.py``'s own
-    ``_ANALYZABLE_FILE_TYPES`` companion/unknown skip) KEEPS its broad, extension-based
-    classification -- that gate answers "should this file be enqueued for analysis at all",
-    a cheaper and necessarily coarser question than "does this specific file have an audio
-    stream", which only ``ffprobe`` can answer authoritatively. The two gates are
-    deliberately NOT unified: scan-time classification never opens the file; this module
-    always does.
-
-**D-10 NARROWING (phaze-l832u): every file is still PROBED, but a file that is already plain
-audio is no longer REMUXED.** phaze-3ea41's decision above was "extraction runs on every file";
-2026.8.3 shipped it alongside phaze-w55w1's exhaustive analysis and the pair stopped the
-pipeline dead for 11.5 hours -- the ``.mka`` intermediate is Matroska, and ``es.MetadataReader``
-returns duration 0 for Matroska ON THE DEPLOYED PLATFORM, so every file produced zero natural
-windows. (This was originally recorded as "MetadataReader is TagLib and TagLib cannot read
-Matroska". The CONCLUSION is right and measured; that MECHANISM was never verified and is not
-what the evidence shows -- see :func:`_probe_duration_sec`'s D-10 record in
-``services/analysis_probe.py`` for what was actually measured, phaze-gppj2.)
-
-The CORRECTNESS half of the fix is in ``services/analysis.py`` (D-10: probe duration
-with ffprobe, which reads the ``.mka`` correctly -- gating the remux alone would have left
-phaze-3ea41's actual feature, video containers, broken in exactly the same way, since a video's
-extracted ``.mka`` hits the identical gap). This module carries the COST half, and only that:
-:func:`_is_already_plain_audio` sends a single-audio-stream container straight to the analyzer
-instead of copying it through ffmpeg first, removing a full remux of every audio file in an
-11,428-file corpus from the hot path. ``ffprobe`` remains the sole authority -- the predicate
-reads the container's real stream list, never the suffix or ``file_type``, so the extension
-whitelist phaze-3ea41 removed stays removed. What changes for CALLERS is the return type: see
-:class:`AudioSource`, which exists because a skip branch cannot express itself as a bare
-"scratch path you own and delete" without deleting the operator's archive original.
-
-**Disk headroom (``-c:a copy``, never a decode-to-PCM/WAV intermediate) -- the
-IMPLEMENTER's decision, explicitly left to the developer (record 2 above).** A multi-hour
-concert set decoded to raw PCM would be the multi-GiB-per-hour blowup ``services/analysis.py``
-D-07's chunking exists to avoid for the ESSENTIA side; producing that same blowup one step
-earlier, as the extraction intermediate, would just move the disk-pressure problem rather than
-solve it. ``-c:a copy`` is a stream copy -- no re-encode, no PCM materialization -- so the
-scratch file stays close to the SIZE OF THE ORIGINAL COMPRESSED AUDIO TRACK (typically tens to
-a few hundred MB for a multi-hour set, and correspondingly tiny for an ordinary track),
-regardless of how long the source runs. The Matroska audio container (``.mka``) is the output
-wrapper because it accepts arbitrary audio codecs without a forced re-encode, so ``-c:a copy``
-is always legal regardless of the source codec. This bound applies to every file that is
-actually extracted -- any container that is not already plain audio (the D-10 narrowing above),
-not just recognized video extensions -- and such a scratch file is gone within the same job
-attempt, so the aggregate scratch footprint at any instant is O(concurrent in-flight files),
-never O(archive size). A file that skips extraction contributes nothing to it at all.
-
-**Cloud lane vs local lane (both extract locally, no audio-push plumbing) --
-operator decision, answered "Both lanes" 2026-08-12 (phaze-3ea41; question as put in
-record 2 above).** ``ffmpeg`` is already installed in both the app/agent images AND the burst-lane
-job-runner image (stack notes), and ``-c:a copy`` extraction is cheap (bounded
-by disk I/O, not audio decode). Piping the ORIGINAL file through the existing push/pull cloud
-pipeline unmodified and extracting on whichever side ends up holding the bytes -- rather than
-inventing a THIRD artifact (the extracted audio) that would need its own S3 upload/download
-leg through ``services/cloud_staging.py`` -- keeps this module a pure, lane-agnostic pre-step
-in front of the SAME ``run_analysis_subprocess`` call every lane already makes. Multi-hour
-concert videos are exactly what the cloud/burst lane exists to absorb, so this lane needs the
-capability at least as much as the local one. Both ``tasks/functions.py::process_file``
-(local/SAQ lane) and ``job_runner.py::run`` (cloud one-shot lane) call
-:func:`extract_audio_track` on the file THEY ALREADY HAVE locally
-(``original_path``/pushed ``scratch_path`` for the SAQ lane, the just-downloaded temp file for
-the cloud lane) before handing the (possibly-rewritten) read path to the shared analysis
-driver -- symmetric with how ``read_path = payload.scratch_path or payload.original_path``
-already makes the analyzer path-agnostic between the two sources.
-
-**Liveness during extraction (phaze-w55w1 discipline, extended) -- the IMPLEMENTER's
-decision; never put to the operator (record 2 above).** ``ffmpeg -progress
-pipe:1`` emits a periodic ``key=value`` progress block to stdout while it runs -- requested
-ONLY when a caller supplies ``heartbeat_cb`` (a no-op caller gets a plain ``DEVNULL`` stdout,
-no pipe, no pump); this module treats EVERY such block as a liveness tick and SPAWNS the
-caller's ``heartbeat_cb`` (fire-and-forget, never awaited inline by the reading pump) at most
-once per ``heartbeat_interval_sec`` (mirroring ``tasks/functions.py::_run_analysis_with_progress``'s
-own throttle-and-spawn shape). Callers wire this to whatever THEY use to stay alive under
-supervision -- the SAQ lane touches its own ``job.update()`` (the phaze-w55w1 outer net), so a
-long extraction on a multi-hour container cannot let the SAQ job heartbeat deadline
-(``analysis_job_heartbeat_sec``) expire before the analysis child itself even starts. Because
-extraction runs BEFORE ``run_analysis_subprocess`` spawns the analysis child, the INNER stall
-watchdog (``services/analysis_exec.py``) is not yet armed during extraction -- there is
-nothing there to starve -- so only the OUTER (job-level) liveness signal needs feeding here,
-and this module never invents a second inner watchdog for extraction itself. In practice
-``-c:a copy`` is a demux, not a decode, so extraction is typically far faster than the file's
-own duration and well inside ``analysis_stall_timeout_sec`` (1800s default) even for a
-12-hour set -- the heartbeat is defense-in-depth against slow/loaded storage, not the primary
-bound.
-
-**Fire-and-forget, not inline (review correction, phaze-3ea41).** An earlier draft AWAITED
-``heartbeat_cb`` directly inside the stdout-reading loop. A hung touch (e.g. a broker hiccup
-that makes ``job.update()`` hang rather than fail fast) then stopped the pump from draining
-``proc.stdout`` -- ffmpeg fills the OS pipe buffer writing further ``-progress`` lines nobody
-is reading, blocks on the full pipe, and the whole extraction wedges with NO watchdog able to
-save it (see the previous paragraph: the inner stall watchdog is not armed yet). Spawning the
-touch as a tracked background task (mirroring ``_run_analysis_with_progress``'s ``_spawn``:
-strong ref via a ``pending`` set + a done-callback that discards it) keeps the pump reading
-regardless of how slow any single touch is. Deliberately asymmetric on exit: the SUCCESS path
-does NOT drain ``pending`` before returning -- ffmpeg already finished, so blocking the return
-on a straggling touch would just move the same hang one line later and wedge extraction's OWN
-caller instead of merely the read loop, defeating the fix. The EXCEPTIONAL path DOES settle
-(cancel + await) ``pending`` -- mirroring ``analysis_exec.py``'s own ``_settle`` -- because
-there the caller is walking away entirely (a failure/cancellation), and an orphaned touch left
-running would keep firing against a job nobody is watching any more.
-
-This module MUST NOT import phaze.database, phaze.tasks.session, sqlalchemy, or essentia --
-both ``tasks/functions.py`` (agent worker) and ``job_runner.py`` (Postgres-free one-shot pod)
-import it, and both are subject to the same import-boundary guard as
-``tests/shared/core/test_task_split.py`` enforces for their other imports.
+This module must not import ``phaze.database``, ``phaze.tasks.session``, SQLAlchemy, or Essentia:
+both the agent worker and the Postgres-free one-shot job runner import it.
 """
 
 from __future__ import annotations

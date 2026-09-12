@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Database
 
 phaze persists all state in PostgreSQL (18+) accessed asynchronously via SQLAlchemy 2.0
@@ -16,7 +15,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `scan_batches`        | Scan operation progress and status (`ScanStatus`)                     |
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
 | `analysis`            | BPM, key, mood, style results (1:1 with `files`)                       |
-| `analysis_window`     | Per-window time-series analysis rows (1:many with `files`, `ON DELETE CASCADE`) |
+| `analysis_window`     | Per-window time series plus nullable energy/Camelot/mood projection columns (1:many with `files`, `ON DELETE CASCADE`) |
+| `set_profile`         | Whole-set projection (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
 | `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
@@ -51,27 +51,60 @@ guarded by `status = 'queued'`.
 ### Entity relationships
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
-deleted); `analysis_window` and `file_companions` cascade with their `files` row
+deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with their `files` row
 (`ON DELETE CASCADE`), as does `cloud_budget`; the remaining per-file sidecars (`metadata`,
 `analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
 tracklist chain use the default restricting FK (no cascade).
 
 ```mermaid
 erDiagram
+    %% evidence: src/phaze/models/agent.py; src/phaze/models/file.py
     agents ||--o{ files : "owns (RESTRICT)"
+    %% evidence: src/phaze/models/agent.py; src/phaze/models/scan_batch.py
     agents ||--o{ scan_batches : "owns (RESTRICT)"
-    files ||--|| metadata : "1:1"
-    files ||--|| analysis : "1:1"
+    %% evidence: src/phaze/models/file.py; src/phaze/models/metadata.py
+    files ||--o| metadata : "optional 1:1"
+    %% evidence: src/phaze/models/file.py; src/phaze/models/analysis.py
+    files ||--o| analysis : "optional 1:1"
+    %% evidence: src/phaze/models/analysis.py
     files ||--o{ analysis_window : "CASCADE"
+    %% evidence: src/phaze/models/file.py; src/phaze/models/set_profile.py
+    files ||--o| set_profile : "profile (CASCADE)"
+    %% evidence: src/phaze/models/file.py; src/phaze/models/proposal.py
     files ||--o{ proposals : "rename/move"
+    %% evidence: src/phaze/models/cloud_job.py
     files ||--o| cloud_job : "0..1 sidecar"
+    %% evidence: src/phaze/models/cloud_budget.py
     files ||--o| cloud_budget : "0..1 durable budget (CASCADE)"
+    %% evidence: src/phaze/models/file_companion.py
     files ||--o{ file_companions : "CASCADE"
+    %% evidence: src/phaze/models/tracklist.py
     tracklists ||--o{ tracklist_versions : "versions"
+    %% evidence: src/phaze/models/tracklist.py
     tracklist_versions ||--o{ tracklist_tracks : "tracks"
+    %% evidence: src/phaze/models/tracklist.py; src/phaze/models/discogs_link.py
     tracklist_tracks ||--o{ discogs_links : "match candidates"
+    %% evidence: src/phaze/models/tracklist.py; src/phaze/models/file.py
     tracklists }o--o| files : "optional link"
 ```
+
+The `evidence:` comments are repo-relative citations. The docs integrity guard resolves every
+cited path, and the focused Mermaid render verifies this ER syntax.
+
+### Set projection
+
+Migration `063` adds three nullable columns to `analysis_window`: `energy`, `camelot`, and
+`mood_scores`. It also creates `set_profile`, whose `file_id` is both primary key and foreign key
+to `files.id`. The FK uses `ON DELETE CASCADE`; `FileRecord.set_profile` is the matching optional,
+one-to-one ORM relationship with `delete-orphan` plus `passive_deletes=True` so the database owns
+the cascade.
+
+`set_profile` stores the whole-file `mean_vector`, 64-point energy `arc`, cached `glyph`, modal
+Camelot key, harmonic-discipline score, peak position, and `projection_version`. The live analysis
+callback derives it through `services/set_projection_writer.py`; the resumable
+`services/set_projection_backfill.py` derives the same values from stored `analysis_window`
+JSONB without re-running Essentia. Projection math and its fixed 11-value mood ordering live in
+`services/set_projection.py`.
 
 ### Agent attribution
 
@@ -178,10 +211,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-062)
+### Post-baseline chain (040-063)
 
-`alembic/versions/` holds **24** files: the `039` baseline plus a linear chain to the current
-head, **`062`**.
+`alembic/versions/` holds **25** files: the `039` baseline plus a linear chain to the current
+head, **`063`**.
 
 | Rev | Change |
 |-----|--------|
@@ -207,7 +240,8 @@ head, **`062`**.
 | `059` | Durable operator ARM/DISARM state for the tracklist drain |
 | `060` | Drop the obsolete `analysis.sampled` column after exhaustive-window analysis shipped |
 | `061` | Durable duplicate-review plans |
-| `062` | Persist reviewed-before tags and review source versions — **head** |
+| `062` | Persist reviewed-before tags and review source versions |
+| `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

@@ -33,9 +33,6 @@ from phaze.services.cloud_budget import CloudBudgetState
 NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=UTC)
 
 
-# --- construction helpers ----------------------------------------------------------------
-
-
 def _local(*, id: str = "local", rank: int = 99, cap: int = 10) -> LocalBackend:
     """A LocalBackend with a positive cap so the drain-supplied `remaining` can be > 0."""
     return LocalBackend(id=id, rank=rank, cap=cap)
@@ -69,9 +66,6 @@ def _cfg(*, spill_after: int = 900, max_attempts: int = 3) -> ControlSettings:
     )
 
 
-# --- SCHED-01: rank-first eligible dispatch ----------------------------------------------
-
-
 def test_rank_first_picks_lowest_rank_available() -> None:
     """Two available backends (rank 0 and rank 5, both with a free slot) -> the rank-0 one."""
     b0 = _compute(id="rank0", rank=0, cap=4)
@@ -88,9 +82,6 @@ def test_spill_when_lowest_rank_full_picks_next_rank() -> None:
     snap = _snapshot(_slot(b0, remaining=0), _slot(b5, remaining=4))
     picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is b5
-
-
-# --- MCOMP-04: N compute lanes filled lowest-rank-first, then spill to the next rank ------
 
 
 def test_mcomp04_compute_rank_cap_spread_prefers_free_arm64_then_spills_to_paid_x86() -> None:
@@ -115,9 +106,6 @@ def test_mcomp04_compute_rank_cap_spread_prefers_free_arm64_then_spills_to_paid_
     assert select_backend(NOW, 0, free_full, NOW, _cfg()) is paid_x86
 
 
-# --- D-03: offline -> local is immediate (NOT staleness-gated) ----------------------------
-
-
 def test_offline_all_non_local_spills_to_local_immediately() -> None:
     """Every non-local backend OFFLINE + local available + file just entered -> local, no wait."""
     compute = _compute(id="compute-a1", rank=10, cap=2)
@@ -129,9 +117,6 @@ def test_offline_all_non_local_spills_to_local_immediately() -> None:
     # updated_at == now -> zero wait; offline path must NOT be gated by the staleness threshold.
     picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is local
-
-
-# --- D-01: online-but-FULL -> local is staleness-gated ------------------------------------
 
 
 def test_stale_full_to_local_gated_before_threshold_holds() -> None:
@@ -158,9 +143,6 @@ def test_stale_full_to_local_after_threshold_spills() -> None:
     assert select_backend(entered, 0, snap, NOW, _cfg(spill_after=900)) is local
 
 
-# --- D-04: attempt-exclusion forces local -------------------------------------------------
-
-
 def test_attempt_exhausted_excludes_cloud_routes_local() -> None:
     """cloud_attempts >= cfg.cloud_submit_max_attempts -> only local eligible, even with cloud slots free."""
     compute = _compute(id="compute-a1", rank=10, cap=2)
@@ -181,9 +163,6 @@ def test_attempt_below_max_still_prefers_cloud() -> None:
     snap = _snapshot(_slot(compute, remaining=2), _slot(local, remaining=10))
     picked = select_backend(NOW, 2, snap, NOW, _cfg(max_attempts=3))
     assert picked is compute
-
-
-# --- D-06: stateless re-rank --------------------------------------------------------------
 
 
 def test_stateless_rerank_repicks_same_backend_after_prior_failure() -> None:
@@ -214,9 +193,6 @@ def test_stateless_signature_has_no_last_failed_parameter() -> None:
     assert [f for f in CloudBudgetState._fields if "backend" in f] == [], "the durable record stores counters + a clock, never a backend id"
 
 
-# --- SCHED-04: tie-break by utilization then stable id ------------------------------------
-
-
 def test_tiebreak_prefers_lower_utilization() -> None:
     """Two available equal-rank backends -> the one at lower in_flight/cap utilization wins."""
     busy = _compute(id="compute-busy", rank=10, cap=4)
@@ -241,9 +217,6 @@ def test_tiebreak_equal_utilization_breaks_on_stable_id() -> None:
     assert picked is a
 
 
-# --- hold: no eligible backend ------------------------------------------------------------
-
-
 def test_hold_returns_none_when_no_backend_eligible() -> None:
     """No available backend with a free slot -> None (clean hold), never raises."""
     compute = _compute(id="compute-a1", rank=10, cap=2)
@@ -261,7 +234,6 @@ def test_hold_when_empty_snapshot() -> None:
     assert select_backend(NOW, 0, {}, NOW, _cfg()) is None
 
 
-# --- phaze-9sqa: the labelled hold reason -------------------------------------------------
 #
 # A bare `None` says "held" but not "held WHY", and the three whys are operationally different: one is
 # self-clearing capacity pressure, one is a clock that has not run out yet, and one is permanent until an

@@ -251,9 +251,7 @@ def test_event_handler_preserves_undecodable_bytes_via_surrogateescape() -> None
     assert args[1].endswith("name.mp3")
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap fills (Codecov PR #59): observer.py:64, 68-70, 90
-# ---------------------------------------------------------------------------
 
 
 def test_event_handler_drops_empty_src_path() -> None:
@@ -309,10 +307,8 @@ def test_event_handler_ignores_directories_in_on_modified() -> None:
     assert touch.call_count == 0
 
 
-# ---------------------------------------------------------------------------
 # phaze-0z29: FileMovedEvent handling (rsync atomic temp->rename delivery,
 # in-tree renames/reorganization).
-# ---------------------------------------------------------------------------
 
 
 def test_event_handler_dispatches_dest_path_on_moved() -> None:

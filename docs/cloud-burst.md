@@ -1,12 +1,11 @@
-<!-- generated-by: gsd-doc-writer -->
 # Cloud Burst — OCI A1 compute agent (v5.0)
 
 **Cloud burst** offloads **long** audio sets to a free, always-on **OCI Ampere A1 (arm64)
-compute agent** so they no longer time out on the local file server. The control plane routes
+compute agent** so they no longer monopolize the local file server's analysis lane. The control plane routes
 any file whose duration is at/above `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` to the compute agent: the
 file server **pushes** it over **rsync-over-SSH across Tailscale** (Phase 50), the A1 worker
 analyzes it, and results reconcile by `file_id`. There is **NO object storage** — the transport
-is a direct rsync push to an ephemeral scratch volume that the agent deletes after analysis.
+is a direct rsync push to an ephemeral host-bound scratch directory that the agent deletes after analysis.
 
 This document is the single home for deploying and operating cloud burst: the compose
 walkthrough, the homelab provisioning runbook (OCI A1 + Tailscale ACL + Postgres broker role),
@@ -40,24 +39,24 @@ not duplicate that table.
 ```mermaid
 flowchart LR
   %% Tailscale tailnet (default-deny grants ACL)
-  subgraph nox["nox (file server)"]
-    noxc["docker-compose.agent.yml<br/>(worker+watcher+media)"]
+  subgraph store["host-store (file server)"]
+    storec["docker-compose.agent.yml<br/>(worker+watcher+media)"]
   end
   subgraph a1["OCI A1 (compute backend, rank R)"]
-    a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, scratch volume<br/>-arm64 image"]
+    a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, host-bound scratch<br/>-arm64 image"]
   end
-  subgraph lux["lux (application server)"]
-    luxapi["api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)"]
-    luxctl["controller worker (stage_cloud_window drain — resolve_backends → select_backend)"]
-    luxbroker["broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)"]
-    luxlocal["local backend (rank 99, safety net)"]
+  subgraph control["host-prod (application server)"]
+    controlapi["api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)"]
+    controlworker["controller worker (stage_cloud_window drain — resolve_backends → select_backend)"]
+    controlbroker["broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)"]
+    controllocal["local backend (rank 99, safety net)"]
   end
   kueue["...N other backends (kind=kueue clusters, own ranks)"]
-  noxc -->|"rsync over SSH (nox → A1:22)"| a1c
-  a1c -->|"HTTP API + saq_jobs + cache (A1 → lux:{5432,6379,8000})"| luxapi
-  luxctl -.->|"rank-first dispatch"| a1c
-  luxctl -.->|"spill to next rank when a lane is FULL"| kueue
-  luxctl -.->|"staleness-gated spill (all cloud FULL, waited) / immediate (all cloud OFFLINE)"| luxlocal
+  storec -->|"rsync over SSH (host-store → A1:22)"| a1c
+  a1c -->|"HTTP API + saq_jobs + cache (A1 → host-prod:{5432,6379,8000})"| controlapi
+  controlworker -.->|"rank-first dispatch"| a1c
+  controlworker -.->|"spill to next rank when a lane is FULL"| kueue
+  controlworker -.->|"staleness-gated spill (all cloud FULL, waited) / immediate (all cloud OFFLINE)"| controllocal
 ```
 
 _The compute (A1) backend is **one rank-tiered lane among N** the registry resolves simultaneously.
@@ -75,8 +74,8 @@ Key invariants:
   multi-arch manifest); the `-arm64` suffix is mandatory or the pull resolves the x86 image,
   which will not run on the Ampere A1 (see [arm64-agent-image.md](arm64-agent-image.md)).
 - **No `DATABASE_URL` (DIST-04).** The compute agent reaches Postgres **only** via
-  `PHAZE_QUEUE_URL` for the `saq_jobs` broker, plus the application server's HTTP API. It never
-  touches the app ORM tables.
+  `PHAZE_QUEUE_URL` for the `saq_jobs` broker, Redis via `PHAZE_REDIS_URL` for cache/counters,
+  and application state via the server's HTTP API. It never touches the app ORM tables.
 - **Host Tailscale.** `tailscaled` runs on the **A1 host** (not a sidecar); the compose uses
   `network_mode: host` to inherit the host's tailnet connectivity + MagicDNS.
 
@@ -153,31 +152,31 @@ sudo chmod 700 /scratch                # only the phaze uid needs it; the pushed
 ## Step 2 — Apply the Tailscale grants ACL (homelab)
 
 Apply this **default-deny** tailnet policy (Tailscale's current `grants` form). Once any policy
-exists, the A1 (tagged `tag:cloud-agent`) gets **only** what is granted: `A1 → lux` on
-`tcp:{5432,6379,8000}` and `nox → A1` on `tcp:22`, and nothing else. This is a reference copy;
+exists, the A1 (tagged `tag:cloud-agent`) gets **only** what is granted: `A1 → host-prod` on
+`tcp:{5432,6379,8000}` and `host-store → A1` on `tcp:22`, and nothing else. This is a reference copy;
 homelab is the source of the live policy.
 
 ```jsonc
 {
   // The A1 must come up tagged 'tag:cloud-agent' (tailscale up --advertise-tags=tag:cloud-agent,
-  // or auth-key with the tag). 'hosts' map lux/nox to their tailnet IPs (or use tags if preferred).
+  // or auth-key with the tag). 'hosts' map role names to their tailnet IPs (or use tags if preferred).
   "tagOwners": {
     "tag:cloud-agent": ["autogroup:admin"]
   },
   "hosts": {
-    "lux": "100.x.x.x",   // application server tailnet IP (Postgres queue + Redis cache + HTTP API)
-    "nox": "100.y.y.y"    // file server tailnet IP (push initiator)
+    "host-prod": "100.x.x.x",   // application server tailnet IP (Postgres queue + Redis cache + HTTP API)
+    "host-store": "100.y.y.y"   // file server tailnet IP (push initiator)
   },
   "grants": [
-    // A1 compute agent -> lux: saq_jobs broker (5432), Redis cache (6379), app HTTP API (8000).
+    // A1 compute agent -> host-prod: saq_jobs broker (5432), Redis cache (6379), app HTTP API (8000).
     {
       "src": ["tag:cloud-agent"],
-      "dst": ["lux"],
+      "dst": ["host-prod"],
       "ip": ["tcp:5432", "tcp:6379", "tcp:8000"]
     },
-    // nox file server -> A1: SSH for the rsync-over-SSH push (Phase 50 push_file target).
+    // host-store file server -> A1: SSH for the rsync-over-SSH push (Phase 50 push_file target).
     {
-      "src": ["nox"],
+      "src": ["host-store"],
       "dst": ["tag:cloud-agent"],
       "ip": ["tcp:22"]
     }
@@ -187,11 +186,11 @@ homelab is the source of the live policy.
 
 `tcp:5432` is required because the SAQ broker is **Postgres** (Phase 36); the A1 still has **no**
 `DATABASE_URL` (DIST-04 — it touches only `saq_jobs`/`saq_stats`/`saq_versions`). Use placeholders
-only here; the real lux/nox tailnet IPs live in the homelab repo, never in this spec.
+only here; the real role-address mappings live in the homelab repo, never in this spec.
 
-## Step 3 — Create the least-privilege `phaze_broker` Postgres role (homelab, lux)
+## Step 3 — Create the least-privilege `phaze_broker` Postgres role (homelab, host-prod)
 
-The compute agent connects to lux Postgres **only** as the SAQ broker. Create a dedicated
+The compute agent connects to host-prod Postgres **only** as the SAQ broker. Create a dedicated
 `phaze_broker` role with exactly the grants below and **zero** grants on any app-ORM table.
 
 > **Prerequisite (load-bearing).** The **full `phaze` role** (the control plane) must boot
@@ -208,7 +207,7 @@ The compute agent connects to lux Postgres **only** as the SAQ broker. Create a 
 > does **not** work; `CREATE ON SCHEMA public` is required regardless.
 
 ```sql
--- Run as the phaze owner / a superuser on the lux Postgres, in the phaze database.
+-- Run as the phaze owner / a superuser on the host-prod Postgres, in the phaze database.
 -- The control plane (full 'phaze' role) must boot FIRST so SAQ has already created
 -- saq_jobs/saq_stats/saq_versions and migrated them to the current version.
 
@@ -230,7 +229,7 @@ GRANT USAGE, SELECT ON SEQUENCE saq_jobs_lock_key_seq TO phaze_broker;
 
 **Postgres-version note.** On PostgreSQL **15+**, the `public` schema no longer grants `CREATE`
 to `PUBLIC` by default, so the explicit `GRANT … CREATE ON SCHEMA public` is genuinely required.
-On PG **<15** it is redundant. Confirm the lux Postgres major version in the runbook.
+On PG **<15** it is redundant. Confirm the host-prod Postgres major version in the runbook.
 
 **DIST-04 verification probe (run after creating the role).** The broker must be blind to all
 app-ORM data:
@@ -276,13 +275,13 @@ in [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-sett
 the `*_FILE` convention:
 
 ```bash
-PHAZE_QUEUE_URL=postgresql://phaze_broker:<pw>@lux:5432/phaze   # libpq form; broker role (NOT phaze)
+PHAZE_QUEUE_URL='postgresql://phaze_broker:<pw>@host-prod:5432/phaze'   # libpq form; broker role (NOT phaze)
                                                                # prefer PHAZE_QUEUE_URL_FILE
-PHAZE_REDIS_URL=redis://:<redis_pw>@lux:6379/0                  # production mode REQUIRES a password
-PHAZE_AGENT_API_URL=https://lux:8000                           # production mode REQUIRES https://
+PHAZE_REDIS_URL='redis://:<redis-pw>@host-prod:6379/0'                  # production mode REQUIRES a password
+PHAZE_AGENT_API_URL=https://host-prod:8000                              # production mode REQUIRES https://
 PHAZE_AGENT_ENV=production
 PHAZE_AGENT_KIND=compute                                       # relaxes the empty-scan-roots gate
-PHAZE_AGENT_QUEUE=phaze-agent-<compute_agent_id>               # raw env, read at SAQ import time
+PHAZE_AGENT_QUEUE='phaze-agent-<compute-agent-id>'              # raw env, read at SAQ import time
 PHAZE_AGENT_TOKEN_FILE=/run/secrets/agent_token                # _FILE secret
 PHAZE_CLOUD_SCRATCH_DIR=/scratch                               # MUST match this backend's scratch_dir in backends.toml (Step 6)
 # No WORKER_MAX_JOBS override needed: docker-compose.cloud-agent.yml already pins the analyze
@@ -296,24 +295,24 @@ PHAZE_IMAGE_TAG=2026.8.4                                      # pulls 2026.8.4-a
 
 > **Two production guards WILL fire if violated** (`AgentSettings`, with
 > `PHAZE_AGENT_ENV=production`): `agent_api_url` must be `https://` and `redis_url` must carry a
-> password. Both are non-negotiable on the compute agent — set `PHAZE_AGENT_API_URL=https://lux:8000`
+> password. Both are non-negotiable on the compute agent — set `PHAZE_AGENT_API_URL=https://host-prod:8000`
 > and a passworded `PHAZE_REDIS_URL`.
 
 **Scratch-dir match.** `PHAZE_CLOUD_SCRATCH_DIR` (A1) **must equal** this backend's `scratch_dir`
-field in `backends.toml` (Step 6, lux control plane — the flat control-side `compute_scratch_dir` /
+field in `backends.toml` (Step 6, host-prod control plane — the flat control-side `compute_scratch_dir` /
 `PHAZE_COMPUTE_SCRATCH_DIR` was removed in Phase 67/73 with no shim) and the host-bind mount
 path (Step 1) — a drift surfaces as a sha256/transfer failure, never silent corruption.
 
-## Step 6 — Declare the compute backend and restart the control plane (lux)
+## Step 6 — Declare the compute backend and restart the control plane (host-prod)
 
-On the **lux control plane**, add a `kind="compute"` entry to the
+On the **host-prod control plane**, add a `kind="compute"` entry to the
 [backend registry](configuration.md#backend-registry-backendstoml) TOML file
 (`PHAZE_BACKENDS_CONFIG_FILE`, default `/etc/phaze/backends.toml`) and restart so the registry is
 re-read. There is **no** `PHAZE_CLOUD_TARGET` env var — on/off is **derived** from whether the
 registry holds any non-local backend (`cloud_enabled`).
 
 ```toml
-# /etc/phaze/backends.toml on lux. An absent file = implicit all-local; adding this compute
+# /etc/phaze/backends.toml on host-prod. An absent file = implicit all-local; adding this compute
 # entry is what turns cloud burst ON (cloud_enabled becomes True).
 
 # The always-present local safety net (rank 99 = last-resort spill target).
@@ -370,7 +369,7 @@ Confirm the end-to-end path with this checklist:
       tables via `services/stage_status.py`.)
 - [ ] **The compute agent drains a `process_file`.** The A1 worker reads the pushed file from
       scratch, analyzes it, and posts results that reconcile by `file_id`.
-- [ ] **Scratch is cleaned.** The pushed file is deleted from the A1 scratch volume after
+- [ ] **Scratch is cleaned.** The pushed file is deleted from the A1 host-bound scratch directory after
       analysis (no scratch leak).
 - [ ] **Reverts cleanly (optional).** Engage the runtime **force-local** pill (no restart) — or
       drop the `kind="compute"` entry from `backends.toml` and restart — and confirm a new long file
@@ -392,7 +391,8 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
   only `kind="local"`), `cloud_enabled` derives **`False`**: every file — short and long — routes
   to the local file-server queue exactly as before cloud burst existed. The routing seam never
   writes an `awaiting` `cloud_job` row, the drain no-ops, and backfill-to-cloud is rejected. Long
-  files may then time out locally and fail cleanly (a FAILED analyze stage). A fresh deploy ships
+  files may then run for hours locally and occupy the analyze lane until they complete or stop making
+  progress (a stalled child fails cleanly). A fresh deploy ships
   **dormant** this way until the operator declares a non-local backend and completes Steps 1–6.
 - **`kind="compute"` = OCI A1 compute agent (this page).** Long files route to the A1 via
   rsync-over-SSH. Requires the backend's `agent_ref` and `scratch_dir` (the latter matched to the
@@ -412,7 +412,7 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
   across a restart (the sidecar is durable in Postgres); no mid-transfer/mid-analysis abort, no
   scratch reclaim. Files held at `status='awaiting'` from before a backend is added release once a
   cloud backend is declared.
-- **`nox`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
+- **`host-store`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
   the A1 is up (Phase 50 strict known_hosts), or the rsync-over-SSH push fails host verification.
 
 ### Tiered drain & spillover (Phase 69, SCHED-01)

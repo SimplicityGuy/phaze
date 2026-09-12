@@ -1,7 +1,7 @@
 # Phase 46 Context — Heartbeat Starvation Fix
 
-> Source: live incident triage on the nox homelab (v4.4.0), 2026-06-23.
-> Agent `nox` showed **DEAD** (last seen 39m ago) in the admin UI while the
+> Source: live incident triage on the host-store homelab (v4.4.0), 2026-06-23.
+> Agent `host-store` showed **DEAD** (last seen 39m ago) in the admin UI while the
 > `phaze-agent-worker` container was healthy and pegged at **~394% CPU / 18 GB RAM**,
 > actively analyzing. Operator could not start fingerprinting ("No files ready") because
 > the busy-but-DEAD agent also blocks new agent-task routing.
@@ -14,9 +14,9 @@ as long-running analysis jobs, so a saturated worker cannot report liveness.
 - `heartbeat_tick` is registered as a SAQ `CronJob` **in the agent worker**
   (`src/phaze/tasks/agent_worker.py:227`), alongside `process_file` in the same `functions`
   list and the same worker `concurrency = worker_max_jobs` (`agent_worker.py:229`, default
-  **8** — `config.py:222`, no env override on nox).
+  **8** — `config.py:222`, no env override on host-store).
 - The cron fires every 30s (`"* * * * * */30"`, `unique=True`) and **enqueues a
-  `heartbeat_tick` job** onto the `phaze-agent-nox` queue. That job must acquire one of the
+  `heartbeat_tick` job** onto the `phaze-agent-host-store` queue. That job must acquire one of the
   8 dispatch slots to run.
 - All 8 slots are occupied by `process_file` analysis jobs that each take **2–3.6 hours**
   (long concert sets). Confirmed from worker logs: jobs `99c67ef6` (2.8h), `bc284e41` (3.6h),

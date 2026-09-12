@@ -85,9 +85,7 @@ def _render_progress(
     return response.body.decode()
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — Empty state
-# ---------------------------------------------------------------------------
 
 
 def test_empty_dispatch_summary_renders_italic_paragraph() -> None:
@@ -99,9 +97,7 @@ def test_empty_dispatch_summary_renders_italic_paragraph() -> None:
     assert "<tr" not in html or "<tbody" not in html
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — Single-agent RUNNING
-# ---------------------------------------------------------------------------
 
 
 def test_single_agent_renders_one_row_with_running_pill() -> None:
@@ -127,9 +123,7 @@ def test_single_agent_renders_one_row_with_running_pill() -> None:
     assert "agent-aaa" in html
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — Multi-agent ordering
-# ---------------------------------------------------------------------------
 
 
 def test_multi_agent_renders_rows_in_dispatch_order() -> None:
@@ -150,9 +144,7 @@ def test_multi_agent_renders_rows_in_dispatch_order() -> None:
     assert 0 <= pos_alpha < pos_beta < pos_gamma
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — COMPLETE state
-# ---------------------------------------------------------------------------
 
 
 def test_all_complete_pill_green() -> None:
@@ -166,9 +158,7 @@ def test_all_complete_pill_green() -> None:
     assert "bg-green-100" in html
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — ERRORS state + Failed cell coloring
-# ---------------------------------------------------------------------------
 
 
 def test_completed_with_errors_pill_red_classes() -> None:
@@ -185,9 +175,7 @@ def test_completed_with_errors_pill_red_classes() -> None:
     assert "font-semibold" in html
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — PENDING state
-# ---------------------------------------------------------------------------
 
 
 def test_pending_pill_when_no_progress() -> None:
@@ -201,9 +189,7 @@ def test_pending_pill_when_no_progress() -> None:
     assert "bg-gray-100" in html
 
 
-# ---------------------------------------------------------------------------
 # agents_table.html — Caption / accessibility
-# ---------------------------------------------------------------------------
 
 
 def test_agents_table_has_screen_reader_caption() -> None:
@@ -217,9 +203,7 @@ def test_agents_table_has_screen_reader_caption() -> None:
     assert "sr-only" in html
 
 
-# ---------------------------------------------------------------------------
 # progress.html — Revoked-agents banner pluralization (1 vs N)
-# ---------------------------------------------------------------------------
 
 
 def test_revoked_agents_banner_pluralization_singular() -> None:
@@ -260,9 +244,7 @@ def test_no_revoked_banner_when_zero_skipped() -> None:
     assert "bg-orange-50" not in html
 
 
-# ---------------------------------------------------------------------------
 # progress.html — sse-close placement + sse event slot wiring (phaze-047gd)
-# ---------------------------------------------------------------------------
 
 
 def test_sse_close_lives_on_the_sse_connect_element() -> None:
@@ -359,9 +341,7 @@ def test_progress_empty_state_when_no_agents() -> None:
     assert "No approved proposals to execute." in html
 
 
-# ---------------------------------------------------------------------------
 # PR4: scan_progress_card.html RUNNING-branch live activity affordance
-# ---------------------------------------------------------------------------
 
 
 def _render_scan_progress_card(

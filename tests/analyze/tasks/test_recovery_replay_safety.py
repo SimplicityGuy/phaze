@@ -62,9 +62,7 @@ _PART_SIZE = 5242880  # 5 MiB (S3 minimum) so part_count is predictable from fil
 _AGENT = "fileserver-01"
 
 
-# ---------------------------------------------------------------------------
 # Harness: a real object store + a real backends.toml bucket registry
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -209,9 +207,7 @@ def _cloud_job_stmt(file_id: uuid.UUID):  # type: ignore[no-untyped-def]
     return select(CloudJob).where(CloudJob.file_id == file_id).execution_options(populate_existing=True)
 
 
-# ---------------------------------------------------------------------------
 # The regression test (acceptance 1 + 4 + 5)
-# ---------------------------------------------------------------------------
 
 
 async def test_recovery_regenerates_presigned_urls_instead_of_replaying_dead_ones(
@@ -289,9 +285,7 @@ async def test_regeneration_re_stages_the_cloud_job_on_a_fresh_multipart(
     assert after.staging_bucket == bucket.id
 
 
-# ---------------------------------------------------------------------------
 # The deliberate, VISIBLE skip (acceptance 3)
-# ---------------------------------------------------------------------------
 
 
 async def test_regeneration_without_an_online_fileserver_is_unreplayable_not_reenqueued(
@@ -329,9 +323,7 @@ async def test_regeneration_without_an_online_fileserver_is_unreplayable_not_ree
     assert kept[0].payload["part_urls"] == stale_urls
 
 
-# ---------------------------------------------------------------------------
 # The GENERAL guard: not pinned to s3_upload (acceptance 2)
-# ---------------------------------------------------------------------------
 
 
 async def test_recovery_refuses_any_payload_carrying_time_limited_material(

@@ -1,4 +1,4 @@
-"""RouteControl model - a single durable row holding the force-local routing override (Phase 71).
+"""RouteControl model - a single durable row holding the force-local routing override.
 
 A standalone one-row app table (NOT part of SAQ's auto-managed ``saq_jobs``) mirroring the
 :class:`~phaze.models.pipeline_stage_control.PipelineStageControl` control-table pattern. It carries
@@ -8,7 +8,7 @@ registry (``cloud_enabled=False``) with no redeploy -- the drain (``stage_cloud_
 clean no-op and the duration router routes new long files LOCAL instead of holding them in
 ``AWAITING_CLOUD``.
 
-The write SURFACE (thin endpoint + header pill) is Plan 04; this model + its degrade-safe reader
+The write surface is a thin endpoint plus header pill; this model and its degrade-safe reader
 (``phaze.services.route_control.get_route_control``) + the two routing gates are the behavior change.
 
 ``created_at`` / ``updated_at`` come from :class:`TimestampMixin` (``updated_at`` carries

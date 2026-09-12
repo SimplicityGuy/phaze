@@ -46,7 +46,7 @@ class FileUpsertChunk(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     files: list[FileUpsertRecord] = Field(min_length=1, max_length=_CHUNK_MAX)
-    batch_id: uuid.UUID | None = None  # Phase 27 D-09: present -> bind to batch; absent -> LIVE sentinel resolution
+    batch_id: uuid.UUID | None = None  # D-09: present -> bind to batch; absent -> LIVE sentinel resolution
 
 
 class FileUpsertResponse(BaseModel):

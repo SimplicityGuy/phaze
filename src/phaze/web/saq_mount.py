@@ -1,4 +1,4 @@
-"""Testable mount helper for the SAQ monitoring dashboard (Phase 33).
+"""Testable mount helper for the SAQ monitoring dashboard.
 
 This isolates the single ``saq_web`` call behind a pure function so the Wave 2
 lifespan body stays thin and the mount can be unit-tested over in-memory queue

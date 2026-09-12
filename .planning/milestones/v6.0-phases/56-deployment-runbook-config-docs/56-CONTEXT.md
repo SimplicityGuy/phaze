@@ -55,7 +55,7 @@ Out of scope (own phases / deferred):
   stays the authoritative spec, operator applies.
 - **D-02: Cluster setup is also delivered as a ready-to-paste homelab change-prompt.** Following
   v5.0 D-09/D-10: phaze ships the runbook/manifests as the source-of-truth **SPEC** AND emits a
-  ready-to-paste **homelab repo change-prompt** (deploy ordering via `datum@nox` / `datum@lux`,
+  ready-to-paste **homelab repo change-prompt** (deploy ordering via `operator@host-store` / `operator@host-prod`,
   where the manifests get applied, secret provisioning). Workspace boundary holds: **phaze = spec,
   homelab = live infra.** No live `kubectl`/cluster mutation authored in the phaze repo.
 

@@ -80,7 +80,7 @@ migration 013). If the target fileserver already owns a row at the same `origina
 legacy-owned row, the UPDATE produces a duplicate `(target, original_path)` and raises `IntegrityError`.
 
 This is not a hypothetical edge case. The `legacy-application-server` sentinel represents the pre-agent
-v3.0 world where files were scanned from `/data/music`. A real fileserver agent (e.g. `nox`) that later
+v3.0 world where files were scanned from `/data/music`. A real fileserver agent (e.g. `host-store`) that later
 re-scanned the same tree creates NEW `files` rows with identical `original_path` under its own
 `agent_id` — this is precisely what the Phase-013 composite UQ was designed to allow, and migration
 013's downgrade guard (D-16, `013:47-55`) exists specifically because "the same original_path now lives

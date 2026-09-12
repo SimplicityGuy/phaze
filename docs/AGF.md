@@ -46,7 +46,8 @@ preserving the resulting tree.
 
 When a hive uses GitHub PR landing, publish the bead branch and open the PR after submission. Once
 GitHub reports the PR merged, `bh work land <id>` verifies that external state and closes the bead.
-For local landing, only the merger runs `bh work merge <id>` after every required gate is resolved.
+Phaze currently uses local landing: only the merger runs `bh work merge <id>` after every required
+gate is resolved. Developers stop at submission and never approve or merge their own work.
 
 ## Review and integration
 
@@ -63,17 +64,18 @@ role guide rather than applying the leaf sequence mechanically.
 
 ## Test isolation
 
-Every concurrent worktree needs its own PostgreSQL databases and Redis logical database. Start the
-shared containers once, allocate a seat, and copy all three exports exactly as printed:
+Every concurrent worktree needs its own PostgreSQL databases and Redis logical database. Allocate
+a seat and copy all three exports exactly as printed; the recipe starts the shared containers when
+needed:
 
 ```bash
-just test-db
 just test-db-for <seat>
 ```
 
 Do not run two pytest processes against one seat. The session advisory lock refuses the second
 process, while separate seats can validate concurrently. Do not stop the shared test containers
-while another seat is active.
+while another seat is active. When the worktree is finished, run `just test-db-release <seat>`;
+never use `just test-db-down` as seat cleanup because it targets the shared containers.
 
 Isolation is not only about services. Any writable path two seats can open is a collision surface,
 and the scratchpad the harness advertises as "session-specific" is per-session, not per-seat —
@@ -83,6 +85,20 @@ and coverage lines, never from a wrapper's exit code or a task-completion status
 the measured incidents behind both rules.
 
 ## Boundaries
+
+Phaze's current validation mapping keeps the cost and authority boundaries distinct:
+
+| Boundary | Recipe |
+| --- | --- |
+| `bh work check` and `bh work submit` | `just check-fast` |
+| per-bead `merge` / `merge-main` configuration | `just check-fast` (molecule-bound merges are inert under relaxed validation) |
+| assembled molecule (`bh work finish`) | `just check-all` |
+| `postland` and conflict-resolution `union` | `just check` |
+
+`just check-fast` is change-selected and may escalate to the full suite; `just check` is the manual
+full coverage gate; `just check-all` adds all pre-commit hooks. See
+[Gates and isolation](gates-and-isolation.md) for measured evidence and edge cases, and the
+[public Just recipe contract](just-recipe-contract.md) for the complete recipe inventory.
 
 - File epics through the planner; do not hand-roll dependency graphs with raw `bd` commands.
 - Use `bh work` for bead reads and lifecycle mutations. `bv --robot-*` is read-only scheduling and

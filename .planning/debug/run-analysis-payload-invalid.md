@@ -11,16 +11,16 @@ updated: 2026-06-10
 ## Symptoms
 
 - **Expected behavior:** Clicking "Run analysis" enqueues one `process_file` SAQ job per DISCOVERED file; the agent worker analyzes each file (essentia) and writes an `analysis` row, advancing the file out of `discovered`.
-- **Actual behavior:** Nothing visibly happens. All 11,428 files remain in `discovered`; `analysis` table has 0 rows. Jobs are enqueued and DO reach the agent worker (queue `phaze-agent-nox`), but each immediately fails validation, retries 4×, and dead-letters.
-- **Error messages:** `pydantic_core.ValidationError: 4 validation errors for ProcessFilePayload` — `original_path`, `file_type`, `agent_id`, `models_path` all `Field required`; `input_value={'file_id': '...'}`. 73+ occurrences in `phaze-agent-worker@nox` logs (`src/phaze/tasks/functions.py:116` `ProcessFilePayload.model_validate(kwargs)`).
+- **Actual behavior:** Nothing visibly happens. All 11,428 files remain in `discovered`; `analysis` table has 0 rows. Jobs are enqueued and DO reach the agent worker (queue `phaze-agent-host-store`), but each immediately fails validation, retries 4×, and dead-letters.
+- **Error messages:** `pydantic_core.ValidationError: 4 validation errors for ProcessFilePayload` — `original_path`, `file_type`, `agent_id`, `models_path` all `Field required`; `input_value={'file_id': '...'}`. 73+ occurrences in `phaze-agent-worker@host-store` logs (`src/phaze/tasks/functions.py:116` `ProcessFilePayload.model_validate(kwargs)`).
 - **Timeline:** Surfaced after the v4.0.7 deploy (Phase 30 queue-misrouting fix, 10h ago). Latent bug — before Phase 30, `process_file` jobs were stranded on the consumer-less default queue and never reached a worker to fail validation. Now routing works, so the incomplete payload fails loudly.
 - **Reproduction:** POST `/api/v1/analyze` (the "Run analysis" button) with files in DISCOVERED state and an active agent. Observe ProcessFilePayload validation errors on the agent worker.
 
 ## Live environment evidence (gathered pre-session)
 
-- Both nox + lux on `ghcr.io/simplicityguy/phaze:v4.0.7` (deploy is correct; not a deploy regression).
+- Both host-store + host-prod on `ghcr.io/simplicityguy/phaze:v4.0.7` (deploy is correct; not a deploy regression).
 - DB `phaze.files`: 11,428 rows, all `state = discovered`. `phaze.analysis`: 0 rows.
-- Agent worker queue `phaze-agent-nox` is consuming jobs (Phase 30 routing fix confirmed working) — the failure is payload shape, not routing.
+- Agent worker queue `phaze-agent-host-store` is consuming jobs (Phase 30 routing fix confirmed working) — the failure is payload shape, not routing.
 
 ## Root Cause (pre-located, confirmed by debugger)
 
@@ -49,14 +49,14 @@ Working reference: `src/phaze/routers/agent_files.py:143` builds a full `Extract
 
 ## Evidence
 
-- timestamp 2026-06-10: agent-worker@nox logs show 73+ `ProcessFilePayload` validation errors, all on queue `phaze-agent-nox`, input_value contains only `file_id`.
+- timestamp 2026-06-10: agent-worker@host-store logs show 73+ `ProcessFilePayload` validation errors, all on queue `phaze-agent-host-store`, input_value contains only `file_id`.
 - timestamp 2026-06-10: DB confirms 11,428 files all `discovered`, 0 analysis rows.
 - timestamp 2026-06-10: both hosts on v4.0.7; queue routing (Phase 30) confirmed working.
 - timestamp 2026-06-10: codebase confirmation — `pipeline.py` `_enqueue_analysis_jobs` enqueued only `file_id`; both `trigger_analysis` (`/api/v1/analyze`) and `trigger_analysis_ui` (`/pipeline/analyze`) reduced full FileRecord objects to `[str(f.id)]` before enqueue. `ProcessFilePayload` is `extra="forbid"` with 5 required fields. `agent_files.py:143` is the working ExtractMetadataPayload reference.
 
 ## Eliminated
 
-- hypothesis: queue misrouting (Phase 30 / default-queue) — ELIMINATED: jobs reach `phaze-agent-nox` and fail at validation, not at routing.
+- hypothesis: queue misrouting (Phase 30 / default-queue) — ELIMINATED: jobs reach `phaze-agent-host-store` and fail at validation, not at routing.
 - hypothesis: deploy/version skew — ELIMINATED: both hosts confirmed on v4.0.7.
 - hypothesis: no active agent — ELIMINATED: agent worker is up and consuming jobs.
 

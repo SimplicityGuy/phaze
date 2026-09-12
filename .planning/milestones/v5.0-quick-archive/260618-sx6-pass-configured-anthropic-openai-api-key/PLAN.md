@@ -36,5 +36,5 @@ proposals had never succeeded in deployment.
 
 ## Scope
 
-phaze repo only. Bug B (nox panako/audfprint hostname alias) is a homelab deploy fix,
+phaze repo only. Bug B (host-store panako/audfprint hostname alias) is a homelab deploy fix,
 handled separately.

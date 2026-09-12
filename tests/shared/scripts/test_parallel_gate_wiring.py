@@ -25,7 +25,8 @@ def test_parallel_recipe_and_two_worker_cap_are_explicit() -> None:
 def test_local_validation_selects_parallel_and_external_environment_falls_back_loudly() -> None:
     validate = _recipe("test-validate")
 
-    assert 'if [ -n "${TEST_DATABASE_URL:-}" ]; then' in validate
+    assert 'if [ -n "${TEST_DATABASE_URL:-}${MIGRATIONS_TEST_DATABASE_URL:-}${PHAZE_REDIS_URL:-}" ]; then' in validate
+    assert "scripts/ensure-test-seat.sh" in validate
     assert "SERIAL FALLBACK" in validate
     assert "just test-cov" in validate
     assert "PHAZE_TEST_PARALLEL" in validate

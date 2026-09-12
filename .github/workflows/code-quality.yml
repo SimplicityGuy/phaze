@@ -58,7 +58,7 @@ jobs:
           hadolint: v2.15.1  # arkade uses this verbatim as the release tag -- the `v` is required
 
       - name: 📦 Install dependencies
-        run: just install
+        run: just setup
 
       - name: 🧪 Run pre-commit hooks
         run: just pre-commit

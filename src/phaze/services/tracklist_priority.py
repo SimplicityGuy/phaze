@@ -73,9 +73,7 @@ if TYPE_CHECKING:
     from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 
 
-# --------------------------------------------------------------------------------------------
 # Flag persistence
-# --------------------------------------------------------------------------------------------
 
 
 async def flag_file_for_lookup(session: AsyncSession, file_id: uuid.UUID, *, now: datetime | None = None) -> None:
@@ -164,9 +162,7 @@ async def load_flagged_file_ids(session: AsyncSession) -> set[uuid.UUID]:
     return set(result.scalars().all())
 
 
-# --------------------------------------------------------------------------------------------
 # Per-file review
-# --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

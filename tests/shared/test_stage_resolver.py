@@ -25,9 +25,7 @@ from phaze.enums.stage import Stage, Status, domain_completed, eligible, resolve
 _TS = "2026-07-08T00:00:00+00:00"  # any non-None sentinel timestamp scalar
 
 
-# --------------------------------------------------------------------------------------
 # analyze — completion discriminator + precedence (DERIV-02 / DERIV-03)
-# --------------------------------------------------------------------------------------
 def test_analyze_not_started() -> None:
     assert resolve_status(Stage.ANALYZE, {}) is Status.NOT_STARTED
 
@@ -57,9 +55,7 @@ def test_analyze_inflight_wins_over_done() -> None:
     assert got is Status.IN_FLIGHT
 
 
-# --------------------------------------------------------------------------------------
 # metadata — D-03: a failure-only row is FAILED, not DONE
-# --------------------------------------------------------------------------------------
 def test_metadata_not_started() -> None:
     assert resolve_status(Stage.METADATA, {"row_present": False}) is Status.NOT_STARTED
 
@@ -78,9 +74,7 @@ def test_metadata_inflight_precedence() -> None:
     assert got is Status.IN_FLIGHT
 
 
-# --------------------------------------------------------------------------------------
 # downstream presence stages -- every stage x 4 statuses coverage
-# --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("stage", [Stage.TRACKLIST, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY])
 def test_downstream_stage_four_way(stage: Stage) -> None:
     assert resolve_status(stage, {}) is Status.NOT_STARTED
@@ -95,9 +89,7 @@ def test_every_stage_reaches_in_flight(stage: Stage) -> None:
     assert resolve_status(stage, {"inflight": True}) is Status.IN_FLIGHT
 
 
-# --------------------------------------------------------------------------------------
 # D-08 — force-skip marker: SKIPPED bucket + precedence (in_flight ≻ done ≻ skipped ≻ failed)
-# --------------------------------------------------------------------------------------
 def test_skipped_wins_over_failed() -> None:
     # skipped ≻ failed: a terminally-failed analyze marked skipped reads SKIPPED (the writer is
     # additive and never clears failed_at, so the resolver ordering — not the writer — decides).
@@ -158,9 +150,7 @@ def test_skipped_clause_raises_on_downstream_stage(stage: Stage) -> None:
         skipped_clause(stage)
 
 
-# --------------------------------------------------------------------------------------
 # D-04 / T-78-01 agent import boundary — the resolver module is DB-free
-# --------------------------------------------------------------------------------------
 def test_stage_module_stays_db_free() -> None:
     """``phaze.enums.stage`` must not transitively import phaze.models / phaze.database / sqlalchemy.
 

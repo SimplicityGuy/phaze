@@ -145,10 +145,8 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
     assert follow_up["discovery"]["done"] == 0
 
 
-# ---------------------------------------------------------------------------
 # get_proposal_busy_count (phaze-8qheu) — the generate_proposals in-flight gate over the
 # saq_jobs table, degrade-safe. Mirrors get_match_busy_count's shape verbatim.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

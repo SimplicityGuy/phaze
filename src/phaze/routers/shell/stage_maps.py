@@ -117,34 +117,10 @@ STAGE_PARTIALS: dict[str, str] = {
 }
 
 
-# Rail-node id -> content partial for the Operations workspaces -- the sibling of
-# STAGE_PARTIALS above, deliberately kept
-# SEPARATE from it rather than folded in. STAGE_PARTIALS' own comment pins its key set AND
-# order VERBATIM to the 57-UI-SPEC "DAG Rail" table; Audit and Agents are not DAG pipeline
-# stages -- they sit below the rail's border-t divider, carry no pipeline count/badge and never
-# take the blue aria-[current=page] active tint reserved for pipeline nodes (rail.html) -- so
-# adding them to STAGE_PARTIALS would silently falsify a documented invariant instead of
-# widening it honestly. This map exists so that claim stays literally true.
-#
-# Same T-57-01 discipline as STAGE_PARTIALS: every VALUE is a STATIC string literal, `stage` is
-# matched against these keys and NEVER spliced into a template path, and the literals double as
-# dead-template-guard entry roots (test_dead_template_guard.py) exactly like STAGE_PARTIALS'.
-#
-# phaze-uvmcr.1 landed both keys with placeholder/thin content so that bead was independently
-# mergeable.
-#
-# phaze-uvmcr.3: "audit" now points at the REAL content -- execution/audit_log.html, converted
-# from a base.html-extending full page into a content-only partial. Its context is built by
-# build_audit_log_context (routers/execution.py, imported above), the SAME function GET /audit/'s
-# redirect target composes with -- shared so the shell-hosted pane and the (now-redirecting)
-# legacy route can never diverge on what a render of this content needs.
-#
-# phaze-uvmcr.4: "agents" now points at the REAL content -- admin/agents.html, converted from a
-# base.html-extending full page into a content-only partial (no more {% extends %}, no
-# document-level tags). Its context is built by build_agents_pane_context (routers/admin_agents.py,
-# imported above), the SAME function GET /admin/agents's redirect target composed with before this
-# bead -- shared so the shell-hosted pane and the (now-redirecting) legacy route can never diverge
-# on what a render of this content needs. See the ``elif stage == "agents"`` branch below.
+# Operations panes are deliberately separate from DAG stages: they have no pipeline count/badge or
+# stage-active styling. T-57-01 requires static template literals, which also serve as dead-template
+# entry roots. Audit and Agents reuse their redirect routes' context builders so the two render paths
+# cannot drift (phaze-uvmcr.3/phaze-uvmcr.4).
 UTILITY_PANES: dict[str, str] = {
     "operations": "shell/partials/operations.html",
     "audit": "execution/audit_log.html",
@@ -196,30 +172,9 @@ _EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
 # context rather than hardcoded in markup, so the router's HX-Target comparison and the element that
 # must match it cannot drift apart.
 #
-# ID UNIQUENESS (argued, not assumed -- this repo has FOUR duplicate-id OOB bugs on record: gzrd,
-# op6f, 7j50, and the one 5p43 avoided):
-#
-# 1. It is NOT "proposal-list-container". That id belongs to the legacy proposals view and is
-#    contractually defined by proposals/partials/proposal_list.html as holding exactly
-#    `proposal_table + bulk_actions + pagination`. This container holds a _file_table-based workspace
-#    list instead, so reusing the id would create a SECOND, DISAGREEING definition of the same id --
-#    precisely the phaze-7j50 defect. The names are deliberately more than one character apart
-#    ("propose-workspace-list" vs "proposal-list-container") so neither reads as a typo of the other.
-# 2. It cannot collide within the propose render: the id is emitted by exactly one element, in
-#    _propose_list_host, which is included exactly once by propose_workspace.html.
-# 3. It cannot collide ACROSS stages: STAGE_PARTIALS maps one partial per stage and only the propose
-#    workspace includes that host, and #stage-workspace holds exactly one stage at a time.
-# 4. It cannot be duplicated BY ITS OWN SWAPS -- the recurring shape of the four bugs above, where a
-#    fragment re-emits its own wrapper and nests a copy inside itself. The narrow-swap branch in
-#    _render_stage returns _propose_list.html (the container's INNER content), never the host div, and
-#    the two files are kept separate for exactly that reason. The full-workspace branch is the only
-#    producer of the wrapper. phaze-a6hm.11 added a THIRD producer -- the bulk approve/reject
-#    response (_propose_bulk_response.html) -- and it obeyed the same split, including
-#    _propose_list.html (inner content) and never the wrapper. phaze-7tiqp retired that producer
-#    with the rest of the Propose bulk chain: ADR-0008 made Changes Review the only surface that
-#    authorizes anything, so Propose has no bulk controls and PATCH /proposals/bulk no longer has a
-#    branch that renders into this container. Two producers again, both listed above.
-# 5. No OOB fragment targets it: this container is only ever an hx-target, and oob_counts stays False
-#    on every stage render (Pitfall 5), so the chrome poll's OOB seeds cannot land here.
+# phaze-a6hm.2/.9: this ID is emitted by one host and narrow swaps return only its inner content,
+# preventing the wrapper-nesting duplicate-ID class. Only the Propose stage owns it, and no OOB
+# fragment targets it. Changes Review remains the sole authorization surface under
+# ``docs/design/0008-changes-review-approval-boundary.md``.
 PROPOSE_LIST_CONTAINER_ID = "propose-workspace-list"
 CHANGES_LIST_CONTAINER_ID = "changes-workspace-list"

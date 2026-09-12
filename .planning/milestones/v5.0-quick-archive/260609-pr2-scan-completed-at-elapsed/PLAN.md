@@ -142,7 +142,7 @@ Session fixtures — tests/conftest.py: `async_engine` fixture; build a factory 
     Mark the test module/functions @pytest.mark.asyncio like the sibling migration tests.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr2-scan-elapsed && uv run alembic heads | grep -q 016 && uv run pytest tests/test_migrations/test_016_upgrade.py -x -q</automated>
+    <automated>cd <scratch>/phaze-pr2-scan-elapsed && uv run alembic heads | grep -q 016 && uv run pytest tests/test_migrations/test_016_upgrade.py -x -q</automated>
   </verify>
   <done>Migration 016 is the single head (down_revision 015); backfill SQL updates only terminal NULL rows; test proves COMPLETED/FAILED NULL rows get updated_at, RUNNING and already-stamped rows are untouched. (Migration test requires phaze_migrations_test DB on localhost:5432.)</done>
 </task>
@@ -183,7 +183,7 @@ Session fixtures — tests/conftest.py: `async_engine` fixture; build a factory 
         row and assert status == FAILED and completed_at is not None and error_message is set.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr2-scan-elapsed && uv run pytest tests/test_services/test_ingestion.py -x -q && uv run ruff check src/phaze/services/ingestion.py && uv run mypy src/phaze/services/ingestion.py</automated>
+    <automated>cd <scratch>/phaze-pr2-scan-elapsed && uv run pytest tests/test_services/test_ingestion.py -x -q && uv run ruff check src/phaze/services/ingestion.py && uv run mypy src/phaze/services/ingestion.py</automated>
   </verify>
   <done>run_scan stamps completed_at on both COMPLETED and FAILED transitions; success and failure tests prove it; ruff + mypy clean; audit documented in code that exactly two terminal writers exist.</done>
 </task>
@@ -226,7 +226,7 @@ Session fixtures — tests/conftest.py: `async_engine` fixture; build a factory 
     still pass under the new branching.
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze-pr2-scan-elapsed && uv run pytest tests/test_routers/test_pipeline_scans.py -x -q && uv run ruff check src/phaze/routers/pipeline_scans.py && uv run mypy src/phaze/routers/pipeline_scans.py</automated>
+    <automated>cd <scratch>/phaze-pr2-scan-elapsed && uv run pytest tests/test_routers/test_pipeline_scans.py -x -q && uv run ruff check src/phaze/routers/pipeline_scans.py && uv run mypy src/phaze/routers/pipeline_scans.py</automated>
   </verify>
   <done>elapsed_seconds freezes terminal+NULL rows at updated_at, keeps running rows ticking, keeps completed_at-set behavior; new + existing unit tests pass; ruff + mypy clean; docstring updated to supersede the 260608 note.</done>
 </task>
@@ -253,7 +253,7 @@ Session fixtures — tests/conftest.py: `async_engine` fixture; build a factory 
 Run the full quality gate from the worktree before committing each task:
 
 ```
-cd /Users/Robert/Code/public/phaze-pr2-scan-elapsed
+cd <scratch>/phaze-pr2-scan-elapsed
 uv run pytest tests/test_services/test_ingestion.py tests/test_routers/test_pipeline_scans.py tests/test_migrations/test_016_upgrade.py -q
 uv run pytest --cov=phaze --cov-report=term-missing -q   # confirm >=85% overall
 uv run ruff check . && uv run ruff format --check .

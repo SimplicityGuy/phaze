@@ -19,9 +19,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 async def _ensure_agent(session: AsyncSession, agent_id: str, scan_roots: list[str], *, revoked: bool = False) -> None:
@@ -98,9 +96,7 @@ def _mock_proposal(
     return p
 
 
-# ---------------------------------------------------------------------------
 # detect_collisions tests (require database)
-# ---------------------------------------------------------------------------
 
 
 class TestDetectCollisions:
@@ -197,9 +193,7 @@ class TestDetectCollisions:
         assert result == []
 
 
-# ---------------------------------------------------------------------------
 # get_collision_ids tests (require database)
-# ---------------------------------------------------------------------------
 
 
 class TestGetCollisionIds:
@@ -237,12 +231,10 @@ class TestGetCollisionIds:
         assert str(p2.id) in ids
 
 
-# ---------------------------------------------------------------------------
 # phaze-dqx8 — the collision key must identify a REAL destination: keyed per
 # agent + owning scan_root, with the in-place arm normalized into the same
 # root-relative namespace as proposed_path. Catches cross-form collisions;
 # never invents cross-agent / cross-scan-root phantoms.
-# ---------------------------------------------------------------------------
 
 
 class TestCollisionKeyNormalization:
@@ -488,13 +480,11 @@ class TestCollisionKeyNormalization:
         assert result[0][0] == "Coachella 2024/set.mp3"
 
 
-# ---------------------------------------------------------------------------
 # phaze-p46n4 — a collision confined to a REVOKED agent's own proposals must
 # not veto dispatch of every other (live) agent's work. The collision key is
 # agent-scoped (agent_id is the first component), so detect_collisions and
 # get_collision_ids must exclude revoked-agent proposals, matching the
 # population get_approved_proposals_grouped_by_agent actually dispatches.
-# ---------------------------------------------------------------------------
 
 
 class TestRevokedAgentCollisionExclusion:
@@ -601,9 +591,7 @@ class TestRevokedAgentCollisionExclusion:
         assert ids == set()
 
 
-# ---------------------------------------------------------------------------
 # build_tree tests (pure Python, no database)
-# ---------------------------------------------------------------------------
 
 
 class TestBuildTree:

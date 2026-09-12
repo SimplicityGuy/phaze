@@ -15,9 +15,7 @@ from __future__ import annotations
 from phaze.enums.stage import ELIGIBILITY_DAG, Stage, Status, eligible
 
 
-# --------------------------------------------------------------------------------------
 # ELIGIBILITY_DAG topology (ELIG-01 / ELIG-02)
-# --------------------------------------------------------------------------------------
 def test_dag_enrich_stages_have_no_upstream() -> None:
     assert ELIGIBILITY_DAG[Stage.METADATA] == ()
     assert ELIGIBILITY_DAG[Stage.ANALYZE] == ()
@@ -37,9 +35,7 @@ def test_dag_covers_every_stage() -> None:
     assert set(ELIGIBILITY_DAG) == set(Stage)
 
 
-# --------------------------------------------------------------------------------------
 # ELIG-01: a discovered file is eligible for every enrich stage in any order
-# --------------------------------------------------------------------------------------
 def test_discovered_file_eligible_for_all_enrich_stages() -> None:
     status_map: dict[Stage, Status] = {
         Stage.METADATA: Status.NOT_STARTED,
@@ -55,9 +51,7 @@ def test_empty_status_map_eligible_for_enrich() -> None:
     assert eligible({}, Stage.ANALYZE) is True
 
 
-# --------------------------------------------------------------------------------------
 # metadata: eligible iff status NOT in (DONE, IN_FLIGHT) — no failure carve-out
-# --------------------------------------------------------------------------------------
 def test_done_enrich_not_eligible() -> None:
     assert eligible({Stage.METADATA: Status.DONE}, Stage.METADATA) is False
 
@@ -70,9 +64,7 @@ def test_failed_metadata_still_eligible() -> None:
     assert eligible({Stage.METADATA: Status.FAILED}, Stage.METADATA) is True
 
 
-# --------------------------------------------------------------------------------------
 # ELIG-03: a FAILED analyze is terminal (the only enrich failure carve-out)
-# --------------------------------------------------------------------------------------
 def test_terminal_failed_analyze_not_eligible() -> None:
     # ELIG-03 — the 44.5K over-enqueue guard: a genuinely un-analyzable file must NEVER auto-loop.
     assert eligible({Stage.ANALYZE: Status.FAILED}, Stage.ANALYZE) is False
@@ -86,9 +78,7 @@ def test_inflight_analyze_not_eligible() -> None:
     assert eligible({Stage.ANALYZE: Status.IN_FLIGHT}, Stage.ANALYZE) is False
 
 
-# --------------------------------------------------------------------------------------
 # ELIG-02: downstream conjuncts
-# --------------------------------------------------------------------------------------
 def test_tracklist_is_upstream_independent() -> None:
     # phaze-0jpe: TRACKLIST used to be gated on done(FINGERPRINT). With an EMPTY conjunct list the
     # rule reduces to "not already DONE" -- which is the whole predicate, so this must hold with an
@@ -113,9 +103,7 @@ def test_review_requires_proposal_exists() -> None:
     assert eligible({Stage.PROPOSE: Status.DONE, Stage.REVIEW: Status.DONE}, Stage.REVIEW) is False
 
 
-# --------------------------------------------------------------------------------------
 # ELIG-02: apply gates on an APPROVED proposal, NOT bare done(review)
-# --------------------------------------------------------------------------------------
 def test_apply_requires_approved_proposal_not_bare_review_done() -> None:
     reviewed = {Stage.REVIEW: Status.DONE, Stage.APPLY: Status.NOT_STARTED}
     # A pending-only proposal (review done, but not approved) is NOT apply-eligible.

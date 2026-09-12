@@ -14,9 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
 # Mood / style derivation
-# ---------------------------------------------------------------------------
 
 _MOOD_SET_NAMES = frozenset(
     {

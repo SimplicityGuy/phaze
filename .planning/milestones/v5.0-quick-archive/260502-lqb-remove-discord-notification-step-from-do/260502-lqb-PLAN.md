@@ -89,7 +89,7 @@ Steps:
 Rationale for the surgical approach: this is a pure deletion — no rewiring, no replacement step, no job-level changes. The `notify` job referenced in the planning context does not exist (there's only one job, `build-and-push`).
   </action>
   <verify>
-    <automated>cd /Users/Robert/Code/public/phaze && grep -ic discord .github/workflows/docker-publish.yml | grep -qx 0 && grep -rci discord .github/ | grep -v ':0$' | grep -qv . && uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/docker-publish.yml'))" && echo "VERIFY OK"</automated>
+    <automated>cd <scratch>/phaze && grep -ic discord .github/workflows/docker-publish.yml | grep -qx 0 && grep -rci discord .github/ | grep -v ':0$' | grep -qv . && uv run python -c "import yaml; yaml.safe_load(open('.github/workflows/docker-publish.yml'))" && echo "VERIFY OK"</automated>
   </verify>
   <done>
 - `grep -ic discord .github/workflows/docker-publish.yml` returns `0`

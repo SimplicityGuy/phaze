@@ -140,7 +140,7 @@ services:
   worker:
     image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64   # D-08: -arm64 MANDATORY
     command: uv run saq phaze.tasks.agent_worker.settings
-    network_mode: host                       # D-05: reach lux via host tailscaled + MagicDNS
+    network_mode: host                       # D-05: reach host-prod via host tailscaled + MagicDNS
     env_file: .env
     environment:
       - PHAZE_ROLE=agent
@@ -271,9 +271,9 @@ Keep the emoji-prefixed-purpose convention and the `<!-- generated-by: gsd-doc-w
 - Line 1 marker `<!-- generated-by: gsd-executor -->` + `# Homelab Change Prompt — <title>`.
 - A blockquote `> **Paste the section below into the homelab repo agent.** ...` intro (`:4-8`).
 - `## Context for the homelab agent` summary of what changed (`:12-32`).
-- Numbered `## N. <change>` sections, each with a fenced config/SQL/HCL block and placeholders-only secrets (`:36-68`), ending with deploy ordering via `datum@nox` / `datum@lux`.
+- Numbered `## N. <change>` sections, each with a fenced config/SQL/HCL block and placeholders-only secrets (`:36-68`), ending with deploy ordering via `operator@host-store` / `operator@host-prod`.
 
-**Content (D-09/D-10):** OpenTofu OCI A1 module spec (2 OCPU/12 GB, Ubuntu 24.04 arm64, boot volume, SSH key, VCN/subnet/IGW/route-table/security-list), the Tailscale grants ACL JSON (A1→`lux:{5432,6379,8000}` + `nox→A1:22`), the `phaze_broker` PG role SQL, and the 7-step deploy ordering. Carry the SAME placeholders-only-never-real-secrets discipline (`36-...:66-68`).
+**Content (D-09/D-10):** OpenTofu OCI A1 module spec (2 OCPU/12 GB, Ubuntu 24.04 arm64, boot volume, SSH key, VCN/subnet/IGW/route-table/security-list), the Tailscale grants ACL JSON (A1→`host-prod:{5432,6379,8000}` + `host-store→A1:22`), the `phaze_broker` PG role SQL, and the 7-step deploy ordering. Carry the SAME placeholders-only-never-real-secrets discipline (`36-...:66-68`).
 
 ---
 

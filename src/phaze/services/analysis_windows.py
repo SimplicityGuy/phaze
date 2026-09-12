@@ -20,9 +20,7 @@ from statistics import mean, median
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
 # Windowed time-series: per-window value containers + aggregate reductions
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

@@ -116,7 +116,6 @@ PERFORMANCE_BIOMARKERS = frozenset(
     }
 )
 
-# --- epic phaze-bk9el's split (see the module docstring) -----------------------------------------
 # REACHABLE: a refactor of this file can remove the finding.
 REACHABLE_BIOMARKERS = frozenset(
     {

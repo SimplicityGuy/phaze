@@ -254,12 +254,10 @@ async def test_dashboard_attaches_activity_attrs(client: AsyncClient, session: A
     assert dashboard is not None  # handler import smoke-check
 
 
-# ---------------------------------------------------------------------------
 # Phase 34 Plan 02: queue-activity surfaced through both contexts + degrade-to-200
 # (VALIDATION 34-02-01). The client fixture skips the lifespan, so app.state queue
 # handles are ABSENT until a test wires fakes — proving get_queue_activity's
 # missing-attr degrade keeps BOTH the 5s poll and the full-page render alive.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -312,7 +310,6 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
     assert response.status_code == 200
 
 
-# ---------------------------------------------------------------------------
 # Phase 44 Plan 04 Task 1: the ANALYSIS_FAILED + STALLED counts on the dashboard
 #
 # The two counts ride the EXISTING 5s /pipeline/stats poll context (seeded into BOTH
@@ -327,7 +324,6 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
 # now lands in ANALYSIS_FAILED itself, reason="timeout"), then -- per operator follow-up --
 # replaced the amber tile with STALLED, a PRECISE count of that same reason="timeout" subset
 # instead of dropping the tile outright.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

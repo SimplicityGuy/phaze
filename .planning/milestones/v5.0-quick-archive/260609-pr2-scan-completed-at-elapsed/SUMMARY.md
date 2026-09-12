@@ -13,7 +13,7 @@ three NULL-`completed_at` sources for terminal `ScanBatch` rows: a data backfill
 | 2 — Stamp completed_at in run_scan (TDD) | `a3a3f04` | feat(quick-260609-01): stamp completed_at on run_scan terminal transitions |
 | 3 — Defensive elapsed_seconds (TDD) | `69d0cae` | feat(quick-260609-01): freeze elapsed_seconds at updated_at for terminal NULL rows |
 
-Branch: `fix/scan-completed-at-elapsed` (worktree `/Users/Robert/Code/public/phaze-pr2-scan-elapsed`). Not pushed; no PR opened (per instructions).
+Branch: `fix/scan-completed-at-elapsed` (worktree `<scratch>/phaze-pr2-scan-elapsed`). Not pushed; no PR opened (per instructions).
 
 ## What Changed
 

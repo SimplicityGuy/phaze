@@ -464,8 +464,8 @@ Create migration for `discogs_links` table with:
 - `src/phaze/routers/tracklists.py` -- inline expand, approve/reject, HTMX swap patterns
 - `src/phaze/models/tracklist.py` -- TracklistTrack model (match source)
 - `src/phaze/models/base.py` -- Base, TimestampMixin patterns
-- `/Users/Robert/Code/public/discogsography/api/routers/search.py` -- discogsography endpoint signature
-- `/Users/Robert/Code/public/discogsography/api/queries/search_queries.py` -- response shape, ALL_TYPES constant
+- `<scratch>/discogsography/api/routers/search.py` -- discogsography endpoint signature
+- `<scratch>/discogsography/api/queries/search_queries.py` -- response shape, ALL_TYPES constant
 
 ### Secondary (MEDIUM confidence)
 - rapidfuzz PyPI -- version 3.14.3 verified installed locally

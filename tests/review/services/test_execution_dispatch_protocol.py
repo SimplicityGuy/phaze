@@ -145,9 +145,7 @@ def _task_router(side_effect: Any = None) -> AsyncMock:
     return router
 
 
-# ---------------------------------------------------------------------------
 # Ordering invariants (mutation checks)
-# ---------------------------------------------------------------------------
 
 
 async def test_the_batch_hash_is_seeded_before_the_active_claim_is_taken() -> None:
@@ -365,9 +363,7 @@ async def test_the_session_is_committed_before_any_redis_or_broker_call(monkeypa
     assert order == ["commit", "redis", "enqueue"]
 
 
-# ---------------------------------------------------------------------------
 # Outcome shapes
-# ---------------------------------------------------------------------------
 
 
 async def test_an_empty_dispatch_terminates_without_touching_redis_or_the_broker() -> None:
@@ -467,9 +463,7 @@ async def test_a_clean_dispatch_seeds_the_full_wire_contract() -> None:
     ]
 
 
-# ---------------------------------------------------------------------------
 # Ambiguous enqueue reconciliation (phaze-19u7g)
-# ---------------------------------------------------------------------------
 
 
 async def test_an_ambiguous_enqueue_stays_inside_subjobs_expected() -> None:
@@ -599,9 +593,7 @@ async def test_a_crash_mid_await_settles_before_propagating_and_keeps_that_chunk
     mocks["release"].assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Response equivalence -- the outcome -> template-context mapping
-# ---------------------------------------------------------------------------
 
 
 def _fake_request() -> Any:

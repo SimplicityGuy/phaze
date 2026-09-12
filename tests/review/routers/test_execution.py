@@ -197,7 +197,6 @@ async def test_audit_log_filter(client: AsyncClient, session: AsyncSession) -> N
     assert "/music/failed.mp3" not in response.text
 
 
-# --- phaze-37i1.2: the two DIFFERENT empty states -------------------------------------
 #
 # Scope per the repo owner's decision after the phaze-37i1.1 diagnosis: the audit read path is
 # correct and stays untouched; what was wrong is that a never-run log and a filtered-to-nothing
@@ -690,7 +689,6 @@ async def test_audit_log_history_restore_of_a_sorted_url_also_redirects(client: 
     assert response.headers["location"] == "/s/audit?status=failed&sort=status&order=desc"
 
 
-# --- phaze-a6hm.8: execution agents table sort ---------------------------------------------------
 # EXEC_AGENTS_SORT composes column_sort.py's whitelist/resolve/aria-sort machinery; the generic
 # resolution mechanics (unwhitelisted -> default, equality-only matching, aria-sort tokens, url
 # encoding) are already covered exhaustively by tests/shared/routers/test_column_sort.py against the
@@ -921,7 +919,6 @@ async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClie
     assert 'aria-sort="descending"' in body
 
 
-# ---------------------------------------------------------------------------
 # phaze-0sv3: audit SHA256-Verified column renders for real ("move") rows.
 #
 # ``operation`` is only ever written as "move" (tasks/execution.py). The prior
@@ -929,7 +926,6 @@ async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClie
 # production row fell to the grey "Not applicable" dash and the verification
 # result the DB carries was never shown. These tests drive the real operation
 # value + terminal status and assert the check / cross now render.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -980,7 +976,6 @@ async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncCli
     assert 'aria-label="SHA256 verified"' not in response.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-37i1.3: per-entry audit-log detail (the expanded-row drill-down).
 #
 # "An audit log that lists events you cannot inspect has not solved the operator's problem"
@@ -989,7 +984,6 @@ async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncCli
 # not a generic label. All fixture paths/hashes below are synthetic (test-fixture data only,
 # per docs/spikes/phaze-37i1.1-audit-log-diagnosis.md -- the real execution_log table is
 # empty until the propose stage runs).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

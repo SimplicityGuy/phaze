@@ -101,9 +101,6 @@ def _segment(position: int, start: float, end: float | None, *, title: str | Non
     )
 
 
-# --- The payload --------------------------------------------------------------------------
-
-
 def test_every_window_carries_the_energy_camelot_and_top_mood_the_readout_names() -> None:
     """The readout's four facts come off the SAME window row the lanes were drawn from.
 
@@ -233,9 +230,6 @@ def test_the_payloads_key_runs_are_numbered_exactly_as_the_wheel_numbers_its_nod
 
 def test_a_file_with_no_key_data_yields_no_key_runs_and_no_ring_to_place() -> None:
     assert inspection_key_runs([_fine(0, 0.0, 30.0, bpm=128.0)]) == []
-
-
-# --- The script's own contract --------------------------------------------------------------
 
 
 def test_no_global_keydown_handler_is_attached_anywhere_in_the_shipped_script() -> None:

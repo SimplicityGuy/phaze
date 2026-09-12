@@ -1,4 +1,4 @@
-"""Pydantic schemas for the internal-API push callbacks (Phase 50).
+"""Pydantic schemas for the internal-API push callbacks.
 
 Three control-plane endpoints mirror the existing `put_analysis` /
 `report_analysis_failed` split (RESEARCH §Critical Finding 1 + Open-Q2):
@@ -6,7 +6,7 @@ Three control-plane endpoints mirror the existing `put_analysis` /
 - ``POST /api/internal/agent/push/{file_id}/pushed``   — the fileserver agent
   reports a successful rsync to the compute scratch dir; control terminalizes
   the file's ``cloud_job`` row (``submitted`` -> ``succeeded``) and enqueues
-  ``process_file`` (50-05). Phase 90 (D-09) removed the companion
+  ``process_file`` (50-05).  (D-09) removed the companion
   ``FileState.PUSHED`` dual-write -- the ``cloud_job`` sidecar is now the sole
   derived authority.
 - ``POST /api/internal/agent/push/{file_id}/mismatch`` — the compute agent
@@ -27,7 +27,7 @@ import-safe across the Postgres-free agent boundary.
 AUTH-01 discipline: ``file_id`` always travels on the URL path, never in the
 request body — the request models carry only optional diagnostic detail, never
 identity. Every REQUEST model declares ``extra="forbid"`` like the other agent
-payloads; RESPONSE models stay loose (``extra="ignore"``) per the Phase 25
+payloads; RESPONSE models stay loose (``extra="ignore"``) per the
 convention (``schemas/agent_identity.py``) — see ``PushedResponse`` /
 ``PushMismatchResponse`` below.
 """
@@ -42,7 +42,7 @@ class PushedResponse(BaseModel):
     """Echo confirming control recorded a successful push (file → PUSHED).
 
     RESPONSE-only model the agent TRUSTS from the control plane -- not an
-    attacker-facing request body -- so it stays loose (Phase 25 convention,
+    attacker-facing request body -- so it stays loose ( convention,
     ``schemas/agent_identity.py``: only REQUEST schemas are strict). A
     control-plane-first rolling deploy adding one additive field here must not
     hard-fail ``model_validate`` on an older agent AFTER the server has already
@@ -77,7 +77,7 @@ class PushMismatchResponse(BaseModel):
     control will re-drive the push (the PUSHING slot is kept, D-12).
 
     RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
-    (Phase 25 convention) for the same forward-compat reason as ``PushedResponse``.
+    ( convention) for the same forward-compat reason as ``PushedResponse``.
     """
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
@@ -109,7 +109,7 @@ class PushFailedResponse(BaseModel):
     a late/duplicate callback).
 
     RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
-    (Phase 25 convention) for the same forward-compat reason as ``PushedResponse``.
+    ( convention) for the same forward-compat reason as ``PushedResponse``.
     """
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)

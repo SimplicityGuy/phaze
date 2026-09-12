@@ -44,9 +44,7 @@ def _cleanup_committed_agents(async_engine: object) -> "object":  # type: ignore
     asyncio.run(_clean())
 
 
-# ---------------------------------------------------------------------------
 # Pure-function validation (no DB) — proves rejection happens before any write.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bad", ["Foo_Bar", "-x", "x-", "", "a b", "x--y", "UPPER"])
@@ -103,9 +101,7 @@ def test_derive_queue_name() -> None:
     assert derive_queue_name("x-y") == "phaze-agent-x-y"
 
 
-# ---------------------------------------------------------------------------
 # add_agent — DB-backed (integration via the shared `session` fixture).
-# ---------------------------------------------------------------------------
 
 
 async def test_add_agent_happy_path(session: AsyncSession) -> None:
@@ -141,9 +137,7 @@ async def test_add_agent_duplicate_id_raises(session: AsyncSession) -> None:
     await session.rollback()
 
 
-# ---------------------------------------------------------------------------
 # main() exit codes — drives the print/exit branches.
-# ---------------------------------------------------------------------------
 
 
 def test_main_invalid_id_exits_before_db(capsys: pytest.CaptureFixture[str]) -> None:

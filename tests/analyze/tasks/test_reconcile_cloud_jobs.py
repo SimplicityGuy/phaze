@@ -50,9 +50,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
-# --- Seam spies -------------------------------------------------------------------------------------
-
-
 class GetJobSpy:
     """Monkeypatch stand-in for ``kube_staging.get_job`` returning a per-call canned Job.
 
@@ -144,9 +141,6 @@ class S3DeleteSpy:
         self.calls.append(file_id)
         self.buckets.append(getattr(bucket, "id", None))
         self.events.append("s3_delete")
-
-
-# --- Fixtures / builders ----------------------------------------------------------------------------
 
 
 # The cron dispatches reconcile per-backend via ``resolve_backends`` (SCHED-05), so the settings stub
@@ -279,9 +273,6 @@ async def _read_file(session: AsyncSession, file_id: uuid.UUID) -> FileRecord:
     return (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
 
 
-# --- Pending: silent -------------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_pending_is_silent(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Healthy Pending waits indefinitely: no attempts change, no inadmissible flag, no delete/enqueue."""
@@ -298,9 +289,6 @@ async def test_pending_is_silent(session: AsyncSession, monkeypatch: pytest.Monk
     assert dj.calls == []
     assert s3.calls == []
     assert tally["pending"] == 1
-
-
-# --- Inadmissible: loud, holds, no cap -------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -337,9 +325,6 @@ async def test_inadmissible_never_consumes_cap(session: AsyncSession, monkeypatc
     assert cj.inadmissible is True
     assert cj.status == CloudJobStatus.SUBMITTED.value
     assert dj.calls == []  # the Job is never deleted on an Inadmissible hold
-
-
-# --- Admission -> success sequence -----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -385,9 +370,6 @@ async def test_admission_to_success_sequence(session: AsyncSession, monkeypatch:
     assert s3.calls == []  # success path never deletes S3 (the callback already did)
 
 
-# --- Eviction -> re-drive --------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_eviction_triggers_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """An Evicted Workload is a no-callback terminal: delete the Job, confirm gone, re-drive submit."""
@@ -414,9 +396,6 @@ async def test_eviction_triggers_redrive(session: AsyncSession, monkeypatch: pyt
     assert queue.captured[0][1] == {"file_id": str(fid)}
     assert queue.captured_policy[0]["key"] == submit_cloud_job_key(fid)
     assert tally["redriven"] == 1
-
-
-# --- Cap reached -> spill back to AWAITING_CLOUD (SCHED-03/D-04) ------------------------------------
 
 
 @pytest.mark.asyncio
@@ -492,7 +471,6 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(sess
     assert after <= cap  # cap-safe: never overshoots
 
 
-# --- D-04/D-12: at-cap spill re-stamps the sidecar 'awaiting', writes NO FileRecord.state -----------
 #
 # The Plan 80-03 regression (VALIDATION SC-1 mutation b): the at-cap terminal must route through the
 # single spill-mode writer (hold_awaiting_cloud) leaving cloud_job.status='awaiting' (NOT FAILED) and the
@@ -545,13 +523,9 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
     assert tally["failed"] == 1
 
 
-# --- Delete-after-record ordering (D-04) -----------------------------------------------------------
 # NOTE (92-04): ``test_delete_after_record_ordering`` moved to
 # ``tests/integration/test_reconcile_concurrency.py`` -- its ``DeleteJobSpy(engine=...)`` snapshot reads
 # COMMITTED state on a SEPARATE connection, which the hermetic create_savepoint fixture cannot provide.
-
-
-# --- S3 delete only on the no-callback terminal ----------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -569,9 +543,6 @@ async def test_s3_delete_only_on_no_callback_terminal(session: AsyncSession, mon
     _, _, _, s3_fail = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name_fail)))
     await reconcile_cloud_jobs(_make_ctx())
     assert s3_fail.calls == [fid_fail]
-
-
-# --- Reconcile never writes a result (KSUBMIT-03) --------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -620,9 +591,6 @@ def test_reconcile_module_calls_no_result_writer() -> None:
     assert not any(name.startswith("phaze.routers") for name in imported)
 
 
-# --- Re-drive race guard: confirm prior Job gone before re-submit ----------------------------------
-
-
 @pytest.mark.asyncio
 async def test_redrive_confirms_prior_job_gone_before_resubmit(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The under-cap re-drive re-submits ONLY after confirming the prior Job is gone (race guard, D-08).
@@ -669,9 +637,6 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(session: AsyncSes
     assert queue_b.captured == []  # NO re-submit enqueued on this tick
 
 
-# --- phaze-nq3c: the re-drive deferral path commits to release the per-row advisory lock -------------
-
-
 @pytest.mark.asyncio
 async def test_redrive_deferral_commits_to_release_the_per_row_advisory_lock(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """phaze-nq3c: the 'prior Job still terminating' deferral path MUST commit (release pg_advisory_xact_lock(5_000_504)).
@@ -705,9 +670,6 @@ async def test_redrive_deferral_commits_to_release_the_per_row_advisory_lock(ses
     cj = await _read_cloud_job(session, _fid)
     assert cj.attempts == 0  # deferral burns no attempt
     assert cj.status == CloudJobStatus.SUBMITTED.value  # row left untouched for a later tick
-
-
-# --- phaze-32wz: a pending re-submit is not a fresh no-callback terminal ----------------------------
 
 
 @pytest.mark.asyncio
@@ -803,9 +765,6 @@ async def test_pending_resubmit_resolves_once_fresh_job_is_observed(session: Asy
     assert tally["pending"] == 1
 
 
-# --- CR-01: the Inadmissible alert flag clears once the Workload recovers ---------------------------
-
-
 @pytest.mark.asyncio
 async def test_inadmissible_clears_on_admission(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Inadmissible tick sets the flag; a later Admitted tick clears it (CR-01 -- the alert must recover)."""
@@ -865,9 +824,6 @@ async def test_inadmissible_clears_on_success(session: AsyncSession, monkeypatch
     cj = await _read_cloud_job(session, fid)
     assert cj.status == CloudJobStatus.SUCCEEDED.value
     assert cj.inadmissible is False
-
-
-# --- WR-01: a vanished Job (404 / None) is a no-callback terminal, not a stuck transient -------------
 
 
 @pytest.mark.asyncio
@@ -1001,9 +957,6 @@ async def test_evicted_workload_with_completed_analysis_is_success_not_redrive(s
     assert tally.get("redriven", 0) == 0
 
 
-# --- Per-row guard: one bad row never aborts the tick ----------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_one_bad_row_does_not_abort_tick(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A row whose kube read raises is logged + skipped; the remaining rows still reconcile."""
@@ -1027,9 +980,6 @@ async def test_one_bad_row_does_not_abort_tick(session: AsyncSession, monkeypatc
     assert name_ok in dj.calls
     assert tally["reconciled"] == 2
     assert tally["succeeded"] == 1
-
-
-# --- D-04: cloud_phase admission progression co-write (orthogonal to inadmissible) -----------------
 
 
 @pytest.mark.asyncio
@@ -1101,7 +1051,6 @@ async def test_inadmissible_does_not_touch_cloud_phase(session: AsyncSession, mo
     assert cj.cloud_phase is None  # the fault flag is orthogonal: it never repurposes the admission phase
 
 
-# --- MKUE-04: clean-before-flip spillover cleanup (delete under the lock, before the AWAITING_CLOUD flip) ---
 #
 # The crux of Plan 05 (D-01/D-03, Pitfall 9): on the at-cap spill-back the old (backend_id,
 # staging_bucket) staged object must be deleted WHILE the per-row pg_advisory_xact_lock(5_000_504) is
@@ -1242,7 +1191,6 @@ async def test_clean_before_flip_delete_is_best_effort(session: AsyncSession, mo
     assert tally["failed"] == 1
 
 
-# --- phaze-202e: pod-state wedge detection (NO wall clock anywhere) --------------------------------
 #
 # phaze-1b39 answered "is this row wedged?" with ``activeDeadlineSeconds + slack`` on the row's
 # ``updated_at``. In production that killed every 2-6 h concert-set analyze at exactly 3h, burned
@@ -1584,7 +1532,6 @@ def test_reconcile_carries_no_wall_clock_deadline_reference() -> None:
     assert reconcile_mod.PENDING_SUBMIT_CONFIRMATION_SECONDS > 0
 
 
-# --- phaze-1b39 / phaze-202e: the permanent-phantom row (kueue_workload IS NULL) -------------------
 #
 # The ONE surviving age rule, and the only one that may survive: a row with no ``kueue_workload`` has
 # no Job and therefore no pod anywhere, so ``PENDING_SUBMIT_CONFIRMATION_SECONDS`` can only reclaim
@@ -1693,7 +1640,6 @@ async def test_stale_phantom_row_with_landed_callback_records_success(session: A
     assert tally["succeeded"] == 1
 
 
-# --- phaze-1q4g: the node-loss re-drive budget ------------------------------------------------------
 #
 # ``cloud_job.attempts`` is the file's ANALYZE retry budget. A re-drive taken because the pod died WITH
 # ITS NODE deliberately does not charge it -- an infrastructure fault is not the file's fault. What was
@@ -1928,7 +1874,6 @@ async def test_an_unreadable_pod_list_degrades_to_the_ordinary_budget(session: A
     assert tally["redriven"] == 1
 
 
-# --- phaze-mwbz3: the node-loss verdict must survive the still-terminating re-drive deferral --------
 #
 # ``_handle_no_callback_terminal``'s "prior Job still terminating" deferral (delete_job succeeds, the
 # confirm-gone read still sees the dying Job) commits with NO other row mutation to release the

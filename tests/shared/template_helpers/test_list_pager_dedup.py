@@ -69,9 +69,7 @@ def _render_pipeline_pager(*, page: int, page_size: int, total: int) -> str:
     return response.body.decode()
 
 
-# ---------------------------------------------------------------------------
 # pipeline/partials/_list_pager.html -- phaze-rv40
-# ---------------------------------------------------------------------------
 
 
 def test_pipeline_pager_last_page_button_renders_once_on_the_final_page() -> None:
