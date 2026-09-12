@@ -30,11 +30,8 @@ import pytest
 from phaze.models.proposal import ProposalStatus
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.services import review as new_review
-from tests.review.services.test_review_degrade import (
-    _CountingSession,
-    _seed_applied_tagwrite_file,
-    _seed_eligible_cue_tracklist,
-)
+from tests.review.capabilities.cue.test_degrade import _seed_eligible_cue_tracklist
+from tests.review.capabilities.tag_write.test_degrade import _CountingSession, _seed_applied_tagwrite_file
 
 
 if TYPE_CHECKING:

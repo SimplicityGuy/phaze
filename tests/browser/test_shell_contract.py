@@ -273,7 +273,7 @@ async def test_execute_always_states_the_scope_it_will_not_dispatch(page: Any) -
       product's final safety boundary, which is the worst place to hold a vacuous assertion.
 
     The invariant it claimed is real and IS properly guarded, one layer down and with the seeded
-    state this suite lacks: ``tests/shared/core/test_review_apply_workspaces.py``'s
+    state this suite lacks: ``tests/review/capabilities/changes/test_workspace.py``'s
     ``test_apply_workspace_hosts_the_execute_trigger`` seeds an approved proposal so ``can_execute``
     is True, then asserts ``hx-confirm`` is absent while ``#apply-confirm`` / ``<dialog>`` /
     ``showModal()`` are present. Nothing was lost by deleting the browser copy.

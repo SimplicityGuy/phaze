@@ -32,6 +32,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Maintenance Audit — 2026-09-10](maintenance-audit-2026-09-10.md)** | ✅ Final inventory, dispositions, limitations, and validation evidence for the maintenance sprint |
 | **[Structural Maintenance Rebaseline — 2026-09-11](structural-maintenance-rebaseline-2026-09-11.md)** | 🧭 Post-maintenance boundaries, compatibility inventories, invariants, and GO dispositions for the structural follow-on |
 | **[Test Bucket Mapping](../tests/BUCKETS.md)** | 🪣 Historical reorganization baseline plus the live CI bucket and shard boundaries |
+| **[Review and Proposal Capability Tests](../tests/review/capabilities/README.md)** | 🧩 Capability ownership and preserved scenario mapping for review and proposal tests |
 | **[Watcher Developer Guide](../src/phaze/agent_watcher/README.md)** | 👁️ Watcher flow, bootstrap, configuration, import boundary, and operational behavior |
 
 ## 📐 Reference

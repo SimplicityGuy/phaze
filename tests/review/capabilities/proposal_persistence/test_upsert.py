@@ -1,4 +1,4 @@
-"""Integration tests for store_proposals idempotency (Phase 35, D-04).
+"""Proposal-persistence integration tests for idempotent upserts (Phase 35, D-04).
 
 Exercises the real partial-index upsert against a live Postgres ``session``
 fixture (which builds the schema from model metadata, so the

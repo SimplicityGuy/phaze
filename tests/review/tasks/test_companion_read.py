@@ -1,6 +1,6 @@
 """phaze-6bkk: the AGENT-side companion read -- containment, bounded read, off-loop I/O.
 
-These cases moved here from ``tests/review/services/test_proposal.py::TestLoadCompanionContents``
+These cases complement ``tests/review/capabilities/proposal_context/test_service.py::TestLoadCompanionContents``
 along with the code. The containment guard (phaze-eycl) and the bounded read (phaze-cycw) are
 unchanged in substance; what changed is WHERE they run. The controller worker is fileless under
 DIST-01, so ``Path.resolve()`` there normalizes lexically against a filesystem that does not hold

@@ -1,4 +1,4 @@
-"""Filter tabs, search and pagination in the v7 Propose workspace (phaze-a6hm.2 / phaze-a6hm.9).
+"""Changes-review filter, search, and pagination contracts (phaze-a6hm.2 / phaze-a6hm.9).
 
 The v7 shell cutover replaced the proposals table with ``pipeline/partials/propose_workspace.html``
 and dropped status filtering, search, sorting, pagination and bulk approve/reject in the process.

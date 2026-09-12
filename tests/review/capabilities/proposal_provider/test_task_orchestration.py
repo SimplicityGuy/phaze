@@ -1,4 +1,4 @@
-"""Tests for the proposal SAQ task function."""
+"""Provider-orchestration tests for the proposal SAQ task function."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""End-to-end coverage of the gated date fallback inside ``generate_proposals`` (phaze-5fta.4).
+"""Proposal-context coverage of the gated date fallback inside ``generate_proposals`` (phaze-5fta.4).
 
 ``tests/review/services/test_date_convention.py`` covers the resolution rule and its gates. What is
 asserted HERE is the wiring: that the flag really does reach the proposal path, that the provenance

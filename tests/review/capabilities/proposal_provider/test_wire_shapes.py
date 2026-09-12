@@ -1,4 +1,4 @@
-"""Seam E6 (phaze-02v1s): the LLM -> ``BatchProposalResponse`` seam, driven from PROVIDER WIRE BYTES.
+"""Provider seam E6: the LLM -> ``BatchProposalResponse`` path driven from wire bytes.
 
 WHY THIS FILE EXISTS
 --------------------
@@ -884,7 +884,7 @@ def _litellm_requirement(dependencies: list[str]) -> Requirement:
 
 
 def _project_dependencies() -> list[str]:
-    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    pyproject = next(parent / "pyproject.toml" for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
     deps: list[str] = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
     return deps
 
