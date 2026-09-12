@@ -1,27 +1,4 @@
-"""Per-enrich-stage orphaned/stuck (recovery-candidate) count -- UI-05 / D-05 (Phase 87, 87-08).
-
-``services.pipeline.get_stage_orphan_counts`` returns ``{metadata, analyze}`` where each
-value is the number of ``scheduling_ledger`` rows for that stage's function that are NEITHER live (a
-queued/active ``saq_jobs`` key) NOR domain-completed NOR owned by an in-flight ``cloud_job`` -- EXACTLY
-the set :func:`phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for that stage. This is the
-badge-recovery no-drift contract (T-87-31 / OQ-2): the helper reuses recovery's OWN classification
-predicate, so the two agree by construction.
-
-Load-bearing cells:
-
-* **orphan == recovery-candidate** -- a scheduled-then-lost file (ledger row, no output, no live key)
-  counts as one orphan for its stage; the count matches the inline recovery-candidate derivation over
-  the SAME session (parity, no drift).
-* **exclusions mirror recovery** -- a domain-completed file (done output), a force-SKIPPED stage
-  (behavior 5), a live-keyed row, and an in-flight-cloud-owned analyze file each drop OUT of the count,
-  exactly as recovery excludes them.
-* **degrade-safe** -- a forced error inside the derivation returns all-zeros and leaves the session
-  usable (SAVEPOINT rollback, never a poll 500 -- T-87-28).
-
-Real-PG ``db_session`` fixture + ``*_test`` guard + seed helpers mirror
-``tests/integration/test_stage_progress_buckets.py``. Run with real PG via
-``just test-bucket integration`` on port 5433 (export ``TEST_DATABASE_URL``).
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -52,7 +29,6 @@ from phaze.tasks.reenqueue import (
     _natural_id,
     is_domain_completed,
 )
-from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -63,21 +39,8 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-
-# DSN derivation + destructive-DB guard, identical to test_stage_progress_buckets.py.
-# DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
-_, SA_DSN = integration_dsns()
-_TARGET_DB = require_test_database(SA_DSN, context="orphan-count integration tests")
-
 _LEGACY_AGENT_ID = "test-fileserver"
 
-# phaze-xwaj: ``saq_jobs`` is SAQ-owned and absent from ``Base.metadata`` (never Alembic-managed), and
-# sibling suites create it with differing schemas, so it is pinned here with the shape this module
-# controls (idiom from tests/integration/test_stage_progress_buckets.py / tests/shared/routers/test_pipeline.py).
-# The drop+create is undone when the per-test transaction rolls back (db_session's teardown). Since the
-# fix for phaze-xwaj makes _compute_stage_orphan_counts read ``saq_jobs`` DIRECTLY (raising, no longer
-# via the degrade-safe get_live_job_keys wrapper), the table must actually EXIST for the happy-path tests
-# below to exercise a real empty read rather than accidentally relying on a "table missing" degrade.
 _PIN_SAQ_JOBS = (
     text("DROP TABLE IF EXISTS saq_jobs"),
     text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"),

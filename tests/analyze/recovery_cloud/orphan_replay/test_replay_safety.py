@@ -1,31 +1,4 @@
-"""The LEDGER REPLAY-SAFETY INVARIANT and its guards (phaze-71nz).
-
-**A ``scheduling_ledger`` payload must be replayable at an arbitrary FUTURE time.**
-
-That invariant is what ``recover_orphaned_work`` silently assumed and nothing enforced. On
-2026-07-31 one operator Recover replayed 430 orphaned ``s3_upload`` rows whose payloads carried
-presigned S3 PUT URLs signed at the ORIGINAL enqueue; 428 ran their retries out to terminal
-``failed`` at the object store (122x HTTP 403, 257x HTTP 400) and ZERO succeeded, while the same
-run's 2,512 ``process_file`` rows replayed fine.
-
-These tests hold the GENERAL form of the fix, deliberately not a pin on ``s3_upload``:
-
-1. the classification (:data:`LEDGER_REPLAY_TIME_INVARIANT` / :data:`LEDGER_REPLAY_REGENERATED`) is
-   TOTAL and DISJOINT over the keyed-producer universe, so a NEW producer cannot slip through by
-   omission the way ``s3_upload`` did;
-2. every declared-regenerated function has a real regenerator, so "do not replay verbatim" can never
-   quietly mean "never recover this stage";
-3. the CONTENT detector recognises the shape of expiring material -- verified against REAL presigned
-   URLs minted by a wire-compatible object store, in both the SigV4 form boto3 emits today and the
-   SigV2 ``AWSAccessKeyId``/``Expires``/``Signature`` form the live incident actually produced -- and
-   does NOT fire on any of the time-invariant producers' real payload shapes;
-4. the write-side chokepoint (``apply_deterministic_key``) LOGS the violation without ever blocking
-   an enqueue.
-
-The replay-side refusal and the ``s3_upload`` regeneration itself live in
-``tests/analyze/tasks/test_recovery_replay_safety.py``, which drives them through
-``recover_orphaned_work`` against a real object store.
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -55,10 +28,8 @@ if TYPE_CHECKING:
 
 
 _BUCKET = "phaze-replay-safety"
+
 _CREDS = {"aws_access_key_id": "testing", "aws_secret_access_key": "testing"}
-
-
-# 1. The classification is TOTAL and DISJOINT -- the anti-omission guard
 
 
 def test_every_keyed_producer_is_classified() -> None:
@@ -103,9 +74,6 @@ def test_s3_upload_is_the_declared_time_limited_producer() -> None:
     """
     assert "s3_upload" in LEDGER_REPLAY_REGENERATED
     assert "process_file" in LEDGER_REPLAY_TIME_INVARIANT
-
-
-# 2. The content detector, against REAL presigned URLs
 
 
 @pytest.fixture
@@ -264,9 +232,6 @@ def test_detector_is_total_on_odd_payloads() -> None:
     for _ in range(50):
         deep = {"nest": deep}
     assert find_time_limited_paths(deep) == []
-
-
-# 3. The write-side chokepoint: DETECTS loudly, never blocks
 
 
 class _FakeSession:

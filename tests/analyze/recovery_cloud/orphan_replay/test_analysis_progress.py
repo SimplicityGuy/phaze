@@ -1,23 +1,4 @@
-"""Phase 57.1 SPIKE -- de-risk the two load-bearing safety properties before the
-production write path is locked (PLAN 57.1-01; consumed by Plan 04).
-
-This module is a SPIKE harness. It touches NO production module under
-``src/phaze/`` -- it exercises the EXISTING ``put_analysis`` replace path to
-prove crash-mid-run idempotency.
-
-Phase 101 (phaze-bo3p.4): the ``transport`` task group (pebble Manager-queue
-drainer + child-side httpx comparison) was removed with the pebble ProcessPool
-itself -- the exec'd analysis child (services.analysis_exec) superseded that
-transport, and its parent/child contract is covered by
-tests/analyze/services/pipeline/test_analysis_exec.py. The surviving group:
-
-* ``idempotent`` -- prove a file killed mid-analysis re-runs cleanly via the
-  existing ``put_analysis`` ``file_id``-UQ replace path (PROG-02 / RESEARCH Q3):
-  the final ``analysis`` row + ``analysis_window`` set is identical to an
-  uninterrupted control run, the file reaches the ``ANALYZED`` derived status exactly once, and
-  no duplicate/orphaned window rows remain. The Phase 32 re-enqueue done-predicate
-  is state-only, so the partial row cannot mis-drive recovery.
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -42,13 +23,6 @@ if TYPE_CHECKING:
     from phaze.models.agent import Agent
 
 
-# Task 2 -- crash-mid-run idempotency on the put_analysis replace path
-#           (group: idempotent; real Postgres via the `session` fixture)
-
-
-# Canonical "uninterrupted control" payload: the known-good final analysis a
-# clean run produces. Five fine windows fully analyzed (analyzed == total), plus the
-# representative aggregates. The re-run after a crash must land byte-identical.
 _CONTROL_PAYLOAD: dict = {
     "bpm": 128.0,
     "musical_key": "C minor",

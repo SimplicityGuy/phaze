@@ -436,7 +436,7 @@ async def test_sql_equals_python(
 # count card already read ``... AND ~inflight_clause``, and these DERIV-04 cells deliberately EXCLUDE the
 # ``*_inflight`` seeds -- so adding ``~inflight_clause`` to ``domain_completed_clause`` is a pure no-op for
 # every row this equivalence test (and the drain/card) ever sees, and the test STAYS GREEN. The real lock
-# is the recovery-LAYER regression in ``tests/analyze/tasks/test_recovery.py`` (Plan 80-04): because its
+# is the recovery-LAYER regression in ``tests/analyze/recovery_cloud/orphan_replay/test_recovery.py`` (Plan 80-04): because its
 # candidates ARE ledger rows, the trap makes ``domain_completed`` False for all of them and its Cell B goes
 # RED. Keep the ``*_inflight`` exclusion (it is what makes this test correctly ledger-agnostic); do NOT
 # "harden" it by adding in-flight cells here to try to catch the trap -- that responsibility lives at the

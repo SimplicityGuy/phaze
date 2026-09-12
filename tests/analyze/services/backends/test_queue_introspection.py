@@ -17,7 +17,7 @@ file is un-requeueable by every path. The breakdown therefore also reports ``str
 ``reap_stranded_active_jobs`` would delete -- and raises :attr:`ActiveJobBreakdown.exceeds_concurrency`
 when that count passes what the lane could ever have been running. ``phaze queue status`` exits 1 on
 it, which is the GUARD acceptance item 5 asks for. Parity between ``stranded`` and the reaper's actual
-delete set is asserted in ``tests/analyze/tasks/test_active_reaper.py``.
+delete set is asserted in ``tests/analyze/recovery_cloud/orphan_replay/test_active_reaper.py``.
 
 ctx/session wiring mirrors tests/analyze/tasks/test_aborting_reaper.py.
 """

@@ -33,6 +33,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Structural Maintenance Rebaseline — 2026-09-11](structural-maintenance-rebaseline-2026-09-11.md)** | 🧭 Post-maintenance boundaries, compatibility inventories, invariants, and GO dispositions for the structural follow-on |
 | **[Test Bucket Mapping](../tests/BUCKETS.md)** | 🪣 Historical reorganization baseline plus the live CI bucket and shard boundaries |
 | **[Review and Proposal Capability Tests](../tests/review/capabilities/README.md)** | 🧩 Capability ownership and preserved scenario mapping for review and proposal tests |
+| **[Recovery and Cloud-Reconciliation Capability Tests](../tests/analyze/recovery_cloud/README.md)** | ♻️ State/ownership families and preserved scenario mapping for recovery and cloud-reconciliation tests |
 | **[Watcher Developer Guide](../src/phaze/agent_watcher/README.md)** | 👁️ Watcher flow, bootstrap, configuration, import boundary, and operational behavior |
 
 ## 📐 Reference

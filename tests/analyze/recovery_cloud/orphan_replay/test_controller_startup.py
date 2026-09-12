@@ -1,15 +1,4 @@
-"""Phase 42 Plan 02: controller wiring for the recovery-only automation gate.
-
-Two groups:
-1. Registration (``-k cron`` / ``-k functions``) -- ``recover_orphaned_work`` is in
-   ``settings["functions"]``; the legacy ``reenqueue_discovered`` is FULLY removed (no
-   import, no function, no cron); the every-5-min ``*/5 * * * *`` auto-advance cron is
-   GONE; the existing ``reap_stalled_scans`` cron remains; and ``refresh_tracklists`` is
-   registered as a function but is deliberately NOT a cron (phaze-2akf).
-2. Startup behavior (``-k startup``) -- patch the heavyweight constructors, stash
-   ``ctx["task_router"]``, await the gated ``recover_orphaned_work(ctx)`` once on boot,
-   close the router in shutdown, and prove a raising recovery never aborts boot.
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -58,9 +47,6 @@ def _make_router_stub() -> MagicMock:
     stub.close = AsyncMock()
     stub.queue_for = MagicMock()
     return stub
-
-
-# Group 1: registration                                                       #
 
 
 def test_functions_list_includes_recover_orphaned_work() -> None:
@@ -148,9 +134,6 @@ def test_cron_does_not_regress_existing_jobs() -> None:
     assert reap_stalled_scans in cron_functions, "reap_stalled_scans cron regressed (missing)"
     assert refresh_tracklists not in cron_functions, "refresh_tracklists must stay on-demand -- never a cron (phaze-2akf)"
     assert refresh_tracklists in controller.settings["functions"], "refresh_tracklists must stay operator-enqueueable"
-
-
-# Group 2: startup behavior                                                   #
 
 
 @pytest.mark.asyncio

@@ -1,29 +1,4 @@
-"""Tests for the Phase-45 Plan-04 one-time startup ledger backfill (locked decision #3).
-
-``backfill_ledger_from_saq_jobs(session)`` seeds the durable ``scheduling_ledger`` from the
-live ``saq_jobs`` queued/active rows at first boot after migration 022, so in-flight work
-(and any residual incident cohort still present) stays recoverable immediately -- there is no
-blind window between the migration landing and the ``before_enqueue`` WRITE hook populating
-the ledger. It is a CONTROL-SIDE runtime reconcile, NEVER an Alembic data step.
-
-Contract (must_haves):
-
-  - deserializes each queued/active ``saq_jobs`` blob (the SAQ default ``json.dumps`` serializer,
-    so the blob is a JSON object with top-level ``function`` / ``kwargs`` / ``key``), mirroring
-    ``pipeline._job_started_ms`` -- NO ``saq.Job`` construction,
-  - only KEYED rows (``function`` in ``_KEY_BUILDERS``) are seeded; a random-key / non-pipeline
-    row is SKIPPED,
-  - idempotent (``insert_ledger_if_absent`` == ON CONFLICT (key) DO NOTHING): a second run over
-    the same broker state inserts 0,
-  - a row already written by the WRITE hook is NOT overwritten (DO NOTHING preserves the fresher
-    row),
-  - degrades safely: a missing ``saq_jobs`` table (pre-migration env) or an unparseable blob is
-    tolerated (SAVEPOINT / skip-the-row) and NEVER raises -- boot must not abort.
-
-The two pure-parse unit tests below need no DB (they exercise the blob-deserialize tolerance).
-The end-to-end seed/idempotency/no-overwrite cases run against the real ``saq_jobs`` broker under
-``just integration-test`` (``@pytest.mark.integration``; skips when Postgres is unavailable).
-"""
+"""Saq ledger parsing, backfill, and startup recovery ordering."""
 
 from __future__ import annotations
 
@@ -42,9 +17,6 @@ from phaze.tasks.reenqueue import _parse_job_blob, backfill_ledger_from_saq_jobs
 from tests.db_guard import integration_dsns
 
 
-# Raw libpq broker DSN (NOT the +asyncpg dialect form psycopg3 cannot parse) + the SQLAlchemy
-# +asyncpg form for the AsyncSession the backfill reads/writes through, both derived via the
-# shared tests.db_guard resolver (defaults to the 5433 test harness, never the dev DB on 5432).
 _RAW_DSN, _SA_DSN = integration_dsns()
 
 

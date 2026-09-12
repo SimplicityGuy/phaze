@@ -1,36 +1,4 @@
-"""Tests for the control-side stranded-'active' reaper (phaze.tasks.active_reaper).
-
-phaze-o0n6 REGRESSION. SAQ's ``_enqueue`` upsert only overwrites a conflicting key whose status is in
-``('aborted','complete','failed')``. ``'aborting'`` is not in that allowlist (phaze-e57w) -- and
-neither is ``'active'``. ``PostgresQueue._dequeue`` marks rows ``active`` in bulk and buffers them
-in-process, so any process death abandons every buffered row as ``active`` with nothing alive to
-finalize it, and each abandoned row holds ``process_file:<file_id>`` hostage FOREVER. Measured on the
-live deployment: 2,413 such rows against worker concurrency 4, of which 2,411 keyed files that had
-never been analyzed and could not be re-enqueued by ANY path, including the recovery CLI.
-
-Two groups of assertions:
-
-1. **The reaper itself** -- mirrors ``test_aborting_reaper.py`` one-for-one, because the three guards
-   are literally the same statement (``phaze.tasks._saq_reap.REAP_STRANDED_SQL``): the FROZEN
-   ``started`` bound (never ``touched``, which the sweeper bumps), the PER-ROW bound derived from the
-   row's own serialized ``timeout`` (``process_file`` runs 7200s, so any fixed constant is wrong for
-   it), and the status CAS in the DELETE's ``WHERE``. Plus the one asymmetry with the ``'aborting'``
-   population: a stranded row may carry ``attempts >= 1`` (picked up, then abandoned mid-flight by a
-   dying process) and MUST still be reaped -- it blocks its key exactly as hard as a never-run claim.
-
-2. **The bead's OPEN QUESTION**, resolved against a real database rather than guessed: is releasing
-   the SAQ key SUFFICIENT to get the file re-analyzed, or must the file's orphaned
-   ``scheduling_ledger`` row be cleared too? ``test_reaped_active_row_makes_its_ledger_row_recoverable``
-   drives the REAL ``recover_orphaned_work`` across the reap and shows the answer is: releasing the key
-   is sufficient, AND the ledger row must SURVIVE, because that row IS the recovery source
-   (``orphaned = ledger MINUS live-saq_jobs-keys MINUS domain-completed``). The counterfactual test
-   next to it shows that deleting the ledger row instead makes recovery re-enqueue NOTHING -- the
-   file would be lost, silently and permanently. Getting this backwards was the stated risk.
-
-ctx["async_session"] is sourced from ``phaze.database.async_session`` -- monkeypatched by the
-``session`` fixture's fanout to a factory bound to the per-test connection, exactly as the production
-controller wires it (mirrors tests/analyze/tasks/test_aborting_reaper.py).
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -54,8 +22,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# SAQ 0.26.4 saq_jobs schema (saq/queue/postgres_migrations.py) -- created locally because SAQ owns
-# this table at runtime and Base.metadata.create_all does not know about it.
 _CREATE_SAQ_JOBS = text(
     """
     CREATE TABLE IF NOT EXISTS saq_jobs (
@@ -73,8 +39,7 @@ _CREATE_SAQ_JOBS = text(
 )
 
 _QUEUE = "phaze-agent-nox-analyze"
-# The real production bound for the stranded population: services/analysis_enqueue.py enqueues
-# process_file with a 7200s job timeout, which is why the reaper's bound must be per-row.
+
 _PROCESS_FILE_TIMEOUT = 7200
 
 
@@ -394,6 +359,7 @@ def _analyze_payload(file_id: uuid.UUID, agent_id: str) -> dict[str, Any]:
 
 
 _AGENT_ID = "nox"
+
 _AGENT_LANE_QUEUE = f"{_AGENT_ID}-analyze"
 
 

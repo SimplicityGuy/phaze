@@ -364,7 +364,7 @@ async def test_orphaned_lens_lists_exactly_the_recovery_candidates(client: Async
     twin of recovery's work set. Seeded: an orphan (ledger row, no live broker key, no analysis), a
     genuinely-running file (ledger row + a live ``saq_jobs`` key), and a bare file. Only the orphan
     may appear. ``saq_jobs`` is SAQ-owned and absent from ``Base.metadata``, so the test pins a
-    module-controlled minimal table the same way tests/integration/test_orphan_count.py does.
+    module-controlled minimal table the same way tests/analyze/recovery_cloud/orphan_replay/test_orphan_count.py does.
     """
     from sqlalchemy import text
 

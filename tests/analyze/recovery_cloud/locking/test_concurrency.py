@@ -1,24 +1,4 @@
-"""D-04 ordering + drain-lock concurrency for ``reconcile_cloud_jobs`` (real PG, 92-04).
-
-Moved here from ``tests/analyze/tasks/test_reconcile_cloud_jobs.py`` by plan 92-04 (Option B). Both cells
-prove a property that only exists ACROSS independent, committed-visible DB connections:
-
-* ``test_delete_after_record_ordering`` -- a ``DeleteJobSpy(engine=...)`` opens a SEPARATE connection at
-  Job-delete time and reads the COMMITTED ``cloud_job`` state, proving the outcome was committed BEFORE
-  the Kube Job was deleted (D-04).
-* ``test_drain_reconcile_concurrency_delete_runs_under_advisory_lock`` -- from a SEPARATE connection a
-  ``pg_try_advisory_xact_lock`` on the drain key must FAIL while reconcile holds it during the delete,
-  then SUCCEED after the reconcile transaction commits.
-
-The hermetic single-connection ``create_savepoint`` ``session`` fixture (92-03) cannot express either:
-reconcile's writes are never truly committed (savepoint release inside an uncommitted outer txn) and a
-second connection would read ZERO/STALE. So these live on the real-PG ``committed_db`` fixture where
-reconcile runs on its OWN pool connection and the probe/snapshot connection sees committed truth.
-
-Test-local helpers (``GetJobSpy`` / ``DeleteJobSpy`` / ``S3DeleteSpy`` / ``_patch_cap`` / ``_patch_seam``
-/ ``_seed`` / ...) are COPIED from the donor (which still uses them for its own hermetic cells); only the
-ctx/engine acquisition changed. Assertions are preserved verbatim.
-"""
+"""Transaction release, commit ordering, and advisory-lock ownership."""
 
 from __future__ import annotations
 
@@ -45,12 +25,10 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-
-# SCHED-05: KueueBackend.reconcile is backend_id-scoped; MKUE-02: the at-cap staged-object delete acts on
-# the recorded staging_bucket. Copied from the donor.
 _KUEUE_BACKEND_ID = "kueue-x64"
+
 _STAGING_BUCKET_ID = "staging-a"
-# The drain's transaction-scoped advisory-lock key reconcile takes across the clean-before-flip delete.
+
 _DRAIN_ADVISORY_LOCK_KEY = 5_000_504
 
 
