@@ -57,6 +57,8 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
 | Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py` |
+| Proposal generation | `services/proposal.py` orchestrates context, parsing, provider, and persistence modules |
+| Review workspaces | `services/review.py` orchestrates changes, cue, dedupe, and tag-write review modules |
 | Approved execution | `tasks/execution.py` orchestrates SAQ and reporting; `tasks/execution_filesystem.py` owns guarded local moves |
 | Set projection | `services/set_projection.py`, `set_projection_writer.py`, `set_projection_backfill.py` |
 | Set views | `services/analysis_timeline.py`, `harmonic_journey.py`, `track_segments.py`, `record_facts.py`, `set_glyph_colors.py`, `set_similarity.py` |
