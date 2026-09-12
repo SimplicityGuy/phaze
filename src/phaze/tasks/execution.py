@@ -211,55 +211,6 @@ async def _verify_hash_or_raise(path: Path, expected_hash: str, *, label: str, s
     )
 
 
-def _check_replay_corroborated(
-    original: Path,
-    proposed: Path,
-    item: ExecuteBatchProposalItem,
-    job: Any | None,
-) -> bool:
-    job_meta = dict(getattr(job, "meta", None) or {}) if job is not None else {}
-    if original.exists() or not proposed.exists():
-        return False
-    return job_meta.get(_moved_flag_key(item.proposal_id)) is not None or _committed_copy_marker_path(proposed, item.proposal_id).exists()
-
-
-async def _reclaim_or_refuse_existing_destination(
-    original: Path,
-    proposed: Path,
-    item: ExecuteBatchProposalItem,
-    step: _MoveStep,
-    *,
-    same_fs: bool,
-) -> None:
-    engine = _filesystem.LocalExecutionFilesystemEngine(_FACADE_FILESYSTEM_PRIMITIVES)
-    await engine._reclaim_or_refuse_existing_destination(original, proposed, item, step, same_fs=same_fs)
-
-
-def _move_same_fs_entry(original: Path, proposed: Path, step: _MoveStep) -> None:
-    engine = _filesystem.LocalExecutionFilesystemEngine(_FACADE_FILESYSTEM_PRIMITIVES)
-    engine._move_same_fs_entry(original, proposed, step)
-
-
-async def _move_across_filesystem(
-    original: Path,
-    proposed: Path,
-    item: ExecuteBatchProposalItem,
-    step: _MoveStep,
-) -> None:
-    engine = _filesystem.LocalExecutionFilesystemEngine(_FACADE_FILESYSTEM_PRIMITIVES)
-    await engine._move_across_filesystem(original, proposed, item, step)
-
-
-async def _apply_file_move(
-    original: Path,
-    proposed: Path,
-    item: ExecuteBatchProposalItem,
-    step: _MoveStep,
-) -> None:
-    engine = _filesystem.LocalExecutionFilesystemEngine(_FACADE_FILESYSTEM_PRIMITIVES)
-    await engine._apply_file_move(original, proposed, item, step)
-
-
 def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
     if "sha256 mismatch" in str(exc):
         return "verify"
