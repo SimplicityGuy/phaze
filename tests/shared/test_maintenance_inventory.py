@@ -43,3 +43,7 @@ def test_classification_precedence_for_special_documentation() -> None:
     assert inventory.documentation_class("docs/spikes/README.md", generated=generated) == "maintained"
     assert inventory.documentation_class("docs/telemetry/measurements/README.md", generated=generated) == "maintained"
     assert inventory.documentation_class("README.md", generated=generated) == "maintained"
+
+
+def test_scenario_mapping_is_declarative_data() -> None:
+    assert inventory.exclusion_class("tests/review/capabilities/scenario_node_map.tsv") == "declarative-config-or-data"

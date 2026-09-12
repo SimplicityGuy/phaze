@@ -1,4 +1,4 @@
-"""Tests for the Rename/Move pending-proposal totals bundle (phaze-rw14).
+"""Changes-review tests for the Rename/Move pending-proposal totals bundle (phaze-rw14).
 
 ``get_pending_proposal_rows`` used to return a bare, 200-row-capped list, and the Rename/Move
 workspace templates quoted ``rename_proposals | length`` / ``move_proposals | length`` for both

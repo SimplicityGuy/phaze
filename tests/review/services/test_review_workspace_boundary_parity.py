@@ -14,7 +14,7 @@ import pytest
 
 from phaze.models.proposal import ProposalStatus
 from phaze.services import review
-from tests.review.services.test_review_degrade import _seed_applied_tagwrite_file
+from tests.review.capabilities.tag_write.test_degrade import _seed_applied_tagwrite_file
 from tests.review.services.test_review_refactor_parity import _load_old_review_module
 
 

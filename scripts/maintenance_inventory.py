@@ -42,7 +42,7 @@ EXCLUSION_CLASS_NAMES = (
 )
 
 _PROSE_SUFFIXES = frozenset({".adoc", ".md", ".mdx", ".rst", ".txt"})
-_CONFIG_SUFFIXES = frozenset({".agent", ".example", ".ini", ".json", ".lock", ".toml", ".yaml", ".yml"})
+_CONFIG_SUFFIXES = frozenset({".agent", ".example", ".ini", ".json", ".lock", ".toml", ".tsv", ".yaml", ".yml"})
 _FIXTURE_SUFFIXES = frozenset({".html", ".ico", ".json", ".png", ".svg", ".wav"})
 _GENERATED_MARKER = "^<!-- generated-by:"
 
