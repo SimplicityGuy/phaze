@@ -20,6 +20,7 @@ tests/agents/deployment/test_k8s_runbook.py
 tests/analyze/services/backends/test_kube_env_contract.py
 tests/shared/core/test_docs_beui03.py
 tests/shared/core/test_docs_ia_current.py
+tests/shared/core/test_structural_boundary_contracts.py
 tests/shared/routers/test_pipeline_analysis_bind_param_cap.py
 tests/shared/telemetry/test_alert_rules.py
 tests/shared/telemetry/test_metric_catalogue.py
