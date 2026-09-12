@@ -94,6 +94,27 @@ def test_pending_confirmation_transition_table(age_seconds: float, expected: str
     assert observation.classify_pending_confirmation(age_seconds).value == expected
 
 
+@pytest.mark.asyncio
+async def test_unknown_workload_condition_commits_and_holds_without_an_effect() -> None:
+    """An unreadable future condition set releases the row lock but selects no transition."""
+
+    class _CommitSpy:
+        commits = 0
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+    session = _CommitSpy()
+    cloud_job = SimpleNamespace(status="submitted", inadmissible=False, cloud_phase=None)
+    row = reconcile_mod._RowReconcile(ctx={}, session=session, cloud_job=cloud_job, cap=3, tally={}, kube=SimpleNamespace())
+
+    await reconcile_mod._reconcile_workload_state(row, fake_job(), fake_workload(), "job-name")
+
+    assert session.commits == 1
+    assert vars(cloud_job) == {"status": "submitted", "inadmissible": False, "cloud_phase": None}
+    assert row.tally == {}
+
+
 def test_facade_exposes_kueue_reconcile_patch_points() -> None:
     """The private helpers are established patch/import seams despite their names."""
     for name in (
