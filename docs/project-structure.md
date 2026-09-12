@@ -37,7 +37,7 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | ------ | ---- |
 | `main.py` | FastAPI composition root and lifespan |
 | `database.py` | Application SQLAlchemy engine/session construction |
-| `config.py`, `config_*.py` | Role-specific settings, secrets, Redis, and backend policy |
+| `config.py`, `config_*.py` | Public settings facade plus role-specific settings, secrets, Redis, and backend policy domains |
 | `entrypoint.py`, `cert_bootstrap.py` | Container entry and TLS bootstrap |
 | `job_runner.py` | One-shot Kueue analysis job |
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
