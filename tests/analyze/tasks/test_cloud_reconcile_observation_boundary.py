@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from phaze.tasks import reconcile_cloud_jobs as reconcile_mod
+from phaze.tasks import cloud_reconcile_observation as observation, reconcile_cloud_jobs as reconcile_mod
 from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, QUOTA_RESERVED, fake_job, fake_workload
 
 
@@ -53,6 +53,7 @@ def _legacy_workload_disposition(workload: Any) -> str:
 )
 def test_job_transition_table(job: Any, expected: str) -> None:
     assert _legacy_job_disposition(job) == expected
+    assert observation.classify_job(job).value == expected
 
 
 @pytest.mark.parametrize(
@@ -78,6 +79,19 @@ def test_job_transition_table(job: Any, expected: str) -> None:
 )
 def test_workload_transition_table(workload: Any, expected: str) -> None:
     assert _legacy_workload_disposition(workload) == expected
+    assert observation.classify_workload(workload).value == expected
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expected"),
+    [
+        pytest.param(0, "fresh", id="new"),
+        pytest.param(3600, "fresh", id="boundary-is-fresh"),
+        pytest.param(3600.0001, "expired", id="past-boundary"),
+    ],
+)
+def test_pending_confirmation_transition_table(age_seconds: float, expected: str) -> None:
+    assert observation.classify_pending_confirmation(age_seconds).value == expected
 
 
 def test_facade_exposes_kueue_reconcile_patch_points() -> None:
@@ -109,3 +123,17 @@ def test_backend_cycle_break_import_stays_function_local() -> None:
         and any(alias.name == "resolve_backends" for alias in node.names)
         for node in ast.walk(reconcile)
     )
+
+
+def test_observation_module_has_no_reconciliation_side_effect_adapters() -> None:
+    """The extracted boundary may observe external state but cannot apply transitions."""
+    source = Path(observation.__file__).read_text()
+    tree = ast.parse(source)
+    imported_modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
+    assert "phaze.services.backends" not in imported_modules
+    assert "phaze.services.s3_staging" not in imported_modules
+    assert "phaze.tasks.submit_cloud_job" not in imported_modules
+
+    forbidden_calls = {"commit", "rollback", "enqueue", "delete_job", "delete_staged_object"}
+    called_attributes = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    assert called_attributes.isdisjoint(forbidden_calls)

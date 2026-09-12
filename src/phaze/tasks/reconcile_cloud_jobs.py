@@ -106,18 +106,37 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
 from sqlalchemy import select
 import structlog
 
 from phaze.config import get_settings
-from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
+from phaze.tasks.cloud_reconcile_observation import (
+    NO_POD_PROBE_SECONDS as _NO_POD_PROBE_SECONDS,
+    PENDING_SUBMIT_CONFIRMATION_SECONDS as _PENDING_SUBMIT_CONFIRMATION_SECONDS,
+    JobDisposition,
+    PendingConfirmationDisposition,
+    Wedge,
+    WorkloadDisposition,
+    classify_job,
+    classify_pending_confirmation,
+    classify_workload,
+    condition_true as _observe_condition_true,
+    job_counter as _observe_job_counter,
+    job_has_true_condition as _observe_job_has_true_condition,
+    observe_analysis_completed,
+    observe_job_gone,
+    observe_pod_wedge_reason,
+    observe_terminal_node_loss_reason,
+    quota_hold_reason as _observe_quota_hold_reason,
+    row_age_seconds as _observe_row_age_seconds,
+    workload_condition as _observe_workload_condition,
+)
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 
 
@@ -132,46 +151,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-
-# The Kueue Workload condition vocabulary the loop matches (RESEARCH §Status->Outcome Mapping,
-# verified against Context7 /kubernetes-sigs/kueue). Matching the exact (type, status, reason) tuples
-# is what keeps healthy Pending from being mistaken for a fault (Pitfall 3).
-_TYPE_QUOTA_RESERVED = "QuotaReserved"
-_TYPE_ADMITTED = "Admitted"
-_TYPE_EVICTED = "Evicted"
-_REASON_PENDING = "Pending"
-_REASON_INADMISSIBLE = "Inadmissible"
-
-# phaze-202e: how long a row may sit with NO ``kueue_workload`` recorded -- the pending-confirmation
-# bound, and the ONLY remaining age-based rule in this file. It is NOT a bound on a run: a row with no
-# Job name has no pod anywhere doing work, so nothing can be killed by it. It bounds the SUBMIT
-# machinery (a submit that crashed between the row insert and the workload stamp, or a re-drive whose
-# freshly-enqueued ``submit_cloud_job`` never executed). Sized above the submit job's own SAQ budget
-# (worker_job_timeout 600s x the retry budget) so a merely-retrying submit is never stolen.
-PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
-
-# phaze-202e: how long an UN-SUSPENDED, non-terminal Job may report zero pods before it counts as a
-# wedge. This is the "Workload wedged Admitted with no pod" shape phaze-1b39 also had to cover. Safe
-# without a run clock because it fires ONLY when the Job itself reports no active pod AND the pod list
-# is empty -- i.e. nothing is running to kill. Measured on the Job's ``status.startTime`` (when Kueue
-# un-gated it), never on how long an analysis has run. The 15-minute wall-clock bound is preserved
-# across the every-minute reconcile cadence (15 ticks; phaze-i3pkb.1).
-NO_POD_PROBE_SECONDS = 900
-
-
-class Wedge(NamedTuple):
-    """A terminalizing pod verdict: WHY the pod is dead, and whether its NODE is what killed it.
-
-    phaze-1q4g split this off the bare ``str`` :func:`_pod_wedge_reason` used to return, because the
-    two causes must be budgeted differently. ``node_loss=True`` means the pod died WITH ITS NODE
-    (:attr:`kube_staging.PodLiveness.NODE_LOST`) -- an infrastructure fault that is not the file's
-    fault, so it charges :data:`CloudJob.node_loss_redrives` against ``cloud_node_loss_max_redrives``
-    instead of ``attempts`` against ``cloud_submit_max_attempts``. ``node_loss=False`` is an ordinary
-    dead-before-start / unschedulable / zero-pod wedge and is charged exactly as before.
-    """
-
-    reason: str
-    node_loss: bool
+# Compatibility exports: tests and downstream diagnostics import these constants from the controller
+# facade even though their ownership now lives with observation/classification.
+NO_POD_PROBE_SECONDS = _NO_POD_PROBE_SECONDS
+PENDING_SUBMIT_CONFIRMATION_SECONDS = _PENDING_SUBMIT_CONFIRMATION_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,12 +201,7 @@ async def _terminal_node_loss_reason(name: str, kube: KubeConfig) -> str | None:
     that direction costs one retry; being wrong the other way would hand a node-killing file the looser
     of the two budgets, which is the whole defect this bead closes.
     """
-    pods: list[Any] = []
-    with contextlib.suppress(Exception):
-        pods = await kube_staging.list_pods_for_job(name, kube)
-    if kube_staging.classify_job_pods(pods) is not kube_staging.PodLiveness.NODE_LOST:
-        return None
-    return f"node_lost ({kube_staging.describe_job_pods(pods)})"
+    return await observe_terminal_node_loss_reason(name, kube)
 
 
 def _row_age_seconds(cloud_job: CloudJob) -> float:
@@ -244,11 +222,7 @@ def _row_age_seconds(cloud_job: CloudJob) -> float:
     awareness (assume-UTC, the scan_reaper / release_awaiting_cloud convention) so the subtraction can
     never raise inside the cron.
     """
-    now = datetime.now(UTC)
-    updated = cloud_job.updated_at
-    if updated.tzinfo is None:
-        now = now.replace(tzinfo=None)
-    return (now - updated).total_seconds()
+    return _observe_row_age_seconds(cloud_job)
 
 
 def _job_counter(job: Any, key: str) -> int:
@@ -257,26 +231,17 @@ def _job_counter(job: Any, key: str) -> int:
     kr8s exposes ``.status`` as a dict; with ``backoffLimit: 0`` a non-zero ``succeeded``/``failed`` is
     the most direct terminal signal (the Job is the source of truth for succeeded-vs-failed).
     """
-    status = getattr(job, "status", None) or {}
-    try:
-        return int(status.get(key) or 0)
-    except (TypeError, ValueError):
-        return 0
+    return _observe_job_counter(job, key)
 
 
 def _job_has_true_condition(job: Any, cond_type: str) -> bool:
     """Return whether the Job carries a ``(cond_type, status=True)`` entry in ``status.conditions``."""
-    status = getattr(job, "status", None) or {}
-    return any(cond.get("type") == cond_type and cond.get("status") == "True" for cond in status.get("conditions", []) or [])
+    return _observe_job_has_true_condition(job, cond_type)
 
 
 def _workload_condition(workload: Any, cond_type: str) -> dict[str, Any] | None:
     """Return the first ``status.conditions`` entry of ``cond_type`` on a Kueue Workload, or None."""
-    status = getattr(workload, "status", None) or {}
-    for cond in status.get("conditions", []) or []:
-        if cond.get("type") == cond_type:
-            return cast("dict[str, Any]", cond)
-    return None
+    return _observe_workload_condition(workload, cond_type)
 
 
 async def _job_gone(name: str | None, kube: KubeConfig) -> bool:
@@ -291,13 +256,7 @@ async def _job_gone(name: str | None, kube: KubeConfig) -> bool:
     phaze-1b39: a phantom row (``kueue_workload IS NULL``) has no Job to wait on -- nothing can
     409->refresh under us -- so it is trivially gone.
     """
-    if name is None:
-        return True
-    try:
-        job = await kube_staging.get_job(name, kube)
-    except kr8s.NotFoundError:
-        return True
-    return job is None
+    return await observe_job_gone(name, kube)
 
 
 async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> Wedge | None:
@@ -333,18 +292,7 @@ async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> Wedge | No
     being unreadable holds the row instead (an in-flight row that is merely un-observable is left for
     a later tick -- the pre-1b39 behaviour, minus the permanence).
     """
-    pods = await kube_staging.list_pods_for_job(name, kube)
-    verdict = kube_staging.classify_job_pods(pods)
-    if verdict is kube_staging.PodLiveness.ALIVE:
-        return None
-    if verdict in (kube_staging.PodLiveness.NODE_LOST, kube_staging.PodLiveness.DEAD_BEFORE_START, kube_staging.PodLiveness.UNSCHEDULABLE):
-        return Wedge(f"{verdict.value} ({kube_staging.describe_job_pods(pods)})", verdict is kube_staging.PodLiveness.NODE_LOST)
-    if pods or _job_counter(job, "active") != 0 or kube_staging.job_is_suspended(job):
-        return None
-    started = kube_staging.job_started_at(job)
-    if started is None or (datetime.now(UTC) - started).total_seconds() <= NO_POD_PROBE_SECONDS:
-        return None
-    return Wedge("no_pod (job un-suspended with zero active pods past the probe)", False)
+    return await observe_pod_wedge_reason(job, name, kube)
 
 
 async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -357,8 +305,7 @@ async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool
     vanished-Job path would misclassify a DONE file as a no-callback terminal and re-drive it against a
     staged object the callback already deleted. This lets that path recognise the success instead.
     """
-    completed_at = (await session.execute(select(AnalysisResult.analysis_completed_at).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
-    return completed_at is not None
+    return await observe_analysis_completed(session, file_id)
 
 
 async def _enqueue_resubmit(ctx: dict[str, Any], file_id: uuid.UUID) -> None:
@@ -702,7 +649,8 @@ async def _reconcile_pending_confirmation(row: _RowReconcile) -> None:
     # CONFIRMED VANISHED (not merely pending) -> terminalize through the SAME no-callback path
     # everything else uses (bounded re-drive under cap -- a NEW, independently-charged attempt --
     # spill to local at cap), which is what returns the cap slot without operator surgery.
-    if _row_age_seconds(cloud_job) <= PENDING_SUBMIT_CONFIRMATION_SECONDS:
+    age_seconds = _row_age_seconds(cloud_job)
+    if classify_pending_confirmation(age_seconds) is PendingConfirmationDisposition.FRESH:
         logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
         await row.session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
@@ -710,7 +658,7 @@ async def _reconcile_pending_confirmation(row: _RowReconcile) -> None:
         "reconcile_cloud_jobs: cloud_job missing kueue_workload past the pending-submit bound -- terminalizing phantom row",
         cloud_job_id=str(cloud_job.id),
         file_id=str(cloud_job.file_id),
-        age_seconds=int(_row_age_seconds(cloud_job)),
+        age_seconds=int(age_seconds),
     )
     # The callback may have landed anyway (it keys off file_id, not the Job) -- ``_finalize_or_redrive``
     # finalizes that as the success it is rather than re-driving an already-analyzed file. name=None:
@@ -724,10 +672,11 @@ async def _reconcile_job_terminal_signal(row: _RowReconcile, job: Any, name: str
     Returns True when the Job carried a terminal signal and this row is fully handled, False when the
     Job is still in flight and the caller must go on to read the paired Kueue Workload.
     """
-    if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
+    disposition = classify_job(job)
+    if disposition is JobDisposition.SUCCEEDED:
         await _record_success(row, name)
         return True
-    if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
+    if disposition is JobDisposition.FAILED:
         # phaze-73sv: mirror the vanished-Job guard. A Job can read Failed AFTER its success callback
         # landed -- activeDeadlineSeconds firing just after the callback PUT completed, an OOM/preempt in
         # the post-callback teardown window -- because the /analysis callback records the result + deletes
@@ -781,7 +730,7 @@ async def _terminalize_if_wedged(row: _RowReconcile, job: Any, name: str) -> boo
 
 def _condition_true(condition: dict[str, Any] | None) -> bool:
     """A Job/Workload condition tuple that is PRESENT and reads ``status="True"``."""
-    return condition is not None and condition.get("status") == "True"
+    return _observe_condition_true(condition)
 
 
 def _quota_hold_reason(quota_reserved: dict[str, Any] | None) -> Any:
@@ -791,9 +740,7 @@ def _quota_hold_reason(quota_reserved: dict[str, Any] | None) -> Any:
     one resolution here is what lets ``_reconcile_workload_state`` read as the mapping table it is
     (RESEARCH Status->Outcome Mapping) rather than re-deriving the same three-part condition per branch.
     """
-    if quota_reserved is None or quota_reserved.get("status") != "False":
-        return None
-    return quota_reserved.get("reason")
+    return _observe_quota_hold_reason(quota_reserved)
 
 
 async def _hold_inadmissible(row: _RowReconcile, name: str) -> None:
@@ -844,8 +791,9 @@ async def _advance_admitted(row: _RowReconcile, job: Any, name: str, *, admitted
 
 async def _reconcile_workload_state(row: _RowReconcile, job: Any, workload: Any, name: str) -> None:
     """Map the paired Kueue Workload's admission conditions to this row's outcome (RESEARCH Status->Outcome Mapping)."""
+    disposition = classify_workload(workload)
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
-    if _condition_true(_workload_condition(workload, _TYPE_EVICTED)):
+    if disposition is WorkloadDisposition.EVICTED:
         # phaze-73sv: same guard as the Job-Failed branch -- a Kueue eviction under quota pressure can
         # land AFTER the pod's success callback PUT completed, and ``_finalize_or_redrive`` finalizes such
         # a row as the success it is rather than re-driving an already-analyzed file against a staged
@@ -855,18 +803,15 @@ async def _reconcile_workload_state(row: _RowReconcile, job: Any, workload: Any,
         await _finalize_or_redrive(row, name, probe_node_loss=True)
         return
 
-    quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
-    hold_reason = _quota_hold_reason(quota_reserved)
-    if hold_reason == _REASON_INADMISSIBLE:
+    if disposition is WorkloadDisposition.INADMISSIBLE:
         await _hold_inadmissible(row, name)
         return
-    if hold_reason == _REASON_PENDING:
+    if disposition is WorkloadDisposition.PENDING:
         await _hold_pending_quota(row)
         return
 
-    admitted_true = _condition_true(_workload_condition(workload, _TYPE_ADMITTED))
-    if admitted_true or _condition_true(quota_reserved):
-        await _advance_admitted(row, job, name, admitted_true=admitted_true)
+    if disposition in (WorkloadDisposition.ADMITTED, WorkloadDisposition.QUOTA_RESERVED):
+        await _advance_admitted(row, job, name, admitted_true=disposition is WorkloadDisposition.ADMITTED)
         return
 
     # Unknown in-flight condition set -> leave the row untouched for a later tick.
