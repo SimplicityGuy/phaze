@@ -31,6 +31,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
 | **[Maintenance Audit — 2026-09-10](maintenance-audit-2026-09-10.md)** | ✅ Final inventory, dispositions, limitations, and validation evidence for the maintenance sprint |
 | **[Structural Maintenance Rebaseline — 2026-09-11](structural-maintenance-rebaseline-2026-09-11.md)** | 🧭 Post-maintenance boundaries, compatibility inventories, invariants, and GO dispositions for the structural follow-on |
+| **[Structural Maintenance Audit — 2026-09-12](structural-maintenance-audit-2026-09-12.md)** | ✅ Final facade decisions, behavior evidence, and same-ruler structural comparison for the structural follow-on |
 | **[Test Bucket Mapping](../tests/BUCKETS.md)** | 🪣 Historical reorganization baseline plus the live CI bucket and shard boundaries |
 | **[Review and Proposal Capability Tests](../tests/review/capabilities/README.md)** | 🧩 Capability ownership and preserved scenario mapping for review and proposal tests |
 | **[Recovery and Cloud-Reconciliation Capability Tests](../tests/analyze/recovery_cloud/README.md)** | ♻️ State/ownership families and preserved scenario mapping for recovery and cloud-reconciliation tests |
