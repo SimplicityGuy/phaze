@@ -29,6 +29,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
+| **[Maintenance Audit — 2026-09-10](maintenance-audit-2026-09-10.md)** | ✅ Final inventory, dispositions, limitations, and validation evidence for the maintenance sprint |
 | **[Test Bucket Mapping](../tests/BUCKETS.md)** | 🪣 Historical reorganization baseline plus the live CI bucket and shard boundaries |
 | **[Watcher Developer Guide](../src/phaze/agent_watcher/README.md)** | 👁️ Watcher flow, bootstrap, configuration, import boundary, and operational behavior |
 
