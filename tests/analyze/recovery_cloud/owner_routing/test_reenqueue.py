@@ -1,40 +1,16 @@
-"""Recovery classification + fileserver re-drive for ``push_file`` (Phase 50 Plan 02).
-
-``recover_orphaned_work`` must classify the new Phase-50 ``push_file`` stage so a crash
-between staging and the push callback leaves the file re-drivable, while a file that has
-already landed on compute scratch (``PUSHED``) -- or advanced past it (``ANALYZED`` /
-``ANALYSIS_FAILED``) -- is treated as DONE and never re-pushed. The re-drive of a still-pushing
-file must route to a FILESERVER agent (the media-mount owner that initiates the rsync), never
-the compute agent, and must skip (not raise) when no fileserver is online (D-10).
-
-The analyze done-set is deliberately UNCHANGED: ``PUSHED`` is NOT analyze-done, so a pushed
-file still drives analysis (a ``process_file`` row for a ``PUSHED`` file stays orphaned).
-
-The queue-loss detector ``count_inflight_jobs`` and the live-key set ``get_live_job_keys`` are
-stubbed per unit test (the unit DB has no ``saq_jobs`` table). ``ctx`` mirrors the controller
-worker shape: ``async_session`` (a sessionmaker bound to the test engine), ``queue`` (a
-controller-queue stand-in), ``task_router`` (a ``DedupFakeTaskRouter`` modeling SAQ dedup).
-"""
+"""Owner-specific fileserver, compute, and controller routing."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
 
-from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import (
-    _DOMAIN_COMPLETED_STAGES,
-    _build_done_sets,
-    _ledger_fids,
-    is_domain_completed,
     recover_orphaned_work,
 )
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -115,31 +91,6 @@ async def _seed_push_ledger(session: AsyncSession, *, file_id: uuid.UUID) -> str
     return key
 
 
-async def _seed_cloud_job_succeeded(session: AsyncSession, file_id: uuid.UUID) -> None:
-    """Seed a compute ``cloud_job`` row at status='succeeded' -- the D-07 sidecar 'pushed and landed' signal.
-
-    Phase 80 cut push-done from ``FileRecord.state == PUSHED`` to
-    ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (D-07). A landed-but-not-yet-analyzed
-    file is now represented by a SUCCEEDED compute cloud_job row (SUCCEEDED = 'pushed and analyzing' on
-    the compute lane), NOT the retired ``PUSHED`` scalar state.
-    """
-    session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id="oci-a1", s3_key=None, status=CloudJobStatus.SUCCEEDED.value))
-    await session.commit()
-
-
-async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
-    """Seed the ``analysis`` output row Phase-80 derives analyze-done from (NAND: never both markers)."""
-    session.add(
-        AnalysisResult(
-            id=uuid.uuid4(),
-            file_id=file_id,
-            analysis_completed_at=datetime.now(UTC) if completed else None,
-            failed_at=datetime.now(UTC) if failed else None,
-        )
-    )
-    await session.commit()
-
-
 @pytest.mark.asyncio
 async def test_pushing_orphan_redrives_to_fileserver(
     session: AsyncSession,
@@ -215,106 +166,6 @@ async def test_pushing_redrive_skips_when_no_fileserver(
     assert "cloud" not in router.queues
     assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert "fileserver" in caplog.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_pushing_pushed_state_is_domain_completed(
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A landed (cloud_job='succeeded') file's push_file row is domain-completed -> NOT re-pushed.
-
-    D-07: push-done is now ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (sidecar-derived,
-    no FileRecord.state read). A SUCCEEDED compute cloud_job row is the 'pushed and landed' signal that
-    replaced the retired ``PUSHED`` scalar state.
-    """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file()
-    session.add(f)
-    await session.commit()
-    await _seed_cloud_job_succeeded(session, f.id)  # landed on compute scratch (D-07)
-    await _seed_push_ledger(session, file_id=f.id)
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
-
-    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
-    assert router.queues == {}
-
-
-@pytest.mark.asyncio
-async def test_pushing_analyzed_state_is_domain_completed(
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A push_file row whose file has domain-completed analyze (done/failed) is past pushing -> domain-completed.
-
-    D-07's second disjunct: ``domain_completed(analyze)`` covers the onward advance past PUSHED. Derived
-    from the ``analysis`` output row (completed_at / failed_at), not the retired ANALYZED / ANALYSIS_FAILED
-    the scalar state.
-    """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f_done = _make_file()
-    f_failed = _make_file()
-    session.add_all([f_done, f_failed])
-    await session.commit()
-    await _seed_analysis(session, f_done.id, completed=True)
-    await _seed_analysis(session, f_failed.id, failed=True)
-    await _seed_push_ledger(session, file_id=f_done.id)
-    await _seed_push_ledger(session, file_id=f_failed.id)
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
-
-    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
-    assert router.queues == {}
-
-
-@pytest.mark.asyncio
-async def test_pushed_file_is_not_analyze_done_for_process_file(
-    session: AsyncSession,
-) -> None:
-    """D-07: a landed (cloud_job='succeeded') file is push-done but NOT analyze-done, so its process_file row re-drives.
-
-    A landed file has rsynced to compute scratch but is not yet analyzed; push-done is derived from the
-    SUCCEEDED cloud_job sidecar (D-07), while analyze-done requires an ``analysis`` output row -- which
-    this file lacks -- so recovery keeps driving its analysis. Both derivations are ledger-scoped, so a
-    ledger row for the file must exist for it to appear in a done-set.
-    """
-    f = _make_file()
-    session.add(f)
-    await session.commit()
-    await _seed_cloud_job_succeeded(session, f.id)  # landed -> push-done via D-07
-    key = await _seed_push_ledger(session, file_id=f.id)
-
-    done_sets = await _build_done_sets(
-        session, _ledger_fids([SchedulingLedger(key=key, function="push_file", routing="agent", payload={"file_id": str(f.id)})])
-    )
-
-    # The landed file IS in the cloud-lane done-set (SUCCEEDED cloud_job, D-07)...
-    assert str(f.id) in done_sets.cloud_lane_done
-
-    # ...but a process_file row for the same file is NOT domain-completed (no analysis row -> analyze pending).
-    pf_row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})
-    assert is_domain_completed(pf_row, done_sets) is False
-
-    # And a push_file row for the same file IS domain-completed (push landed).
-    push_row = SchedulingLedger(key=f"push_file:{f.id}", function="push_file", routing="agent", payload={"file_id": str(f.id)})
-    assert is_domain_completed(push_row, done_sets) is True
-
-
-def test_push_file_is_predicate_covered() -> None:
-    """push_file joins the domain-predicate-covered set (it is keyed and stage-classifiable)."""
-    assert "push_file" in _DOMAIN_COMPLETED_STAGES
-    assert "push_file" in _KEY_BUILDERS
 
 
 def _process_payload(file_id: uuid.UUID, *, agent_id: str) -> dict[str, Any]:

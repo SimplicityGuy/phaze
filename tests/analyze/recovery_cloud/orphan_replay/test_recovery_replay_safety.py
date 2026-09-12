@@ -1,34 +1,4 @@
-"""Recovery must never re-enqueue a job that is GUARANTEED to fail (phaze-71nz).
-
-``recover_orphaned_work`` replays each orphaned ``scheduling_ledger`` row's STORED payload verbatim.
-On 2026-07-31 an operator Recover did that to 430 orphaned ``s3_upload`` rows whose payloads embedded
-presigned S3 PUT URLs signed at the ORIGINAL enqueue. 428 ran their retries out to terminal ``failed``
-against the object store (122x HTTP 403, 257x HTTP 400); zero succeeded. The HTTP layer returned 200
-and "Recovery started — re-enqueuing any orphaned work across all stages" throughout.
-
-These tests drive that scenario through the REAL producer against a REAL (wire-compatible
-``ThreadedMotoServer``) object store rather than a mocked S3 client, because the failure IS an
-object-store response -- a mocked client is exactly what would let this regress unnoticed
-(acceptance 5). ``tests/analyze/services/backends/test_cloud_staging.py`` established this harness; the setup
-fixtures here mirror it deliberately.
-
-WHAT "DEAD CREDENTIALS" MEANS IN THIS HARNESS -- read before changing an assertion. moto does NOT
-enforce presigned-URL expiry (a URL minted with ``ExpiresIn=0`` is still honoured), so the presign-TTL
-half of the incident cannot be reproduced against it directly; that half is covered in
-``tests/analyze/core/test_replay_safety.py``, where the detector is verified against REAL presigned
-URLs in both the SigV4 and the SigV2 ``AWSAccessKeyId``/``Expires``/``Signature`` form the live
-deployment emitted. What moto DOES reproduce faithfully is the other half of the same production
-reality: an orphaned staging upload's multipart is swept -- by ``redrive_upload``'s abort, by the
-terminal ``/failed`` handler, or by the ``AbortIncompleteMultipartUpload`` bucket-lifecycle rule this
-repo configures (``s3_staging.ensure_bucket_lifecycle_ttl``, phaze-sqpv) -- after which its part URLs
-are rejected by the store no matter how well signed they are. So the stored payload is proven dead
-BY THE STORE ITSELF before recovery runs, and the regenerated payload is proven live BY THE STORE
-after it.
-
-MUTATION: revert the fix (let ``_replay_row`` enqueue the stored ``s3_upload`` payload verbatim) and
-``test_recovery_regenerates_presigned_urls_instead_of_replaying_dead_ones`` goes RED on both halves --
-the enqueued URLs are the stale ones, and PUTting to them is refused by the object store.
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -57,12 +27,12 @@ if TYPE_CHECKING:
 
 
 _BUCKET = "phaze-test-staging"
+
 _CREDS = {"aws_access_key_id": "testing", "aws_secret_access_key": "testing"}
+
 _PART_SIZE = 5242880  # 5 MiB (S3 minimum) so part_count is predictable from file_size
+
 _AGENT = "fileserver-01"
-
-
-# Harness: a real object store + a real backends.toml bucket registry
 
 
 @pytest.fixture
@@ -207,9 +177,6 @@ def _cloud_job_stmt(file_id: uuid.UUID):  # type: ignore[no-untyped-def]
     return select(CloudJob).where(CloudJob.file_id == file_id).execution_options(populate_existing=True)
 
 
-# The regression test (acceptance 1 + 4 + 5)
-
-
 async def test_recovery_regenerates_presigned_urls_instead_of_replaying_dead_ones(
     s3_env: str,
     session: AsyncSession,
@@ -285,9 +252,6 @@ async def test_regeneration_re_stages_the_cloud_job_on_a_fresh_multipart(
     assert after.staging_bucket == bucket.id
 
 
-# The deliberate, VISIBLE skip (acceptance 3)
-
-
 async def test_regeneration_without_an_online_fileserver_is_unreplayable_not_reenqueued(
     s3_env: str,
     session: AsyncSession,
@@ -321,9 +285,6 @@ async def test_regeneration_without_an_online_fileserver_is_unreplayable_not_ree
     kept = [r for r in rows if r.key == f"s3_upload:{file.id}"]
     assert len(kept) == 1, "the un-recovered row must stay in the ledger for the next pass"
     assert kept[0].payload["part_urls"] == stale_urls
-
-
-# The GENERAL guard: not pinned to s3_upload (acceptance 2)
 
 
 async def test_recovery_refuses_any_payload_carrying_time_limited_material(

@@ -67,7 +67,7 @@ recovery; the moment this reaper deletes it the SAME ledger row becomes an orpha
 its stored payload through the original keyed producer. Releasing the
 SAQ key is therefore not merely necessary but SUFFICIENT -- provided the ledger row survives. Verified
 end-to-end against a test database in
-``tests/analyze/tasks/test_active_reaper.py::test_reaped_active_row_makes_its_ledger_row_recoverable``,
+``tests/analyze/recovery_cloud/orphan_replay/test_active_reaper.py::test_reaped_active_row_makes_its_ledger_row_recoverable``,
 which also pins the counterfactual: delete the ledger row too and recovery re-enqueues NOTHING, exactly
 the data-loss shape :mod:`phaze.tasks.ledger_reaper` warns about ("an orphaned row is genuinely owed
 work that the ledger is RIGHT to hold"). ``reap_resolved_ledger_rows`` still clears the ledger row

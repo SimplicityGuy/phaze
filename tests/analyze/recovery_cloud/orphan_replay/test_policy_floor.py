@@ -1,26 +1,4 @@
-"""Recovery replay of a legacy NULL-bounds ``process_file`` ledger row (phaze-plpnf).
-
-Live logs on 2026-08-11 showed a steady stream of ``process_file`` jobs dying at exactly 600s
-with a SAQ ``TimeoutError``, carrying ``timeout=600`` / ``retries=4`` -- the ROLE defaults --
-while ``process_file``'s sole producer (``services.analysis_enqueue.enqueue_process_file``)
-pins an explicit policy (``timeout=7200`` / ``retries=2`` then; ``timeout=0`` + a progress
-``heartbeat`` / ``retries=2`` since phaze-w55w1). The observed jobs shared a queued-at cluster
-matching ADR-0006's recorded operator recovery flood: ``scheduling_ledger`` rows written before
-the Phase-45 ``timeout``/``retries`` capture columns existed carry NULL bounds, so
-``reenqueue._replay_row`` omits both kwargs from its replay enqueue, and the queue's
-``apply_project_job_defaults`` before_enqueue hook filled the ROLE default (600s/4 retries)
-instead of ``process_file``'s own policy.
-
-These tests drive ``_replay_row`` against a fake queue whose ``enqueue()`` builds a REAL
-``saq.Job`` and runs the REAL ``apply_project_job_defaults`` hook (the actual production
-before_enqueue chokepoint, not a mock) -- so a regression here is caught at the same layer the
-production hook chain runs, not just at the hook's own unit-test layer
-(``tests/analyze/tasks/test_queue_defaults.py``).
-
-MUTATION: revert ``queue_defaults._FUNCTION_JOB_POLICY`` (or its enforcement) and
-``test_replay_of_null_bounds_process_file_row_lands_on_policy_not_role_default`` goes RED --
-the replayed job comes out at 600s/4 retries, reproducing the 2026-08-08 incident.
-"""
+"""Orphan classification, replay safety, reaping, and crash idempotency."""
 
 from __future__ import annotations
 
@@ -36,9 +14,6 @@ from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.reenqueue import _replay_row, _zero
 
 
-# Mirrors tests/_queue_fakes.py's ``_JOB_CONTROL_FIELDS`` split: SAQ's real
-# ``Queue.enqueue`` routes dataclass-field kwargs (timeout/retries/key/...) onto the Job
-# itself and everything else into ``job.kwargs`` (the task payload).
 _JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
 
 

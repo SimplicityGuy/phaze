@@ -152,12 +152,12 @@ returned fragment now polls `GET /pipeline/recover/status`, which renders the fi
 
 ## Verification
 
-- `tests/analyze/tasks/test_recovery_replay_safety.py` drives an orphaned `s3_upload` row through
+- `tests/analyze/recovery_cloud/orphan_replay/test_recovery_replay_safety.py` drives an orphaned `s3_upload` row through
   `recover_orphaned_work` against a **real** wire-compatible object store (`ThreadedMotoServer`),
   not a mocked S3 client: the stored payload is proven dead **by the store** before recovery runs,
   the enqueued payload is proven to differ, and the regenerated URL is proven to **work** (a real
   part PUT returning an ETag). Reverting to verbatim replay makes it red on both halves.
-- `tests/analyze/core/test_replay_safety.py` verifies the detector against real presigned URLs in
+- `tests/analyze/recovery_cloud/orphan_replay/test_replay_safety.py` verifies the detector against real presigned URLs in
   both signature versions, verifies it is quiet on all nine time-invariant producers' payload
   shapes, and holds the classification totality/disjointness/regenerator-coverage assertions.
 - The general (non-`s3_upload`) case is covered by driving a `process_file` row carrying a presigned

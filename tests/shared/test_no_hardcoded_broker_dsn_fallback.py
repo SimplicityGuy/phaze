@@ -133,8 +133,8 @@ def test_the_scan_actually_reaches_the_known_offender_shape() -> None:
         "tests/integration/test_stage_status_equivalence.py",
         "tests/integration/test_files_page.py",
         "tests/integration/test_lifespan_orphan_task.py",
-        "tests/analyze/tasks/test_recovery.py",
-        "tests/analyze/tasks/test_ledger_backfill.py",
+        "tests/analyze/recovery_cloud/orphan_replay/test_recovery.py",
+        "tests/analyze/recovery_cloud/ledger_backfill/test_backfill.py",
     )
     scanned = {str(p.relative_to(REPO_ROOT)) for p in _sources()}
     for site in known_fixed_sites:

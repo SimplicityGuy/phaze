@@ -29,11 +29,11 @@ if TYPE_CHECKING:
 # MUST create the table with SAQ's CANONICAL column set, not a minimal stub. saq_jobs is shared
 # across the ephemeral test DB, and `CREATE TABLE IF NOT EXISTS` means whichever test creates it
 # FIRST wins. A stub missing `job`/`queue`/`lock_key` poisons every later broker test in the same
-# job (e.g. tests/analyze/tasks/test_ledger_backfill + test_recovery, which INSERT/SELECT those
+# job (e.g. tests/analyze/recovery_cloud/{ledger_backfill,orphan_replay}, which INSERT/SELECT those
 # columns and would raise `UndefinedColumn`). This was hidden while the suite ran as one process
 # (a real PostgresQueue built the canonical table first) and surfaced once the suite was
 # partitioned into per-bucket CI jobs. Schema mirrors saq.queue.postgres_migrations (see
-# tests/analyze/tasks/test_ledger_backfill.py); the extra NOT NULL columns are harmless here
+# tests/analyze/recovery_cloud/ledger_backfill/test_backfill.py); the extra NOT NULL columns are harmless here
 # because no rows are inserted.
 _SAQ_JOBS_DDL = text(
     """
