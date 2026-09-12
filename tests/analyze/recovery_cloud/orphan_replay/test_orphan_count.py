@@ -29,6 +29,7 @@ from phaze.tasks.reenqueue import (
     _natural_id,
     is_domain_completed,
 )
+from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
+
+# DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
+_, SA_DSN = integration_dsns()
+_TARGET_DB = require_test_database(SA_DSN, context="orphan-count integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
 
