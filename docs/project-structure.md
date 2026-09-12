@@ -60,6 +60,7 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Proposal generation | `services/proposal.py` orchestrates context, parsing, provider, and persistence modules |
 | Review workspaces | `services/review.py` orchestrates changes, cue, dedupe, and tag-write review modules |
 | Approved execution | `tasks/execution.py` orchestrates SAQ and reporting; `tasks/execution_filesystem.py` owns guarded local moves |
+| Recovery orchestration | `tasks/reenqueue.py` is the facade over recovery backfill, policy, queries, and replay modules |
 | Set projection | `services/set_projection.py`, `set_projection_writer.py`, `set_projection_backfill.py` |
 | Set views | `services/analysis_timeline.py`, `harmonic_journey.py`, `track_segments.py`, `record_facts.py`, `set_glyph_colors.py`, `set_similarity.py` |
 | Record composition | `routers/record.py`, `templates/record/`, `templates/proposals/partials/analysis_timeline.html`, `templates/ui/set_marks.html` |
