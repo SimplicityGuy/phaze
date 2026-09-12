@@ -1,0 +1,11 @@
+"""SAQ retry identity and legacy-context contracts for execution orchestration."""
+
+from tests.review.tasks import _execution_contract_scenarios as scenarios
+
+
+test_uuids_persisted_in_job_meta_on_first_run = scenarios.test_uuids_persisted_in_job_meta_on_first_run
+test_uuids_reused_from_job_meta_on_retry = scenarios.test_uuids_reused_from_job_meta_on_retry
+test_execution_log_and_progress_use_distinct_uuids = scenarios.test_execution_log_and_progress_use_distinct_uuids
+test_legacy_ctx_without_job_does_not_break = scenarios.test_legacy_ctx_without_job_does_not_break
+test_correct_sha256_still_succeeds = scenarios.test_correct_sha256_still_succeeds
+test_empty_scan_roots_raises_runtime_error = scenarios.test_empty_scan_roots_raises_runtime_error

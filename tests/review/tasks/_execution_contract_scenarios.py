@@ -1,4 +1,4 @@
-"""Tests for agent-side execute_approved_batch progress POSTs (Phase 28 D-03, D-15, D-16, L6/L22).
+"""Explicit execution scenarios collected through responsibility-focused contract modules.
 
 Covers:
 

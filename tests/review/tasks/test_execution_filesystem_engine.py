@@ -1,4 +1,4 @@
-"""Regression tests for the execute_approved_batch move strategy (bead phaze-uciu.5).
+"""Filesystem engine and compatibility-facade move contracts.
 
 The executor must never load a whole file into RAM: the core use case is
 multi-GB concert videos and ``execute_approved_batch`` runs on the 'meta' lane
@@ -32,6 +32,7 @@ from phaze.config import AgentSettings
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 import phaze.tasks.execution as execmod
 from phaze.tasks.execution import _same_filesystem, _streamed_copy, execute_approved_batch
+from phaze.tasks.execution_filesystem import FilesystemMoveRequest, LocalExecutionFilesystemEngine, LocalFilesystemPrimitives, MoveStep
 
 
 if TYPE_CHECKING:
@@ -71,8 +72,6 @@ async def test_same_filesystem_move_is_o1_and_never_streams(tmp_path: Path, monk
     O(1), no bytes read) and adds the one it could not express: the destination create is
     no-clobber, so a file that appeared after the exists-check is refused rather than destroyed.
     """
-    _patch_settings(monkeypatch, [str(tmp_path)])
-    api = _make_api_client_mock()
     orig = tmp_path / "orig" / "concert.mp4"
     orig.parent.mkdir(parents=True, exist_ok=True)
     content = b"a" * (3 * 1024 * 1024)
@@ -86,12 +85,15 @@ async def test_same_filesystem_move_is_o1_and_never_streams(tmp_path: Path, monk
         real_link(src, dst)  # type: ignore[arg-type]
 
     monkeypatch.setattr(execmod.os, "link", spy_link)
-    monkeypatch.setattr(execmod, "_streamed_copy", lambda _s, _d: calls.__setitem__("stream", calls["stream"] + 1))
+    primitives = LocalFilesystemPrimitives()
+    monkeypatch.setattr(primitives, "streamed_copy", lambda _s, _d: calls.__setitem__("stream", calls["stream"] + 1))
 
-    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "moved", "concert.mp4")])
-    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+    result = await LocalExecutionFilesystemEngine(primitives).move(
+        FilesystemMoveRequest(item=_item(orig, "moved", "concert.mp4"), scan_roots=[str(tmp_path)]),
+        MoveStep(),
+    )
 
-    assert result["status"] == "completed"
+    assert result.committed_now is True
     assert calls["link"] == 1
     assert calls["stream"] == 0
     dest = tmp_path / "moved" / "concert.mp4"
@@ -107,8 +109,6 @@ async def test_cross_filesystem_move_streams_with_bounded_memory(tmp_path: Path,
     We force the fallback branch and make ``Path.read_bytes`` fail loudly: if the
     move path ever reads the whole file into memory the test aborts.
     """
-    _patch_settings(monkeypatch, [str(tmp_path)])
-    api = _make_api_client_mock()
     orig = tmp_path / "orig" / "huge.mkv"
     orig.parent.mkdir(parents=True, exist_ok=True)
     content = b"z" * (5 * 1024 * 1024)
@@ -116,7 +116,8 @@ async def test_cross_filesystem_move_streams_with_bounded_memory(tmp_path: Path,
 
     from pathlib import Path as _Path
 
-    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: False)
+    primitives = LocalFilesystemPrimitives()
+    monkeypatch.setattr(primitives, "same_filesystem", lambda _s, _d: False)
 
     def _forbid_read_bytes(_self: object) -> bytes:
         msg = "read_bytes() slurps the whole file -- the streamed move must not call it"
@@ -124,11 +125,12 @@ async def test_cross_filesystem_move_streams_with_bounded_memory(tmp_path: Path,
 
     monkeypatch.setattr(_Path, "read_bytes", _forbid_read_bytes)
 
-    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "out", "huge.mkv")])
-    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+    result = await LocalExecutionFilesystemEngine(primitives).move(
+        FilesystemMoveRequest(item=_item(orig, "out", "huge.mkv"), scan_roots=[str(tmp_path)]),
+        MoveStep(),
+    )
 
-    assert result["status"] == "completed"
-    assert result["error_count"] == 0
+    assert result.committed_now is True
     dest = tmp_path / "out" / "huge.mkv"
     assert dest.exists()
     with dest.open("rb") as fh:
