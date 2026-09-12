@@ -2,7 +2,8 @@
 #
 # `scripts/select_impacted_tests.py` returns the `docs` verdict (exit 4) when every path in the
 # diff is prose, and `just test-fast` runs exactly this list instead of the ~21-minute suite.
-# Measured 2026-08-25 on seat `docsgate`: 193 tests, 9.4-9.9 s.
+# Measured 2026-09-12 on seat `structural-audit`: 21 modules, 274 tests,
+# 164.37 s pytest / 185.61 s wall.
 #
 # THIS FILE IS DERIVED, NOT CURATED. `tests/shared/test_fast_gate.py` scans every test module for a
 # reference to a tracked prose path and fails the build if one is missing here, so a prose guard
@@ -20,6 +21,7 @@ tests/agents/deployment/test_k8s_runbook.py
 tests/analyze/services/backends/test_kube_env_contract.py
 tests/shared/core/test_docs_beui03.py
 tests/shared/core/test_docs_ia_current.py
+tests/shared/core/test_structural_boundary_contracts.py
 tests/shared/routers/test_pipeline_analysis_bind_param_cap.py
 tests/shared/telemetry/test_alert_rules.py
 tests/shared/telemetry/test_metric_catalogue.py
