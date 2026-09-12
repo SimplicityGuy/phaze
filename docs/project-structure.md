@@ -26,7 +26,7 @@ a module makes the inventory fail until this page is reconciled.
 | `routers/` | 52 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 20 | Pydantic wire contracts; agent payloads remain ORM-free |
 | `services/` | 122 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 42 | SAQ controller/agent jobs and shared queue policy |
+| `tasks/` | 43 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 11 | OpenTelemetry bootstrap and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -57,6 +57,7 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
 | Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py` |
+| Approved execution | `tasks/execution.py` orchestrates SAQ and reporting; `tasks/execution_filesystem.py` owns guarded local moves |
 | Set projection | `services/set_projection.py`, `set_projection_writer.py`, `set_projection_backfill.py` |
 | Set views | `services/analysis_timeline.py`, `harmonic_journey.py`, `track_segments.py`, `record_facts.py`, `set_glyph_colors.py`, `set_similarity.py` |
 | Record composition | `routers/record.py`, `templates/record/`, `templates/proposals/partials/analysis_timeline.html`, `templates/ui/set_marks.html` |
