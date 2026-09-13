@@ -57,6 +57,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
 _WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_SECURITY_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "security.yml"
 _ROOT_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
 _BUCKETS_JSON = _REPO_ROOT / "tests" / "buckets.json"
@@ -88,6 +89,12 @@ def _load_workflow() -> dict[str, Any]:
 def _load_root_workflow() -> dict[str, Any]:
     assert _ROOT_WORKFLOW_PATH.is_file(), f"missing workflow: {_ROOT_WORKFLOW_PATH}"
     loaded: dict[str, Any] = yaml.safe_load(_ROOT_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    return loaded
+
+
+def _load_security_workflow() -> dict[str, Any]:
+    assert _SECURITY_WORKFLOW_PATH.is_file(), f"missing workflow: {_SECURITY_WORKFLOW_PATH}"
+    loaded: dict[str, Any] = yaml.safe_load(_SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
     return loaded
 
 
@@ -123,6 +130,15 @@ def test_root_ci_does_not_serialize_tests_behind_quality() -> None:
 
     assert jobs["test"]["needs"] == ["detect-changes"]
     assert {"quality", "test"} <= set(jobs["aggregate-results"]["needs"])
+
+
+def test_python_security_job_calls_the_public_bandit_recipe() -> None:
+    """The workflow must use the current public recipe name, not the retired alias."""
+    steps = _load_security_workflow()["jobs"]["python-security"]["steps"]
+    runs = [step["run"] for step in steps if "run" in step]
+
+    assert "just bandit" in runs
+    assert "just security" not in runs
 
 
 @pytest.mark.parametrize(
