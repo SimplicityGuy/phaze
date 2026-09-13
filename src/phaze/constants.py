@@ -46,6 +46,22 @@ EXTENSION_MAP: dict[str, FileCategory] = {
     ".md5": FileCategory.COMPANION,
 }
 
+INGESTIBLE_COMPANION_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".cue",
+        ".m3u",
+        ".m3u8",
+        ".nfo",
+        ".pls",
+        ".txt",
+    }
+)
+"""Companion extensions admitted by the scan and watcher ingestion producers.
+
+This is the operator-approved D6 subset of the COMPANION entries in
+``EXTENSION_MAP``. Artwork and checksum companions remain intentionally excluded.
+"""
+
 BULK_INSERT_BATCH_SIZE: int = 1000
 """Number of records per bulk INSERT batch for database ingestion."""
 
