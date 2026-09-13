@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
@@ -47,6 +48,21 @@ _MAX_GROUP_MEMBERS = 500
 # caller left for it -- correct at the time. GET /duplicates/groups (routers/duplicates.py) is that
 # caller now; do not delete this again on the same reasoning without checking for one.
 GROUP_PAGE_SIZE = 100
+
+_DEDUP_MEDIA_TYPES = frozenset(
+    extension.lstrip(".") for extension, category in EXTENSION_MAP.items() if category in {FileCategory.MUSIC, FileCategory.VIDEO}
+)
+
+
+def _dedup_population_clause() -> ColumnElement[bool]:
+    """Restrict dedup reads and writes to the current media-file allowlist.
+
+    PROVISIONAL: On 2026-08-24, operator decision D1 recorded on phaze-j8hjn kept COMPANION
+    rows outside the destructive dedup workflow until phaze-4ywkm uses real companion groups
+    to decide their permanent semantics. Deriving the allowlist from ``EXTENSION_MAP`` means a
+    future category is excluded by default.
+    """
+    return FileRecord.file_type.in_(_DEDUP_MEDIA_TYPES)
 
 
 def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
@@ -166,6 +182,7 @@ def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
     """
     return (
         select(FileRecord.sha256_hash)
+        .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
@@ -199,6 +216,7 @@ def _select_capped_group_members(hash_filter: ColumnElement[bool], cap: int = _M
             func.row_number().over(partition_by=FileRecord.sha256_hash, order_by=FileRecord.original_path).label("rn"),
         )
         .where(hash_filter)
+        .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
     ).subquery()
     capped_ids = select(ranked.c.id).where(ranked.c.rn <= cap + 1)
@@ -294,6 +312,7 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = GROUP_PAGE_S
     stmt = (
         select(FileRecord)
         .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
+        .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
         .order_by(FileRecord.sha256_hash, FileRecord.original_path)
     )
@@ -401,6 +420,7 @@ def _duplicate_hash_population() -> Subquery:
     """
     return (
         select(FileRecord.sha256_hash)
+        .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
@@ -453,6 +473,7 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
         func.sum(FileRecord.file_size).label("total_size"),
     ).where(
         FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)),
+        _dedup_population_clause(),
         ~dedup_resolved_clause(),
     )
     stats_result = await session.execute(stats_stmt)
@@ -467,6 +488,7 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
         )
         .where(
             FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)),
+            _dedup_population_clause(),
             ~dedup_resolved_clause(),
         )
         .group_by(FileRecord.sha256_hash)
@@ -509,7 +531,9 @@ async def _assert_reviewed_snapshot(
     """
     await session.execute(text("LOCK TABLE files IN SHARE MODE"))
     current_result = await session.execute(
-        select(FileRecord.id).where(FileRecord.sha256_hash == group_hash, ~dedup_resolved_clause()).order_by(FileRecord.id)
+        select(FileRecord.id)
+        .where(FileRecord.sha256_hash == group_hash, _dedup_population_clause(), ~dedup_resolved_clause())
+        .order_by(FileRecord.id)
     )
     current_member_ids = set(current_result.scalars().all())
     if canonical_id not in reviewed_member_ids or current_member_ids != reviewed_member_ids:
@@ -618,6 +642,7 @@ async def resolve_group(
     canonical_membership_stmt = select(FileRecord.id).where(
         FileRecord.sha256_hash == group_hash,
         FileRecord.id == canonical_id,
+        _dedup_population_clause(),
         ~dedup_resolved_clause(),
     )
     canonical_membership = await session.execute(canonical_membership_stmt)
@@ -628,6 +653,7 @@ async def resolve_group(
     stmt = select(FileRecord).where(
         FileRecord.sha256_hash == group_hash,
         FileRecord.id != canonical_id,
+        _dedup_population_clause(),
         ~dedup_resolved_clause(),
     )
     if reviewed_member_ids is not None:
