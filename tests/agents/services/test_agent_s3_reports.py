@@ -368,3 +368,18 @@ async def test_uploaded_protocol_late_callback_is_noop_without_network(
     assert result.outcome is ProtocolOutcome.NOOP
     assert result.reason is UploadedReason.ABSENT_OR_LATE
     complete.assert_not_awaited()
+
+
+async def test_uploaded_protocol_absent_cloud_job_is_noop_without_network(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown upload callback is a typed no-op without relying on an assertion."""
+    complete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", complete)
+
+    result = await process_uploaded(session, uuid.uuid4(), [(1, '"etag"')], ControlSettings(), SimpleNamespace(), AsyncMock())
+
+    assert result.outcome is ProtocolOutcome.NOOP
+    assert result.reason is UploadedReason.ABSENT_OR_LATE
+    complete.assert_not_awaited()

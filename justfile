@@ -600,11 +600,11 @@ vulture:
 # and the combine job (needs: [test]) would never run. The global gate is enforced
 # once, on the COMBINED number, by `coverage-combine`.
 #
-# PATHS is one or more space-separated `tests/...` paths (phaze-crq9k: the CI matrix is
-# driven off tests/ci_shards.json, whose entries can split a single tests/<bucket>
-# directory into several parallel shards, e.g. "tests/shared/core" and
-# "tests/shared/routers tests/shared/services ..."). NAME is only the shard label used
-# for the .coverage.<NAME> shard filename -- it no longer has to equal a directory name.
+# PATHS is one or more space-separated `tests/...` paths or `--ignore=tests/...` exclusions
+# (phaze-crq9k: the CI matrix is driven off tests/ci_shards.json, whose entries can split a
+# single tests/<bucket> directory into several parallel shards, e.g. "tests/shared/core" and
+# "tests/shared --ignore=tests/shared/core"). NAME is only the shard label used for the
+# .coverage.<NAME> shard filename -- it no longer has to equal a directory name.
 #
 # THIS RECIPE DELIBERATELY DOES NOT USE {{cov_reports}}. Acceptance criterion 4 -- "JSON and XML
 # are emitted by every coverage-producing recipe" -- was narrowed to whole-suite recipes by an
@@ -634,7 +634,10 @@ test-bucket NAME PATHS MODE="serial":
     read -r -a path_args <<<"$paths"
     ((${#path_args[@]} > 0)) || { echo "❌ PATHS must name at least one tests/... path" >&2; exit 2; }
     for path in "${path_args[@]}"; do
-        [[ "$path" =~ ^tests/[A-Za-z0-9_./-]+$ ]] || { echo "❌ invalid test path: $path" >&2; exit 2; }
+        [[ "$path" =~ ^tests/[A-Za-z0-9_./-]+$ || "$path" =~ ^--ignore=tests/[A-Za-z0-9_./-]+$ ]] || {
+            echo "❌ invalid test path or exclusion: $path" >&2
+            exit 2
+        }
     done
     case "$mode" in
         serial) xdist_args=() ;;

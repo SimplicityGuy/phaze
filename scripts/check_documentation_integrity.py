@@ -18,9 +18,9 @@ import sys
 import tempfile
 import time
 from typing import TYPE_CHECKING, NamedTuple, cast
-from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urldefrag, urlsplit
-from urllib.request import Request, urlopen
+
+import httpx
 
 
 if TYPE_CHECKING:
@@ -531,17 +531,30 @@ def render_mermaid_sources(sources: Sequence[MermaidSource], renderer: str | Non
 
 
 def _check_external_url(target: str) -> str | None:
+    """Check one HTTP(S) target with the repository's HTTP-only client.
+
+    ``httpx`` deliberately replaces ``urllib.request.urlopen`` here, matching the earlier
+    telemetry-script repair in fef20ec0. ``urlopen`` also accepts ``file:`` and custom schemes,
+    which is the vulnerability class flagged by Ruff, Bandit, and Semgrep; changing clients
+    removes that class instead of suppressing it. The explicit scheme check preserves this
+    function's contract of ignoring non-HTTP documentation targets.
+    """
     url, _ = urldefrag(target)
     if urlsplit(url).scheme not in {"http", "https"}:
         return None
-    request = Request(url, method="HEAD", headers={"User-Agent": "phaze-documentation-integrity/1"})  # noqa: S310
     try:
-        with urlopen(request, timeout=10):  # noqa: S310  # nosec B310 -- schemes are explicitly restricted above
-            return None
-    except HTTPError as error:
-        return f"{target}: HTTP {error.code}"
-    except (OSError, URLError) as error:
+        response = httpx.head(
+            url,
+            headers={"User-Agent": "phaze-documentation-integrity/1"},
+            timeout=10,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        return f"{target}: HTTP {error.response.status_code}"
+    except httpx.HTTPError as error:
         return f"{target}: {error}"
+    return None
 
 
 def check_external_targets(

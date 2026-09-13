@@ -170,9 +170,9 @@ _UPLOAD_FAILED_OUTCOME_BY_REASON = {
 }
 
 
-def _upload_id_to_complete(cloud_job: CloudJob | None) -> str | None:
+def _upload_id_to_complete(cloud_job: CloudJob) -> str | None:
     """Return the live multipart generation, or decide that the callback is late."""
-    if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value:
+    if cloud_job.status != CloudJobStatus.UPLOADING.value:
         return None
     return cloud_job.upload_id
 
@@ -258,13 +258,13 @@ async def process_uploaded(
     generation this callback completed.
     """
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    if cloud_job is None:
+        return _uploaded_result(UploadedReason.ABSENT_OR_LATE)
     upload_id = _upload_id_to_complete(cloud_job)
     # No staging row, already past UPLOADING (completed/failed), or no multipart to complete:
     # idempotent no-op, never re-complete (T-53-15). The router renders this as a 200.
     if upload_id is None:
         return _uploaded_result(UploadedReason.ABSENT_OR_LATE)
-
-    assert cloud_job is not None
 
     # phaze-eo5x: an EMPTY parts list is a degenerate/zero-byte upload (the agent's _transfer_parts
     # returns [] for a 0-byte source: the first read yields b'' and breaks before any PUT). S3 multipart

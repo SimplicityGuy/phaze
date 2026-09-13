@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import httpx
 import pytest
 
 from scripts import check_documentation_integrity as integrity
@@ -219,3 +220,52 @@ def test_external_failures_remain_separate_from_deterministic_results() -> None:
     errors = integrity.check_external_targets(targets, lambda target: f"{target}: unavailable" if target.startswith("https://") else None)
 
     assert errors == ("https://example.invalid/one: unavailable",)
+
+
+def test_external_url_uses_httpx_head_and_follows_redirects(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, str], int, bool]] = []
+
+    def fake_head(url: str, *, headers: dict[str, str], timeout: int, follow_redirects: bool) -> httpx.Response:
+        calls.append((url, headers, timeout, follow_redirects))
+        return httpx.Response(204, request=httpx.Request("HEAD", url))
+
+    monkeypatch.setattr(integrity.httpx, "head", fake_head)
+
+    assert integrity._check_external_url("https://example.invalid/docs#section") is None
+    assert calls == [
+        (
+            "https://example.invalid/docs",
+            {"User-Agent": "phaze-documentation-integrity/1"},
+            10,
+            True,
+        )
+    ]
+
+
+def test_external_url_reports_httpx_status_and_transport_failures(monkeypatch) -> None:
+    target = "https://example.invalid/missing"
+    request = httpx.Request("HEAD", target)
+    responses: list[httpx.Response | httpx.HTTPError] = [
+        httpx.Response(404, request=request),
+        httpx.ConnectError("unavailable", request=request),
+    ]
+
+    def fake_head(*_args: object, **_kwargs: object) -> httpx.Response:
+        result = responses.pop(0)
+        if isinstance(result, httpx.HTTPError):
+            raise result
+        return result
+
+    monkeypatch.setattr(integrity.httpx, "head", fake_head)
+
+    assert integrity._check_external_url(target) == f"{target}: HTTP 404"
+    assert integrity._check_external_url(target) == f"{target}: unavailable"
+
+
+def test_external_url_skips_non_http_schemes_without_a_request(monkeypatch) -> None:
+    def unexpected_head(*_args: object, **_kwargs: object) -> httpx.Response:
+        raise AssertionError("non-HTTP targets must not reach the HTTP client")
+
+    monkeypatch.setattr(integrity.httpx, "head", unexpected_head)
+
+    assert integrity._check_external_url("mailto:operator@example.invalid") is None
