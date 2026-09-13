@@ -100,6 +100,43 @@ async def test_two_separate_duplicate_groups(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_companion_rows_are_excluded_from_every_duplicate_group_reader(session: AsyncSession) -> None:
+    """D1: companion rows stay off every dedup read path while media behavior is unchanged.
+
+    The basic reader feeds ``routers/companion.py``; the metadata reader feeds the Dedupe
+    workspace and ``GET /duplicates/groups``; the exact-hash and single-hash readers feed its
+    resolve/undo refresh paths. The companion sharing the media hash also proves membership is
+    filtered, not merely the initial grouped-hash selection.
+    """
+    media = [
+        _make_file("/dir/media-1.mp3", "mp3", HASH_A),
+        _make_file("/dir/media-2.flac", "flac", HASH_A),
+    ]
+    companions = [
+        _make_file("/dir/notes-1.txt", "txt", HASH_B),
+        _make_file("/dir/notes-2.txt", "txt", HASH_B),
+        _make_file("/dir/media-copy.txt", "txt", HASH_A),
+    ]
+    session.add_all([*media, *companions])
+    await session.flush()
+
+    basic_groups = await find_duplicate_groups(session)
+    metadata_groups = await find_duplicate_groups_with_metadata(session)
+    exact_groups = await find_duplicate_groups_by_hashes(session, [HASH_A, HASH_B])
+    media_group = await find_duplicate_group_by_hash(session, HASH_A)
+    companion_group = await find_duplicate_group_by_hash(session, HASH_B)
+
+    for groups in (basic_groups, metadata_groups, exact_groups):
+        assert [group["sha256_hash"] for group in groups] == [HASH_A]
+        assert groups[0]["count"] == 2
+        assert {member["file_type"] for member in groups[0]["files"]} == {"mp3", "flac"}
+    assert media_group is not None
+    assert media_group["count"] == 2
+    assert {member["file_type"] for member in media_group["files"]} == {"mp3", "flac"}
+    assert companion_group is None
+
+
+@pytest.mark.asyncio
 async def test_pagination_limit(session: AsyncSession) -> None:
     """Pagination (limit=1) returns only 1 group."""
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)

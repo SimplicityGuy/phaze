@@ -1,6 +1,6 @@
 """Tests for phaze.constants module."""
 
-from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
+from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 from phaze.services.hashing import _HASH_CHUNK_SIZE
 
 
@@ -44,6 +44,12 @@ def test_companion_extensions_classified():
     companion_exts = [".cue", ".nfo", ".txt", ".jpg", ".jpeg", ".png", ".gif", ".m3u", ".m3u8", ".pls", ".sfv", ".md5"]
     for ext in companion_exts:
         assert EXTENSION_MAP[ext] == FileCategory.COMPANION, f"{ext} should be COMPANION"
+
+
+def test_ingestible_companion_extensions_are_the_approved_subset():
+    """Only the six operator-approved text/metadata companions enter ingestion."""
+    assert frozenset({".cue", ".nfo", ".txt", ".m3u", ".m3u8", ".pls"}) == INGESTIBLE_COMPANION_EXTENSIONS
+    assert all(EXTENSION_MAP[ext] is FileCategory.COMPANION for ext in INGESTIBLE_COMPANION_EXTENSIONS)
 
 
 def test_unknown_extension_not_in_map():
