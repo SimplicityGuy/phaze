@@ -108,7 +108,7 @@ repos:
         args: [--shell=bash, --severity=warning]
 
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: 05c1426671b9237fb5e1444dd63aa5731bec0dfb  # frozen: v3.13.1-1
+    rev: 479be5958357ba5ab65ce47172117348516860e9  # frozen: v3.14.1-1
     hooks:
       - id: shfmt
         args: [--indent=2, --case-indent, --language-dialect=bash, --write]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shlex
@@ -170,7 +171,7 @@ def test_variadic_flags_are_forwarded_as_discrete_argv(tmp_path: Path) -> None:
     assert not (REPO_ROOT / "never").exists()
 
 
-def test_bucket_paths_and_parallel_mode_become_validated_argv(tmp_path: Path) -> None:
+def test_bucket_paths_exclusions_and_parallel_mode_become_validated_argv(tmp_path: Path) -> None:
     log = tmp_path / "argv"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -181,7 +182,7 @@ def test_bucket_paths_and_parallel_mode_become_validated_argv(tmp_path: Path) ->
     )
     fake_uv.chmod(0o755)
     result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
-        [JUST, "test-bucket", "shared_1", "tests/shared tests/agents", "parallel"],
+        [JUST, "test-bucket", "shared_1", "tests/shared --ignore=tests/shared/core tests/agents", "parallel"],
         cwd=REPO_ROOT,
         env=os.environ | {"ARGV_LOG": str(log), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         text=True,
@@ -192,8 +193,51 @@ def test_bucket_paths_and_parallel_mode_become_validated_argv(tmp_path: Path) ->
     argv = log.read_text(encoding="utf-8")
     assert "coverage=.coverage.shared_1" in argv
     assert "<tests/shared>" in argv
+    assert "<--ignore=tests/shared/core>" in argv
     assert "<tests/agents>" in argv
     assert "<-n>" in argv and "<auto>" in argv
+
+
+def test_bucket_rejects_unsupported_pytest_options_before_uv(tmp_path: Path) -> None:
+    marker = tmp_path / "uv-called"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
+    fake_uv.chmod(0o755)
+
+    result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit invalid input and controlled PATH
+        [JUST, "test-bucket", "shared", "tests/shared --maxfail=0", "serial"],
+        cwd=REPO_ROOT,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "invalid test path or exclusion: --maxfail=0" in result.stderr
+    assert not marker.exists()
+
+
+def test_every_ci_shard_path_expression_passes_the_recipe_validator(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_uv.chmod(0o755)
+    shards = json.loads((REPO_ROOT / "tests" / "ci_shards.json").read_text(encoding="utf-8"))
+
+    for shard in shards:
+        result = subprocess.run(  # noqa: S603 - resolved Just binary with repository-owned shard data and controlled PATH
+            [JUST, "test-bucket", shard["name"], shard["paths"], "serial"],
+            cwd=REPO_ROOT,
+            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{shard['name']}: {result.stderr}"
 
 
 def test_raw_fragment_boundaries_are_documented_and_minimized() -> None:
