@@ -2,7 +2,7 @@
 
 Five behaviors mirror 27-PATTERNS.md lines 1211-1215:
 
-1. Extension filter: only music/video extensions reach the debouncer touch.
+1. Extension filter: music/video plus six approved companion extensions reach the debouncer touch.
 2. Directory events ignored (DirCreatedEvent fires no callback).
 3. RAW src_path dispatch -- NO NFC normalization before the debouncer
    (phaze-hk7k correction: the path is later used verbatim as the
@@ -39,67 +39,53 @@ if TYPE_CHECKING:
 
 
 def test_event_handler_filters_by_extension() -> None:
-    """`.txt` event ignored; `.mp3` event triggers a single dispatch via the loop."""
+    """Approved companions and media dispatch; unknown extensions do not."""
     loop = MagicMock()
     touch = MagicMock()
     handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
 
-    handler.on_created(FileCreatedEvent(src_path="/foo/a.txt"))
+    handler.on_created(FileCreatedEvent(src_path="/foo/a.bin"))
     assert loop.call_soon_threadsafe.call_count == 0
 
     handler.on_created(FileCreatedEvent(src_path="/foo/b.mp3"))
-    assert loop.call_soon_threadsafe.call_count == 1
+    handler.on_created(FileCreatedEvent(src_path="/foo/c.txt"))
+    assert loop.call_soon_threadsafe.call_count == 2
     # First positional arg is the touch callable, second is the normalized path.
     args, _ = loop.call_soon_threadsafe.call_args
     assert args[0] is touch
-    assert args[1] == "/foo/b.mp3"
+    assert args[1] == "/foo/c.txt"
 
 
-def test_observer_extractable_set_is_music_and_video_only() -> None:
-    """CR-01 regression: watcher's _EXTRACTABLE must be exactly {MUSIC, VIDEO}.
+def test_observer_ingestible_extensions_are_derived_from_extension_map() -> None:
+    """D6: watcher candidates are every media extension plus the approved companions."""
+    from phaze.agent_watcher.observer import _INGESTIBLE_EXTENSIONS
+    from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 
-    The watcher's filter, scan_directory's filter, and the auto-enqueue gate in
-    ``routers/agent_files.py`` MUST stay in lockstep; otherwise the operator-
-    triggered ingestion population diverges from the watcher's ingestion
-    population (CR-01).
-    """
-    from phaze.agent_watcher.observer import _EXTRACTABLE
-    from phaze.constants import FileCategory
-
-    assert frozenset({FileCategory.MUSIC, FileCategory.VIDEO}) == _EXTRACTABLE
+    media_extensions = {ext for ext, category in EXTENSION_MAP.items() if category in {FileCategory.MUSIC, FileCategory.VIDEO}}
+    assert media_extensions | INGESTIBLE_COMPANION_EXTENSIONS == _INGESTIBLE_EXTENSIONS
 
 
-def test_observer_drops_companion_files() -> None:
-    """CR-01 regression: COMPANION extensions (.cue/.nfo/.txt/.jpg/...) drop without dispatch.
-
-    Companion files must NOT enter the debouncer; otherwise the watcher would
-    POST FileRecord rows for COMPANION siblings, which would never be auto-
-    enqueued for metadata extraction. Today's filter is MUSIC+VIDEO; this test
-    pins the exhaustive companion-extension set down so a future schema change
-    that re-categorizes (say) ``.cue`` as MUSIC surfaces loudly.
-    """
+def test_observer_accepts_approved_companions_and_drops_excluded_companions() -> None:
+    """D6-D8: watcher accepts the six approved companions without a sibling check."""
     loop = MagicMock()
     touch = MagicMock()
     handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
 
-    companion_extensions = (
-        ".cue",
-        ".nfo",
-        ".txt",
+    accepted_extensions = (".cue", ".nfo", ".txt", ".m3u", ".m3u8", ".pls")
+    excluded_extensions = (
         ".jpg",
         ".jpeg",
         ".png",
         ".gif",
-        ".m3u",
-        ".m3u8",
-        ".pls",
         ".sfv",
         ".md5",
     )
-    for ext in companion_extensions:
+    for ext in (*accepted_extensions, *excluded_extensions):
         handler.on_created(FileCreatedEvent(src_path=f"/foo/companion{ext}"))
 
-    assert loop.call_soon_threadsafe.call_count == 0
+    assert loop.call_soon_threadsafe.call_count == len(accepted_extensions)
+    dispatched = [call.args[1] for call in loop.call_soon_threadsafe.call_args_list]
+    assert dispatched == [f"/foo/companion{ext}" for ext in accepted_extensions]
     assert touch.call_count == 0
 
 
@@ -350,16 +336,16 @@ def test_event_handler_on_moved_does_not_dispatch_src_path() -> None:
 
 
 def test_event_handler_on_moved_filters_dest_extension() -> None:
-    """A move whose dest_path extension is not music/video is still filtered out.
+    """A move whose dest_path extension is not ingestible is still filtered out.
 
-    E.g. an in-tree rename that lands on a companion (.nfo/.jpg/...) or
-    otherwise-uninteresting extension must not reach the debouncer.
+    An in-tree rename that lands on an excluded artwork companion must not reach
+    the debouncer even though approved text/metadata companions now do.
     """
     loop = MagicMock()
     touch = MagicMock()
     handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
 
-    handler.on_moved(FileMovedEvent(src_path="/music/a.tmp", dest_path="/music/notes.txt"))
+    handler.on_moved(FileMovedEvent(src_path="/music/a.tmp", dest_path="/music/cover.jpg"))
 
     assert loop.call_soon_threadsafe.call_count == 0
     assert touch.call_count == 0
