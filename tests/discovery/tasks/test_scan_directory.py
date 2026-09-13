@@ -1,8 +1,8 @@
 """Tests for the scan_directory SAQ task (Phase 27 Plan 04, D-11..D-13).
 
 Covers:
-- Extension filter (only MUSIC + VIDEO; UNKNOWN and COMPANION dropped -- matches
-  watcher's _EXTRACTABLE so manual-scan ingestion population == watcher ingestion population).
+- Extension filter (MUSIC + VIDEO plus the six approved COMPANION extensions;
+  companions require a media sibling only on settled-tree scans).
 - Exact chunking at AgentSettings.scan_chunk_size (default 500).
 - Per-chunk PATCH(processed_files=...) calls with monotonic counts.
 - Terminal PATCH(status='completed', total_files=N, processed_files=N).
@@ -84,25 +84,26 @@ def _touch(p: Path, size: int = 1) -> None:
 
 
 async def test_scan_directory_walks_known_extensions(tmp_path: Path) -> None:
-    """Only MUSIC + VIDEO categories are posted; UNKNOWN and COMPANION extensions dropped."""
+    """MUSIC/VIDEO ingestion remains unchanged while an approved sibling companion is added."""
     from phaze.tasks.scan import scan_directory
 
     _touch(tmp_path / "a.mp3")
     _touch(tmp_path / "b.flac")
     _touch(tmp_path / "c.unknownext")  # UNKNOWN -- must be filtered
     _touch(tmp_path / "d.mp4")
+    _touch(tmp_path / "notes.txt")
 
     ctx = _make_ctx()
     result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
     assert result["status"] == "completed"
-    assert result["files_posted"] == 3
+    assert result["files_posted"] == 4
 
-    # Single chunk because 3 < default 500.
+    # Single chunk because 4 < default 500.
     assert ctx["api_client"].upsert_files.await_count == 1
     chunk = ctx["api_client"].upsert_files.await_args.args[0]
     file_types = {r.file_type for r in chunk.files}
-    assert file_types == {"mp3", "flac", "mp4"}
+    assert file_types == {"mp3", "flac", "mp4", "txt"}
 
 
 def test_resolve_chunk_size_falls_back_when_not_agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,35 +129,20 @@ def test_resolve_chunk_size_falls_back_when_not_agent_settings(monkeypatch: pyte
     assert scan_mod._resolve_chunk_size() == scan_mod._DEFAULT_SCAN_CHUNK_SIZE
 
 
-def test_scan_directory_extractable_set_is_music_and_video_only() -> None:
-    """CR-01 regression: _EXTRACTABLE must be exactly {MUSIC, VIDEO}.
+def test_scan_directory_ingestible_extensions_are_derived_from_extension_map() -> None:
+    """D6: media plus exactly the approved companion subset are candidates."""
+    from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
+    from phaze.tasks.scan import _INGESTIBLE_EXTENSIONS
 
-    Asserting the explicit set (not just behaviour) pins down the chosen filter so
-    that future schema widening of FileCategory (e.g., a new SUBTITLE category)
-    cannot silently change scan_directory's ingestion population without breaking
-    this test. The watcher uses the same frozenset (see
-    ``agent_watcher/observer.py``) and the auto-enqueue gate uses the same one
-    (``routers/agent_files.py``); the three sets MUST stay in lockstep.
-    """
-    from phaze.constants import FileCategory
-    from phaze.tasks.scan import _EXTRACTABLE
-
-    assert frozenset({FileCategory.MUSIC, FileCategory.VIDEO}) == _EXTRACTABLE
+    media_extensions = {ext for ext, category in EXTENSION_MAP.items() if category in {FileCategory.MUSIC, FileCategory.VIDEO}}
+    assert media_extensions | INGESTIBLE_COMPANION_EXTENSIONS == _INGESTIBLE_EXTENSIONS
 
 
-async def test_scan_directory_drops_companion_files(tmp_path: Path) -> None:
-    """CR-01 regression: COMPANION extensions (.cue/.nfo/.txt/.jpg/.png/.m3u/...) are NOT posted.
-
-    The watcher drops these (see ``agent_watcher/observer.py``); scan_directory
-    must match so the LIVE-sentinel batch row population is identical to what
-    the operator-triggered scan produces. Otherwise a manual scan would insert
-    FileRecord rows for companion siblings that the watcher never discovers,
-    creating divergent ingestion sets between the two paths.
-    """
+async def test_scan_directory_accepts_only_approved_companions_with_media_sibling(tmp_path: Path) -> None:
+    """D6-D7: accept six companion extensions beside media and reject the other six."""
     from phaze.tasks.scan import scan_directory
 
-    # One file from each COMPANION extension surveyed by EXTENSION_MAP. Plus a
-    # MUSIC file so the walk produces at least one upsert chunk to inspect.
+    # One file from each COMPANION extension surveyed by EXTENSION_MAP, plus media.
     _touch(tmp_path / "cover.jpg")
     _touch(tmp_path / "art.jpeg")
     _touch(tmp_path / "art.png")
@@ -175,11 +161,37 @@ async def test_scan_directory_drops_companion_files(tmp_path: Path) -> None:
     result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
     assert result["status"] == "completed"
-    # Only song.mp3 survives the MUSIC+VIDEO filter.
+    assert result["files_posted"] == 7
+    chunk = ctx["api_client"].upsert_files.await_args.args[0]
+    assert {record.original_filename for record in chunk.files} == {
+        "song.mp3",
+        "playlist.m3u",
+        "playlist.m3u8",
+        "playlist.pls",
+        "info.nfo",
+        "notes.txt",
+        "tracks.cue",
+    }
+
+
+async def test_scan_directory_rejects_orphaned_approved_companions(tmp_path: Path) -> None:
+    """D7: a settled-tree scan does not ingest approved companions without local media."""
+    from phaze.tasks.scan import scan_directory
+
+    orphaned = tmp_path / "orphaned"
+    orphaned.mkdir()
+    for extension in ("cue", "nfo", "txt", "m3u", "m3u8", "pls"):
+        _touch(orphaned / f"companion.{extension}")
+    media = tmp_path / "media"
+    media.mkdir()
+    _touch(media / "song.mp3")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
     assert result["files_posted"] == 1
     chunk = ctx["api_client"].upsert_files.await_args.args[0]
-    assert len(chunk.files) == 1
-    assert chunk.files[0].original_filename == "song.mp3"
+    assert [record.original_filename for record in chunk.files] == ["song.mp3"]
 
 
 async def test_scan_directory_chunks_at_500(tmp_path: Path) -> None:
@@ -324,7 +336,7 @@ async def test_scan_directory_patches_total_files_precount_before_first_upsert(t
 
     for i in range(3):
         _touch(tmp_path / f"f{i:04d}.mp3")
-    _touch(tmp_path / "ignored.txt")  # COMPANION -- excluded from the precount
+    _touch(tmp_path / "notes.txt")  # approved COMPANION beside media -- included
 
     manager = MagicMock()
     api = AsyncMock()
@@ -336,9 +348,9 @@ async def test_scan_directory_patches_total_files_precount_before_first_upsert(t
     ctx = _make_ctx(api_client=api)
     await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
-    # The first PATCH carries the pre-count: 3 ingestible files, txt excluded.
+    # The first PATCH carries the same four-file population as the hashing walk.
     first_patch = api.patch_scan_batch.await_args_list[0].args[1]
-    assert first_patch.total_files == 3
+    assert first_patch.total_files == 4
     assert first_patch.processed_files is None
 
     # Ordering: the first recorded call is a patch_scan_batch, and it precedes the
@@ -735,21 +747,38 @@ def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.
 # Phase-46 heartbeat and get a healthy agent classified DEAD.
 
 
-def test_count_ingestible_counts_only_extractable(tmp_path: Path) -> None:
-    """_count_ingestible counts MUSIC/VIDEO files only and returns no errors on a clean walk."""
-    from phaze.tasks.scan import _count_ingestible
+def test_count_ingestible_matches_walk_population_with_companions(tmp_path: Path) -> None:
+    """D5: pre-count and hashing walk select one exact mixed-tree population."""
+    from phaze.tasks.scan import _count_ingestible, _walk_ingestible
 
-    _touch(tmp_path / "a.mp3")
-    _touch(tmp_path / "b.flac")
-    _touch(tmp_path / "c.unknownext")  # UNKNOWN -- excluded
-    _touch(tmp_path / "d.txt")  # COMPANION -- excluded
-    (tmp_path / "sub").mkdir()
-    _touch(tmp_path / "sub" / "e.mp4")
+    media = tmp_path / "media"
+    media.mkdir()
+    _touch(media / "a.mp3")
+    _touch(media / "b.flac")
+    _touch(media / "c.txt")
+    _touch(media / "cover.jpg")
+    _touch(media / "unknown.bin")
+    orphaned = tmp_path / "orphaned"
+    orphaned.mkdir()
+    _touch(orphaned / "playlist.m3u")
+    video = tmp_path / "video"
+    video.mkdir()
+    _touch(video / "set.mkv")
+    _touch(video / "set.cue")
 
     count, errors = _count_ingestible(tmp_path)
+    paths, walk_errors = _walk_ingestible(tmp_path)
 
-    assert count == 3  # mp3 + flac + mp4
+    assert count == len(paths) == 5
+    assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
+        "media/a.mp3",
+        "media/b.flac",
+        "media/c.txt",
+        "video/set.cue",
+        "video/set.mkv",
+    }
     assert errors == []
+    assert walk_errors == []
 
 
 def test_count_ingestible_collects_walk_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -807,19 +836,19 @@ async def test_scan_directory_precount_runs_off_loop(tmp_path: Path, monkeypatch
 # walk above and left this second walk iterating os.walk directly on the loop.
 
 
-def test_walk_ingestible_collects_only_extractable_paths(tmp_path: Path) -> None:
-    """_walk_ingestible returns full paths for MUSIC/VIDEO files only, no errors on a clean walk."""
+def test_walk_ingestible_preserves_media_and_applies_scan_companion_rule(tmp_path: Path) -> None:
+    """Every media path remains selected; only approved sibling companions join it."""
     from phaze.tasks.scan import _walk_ingestible
 
     _touch(tmp_path / "a.mp3")
     _touch(tmp_path / "c.unknownext")  # UNKNOWN -- excluded
-    _touch(tmp_path / "d.txt")  # COMPANION -- excluded
+    _touch(tmp_path / "d.txt")  # approved COMPANION beside media -- included
     (tmp_path / "sub").mkdir()
     _touch(tmp_path / "sub" / "e.mp4")
 
     paths, errors = _walk_ingestible(tmp_path)
 
-    assert {p.name for p in paths} == {"a.mp3", "e.mp4"}
+    assert {p.name for p in paths} == {"a.mp3", "d.txt", "e.mp4"}
     assert errors == []
 
 
@@ -879,10 +908,10 @@ async def test_scan_directory_hashing_walk_runs_off_loop(tmp_path: Path, monkeyp
 async def test_scan_directory_companion_only_subtree_does_not_block_hashing_walk(
     tmp_path: Path,
 ) -> None:
-    """A subtree containing only non-ingestible companion files must not stall the walk.
+    """A subtree containing only orphaned/excluded companion files must not stall the walk.
 
     Regression for the failure scenario in phaze-j54q: a companion-heavy subtree (all
-    files excluded by _EXTRACTABLE) used to keep the loop body's for-filenames iteration
+    files excluded by the scan ingestion filter) used to keep the loop body's for-filenames iteration
     entirely await-free while os.walk's generator advanced directly on the event loop.
     Now the traversal happens off-loop before any per-file work starts, so a large
     companion-only subtree alongside a real ingestible file still completes normally.

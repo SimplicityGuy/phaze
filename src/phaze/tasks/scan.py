@@ -28,7 +28,7 @@ import unicodedata
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
@@ -52,12 +52,16 @@ test contexts that monkeypatch get_settings() or run under PHAZE_ROLE=control.
 """
 
 
-_EXTRACTABLE: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
-"""Extension categories that scan_directory ingests; matches the watcher's filter
-(``agent_watcher/observer.py``) and the controller-side auto-enqueue gate
-(``routers/agent_files.py``). COMPANION extensions (``.cue``, ``.nfo``, ``.txt``,
-images, playlists, ...) are deliberately excluded so the manual-scan ingestion
-set is identical to the watcher's ingestion set (Phase 27 CR-01).
+_MEDIA_CATEGORIES: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
+_INGESTIBLE_EXTENSIONS: frozenset[str] = frozenset(
+    extension for extension, category in EXTENSION_MAP.items() if category in _MEDIA_CATEGORIES or extension in INGESTIBLE_COMPANION_EXTENSIONS
+)
+"""Extensions that scan_directory may ingest (Phase 27 CR-01, amended by phaze-j8hjn D6-D8).
+
+The scan and watcher accept the same extensions, including the six approved
+COMPANION extensions. They deliberately differ by directory context: a settled-tree
+scan admits a companion only beside MUSIC/VIDEO, while the watcher admits it
+unconditionally because 96.5% of companions arrive before their last media sibling.
 """
 
 
@@ -69,31 +73,38 @@ def _classify(filename: str) -> FileCategory:
     return EXTENSION_MAP.get(Path(filename).suffix.lower(), FileCategory.UNKNOWN)
 
 
+def _scan_ingestible_filenames(filenames: list[str]) -> list[str]:
+    """Select this directory's media and companion files under the scan-only sibling rule."""
+    has_media = any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames)
+    return [
+        filename
+        for filename in filenames
+        if (extension := Path(filename).suffix.lower()) in _INGESTIBLE_EXTENSIONS and (EXTENSION_MAP[extension] in _MEDIA_CATEGORIES or has_media)
+    ]
+
+
 def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[OSError]]:
     """Authoritative walk over `scan_root`, run entirely off the event loop (phaze-j54q).
 
     Walks the tree once WITHOUT stat or hashing, collecting the full path of every file
-    whose extension is ingestible (MUSIC/VIDEO) plus any directory-read OSError raised by
+    whose extension is ingestible plus any directory-read OSError raised by
     os.walk. Returns ``(paths, errors)``; the caller stats/hashes each path (still via
     asyncio.to_thread per file) and logs the collected errors back on the loop.
 
     Mirrors ``_count_ingestible`` (phaze-bfd1), which moved the pre-count walk off-loop for
     exactly this reason but left this, the authoritative hashing walk, iterating os.walk
     directly on the event loop -- i.e. every directory's os.scandir executed synchronously
-    in the caller. A directory whose files are ALL non-ingestible (artwork, .cue/.nfo/.txt
-    companions, playlists -- all excluded by _EXTRACTABLE) produced a loop-body iteration
+    in the caller. A directory whose files are ALL non-ingestible produced a loop-body iteration
     with no await at all, so a companion-heavy subtree (or a stalled network mount) could
     monopolize the loop with zero yields -- the same starvation shape phaze-bfd1 diagnosed,
     just on the second walk. Dispatched via asyncio.to_thread so the full synchronous os.walk
     never runs back-to-back on the agent worker's event loop. Only ingestible-file paths are
-    retained (not every file in the tree), keeping memory bounded to the music/video count.
+    retained (not every file in the tree), keeping memory bounded to the ingestible-file count.
     """
     errors: list[OSError] = []
     paths: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
-        for filename in filenames:
-            if _classify(filename) in _EXTRACTABLE:
-                paths.append(Path(dirpath) / filename)
+        paths.extend(Path(dirpath) / filename for filename in _scan_ingestible_filenames(filenames))
     return paths, errors
 
 
@@ -101,7 +112,7 @@ def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     """Pre-count pass over `scan_root`, run entirely off the event loop (phaze-bfd1).
 
     Walks the tree once WITHOUT stat or hashing, counting only files whose extension
-    is ingestible (MUSIC/VIDEO), and collecting any directory-read OSError raised by
+    is ingestible under the same directory rule as the hashing walk, and collecting any directory-read OSError raised by
     os.walk. Returns ``(count, errors)``; the caller logs the collected errors back
     on the loop.
 
@@ -118,9 +129,7 @@ def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     errors: list[OSError] = []
     count = 0
     for _dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
-        for filename in filenames:
-            if _classify(filename) in _EXTRACTABLE:
-                count += 1
+        count += len(_scan_ingestible_filenames(filenames))
     return count, errors
 
 
@@ -171,7 +180,7 @@ class _ScanProgress:
 async def _publish_precount(api: PhazeAgentClient, payload: ScanDirectoryPayload, scan_root: Path) -> None:
     """Populate ``ScanBatch.total_files`` up front from a hash-free name-only walk (best-effort UX)."""
     # Pre-count pass (UX denominator): walk the tree once WITHOUT stat or hashing,
-    # counting only files whose extension is ingestible (MUSIC/VIDEO). This populates
+    # counting only files whose extension is ingestible under the scan sibling rule. This populates
     # ScanBatch.total_files up front so the Recent Scans "N / Z" progress widget shows a
     # real denominator during a RUNNING scan instead of "—" (which previously only
     # filled in at the terminal success PATCH). Counting names is cheap even on a large

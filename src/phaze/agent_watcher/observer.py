@@ -7,7 +7,7 @@ asyncio-owned :class:`Debouncer`. It:
    Delete and ``*DirEvent`` types are ignored.
    ``FileMovedEvent`` handling exists because rsync's atomic delivery
    (write to a filtered-out temp name, then rename to the final name) --
-   and any in-tree ``mv``/rename of an existing music/video file -- never
+   and any in-tree ``mv``/rename of an existing ingestible file -- never
    produces a ``FileCreatedEvent``/``FileModifiedEvent`` for the final
    path under the native inotify observer; only a single paired
    ``FileMovedEvent(src, dest)`` is emitted. A move whose destination
@@ -20,8 +20,12 @@ asyncio-owned :class:`Debouncer`. It:
    handle exactly the paired, fully-in-tree case; dispatching only
    ``event.dest_path`` (the settled final name) and ignoring ``src_path``
    avoids ingesting the same file under two keys.
-2. Filters by ``EXTENSION_MAP`` -- only ``FileCategory.MUSIC`` and
-   ``FileCategory.VIDEO`` paths enter the debouncer (SCAN-03).
+2. Filters by ``EXTENSION_MAP`` -- MUSIC/VIDEO and the six operator-approved
+   COMPANION extensions enter the debouncer (SCAN-03). This matches
+   ``scan_directory`` by extension but deliberately not by directory context:
+   the watcher admits companions unconditionally because phaze-j8hjn measured
+   that 96.5% arrive before their last media sibling (Phase 27 CR-01, amended
+   by D6-D8).
 3. Dispatches the RAW OS path (whatever Unicode normalization form the
    filesystem handed watchdog) through, unchanged. It is later used
    verbatim as the filesystem handle for ``stat``/hashing in
@@ -52,7 +56,7 @@ from typing import TYPE_CHECKING
 import structlog
 from watchdog.events import FileSystemEventHandler
 
-from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 
 
 if TYPE_CHECKING:
@@ -72,8 +76,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-_EXTRACTABLE: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
-"""Extension categories the watcher posts to the controller; everything else is dropped."""
+_MEDIA_CATEGORIES: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
+_INGESTIBLE_EXTENSIONS: frozenset[str] = frozenset(
+    extension for extension, category in EXTENSION_MAP.items() if category in _MEDIA_CATEGORIES or extension in INGESTIBLE_COMPANION_EXTENSIONS
+)
+"""Extensions the watcher posts; companions need no sibling check (phaze-j8hjn D8)."""
 
 
 class WatcherEventHandler(FileSystemEventHandler):
@@ -104,7 +111,7 @@ class WatcherEventHandler(FileSystemEventHandler):
         else:
             path_str = src_path
         ext = "." + Path(path_str).suffix.lower().lstrip(".")
-        if EXTENSION_MAP.get(ext, FileCategory.UNKNOWN) not in _EXTRACTABLE:
+        if ext not in _INGESTIBLE_EXTENSIONS:
             return
         # Dispatch ``path_str`` raw; do not NFC-normalize it here.
         # It becomes the filesystem handle Poster.post_one stats/hashes; see
