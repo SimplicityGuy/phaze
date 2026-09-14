@@ -2,7 +2,7 @@
 
 These tests prove the Dockerfile.job + docker-publish.yml contract WITHOUT a live
 docker build. They parse the workflow with ``yaml.safe_load`` (robust against YAML
-reformatting) and grep ``Dockerfile.job`` as text. Four guards:
+reformatting) and grep ``Dockerfile.job`` as text. Five guards:
 
 a. ``build-job-runner`` is a ``needs: build-and-push``-gated job (NOT a sibling
    matrix row) — Dockerfile.job ``FROM`` the api tag cannot race the api push
@@ -11,6 +11,8 @@ b. The job builds ``Dockerfile.job`` and passes ``BASE_IMAGE`` as a build-arg.
 c. ``Dockerfile.job`` adds zero new deps (no pip/uv add — KJOB-01) and its CMD
    targets ``phaze.job_runner``.
 d. ``Dockerfile.job`` does not pin a moving ``:latest`` base tag (T-52-06).
+e. ``BASE_IMAGE`` has a syntactically valid, non-resolving default so BuildKit
+   emits no ``InvalidDefaultArgInFrom`` warning and omitted overrides fail closed.
 """
 
 from pathlib import Path
@@ -103,3 +105,15 @@ def test_dockerfile_job_does_not_pin_latest_base() -> None:
     from_lines = [line for line in text.splitlines() if line.lstrip().upper().startswith("FROM")]
     assert from_lines, "Dockerfile.job has no FROM instruction."
     assert any("BASE_IMAGE" in line for line in from_lines), f"Dockerfile.job FROM must reference the ARG BASE_IMAGE (got: {from_lines})."
+
+
+def test_dockerfile_job_base_image_default_is_valid_and_fail_closed() -> None:
+    """Guard (e): the default satisfies BuildKit but cannot resolve to a real image."""
+    assert DOCKERFILE_JOB_PATH.exists(), f"Dockerfile.job missing at {DOCKERFILE_JOB_PATH}"
+    lines = DOCKERFILE_JOB_PATH.read_text().splitlines()
+
+    assert "ARG BASE_IMAGE=invalid.invalid/phaze/api:base-image-required" in lines, (
+        "Dockerfile.job must give BASE_IMAGE the reserved `.invalid` default. "
+        "A missing default triggers BuildKit's InvalidDefaultArgInFrom warning; "
+        "a resolvable default could silently bypass CI's immutable image override."
+    )
