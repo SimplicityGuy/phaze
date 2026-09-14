@@ -33,9 +33,11 @@
 # Build ordering: BASE_IMAGE is the resolved freshly-pushed x86 api tag passed
 # by CI (the exact release tag, never a stale shared moving tag — Tampering
 # T-52-06). The build-job-runner workflow job is `needs: build-and-push`-gated
-# so the api tag exists before this FROM resolves.
+# so the api tag exists before this FROM resolves. The reserved `.invalid`
+# default keeps BuildKit's static FROM check valid while remaining fail-closed:
+# an omitted build argument cannot resolve to a real registry image.
 
-ARG BASE_IMAGE
+ARG BASE_IMAGE=invalid.invalid/phaze/api:base-image-required
 FROM ${BASE_IMAGE}
 
 # The base image ends on USER 1000:1000 (the `phaze` account) and this image adds
