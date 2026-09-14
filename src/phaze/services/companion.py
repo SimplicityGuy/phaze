@@ -61,17 +61,22 @@ async def _media_in_directories(
     """Fetch every media file sitting directly in one of ``dir_groups``' directories, bucketed the same way.
 
     phaze-vu88k.3: ONE query for every (agent, directory) group in this page, instead of one per
-    group. A page holds at most ``batch_size`` companions, so at most that many distinct groups --
-    4 bind params per OR'd clause, well under asyncpg's 32767 cap. Media rows are re-bucketed by
-    their OWN (agent_id, parent directory), computed the same way ``dir_groups`` was, rather than by
-    which OR clause matched them: the LIKE/NOT-LIKE pair only matches rows whose parent IS that
-    literal directory, so recomputing the parent from each returned row reconstructs the exact same
-    grouping the one-query-per-group form did.
+    group. A page holds at most ``batch_size`` companions, so at most that many distinct groups.
+
+    phaze-6igef: the media-type predicate is invariant across every group and MUST stay outside the
+    per-directory OR. Repeating its 16 values in each of a default page's 2,000 clauses rendered
+    38,000 bind parameters and crossed asyncpg's 32,767-parameter cap. Factoring it out preserves
+    the same conjunction while rendering only 16 media-type binds plus 3 binds per group (6,016 at
+    the default page size).
+
+    Media rows are re-bucketed by their OWN (agent_id, parent directory), computed the same way
+    ``dir_groups`` was, rather than by which OR clause matched them: the LIKE/NOT-LIKE pair only
+    matches rows whose parent IS that literal directory, so recomputing the parent from each
+    returned row reconstructs the exact same grouping the one-query-per-group form did.
     """
-    media_conditions = [
+    directory_conditions = [
         and_(
             FileRecord.agent_id == agent_id,
-            FileRecord.file_type.in_(MEDIA_TYPES),
             # Escape LIKE metacharacters in the directory so '_'/'%'/'\' in a real
             # path (e.g. "Coachella_2024") are matched literally rather than as wildcards.
             FileRecord.original_path.like(f"{_escape_like(directory)}/%", escape=_LIKE_ESCAPE_CHAR),
@@ -79,7 +84,12 @@ async def _media_in_directories(
         )
         for agent_id, directory in dir_groups
     ]
-    media_result = await session.execute(select(FileRecord).where(or_(*media_conditions)))
+    media_result = await session.execute(
+        select(FileRecord).where(
+            FileRecord.file_type.in_(MEDIA_TYPES),
+            or_(*directory_conditions),
+        )
+    )
     return _group_by_directory(media_result.scalars().all())
 
 
