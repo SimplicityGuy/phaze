@@ -1,5 +1,13 @@
-"""phaze-p3qr: the asyncpg 32767-bind-parameter cap sweep for ``associate_companions``' bulk INSERT.
+"""The asyncpg 32,767-bind-parameter cap sweep for ``associate_companions``.
 
+phaze-6igef: the batched media lookup repeated the invariant ``MEDIA_TYPES`` predicate inside every
+per-directory OR clause. A default 2,000-companion page spread across 2,000 directories therefore
+rendered 38,000 binds and failed before association reached its already-chunked INSERT. The first
+test below exercises that exact page-width query against PostgreSQL while keeping the fixture cheap:
+the query need not match rows for asyncpg to bind all of its arguments.
+
+phaze-p3qr: the bulk INSERT had a separate bind-cap failure. That history and its regression tests
+follow below.
 ``associate_companions`` used to accumulate every new (companion, media) pair for a directory into
 ONE list and execute it as a single ``pg_insert(FileCompanion).values(rows)`` -- a multi-row VALUES
 that SQLAlchemy renders with 3 bind parameters per row. PostgreSQL's extended-protocol Bind message
@@ -29,7 +37,14 @@ from sqlalchemy import func, select
 
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
-from phaze.services.companion import COMPANION_TYPES, MEDIA_TYPES, associate_companions
+from phaze.services.bulk_insert import PG_MAX_BIND_PARAMS
+from phaze.services.companion import (
+    COMPANION_TYPES,
+    DEFAULT_ASSOCIATE_BATCH_SIZE,
+    MEDIA_TYPES,
+    _media_in_directories,
+    associate_companions,
+)
 
 
 if TYPE_CHECKING:
@@ -37,6 +52,19 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.asyncio
+async def test_default_page_media_lookup_stays_below_bind_param_cap(session: AsyncSession) -> None:
+    """A maximally dispersed default page must execute without exceeding asyncpg's bind cap."""
+    dir_groups: dict[tuple[str, str], list[FileRecord]] = {
+        ("test-fileserver", f"/music/album_{index}"): [] for index in range(DEFAULT_ASSOCIATE_BATCH_SIZE)
+    }
+
+    old_bind_count = DEFAULT_ASSOCIATE_BATCH_SIZE * (len(MEDIA_TYPES) + 3)
+    assert old_bind_count > PG_MAX_BIND_PARAMS, "the fixture must cross the pre-fix media-query break"
+
+    assert await _media_in_directories(session, dir_groups) == {}
 
 
 def _make_file(original_path: str, file_type: str, agent_id: str = "test-fileserver") -> FileRecord:
