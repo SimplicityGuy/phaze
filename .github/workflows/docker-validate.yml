@@ -35,7 +35,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🔧 Install pinned hadolint
-        uses: alexellis/arkade-get@1eef818e467c387d3f50cfe0d2c565d1cbe82b03  # master
+        uses: alexellis/arkade-get@5594ddff52ec7b8a71efd73acaa9e52936e35e16  # master (Node 24)
         with:
           hadolint: v2.15.1
 

@@ -57,6 +57,8 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
 _WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_CODE_QUALITY_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "code-quality.yml"
+_DOCKER_PUBLISH_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 _SECURITY_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "security.yml"
 _ROOT_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
@@ -238,8 +240,13 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     (test_results_step,) = test_job_hits
     assert test_results_step.get("name") == "📊 Upload test results to Codecov", test_results_step
     assert test_results_step.get("if") == "${{ !cancelled() }}", test_results_step
-    assert test_results_step.get("uses") == ("codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3"), test_results_step
-    assert test_results_step.get("with") == {"token": "${{ secrets.CODECOV_TOKEN }}"}, test_results_step
+    assert test_results_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", test_results_step
+    assert test_results_step.get("with") == {
+        "disable_search": True,
+        "files": "./junit.xml",
+        "report_type": "test_results",
+        "token": "${{ secrets.CODECOV_TOKEN }}",
+    }, test_results_step
 
     combine_job_hits = _find_codecov_token_steps(jobs["combine"])
     assert len(combine_job_hits) == 1, f"expected exactly one CODECOV_TOKEN-bearing step in combine, found {len(combine_job_hits)}"
@@ -247,6 +254,35 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     assert codecov_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", codecov_step
     assert codecov_step.get("with") == {"flags": "unittests", "disable_search": True, "files": "./coverage.xml"}, codecov_step
     assert codecov_step.get("env") == {"CODECOV_TOKEN": "${{ secrets.CODECOV_TOKEN }}"}, codecov_step
+
+
+def test_setup_uv_cache_has_one_writer_and_parallel_jobs_are_restore_only() -> None:
+    """One deterministic job persists uv's shared key; parallel consumers never race to create it."""
+    workflow_paths = (
+        _CODE_QUALITY_WORKFLOW_PATH,
+        _WORKFLOW_PATH,
+        _SECURITY_WORKFLOW_PATH,
+        _DOCKER_PUBLISH_WORKFLOW_PATH,
+    )
+    setup_uv_steps: list[tuple[str, str, dict[str, Any]]] = []
+    for path in workflow_paths:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                if step.get("uses", "").startswith("astral-sh/setup-uv@"):
+                    setup_uv_steps.append((path.name, job_name, step))
+
+    assert setup_uv_steps, "expected setup-uv steps in CI workflows"
+    cache_writers: list[tuple[str, str]] = []
+    for workflow_name, job_name, step in setup_uv_steps:
+        inputs = step.get("with", {})
+        assert inputs.get("enable-cache") is True, (workflow_name, job_name, inputs)
+        if inputs.get("save-cache") is True:
+            cache_writers.append((workflow_name, job_name))
+        else:
+            assert inputs.get("save-cache") is False, (workflow_name, job_name, inputs)
+
+    assert cache_writers == [("code-quality.yml", "code-quality")]
 
 
 def test_combine_job_downloads_shards_and_runs_the_combine_recipe() -> None:
