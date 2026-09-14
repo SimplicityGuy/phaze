@@ -21,6 +21,9 @@ jobs:
 
       - name: 📦 Install uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: true
+          save-cache: true
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -53,7 +56,7 @@ jobs:
       # it failed silent once already (phaze-ny3du: a pre-commit rev bump to v2.15.1 left this
       # step on v2.15.0 for an entire dependency-refresh cycle with no test catching it).
       - name: 🔧 Install hadolint
-        uses: alexellis/arkade-get@1eef818e467c387d3f50cfe0d2c565d1cbe82b03  # master
+        uses: alexellis/arkade-get@5594ddff52ec7b8a71efd73acaa9e52936e35e16  # master (Node 24)
         with:
           hadolint: v2.15.1  # arkade uses this verbatim as the release tag -- the `v` is required
 

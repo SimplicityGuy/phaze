@@ -36,6 +36,7 @@ PRECOMMIT_CONFIG_PATH = REPO_ROOT / ".pre-commit-config.yaml"
 CODE_QUALITY_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "code-quality.yml"
 DOCKER_VALIDATE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "docker-validate.yml"
 CONTAINER_VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate-containers.sh"
+ARKADE_NODE24_SHA = "5594ddff52ec7b8a71efd73acaa9e52936e35e16"
 
 # `rev: <40-hex-sha>  # frozen: vX.Y.Z` on the hadolint repo entry.
 _FROZEN_REV_COMMENT_RE = re.compile(r"^\s*rev:\s*[0-9a-f]{40}\s*#\s*frozen:\s*(v[0-9]+\.[0-9]+\.[0-9]+)\s*$", re.MULTILINE)
@@ -61,13 +62,18 @@ def _precommit_hadolint_version() -> str:
     return match.group(1)
 
 
-def _workflow_hadolint_version(path: Path, job_name: str) -> str:
+def _workflow_arkade_step(path: Path, job_name: str) -> dict[str, object]:
     assert path.exists(), f"workflow missing at {path}"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     steps = data["jobs"][job_name]["steps"]
     arkade_steps = [s for s in steps if "arkade-get" in s.get("uses", "")]
     assert len(arkade_steps) == 1, f"expected exactly one arkade-get step in {path.name}, found {len(arkade_steps)}"
     (arkade_step,) = arkade_steps
+    return arkade_step
+
+
+def _workflow_hadolint_version(path: Path, job_name: str) -> str:
+    arkade_step = _workflow_arkade_step(path, job_name)
     version = arkade_step.get("with", {}).get("hadolint")
     assert isinstance(version, str) and version.startswith("v"), (
         f"{path.name}'s arkade-get `hadolint:` value must be a `vX.Y.Z` string; got {version!r}"
@@ -116,6 +122,17 @@ def test_hadolint_version_pins_agree_across_precommit_and_ci() -> None:
         f"  validate-containers.sh (runtime guard):      {script_version!r}\n"
         "Bump all four together."
     )
+
+
+def test_arkade_get_is_frozen_to_the_verified_node24_commit() -> None:
+    """Both hadolint installers use the immutable arkade-get commit verified to declare Node 24."""
+    expected = f"alexellis/arkade-get@{ARKADE_NODE24_SHA}"
+    for path, job_name in (
+        (CODE_QUALITY_WORKFLOW_PATH, "code-quality"),
+        (DOCKER_VALIDATE_WORKFLOW_PATH, "validate-dockerfiles"),
+    ):
+        step = _workflow_arkade_step(path, job_name)
+        assert step.get("uses") == expected, f"{path.name} must use the verified Node 24 arkade-get pin"
 
 
 def test_shared_validator_lints_every_shipped_dockerfile() -> None:
