@@ -12,6 +12,7 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.filename_convention import FilenameConvention
 from phaze.models.metadata import FileMetadata
+from phaze.models.orphan_companion_diagnostic import OrphanCompanionDiagnostic
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.route_control import RouteControl
@@ -42,6 +43,7 @@ __all__ = [
     "FileMetadata",
     "FileRecord",
     "FilenameConvention",
+    "OrphanCompanionDiagnostic",
     "PipelineStageControl",
     "ProposalStatus",
     "RenameProposal",

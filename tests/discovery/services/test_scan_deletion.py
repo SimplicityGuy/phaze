@@ -36,6 +36,7 @@ from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
+from phaze.models.orphan_companion_diagnostic import OrphanCompanionDiagnostic
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -325,6 +326,37 @@ async def test_cascade_removes_dedup_resolution_and_cloud_job_sidecars(session: 
     assert await session.get(FileRecord, file_a_id) is None
     assert await session.get(FileRecord, file_b_id) is not None
     assert await session.get(ScanBatch, batch_b_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_scan_delete_cascades_orphan_diagnostics_only_for_target_batch(session: AsyncSession) -> None:
+    """The existing terminal-batch delete relies on the diagnostic FK's database cascade."""
+    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/a", status=ScanStatus.COMPLETED.value)
+    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/b", status=ScanStatus.COMPLETED.value)
+    session.add_all([batch_a, batch_b])
+    await session.flush()
+    session.add_all(
+        [
+            OrphanCompanionDiagnostic(
+                batch_id=batch_a.id,
+                configured_root="/a",
+                normalized_path="/a/orphan-a.nfo",
+                companion_extension=".nfo",
+            ),
+            OrphanCompanionDiagnostic(
+                batch_id=batch_b.id,
+                configured_root="/b",
+                normalized_path="/b/orphan-b.m3u",
+                companion_extension=".m3u",
+            ),
+        ]
+    )
+    await session.flush()
+
+    await delete_scan_cascade(session, batch_a.id)
+    remaining = (await session.execute(select(OrphanCompanionDiagnostic))).scalars().all()
+
+    assert [(row.batch_id, row.normalized_path) for row in remaining] == [(batch_b.id, "/b/orphan-b.m3u")]
 
 
 @pytest.mark.asyncio

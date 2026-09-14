@@ -1,6 +1,6 @@
 """Tests for SQLAlchemy model definitions."""
 
-from phaze.models import AnalysisResult, ExecutionLog, FileMetadata, FileRecord, RenameProposal
+from phaze.models import AnalysisResult, ExecutionLog, FileMetadata, FileRecord, OrphanCompanionDiagnostic, RenameProposal
 from phaze.models.base import Base
 
 
@@ -49,6 +49,7 @@ def test_all_tables_defined() -> None:
         # phaze-x1qr3.1 (migration 063): the per-file set projection -- mean_vector, arc, glyph,
         # camelot_modal, harmonic_discipline, peak_sec, projection_version, 1:1 with files.
         "set_profile",
+        "orphan_companion_diagnostics",
     }
     assert expected == table_names
 
@@ -106,6 +107,15 @@ def test_file_record_has_batch_id() -> None:
     assert len(col.foreign_keys) == 1
     fk = next(iter(col.foreign_keys))
     assert fk.target_fullname == "scan_batches.id"
+
+
+def test_orphan_companion_diagnostic_is_metadata_only() -> None:
+    """The inventory sidecar cannot accidentally become an ingested-file surrogate."""
+    columns = {column.name for column in OrphanCompanionDiagnostic.__table__.columns}
+    assert columns == {"batch_id", "configured_root", "normalized_path", "companion_extension"}
+    batch_fk = next(iter(OrphanCompanionDiagnostic.__table__.columns["batch_id"].foreign_keys))
+    assert batch_fk.target_fullname == "scan_batches.id"
+    assert batch_fk.ondelete == "CASCADE"
 
 
 async def test_tables_created_in_database(async_engine) -> None:  # type: ignore[no-untyped-def]
