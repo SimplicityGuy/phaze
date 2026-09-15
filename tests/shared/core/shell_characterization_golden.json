@@ -63,6 +63,7 @@
     "POST /api/internal/agent/push/{file_id}/pushed",
     "POST /api/internal/agent/s3/{file_id}/failed",
     "POST /api/internal/agent/s3/{file_id}/uploaded",
+    "POST /api/internal/agent/scan-batches/{batch_id}/orphan-companions",
     "POST /api/internal/agent/scratch/live",
     "POST /api/v1/analyze",
     "POST /api/v1/associate",

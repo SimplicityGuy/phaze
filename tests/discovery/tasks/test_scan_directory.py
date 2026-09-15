@@ -61,11 +61,12 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
 def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
     """Create a minimal SAQ context dict with api_client mock.
 
-    upsert_files and patch_scan_batch are AsyncMocks that record every call.
+    upsert_files, post_orphan_companions, and patch_scan_batch are AsyncMocks that record every call.
     """
     if api_client is None:
         api_client = AsyncMock()
         api_client.upsert_files = AsyncMock(return_value=MagicMock(upserted=0, inserted=0, enqueued=0))
+        api_client.post_orphan_companions = AsyncMock(return_value=MagicMock(inserted=0, existing=0))
         api_client.patch_scan_batch = AsyncMock(return_value=MagicMock())
     return {"api_client": api_client}
 
@@ -172,6 +173,7 @@ async def test_scan_directory_accepts_only_approved_companions_with_media_siblin
         "notes.txt",
         "tracks.cue",
     }
+    ctx["api_client"].post_orphan_companions.assert_not_awaited()
 
 
 async def test_scan_directory_rejects_orphaned_approved_companions(tmp_path: Path) -> None:
@@ -192,6 +194,52 @@ async def test_scan_directory_rejects_orphaned_approved_companions(tmp_path: Pat
     assert result["files_posted"] == 1
     chunk = ctx["api_client"].upsert_files.await_args.args[0]
     assert [record.original_filename for record in chunk.files] == ["song.mp3"]
+    diagnostic_chunk = ctx["api_client"].post_orphan_companions.await_args.args[1]
+    assert {record.normalized_path for record in diagnostic_chunk.diagnostics} == {
+        str(orphaned / f"companion.{extension}") for extension in ("cue", "nfo", "txt", "m3u", "m3u8", "pls")
+    }
+    assert {record.companion_extension for record in diagnostic_chunk.diagnostics} == {".cue", ".nfo", ".txt", ".m3u", ".m3u8", ".pls"}
+
+
+async def test_scan_directory_neither_ingests_nor_reports_excluded_companions(tmp_path: Path) -> None:
+    """Only the approved D6 companion subset becomes an orphan diagnostic."""
+    from phaze.tasks.scan import scan_directory
+
+    for extension in ("jpg", "jpeg", "png", "gif", "sfv", "md5"):
+        _touch(tmp_path / f"excluded.{extension}")
+    _touch(tmp_path / "accepted.nfo")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result == {"status": "completed", "files_posted": 0}
+    ctx["api_client"].upsert_files.assert_not_awaited()
+    diagnostic_chunk = ctx["api_client"].post_orphan_companions.await_args.args[1]
+    assert [record.normalized_path for record in diagnostic_chunk.diagnostics] == [str(tmp_path / "accepted.nfo")]
+
+
+async def test_scan_directory_chunks_orphan_diagnostics_without_expanding_progress_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A diagnostic population larger than one chunk remains bounded and off ScanBatchPatch."""
+    from phaze.config import get_settings
+    from phaze.tasks.scan import scan_directory
+
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "3")
+    get_settings.cache_clear()
+    for index in range(7):
+        _touch(tmp_path / f"orphan-{index}.txt")
+
+    ctx = _make_ctx()
+    await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    calls = ctx["api_client"].post_orphan_companions.await_args_list
+    assert [len(call.args[1].diagnostics) for call in calls] == [3, 3, 1]
+    assert all(call.args[0] == calls[0].args[0] for call in calls)
+    assert len({record.normalized_path for call in calls for record in call.args[1].diagnostics}) == 7
+    for call in ctx["api_client"].patch_scan_batch.await_args_list:
+        assert "diagnostics" not in call.args[1].model_dump()
 
 
 async def test_scan_directory_chunks_at_500(tmp_path: Path) -> None:
@@ -767,7 +815,7 @@ def test_count_ingestible_matches_walk_population_with_companions(tmp_path: Path
     _touch(video / "set.cue")
 
     count, errors = _count_ingestible(tmp_path)
-    paths, walk_errors = _walk_ingestible(tmp_path)
+    paths, orphan_paths, walk_errors = _walk_ingestible(tmp_path)
 
     assert count == len(paths) == 5
     assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
@@ -778,6 +826,7 @@ def test_count_ingestible_matches_walk_population_with_companions(tmp_path: Path
         "video/set.mkv",
     }
     assert errors == []
+    assert [path.relative_to(tmp_path).as_posix() for path in orphan_paths] == ["orphaned/playlist.m3u"]
     assert walk_errors == []
 
 
@@ -846,9 +895,10 @@ def test_walk_ingestible_preserves_media_and_applies_scan_companion_rule(tmp_pat
     (tmp_path / "sub").mkdir()
     _touch(tmp_path / "sub" / "e.mp4")
 
-    paths, errors = _walk_ingestible(tmp_path)
+    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
 
     assert {p.name for p in paths} == {"a.mp3", "d.txt", "e.mp4"}
+    assert orphan_paths == []
     assert errors == []
 
 
@@ -867,9 +917,10 @@ def test_walk_ingestible_collects_walk_errors(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(scan_module.os, "walk", fake_walk)
 
-    paths, errors = _walk_ingestible(tmp_path)
+    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
 
     assert paths == []
+    assert orphan_paths == []
     assert errors == [exc]
 
 
