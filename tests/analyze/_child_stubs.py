@@ -23,6 +23,7 @@ on ``sys.path[0]`` under ``python -m``; driver tests pass the repo root cwd expl
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import time
@@ -41,6 +42,11 @@ _GATE_AFTER_ENV = "PHAZE_STUB_GATE_AFTER"
 # Safety bound only: a test that never opens its gate gets a slow failure, not a wedged child.
 _GATE_MAX_WAIT_SEC = 30.0
 _GATE_POLL_SEC = 0.005
+
+# The identity barrier (phaze-21nnf). Where each child publishes its resolved telemetry
+# identity, and how many siblings must have done so before any of them may return.
+_IDENTITY_DIR_ENV = "PHAZE_STUB_IDENTITY_DIR"
+_IDENTITY_PEERS_ENV = "PHAZE_STUB_IDENTITY_PEERS"
 
 
 def _result(file_path: str, models_dir: str, **windowing: Any) -> dict[str, Any]:
@@ -348,4 +354,49 @@ def long_recording_analyze(
     result["fine_windows_total"] = len(fine)
     result["coarse_windows_analyzed"] = len(coarse)
     result["coarse_windows_total"] = len(coarse)
+    return result
+
+
+def telemetry_identity_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """Publish this child's OWN resolved telemetry identity, then BARRIER on its peers.
+
+    The barrier is what makes the identity test about CONCURRENCY rather than about
+    sequence (phaze-21nnf). Every child writes its identity into
+    ``PHAZE_STUB_IDENTITY_DIR`` and then refuses to return until
+    ``PHAZE_STUB_IDENTITY_PEERS`` files exist there, so no child can have exited before the
+    last one started. Without that, two children could be handed the SAME slot perfectly
+    correctly -- a slot is reused by design -- and a test that merely spawned them one after
+    another would pass against the shared-identity default it is supposed to refute.
+
+    The identity is read from the child's own ``bootstrap._instance_id``, not reconstructed
+    from the environment, because what the assertion is about is the string that becomes the
+    Prometheus ``instance`` label in THIS process.
+    """
+    from phaze.telemetry import bootstrap, slots  # child-side import: the stub runs in the exec'd child
+
+    identity_dir = Path(os.environ[_IDENTITY_DIR_ENV])
+    peers = int(os.environ.get(_IDENTITY_PEERS_ENV, "1"))
+    payload = {
+        "pid": os.getpid(),
+        "slot_env": os.environ.get(slots.SLOT_ENV, ""),
+        "instance_id": bootstrap._instance_id("phaze-analysis"),
+    }
+    (identity_dir / f"{os.getpid()}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    deadline = time.monotonic() + _GATE_MAX_WAIT_SEC
+    while len(list(identity_dir.glob("*.json"))) < peers and time.monotonic() < deadline:
+        # Heartbeat while parked: the driver's D-08 watchdog bounds SILENCE, and a barrier
+        # that went quiet would be indistinguishable from a stalled child.
+        _beat(heartbeat_cb, "identity_barrier", 0, 1)
+        time.sleep(_GATE_POLL_SEC)
+
+    result = _result(file_path, models_dir, **windowing)
+    result["echo"].update(payload)
     return result

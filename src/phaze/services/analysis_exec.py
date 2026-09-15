@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from phaze import telemetry
-from phaze.telemetry import tracing as otel
+from phaze.telemetry import slots, tracing as otel
 
 
 if TYPE_CHECKING:
@@ -232,19 +232,35 @@ async def run_analysis_subprocess(
     # even though it spans two processes: the traceparent injected into the child's
     # environment below is THIS span's.
     with otel.span("analysis.subprocess", {"phaze.file.path": file_path, "phaze.analysis.stall_timeout_sec": stall_timeout}):
-        return await _run_analysis_subprocess_traced(
-            argv,
-            file_path,
-            progress_cb=progress_cb,
-            heartbeat_cb=heartbeat_cb,
-            stall_timeout=stall_timeout,
-        )
+        # THE CHILD'S TELEMETRY IDENTITY IS ALLOCATED HERE, and the slot is held for the
+        # child's WHOLE LIFETIME rather than just its spawn. Up to
+        # `worker_process_pool_size` children export cumulative counters at once; under one
+        # shared `service.instance.id` the collector keeps a single series and takes the
+        # last write, which measurably produced a DECREASING counter and an `increase()`
+        # over-count of 84.4%, growing to 221.5% over twice the exports
+        # (phaze.telemetry.slots). Releasing at spawn time would hand this slot
+        # to the next child while this one is still exporting under it -- i.e. it would
+        # reinstate exactly that merge -- so the release is in the `finally` below, after
+        # the child has exited.
+        environ, slot = slots.assign(telemetry.child_environment())
+        try:
+            return await _run_analysis_subprocess_traced(
+                argv,
+                file_path,
+                environ=environ,
+                progress_cb=progress_cb,
+                heartbeat_cb=heartbeat_cb,
+                stall_timeout=stall_timeout,
+            )
+        finally:
+            slots.default_pool().release(slot)
 
 
 async def _run_analysis_subprocess_traced(
     argv: list[str],
     file_path: str,
     *,
+    environ: dict[str, str],
     progress_cb: Callable[[int, int, int, int], None] | None,
     heartbeat_cb: Callable[[str, int, int], None] | None,
     stall_timeout: float | None,
@@ -266,12 +282,15 @@ async def _run_analysis_subprocess_traced(
         # file's trace instead of starting a second, unrelated one. Copying rather than
         # mutating os.environ matters: a mutated os.environ would leak this span's context
         # into every other subprocess this worker ever spawns.
+        #
+        # The caller built it (and stamped this child's telemetry worker slot into it)
+        # because the slot's LIFETIME is the child's, not this coroutine's.
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STREAM_LIMIT,
-            env=telemetry.child_environment(),
+            env=environ,
         )
     except FileNotFoundError as exc:
         # sys.executable vanished out from under us — a broken venv, not a job failure.
