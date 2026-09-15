@@ -322,6 +322,11 @@ class TestRegistration:
         assert "continue_armed_tracklist_drain" not in CONTROLLER_TASKS
 
     def test_after_process_runs_both_the_counter_hook_and_the_drain_completion_hook(self) -> None:
+        """phaze-24dl8: the registered list is now ONE composed entry, so the membership this
+        test protects is read off its ``chain`` -- the effective order, telemetry last. A raise
+        from either hook no longer abandons the telemetry hook after them; see
+        ``phaze.telemetry.saq.after_process_chain``."""
         after_process = controller_settings["after_process"]
-        names = {fn.__name__ for fn in after_process}
+        assert len(after_process) == 1
+        names = {fn.__name__ for fn in after_process[0].chain}
         assert {"increment_completed", "record_drain_slice_completion"} <= names

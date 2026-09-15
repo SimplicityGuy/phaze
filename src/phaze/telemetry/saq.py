@@ -9,6 +9,10 @@ Wired as ordinary SAQ ``before_process`` / ``after_process`` hooks, the same mec
 phaze already uses for ``enforce_stage_pause_on_process`` and ``increment_completed``, so
 there is no new extension point and no wrapper around the function registry.
 
+The ``after_process`` side is registered through :func:`after_process_chain` rather than as
+the last element of SAQ's hook list, because SAQ's list is a bare loop that the first
+raising hook abandons -- see that function.
+
 **The job function name is the label -- spelled ``saq_function``, never ``job`` -- and it
 is bounded** by the union of the controller's
 and the agent's registered function lists -- a closed set in this repo's source, not a
@@ -28,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from phaze.telemetry.instruments import add, record
 from phaze.telemetry.tracing import span
@@ -39,6 +43,23 @@ log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from typing import Protocol
+
+    #: The shape SAQ's ``before_process`` / ``after_process`` hooks take.
+    SaqHook = Callable[[dict[str, Any]], Awaitable[None]]
+
+    class ChainedHook(Protocol):
+        """An :func:`after_process_chain` result -- callable, plus the order it will run in.
+
+        ``chain`` exists for the wiring tests: collapsing the worker's ``after_process``
+        list into one callable would otherwise make "is this hook registered, and where"
+        unassertable, and those assertions are the ones that caught two ordering defects.
+        """
+
+        chain: tuple[SaqHook, ...]
+
+        def __call__(self, ctx: dict[str, Any]) -> Awaitable[None]: ...
+
 
 _START_KEY = "_phaze_telemetry_started"
 _SPAN_KEY = "_phaze_telemetry_span"
@@ -91,6 +112,16 @@ async def after_process(ctx: dict[str, Any]) -> None:
     SAQ runs this in a ``finally`` after EVERY outcome, so ``job.status`` is authoritative.
     Never raises, for the same reason: this hook runs alongside phaze's ledger-clearing
     hook, and an exception here would be raised through SAQ's own ``finally``.
+
+    It is NOT reached by SAQ's own dispatch when an earlier ``after_process`` hook raises --
+    ``saq.worker.Worker._after_process`` is one bare loop and the first exception abandons
+    the rest of it -- which is why the workers register it through
+    :func:`after_process_chain` instead of as the last element of that list.
+
+    Contains NO await points, deliberately. Cancellation is delivered only at a suspension
+    point, so this hook cannot be interrupted part-way and cannot leak the span it closes --
+    which is what makes it safe to await from a ``finally`` that is already unwinding a
+    ``CancelledError``. Adding an ``await`` here would quietly remove that property.
     """
     try:
         job = ctx.get("job")
@@ -109,6 +140,43 @@ async def after_process(ctx: dict[str, Any]) -> None:
         # NEVER raises: this runs in SAQ's own hook chain, alongside the ledger clear.
         # Logged rather than passed so a systematically broken hook is discoverable.
         log.debug("telemetry_saq_hook_failed", exc_info=True)
+
+
+def after_process_chain(*hooks: SaqHook) -> ChainedHook:
+    """The ONE ``after_process`` entry a worker registers: ``hooks`` in order, then
+    :func:`after_process` in a ``finally``.
+
+    ``saq.worker.Worker._after_process`` runs the registered hooks in a single bare loop
+    (``for ap in self.after_process: await ap(ctx)``), and ``Worker.process`` wraps the whole
+    loop in one ``try`` that merely logs. So a hook that raises -- a transient DB error in
+    ``repark_if_stage_paused``, a raise from ``record_drain_slice_completion``, or a
+    ``CancelledError`` during shutdown -- abandons every hook after it. With telemetry
+    registered LAST in that list, the job's span was never ``__exit__``'d (never ended, never
+    exported) and its duration and outcome were never recorded: precisely the abnormally-ended
+    jobs the metrics exist to show were the ones missing from the panels (phaze-24dl8).
+
+    This changes nothing about the neighbouring hooks' ORDER or their behaviour, including the
+    abort-on-first-raise between them: ``repark_if_stage_paused`` raising must still skip
+    ``increment_completed``, because repark is what stops a bounce being read as a genuine
+    terminal outcome. The exception still propagates to SAQ's own handler, so a systematically
+    broken hook still shows up as ``Failed to run after process hook``.
+
+    Returns an ``async def`` closure, NOT a callable object: SAQ gates on
+    ``asyncio.iscoroutinefunction(func)``, which is FALSE for an instance with an async
+    ``__call__`` -- such a hook would be handed to a thread pool, which would return the
+    coroutine without awaiting it and drop the telemetry silently.
+    """
+
+    async def run_after_process_chain(ctx: dict[str, Any]) -> None:
+        try:
+            for hook in hooks:
+                await hook(ctx)
+        finally:
+            await after_process(ctx)
+
+    chained = cast("ChainedHook", run_after_process_chain)
+    chained.chain = (*hooks, after_process)
+    return chained
 
 
 def hooks() -> tuple[Callable[[dict[str, Any]], Awaitable[None]], Callable[[dict[str, Any]], Awaitable[None]]]:

@@ -253,9 +253,10 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     import saq
 
     from phaze.tasks import agent_worker as agent_worker_module
+    from phaze.tasks._shared.deterministic_key import increment_completed
     from phaze.tasks._shared.stage_control import repark_if_stage_paused
     from phaze.tasks.agent_worker import settings as agent_settings
-    from phaze.telemetry.saq import after_process as telemetry_after_process
+    from phaze.telemetry import saq as telemetry_saq
 
     worker = saq.Worker(**agent_settings)
     assert worker is not None
@@ -279,9 +280,13 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     asyncio.run(composed({}))
     assert called == ["pause", "telemetry"], "the pause check must run, and must run before telemetry"
 
+    # phaze-24dl8: ONE entry, not three. SAQ's after_process list is a bare loop whose first
+    # raising hook abandons the rest, so telemetry is no longer registered as its last element
+    # -- `after_process_chain` runs it in a `finally` instead. The neighbours keep their order
+    # and their abort-on-first-raise relationship; `chain` is the effective order.
     assert worker.after_process is not None
-    assert worker.after_process[0] is repark_if_stage_paused
-    assert worker.after_process[-1] is telemetry_after_process, "telemetry runs LAST so it measures the other hooks' work too"
+    assert len(worker.after_process) == 1
+    assert worker.after_process[0].chain == (repark_if_stage_paused, increment_completed, telemetry_saq.after_process)
 
 
 @pytest.mark.asyncio
