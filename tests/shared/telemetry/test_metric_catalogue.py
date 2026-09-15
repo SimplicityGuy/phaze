@@ -28,9 +28,9 @@ from phaze.telemetry.catalogue import (
     FORBIDDEN_LABEL_SUBSTRINGS,
     MODEL_COMBINATIONS,
     RESERVED_LABEL_NAMES,
-    MetricSpec,
     total_series,
 )
+from tests.shared.telemetry._prometheus_translation import prometheus_family
 
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
@@ -198,24 +198,6 @@ def test_recording_an_out_of_domain_label_value_drops_it_in_production(monkeypat
     instruments.set_gauge("phaze.pipeline.backlog", 1.0, backlog="a_backlog_nobody_catalogued")
 
 
-def _prometheus_family(spec: MetricSpec) -> str:
-    """The Prometheus family name for a spec, as the REAL translation produces it.
-
-    Recorded from a live otel/opentelemetry-collector-contrib 0.140.0 in
-    ``docs/telemetry/metric-catalogue.md`` section 5 -- not derived from the OTLP ->
-    Prometheus naming rules on paper, which is how the two defects section 5 records were
-    found.
-    """
-    base = "phaze_" + spec.name.removeprefix("phaze.").replace(".", "_")
-    if spec.unit == "s":
-        base += "_seconds"
-    elif spec.unit == "By":
-        base += "_bytes"
-    if spec.kind == "counter":
-        base += "_total"
-    return base
-
-
 def test_the_documented_catalogue_lists_every_metric() -> None:
     """The committed doc is what homelab wires against, so it is checked BOTH ways.
 
@@ -224,11 +206,11 @@ def test_the_documented_catalogue_lists_every_metric() -> None:
     -- which reads as a healthy idle system.
     """
     doc = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "metric-catalogue.md").read_text(encoding="utf-8")
-    missing = [spec.name for spec in CATALOGUE if _prometheus_family(spec) not in doc]
+    missing = [spec.name for spec in CATALOGUE if prometheus_family(spec) not in doc]
     assert not missing, f"metrics absent from docs/telemetry/metric-catalogue.md: {missing}"
 
     documented = set(re.findall(r"`(phaze_[a-z0-9_]+)`", doc))
-    known = {_prometheus_family(spec) for spec in CATALOGUE}
+    known = {prometheus_family(spec) for spec in CATALOGUE}
     stale = sorted(
         name for name in documented if name not in known and not name.endswith(("_bucket", "_sum", "_count")) and name not in _NAMED_AS_REJECTED
     )

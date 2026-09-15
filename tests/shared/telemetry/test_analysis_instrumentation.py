@@ -20,16 +20,14 @@ discharged by ``test_analysis_with_real_models`` below, which SKIPS unless
 
 from __future__ import annotations
 
-import math
 import os
 from typing import TYPE_CHECKING
-import wave
 
-import numpy as np
 import pytest
 
 from phaze.services.analysis import analyze_file
 from phaze.telemetry.catalogue import FORBIDDEN_LABEL_SUBSTRINGS
+from tests.shared.telemetry.conftest import write_two_tone_wav
 
 
 if TYPE_CHECKING:
@@ -47,15 +45,7 @@ _COARSE_WINDOW_SEC = 60
 
 @pytest.fixture
 def audio(tmp_path: Path) -> str:
-    path = str(tmp_path / "sine.wav")
-    t = np.arange(_SOURCE_RATE * _TOTAL_SEC) / _SOURCE_RATE
-    samples = 0.4 * np.sin(2 * math.pi * 220 * t) + 0.3 * np.sin(2 * math.pi * 331 * t)
-    with wave.open(path, "w") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(_SOURCE_RATE)
-        handle.writeframes((samples * 32767).astype("<i2").tobytes())
-    return path
+    return write_two_tone_wav(str(tmp_path / "sine.wav"), total_sec=_TOTAL_SEC, source_rate=_SOURCE_RATE)
 
 
 def _run(audio_path: str, models_dir: str) -> dict[str, object]:

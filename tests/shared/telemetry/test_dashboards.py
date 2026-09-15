@@ -29,34 +29,13 @@ import sys
 
 import pytest
 
-from phaze.telemetry.catalogue import CATALOGUE
+from tests.shared.telemetry._prometheus_translation import prometheus_families
 
 
 REPO = Path(__file__).resolve().parents[3]
 DASHBOARD_DIR = REPO / "dashboards"
 
 DASHBOARDS = sorted(DASHBOARD_DIR.glob("*.json"))
-
-
-#: Every Prometheus metric family the catalogue can produce, with the suffixes the
-#: OTLP -> Prometheus translation appends. Measured against a real
-#: otel/opentelemetry-collector-contrib 0.140.0 and recorded in
-#: docs/telemetry/metric-catalogue.md section 5 -- NOT derived from the naming rules on paper.
-def _prometheus_families() -> set[str]:
-    families: set[str] = set()
-    for spec in CATALOGUE:
-        base = "phaze_" + spec.name.removeprefix("phaze.").replace(".", "_")
-        if spec.unit == "s":
-            base += "_seconds"
-        elif spec.unit == "By":
-            base += "_bytes"
-        if spec.kind == "histogram":
-            families.update({base, f"{base}_bucket", f"{base}_sum", f"{base}_count"})
-        elif spec.kind == "counter":
-            families.update({f"{base}_total"})
-        else:
-            families.add(base)
-    return families
 
 
 def test_there_are_dashboards_at_all() -> None:
@@ -123,7 +102,7 @@ def test_every_panel_has_a_query_and_a_description_where_it_matters(path: Path) 
 def test_every_metric_referenced_is_catalogued(path: Path) -> None:
     """A typo in a metric name is an EMPTY PANEL, and an empty panel reads as an idle
     system rather than as a broken dashboard. That is the failure this catches."""
-    families = _prometheus_families()
+    families = prometheus_families()
     text = path.read_text(encoding="utf-8")
     referenced = set(re.findall(r"\bphaze_[a-z0-9_]+", text))
     unknown = sorted(referenced - families)
