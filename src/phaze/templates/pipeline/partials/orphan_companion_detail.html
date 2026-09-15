@@ -1,0 +1,128 @@
+{# Batch-scoped, bounded orphan-COMPANION inventory for the Recent Scans drill-down. #}
+{% import "ui/primitives.html" as ui %}
+<section id="orphan-companion-detail"
+         aria-labelledby="orphan-companion-detail-heading"
+         class="mt-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+    {% if alert_message %}
+    <div class="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30" role="alert">
+        <p class="text-sm text-danger ">{{ alert_message }}</p>
+    </div>
+    {% else %}
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+            <h3 id="orphan-companion-detail-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">Skipped orphan companions</h3>
+            <p class="mt-1 text-sm text-muted ">{{ total }} accepted companion {{ 'file' if total == 1 else 'files' }} had no music or video sibling in this scan.</p>
+        </div>
+        {% set _filter_qs = view.filters_query() %}
+        <a href="/pipeline/scans/{{ batch_id }}/orphan-companions/download{{ ('?' ~ _filter_qs) if _filter_qs else '' }}"
+           class="inline-flex h-9 items-center justify-center rounded-md border border-gray-300 px-3 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Download CSV</a>
+    </div>
+
+    {% if total == 0 %}
+    <div class="mt-4">
+        {{ ui.state('empty', 'No skipped orphan companions', 'This scan has no persisted orphan-COMPANION diagnostics.') }}
+    </div>
+    {% else %}
+    <div class="mt-4 grid gap-4 lg:grid-cols-2">
+        <div class="rounded-md border border-gray-200 p-3 dark:border-phaze-border">
+            <h4 class="text-xs font-semibold uppercase tracking-wide text-muted ">By configured root</h4>
+            <ul class="mt-2 space-y-1 text-sm">
+                {% for configured_root, count in root_totals %}
+                <li class="flex items-start justify-between gap-3" data-root-count="{{ count }}">
+                    <code class="break-all text-gray-700 dark:text-gray-300">{{ configured_root }}</code>
+                    <span class="font-mono text-muted ">{{ count }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="rounded-md border border-gray-200 p-3 dark:border-phaze-border">
+            <h4 class="text-xs font-semibold uppercase tracking-wide text-muted ">By accepted extension</h4>
+            <ul class="mt-2 space-y-1 text-sm">
+                {% for extension, count in extension_totals %}
+                <li class="flex items-center justify-between gap-3" data-extension-count="{{ count }}">
+                    <code class="text-gray-700 dark:text-gray-300">{{ extension }}</code>
+                    <span class="font-mono text-muted ">{{ count }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <form method="get"
+          action="/pipeline/scans/{{ batch_id }}/orphan-companions"
+          hx-get="/pipeline/scans/{{ batch_id }}/orphan-companions"
+          hx-target="#orphan-companion-detail"
+          hx-swap="outerHTML"
+          class="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,12rem)_auto] sm:items-end">
+        <label class="text-xs font-semibold text-muted ">
+            Configured root
+            <select name="root" class="mt-1 block h-9 w-full rounded-md border border-gray-300 bg-white px-2 font-mono text-xs text-gray-700 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-300">
+                <option value="">All roots</option>
+                {% for configured_root, count in root_totals %}
+                <option value="{{ configured_root }}" {% if view.root == configured_root %}selected{% endif %}>{{ configured_root }} ({{ count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="text-xs font-semibold text-muted ">
+            Accepted extension
+            <select name="type" class="mt-1 block h-9 w-full rounded-md border border-gray-300 bg-white px-2 font-mono text-xs text-gray-700 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-300">
+                <option value="">All types</option>
+                {% for extension, count in extension_totals %}
+                <option value="{{ extension }}" {% if view.extension == extension %}selected{% endif %}>{{ extension }} ({{ count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit" class="h-9 rounded-md bg-action-brand px-3 text-xs font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Apply filters</button>
+    </form>
+
+    <div class="mt-4">
+        {% if diagnostics_page.rows %}
+        {% call ui.data_table('Skipped orphan companion paths') %}
+            <thead class="border-b border-gray-200 text-left text-xs font-semibold uppercase text-muted dark:border-phaze-border">
+                <tr>
+                    <th scope="col" class="px-4 py-3">Configured root</th>
+                    <th scope="col" class="px-4 py-3">Type</th>
+                    <th scope="col" class="px-4 py-3">Normalized path</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+                {% for diagnostic in diagnostics_page.rows %}
+                <tr>
+                    <td class="px-4 py-3"><code class="break-all text-xs text-gray-700 dark:text-gray-300">{{ diagnostic.configured_root }}</code></td>
+                    <td class="px-4 py-3"><code class="text-xs text-gray-700 dark:text-gray-300">{{ diagnostic.companion_extension }}</code></td>
+                    <td class="px-4 py-3"><code class="break-all text-xs text-gray-900 dark:text-gray-100">{{ diagnostic.normalized_path }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        {% endcall %}
+        {% else %}
+        {{ ui.state('empty', 'No paths on this page', 'Change the filters or return to the previous page.') }}
+        {% endif %}
+    </div>
+
+    {% if diagnostics_page.rows or diagnostics_page.show_pager %}
+    {% set _start = ((diagnostics_page.page - 1) * diagnostics_page.page_size) + 1 if diagnostics_page.rows else 0 %}
+    {% set _end = [diagnostics_page.page * diagnostics_page.page_size, filtered_total] | min if diagnostics_page.rows else 0 %}
+    <nav aria-label="Orphan companion path pagination" class="mt-4 flex items-center justify-between gap-3">
+        <p class="text-sm text-muted ">Showing {{ _start }}-{{ _end }} of {{ filtered_total }} · Page {{ diagnostics_page.page }}</p>
+        <div class="flex gap-1">
+            {% if diagnostics_page.has_prev %}
+            <a href="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page - 1) }}"
+               hx-get="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page - 1) }}"
+               hx-target="#orphan-companion-detail"
+               hx-swap="outerHTML"
+               class="rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Previous</a>
+            {% endif %}
+            {% if diagnostics_page.has_next %}
+            <a href="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page + 1) }}"
+               hx-get="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page + 1) }}"
+               hx-target="#orphan-companion-detail"
+               hx-swap="outerHTML"
+               class="rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Next</a>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+    {% endif %}
+    {% endif %}
+</section>

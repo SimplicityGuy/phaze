@@ -28,6 +28,8 @@
     "GET /pipeline/scans/agent-roots",
     "GET /pipeline/scans/recent",
     "GET /pipeline/scans/{batch_id}",
+    "GET /pipeline/scans/{batch_id}/orphan-companions",
+    "GET /pipeline/scans/{batch_id}/orphan-companions/download",
     "GET /pipeline/stats",
     "GET /pipeline/tracklist-drain-status",
     "GET /pipeline/tracklist-sets",

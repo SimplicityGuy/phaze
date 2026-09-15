@@ -133,6 +133,15 @@
                         {# quick 260622-i0w: per-agent reconciliation — shown only when this agent's
                            scan total collapsed onto existing rows (deduped > 0). Hidden otherwise. #}
                         {% if batch._reconciliation and batch._reconciliation.deduped > 0 %}<span class="text-xs text-muted ">→ {{ batch._reconciliation.unique }} unique · {{ batch._reconciliation.deduped }} deduped</span>{% endif %}
+                        {% if batch._orphan_companion_count > 0 %}
+                        <a href="/pipeline/scans/{{ batch.id }}/orphan-companions"
+                           hx-get="/pipeline/scans/{{ batch.id }}/orphan-companions"
+                           hx-target="#orphan-companion-detail"
+                           hx-swap="outerHTML"
+                           class="mt-1 block text-xs font-semibold text-warn underline decoration-dotted underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            {{ batch._orphan_companion_count }} orphan companion{{ '' if batch._orphan_companion_count == 1 else 's' }}
+                        </a>
+                        {% endif %}
                     </td>
                     <td class="px-4 py-3 text-muted ">{{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '—' }}</td>
                     <td class="px-4 py-3 text-muted ">
@@ -177,4 +186,5 @@
             </tbody>
     {% endcall %}
     {% endif %}
+    <section id="orphan-companion-detail" class="empty:hidden" aria-live="polite"></section>
 </section>

@@ -14,24 +14,32 @@ The agent-roots swap (`GET /pipeline/scans/agent-roots`) re-renders the
 populated; missing/revoked/empty agents render the yellow-surface empty state.
 """
 
+from collections.abc import AsyncIterator
+import csv
+from dataclasses import dataclass
 from datetime import UTC, datetime
+import io
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from phaze.config import get_settings
+from phaze.constants import INGESTIBLE_COMPANION_EXTENSIONS
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.orphan_companion_diagnostic import OrphanCompanionDiagnostic
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, paged_stmt, split_sentinel
 from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
 from phaze.web.template_globals import register_set_glyph_globals
@@ -55,6 +63,154 @@ _TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED})
 # reaper actually marks the scan FAILED. e.g. scan_stall_seconds=600 -> the UI
 # warns once a RUNNING scan has been quiet for >300s.
 _UI_STALL_WARN_FRACTION = 0.5
+
+_ORPHAN_CSV_FETCH_SIZE = 250
+
+
+@dataclass(frozen=True, slots=True)
+class OrphanCompanionViewState:
+    """Resolved, bounded URL state for one scan's diagnostic inventory."""
+
+    root: str | None = None
+    extension: str | None = None
+    page: int = 1
+    page_size: int = DEFAULT_PAGE_SIZE
+
+    def query(self, *, page: int | None = None) -> str:
+        """Encode every active filter plus a bounded page for detail-view links."""
+        params: list[tuple[str, str | int]] = []
+        if self.root is not None:
+            params.append(("root", self.root))
+        if self.extension is not None:
+            params.append(("type", self.extension))
+        params.append(("page", self.page if page is None else clamp_page(page)))
+        return urlencode(params)
+
+    def filters_query(self) -> str:
+        """Encode only the active filters for the exhaustive streaming download."""
+        params: list[tuple[str, str]] = []
+        if self.root is not None:
+            params.append(("root", self.root))
+        if self.extension is not None:
+            params.append(("type", self.extension))
+        return urlencode(params)
+
+
+def _parse_orphan_page(raw: str | None) -> int:
+    """Resolve a hand-editable page preference without turning the view into a 422."""
+    try:
+        page = int(raw) if raw is not None else 1
+    except ValueError:
+        page = 1
+    return clamp_page(page)
+
+
+async def _orphan_companion_summary(
+    session: AsyncSession,
+    batch_id: uuid.UUID,
+) -> tuple[list[tuple[str, str, int]], dict[str, int], dict[str, int], int]:
+    """Return the exact bounded-cardinality root/type breakdown for one scan."""
+    stmt = (
+        select(
+            OrphanCompanionDiagnostic.configured_root,
+            OrphanCompanionDiagnostic.companion_extension,
+            func.count(),
+        )
+        .where(OrphanCompanionDiagnostic.batch_id == batch_id)
+        .group_by(
+            OrphanCompanionDiagnostic.configured_root,
+            OrphanCompanionDiagnostic.companion_extension,
+        )
+        .order_by(
+            OrphanCompanionDiagnostic.configured_root,
+            OrphanCompanionDiagnostic.companion_extension,
+        )
+    )
+    grouped: list[tuple[str, str, int]] = []
+    root_totals: dict[str, int] = {}
+    extension_totals: dict[str, int] = {}
+    total = 0
+    for configured_root, extension, raw_count in (await session.execute(stmt)).all():
+        count = int(raw_count)
+        grouped.append((configured_root, extension, count))
+        root_totals[configured_root] = root_totals.get(configured_root, 0) + count
+        extension_totals[extension] = extension_totals.get(extension, 0) + count
+        total += count
+    return grouped, root_totals, extension_totals, total
+
+
+def _resolve_orphan_view(
+    request: Request,
+    *,
+    root_totals: dict[str, int],
+    extension_totals: dict[str, int],
+) -> OrphanCompanionViewState:
+    """Resolve filters against this batch's real bounded summary and clamp pagination."""
+    root_raw = request.query_params.get("root")
+    extension_raw = request.query_params.get("type")
+    root = root_raw if root_raw in root_totals else None
+    extension = extension_raw if extension_raw in INGESTIBLE_COMPANION_EXTENSIONS and extension_raw in extension_totals else None
+    return OrphanCompanionViewState(root=root, extension=extension, page=_parse_orphan_page(request.query_params.get("page")))
+
+
+def _orphan_companion_rows_stmt(
+    batch_id: uuid.UUID,
+    view: OrphanCompanionViewState,
+) -> Select[tuple[OrphanCompanionDiagnostic]]:
+    """Build the batch-scoped, composably-filtered diagnostic rows statement."""
+    stmt = select(OrphanCompanionDiagnostic).where(OrphanCompanionDiagnostic.batch_id == batch_id)
+    if view.root is not None:
+        stmt = stmt.where(OrphanCompanionDiagnostic.configured_root == view.root)
+    if view.extension is not None:
+        stmt = stmt.where(OrphanCompanionDiagnostic.companion_extension == view.extension)
+    return stmt
+
+
+async def _orphan_companion_page(
+    session: AsyncSession,
+    batch_id: uuid.UUID,
+    view: OrphanCompanionViewState,
+) -> Page[OrphanCompanionDiagnostic]:
+    """Load one deterministic page with a +1 sentinel, never an unbounded path list."""
+    stmt = paged_stmt(
+        _orphan_companion_rows_stmt(batch_id, view),
+        page=view.page,
+        page_size=view.page_size,
+        order_by=(),
+        tiebreaker=(OrphanCompanionDiagnostic.normalized_path,),
+    )
+    page_rows, has_next = split_sentinel((await session.execute(stmt)).scalars().all(), view.page_size)
+    return Page(rows=page_rows, page=view.page, page_size=view.page_size, has_next=has_next)
+
+
+async def _stream_orphan_companion_csv(
+    session: AsyncSession,
+    stmt: Select[tuple[OrphanCompanionDiagnostic]],
+) -> AsyncIterator[str]:
+    """Stream one CSV row at a time from a server-side cursor."""
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\r\n")
+
+    def render_row(values: tuple[object, ...]) -> str:
+        buffer.seek(0)
+        buffer.truncate(0)
+        writer.writerow(values)
+        return buffer.getvalue()
+
+    yield render_row(("batch_id", "configured_root", "companion_extension", "normalized_path"))
+    result = await session.stream_scalars(
+        stmt.order_by(OrphanCompanionDiagnostic.normalized_path).execution_options(yield_per=_ORPHAN_CSV_FETCH_SIZE)
+    )
+    async for diagnostic in result:
+        yield render_row(
+            (
+                str(diagnostic.batch_id),
+                diagnostic.configured_root,
+                diagnostic.companion_extension,
+                diagnostic.normalized_path,
+            )
+        )
+
 
 # phaze-a6hm.6: THE sortable-column contract for the Recent Scans table (see
 # `routers/column_sort.py` -- that docstring is the contract, this is only its wiring).
@@ -241,6 +397,84 @@ async def recent_scans_partial(
     )
 
 
+@router.get("/{batch_id}/orphan-companions/download")
+async def download_orphan_companions(
+    request: Request,
+    batch_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """Stream the selected scan's diagnostic metadata without materializing every path."""
+    batch = await session.get(ScanBatch, batch_id)
+    if batch is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/orphan_companion_detail.html",
+            context={
+                "request": request,
+                "batch": None,
+                "batch_id": batch_id,
+                "alert_message": "That scan is already gone; its orphan companion inventory was removed with it.",
+            },
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
+
+    _grouped, root_totals, extension_totals, _total = await _orphan_companion_summary(session, batch_id)
+    view = _resolve_orphan_view(request, root_totals=root_totals, extension_totals=extension_totals)
+    stmt = _orphan_companion_rows_stmt(batch_id, view)
+    return StreamingResponse(
+        _stream_orphan_companion_csv(session, stmt),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="scan-{batch_id}-orphan-companions.csv"'},
+    )
+
+
+@router.get("/{batch_id}/orphan-companions", response_class=HTMLResponse)
+async def orphan_companion_detail(
+    request: Request,
+    batch_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    """Render one scan's exact summary and one bounded, deterministic path page."""
+    batch = await session.get(ScanBatch, batch_id)
+    if batch is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/orphan_companion_detail.html",
+            context={
+                "request": request,
+                "batch": None,
+                "batch_id": batch_id,
+                "alert_message": "That scan is already gone; its orphan companion inventory was removed with it.",
+            },
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
+
+    grouped, root_totals, extension_totals, total = await _orphan_companion_summary(session, batch_id)
+    view = _resolve_orphan_view(request, root_totals=root_totals, extension_totals=extension_totals)
+    diagnostics_page = await _orphan_companion_page(session, batch_id, view)
+    filtered_total = sum(
+        count
+        for configured_root, extension, count in grouped
+        if (view.root is None or configured_root == view.root) and (view.extension is None or extension == view.extension)
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/orphan_companion_detail.html",
+        context={
+            "request": request,
+            "batch": batch,
+            "batch_id": batch_id,
+            "alert_message": None,
+            "total": total,
+            "filtered_total": filtered_total,
+            "root_totals": sorted(root_totals.items()),
+            "extension_totals": sorted(extension_totals.items()),
+            "diagnostics_page": diagnostics_page,
+            "view": view,
+        },
+    )
+
+
 @router.get("/{batch_id}", response_class=HTMLResponse)
 async def scan_progress(
     request: Request,
@@ -326,12 +560,22 @@ async def build_recent_scans(session: AsyncSession, sort: SortState | None = Non
     # the SHARED helper keeps dashboard() and delete_scan() in lockstep automatically.
     recon_by_agent = await get_agent_reconciliations(session)
 
+    diagnostic_count_by_batch: dict[uuid.UUID, int] = {}
+    if rows:
+        diagnostic_counts = await session.execute(
+            select(OrphanCompanionDiagnostic.batch_id, func.count())
+            .where(OrphanCompanionDiagnostic.batch_id.in_(batch.id for batch in rows))
+            .group_by(OrphanCompanionDiagnostic.batch_id)
+        )
+        diagnostic_count_by_batch = {batch_id: int(count) for batch_id, count in diagnostic_counts.all()}
+
     for batch in rows:
         batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
         batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
         batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
         batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
         batch._reconciliation = recon_by_agent.get(batch.agent_id)  # type: ignore[attr-defined]
+        batch._orphan_companion_count = diagnostic_count_by_batch.get(batch.id, 0)  # type: ignore[attr-defined]
     return rows
 
 
