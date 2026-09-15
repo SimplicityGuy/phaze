@@ -67,6 +67,117 @@ def test_the_same_failure_RAISES_under_strict(call: Any, name: str, kwargs: dict
         call(name, 1.0, **kwargs)
 
 
+class _ExplodingSpanCM:
+    """A context manager whose ``__enter__`` explodes -- what entering a span looks like when
+    a sampler, an id generator, or a span processor's ``on_start`` raises. None of those three
+    are guarded inside opentelemetry-sdk 1.44.0's ``Tracer.start_span`` (verified directly
+    against the installed SDK, not assumed from a prior version)."""
+
+    def __enter__(self) -> None:
+        msg = "tracer exploded on entry"
+        raise RuntimeError(msg)
+
+    def __exit__(self, *_args: Any) -> bool:
+        return False  # pragma: no cover - unreachable, __enter__ never returns
+
+
+class _ExplodingTracer:
+    """A tracer that blows up on every ``start_as_current_span`` call, before the wrapped
+    block ever runs."""
+
+    def start_as_current_span(self, _name: str, *, context: Any = None) -> _ExplodingSpanCM:  # noqa: ARG002 -- `context` mirrors the real Tracer's keyword-only param
+        return _ExplodingSpanCM()
+
+
+def test_span_survives_a_tracer_that_explodes_on_entry() -> None:
+    """phaze-bzw5y acceptance 1, for ``span()``.
+
+    A raising sampler/id-generator/span-processor ``on_start`` must not propagate out of
+    ``span()`` at a chunk boundary hours into an analysis. The wrapped block must run and
+    return exactly as if tracing were off, yielding an ``INVALID_SPAN``-shaped fallback.
+    """
+    tracing._reset_for_tests(factory=_ExplodingTracer)
+    try:
+        ran = False
+        with tracing.span("phaze.test.exploding_entry") as current:
+            ran = True
+            computed = 1 + 41
+        assert ran, "the wrapped block never ran"
+        assert computed == 42, "the wrapped block's own computation was disturbed"
+        assert not current.is_recording(), "a failed entry must not hand back a recording span"
+    finally:
+        tracing._reset_for_tests()
+
+
+def test_timed_survives_a_tracer_that_explodes_on_entry() -> None:
+    """phaze-bzw5y acceptance 1, for ``timed()`` -- the primitive that actually wraps both
+    D-07 chunk loops in ``services/analysis.py``."""
+    tracing._reset_for_tests(factory=_ExplodingTracer)
+    try:
+        ran = False
+        with tracing.timed("phaze.analysis.tier.duration", "phaze.test.exploding_entry", tier="fine") as current:
+            ran = True
+        assert ran, "the wrapped block never ran"
+        assert not current.is_recording()
+    finally:
+        tracing._reset_for_tests()
+
+
+def test_span_records_and_reraises_the_blocks_own_exception_on_a_healthy_span(telemetry_sink: Any) -> None:
+    """phaze-bzw5y acceptance 2. A HEALTHY tracer, a block that raises: the exception is
+    still recorded on the span and still comes out unchanged. The entry guard added for
+    acceptance 1 must not touch this path at all.
+    """
+
+    class _Boom(RuntimeError):
+        pass
+
+    with pytest.raises(_Boom, match="boom"), tracing.span("phaze.test.healthy_span_raises"):
+        msg = "boom"
+        raise _Boom(msg)
+
+    (recorded,) = [candidate for candidate in telemetry_sink.spans() if candidate.name == "phaze.test.healthy_span_raises"]
+    assert recorded.status.status_code == trace.StatusCode.ERROR
+    assert any(event.name == "exception" for event in recorded.events), "the block's exception was not recorded on the span"
+
+
+def test_timed_metric_finally_does_not_mask_a_raising_blocks_exception(exploding_instruments: None) -> None:
+    """phaze-bzw5y acceptance 3. Under strict, ``record()`` raising from ``timed_metric``'s
+    finally must not replace the block's own in-flight exception -- that is the shape that
+    would mask a genuine sweep failure (e.g. in ``_release_classifier_timed``) behind an
+    unrelated metrics defect.
+    """
+
+    class _SweepFailure(RuntimeError):
+        pass
+
+    with pytest.raises(_SweepFailure, match="sweep failed"), tracing.timed_metric("phaze.analysis.tier.duration", tier="fine"):
+        msg = "sweep failed"
+        raise _SweepFailure(msg)
+
+
+def test_timed_metric_still_raises_a_broken_instrument_when_nothing_else_is_in_flight(exploding_instruments: None) -> None:
+    """The other half of acceptance 3: with no block exception to protect, a broken
+    instrument's own raise is NOT swallowed -- that is what keeps a broken metric a red test
+    under strict rather than a silence nobody notices.
+    """
+    with pytest.raises(RuntimeError, match="instrument exploded"), tracing.timed_metric("phaze.analysis.tier.duration", tier="fine"):
+        pass
+
+
+def test_timed_finally_does_not_mask_a_raising_blocks_exception(exploding_instruments: None) -> None:
+    """The sibling hazard on ``timed()``, which wraps both D-07 chunk loops and has the
+    identical ``record()``-in-a-``finally`` shape as ``timed_metric``.
+    """
+
+    class _SweepFailure(RuntimeError):
+        pass
+
+    with pytest.raises(_SweepFailure, match="sweep failed"), tracing.timed("phaze.analysis.tier.duration", "phaze.test.timed_masking", tier="fine"):
+        msg = "sweep failed"
+        raise _SweepFailure(msg)
+
+
 def test_configure_returns_false_when_installation_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """An endpoint was configured and phaze could not honour it. The process keeps running.
 
