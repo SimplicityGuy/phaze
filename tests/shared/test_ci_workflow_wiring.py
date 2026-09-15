@@ -94,6 +94,12 @@ def _load_root_workflow() -> dict[str, Any]:
     return loaded
 
 
+def _load_code_quality_workflow() -> dict[str, Any]:
+    assert _CODE_QUALITY_WORKFLOW_PATH.is_file(), f"missing workflow: {_CODE_QUALITY_WORKFLOW_PATH}"
+    loaded: dict[str, Any] = yaml.safe_load(_CODE_QUALITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    return loaded
+
+
 def _load_security_workflow() -> dict[str, Any]:
     assert _SECURITY_WORKFLOW_PATH.is_file(), f"missing workflow: {_SECURITY_WORKFLOW_PATH}"
     loaded: dict[str, Any] = yaml.safe_load(_SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
@@ -554,3 +560,83 @@ def test_browser_launch_smoke_precedes_the_contract_suite() -> None:
     (suite_step,) = suite_steps
     assert "timeout --kill-after=5s 30" in smoke_step["run"]
     assert steps.index(smoke_step) < steps.index(suite_step)
+
+
+# phaze-jjjy8: `alerts/phaze-alerts.test.yml` was executed by no workflow and no justfile
+# recipe at all -- only asserted to exist (test_the_promtool_unit_tests_cover_the_accepted_drain_rate)
+# -- so it could diverge from `phaze-alerts.yml` indefinitely with nothing red. `just
+# alerts-test` (a dependency of `just check-all`) closes the justfile half;
+# `.github/workflows/code-quality.yml` installing a real `promtool` and running that recipe
+# closes the CI half, so a local-only skip is never the only place this runs.
+_ALERTS_TEST_ALERT_YAML = _REPO_ROOT / "alerts" / "phaze-alerts.test.yml"
+_ALERT_RULES_TEST_MODULE = _REPO_ROOT / "tests" / "shared" / "telemetry" / "test_alert_rules.py"
+
+# Matches `v3.10.0` / `3.10.0` wherever it appears, so the same pattern reads a `prom/
+# prometheus:vX.Y.Z` docker tag, a GitHub release tag, and a `prometheus-X.Y.Z...` asset name.
+_PROMETHEUS_VERSION_RE = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
+
+
+def _promtool_versions_cited(text: str) -> set[str]:
+    """Every Prometheus version cited near the word ``prometheus`` in ``text``.
+
+    Deliberately narrow (only lines mentioning ``prometheus``) rather than every bare
+    ``X.Y.Z`` in the file -- a CalVer-style date or an unrelated dependency pin would
+    otherwise false-positive as a second, disagreeing citation.
+    """
+    versions: set[str] = set()
+    for line in text.splitlines():
+        if "prometheus" not in line.lower():
+            continue
+        versions.update(_PROMETHEUS_VERSION_RE.findall(line))
+    return versions
+
+
+def test_code_quality_installs_and_runs_promtool_for_alert_rules() -> None:
+    """CI must actually RUN the alert-rule promtool tests, not merely wire a skippable recipe.
+
+    `just alerts-test` loudly skips when `promtool` is not on the local PATH -- correct for a
+    developer machine, wrong for CI. This pins that CI installs the binary and then runs the
+    recipe, so the skip path is never the only place phaze-jjjy8 acceptance 2/3 actually run.
+    """
+    steps = _load_code_quality_workflow()["jobs"]["code-quality"]["steps"]
+    runs = [step.get("run", "") for step in steps]
+
+    install_steps = [run for run in runs if "promtool" in run and "install" in run.lower()]
+    assert install_steps, "no step in code-quality.yml installs promtool"
+
+    alerts_test_steps = [run for run in runs if run.strip() == "just alerts-test"]
+    assert len(alerts_test_steps) == 1, f"expected exactly one `just alerts-test` step, found {len(alerts_test_steps)}"
+
+    install_index = next(i for i, run in enumerate(runs) if run in install_steps)
+    alerts_test_index = next(i for i, run in enumerate(runs) if run.strip() == "just alerts-test")
+    assert install_index < alerts_test_index, "promtool must be installed BEFORE `just alerts-test` runs, not after"
+
+
+def test_promtool_version_pin_agrees_across_ci_and_alert_fixtures() -> None:
+    """The v3.10.0 pin must be the SAME number everywhere it is cited.
+
+    Three independent places name a Prometheus version: the `docker run` reproduce command
+    in `alerts/phaze-alerts.test.yml`'s header comment, the identical reproduce command in
+    `tests/shared/telemetry/test_alert_rules.py`'s module docstring, and the binary CI
+    actually installs in `code-quality.yml`. This is the hadolint-pin shape
+    (`test_hadolint_version_pin.py`) applied to a second external tool: two of the three
+    citations are prose a human could edit independently of the one CI reads, and drifting
+    apart would mean a developer's local `docker run` reproduces a DIFFERENT promtool
+    version than the one that actually gates CI.
+    """
+    code_quality_text = _CODE_QUALITY_WORKFLOW_PATH.read_text(encoding="utf-8")
+    alerts_test_text = _ALERTS_TEST_ALERT_YAML.read_text(encoding="utf-8")
+    module_docstring_text = _ALERT_RULES_TEST_MODULE.read_text(encoding="utf-8")
+
+    ci_versions = _promtool_versions_cited(code_quality_text)
+    alerts_versions = _promtool_versions_cited(alerts_test_text)
+    docstring_versions = _promtool_versions_cited(module_docstring_text)
+
+    assert ci_versions, "code-quality.yml cites no Prometheus version near the word 'prometheus'"
+    assert alerts_versions, "alerts/phaze-alerts.test.yml cites no Prometheus version"
+    assert docstring_versions, "test_alert_rules.py's module docstring cites no Prometheus version"
+
+    assert ci_versions == alerts_versions == docstring_versions, (
+        f"promtool version pin has drifted: code-quality.yml={ci_versions}, "
+        f"alerts/phaze-alerts.test.yml={alerts_versions}, test_alert_rules.py={docstring_versions}"
+    )
