@@ -416,6 +416,14 @@ from any re-read, and phaze-2akf carried that allowlist into the on-demand `refr
 still holds on the facts. The operator's call was that a
 tracklist attributed to a retired engine is not worth keeping as a record.
 
+## COMPANION archive rollout (phaze-8eq1i)
+
+The one-time archive rollout is complete, with operational evidence recorded on `phaze-8eq1i`:
+25,866 files were scanned, producing 14,438 companion rows and 19,983 companion links. The scan
+also found 760 unmatched/orphan companion files and skipped them according to the documented
+same-directory media-sibling policy. This record intentionally contains aggregate counts only;
+archive filenames and paths remain outside tracked content.
+
 ## One-time exhaustive-analysis re-enqueue backfill (phaze-kj8dl)
 
 > **Manual, operator-run, post-deployment only.** This is a one-time archive backfill, not an
