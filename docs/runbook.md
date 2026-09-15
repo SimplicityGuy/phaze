@@ -553,6 +553,12 @@ owning agent at run time. Bring that agent back online and re-run the command �
 a repeat enqueue of an already-queued file a clean no-op reported as `in_flight`) — no manual
 bookkeeping is needed to avoid double-enqueuing.
 
+## COMPANION archive-backfill proposal decision (phaze-cy1h7)
+
+The 2026-09-14 post-backfill production measurement found zero existing rename proposals. The
+operator approved scope **none**: do not regenerate proposals; future first-pass proposal
+generation will read the newly associated COMPANION context through the normal pipeline.
+
 ## See also
 
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the
