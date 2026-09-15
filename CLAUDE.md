@@ -839,7 +839,23 @@ actually claimable.
   git cannot resolve, which is *not* the same as current). Staleness is not confined to `get_health`:
   `get_risk` and `get_context(include=["health"])` embed the same fold rows and neither warns. To force
   a fresh read, `repowise health --file <path>`; **do not conclude "always use the CLI"** — that fixes
-  nothing for bulk reads while leaving agents believing they have worked around it.
+  nothing for bulk reads while leaving agents believing they have worked around it. **All of the above
+  is about the health fold, and a frozen "Files that need care" entry for a DELETED path is a different
+  table, not a health-fold case.** `health_file_metrics` is rebuilt from a walk of the current tree, so
+  a deleted path simply has no row there — `get_health()` correctly reports it gone. The generated
+  `.claude/CLAUDE.md` ranking instead reads **`git_metadata`**, whose row for a deleted path is stamped
+  at the fold immediately following the deleting commit and never revisited again. Measured at HEAD
+  `f9de77e6` (2026-08-26): `health_file_metrics` has 0 rows for `src/phaze/routers/shell.py` and 4 for
+  its replacement package `src/phaze/routers/shell/*` — correct in both cases — but `git_metadata`
+  still carries a row for the deleted path, stamped `updated_at=2026-08-22 05:27:22.486146` at the fold
+  after the deleting commit `c3f09b13` (2026-08-21), with `prior_defect_raw_count=22` and
+  `commit_count_90d=63` frozen from that commit, while the four replacement files' `git_metadata` rows
+  kept updating normally (`updated_at=2026-08-26 02:04:43`) and the `repositories` row itself refreshed
+  hours later the same day (`updated_at=2026-08-26 03:59:13`). **Regeneration does not clear it**: a
+  `repowise generate-claude-md` run moved defect-risk avg (8.93→9.16), hotspot health (6.47→7.11) and
+  performance findings (224→244), yet left the stale line byte-identical — the negative control that
+  rules out a cache hit and confirms the frozen `git_metadata` row, not the health fold, is the cause.
+  Upstream: https://github.com/repowise-dev/repowise/issues/1929 — retire this note once fixed.
 - **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
   `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X**, so that line is evidence
   of neither presence nor removal. Read the label set back with `bd label list <id>` if it matters.
