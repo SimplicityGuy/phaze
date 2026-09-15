@@ -282,3 +282,145 @@ unchanged: a dropped span is acceptable, a failed analyze job is not.
 
 Per ADR-0012 rule 3, discharged against the real consumer — the trace UI, not an assertion
 that the exporter was called. Recorded in `docs/telemetry/traces.md`.
+
+______________________________________________________________________
+
+## 8. Concurrent producers — added 2026-09-15 by `phaze-21nnf`
+
+**§§1–7 decided WHERE the data goes and never asked how many processes send it.** That gap
+was a live defect, and it is the one this ADR had already argued against in another guise:
+§3b rejects the pushgateway partly because *"pushing under a shared key makes concurrent pods
+(cap = 4) overwrite each other, which silently loses three quarters of the data"*. The chosen
+OTLP path recreated exactly that overwrite, one layer down, through the default
+`service.instance.id`.
+
+### 8a. The finding
+
+`bootstrap._resource_attributes` defaulted `service.instance.id` to the **service name**, so
+every analysis producer reported one identity. But up to `worker_process_pool_size` analysis
+children (default **4**) run at once, each its own OS process exporting its own **cumulative**
+counters, and a collector's Prometheus exporter keeps **one series per identity and takes the
+last write**.
+
+Measured against `otel/opentelemetry-collector-contrib` 0.140.0 with this repo's own
+`deploy/telemetry/otel-collector.example.yaml`, two producers at interleaved totals produced
+this exposition:
+
+```
+10 -> 10 -> 10 -> 100 -> 100 -> 20 -> 20 -> 200 -> 200 -> 30 -> 300 -> 300
+```
+
+`100 -> 20` and `200 -> 30` are counter **decreases**. Prometheus reads each as a reset and
+counts the post-reset value as increment, so `increase()` reported **590** where the producers
+delivered **320** — **+84.4%** — and the exposed final total was 300 against a true 330. **The
+error grows with the number of interleaved exports**: at twice the flushes it was **+221.5%**.
+That corrupts every `phaze_analysis_*` counter panel and feeds all three alert rules.
+
+Full record, including what the figures do *not* establish:
+[`docs/telemetry/measurements/concurrent-identity-2026-09-15.md`](../telemetry/measurements/concurrent-identity-2026-09-15.md).
+Harness: `scripts/measure_concurrent_identity.py`.
+
+> **An in-process reader cannot find this, which is why it survived a complete telemetry
+> epic.** Each child's own `InMemoryMetricReader` shows a perfectly monotonic counter — the
+> corruption is in the collector's accumulator. ADR-0012 rule 3, on a component phaze does
+> not own.
+
+### 8b. Decision
+
+**`service.instance.id` is the host-or-service base plus a BOUNDED WORKER-SLOT INDEX**:
+`phaze-analysis-0` … `phaze-analysis-3`, or `host-compute-0` … `host-compute-3` when an
+operator has also pinned the host. The slot arrives in `PHAZE_TELEMETRY_SLOT`, is validated
+against `PHAZE_TELEMETRY_SLOT_MAX`, and an out-of-range or malformed value is **refused** —
+the process falls back to the shared identity rather than minting an unbounded one.
+
+**The cardinality bound, which is the whole reason this scheme and not another:**
+
+| | series |
+| --- | ---: |
+| analysis-role catalogue block | 2,290 |
+| × 4 slots | **9,160** |
+| whole-catalogue ceiling, before | 8,587 |
+| whole-catalogue ceiling, after | **15,457** |
+| a per-pod id instead: 2,290 × 11,428 files | **26,170,120** |
+
+**The bound is a multiple of the CONCURRENCY, not of the corpus.** Slots are reused by the
+next child, so the figure does not move as the archive grows — which is the entire difference
+from the per-pod identity §3b and `_resource_attributes` reject. It reintroduces **no**
+per-file series block.
+
+The multiplier follows `worker_process_pool_size` rather than being a second copy of it:
+`agent_worker.startup` sizes the slot pool from the same knob that sizes the concurrency
+semaphore, and `test_the_default_bound_matches_the_worker_pool_default` fails the build if the
+two defaults drift.
+
+**Dashboards and alert rules are unchanged, and that was checked rather than assumed.** Every
+expression in `dashboards/*.json` and `alerts/phaze-alerts.yml` already wraps its selector in
+`sum(...)` or `sum by (<label>)(...)`; summing after `rate` is the canonical Prometheus
+treatment of one series per producer. Measured: the per-slot arm's summed final value was
+**330 against a true 330**, exact.
+
+### 8c. The alternatives, and why each loses
+
+- **Delta temporality for the analysis role's counters — REJECTED, refuted by measurement.**
+  The appeal was real: deltas from several producers summed by the collector need no extra
+  identity and cost no cardinality at all. **The stock `prometheus` exporter does not
+  accumulate them.** Measured on the same collector, it exposes the last delta received, so
+  the series oscillated `10 -> 100 -> 10 -> 100` and the running total appeared nowhere; the
+  final exposed value was 100 against a true 330. Making it work needs the
+  `deltatocumulative` processor — **collector configuration phaze does not own**, absent
+  silently. That is §3b's objection to the pushgateway again, so it cannot be answered by
+  editing the example compose: homelab's collector is the one that matters.
+  - Delta also gives up the property §4 relies on: with cumulative, a lost export costs
+    nothing once a later one arrives, because the later one carries the running total. With
+    delta, a lost export's increments are gone for good — a worse trade for a producer that
+    reaches the collector over Tailscale.
+- **A per-process instance id plus collector-side aggregation dropping the label —
+  REJECTED.** It needs a processor phaze does not own, and its failure mode is the
+  catastrophic one: without that processor phaze mints ~26.2M series in someone else's
+  Prometheus. It is also semantically wrong even when configured, because summing *cumulative*
+  counters across series before `rate` reproduces a dip every time a process exits.
+- **Hashing a per-process identity into W buckets — REJECTED.** It needs no allocator, which
+  is its whole appeal, and the arithmetic kills it: with 4 buckets and 4 concurrent children
+  the chance that all four land on distinct slots is 4!/4⁴ = **9.4%**, so a collision — i.e.
+  the defect — would be the normal case. Widening the bucket space to make collisions rare
+  costs the cardinality the bound exists to protect.
+- **Recording the counters in the PARENT instead of the child — REJECTED, but it is the only
+  alternative with zero cardinality cost.** The host lane's four children already report
+  progress to one parent over the JSON protocol, so that parent could own the instruments and
+  export one monotonic series. It fails on the burst lane, where each child's parent is its own
+  pod and the pods are still concurrent, and it would move per-file counters through the
+  callback path — a far larger blast radius than a label.
+
+### 8d. What is NOT fixed, and why it is separate
+
+**The burst lane still shares one identity.** The slot pool is process-local, which is exactly
+right for the host lane — concurrent children there are bounded by a single
+`asyncio.Semaphore(worker_process_pool_size)` in one agent-worker process, so a free list in
+that process sees every competitor. A burst-lane child runs in a **one-shot Kueue pod that is
+Postgres-less and shares no memory with its peers**, so nothing inside the pod can allocate
+against them. Its slot must be injected by the controller at submit time, which needs the
+in-flight slot set persisted (a `cloud_job` column and a migration) and a fourth code-injected
+key in the Job env contract (`kube_staging.JOB_ENV_CODE_INJECTED`).
+
+That is a schema change and a separate bead — **`phaze-w15ju`** — filed as such rather than
+bolted on here. **Until it lands, concurrent burst pods still exhibit §8a** — and an operator setting
+`PHAZE_TELEMETRY_INSTANCE` per host does not help, because all four pods share the host.
+
+**Be precise about what they now share, because the string changed and the defect did not.** A
+burst pod runs `run_analysis_subprocess` too, so it builds its own process-local pool and its
+single child always takes slot 0: every burst pod reports **`phaze-analysis-0`**, not
+`phaze-analysis`. That is the same merge under a new name — no better, and no worse. It is
+also why `phaze-w15ju` cannot be closed by observing that the identity "has a slot in it";
+the test it needs is that two CONCURRENT submissions get DIFFERENT slots.
+
+### 8e. Blast radius
+
+This changes the metrics resource identity for **every phaze role**, on both the metrics and
+the trace resource. What currently works that it could break: any consumer keyed on the exact
+string `instance="phaze-analysis"`. Nothing in this repo is — every dashboard and alert
+expression aggregates the label away, verified by `test_dashboards.py` / `test_alert_rules.py`
+and re-read by hand. Roles with no slot (api, controller, agent, watcher — one process each)
+resolve to the unchanged base, so their identity is byte-identical to before.
+`test_concurrent_producers_get_distinct_bounded_identities` and
+`test_concurrent_children_get_distinct_telemetry_identities` prove the analysis role's new
+behaviour; both fail against the old default, which was verified by reverting it.

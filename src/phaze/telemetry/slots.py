@@ -139,8 +139,8 @@ class SlotPool:
     (``tasks/agent_worker.py``), so a free list in that process sees every competitor it
     needs to. A burst-lane child runs in a one-shot Kueue pod that is Postgres-less and
     shares no memory with its peers, so nothing in the pod can allocate against them --
-    that slot has to be injected by the controller at submit time. Tracked separately; see
-    ``docs/design/0017-telemetry-export-topology.md`` section 8.
+    that slot has to be injected by the controller at submit time. Tracked separately as
+    bead ``phaze-w15ju``; see ``docs/design/0017-telemetry-export-topology.md`` section 8d.
 
     Exhaustion returns None rather than raising or blocking. Instrumentation may never be
     the thing that fails or stalls the work it observes (bootstrap's acceptance-7 contract),

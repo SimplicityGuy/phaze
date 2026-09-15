@@ -55,10 +55,18 @@ cost split by.
 ## 2. Two things that are NOT labels but behave like them
 
 **`service.instance.id` multiplies every series a service emits.** It becomes the Prometheus
-`instance` label. The analysis role emits ~1,700 series and runs as a k8s Job whose pod name
-is unique per analyzed file, so defaulting this to the hostname would mint a fresh
-~1,700-series block for each of 11,428 files. phaze defaults it to the **service name** and
-`exporter.md` §3 tells operators to set it to a HOST, never a pod.
+`instance` label. The analysis role's block is **2,290** series and it runs as a k8s Job whose
+pod name is unique per analyzed file, so defaulting this to the hostname would mint a fresh
+2,290-series block for each of 11,428 files — 26,170,120 series. phaze defaults the base to
+the **service name** and `exporter.md` §3 tells operators to set it to a HOST ROLE, never a
+pod.
+
+**It is also the only thing that keeps CONCURRENT producers apart**, which is a different
+question with a different answer: phaze appends a bounded **worker-slot index**, because four
+analysis children exporting cumulative counters under one identity overwrite each other at the
+collector. §1's multiplier table above states what the slots cost; [ADR-0017
+§8](../design/0017-telemetry-export-topology.md) states why the bound is a multiple of the
+concurrency and never of the corpus.
 
 **Resource attributes can be promoted to labels by the collector.** The
 `resource_to_telemetry_conversion` option on the Prometheus exporter turns every resource
@@ -97,6 +105,32 @@ not what the naming rules suggest on paper.
 | `phaze_pipeline_stage_transitions_total` | counter | `stage` (64), `transition` (2) | 64 *(not 128)* | 64 |
 | `phaze_pipeline_backlog` | gauge | `backlog` (12) | 12 | 12 |
 | | | | **total** | **8,587** |
+
+### The instance multiplier: 8,587 becomes 15,457, and the reason it stops there
+
+**The table above is per INSTANCE.** `service.instance.id` becomes the Prometheus `instance`
+label, so the real ceiling is the table multiplied by the number of distinct identities phaze
+ever reports — a dimension that lives outside the label sets and is easy to read past.
+
+phaze appends a **bounded worker-slot index** to that id (`phaze-analysis-0` …
+`phaze-analysis-3`), because up to `worker_process_pool_size` analysis children run at once
+and, under a single identity, a collector's Prometheus exporter keeps one series and takes the
+last write — measured, that produced a DECREASING counter and an `increase()` 84.4% above the
+truth ([the record](measurements/concurrent-identity-2026-09-15.md),
+[ADR-0017 §8](../design/0017-telemetry-export-topology.md)).
+
+| | series |
+| --- | ---: |
+| analysis-role block (the `phaze_analysis_*` rows above) | 2,290 |
+| × 4 slots | 9,160 |
+| everything else, one instance | 6,297 |
+| **ceiling** | **15,457** |
+
+**The multiplier is the CONCURRENCY, never the corpus.** A slot is reused by the next child,
+so this figure does not move as the archive grows. The rejected alternative shows what that
+buys: a per-pod instance id, unique per analyzed file, would be 2,290 × 11,428 =
+**26,170,120** series. Raising `PHAZE_TELEMETRY_SLOT_MAX` costs another 2,290 per slot, and
+nothing else here changes.
 
 ### The arithmetic, where the budget is not the cartesian product
 
