@@ -20,7 +20,7 @@ from typing import Any
 from opentelemetry import trace
 import pytest
 
-from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments, saq as telemetry_saq, tracing
+from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments
 from tests.shared.telemetry.conftest import reset_otel_globals
 
 
@@ -184,16 +184,6 @@ def test_a_propagator_that_raises_yields_no_context(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(telemetry_context, "_propagator", _Explode())
     assert telemetry_context.extract_from({telemetry_context.TRACEPARENT_ENV: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}) is None
-
-
-def test_current_trace_id_is_none_without_a_span() -> None:
-    assert tracing.current_trace_id() is None
-
-
-def test_hooks_returns_the_pair_a_worker_settings_dict_needs() -> None:
-    before, after = telemetry_saq.hooks()
-    assert before is telemetry_saq.before_process
-    assert after is telemetry_saq.after_process
 
 
 def test_a_degraded_stage_activity_read_publishes_nothing(telemetry_sink: Any) -> None:

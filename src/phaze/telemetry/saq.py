@@ -217,8 +217,3 @@ def after_process_chain(*hooks: SaqHook) -> ChainedHook:
     chained = cast("ChainedHook", run_after_process_chain)
     chained.chain = (*hooks, after_process)
     return chained
-
-
-def hooks() -> tuple[Callable[[dict[str, Any]], Awaitable[None]], Callable[[dict[str, Any]], Awaitable[None]]]:
-    """``(before_process, after_process)`` -- the pair a worker settings dict needs."""
-    return before_process, after_process
