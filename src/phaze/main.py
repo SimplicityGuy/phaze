@@ -23,6 +23,7 @@ from phaze.routers import (
     agent_heartbeat,
     agent_identity,
     agent_metadata,
+    agent_orphan_companions,
     agent_proposals,
     agent_push,
     agent_s3,
@@ -191,6 +192,7 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_s3.router,
     agent_proposals.router,
     agent_scan_batches.router,
+    agent_orphan_companions.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
     agent_scratch.router,

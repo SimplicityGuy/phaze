@@ -195,6 +195,24 @@ async def test_patch_scan_batch_uses_correct_url_and_exclude_unset(client):  # t
 
 
 @respx.mock
+async def test_post_orphan_companions_uses_batch_url_and_returns_tally(client):  # type: ignore[no-untyped-def]
+    from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionChunkResponse
+
+    batch_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/scan-batches/{batch_id}/orphan-companions").mock(
+        return_value=httpx.Response(200, json={"batch_id": str(batch_id), "inserted": 1, "existing": 0})
+    )
+    payload = OrphanCompanionChunk(diagnostics=[{"normalized_path": "/archive/orphan.nfo", "companion_extension": ".nfo"}])
+
+    result = await client.post_orphan_companions(batch_id, payload)
+
+    assert route.call_count == 1
+    assert isinstance(result, OrphanCompanionChunkResponse)
+    assert result.inserted == 1
+    assert json.loads(route.calls.last.request.content) == payload.model_dump(mode="json")
+
+
+@respx.mock
 async def test_report_analysis_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
     """report_analysis_failed -> POST /api/internal/agent/analysis/{file_id}/failed, returns AnalysisFailureResponse."""
     from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisFailureResponse

@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.engine.default import DefaultExecutionContext
 from sqlalchemy.orm import Mapped, mapped_column
 
 from phaze.models.base import Base, TimestampMixin
@@ -20,6 +21,11 @@ class ScanStatus(enum.StrEnum):
     LIVE = "live"  # Watcher-originated sentinel; one per agent (D-09, D-10)
 
 
+def _configured_root_from_scan_path(context: DefaultExecutionContext) -> str:
+    """Default direct ORM-created batches to their selected path."""
+    return str(context.get_current_parameters()["scan_path"])
+
+
 class ScanBatch(TimestampMixin, Base):
     """Tracks a file discovery scan operation with progress and status."""
 
@@ -32,6 +38,10 @@ class ScanBatch(TimestampMixin, Base):
         nullable=False,
     )
     scan_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # The configured root selected by the operator, distinct from scan_path when a
+    # subpath is requested. Migration 064 conservatively backfills legacy rows from
+    # scan_path because their original configured root cannot be reconstructed.
+    configured_root: Mapped[str] = mapped_column(Text, nullable=False, default=_configured_root_from_scan_path)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ScanStatus.RUNNING)
     total_files: Mapped[int] = mapped_column(Integer, default=0)
     processed_files: Mapped[int] = mapped_column(Integer, default=0)

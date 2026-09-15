@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
     from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+    from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionChunkResponse
     from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
         ProposalStateResponse,
@@ -604,6 +605,21 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ScanBatchPatchResponse.model_validate(response.json())
+
+    async def post_orphan_companions(
+        self,
+        batch_id: uuid.UUID,
+        payload: OrphanCompanionChunk,
+    ) -> OrphanCompanionChunkResponse:
+        """POST one bounded, retry-safe orphan-COMPANION diagnostic chunk."""
+        from phaze.schemas.agent_orphan_companions import OrphanCompanionChunkResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/scan-batches/{batch_id}/orphan-companions",
+            json=payload.model_dump(mode="json"),
+        )
+        return OrphanCompanionChunkResponse.model_validate(response.json())
 
     async def post_exec_batch_progress(
         self,

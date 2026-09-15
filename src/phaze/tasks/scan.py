@@ -22,7 +22,7 @@ import asyncio
 import os
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 import unicodedata
 
 import structlog
@@ -30,6 +30,7 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
+from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.services.agent_client import AgentApiServerError
@@ -37,6 +38,7 @@ from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
+    from phaze.schemas.agent_orphan_companions import CompanionExtension
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -83,13 +85,14 @@ def _scan_ingestible_filenames(filenames: list[str]) -> list[str]:
     ]
 
 
-def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[OSError]]:
+def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[Path], list[OSError]]:
     """Authoritative walk over `scan_root`, run entirely off the event loop (phaze-j54q).
 
     Walks the tree once WITHOUT stat or hashing, collecting the full path of every file
-    whose extension is ingestible plus any directory-read OSError raised by
-    os.walk. Returns ``(paths, errors)``; the caller stats/hashes each path (still via
-    asyncio.to_thread per file) and logs the collected errors back on the loop.
+    whose extension is ingestible, accepted companions skipped solely because their
+    directory has no media sibling, and any directory-read OSError raised by os.walk.
+    Returns ``(paths, orphan_companions, errors)``; the caller stats/hashes only the
+    ingestible paths and reports orphan paths as metadata-only diagnostics.
 
     Mirrors ``_count_ingestible`` (phaze-bfd1), which moved the pre-count walk off-loop for
     exactly this reason but left this, the authoritative hashing walk, iterating os.walk
@@ -98,14 +101,21 @@ def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[OSError]]:
     with no await at all, so a companion-heavy subtree (or a stalled network mount) could
     monopolize the loop with zero yields -- the same starvation shape phaze-bfd1 diagnosed,
     just on the second walk. Dispatched via asyncio.to_thread so the full synchronous os.walk
-    never runs back-to-back on the agent worker's event loop. Only ingestible-file paths are
-    retained (not every file in the tree), keeping memory bounded to the ingestible-file count.
+    never runs back-to-back on the agent worker's event loop. Only ingestible paths and accepted
+    orphan-companion paths are retained, rather than every file in the tree.
     """
     errors: list[OSError] = []
     paths: list[Path] = []
+    orphan_companions: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
-        paths.extend(Path(dirpath) / filename for filename in _scan_ingestible_filenames(filenames))
-    return paths, errors
+        directory = Path(dirpath)
+        ingestible_filenames = _scan_ingestible_filenames(filenames)
+        paths.extend(directory / filename for filename in ingestible_filenames)
+        if not any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames):
+            orphan_companions.extend(
+                directory / filename for filename in filenames if Path(filename).suffix.lower() in INGESTIBLE_COMPANION_EXTENSIONS
+            )
+    return paths, orphan_companions, errors
 
 
 def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
@@ -274,6 +284,24 @@ async def _hash_and_post_chunks(
         await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
 
 
+async def _post_orphan_chunks(
+    api: PhazeAgentClient,
+    payload: ScanDirectoryPayload,
+    orphan_paths: list[Path],
+    chunk_size: int,
+) -> None:
+    """Report accepted companions skipped by D7 without reading or ingesting them."""
+    for offset in range(0, len(orphan_paths), chunk_size):
+        diagnostics = [
+            OrphanCompanionRecord(
+                normalized_path=unicodedata.normalize("NFC", str(path)),
+                companion_extension=cast("CompanionExtension", Path(path.name).suffix.lower()),
+            )
+            for path in orphan_paths[offset : offset + chunk_size]
+        ]
+        await api.post_orphan_companions(payload.batch_id, OrphanCompanionChunk(diagnostics=diagnostics))
+
+
 async def _fail_zero_access(
     api: PhazeAgentClient, payload: ScanDirectoryPayload, walk_errors: list[OSError], progress: _ScanProgress
 ) -> dict[str, Any]:
@@ -419,13 +447,14 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # os.walk) runs OFF the event loop via asyncio.to_thread, mirroring the pre-count
     # walk above (phaze-bfd1). Only the per-file stat/hash below still run on the loop,
     # each individually offloaded via asyncio.to_thread.
-    candidate_paths, walk_errors = await asyncio.to_thread(_walk_ingestible, scan_root)
+    candidate_paths, orphan_paths, walk_errors = await asyncio.to_thread(_walk_ingestible, scan_root)
     for walk_error in walk_errors:
         logger.warning("scan_directory: cannot read directory during walk: %s", walk_error)
 
     progress = _ScanProgress()
     try:
         await _hash_and_post_chunks(api, payload, candidate_paths, chunk_size, progress)
+        await _post_orphan_chunks(api, payload, orphan_paths, chunk_size)
         return await _finish_scan(api, payload, walk_errors, progress, started_at)
     except AgentApiServerError as exc:
         return await _abort_on_controller_error(api, payload, exc, progress)

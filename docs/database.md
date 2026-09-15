@@ -13,6 +13,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `agents`              | Distributed worker (file-server) identities that own files and scans  |
 | `files`               | Central file records; per-stage status is derived on read (no `state` column) |
 | `scan_batches`        | Scan operation progress and status (`ScanStatus`)                     |
+| `orphan_companion_diagnostics` | Metadata-only accepted companion paths skipped because their directory had no media; owned by a scan batch |
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
 | `analysis`            | BPM, key, mood, style results (1:1 with `files`)                       |
 | `analysis_window`     | Per-window time series plus nullable energy/Camelot/mood projection columns (1:many with `files`, `ON DELETE CASCADE`) |
@@ -52,7 +53,8 @@ guarded by `status = 'queued'`.
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
 deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with their `files` row
-(`ON DELETE CASCADE`), as does `cloud_budget`; the remaining per-file sidecars (`metadata`,
+(`ON DELETE CASCADE`), as does `cloud_budget`. `orphan_companion_diagnostics` cascades with its
+`scan_batches` row; the remaining per-file sidecars (`metadata`,
 `analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
 tracklist chain use the default restricting FK (no cascade).
 
@@ -62,6 +64,8 @@ erDiagram
     agents ||--o{ files : "owns (RESTRICT)"
     %% evidence: src/phaze/models/agent.py; src/phaze/models/scan_batch.py
     agents ||--o{ scan_batches : "owns (RESTRICT)"
+    %% evidence: src/phaze/models/scan_batch.py; src/phaze/models/orphan_companion_diagnostic.py
+    scan_batches ||--o{ orphan_companion_diagnostics : "inventory (CASCADE)"
     %% evidence: src/phaze/models/file.py; src/phaze/models/metadata.py
     files ||--o| metadata : "optional 1:1"
     %% evidence: src/phaze/models/file.py; src/phaze/models/analysis.py
@@ -113,6 +117,8 @@ to `agents.id` with `ON DELETE RESTRICT`. New rows default to the seeded
 `legacy-application-server` agent. Uniqueness on `files` is the composite
 `(agent_id, original_path)` — the same path may exist under different agents. `scan_batches`
 enforces a partial unique index allowing at most one `status = 'live'` watcher batch per agent.
+Its `configured_root` preserves the selected agent root separately from `scan_path` when an operator
+requests a subpath; migration `064` conservatively backfills legacy rows from `scan_path`.
 
 ### Proposal idempotency
 
@@ -211,10 +217,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-063)
+### Post-baseline chain (040-064)
 
-`alembic/versions/` holds **25** files: the `039` baseline plus a linear chain to the current
-head, **`063`**.
+`alembic/versions/` holds **26** files: the `039` baseline plus a linear chain to the current
+head, **`064`**.
 
 | Rev | Change |
 |-----|--------|
@@ -241,7 +247,8 @@ head, **`063`**.
 | `060` | Drop the obsolete `analysis.sampled` column after exhaustive-window analysis shipped |
 | `061` | Durable duplicate-review plans |
 | `062` | Persist reviewed-before tags and review source versions |
-| `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table — **head** |
+| `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table |
+| `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
