@@ -5,7 +5,7 @@ C++ holds the GIL of the process it runs in. Without propagation the parent's sp
 child's spans are two unrelated traces and the whole question the epic exists to answer --
 where did this file's hours go -- cannot be asked of one trace.
 
-**ADR-0012 rule 3 is what shapes this file.** The claim is about a REAL exec'd child, so
+**``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 is what shapes this file.** The claim is about a REAL exec'd child, so
 the test EXECs a real child process: it spawns ``phaze.analysis_child`` through the real
 ``run_analysis_subprocess``, with the real environment plumbing, and reads the trace id the
 child observed out of the child's own protocol output. Asserting that

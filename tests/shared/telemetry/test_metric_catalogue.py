@@ -92,7 +92,7 @@ def test_no_label_collides_with_a_prometheus_reserved_name() -> None:
     at the scrape endpoint. Nothing downstream can tell that from "the metric was never
     emitted", which is why this is a build gate and not a review note. It cost two metrics
     (``phaze_saq_job_duration_seconds`` and ``phaze_saq_jobs_total``) before it was caught
-    by looking at the real collector's output -- ADR-0012 rule 3 in one line.
+    by looking at the real collector's output -- ``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 in one line.
     """
     for spec in CATALOGUE:
         for label in spec.labels:

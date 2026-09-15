@@ -1,7 +1,7 @@
 """The CI-runnable half of the alert-rule guarantees (phaze-m1drf.5).
 
 The other half is `promtool`, which is the real consumer of both the rules and their unit
-tests (ADR-0012 rule 3) and needs a Prometheus binary CI does not have:
+tests (``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3) and needs a Prometheus binary CI does not have:
 
     docker run --rm -v "$PWD/alerts:/alerts:ro" --entrypoint /bin/promtool \
       prom/prometheus:v3.10.0 test rules /alerts/phaze-alerts.test.yml

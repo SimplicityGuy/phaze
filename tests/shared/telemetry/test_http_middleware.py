@@ -138,7 +138,7 @@ def test_non_http_scopes_pass_straight_through(scope_type: str) -> None:
 
 
 def test_the_real_phaze_app_reports_route_templates(telemetry_sink: TelemetrySink, monkeypatch: pytest.MonkeyPatch) -> None:
-    """ADR-0012 rule 3, and the test that would have caught the defect the toy app hid.
+    """``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3, and the test that would have caught the defect the toy app hid.
 
     A first implementation recovered route templates from a table built by walking
     ``app.router.routes``. Against a hand-built Starlette app that works. Against phaze's

@@ -3,7 +3,7 @@
 The other half needs a live Grafana holding a real analysis run and lives in
 ``scripts/verify_dashboards.py`` -- it imports the committed JSON through Grafana's real
 API against a datasource whose uid deliberately differs, and runs every panel's PromQL
-through the query API. That is the ADR-0012 rule 3 verification: the real consumer of
+through the query API. That is the ``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 verification: the real consumer of
 Grafana dashboard JSON is Grafana, and a schema check would happily accept a dashboard
 whose datasource does not exist, whose panel type Grafana does not have, or whose PromQL
 does not parse.

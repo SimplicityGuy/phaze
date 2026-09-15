@@ -1,6 +1,6 @@
 """Analysis instrumentation, against REAL essentia and REAL audio.
 
-ADR-0012 rule 3 is the whole reason this file exists in this shape. The claim under test is
+``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 is the whole reason this file exists in this shape. The claim under test is
 about the analysis pipeline's behaviour, and *"a claim about real essentia is not
 discharged by a mocked one"* -- the repo carries
 ``test_repeated_gated_chunk_decodes_do_not_grow_peak_rss`` and

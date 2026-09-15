@@ -1,7 +1,8 @@
 """In-memory OTel providers, so a test can read exactly what phaze emitted.
 
 Every fixture here installs a REAL SDK provider with an in-memory exporter -- not a mock
-of phaze's own seam. The distinction matters for the same reason ADR-0012 rule 3 does: a
+of phaze's own seam. The distinction matters for the same reason
+``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 does: a
 mock of ``instruments.record`` would prove phaze called its own function, while an
 in-memory ``MetricReader`` proves the observation survived instrument creation, the View's
 bucket ladder and the attribute set -- which is where the interesting mistakes are.
