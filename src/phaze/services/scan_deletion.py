@@ -27,6 +27,7 @@ Design choices:
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Any, cast as typing_cast
 
 from sqlalchemy import CursorResult, String, cast as sql_cast, delete, select
@@ -47,6 +48,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.telemetry.pipeline import record_transition
 
 
 if TYPE_CHECKING:
@@ -57,6 +59,40 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _scheduling_ledger_cascade_delete_stmt(batch_id: uuid.UUID) -> Delete:
+    """The scheduling_ledger step of the cascade (phaze-u5dn), RETURNING the deleted rows' functions.
+
+    scheduling_ledger rows are deliberately FK-free (models/scheduling_ledger.py -- "the row must
+    survive even if its target row is mid-flight"), so the FK cascade never touches them and a
+    deleted file's ledger row would otherwise be stranded forever. Every ledger row this cascade can
+    identify by natural id is file-keyed (``_KEY_BUILDERS`` in tasks/_shared/deterministic_key.py
+    stores ``payload["file_id"] = str(file_id)`` for process_file, extract_file_metadata,
+    search_tracklist, push_file, s3_upload and submit_cloud_job), so this scopes the delete to
+    ``payload->>'file_id'`` matching one of this batch's files. ``recover_orphaned_work``'s done-set
+    predicates derive from the very output tables this cascade just deleted, so a stranded row can
+    NEVER become domain-complete -- it is replayed on every recovery pass (burning hours of essentia
+    CPU for ``process_file``), and its write-back then FK-fails/404s against the missing FileRecord,
+    so ``clear_ledger_entry`` is never reached and the row survives to the next recovery cycle.
+    Batch-shaped keys (e.g. a hypothetical ``scan_directory:<batch_id>``) are deliberately OUT of
+    scope: ``scan_directory`` is absent from ``_KEY_BUILDERS``, so no such row is ever written.
+
+    phaze-qyqig: RETURNING ``function`` names the function of every row this DELETE actually
+    removes, so the caller can count "resolved" once per row under its OWN stage label -- a batch's
+    stranded rows can span several of the six file-keyed functions above, never just one. Pulled out
+    to its own function (rather than inlined in the ``ordered`` list below) purely so the return
+    type stays plain ``Delete`` -- ``RETURNING`` changes a statement's STATIC result-row type
+    (``ReturningDelete[tuple[str]]``), which the list's shared ``list[tuple[str, Delete]]`` element
+    type cannot express; every entry in ``ordered`` is executed identically via
+    ``session.execute(...)``, which does not care about that distinction at runtime.
+    """
+    return typing_cast(
+        "Delete",
+        delete(SchedulingLedger)
+        .where(SchedulingLedger.payload["file_id"].astext.in_(select(sql_cast(FileRecord.id, String)).where(FileRecord.batch_id == batch_id)))
+        .returning(SchedulingLedger.function),
+    )
 
 
 async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
@@ -201,12 +237,7 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         # and the row survives to the next recovery cycle. Batch-shaped keys (e.g. a hypothetical
         # `scan_directory:<batch_id>`) are deliberately OUT of scope: `scan_directory` is absent from
         # `_KEY_BUILDERS`, so no such row is ever written.
-        (
-            SchedulingLedger.__tablename__,
-            delete(SchedulingLedger).where(
-                SchedulingLedger.payload["file_id"].astext.in_(select(sql_cast(FileRecord.id, String)).where(FileRecord.batch_id == batch_id))
-            ),
-        ),
+        (SchedulingLedger.__tablename__, _scheduling_ledger_cascade_delete_stmt(batch_id)),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.batch_id == batch_id)),
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
@@ -216,7 +247,16 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         # A DELETE returns a CursorResult at runtime (exposing rowcount); the
         # execute() overload mypy selects only promises the base Result type.
         result = typing_cast("CursorResult[Any]", await session.execute(stmt.execution_options(synchronize_session=False)))
-        counts[tablename] = result.rowcount
+        if tablename == SchedulingLedger.__tablename__:
+            # phaze-qyqig: the RETURNING clause added above names the function of every row this
+            # statement actually deleted; tally "resolved" once per row, grouped by function so a
+            # batch spanning several keyed functions attributes each correctly.
+            deleted_functions = result.scalars().all()
+            counts[tablename] = len(deleted_functions)
+            for deleted_function, deleted_count in Counter(deleted_functions).items():
+                record_transition(deleted_function, "resolved", count=deleted_count)
+        else:
+            counts[tablename] = result.rowcount
 
     logger.info("scan cascade deleted", batch_id=str(batch_id), **counts)
     return counts

@@ -44,9 +44,18 @@ def stage_label(function: str) -> str:
     return _FUNCTION_TO_STAGE.get(function, function or "unknown")
 
 
-def record_transition(function: str, transition: str) -> None:
-    """Count one scheduling-ledger transition. ``transition`` is ``scheduled`` or ``resolved``."""
-    add("phaze.pipeline.stage.transitions", 1, stage=stage_label(function), transition=transition)
+def record_transition(function: str, transition: str, count: int = 1) -> None:
+    """Count ``count`` scheduling-ledger transitions (default 1). ``transition`` is ``scheduled`` or
+    ``resolved``.
+
+    ``count`` exists for the bulk-delete lanes (ledger reaper, scan-batch cascade, cloud-backfill
+    CAS delete) that resolve many rows in one statement: a single ``add(count, ...)`` is the SAME
+    cumulative counter value a loop of ``count`` individual ``record_transition`` calls would
+    produce, without the per-row call overhead (phaze-qyqig). Callers must never pass ``count=0``
+    -- a no-op path (an ON CONFLICT DO NOTHING that inserted nothing, a guarded clear that deleted
+    nothing) must skip the call entirely so a no-op counts nothing, not a zero-value observation.
+    """
+    add("phaze.pipeline.stage.transitions", count, stage=stage_label(function), transition=transition)
 
 
 def record_backlog(counts: dict[str, int]) -> None:

@@ -72,6 +72,13 @@ def _scheduling_ledger_cas_delete_stmt(observed_rows: Sequence[Any]) -> Any:
     lockstep (multiple set-returning functions in one SELECT list iterate together in Postgres),
     extending the same array-bind idiom to a composite key: exactly 2 bind parameters regardless of
     how many rows were observed, same as the single-column helpers above.
+
+    phaze-qyqig: carries ``RETURNING function`` -- this backfill-cloud CAS delete was one of three
+    bulk-delete paths that resolved ledger rows uncounted. The caller tallies "resolved" once per
+    returned function name (a CAS delete can match FEWER rows than ``observed_rows`` if a
+    concurrent enqueue refreshed ``enqueued_at`` between the observing SELECT and this DELETE --
+    see the module's phaze-g31m comment -- so counting the RETURNING rows, not ``len(observed_rows)``,
+    is what keeps the counter honest about what was actually removed).
     """
     observed_keys = [key for key, _ in observed_rows]
     observed_enqueued_ats = [enqueued_at for _, enqueued_at in observed_rows]
@@ -79,8 +86,10 @@ def _scheduling_ledger_cas_delete_stmt(observed_rows: Sequence[Any]) -> Any:
         func.unnest(bindparam("cas_delete_keys", value=observed_keys, type_=ARRAY(String()))).label("key"),
         func.unnest(bindparam("cas_delete_enqueued_ats", value=observed_enqueued_ats, type_=ARRAY(DateTime(timezone=True)))).label("enqueued_at"),
     ).subquery()
-    return delete(SchedulingLedger).where(
-        tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(select(observed_pairs.c.key, observed_pairs.c.enqueued_at)),
+    return (
+        delete(SchedulingLedger)
+        .where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(select(observed_pairs.c.key, observed_pairs.c.enqueued_at)))
+        .returning(SchedulingLedger.function)
     )
 
 
