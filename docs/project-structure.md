@@ -22,7 +22,7 @@ a module makes the inventory fail until this page is reconciled.
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
 | `cli/` | 1 | Operator commands, including agent management and projection backfill |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, and tracklist vocabulary |
-| `models/` | 26 | SQLAlchemy application schema, including migration-`063` `SetProfile` |
+| `models/` | 27 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
 | `routers/` | 52 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 20 | Pydantic wire contracts; agent payloads remain ORM-free |
 | `services/` | 122 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 25 migrations (`039` baseline through head
-`063`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 26 migrations (`039` baseline through head
+`064`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

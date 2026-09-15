@@ -220,6 +220,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
         id=uuid.uuid4(),
         agent_id=_DEV_AGENT_ID,
         scan_path="<watcher>",
+        configured_root="<watcher>",
         status="live",
         total_files=0,
         processed_files=0,

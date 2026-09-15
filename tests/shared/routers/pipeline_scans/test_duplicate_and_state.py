@@ -535,6 +535,25 @@ async def test_post_scans_duplicate_running_batch_is_a_swappable_alert(
 
 
 @pytest.mark.asyncio
+async def test_subpath_scan_preserves_configured_root(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """A selected subpath does not erase the configured root used to aggregate diagnostics."""
+    ac, _mock_router = smoke
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music/", "subpath": "2026/sets"},
+    )
+    assert response.status_code == 200, response.text
+
+    batch = (
+        await session.execute(select(ScanBatch).where(ScanBatch.agent_id == "test-agent", ScanBatch.scan_path == "/data/music/2026/sets"))
+    ).scalar_one()
+    assert batch.configured_root == "/data/music"
+
+
+@pytest.mark.asyncio
 async def test_post_scans_duplicate_running_batch_survives_a_trailing_slash_respelling(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,

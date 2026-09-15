@@ -93,6 +93,7 @@ _EXPECTED_TABLES = frozenset(
         "files",
         "files_state_archive",
         "metadata",
+        "orphan_companion_diagnostics",
         "pipeline_stage_control",
         "proposals",
         "route_control",
@@ -270,7 +271,8 @@ def test_baseline_is_the_only_migration() -> None:
     063 (phaze-x1qr3.1) adds the set projection -- three nullable columns on analysis_window
     (energy / camelot / mood_scores) plus the 1:1 set_profile table -- the narrow projection
     section E's file-viewer surfaces query instead of re-reading the ~5 KB features JSONB
-    across millions of window rows.
+    across millions of window rows; 064 adds scan_batches.configured_root plus the scan-owned,
+    metadata-only orphan_companion_diagnostics table.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -300,6 +302,7 @@ def test_baseline_is_the_only_migration() -> None:
         "061_dedup_review_plans.py",
         "062_tag_write_review_payload.py",
         "063_set_projection.py",
+        "064_orphan_companion_diagnostics.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -328,10 +331,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (063: the set projection)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (064: orphan diagnostics)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "063"
+    assert version == "064"
 
 
 @pytest.mark.asyncio
@@ -403,8 +406,8 @@ async def test_scan_batches_no_duplicate_running_enforced(migrated_engine: Async
         )
         await conn.execute(
             text(
-                "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
-                "VALUES (:id, :agent_id, :scan_path, 'running', 0, 0)"
+                "INSERT INTO scan_batches (id, agent_id, scan_path, configured_root, status, total_files, processed_files) "
+                "VALUES (:id, :agent_id, :scan_path, :scan_path, 'running', 0, 0)"
             ),
             {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
         )
@@ -412,8 +415,8 @@ async def test_scan_batches_no_duplicate_running_enforced(migrated_engine: Async
         async with migrated_engine.begin() as conn:
             await conn.execute(
                 text(
-                    "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
-                    "VALUES (:id, :agent_id, :scan_path, 'running', 0, 0)"
+                    "INSERT INTO scan_batches (id, agent_id, scan_path, configured_root, status, total_files, processed_files) "
+                    "VALUES (:id, :agent_id, :scan_path, :scan_path, 'running', 0, 0)"
                 ),
                 {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
             )
@@ -421,8 +424,8 @@ async def test_scan_batches_no_duplicate_running_enforced(migrated_engine: Async
     async with migrated_engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
-                "VALUES (:id, :agent_id, :scan_path, 'completed', 5, 5)"
+                "INSERT INTO scan_batches (id, agent_id, scan_path, configured_root, status, total_files, processed_files) "
+                "VALUES (:id, :agent_id, :scan_path, :scan_path, 'completed', 5, 5)"
             ),
             {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
         )
@@ -657,7 +660,88 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "063"
+        assert version == "064"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_064_backfills_root_enforces_inventory_contract_and_downgrades() -> None:
+    """064 preserves legacy batches and makes diagnostic retries/type validation database-owned."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    batch_id = uuid.uuid4()
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "063")
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.begin() as conn:
+            await conn.execute(text("INSERT INTO agents (id, name, scan_roots) VALUES ('orphan-test-agent', 'orphan-test-agent', '[]'::jsonb)"))
+            await conn.execute(
+                text(
+                    "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
+                    "VALUES (:id, 'orphan-test-agent', '/archive/subpath', 'completed', 0, 0)"
+                ),
+                {"id": batch_id},
+            )
+        await engine.dispose()
+        engine = None
+
+        await asyncio.to_thread(upgrade_to, cfg, "064")
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.begin() as conn:
+            configured_root = (await conn.execute(text("SELECT configured_root FROM scan_batches WHERE id = :id"), {"id": batch_id})).scalar_one()
+            assert configured_root == "/archive/subpath"
+            await conn.execute(
+                text(
+                    "INSERT INTO orphan_companion_diagnostics "
+                    "(batch_id, configured_root, normalized_path, companion_extension) "
+                    "VALUES (:batch, '/archive', '/archive/subpath/orphan.nfo', '.nfo')"
+                ),
+                {"batch": batch_id},
+            )
+
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO orphan_companion_diagnostics "
+                        "(batch_id, configured_root, normalized_path, companion_extension) "
+                        "VALUES (:batch, '/archive', '/archive/subpath/orphan.nfo', '.nfo')"
+                    ),
+                    {"batch": batch_id},
+                )
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO orphan_companion_diagnostics "
+                        "(batch_id, configured_root, normalized_path, companion_extension) "
+                        "VALUES (:batch, '/archive', '/archive/subpath/art.jpg', '.jpg')"
+                    ),
+                    {"batch": batch_id},
+                )
+
+        await engine.dispose()
+        engine = None
+        await asyncio.to_thread(downgrade_to, cfg, "063")
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            diagnostic_table = (await conn.execute(text("SELECT to_regclass('public.orphan_companion_diagnostics')"))).scalar_one_or_none()
+            configured_root_columns = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' "
+                        "AND table_name = 'scan_batches' AND column_name = 'configured_root'"
+                    )
+                )
+            ).scalar_one()
+        assert diagnostic_table is None
+        assert configured_root_columns == 0
     finally:
         if engine is not None:
             await engine.dispose()

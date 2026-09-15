@@ -214,6 +214,7 @@ async def _insert_running_scan_batch(request: Request, session: AsyncSession, fo
         id=uuid.uuid4(),
         agent_id=form.agent_id,
         scan_path=joined,
+        configured_root=str(PurePosixPath(unicodedata.normalize("NFC", form.scan_root))),
         status=ScanStatus.RUNNING.value,
         total_files=0,
         processed_files=0,
