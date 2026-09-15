@@ -74,6 +74,18 @@ async def post_orphan_companions(
         .on_conflict_do_nothing(index_elements=["batch_id", "normalized_path"])
         .returning(OrphanCompanionDiagnostic.normalized_path)
     )
+    # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
+    # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
+    # INSERT ... ON CONFLICT DO NOTHING ... RETURNING, bounded by settings.agent_file_chunk_max:
+    # the returned rows are the inserted set, so there is no query object to call .count() on
+    # and no second round trip to save -- RETURNING is already how the inserted count comes
+    # back. Rewriting it to satisfy the rule would mean dropping RETURNING for
+    # `result.rowcount`, which is a behavioural change, not a cleanup.
+    #
+    # The marker below must stay on the line IMMEDIATELY above the statement: semgrep reads
+    # nosemgrep from the preceding line only, so folding it into the paragraph above silently
+    # stops suppressing.
+    # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
     inserted = len((await session.execute(statement)).scalars().all())
     await session.commit()
     return OrphanCompanionChunkResponse(batch_id=batch.id, inserted=inserted, existing=len(records) - inserted)
