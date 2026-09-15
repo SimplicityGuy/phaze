@@ -40,11 +40,13 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import metrics, trace
 
-from phaze.telemetry import _env
+from phaze.telemetry import _env, slots
 from phaze.telemetry.catalogue import CATALOGUE
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.view import View
     from opentelemetry.sdk.trace import TracerProvider
@@ -74,27 +76,56 @@ SERVICE_NAMES: dict[str, str] = {
 INSTANCE_ENV = "PHAZE_TELEMETRY_INSTANCE"
 
 
+def _instance_id(service_name: str, environ: Mapping[str, str] | None = None) -> str:
+    """``service.instance.id``: a host-or-service base, plus this process's WORKER SLOT.
+
+    **The base alone was not enough, and the gap was a live defect.** One identity per role
+    is correct for a role that runs as one process. The analysis role does not: up to
+    ``worker_process_pool_size`` children (default 4) run concurrently, each exporting its
+    own cumulative counters, and a collector's Prometheus exporter keeps one series per
+    identity and takes the last write. Measured against the real collector, that produced a
+    counter series that DECREASED (``100 -> 20``), which Prometheus reads as a reset and
+    over-counts ``increase()`` by 84.4% -- rising to 221.5% when the producers export twice
+    as many times, because the error grows with the number of interleaved exports.
+    :mod:`phaze.telemetry.slots` holds the measurement and the arithmetic.
+
+    So the slot is appended when the process has one: ``phaze-analysis-0`` ..
+    ``phaze-analysis-3``, or ``host-prod-0`` .. ``host-prod-3`` when the operator has also
+    pinned the host. The identity set is bounded by the CONCURRENCY and reused by the next
+    child, so it does not grow with the archive -- which is the entire difference between
+    this and the per-pod id :func:`_resource_attributes` rejects.
+    """
+    env = os.environ if environ is None else environ
+    base = env.get(INSTANCE_ENV, "").strip() or service_name
+    slot = slots.resolve_slot(env)
+    return base if slot is None else f"{base}-{slot}"
+
+
 def _resource_attributes(role: str, service_name: str) -> dict[str, str]:
     """Resource attributes for the METRICS provider -- bounded, and bounded on purpose.
 
     ``service.instance.id`` becomes the Prometheus ``instance`` label, and it multiplies
-    EVERY series this service emits. The analysis role emits ~1,700 series (see
-    ``catalogue.total_series``) and runs as a k8s Job whose pod name is unique per file,
-    so defaulting this to the hostname would mint a fresh ~1,700-series block per analyzed
-    file -- 11,428 files x 1,700 = a shared Prometheus phaze does not own, destroyed by a
-    default nobody chose.
+    EVERY series this service emits. The analysis role's catalogue block is 2,290 series
+    (``sum(spec.series_count() for spec in CATALOGUE if spec.name.startswith("phaze.analysis"))``)
+    and it runs as a k8s Job whose pod name is unique per file, so defaulting this to the
+    hostname would mint a fresh 2,290-series block per analyzed file -- 11,428 x 2,290 =
+    **26,170,120** series in a shared Prometheus phaze does not own, from a default nobody
+    chose.
 
-    So the default is the SERVICE NAME itself: one instance per role, and every analyze
-    pod's data lands on it. An operator running phaze on several hosts sets
-    ``PHAZE_TELEMETRY_INSTANCE`` to the HOST (``host-prod`` / ``vox``), never to the pod.
-    Pod identity is not lost -- it is carried on SPANS, where it belongs (see
-    :func:`_trace_resource_attributes`).
+    So the base is the SERVICE NAME, and every analyze pod's data lands on it. An operator
+    running phaze on several hosts sets ``PHAZE_TELEMETRY_INSTANCE`` to the HOST ROLE
+    (``host-prod`` / ``host-compute``), never to the pod. Pod identity is not lost -- it is
+    carried on SPANS, where it belongs (see :func:`_trace_resource_attributes`).
+
+    **What the base does NOT do is separate CONCURRENT producers**, which is a different
+    question from cardinality and has its own answer: :func:`_instance_id` appends a bounded
+    worker slot, multiplying the analysis block by at most 4 rather than by 11,428.
     """
     attributes = {
         "service.name": service_name,
         "service.namespace": "phaze",
         "service.version": _version(),
-        "service.instance.id": os.environ.get(INSTANCE_ENV, "").strip() or service_name,
+        "service.instance.id": _instance_id(service_name),
         "phaze.role": role,
     }
     environment = os.environ.get("PHAZE_DEPLOYMENT_ENVIRONMENT", "").strip()
