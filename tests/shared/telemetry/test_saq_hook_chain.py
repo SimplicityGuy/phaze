@@ -1,6 +1,7 @@
 """The SAQ ``after_process`` hook CHAIN, driven by the installed saq package's own dispatch.
 
-phaze-24dl8. ``saq.worker.Worker._after_process`` is a single bare loop::
+Two defects, one mechanism (phaze-24dl8, phaze-35eiv). ``saq.worker.Worker._after_process``
+is a single bare loop::
 
     for ap in self.after_process:
         await ap(ctx)
@@ -39,7 +40,7 @@ from saq.job import Status
 
 from phaze.tasks._shared import stage_control as stage_control_module
 from phaze.tasks._shared.deterministic_key import increment_completed
-from phaze.tasks._shared.stage_control import repark_if_stage_paused
+from phaze.tasks._shared.stage_control import StagePausedRetry, repark_if_stage_paused
 from phaze.tasks.controller import settings as controller_settings
 from phaze.tasks.tracklist_drain_control import record_drain_slice_completion
 from phaze.telemetry import saq as telemetry_saq
@@ -103,6 +104,10 @@ async def _unpaused(_queue: Any, _stage: str) -> tuple[bool, int]:
     return False, 50
 
 
+async def _paused(_queue: Any, _stage: str) -> tuple[bool, int]:
+    return True, 50
+
+
 @pytest.fixture
 def agent_worker_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The real agent worker settings module.
@@ -137,6 +142,9 @@ def unpaused_stage_control(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """
     monkeypatch.setattr(stage_control_module, "_read_stage_control", _unpaused)
     yield
+
+
+# phaze-24dl8 -- a raising neighbour must not abandon the job's span and metrics.
 
 
 @pytest.mark.asyncio
@@ -271,3 +279,95 @@ def test_both_workers_register_the_telemetry_hook_through_the_chain(agent_worker
         assert worker.after_process is not None
         assert len(worker.after_process) == 1, "a second entry would run outside the chain's finally"
         assert worker.after_process[0].chain == (*neighbours, telemetry_saq.after_process)
+
+
+# phaze-35eiv -- a paused-stage bounce is not a job outcome.
+
+
+@pytest.mark.asyncio
+async def test_a_paused_stage_bounce_records_no_job_outcome_at_all(
+    telemetry_sink: TelemetrySink,
+    agent_worker_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance 1 + 3: a REAL ``StagePausedRetry``, raised by the real pause check, driven
+    through the production composed ``before_process`` and the production after-chain.
+
+    Nothing is mocked but the control-table READ -- the raise, both hooks and SAQ's dispatch
+    of them are the production ones, which is what the non-raising order-probe mocks could not
+    do. ``Status.QUEUED`` is what SAQ's ``retry()`` leaves on the row, so the bounce is
+    indistinguishable from a genuine retry by status alone; the outcome is decided by the
+    explicit bounce mark instead.
+    """
+    monkeypatch.setattr(stage_control_module, "_read_stage_control", _paused)
+    worker = saq.Worker(**agent_worker_module.settings)
+    job = _Job("process_file", Status.QUEUED)
+    ctx: dict[str, Any] = {"job": job}
+
+    with pytest.raises(StagePausedRetry):
+        await worker._before_process(ctx)
+    await worker._after_process(ctx)
+
+    assert "phaze.saq.jobs" not in telemetry_sink.metric_names(), "an operator pause counted as a job outcome"
+    assert telemetry_sink.count("phaze.saq.job.duration") == 0
+    assert telemetry_sink.span_names() == []
+    # ...and the neighbour hook the bounce actually belongs to still did its authoritative write.
+    assert job.updates == [{"status": Status.QUEUED, "scheduled": stage_control_module.SENTINEL, "attempts": 0, "error": None}]
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_retry_of_the_same_function_still_counts_as_an_error(
+    telemetry_sink: TelemetrySink,
+    agent_worker_module: Any,
+    unpaused_stage_control: None,
+) -> None:
+    """Acceptance 4, on the case that discriminates: the SAME ``Status.QUEUED`` the bounce
+    carries, on an unpaused stage.
+
+    If the bounce were suppressed by reading the status, or by the absence of a start time,
+    this test and the one above could not both pass.
+    """
+    worker = saq.Worker(**agent_worker_module.settings)
+    ctx: dict[str, Any] = {"job": _Job("process_file", Status.QUEUED)}
+
+    await worker._before_process(ctx)
+    await worker._after_process(ctx)
+
+    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "process_file", "outcome": "error"}]
+    assert telemetry_sink.count("phaze.saq.job.duration") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_failure_still_counts_as_an_error(
+    telemetry_sink: TelemetrySink,
+    agent_worker_module: Any,
+    unpaused_stage_control: None,
+) -> None:
+    """Acceptance 4 on the terminal-failure shape."""
+    worker = saq.Worker(**agent_worker_module.settings)
+    ctx: dict[str, Any] = {"job": _Job("process_file", Status.FAILED)}
+
+    await worker._before_process(ctx)
+    await worker._after_process(ctx)
+
+    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "process_file", "outcome": "error"}]
+    assert telemetry_sink.span_names() == ["saq.job"]
+
+
+@pytest.mark.asyncio
+async def test_a_bounce_mark_left_on_a_context_can_never_leak_a_span(telemetry_sink: TelemetrySink) -> None:
+    """A bounce has no span, because telemetry's ``before_process`` never ran -- but the hook
+    closes one if it finds one rather than trusting that.
+
+    The alternative is a hook whose no-leak property depends on a sequencing argument made
+    somewhere else, which is how the leak this bead fixes got there.
+    """
+    ctx: dict[str, Any] = {"job": _Job("process_file", Status.QUEUED)}
+    await telemetry_saq.before_process(ctx)
+    telemetry_saq.mark_bounced(ctx)
+    await telemetry_saq.after_process(ctx)
+
+    assert telemetry_sink.span_names() == ["saq.job"]
+    assert "phaze.saq.jobs" not in telemetry_sink.metric_names()
+    assert telemetry_saq._SPAN_KEY not in ctx
+    assert telemetry_saq._START_KEY not in ctx

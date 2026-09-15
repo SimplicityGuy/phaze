@@ -11,7 +11,9 @@ there is no new extension point and no wrapper around the function registry.
 
 The ``after_process`` side is registered through :func:`after_process_chain` rather than as
 the last element of SAQ's hook list, because SAQ's list is a bare loop that the first
-raising hook abandons -- see that function.
+raising hook abandons -- see that function. The ``before_process`` side needs no equivalent:
+a hook ahead of it that raises means the job never started, and the worker says so with
+:func:`mark_bounced` so this module reports nothing rather than an error.
 
 **The job function name is the label -- spelled ``saq_function``, never ``job`` -- and it
 is bounded** by the union of the controller's
@@ -63,11 +65,16 @@ if TYPE_CHECKING:
 
 _START_KEY = "_phaze_telemetry_started"
 _SPAN_KEY = "_phaze_telemetry_span"
+#: Set by the worker (via :func:`mark_bounced`) when a ``before_process`` hook aborted the
+#: attempt before :func:`before_process` ever ran, so :func:`after_process` can tell a
+#: never-started attempt from a job that ran and failed.
+_BOUNCE_KEY = "_phaze_telemetry_bounced"
 
 #: SAQ statuses that mean the job is finished and how it finished. Anything else that
 #: reaches ``after_process`` -- ``queued`` after a ``retry()`` -- is not terminal and is
 #: counted as an error, because from the caller's point of view the attempt did not
-#: produce a result.
+#: produce a result. The ONE exception is a marked bounce (:func:`mark_bounced`), which
+#: never ran a function at all.
 _OK_STATUS = "complete"
 
 
@@ -106,6 +113,28 @@ async def before_process(ctx: dict[str, Any]) -> None:
         log.debug("telemetry_saq_hook_failed", exc_info=True)
 
 
+def mark_bounced(ctx: dict[str, Any]) -> None:
+    """Tell :func:`after_process` that this attempt was BOUNCED, not run.
+
+    Called by the worker's composed ``before_process`` when one of the hooks ahead of
+    :func:`before_process` aborted the attempt -- in this repo, exactly one thing does that:
+    ``enforce_stage_pause_on_process`` raising ``StagePausedRetry`` because the operator
+    paused the stage. The job's function never ran, its retry budget is restored and both
+    neighbouring ``after_process`` hooks are deliberate no-ops for it (Phase 35 D-02
+    bounce-neutrality), so there is no outcome to report and no duration to report it with.
+
+    The signal is EXPLICIT rather than inferred from the absence of :data:`_START_KEY`: a
+    missing start time also describes a telemetry hook that failed internally, and those two
+    must not be conflated -- one is a healthy paused system, the other is a defect.
+
+    Never raises. It is called from a hook that is already unwinding.
+    """
+    try:
+        ctx[_BOUNCE_KEY] = True
+    except Exception:
+        log.debug("telemetry_saq_hook_failed", exc_info=True)
+
+
 async def after_process(ctx: dict[str, Any]) -> None:
     """SAQ ``after_process``: record duration + outcome and close the span.
 
@@ -126,6 +155,17 @@ async def after_process(ctx: dict[str, Any]) -> None:
     try:
         job = ctx.get("job")
         if job is None:
+            return
+        if ctx.pop(_BOUNCE_KEY, False):
+            # A bounce is not an outcome: nothing ran. Recording it as `error` turned an
+            # operator pause into an error storm on the service-health panel (phaze-35eiv);
+            # recording it as a third `outcome` value would widen a label shared with four
+            # other metrics. Close any span defensively -- there should be none, because
+            # `before_process` never ran -- and report nothing.
+            leaked = ctx.pop(_SPAN_KEY, None)
+            if leaked is not None:
+                leaked.__exit__(None, None, None)
+            ctx.pop(_START_KEY, None)
             return
         outcome = "ok" if str(getattr(job, "status", "")).rsplit(".", 1)[-1].lower() == _OK_STATUS else "error"
         name = _job_name(job)
