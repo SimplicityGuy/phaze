@@ -24,7 +24,7 @@ was 300 against a true 330, i.e. one producer's last export simply gone.
 many flushes per producer reported 2,090 against 650, **+221.5%** -- which is what makes
 this a production defect rather than a curiosity: a multi-hour analysis exports every 15 s.
 The full record, including the two rejected alternatives and what the figures do NOT
-establish, is ``docs/telemetry/measurements/concurrent-identity-2026-09-15.md``.
+establish, is ``docs/telemetry/concurrent-identity.md``.
 
 **THE FIX IS A BOUNDED SLOT INDEX, and the bound is the whole point.** The obvious repair
 -- a per-process instance id -- is the one thing
@@ -37,7 +37,8 @@ child, so the identity set is bounded by the CONCURRENCY rather than by the corp
 this affordable and the per-pod id unaffordable.
 
 **A slot is NOT a host, and the two labels stack deliberately.** ``PHAZE_TELEMETRY_INSTANCE``
-remains the per-host override (bounded by hosts, an operator decision); the slot is
+remains the per-host override, whose value is the operator's to pick and is bounded by
+the number of hosts; the slot is
 appended to it, so ``host-prod`` with four children is ``host-prod-0 .. host-prod-3``.
 
 **WHY VALIDATION FAILS CLOSED HERE.** An out-of-range or non-numeric slot is REFUSED and

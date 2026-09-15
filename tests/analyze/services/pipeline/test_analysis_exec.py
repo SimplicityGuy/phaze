@@ -518,7 +518,7 @@ async def test_concurrent_children_get_distinct_telemetry_identities(monkeypatch
     keeps one series per identity and takes the last write -- measured against
     ``otel/opentelemetry-collector-contrib`` 0.140.0, that produced a counter series that
     DECREASED (``100 -> 20 ... 200 -> 30``) and an ``increase()`` 84.4% above the truth. The
-    record is ``docs/telemetry/measurements/concurrent-identity-2026-09-15.md``.
+    record is ``docs/telemetry/concurrent-identity.md``.
 
     Three properties are asserted together, and each one is load-bearing:
 

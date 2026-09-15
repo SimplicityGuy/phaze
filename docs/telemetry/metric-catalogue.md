@@ -116,7 +116,7 @@ phaze appends a **bounded worker-slot index** to that id (`phaze-analysis-0` …
 `phaze-analysis-3`), because up to `worker_process_pool_size` analysis children run at once
 and, under a single identity, a collector's Prometheus exporter keeps one series and takes the
 last write — measured, that produced a DECREASING counter and an `increase()` 84.4% above the
-truth ([the record](measurements/concurrent-identity-2026-09-15.md),
+truth ([the record](concurrent-identity.md),
 [ADR-0017 §8](../design/0017-telemetry-export-topology.md)).
 
 | | series |

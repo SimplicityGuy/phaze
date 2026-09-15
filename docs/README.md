@@ -64,6 +64,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | Document | Purpose |
 | -------- | ------- |
 | **[Alerting](telemetry/alerting.md)** | 🚨 Alert rules and operator response |
+| **[Concurrent Identity](telemetry/concurrent-identity.md)** | 🔀 Measured collector behaviour for concurrent producers, and the worker-slot decision |
 | **[Exporter](telemetry/exporter.md)** | 📤 Metrics export contract and configuration |
 | **[Metric Catalogue](telemetry/metric-catalogue.md)** | 📊 Maintained metric names, labels, and meanings |
 | **[Overhead](telemetry/overhead.md)** | ⏱️ Telemetry cost and measurement guidance |

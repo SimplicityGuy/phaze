@@ -171,7 +171,7 @@ def test_concurrent_producers_get_distinct_bounded_identities(monkeypatch: pytes
     went ``10 -> 100 -> 20 -> 200 -> 30 -> 300`` -- two counter DECREASES, each of which
     Prometheus reads as a reset, giving an ``increase()`` of 590 where 320 was delivered
     (+84.4%, and +221.5% over twice as many exports). Record:
-    ``docs/telemetry/measurements/concurrent-identity-2026-09-15.md``.
+    ``docs/telemetry/concurrent-identity.md``.
 
     **This assertion fails on the old default**, which resolved every slot to the bare
     service name -- verified by reverting ``_instance_id`` and re-running. That is the point

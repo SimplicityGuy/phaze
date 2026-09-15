@@ -4,7 +4,7 @@ phaze-21nnf. Two concurrent analysis children exporting cumulative counters unde
 ``service.instance.id`` overwrite each other at the collector -- measured against
 ``otel/opentelemetry-collector-contrib`` 0.140.0, the exposed series DECREASED and
 ``increase()`` over-counted by 84.4%
-(``docs/telemetry/measurements/concurrent-identity-2026-09-15.md``).
+(``docs/telemetry/concurrent-identity.md``).
 
 **Most of this file is about the BOUND rather than about the fix**, and that is deliberate.
 Separating concurrent producers is easy -- a pid would do it. Separating them without

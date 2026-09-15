@@ -317,7 +317,7 @@ error grows with the number of interleaved exports**: at twice the flushes it wa
 That corrupts every `phaze_analysis_*` counter panel and feeds all three alert rules.
 
 Full record, including what the figures do *not* establish:
-[`docs/telemetry/measurements/concurrent-identity-2026-09-15.md`](../telemetry/measurements/concurrent-identity-2026-09-15.md).
+[`docs/telemetry/concurrent-identity.md`](../telemetry/concurrent-identity.md).
 Harness: `scripts/measure_concurrent_identity.py`.
 
 > **An in-process reader cannot find this, which is why it survived a complete telemetry

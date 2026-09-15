@@ -96,7 +96,7 @@ once, each its own process exporting its own cumulative counters — and a colle
 Prometheus exporter keeps one series per identity and takes the last write. Measured against
 a real collector, that produced a counter series that DECREASED and an `increase()` **84.4%**
 above the truth, growing to **221.5%** over twice as many exports
-([the record](measurements/concurrent-identity-2026-09-15.md),
+([the record](concurrent-identity.md),
 [ADR-0017 §8](../design/0017-telemetry-export-topology.md)).
 
 So a producer that holds slot *n* reports `phaze-analysis-<n>`, or `host-compute-<n>` when

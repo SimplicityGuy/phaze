@@ -1,9 +1,12 @@
 # Concurrent analysis producers at a real collector — 2026-09-15
 
-Point-in-time evidence for `phaze-21nnf`. The shipped behaviour is
-[`metric-catalogue.md`](../metric-catalogue.md) and
-[`exporter.md`](../exporter.md); the decision is
-[`docs/design/0017-telemetry-export-topology.md`](../../design/0017-telemetry-export-topology.md) §8.
+Measured evidence for `phaze-21nnf`, taken on **2026-09-15**. It lives here rather than under
+`measurements/` because that directory is a CLOSED historical corpus -- its population is
+pinned to one revision by `scripts/audit_historical_evidence.py`, which tolerates renames and
+no additions, so a new record there fails the build. The shipped behaviour is
+[`metric-catalogue.md`](metric-catalogue.md) and
+[`exporter.md`](exporter.md); the decision is
+[`docs/design/0017-telemetry-export-topology.md`](../design/0017-telemetry-export-topology.md) §8.
 
 ## 1. The question
 
