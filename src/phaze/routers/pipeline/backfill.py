@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, Request
@@ -22,6 +23,7 @@ from phaze.routers.pipeline.analysis import (
 from phaze.services.analysis_enqueue import process_file_job_key
 from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates, get_live_job_keys
 from phaze.services.route_control import get_route_control
+from phaze.telemetry.pipeline import record_transition
 
 
 if TYPE_CHECKING:
@@ -142,7 +144,15 @@ async def trigger_backfill_cloud(
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
-            await session.execute(_scheduling_ledger_cas_delete_stmt(observed_ledger_rows))
+            # phaze-qyqig: this CAS delete was one of three bulk-delete paths that resolved ledger
+            # rows uncounted. RETURNING function (added at the stmt builder) names exactly the rows
+            # this DELETE actually removed -- fewer than len(observed_ledger_rows) if a concurrent
+            # enqueue refreshed enqueued_at between the SELECT above and this DELETE (phaze-g31m) --
+            # so tally off the RETURNING rows, never off the observed count.
+            cas_result = await session.execute(_scheduling_ledger_cas_delete_stmt(observed_ledger_rows))
+            deleted_functions = cas_result.scalars().all()
+            for deleted_function, deleted_count in Counter(deleted_functions).items():
+                record_transition(deleted_function, "resolved", count=deleted_count)
 
     counts = await _route_discovered_by_duration(
         request.app.state,

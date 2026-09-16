@@ -86,6 +86,7 @@ from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.stage_status import CLOUD_LANE_FUNCTIONS, ledger_key_for_function, resolved_cloud_ledger_clause, resolved_ledger_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
+from phaze.telemetry.pipeline import record_transition
 
 
 if TYPE_CHECKING:
@@ -126,11 +127,21 @@ def _resolved_cloud_keys_subquery(func_name: str) -> Select[tuple[str]]:
     return select(ledger_key_for_function(func_name)).where(resolved_cloud_ledger_clause(func_name))
 
 
-async def _reap_keys(session: AsyncSession, label: str, keys: Select[tuple[str]]) -> int:
+async def _reap_keys(session: AsyncSession, label: str, function: str, keys: Select[tuple[str]]) -> int:
     """Delete the ledger rows named by ``keys``; return the count. Degrade-safe (returns 0 on any error).
 
     ``label`` names the lane in the degrade log ONLY (a stage value or a keyed-function name); the
-    statement itself is built entirely from ORM columns and bound params.
+    statement itself is built entirely from ORM columns and bound params. ``function`` is the REAL
+    SAQ function name this lane's rows carry (``STAGE_TO_FUNCTION[stage.value]`` for the two enrich
+    stages, the keyed function name itself for the cloud lane) -- distinct from ``label``, which for
+    the stage lanes is the Stage VALUE, not the function :func:`~phaze.telemetry.pipeline.record_transition`
+    expects.
+
+    phaze-qyqig: every row this reap actually deletes is a "resolved" ledger transition that no
+    producer counted before this fix -- this reaper was one of three uncounted bulk-delete paths,
+    so a reap clearing a real backlog (176 stale analyze rows on the live archive, per the module
+    docstring) was invisible to the stall alert's arming term. One ``add(rowcount, ...)`` per lane
+    keeps this a single telemetry call regardless of how many rows a lane resolved.
     """
     stmt = delete(SchedulingLedger).where(SchedulingLedger.key.in_(keys))
     try:
@@ -141,7 +152,10 @@ async def _reap_keys(session: AsyncSession, label: str, keys: Select[tuple[str]]
         return 0
     # `session.execute` is typed `Result[Any]`; a DML statement always yields a CursorResult, which is
     # where `rowcount` lives. Same narrowing `services/backends.py` performs on its own DML results.
-    return int(type_cast("CursorResult[Any]", result).rowcount or 0)
+    reaped = int(type_cast("CursorResult[Any]", result).rowcount or 0)
+    if reaped:
+        record_transition(function, "resolved", count=reaped)
+    return reaped
 
 
 async def reap_resolved_ledger_rows(ctx: dict[str, Any]) -> dict[str, int]:
@@ -155,11 +169,11 @@ async def reap_resolved_ledger_rows(ctx: dict[str, Any]) -> dict[str, int]:
     per_lane: dict[str, int] = {}
     async with ctx["async_session"]() as session:
         for stage in _REAPABLE_STAGES:
-            per_lane[stage.value] = await _reap_keys(session, stage.value, _resolved_keys_subquery(stage))
+            per_lane[stage.value] = await _reap_keys(session, stage.value, STAGE_TO_FUNCTION[stage.value], _resolved_keys_subquery(stage))
         # phaze-k95r7: the cloud-lane pass. Same predicate SHAPE, keyed by function rather than stage,
         # because these producers have a per-file ledger key but no ``Stage`` to hang off.
         for func_name in CLOUD_LANE_FUNCTIONS:
-            per_lane[func_name] = await _reap_keys(session, func_name, _resolved_cloud_keys_subquery(func_name))
+            per_lane[func_name] = await _reap_keys(session, func_name, func_name, _resolved_cloud_keys_subquery(func_name))
         await session.commit()
 
     total = sum(per_lane.values())

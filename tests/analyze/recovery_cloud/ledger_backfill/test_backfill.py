@@ -112,13 +112,29 @@ class _SeededSession:
         # every row of its chunk, each column bound as ``<col>_m<row-index>`` (multi-values compile),
         # so capture EVERY row's key here -- not just ``key_m0`` -- to keep this fake session's
         # observed-inserts view accurate now that a chunk can hold more than one row.
+        #
+        # phaze-qyqig: insert_ledger_rows_if_absent now adds ``RETURNING function`` and reads
+        # ``result.scalars().all()`` to tally "scheduled" per actually-inserted row -- so this fake
+        # must hand back a fake Result supporting that call shape (this fake session never
+        # conflicts, so every row in the chunk counts as "inserted").
+        functions_this_call: list[str] = []
         with contextlib.suppress(Exception):
             params = statement.compile().params
             row_indices = sorted({int(name.rsplit("_m", 1)[1]) for name in params if name.startswith("key_m")})
             for i in row_indices:
                 self.inserted_keys.append(params[f"key_m{i}"])
+                functions_this_call.append(params[f"function_m{i}"])
             self.inserted_params.append(params)
-        return None
+
+        class _InsertResult:
+            def scalars(self_inner) -> Any:
+                class _Scalars:
+                    def all(self_inner2) -> list[str]:
+                        return functions_this_call
+
+                return _Scalars()
+
+        return _InsertResult()
 
 
 @pytest.mark.asyncio

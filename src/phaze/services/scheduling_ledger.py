@@ -45,9 +45,10 @@ one shared primitive -- no call site needs its own ownership check.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections import Counter
+from typing import TYPE_CHECKING, Any, cast as type_cast
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ProgrammingError
 import structlog
@@ -60,6 +61,7 @@ from phaze.telemetry.pipeline import record_transition
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from sqlalchemy import CursorResult
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -98,6 +100,15 @@ async def upsert_ledger_entry(
     PK. ``timeout`` / ``retries`` are the SAQ Job policy captured at enqueue time so recovery can
     replay the SAME bound (None => producer set no explicit value; replay omits it). The caller
     commits.
+
+    phaze-qyqig: ``"scheduled"`` is counted ONLY when this call actually INSERTED a new row --
+    never on a re-upsert that merely refreshed an already-scheduled key's payload. ``RETURNING
+    (xmax = 0)`` is the standard Postgres upsert idiom for telling the two branches of an ``ON
+    CONFLICT DO UPDATE`` apart in one round trip: a freshly inserted row's system ``xmax`` is 0
+    (no deleting transaction has ever touched it), while a row reached via the UPDATE arm carries
+    a non-zero ``xmax`` from the UPDATE itself. Before this, EVERY call counted "scheduled" --
+    inflating the counter on every repeat enqueue of a still in-flight key, which is exactly the
+    periodic no-op the stall alert's arming term must NOT read as fresh scheduling activity.
     """
     routing = routing_for_function(function)
     values = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
@@ -119,8 +130,11 @@ async def upsert_ledger_entry(
             "updated_at": func.now(),
         },
     )
-    await session.execute(stmt)
-    record_transition(function, "scheduled")
+    returning_stmt: Any = stmt.returning(literal_column("(xmax = 0)").label("inserted"))
+    result = await session.execute(returning_stmt)
+    was_inserted = bool(result.scalar_one())
+    if was_inserted:
+        record_transition(function, "scheduled")
 
 
 async def insert_ledger_if_absent(
@@ -138,11 +152,18 @@ async def insert_ledger_if_absent(
     an existing (possibly fresher hook-written) row. Differs from :func:`upsert_ledger_entry`
     only in the conflict clause; the ``values()`` build is identical (including the captured
     ``timeout`` / ``retries`` policy). The caller commits.
+
+    phaze-qyqig: counts ``"scheduled"`` iff a row was actually inserted (``rowcount == 1``). A
+    DO NOTHING conflict (the key was already live) is a genuine no-op and must count nothing --
+    this primitive previously recorded no transition at all, which undercounted "scheduled" for
+    every row this backfill path seeded.
     """
     routing = routing_for_function(function)
     values = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
     stmt = pg_insert(SchedulingLedger).values([values]).on_conflict_do_nothing(index_elements=["key"])
-    await session.execute(stmt)
+    result = await session.execute(stmt)
+    if type_cast("CursorResult[Any]", result).rowcount:
+        record_transition(function, "scheduled")
 
 
 # phaze-xemza: chunk size for insert_ledger_rows_if_absent. One multi-row INSERT is bounded by one
@@ -164,6 +185,15 @@ async def insert_ledger_rows_if_absent(session: AsyncSession, rows: Sequence[dic
     :data:`_LEDGER_BATCH_INSERT_CHUNK_SIZE` so an unusually deep broker still issues a small,
     bounded number of statements rather than one with an unbounded parameter list. The caller
     commits. A no-op on an empty ``rows``.
+
+    phaze-qyqig: this is the reenqueue/recovery backfill's ledger-write primitive
+    (``tasks.recovery_backfill.backfill_ledger_from_saq_jobs``), and like the single-row form it
+    previously recorded NO "scheduled" transition at all -- so a startup backfill that seeded
+    hundreds of rows the WRITE hook had missed was invisible to the counter. ``RETURNING
+    function`` names exactly the rows THIS statement actually inserted (never the ones a
+    concurrent hook already holds), and each chunk's functions are tallied so "scheduled" is
+    counted once per row actually created, batched into one ``add()`` per function per chunk
+    rather than one call per row.
     """
     if not rows:
         return
@@ -180,8 +210,11 @@ async def insert_ledger_rows_if_absent(session: AsyncSession, rows: Sequence[dic
     ]
     for start in range(0, len(values), _LEDGER_BATCH_INSERT_CHUNK_SIZE):
         chunk = values[start : start + _LEDGER_BATCH_INSERT_CHUNK_SIZE]
-        stmt = pg_insert(SchedulingLedger).values(chunk).on_conflict_do_nothing(index_elements=["key"])
-        await session.execute(stmt)
+        stmt = pg_insert(SchedulingLedger).values(chunk).on_conflict_do_nothing(index_elements=["key"]).returning(SchedulingLedger.function)
+        result = await session.execute(stmt)
+        inserted_functions = result.scalars().all()
+        for inserted_function, inserted_count in Counter(inserted_functions).items():
+            record_transition(inserted_function, "scheduled", count=inserted_count)
 
 
 # Guarded CLEAR (phaze-3yln). A bare ``DELETE ... WHERE key = :key`` cannot tell "my own row" apart
@@ -240,15 +273,25 @@ async def clear_ledger_entry(session: AsyncSession, key: str) -> None:
     (it degrades to an empty live-set rather than guessing) and that the calling hooks already apply
     to their own failures. A skipped clear leaves a stale ledger row that the next recovery pass
     reconciles harmlessly; it never risks deleting a live row out from under a racing re-enqueue.
+
+    phaze-qyqig: counts ``"resolved"`` iff a row was ACTUALLY deleted (``rowcount`` from whichever
+    branch ran). Before this fix the call was unconditional, so a guarded no-op -- the key was
+    already absent, or a live same-key ``saq_jobs`` row protected it (the phaze-3yln guard doing
+    exactly its job) -- still counted a "resolved" transition that never happened, inflating the
+    counter opposite to :func:`upsert_ledger_entry`'s (also fixed) over-count of "scheduled".
     """
     try:
         async with session.begin_nested():
-            await session.execute(_GUARDED_CLEAR_SQL, {"key": key})
+            result = await session.execute(_GUARDED_CLEAR_SQL, {"key": key})
     except ProgrammingError:
         logger.warning("scheduling_ledger_clear_liveness_probe_missing_table", key=key, exc_info=True)
-        await session.execute(delete(SchedulingLedger).where(SchedulingLedger.key == key))
+        result = await session.execute(delete(SchedulingLedger).where(SchedulingLedger.key == key))
     except Exception:
         logger.warning("scheduling_ledger_clear_liveness_probe_degraded_skipped", key=key, exc_info=True)
+        return
+    if not type_cast("CursorResult[Any]", result).rowcount:
+        # No row was actually removed (already absent, or protected by the phaze-3yln liveness
+        # guard) -- a genuine no-op, and must count nothing.
         return
     # phaze-m1drf.1 acceptance 3. AFTER the clear and NOT on the degraded-skip path above,
     # which returns early: a skipped clear left the row standing, so counting it resolved

@@ -12,6 +12,14 @@ Covers the five service helpers:
 The DB-touching cases use the real PostgreSQL ``session`` fixture from
 ``tests/conftest.py`` (auto-marked ``integration``); ``routing_for_function`` is a pure
 function tested without a DB.
+
+phaze-qyqig: the ``phaze.pipeline.stage.transitions`` counter balance -- every path that
+creates a ledger row counts exactly one "scheduled", every path that removes one counts
+exactly one "resolved", and a no-op counts nothing -- is pinned in
+``tests/shared/telemetry/test_pipeline_stage_transitions.py``, not here: that assertion needs
+the real in-memory-OTel ``telemetry_sink`` fixture, which (like every fixture from a
+``conftest.py``) is visible only within its own directory subtree
+(``tests/shared/telemetry/**``), not to sibling directories such as this one.
 """
 
 from __future__ import annotations
@@ -339,7 +347,14 @@ class _RaisingLivenessProbeSession:
         if isinstance(statement, TextClause):
             raise self._probe_exc
         self.fallback_deletes.append(statement)
-        return None
+
+        # phaze-qyqig: clear_ledger_entry now reads `result.rowcount` off the fallback delete's
+        # result to decide whether to count "resolved" -- this fake models the fallback actually
+        # deleting the (fake) row, mirroring what an unconditional DELETE by an existing key does.
+        class _FakeDeleteResult:
+            rowcount = 1
+
+        return _FakeDeleteResult()
 
 
 def _undefined_table_error() -> ProgrammingError:
