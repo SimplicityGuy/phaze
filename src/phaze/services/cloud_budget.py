@@ -46,7 +46,7 @@ budget-grounded file is still routed every tick and still reaches a terminal ana
 constraint "never leave a row in a state no writer can advance" is satisfied structurally, not by
 convention.
 
-ADR-0005 CONTEXT. With the pod memory limit now emitted, a runaway is a pod-scoped OOMKill rather than a
+ADR-0005 (analyze job memory limits) CONTEXT. With the pod memory limit now emitted, a runaway is a pod-scoped OOMKill rather than a
 node crash, so the node-loss path these budgets guard should become markedly rarer. That is a reason to
 keep the node-loss ceiling generous and separate -- not a reason to leave it unbounded, which is exactly
 the mistake ``phaze-1q4g`` had to correct one level down.

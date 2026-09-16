@@ -22,7 +22,7 @@ failure arrives before a single Job is submitted rather than as an apiserver rej
 apiserver's ``resource.ParseQuantity`` would reject. It expresses no opinion on whether a
 syntactically valid quantity is a *good* quantity: ``memory_limit = "4Gi"`` and
 ``memory_limit = "400Gi"`` are equally acceptable here. That boundary is load-bearing --
-``backends.toml`` and ADR-0005 are explicit that ``memory_limit`` is not a knob to raise casually,
+``backends.toml`` and ADR-0005 (analyze job memory limits) are explicit that ``memory_limit`` is not a knob to raise casually,
 and CLAUDE.md records that duration-linear memory growth is a bug rather than a sizing input. A
 format validator that quietly normalised or clamped a value would be doing sizing policy under
 cover of validation.

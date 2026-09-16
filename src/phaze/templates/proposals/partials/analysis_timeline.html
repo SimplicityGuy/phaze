@@ -4,7 +4,7 @@
    `currentColor`, so the lane inherits the surrounding text colour in both themes. #}
 {% import "ui/set_marks.html" as marks %}
 <td colspan="7" class="min-w-0 bg-gray-50 px-4 py-4 dark:bg-phaze-panel sm:px-6">
-    {# phaze-w55w1 / ADR-0007 §7: this is exhaustive stored coverage. There is no sampled
+    {# phaze-w55w1 / ADR-0007 (windowed analysis) §7: this is exhaustive stored coverage. There is no sampled
        state, cap, stride, deepen path, or client-side thinning step. #}
     {% if not has_windows %}
     <p class="text-sm text-muted">No analysis windows for this file.</p>

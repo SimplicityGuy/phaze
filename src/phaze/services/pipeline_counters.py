@@ -58,7 +58,7 @@ def _to_int(value: Any) -> int:
     A missing key reads back ``None`` -> ``0``.
 
     IMPLEMENTER'S DECISION, not an operator decision (phaze-ooe68, dev/redismode, 2026-08-24;
-    labelled per ADR-0012 rule 2 so it invites the review an operator label would suppress).
+    labelled per ADR-0012 (verification fidelity and operator attribution) rule 2 so it invites the review an operator label would suppress).
     This helper used to ACCEPT ``bytes`` and decode them, on the stated grounds that that is
     "the default when the SAQ queue's Redis client is not ``decode_responses=True``". The
     code-side client-mode measurement recorded on phaze-ooe68 refutes the premise:

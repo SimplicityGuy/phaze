@@ -7,7 +7,7 @@ workload -- so every sizing figure the `phaze-esut` -> `phaze-7i0k` -> `phaze-15
 `phaze-3j67` -> `phaze-0582` investigation produced is valid only for the 4-physical-core node
 it was measured on. Move to a 32-physical-core host and TF sizes both pools at ~64, and the
 per-process peak moves with them -- risking the node-scoped OOM failure mode
-(`oom-kill:constraint=CONSTRAINT_NONE`) that ADR-0005 and seven spikes exist to eliminate, on
+(`oom-kill:constraint=CONSTRAINT_NONE`) that ADR-0005 (analyze job memory limits) and seven spikes exist to eliminate, on
 a bigger box with more headroom to hide it until it doesn't.
 
 **Pinning the pools is therefore not an optimization. It is the mechanism that decouples
