@@ -11,9 +11,11 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import _LEDGER_BATCH_INSERT_CHUNK_SIZE, upsert_ledger_entry
-from phaze.tasks.reenqueue import _parse_job_blob, backfill_ledger_from_saq_jobs
+from phaze.services.stage_status import ledger_key_for_function
+from phaze.tasks.reenqueue import _keyed_function_from_job_blob, _parse_job_blob, backfill_ledger_from_saq_jobs
 from tests.db_guard import integration_dsns
 
 
@@ -71,6 +73,46 @@ async def test_missing_saq_jobs_table_degrades_to_no_op() -> None:
 def test_parse_job_blob_tolerates_garbage(blob: object, expected: dict[str, Any] | None) -> None:
     """``_parse_job_blob`` mirrors ``pipeline._job_started_ms``: JSON dict in, dict or None out."""
     assert _parse_job_blob(blob) == expected
+
+
+@pytest.mark.asyncio
+async def test_keyed_function_fallback_matches_ledger_key_for_function(session: AsyncSession) -> None:
+    """phaze-d1b6x: ``_keyed_function_from_job_blob``'s fallback ``key.split(":", 1)[0]`` -- taken
+    when a SAQ job blob lacks its own ``"function"`` field -- is a SEPARATE Python-side spelling of
+    the same ``"<function>:<file_id>"`` idiom ``stage_status.ledger_key_for_function`` builds as a
+    SQL expression, and a second, independent copy of the identical idiom
+    ``scheduling_ledger.clear_ledger_entry`` already has pinned (phaze-qyqig,
+    ``test_resolved_transition_key_parse_matches_ledger_key_for_function``).
+
+    Pins this copy the SAME way: the key under test is produced by EXECUTING
+    ``ledger_key_for_function`` through Postgres, never hand-written as an f-string, so a future
+    change to that builder's format (delimiter, field order) that this split-based fallback
+    silently stopped matching would show up here as a wrong (or missing) recovered function, not as
+    a passing test that never exercised the real builder.
+    """
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=file_id.hex,
+            original_path=f"/music/{file_id.hex}.mp3",
+            original_filename=f"{file_id.hex}.mp3",
+            current_path=f"/music/{file_id.hex}.mp3",
+            file_type="mp3",
+            file_size=1000,
+        )
+    )
+    await session.flush()
+
+    function = "extract_file_metadata"
+    key = (
+        await session.execute(select(ledger_key_for_function(function).label("key")).select_from(FileRecord).where(FileRecord.id == file_id))
+    ).scalar_one()
+    assert key == f"extract_file_metadata:{file_id}"  # sanity: still the documented "<function>:<id>" shape
+
+    # The blob omits "function" entirely -- the exact SAQ-job shape that forces the fallback.
+    assert _keyed_function_from_job_blob({"kwargs": {"file_id": str(file_id)}}, key) == function
 
 
 class _SeededSession:
