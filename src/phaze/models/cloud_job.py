@@ -129,6 +129,33 @@ class CloudJob(TimestampMixin, Base):
     # free-text (no CHECK/enum). The recorded value is AUTHORITATIVE -- presign/cleanup READ it,
     # never re-derive. ``unique(file_id)`` (L72) is preserved -- cloud_job stays one-row-per-file (D-02).
     staging_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # phaze-w15ju: the BOUNDED TELEMETRY WORKER SLOT this burst Job's pod exports under, allocated by
+    # the controller at submit and injected into the Job env as ``PHAZE_TELEMETRY_SLOT``.
+    #
+    # **Why the controller and not the pod.** Concurrent analysis producers must carry distinct
+    # ``service.instance.id`` values or a collector's Prometheus exporter keeps one series per identity
+    # and takes the last write -- measured, that produced a DECREASING cumulative counter and an
+    # ``increase()`` 84.4% above the truth, growing to 221.5% over twice the exports
+    # (``docs/telemetry/concurrent-identity.md``). The host lane allocates its slot in the one process
+    # that bounds its concurrency (``phaze.telemetry.slots.SlotPool``). A burst-lane child runs in a
+    # one-shot Kueue pod that is Postgres-less and shares no memory with its peers, so the only seat
+    # that can see every competitor is the controller -- and the only place its decision survives a
+    # controller restart is this column.
+    #
+    # **OCCUPANCY IS DERIVED FROM ``status``, WHICH IS WHY NOTHING HAS TO RELEASE A SLOT.**
+    # ``burst_telemetry_slots.allocate_slot`` reads the held set as "the slots on OTHER cloud_job rows
+    # whose status is in ``backends.base.IN_FLIGHT``". So the instant a row leaves the in-flight set --
+    # succeeded, failed, or spilled back to 'awaiting' by the reconcile cron or
+    # ``KueueBackend._reap_stranded_staging`` -- its slot is free, by construction and with no writer
+    # to forget. A crashed or evicted pod leaks nothing: the same reconcile tick that terminalizes its
+    # row frees its slot. That is the property acceptance 1 asks for, and an explicit free list
+    # persisted here could not have it -- every terminal writer would need a release call, and the one
+    # that was missed would shrink the pool permanently.
+    #
+    # The value is deliberately NOT cleared on terminalization: it is inert (the query filters on
+    # status) and it is the post-mortem record of which identity a finished Job's counters landed on.
+    # A re-submit re-allocates rather than trusting a stale value -- see ``allocate_slot``.
+    telemetry_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         # Bare name "status_enum"; the ck_%(table_name)s_%(constraint_name)s convention re-prefixes it.
@@ -140,6 +167,10 @@ class CloudJob(TimestampMixin, Base):
             "cloud_phase IN ('queued_behind_quota', 'admitted', 'running', 'finished')",
             name="cloud_phase_enum",
         ),
+        # phaze-w15ju: a telemetry slot is an index into a bounded pool, so a negative one is
+        # meaningless. The UPPER bound is deliberately NOT here: it is the sum of the kueue backends'
+        # configured caps, which lives in backends.toml and can be raised without a migration.
+        CheckConstraint("telemetry_slot IS NULL OR telemetry_slot >= 0", name="telemetry_slot_nonnegative"),
         # PERF-01, migration 032: awaiting-lookup partial index mirroring migration 032.
         Index("ix_cloud_job_awaiting", "file_id", postgresql_where=text("status = 'awaiting'")),
     )
