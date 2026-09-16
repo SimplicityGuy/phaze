@@ -29,7 +29,12 @@ def _track(position: int, timestamp: str | None) -> TracklistTrack:
 
 
 def _fine(index: int, start: float, end: float, *, bpm: float | None = None, camelot: str | None = None) -> AnalysisWindow:
-    return AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=bpm, camelot=camelot)
+    """``camelot`` names the intended CODE; the window carries the ``musical_key`` that maps to it
+    -- ``camelot`` is a read-time property since migration 065 (phaze-6r3eh), not a settable column.
+    """
+    return AnalysisWindow(
+        file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=bpm, musical_key=key_name_for_camelot(camelot)
+    )
 
 
 def _coarse(index: int, start: float, end: float, *, energy: float | None = None, moods: dict[str, float] | None = None) -> AnalysisWindow:

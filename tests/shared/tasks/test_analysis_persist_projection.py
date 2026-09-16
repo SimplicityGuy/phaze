@@ -181,11 +181,16 @@ async def test_a_projection_failure_never_fails_the_analysis(
     assert analysis.analysis_completed_at is not None
     assert analysis.failed_at is None
 
-    # Windows are still there (base fields) -- just without the projection columns.
+    # Windows are still there (base fields) -- just without the STORED projection columns.
     window_count = (await session.execute(select(func.count()).select_from(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalar_one()
     assert window_count == len(payload.windows or [])
     windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()
-    assert all(w.energy is None and w.camelot is None and w.mood_scores is None for w in windows)
+    assert all(w.energy is None and w.mood_scores is None for w in windows)
+    # `camelot` is NOT one of the columns this failure leaves NULL: since migration 065
+    # (phaze-6r3eh) it is a read-time property of `musical_key`, which the write path sets
+    # regardless of whether `annotate_window_rows` (the broken step here) ever runs -- so a fine
+    # window with a real key has a real camelot code even when the projection failed.
+    assert all(w.camelot is not None for w in windows if w.tier == "fine" and w.musical_key is not None)
 
     # No profile was written -- left NULL/absent, never a garbage all-NULL row.
     profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one_or_none()
@@ -463,10 +468,14 @@ async def test_a_projection_failure_leaves_a_row_the_backfill_actually_repairs(
 
     session.expunge_all()
 
-    # The windows were rewritten and carry no projection -- the state that made the old row a lie.
+    # The windows were rewritten and carry no STORED projection -- the state that made the old
+    # row a lie. `camelot` is excluded from that claim: since migration 065 (phaze-6r3eh) it is a
+    # read-time property of `musical_key`, set regardless of whether the broken `annotate_window_rows`
+    # step ran, so a fine window with a real key still answers a real camelot code here.
     windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()
     assert windows, "the re-analysis must still have persisted its windows"
-    assert all(w.energy is None and w.camelot is None and w.mood_scores is None for w in windows)
+    assert all(w.energy is None and w.mood_scores is None for w in windows)
+    assert all(w.camelot is not None for w in windows if w.tier == "fine" and w.musical_key is not None)
 
     # THE BEAD: the file is selectable by the real predicate, and the real backfill repairs it.
     assert await _profile_row(session, file_id) is None

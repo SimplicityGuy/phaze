@@ -57,7 +57,10 @@ _RECORD_PAGE = _TEMPLATES / "record" / "record_page.html"
 _RECORD_BODY = _TEMPLATES / "record" / "record_body.html"
 
 
-def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None, camelot: str | None = None) -> AnalysisWindow:
+def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None) -> AnalysisWindow:
+    """``camelot`` is a read-time property of ``musical_key`` since migration 065 (phaze-6r3eh),
+    not a settable column, so there is no ``camelot=`` parameter here any more -- callers that want
+    a particular code pass the ``key`` that maps to it (or an unrecognised ``key`` for "no code")."""
     return AnalysisWindow(
         file_id=uuid.uuid4(),
         tier="fine",
@@ -66,7 +69,6 @@ def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key
         end_sec=end,
         bpm=bpm,
         musical_key=key,
-        camelot=camelot,
     )
 
 
@@ -109,7 +111,7 @@ def test_every_window_carries_the_energy_camelot_and_top_mood_the_readout_names(
     the sentence stay right for the set while being wrong for the moment being pointed at.
     """
     windows = [
-        _fine(0, 0.0, 30.0, bpm=128.0, key="A minor", camelot="8A"),
+        _fine(0, 0.0, 30.0, bpm=128.0, key="A minor"),
         _coarse(0, 0.0, 180.0, energy=0.62, moods=_moods(mood_happy=0.8)),
     ]
 
@@ -157,7 +159,7 @@ def test_the_payload_carries_the_track_segments_the_readout_and_the_shaded_span_
     the end of what we know" rather than inventing a length, which is the same reading
     ``TrackSegment.end_sec`` documents.
     """
-    windows = [_fine(0, 0.0, 30.0, bpm=128.0, key="A minor", camelot="8A"), _coarse(0, 0.0, 600.0, energy=0.4)]
+    windows = [_fine(0, 0.0, 30.0, bpm=128.0, key="A minor"), _coarse(0, 0.0, 600.0, energy=0.4)]
     segments = [_segment(1, 0.0, 300.0, title="Opening Track"), _segment(2, 300.0, None, title=None)]
 
     payload = build_analysis_timeline_context(windows, track_segments=segments)["timeline_inspection"]
@@ -210,12 +212,12 @@ def test_the_payloads_key_runs_are_numbered_exactly_as_the_wheel_numbers_its_nod
     run counts below are of what SURVIVED the flicker filter, not of the windows fed in.
     """
     fine = [
-        _fine(0, 0.0, 30.0, camelot="8A"),
-        _fine(1, 30.0, 60.0, camelot="8A"),
-        _fine(2, 60.0, 90.0, camelot="ZZ"),
-        _fine(3, 90.0, 120.0, camelot="ZZ"),
-        _fine(4, 120.0, 150.0, camelot="5A"),
-        _fine(5, 150.0, 180.0, camelot="5A"),
+        _fine(0, 0.0, 30.0, key="A minor"),
+        _fine(1, 30.0, 60.0, key="A minor"),
+        _fine(2, 60.0, 90.0, key="Not A Real Key"),
+        _fine(3, 90.0, 120.0, key="Not A Real Key"),
+        _fine(4, 120.0, 150.0, key="C minor"),
+        _fine(5, 150.0, 180.0, key="C minor"),
     ]
 
     runs = inspection_key_runs(fine)
@@ -224,7 +226,7 @@ def test_the_payloads_key_runs_are_numbered_exactly_as_the_wheel_numbers_its_nod
     assert [run["index"] for run in runs] == [node.index for node in nodes]
     assert [run["code"] for run in runs] == [node.code for node in nodes]
     assert [run["number"] for run in runs] == [node.number for node in nodes]
-    assert "ZZ" not in [run["code"] for run in runs]
+    assert None not in [run["code"] for run in runs]
     assert [(run["start"], run["end"]) for run in runs] == [(0.0, 60.0), (120.0, 180.0)]
 
 

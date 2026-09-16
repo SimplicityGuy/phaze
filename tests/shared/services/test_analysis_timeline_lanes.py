@@ -62,7 +62,9 @@ def _coarse(index: int, start: float, end: float, *, energy: float | None = None
     )
 
 
-def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None, camelot: str | None = None) -> AnalysisWindow:
+def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None) -> AnalysisWindow:
+    """No ``camelot`` parameter: since migration 065 (phaze-6r3eh) it is a read-time property of
+    ``musical_key``, not a settable column, so it always agrees with whatever ``key`` is passed."""
     return AnalysisWindow(
         file_id=uuid.uuid4(),
         tier="fine",
@@ -71,7 +73,6 @@ def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key
         end_sec=end,
         bpm=bpm,
         musical_key=key,
-        camelot=camelot,
     )
 
 
@@ -287,7 +288,11 @@ def test_a_window_carrying_only_some_of_the_seven_normalises_over_what_it_has() 
 
 def test_key_ribbons_are_labelled_with_the_key_and_its_camelot_code() -> None:
     """ "A minor · 8A" -- the raw label stays available, the DISPLAY carries the wheel position."""
-    windows = [_fine(0, 0.0, 30.0, key="A minor", camelot="8A"), _fine(1, 30.0, 60.0, key="C major", camelot=None)]
+    # The second window's key is not one of the 24 canonical strings -- unlike a stale/missing
+    # projection (impossible now that `camelot` is a read-time property, migration 065,
+    # phaze-6r3eh: any `musical_key` deterministically has SOME `camelot`, possibly None), an
+    # unrecognised key is a real state essentia can produce and camelot_code must still handle.
+    windows = [_fine(0, 0.0, 30.0, key="A minor"), _fine(1, 30.0, 60.0, key="Some Unrecognized Key")]
 
     context = build_analysis_timeline_context(windows)
     ribbons = context["key_ribbons"]
@@ -296,8 +301,9 @@ def test_key_ribbons_are_labelled_with_the_key_and_its_camelot_code() -> None:
     assert ribbons[0]["label"] == "A minor"
     assert ribbons[0]["code"] == "8A"
     assert ribbons[0]["display"] == "A minor · 8A"
-    # An unprojected window still shows its key: the Camelot half is additive, never a filter.
-    assert ribbons[1]["display"] == "C major"
+    # A window with no resolvable Camelot code still shows its key: the Camelot half is additive,
+    # never a filter.
+    assert ribbons[1]["display"] == "Some Unrecognized Key"
 
 
 def test_one_tick_per_timestamped_track_and_none_for_a_track_without_one() -> None:
@@ -415,7 +421,7 @@ def test_the_lane_height_constant_and_the_stylesheet_agree() -> None:
 def test_the_context_exposes_every_lane_the_template_reads() -> None:
     """A renamed context key would render an EMPTY lane, not an error -- so pin the names."""
     windows = [
-        _fine(0, 0.0, 30.0, bpm=128.0, key="A minor", camelot="8A"),
+        _fine(0, 0.0, 30.0, bpm=128.0, key="A minor"),
         _coarse(0, 0.0, 180.0, energy=0.5, moods=_even_moods()),
     ]
 

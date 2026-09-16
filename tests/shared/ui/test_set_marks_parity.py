@@ -31,6 +31,7 @@ from fastapi.templating import Jinja2Templates
 from phaze.models.analysis import AnalysisWindow
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.harmonic_journey import build_harmonic_journey
+from phaze.services.set_projection import key_name_for_camelot
 from phaze.web.template_globals import register_set_glyph_globals
 
 
@@ -74,7 +75,12 @@ def _geometry(markup: str) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
 
 
 def _fine(index: int, start: float, end: float, camelot: str) -> AnalysisWindow:
-    return AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=128.0, camelot=camelot)
+    """``camelot`` names the intended CODE; the window carries the ``musical_key`` that maps to it
+    -- ``camelot`` is a read-time property since migration 065 (phaze-6r3eh), not a settable column.
+    """
+    return AnalysisWindow(
+        file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=128.0, musical_key=key_name_for_camelot(camelot)
+    )
 
 
 def _coarse(index: int, start: float, end: float, energy: float) -> AnalysisWindow:

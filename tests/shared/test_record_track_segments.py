@@ -58,12 +58,8 @@ async def _seed_set_with_tracklist_and_windows(make_file, session: AsyncSession)
     session.add(TracklistTrack(version_id=version.id, position=2, artist="Duskline", title="Untimed", timestamp=None))
     session.add_all(
         [
-            AnalysisWindow(
-                file_id=file_rec.id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=126.0, musical_key="A minor", camelot="8A"
-            ),
-            AnalysisWindow(
-                file_id=file_rec.id, tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=130.0, musical_key="A minor", camelot="8A"
-            ),
+            AnalysisWindow(file_id=file_rec.id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=126.0, musical_key="A minor"),
+            AnalysisWindow(file_id=file_rec.id, tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=130.0, musical_key="A minor"),
             AnalysisWindow(
                 file_id=file_rec.id,
                 tier="coarse",

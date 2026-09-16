@@ -29,14 +29,20 @@ from phaze.services.harmonic_journey import (
     build_harmonic_journey,
 )
 from phaze.services.set_glyph_colors import camelot_hue
-from phaze.services.set_projection import flicker_filtered_key_runs, harmonic_discipline
+from phaze.services.set_projection import flicker_filtered_key_runs, harmonic_discipline, key_name_for_camelot
 
 
 _WINDOW_SEC = 30.0
 
 
 def _fine(codes: list[str | None], window_sec: float = _WINDOW_SEC) -> list[AnalysisWindow]:
-    """One fine window per code, contiguous and in order. ``None`` is a window with no key."""
+    """One fine window per intended camelot CODE, contiguous and in order. ``None`` is a window
+    with no key. ``camelot`` is a read-time property of ``musical_key`` since migration 065
+    (phaze-6r3eh), not a settable column, so each window carries the ``musical_key`` that maps to
+    ``code`` instead: :func:`key_name_for_camelot` returns ``None`` for ``None`` and for anything
+    outside the 24 canonical codes (e.g. a deliberately unplaceable "99Z"), which round-trips to a
+    ``None`` ``camelot`` exactly as a directly-stored out-of-table value used to.
+    """
     return [
         AnalysisWindow(
             file_id=uuid.uuid4(),
@@ -44,7 +50,7 @@ def _fine(codes: list[str | None], window_sec: float = _WINDOW_SEC) -> list[Anal
             window_index=index,
             start_sec=index * window_sec,
             end_sec=(index + 1) * window_sec,
-            camelot=code,
+            musical_key=key_name_for_camelot(code),
         )
         for index, code in enumerate(codes)
     ]
