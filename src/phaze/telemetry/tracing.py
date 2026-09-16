@@ -19,6 +19,7 @@ than asserting it is nothing.
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from opentelemetry.context import Context
+
+log = logging.getLogger(__name__)
 
 _tracer = trace.get_tracer("phaze")
 
@@ -53,31 +56,70 @@ def span(name: str, attributes: dict[str, Any] | None = None, *, context: Contex
     An exception escaping the block is recorded on the span and re-raised UNCHANGED. This
     seam never converts an error into a return value; the caller's own failure handling is
     what decides what an error means.
+
+    Entering the span is guarded SEPARATELY from the block. ``_tracer.start_as_current_span``
+    calls the sampler, the id generator and every span processor's ``on_start`` before this
+    function's own ``try`` ever runs -- none of those are guarded inside the installed SDK
+    (verified against opentelemetry-sdk 1.44.0's ``Tracer.start_span``) -- so a raising one
+    would otherwise blow past this seam at a chunk boundary hours into an analysis. A failure
+    there falls back to ``INVALID_SPAN`` and the wrapped block still runs, untouched; a
+    failure raised BY the block is still recorded and re-raised exactly as before. Only
+    span-machinery faults at entry are swallowed -- never the block's own exceptions.
     """
-    with _tracer.start_as_current_span(name, context=context) as current:
-        if attributes and current.is_recording():
-            current.set_attributes({key: value for key, value in attributes.items() if value is not None})
-        try:
-            yield current
-        except Exception as exc:
-            if current.is_recording():
-                current.record_exception(exc)
-                current.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}"))
-            raise
+    entered = _tracer.start_as_current_span(name, context=context)
+    try:
+        current = entered.__enter__()
+    except Exception:
+        log.debug("telemetry_span_start_failed", exc_info=True)
+        yield trace.INVALID_SPAN
+        return
+
+    if attributes and current.is_recording():
+        current.set_attributes({key: value for key, value in attributes.items() if value is not None})
+    try:
+        yield current
+    except BaseException as exc:
+        if isinstance(exc, Exception) and current.is_recording():
+            current.record_exception(exc)
+            current.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}"))
+        entered.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        entered.__exit__(None, None, None)
+
+
+def _record_without_masking(metric: str, elapsed: float, labels: dict[str, Any]) -> None:
+    """Record an observation for a block that is ALREADY raising, without letting a broken
+    instrument replace the block's own exception.
+
+    Under ``PHAZE_TELEMETRY_STRICT`` (the test suite's default), :func:`record` re-raises on
+    a broken instrument or an undeclared attribute. Called from a bare ``finally``, that
+    second raise would REPLACE whatever exception the wrapped block was already propagating
+    -- a genuine sweep failure masked by an unrelated metrics defect, in exactly the
+    environment meant to surface it loudest. The block's own failure is what a caller needs
+    to see; a broken ``record`` call at that moment is at most a debug line.
+    """
+    try:
+        record(metric, elapsed, **labels)
+    except Exception:
+        log.debug("telemetry_record_failed_during_exception_propagation", exc_info=True)
 
 
 @contextlib.contextmanager
 def timed_metric(metric: str, **labels: Any) -> Iterator[None]:
     """Time the block into ``metric``. No span; the cheapest primitive.
 
-    The observation is recorded in a ``finally``, so a raising block is still measured --
-    a model that fails after 40 s of inference cost those 40 s, and dropping the
-    observation would make the failure look free.
+    The observation is recorded even when the block raises -- a model that fails after 40 s
+    of inference cost those 40 s, and dropping the observation would make the failure look
+    free. But a raising block's own exception always wins: see :func:`_record_without_masking`.
     """
     started = time.perf_counter()
     try:
         yield
-    finally:
+    except BaseException:
+        _record_without_masking(metric, time.perf_counter() - started, labels)
+        raise
+    else:
         record(metric, time.perf_counter() - started, **labels)
 
 
@@ -93,7 +135,10 @@ def timed(metric: str, span_name: str, *, attributes: dict[str, Any] | None = No
     with span(span_name, attributes) as current:
         try:
             yield current
-        finally:
+        except BaseException:
+            _record_without_masking(metric, time.perf_counter() - started, labels)
+            raise
+        else:
             record(metric, time.perf_counter() - started, **labels)
 
 
