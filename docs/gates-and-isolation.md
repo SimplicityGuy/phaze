@@ -726,6 +726,107 @@ DB bucket serial for the same reason).
 Two suites in two worktrees with their own `test-db-for` databases are unaffected — that is the
 supported way to run concurrently, and it is verified green.
 
+## The advisory lock holds, and the tool-timeout hazard is what is left (phaze-cpn5k)
+
+The section above says a second process is refused before collection with the holder's pid. That
+was the documented claim; on 2026-08-21 a seat saw the exact signature the lock exists to prevent
+(48 failed / 7 errors, green on isolated re-run) after a foreground `just check` hit the agent's
+2-minute tool limit and a second run was started, and it captured no refusal. Either reading fitted:
+the lock fired into an unread stream, or it did not fire. **Measured 2026-09-16: the lock fires.**
+
+Session A ran `pytest tests/review tests/identify -q` and was confirmed past `pytest_sessionstart`
+by reading the holder out of Postgres rather than out of a log — `phaze-pytest-session-lock
+pid=64140|174550`. Session B then ran a DB-touching module against the same `TEST_DATABASE_URL`,
+with A verified alive immediately before and after, and `PHAZE_TEST_DB_ALLOW_SHARED` confirmed
+unset. B exited **4** (`pytest.ExitCode.USAGE_ERROR`) in **2 s**, printing:
+
+```
+! _pytest.outcomes.Exit: Refusing to start: test database 'phaze_phaze_cpn5k_f4126343_test' is already owned by phaze-pytest-session-lock pid=64140 (backend pid 174550, connected 2026-09-16 03:50:38.125816+00:00).
+```
+
+Two pids, on purpose: `pid=64140` is the OS process to `ps` or `kill`, `backend pid 174550` its
+Postgres backend. The remediation text follows it, on **stdout and stderr both**, and survives the
+`just` wrapper unaltered — `just test-cov` against a held lock ends with just's own
+`error: recipe ... failed on line 336 with exit code 4`. **Refused before collection** is
+literal: a grep of both streams for `phaze test database:`, `collected `, `rootdir` and
+`platform darwin` returns **0 matches**. The refusal is the run's entire output, 956 bytes.
+A negative control — the identical command after A exited — returned `17 passed`, so the 4 is the
+lock and not the target. The `--collect-only` exemption is live and is **not** a way in: against
+the same held lock, `--collect-only` exits 0 (`17 tests collected in 0.03s`) while the normal run
+is refused.
+
+**Why a refusal can still go unseen.** Four measured properties compound. A refused gate prints no
+pytest summary and no coverage line, so by this document's own rules the log reads as
+**UNMEASURED**, routing the reader toward "the harness broke" rather than to the remediation text
+above it. Which run gets refused depends only on which reaches `pytest_sessionstart` second, and
+`just check` spends its `lint` and `typecheck` phases before `pytest` starts — so if the abandoned
+run is still in that prologue when the new one claims the lock, the **abandoned** run is the one
+refused, into a stream nobody will read. Redirected stdout is block-buffered: a session's log file
+was still empty **20 s** after launch with its `pytest` already running, so tailing the file to
+decide whether a run has begun is unsound. And `-q` (`just test`) suppresses the header line
+carrying the `exclusive` / `unlocked` token; `test-cov` does not pass `-q`, so a `just check` log
+does carry it.
+
+This does **not** explain the 2026-08-21 failure set — that run left no log, and a verified
+mechanism does not vouch for an unobserved instance. One reading is excluded: the guard was present
+in that checkout, landing in `61ae500a` on 2026-07-29, with no later change to
+`acquire_exclusive_session_lock` or `pytest_sessionstart`. So is the two-worker gate:
+`test-cov-parallel` landed 2026-09-11, so `just check` was a single serial `test-cov` then, and the
+two processes were two separate gate invocations. Had the log survived, the discriminator is one
+word — `exclusive` or `unlocked` — in that run's own header.
+
+### A tool-call timeout does not kill the run it started
+
+Tested with subshells killed by signal number, never by timing out a tool call and never with
+`pkill`. The chain is `bash -c 'uv run pytest …; true'`, where the trailing `; true` stops `bash`
+from `exec`-ing so the real three-level `shell → uv → python` shape survives.
+
+| signal | sent to | shell | `uv` | `pytest` |
+|---|---|---|---|---|
+| `SIGTERM` | the **shell** | dead | **alive** | **alive** at 8 s and 20 s |
+| `SIGHUP` | the **shell** | dead | **alive** | **alive** at 8 s and 18 s |
+| `SIGTERM` | **`uv`** | — | dead | **dead** within 5 s |
+
+The orphan does not merely survive, it **finishes**: killed at 25 s, its log ends `1166 passed, 1
+warning in 61.05s (0:01:01)` — a complete run 36 s after its shell died, holding the database lock
+throughout (`phaze-pytest-session-lock pid=64922|175252` was still readable after the kill). So
+**never re-run a gate because a tool call timed out.** Find the pid
+(`ps -eo pid,args= | grep pytest`) and either wait for it or kill that pid. The third row is the
+trap: signalling `uv` cleans up, signalling the shell does not, and an agent whose call timed out
+does not choose which one the harness signalled.
+
+Bare `ps -p <pid>` is **not** a liveness check. On BSD `ps`, `-p` intersects with the default
+"processes on this terminal" selection, so a detached child reads as **absent** — the benign-looking
+direction. This spike's first probe reported a running session as dead on exactly that. Use
+`ps -p <pid> -o pid=`, or read the lock holder out of Postgres.
+
+### The guard can disable itself, silently and green
+
+`acquire_exclusive_session_lock` returns `None` when `psycopg.connect` raises `OperationalError`,
+which includes exceeding its `connect_timeout=5`. That is deliberate — a bare `uv run pytest` with
+no harness up must still run the thousands of DB-free tests — but it makes a **slow** Postgres
+indistinguishable from an **absent** one, and a loaded box produces slow connects. Measured against
+a blackholed address, so the 5 s timeout is what ends the connect:
+
+```
+ELAPSED=7s EXIT=0
+phaze test database: 'phaze_unreachable_test' on 10.255.255.1:5433 (from TEST_DATABASE_URL, unlocked (Postgres unreachable or bypass set))
+========================= 2 passed, 1 warning in 0.03s =========================
+```
+
+The run proceeded, passed, exited 0. **The only trace is the word `unlocked`** in the header that
+`-q` suppresses. This is the one shape in which two pytest processes could share one database today
+without either being refused, which is why that token is worth reading on any run whose failures
+look like a harness collision. Recorded as a gap, not filed as a defect: narrowing the timeout or
+failing closed on an unreachable Postgres would break the DB-free run the exemption protects, so it
+is an operator question rather than an implementer's.
+
+`tests/shared/test_test_db_session_exclusivity.py` already spawns a real second `pytest` from inside
+a lock-holding session and asserts `USAGE_ERROR`, `Refusing to start`, and that the holder is named;
+it was green throughout. What it does not cover, and what the above adds, is the shell-level shape:
+two independently started runs, the `just` wrapper, where the text lands, and signal propagation.
+No test change is proposed.
+
 ## `pg_locks` and `pg_stat_activity` are cluster-wide — always scope them
 
 A per-worktree database isolates table data completely and the system catalogues not at all. Any
