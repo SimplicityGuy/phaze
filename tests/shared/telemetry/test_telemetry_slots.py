@@ -9,7 +9,7 @@ phaze-21nnf. Two concurrent analysis children exporting cumulative counters unde
 **Most of this file is about the BOUND rather than about the fix**, and that is deliberate.
 Separating concurrent producers is easy -- a pid would do it. Separating them without
 minting a series block per analyzed file is the hard half and the only reason a slot index
-was chosen over the per-pod id ADR-0017 rejected, so the tests that fail loudest here are
+was chosen over the per-pod id ADR-0017 (telemetry export topology) rejected, so the tests that fail loudest here are
 the ones guarding the ceiling: the drift pin against ``worker_process_pool_size``, and the
 refusal of an out-of-range slot.
 """
@@ -115,7 +115,7 @@ def test_the_pool_hands_out_distinct_slots_and_takes_them_back() -> None:
     """The whole mechanism in one test: distinct while held, REUSED once released.
 
     Reuse is what bounds the cardinality. A pool that never reissued a slot would be a
-    per-child identity by a slower route, which is the design ADR-0017 rejected.
+    per-child identity by a slower route, which is the design ADR-0017 (telemetry export topology) rejected.
     """
     pool = slots.SlotPool(3)
     first, second, third = pool.acquire(), pool.acquire(), pool.acquire()

@@ -11,7 +11,7 @@ surfaced only as a pod exiting 20, one S3 stage, one submit and one Kueue admiss
 ConfigMap and the Secret are operator-created -- phaze creates neither, and that is deliberate
 (``docs/k8s-burst.md`` §5/§6). So the artifact an operator actually applies is the YAML **in the
 runbook**, and that is what this module parses and asserts against. A fixture restating the keys
-here would prove only that this file agrees with itself, which is precisely the shape ADR-0012
+here would prove only that this file agrees with itself, which is precisely the shape ADR-0012 (verification fidelity and operator attribution)
 rule 3 names: *verify with the artifact's real consumer, not the tool that produced it.* Parsing
 the runbook means a runbook edit that drops a key fails the build.
 

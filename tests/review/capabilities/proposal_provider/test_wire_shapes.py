@@ -5,7 +5,7 @@ WHY THIS FILE EXISTS
 ``TestGenerateBatch`` in ``test_proposal.py`` builds its fixture as
 ``BatchProposalResponse(proposals=[...]).model_dump_json()`` and hands it back to
 ``BatchProposalResponse.model_validate_json``. The consumer generates its own input, so the test
-proves only that the model can parse what the model emitted -- the purest instance of the ADR-0012
+proves only that the model can parse what the model emitted -- the purest instance of the ADR-0012 (verification fidelity and operator attribution)
 rule 3 defect ("verify with the artifact's real consumer, not with the tool that produced it") in
 the ``phaze-d2hgv.6`` seam inventory, where it is row E6.
 
@@ -48,7 +48,7 @@ when each measurement was taken and are deliberately NOT maintained against it.
 The re-measurement happened because it was *forced*: ``test_litellm_pin_is_unchanged`` below turned
 main red when the aiobotocore 3.x upgrade moved the pin (litellm 1.98 requires boto3 >=1.43.1). The
 cheap response was to edit the assertion string, which would have re-baselined all six verdicts onto
-an unmeasured version -- the ADR-0012 defect this repo has paid for three times. Instead all six
+an unmeasured version -- the ADR-0012 (verification fidelity and operator attribution) defect this repo has paid for three times. Instead all six
 were re-run: the whole module passed unmodified except the pin string itself, and, independently,
 each mode was re-driven through real litellm 1.98 with phaze's own ``response_format`` to capture
 the exact content reaching the parser and re-derive the BEFORE column from the unmodified
@@ -929,7 +929,7 @@ def _assert_is_the_measured_minor(requirement: Requirement, installed: Version) 
         "minor -- mode 4 in particular ('an empty `choices` list is already handled') is true only because litellm raises "
         "InternalServerError inside `acompletion`, which is a property of the pinned version.\n"
         "The fix is to RE-MEASURE the verdicts against the new minor and then update MEASURED_LITELLM_MINOR, exactly as "
-        "phaze-o6wg7 did. Bumping the constant alone banks an unverified claim (ADR-0012)."
+        "phaze-o6wg7 did. Bumping the constant alone banks an unverified claim (ADR-0012 (verification fidelity and operator attribution))."
     )
 
     assert (pinned_floor.major, pinned_floor.minor) == MEASURED_LITELLM_MINOR, (

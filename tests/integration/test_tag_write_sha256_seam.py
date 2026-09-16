@@ -15,7 +15,7 @@ natural home for a test. That is what let this ship. These tests build the missi
 a real file on disk, the real write, the real callback, the real database column, handed to the
 real consumer.
 
-ADR-0012 RULE 3 IS THE WHOLE POINT OF THE SHAPE. "Verify with the artifact's real consumer, not
+ADR-0012 (verification fidelity and operator attribution) RULE 3 IS THE WHOLE POINT OF THE SHAPE. "Verify with the artifact's real consumer, not
 with the tool that produced it." Every pre-existing tag test re-reads the written file with
 mutagen -- the producer's own tooling -- which round-trips perfectly and therefore CANNOT exhibit
 this defect at any fidelity. So nothing below re-reads tags. Each test hands the written file, plus

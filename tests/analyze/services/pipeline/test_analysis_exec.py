@@ -125,7 +125,7 @@ async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: p
 
 
 async def test_slow_but_progressing_child_survives_far_past_the_stall_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    """THE regression test for phaze-1b39 / ADR-0007 §7: elapsed time alone must never kill.
+    """THE regression test for phaze-1b39 / ADR-0007 (windowed analysis) §7: elapsed time alone must never kill.
 
     ``crawling_analyze`` runs for ~2 s -- roughly 7x the 0.3 s stall threshold armed here -- but
     never goes quiet for more than ~0.05 s. Under the retired wall-clock bound this file died;
@@ -525,7 +525,7 @@ async def test_concurrent_children_get_distinct_telemetry_identities(monkeypatch
     1. the identities are DISTINCT -- the fix;
     2. each is the base name plus a slot inside the stated bound -- the CARDINALITY half,
        because an identity that merely differed (a pid, a uuid) would be a per-file series
-       block and the reason ADR-0017 rejected a per-pod id;
+       block and the reason ADR-0017 (telemetry export topology) rejected a per-pod id;
     3. the children genuinely OVERLAPPED -- the stub's barrier means neither returns until
        both have registered, so this cannot pass by running them one after the other, which
        is the shape that would pass against a shared identity too.

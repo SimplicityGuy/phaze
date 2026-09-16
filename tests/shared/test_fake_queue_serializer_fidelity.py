@@ -5,7 +5,7 @@ tests fast and hermetic, and this module is emphatically NOT an argument for del
 it fixes is narrower: the fake used to record the kwargs dict in-process and UNSERIALIZED, so the
 type-fidelity property of the ``queue.enqueue`` -> broker -> worker ``**kwargs`` hop -- the
 most-used producer-to-consumer artifact in the system -- was asserted nowhere. A dict handed back
-unchanged proves the dict was handed back unchanged (ADR-0012 rule 3).
+unchanged proves the dict was handed back unchanged (ADR-0012 (verification fidelity and operator attribution) rule 3).
 
 The fake now routes every enqueue through the SAME ``PostgresQueue.serialize`` /
 ``PostgresQueue.deserialize`` pair the production broker runs, so all ~43 modules that use it

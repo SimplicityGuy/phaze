@@ -149,7 +149,7 @@ async def test_process_file_policy_pins_over_any_explicit_wall_clock_timeout(mon
     site, or a replay of a ledger row that captured the pre-phaze-w55w1 7200s bound -- is pinned
     back to 0. This is the load-bearing direction now: those 7200s rows really are on disk, and
     replaying one at its captured bound would kill a progressing multi-hour analysis at 2h, the
-    exact outcome ADR-0007 §7 removed.
+    exact outcome ADR-0007 (windowed analysis) §7 removed.
     """
     fake_cfg = MagicMock(
         worker_job_timeout=600,

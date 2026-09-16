@@ -15,7 +15,7 @@ spike's job, not CI's).
    **This test's subject changed with phaze-w55w1 and its assertions had to change with it.**
    Under the Phase 43 caps a long file was STRIDED to 60 fine + 30 coarse windows, and
    bounded memory came for free from analyzing less of the file. Analysis is now exhaustive
-   (ADR-0007 §7): the 12h file's ~1440 natural fine windows are ALL analyzed, so the old
+   (ADR-0007 (windowed analysis) §7): the 12h file's ~1440 natural fine windows are ALL analyzed, so the old
    proof (``len(fine) == cap``) is gone and the property it stood in for has to be proved
    directly — peak RSS is bounded by the CHUNK, not by the file.
 
@@ -105,7 +105,7 @@ _BUF_MB = _FINE_BUF_SAMPLES * 4 / 1024 / 1024  # ~5.05 MB per mocked window buff
 #
 # phaze-w55w1: the numbers are unchanged; only their SOURCE moved, from the removed caps to
 # the chunk sizes. That equality is the whole point of picking those chunk sizes (D-07), and
-# it is what keeps ADR-0005's memory limits valid across the cap removal.
+# it is what keeps ADR-0005 (analyze job memory limits)'s memory limits valid across the cap removal.
 _DESIGNED_RETENTION_MB = (analysis_mod._FINE_CHUNK_WINDOWS + analysis_mod._COARSE_CHUNK_WINDOWS) * _BUF_MB
 
 # Headroom over that for interpreter, mock and allocator overhead. Measured 1.05x on macOS
@@ -307,7 +307,7 @@ def test_long_file_bounded() -> None:
     # chunk, then one coarse chunk -- phaze-5lop / phaze-15sw / D-07) plus overhead, not
     # something proportional to its ~240 fine windows (~1.2 GB) nor to the 12h file's ~1440
     # (~7.3 GB). Both of those are now genuinely ANALYZED, so this is the only thing standing
-    # between exhaustive analysis and the ADR-0005 memory limit.
+    # between exhaustive analysis and the ADR-0005 (analyze job memory limits) memory limit.
     ceiling_mb = _DESIGNED_RETENTION_MB * _MAX_PEAK_RATIO
     assert long_peak < ceiling_mb, (
         f"a 2h file peaked at {long_peak:.1f}MB, past {ceiling_mb:.0f}MB "

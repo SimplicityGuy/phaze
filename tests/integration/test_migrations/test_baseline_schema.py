@@ -262,9 +262,9 @@ def test_baseline_is_the_only_migration() -> None:
     059 (phaze-6nrrf) creates tracklist_drain_arm_state, the durable operator ARM/DISARM flag for
     the continuous 1001Tracklists drain, seeded disarmed (DEFAULT OFF); 060 (phaze-w55w1) drops
     analysis.sampled, which could only ever describe a window-capping policy the code no longer
-        implements now that every file is analyzed exhaustively (ADR-0007 §7); 061 adds durable,
+        implements now that every file is analyzed exhaustively (ADR-0007 (windowed analysis) §7); 061 adds durable,
         opaque duplicate review plans that bind a canonical choice to complete reviewed membership;
-    062 (phaze-tzy6s.11 / ADR-0008) adds tag_write_log.reviewed_before_tags and
+    062 (phaze-tzy6s.11 / ADR-0008 (changes review approval boundary)) adds tag_write_log.reviewed_before_tags and
     review_source_versions, the persisted record of WHAT the operator actually reviewed when they
     authorized a tag write -- the tag half of the Changes Review approval boundary, which needs the
     reviewed payload durable to revalidate a submitted decision against current state;

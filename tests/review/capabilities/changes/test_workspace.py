@@ -71,7 +71,7 @@ async def test_no_corpus_wide_bulk_approve_survives_anywhere(
 
     This test used to exercise ``PATCH /proposals/bulk-approve-high-confidence`` and assert its
     server-side predicate drove the result (>=0.9 PENDING approved, a forged client id-list ignored,
-    NULL confidence excluded). ADR-0008 then made Changes Review the only surface that authorizes
+    NULL confidence excluded). ADR-0008 (changes review approval boundary) then made Changes Review the only surface that authorizes
     anything, and its bulk action is selection-driven: an operator approves rows they have SEEN.
     That deleted the route's two callers, and phaze-7tiqp deleted the route.
 
@@ -365,7 +365,7 @@ async def test_apply_counter_row_accounts_for_executed_proposals(
 
     ``Total`` is a plain ``count()``. ``Approved`` is ``count(case(status == APPROVED))`` and stays
     that way deliberately -- on THIS card the operator's question is "what is still to dispatch", so
-    folding ADR-0008's ``approved OR executed`` union into it would count already-done work as
+    folding ADR-0008 (changes review approval boundary)'s ``approved OR executed`` union into it would count already-done work as
     pending work on the one control that moves bytes. The defect was the other half: ``executed``
     was counted by ``Total`` and by no visible status, so the row silently did not account for a
     proposal it had already included in its own total.

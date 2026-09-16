@@ -6,7 +6,7 @@ enrich payload carries the pre-move ``FileRecord.original_path`` (D-24). A ``pro
 longer exists. ``_proposal_pending_clauses`` closes that by refusing to propose a file with enrich
 work in flight.
 
-THE MECHANISM WAS AN OPERATOR DECISION (bead phaze-3542b, 2026-08-25; ADR-0012 rule 2). Question as
+THE MECHANISM WAS AN OPERATOR DECISION (bead phaze-3542b, 2026-08-25; ADR-0012 (verification fidelity and operator attribution) rule 2). Question as
 put: the mechanism for phaze-3542b's confirmed enqueue-then-execute TOCTOU, offered as labelled
 options. Answer as given -- the option LABEL the operator selected, and the whole of what they
 authored: "Close the door: add ~inflight to the propose gate". Durable record: the phaze-3542b bead
@@ -23,7 +23,7 @@ not prove that enqueuing through the real producer produces a row the predicate 
 here runs the real hook (the ``_RealHookQueue`` shape carried over from
 ``tests/integration/test_agent_push_concurrency.py``) and the producers called are the real
 ``analysis_enqueue.enqueue_process_file`` and ``routers/pipeline/extraction._enqueue_extraction_jobs``.
-This is ADR-0012 rule 3 applied to a predicate: verify with the artifact's real consumer.
+This is ADR-0012 (verification fidelity and operator attribution) rule 3 applied to a predicate: verify with the artifact's real consumer.
 """
 
 from __future__ import annotations

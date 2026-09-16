@@ -85,7 +85,7 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     session: AsyncSession,
     seed_pending_proposal,
 ) -> None:
-    """RECORD-01 / ADR-0008: the record COUNTS pending decisions and links out; it never approves them.
+    """RECORD-01 / ADR-0008 (changes review approval boundary): the record COUNTS pending decisions and links out; it never approves them.
 
     Retired contract (phaze-tzy6s.11): this test previously asserted that the record embedded the
     shared ``_diff_row`` approval cluster wired to ``/proposals/{id}/approve|edit|reject|undo``.
@@ -120,7 +120,7 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     body = r.text
 
     # (1) The needs-review count is real and file-scoped: 1, not the 2 pending rows in the DB.
-    #     Wording is ADR-0008 operator vocabulary ("needs review", never "pending") -- phaze-tzy6s.17.
+    #     Wording is ADR-0008 (changes review approval boundary) operator vocabulary ("needs review", never "pending") -- phaze-tzy6s.17.
     assert "1 decision needing review." in body
 
     # (2) The canonical queue link, with htmx wiring onto a container the shell really renders.

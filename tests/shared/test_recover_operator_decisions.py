@@ -8,7 +8,7 @@ Two layers, matching the two claims the tool makes:
    These give deterministic, CI-safe coverage of the classification and pairing logic without
    depending on any particular machine's transcript history.
 2. A REAL-TRANSCRIPT INTEGRATION TEST (`test_real_corpus_reproduces_the_three_regression_fixtures`).
-   Layer 1 alone would repeat exactly the verification-fidelity mistake ADR-0012 documents: a parser
+   Layer 1 alone would repeat exactly the verification-fidelity mistake ADR-0012 (verification fidelity and operator attribution) documents: a parser
    that has only ever been checked against a hand-built stand-in for its own input format. This test
    runs the real `main()`/`recover()` against this developer's actual `~/.claude/projects`, if
    present, and asserts on the three fixtures the bead specifies verbatim -- the same evidence used

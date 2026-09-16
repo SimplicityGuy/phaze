@@ -298,7 +298,7 @@ async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_go
     """phaze-39eiy: focus must not strand on <body> when the opener is gone by the time Escape runs.
 
     Measured in the wild (recorded in the since-deleted ``tests/browser/FLAKE_RECORD.md``; see
-    ADR-0009 § "The browser contract suite"): the Analyze workspace's own filter re-render can race
+    ADR-0009 (responsive accessibility baseline) § "The browser contract suite"): the Analyze workspace's own filter re-render can race
     its container's ``hx-trigger="load"`` fetch and replace ``#analyze-files-view``'s rows while the
     drawer a click just opened is still up -- disconnecting the exact ``<tr>`` record_host.html's
     ``hide()`` was holding onto as its focus-restore target. ``.focus()`` on a disconnected element

@@ -62,7 +62,7 @@ _JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
 # type-fidelity property of every ``queue.enqueue`` -> broker -> worker ``**kwargs`` hop was
 # asserted NOWHERE: a UUID / datetime / Path / enum kwarg that the real broker rejects with a
 # ``TypeError``, and a tuple / int-keyed dict that survives but comes back a DIFFERENT TYPE, both
-# read as a clean pass. That is ADR-0012 rule 3 verbatim -- the producer's own in-process echo is
+# read as a clean pass. That is ADR-0012 (verification fidelity and operator attribution) rule 3 verbatim -- the producer's own in-process echo is
 # not the artifact's real consumer.
 #
 # The fix routes every fake enqueue through the SAME code the production broker runs:
@@ -90,7 +90,7 @@ def _serializer_queue(name: str) -> PostgresQueue:
     * It must be a REAL ``PostgresQueue`` because the property under test is "the fake agrees with
       the production broker". A hand-rolled ``json.dumps`` agrees with today's broker by
       coincidence and would silently stop agreeing the day ``build_pipeline_queue`` passes a custom
-      ``dump``/``load`` -- which is exactly the drift this seam exists to prevent (ADR-0012 rule 3:
+      ``dump``/``load`` -- which is exactly the drift this seam exists to prevent (ADR-0012 (verification fidelity and operator attribution) rule 3:
       verify with the artifact's real consumer, not with a stand-in for it).
     * It is never connected, and needs no live Postgres, because ``PostgresQueue.__init__`` builds
       its psycopg pool ``open=False`` and ``serialize``/``deserialize`` touch only ``self._dump`` /

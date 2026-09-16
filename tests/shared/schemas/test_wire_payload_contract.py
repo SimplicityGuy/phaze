@@ -18,7 +18,7 @@ WHAT THIS MODULE DOES NOT CLAIM
 -------------------------------
 It proves membership and the JSON-native dump property. It does NOT prove the payload survives a
 real broker -- that is ``tests/integration/test_pg_payload_type_fidelity.py``, against live bytes off
-a live ``PostgresQueue``, which is the ADR-0012 rule 3 obligation. Read the two together; separately
+a live ``PostgresQueue``, which is the ADR-0012 (verification fidelity and operator attribution) rule 3 obligation. Read the two together; separately
 each is weaker than it looks.
 
 The negative controls (:func:`test_the_membership_check_fires_on_a_plain_basemodel_payload` and

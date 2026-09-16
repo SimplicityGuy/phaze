@@ -6,7 +6,7 @@ sent and answers with a canned 200, so the router never sees it. The server half
 hand-written ``json={...}`` literals (``tests/agents/routers/test_agent_analysis.py``) — a body
 a person typed, so the producer never wrote it. Agreement between two hand-written fixtures
 proves only that the two agree with each other; it says nothing about whether what
-``analyze_file`` actually produces is a body this router accepts. That is ADR-0012 rule 3
+``analyze_file`` actually produces is a body this router accepts. That is ADR-0012 (verification fidelity and operator attribution) rule 3
 (verify with the artifact's real consumer) applied to an HTTP seam.
 
 **Why it matters more here than at most seams.** ``AnalysisWindowPayload`` is

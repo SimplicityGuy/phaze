@@ -489,7 +489,7 @@ def test_chunk_stop_sec_single_chunk_is_never_gated() -> None:
 def test_chunk_sizes_match_the_documented_memory_envelope() -> None:
     """The D-07 chunk sizes are pinned: they ARE the pre-removal per-tier residency figures.
 
-    317 MB fine / 345 MB coarse is the envelope ADR-0005's memory limits were sized against,
+    317 MB fine / 345 MB coarse is the envelope ADR-0005 (analyze job memory limits)'s memory limits were sized against,
     and the D-07 record's whole argument is that chunking reproduces it rather than changing
     it. A silent bump here would invalidate that reasoning without anyone noticing, so the
     arithmetic is asserted, not just the constants.
@@ -800,7 +800,7 @@ def test_analyze_file_coverage_is_complete(_mock_es: MagicMock, mock_get_labels:
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_no_longer_emits_sampled(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
-    """The `sampled` flag is GONE from the result contract (ADR-0007 §7).
+    """The `sampled` flag is GONE from the result contract (ADR-0007 (windowed analysis) §7).
 
     Asserted rather than assumed because every downstream consumer -- the write payload, the
     job_runner log line, the (removed) badge -- read it by key off this dict; a stray reappearance

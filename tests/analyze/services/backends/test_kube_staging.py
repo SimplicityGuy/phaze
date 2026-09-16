@@ -258,22 +258,22 @@ def test_build_job_manifest_omits_models_volume_when_unset() -> None:
 def test_build_job_manifest_emits_memory_limit_when_set() -> None:
     """ADR-0005 (phaze-k6d5) ACCEPTANCE: with ``memory_limit`` set, the analyze container carries
     ``resources.limits.memory`` == the configured value, and ``resources.requests`` is UNCHANGED
-    (Kueue's quota accounting reads requests only; ADR-0005 keeps requests authoritative -- the
+    (Kueue's quota accounting reads requests only; ADR-0005 (analyze job memory limits) keeps requests authoritative -- the
     limit is a kernel bound, invisible to scheduling, and must not distort the request)."""
     manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
     resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
 
     assert resources["limits"] == {"memory": "16Gi"}
-    assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # untouched by ADR-0005
+    assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # untouched by ADR-0005 (analyze job memory limits)
     assert "cpu" not in resources["limits"]  # deliberately memory-only (QoS stays Burstable)
 
 
 def test_build_job_manifest_omits_memory_limit_by_default() -> None:
     """ADR-0005 (phaze-k6d5) ACCEPTANCE / regression guard: with ``memory_limit`` unset (the
-    default), the manifest is BYTE-IDENTICAL to the pre-ADR-0005, requests-only form -- no
+    default), the manifest is BYTE-IDENTICAL to the pre-ADR-0005 (analyze job memory limits), requests-only form -- no
     ``limits`` key, not an empty ``limits: {}``. Any consumer that has not opted in sees zero
     change. Asserted structurally (not by eye) via a full manifest equality against the
-    known-good pre-ADR-0005 shape."""
+    known-good pre-ADR-0005 (analyze job memory limits) shape."""
     fid = uuid.uuid4()
     kube = _kube()
     assert kube.memory_limit is None  # the field default is OFF
@@ -292,7 +292,7 @@ def test_build_job_manifest_memory_limit_keeps_qos_burstable() -> None:
     """ADR-0005 (phaze-k6d5) ACCEPTANCE: a memory limit WITHOUT a matching CPU limit must not
     promote the pod's Kubernetes QoS class to Guaranteed -- Guaranteed requires EVERY container to
     set limits == requests on BOTH cpu and memory (K8s QoS spec). Verified here rather than
-    assumed: a QoS change would silently alter eviction ordering, which is exactly what ADR-0005
+    assumed: a QoS change would silently alter eviction ordering, which is exactly what ADR-0005 (analyze job memory limits)
     promises NOT to do (the pods are already Burstable per the OOM records; this must stay true)."""
     manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
     resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
@@ -916,7 +916,7 @@ def test_classify_job_pods_node_loss_outranks_a_dead_before_start_container() ->
 def test_classify_job_pods_an_in_container_oomkill_is_not_node_loss() -> None:
     """A container OOMKilled under its OWN ``limits.memory`` is the file overrunning, NOT node loss.
 
-    ADR-0005's memory limit converts a node-scoped OOM into a pod-scoped one; that pod is paying for
+    ADR-0005 (analyze job memory limits)'s memory limit converts a node-scoped OOM into a pod-scoped one; that pod is paying for
     its own excess and MUST keep charging the ordinary ``attempts`` budget. Only node-scoped fields
     (``status.reason`` / ``DisruptionTarget``) select the node-loss budget -- a container's terminated
     reason never does.

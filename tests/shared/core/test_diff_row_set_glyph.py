@@ -1,6 +1,6 @@
 """phaze-x1qr3.9: the set glyph on the Changes Review row (`_diff_row.html`), both facets.
 
-Mirrors ``test_diff_row_tooltip_contract.py``'s real-consumer idiom (ADR-0012 rule 3): every
+Mirrors ``test_diff_row_tooltip_contract.py``'s real-consumer idiom (ADR-0012 (verification fidelity and operator attribution) rule 3): every
 assertion reads the RENDERED HTML the browser would actually receive, never the Python row dict
 ``services/review.py`` builds. A file WITH a ``SetProfile`` row renders the glyph (the ONE shared
 ``ui/primitives.html`` ``set_glyph`` macro every glyph surface uses, at the row-scale 10px

@@ -101,7 +101,7 @@ async def _tag_log_count(session: AsyncSession, file_id: uuid.UUID) -> int:
 async def _review_token(session: AsyncSession, file_id: uuid.UUID) -> str:
     """Mint the reviewed-payload token ``POST /tags/{id}/write`` now requires.
 
-    phaze-tzy6s.11 / ADR-0008: these tests used to post a bare ``{"artist": ...}`` form, which the
+    phaze-tzy6s.11 / ADR-0008 (changes review approval boundary): these tests used to post a bare ``{"artist": ...}`` form, which the
     route accepted as a ``manual_edit`` tag write. That path is gone -- Changes Review is the only
     surface that authorizes a tag write, and it authorizes exactly the payload it rendered, so the
     route takes a ``review_token`` and rejects anything else with 400. The REVIEW-05 properties
@@ -129,7 +129,7 @@ async def test_tag_write_produces_exactly_one_audit_row(client: AsyncClient, ses
 
 @pytest.mark.asyncio
 async def test_tag_write_without_a_review_token_is_refused_and_audits_nothing(client: AsyncClient, session: AsyncSession) -> None:
-    """(a') ADR-0008: an unreviewed write is refused BEFORE it can append an audit row.
+    """(a') ADR-0008 (changes review approval boundary): an unreviewed write is refused BEFORE it can append an audit row.
 
     The retired ``manual_edit`` form shape is the exact request an out-of-band caller would replay,
     so this pins that the boundary is enforced server-side and leaves the audit trail untouched --

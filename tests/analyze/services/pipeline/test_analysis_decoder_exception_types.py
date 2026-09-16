@@ -5,7 +5,7 @@ WHY THIS MODULE EXISTS. ``phaze-bk9el.29`` reviewed all seven ``except Exception
 for doing so: every failure injection in that module's suite was a ``RuntimeError`` (11 sites)
 or an ``OSError`` (1). Zero type variety. Narrowing ``@324``/``@329``/``@345`` to
 ``except RuntimeError`` would therefore have left the ENTIRE suite green while changing
-production behaviour for every other exception type -- ADR-0012 rule 3's "verified against a
+production behaviour for every other exception type -- ADR-0012 (verification fidelity and operator attribution) rule 3's "verified against a
 proxy that structurally cannot exhibit the failure", verbatim. The broad catches were never the
 debt; the missing type variety was, because it is what blocks any future decision about them.
 
@@ -15,7 +15,7 @@ a decision verifiable, and its own falsifiability is proved rather than asserted
 transcript on the bead, where ``@345`` was temporarily narrowed to ``except RuntimeError`` and
 this module went from green to red.
 
-WHAT THESE INJECTIONS PROVE, AND WHAT THEY DO NOT (ADR-0012 rules 3 and 5). Injecting a
+WHAT THESE INJECTIONS PROVE, AND WHAT THEY DO NOT (ADR-0012 (verification fidelity and operator attribution) rules 3 and 5). Injecting a
 ``MemoryError`` through a mocked seam does NOT prove that essentia raises ``MemoryError``; no
 mock can prove anything about the C++ side. What it proves is the property the narrowing
 question actually turns on: **each handler's degradation behaviour is TYPE-INDEPENDENT today.**

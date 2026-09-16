@@ -40,7 +40,7 @@ async def test_preflight_groups_approved_work_by_operation_type(
 ) -> None:
     """Moves and in-place renames are DIFFERENT operations and are counted separately.
 
-    ADR-0008 puts the filename and destination decision on one RenameProposal, so the split is not a
+    ADR-0008 (changes review approval boundary) puts the filename and destination decision on one RenameProposal, so the split is not a
     second table -- it is ``proposed_path``: empty means "rename where it sits", non-empty means
     "copy to a new directory, verify, delete the original". Those have different blast radii and
     different reversibility, so a manifest that reports a single undifferentiated "12 operations" has
@@ -101,7 +101,7 @@ async def test_preflight_states_that_tag_writes_are_not_dispatched_here(
 ) -> None:
     """EXECUTE APPROVED does not flush tag writes, and the manifest says so rather than staying silent.
 
-    ADR-0008 keeps tag authorization on its own append-only TagWriteLog, dispatched from Changes
+    ADR-0008 (changes review approval boundary) keeps tag authorization on its own append-only TagWriteLog, dispatched from Changes
     Review. An operator who assumes this control runs them is wrong in a way that costs a debugging
     session, so the exclusion is stated with the stage that does own it.
 
@@ -117,7 +117,9 @@ async def test_preflight_states_that_tag_writes_are_not_dispatched_here(
 
     assert "Not dispatched by this control" in body
     assert "EXECUTE APPROVED runs approved filename and destination changes only." in body
-    assert "Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them." in body
+    assert (
+        "Tag writes are authorized and dispatched separately (ADR-0008 (changes review approval boundary)); this control does not run them." in body
+    )
     assert "Dispatch them from the Tag Changes section of Changes Review." in body
     assert "Duplicate resolution is its own decision, taken in Duplicates." in body
     assert "Cue sheets are generated artifacts, written on the Cue sheets stage." in body

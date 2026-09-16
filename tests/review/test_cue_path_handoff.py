@@ -9,7 +9,7 @@ see it because each half was tested against its own view of the world.**
 whose ``current_path`` is a symlink into a differently-named target, the sheet therefore lands in
 the target's directory naming the symlink's basename -- a file that is not beside it.
 
-That is ADR-0012 rule 3 at one remove. The artifact is a CUE sheet; its real consumer is a parser
+That is ADR-0012 (verification fidelity and operator attribution) rule 3 at one remove. The artifact is a CUE sheet; its real consumer is a parser
 or player that opens the ``.cue`` and resolves ``FILE`` **relative to the .cue's own directory**.
 Both existing modules validate it against the PRODUCER's view instead:
 

@@ -8,7 +8,7 @@ shape that cannot exhibit the failures the real thing could: a numpy scalar leaf
 is ``json.dumps`` with no ``default=``), a non-finite float (``AnalysisWindowPayload``
 rejects one anywhere inside ``features``), a ``musical_key`` past ``max_length=10``, or a
 line large enough to matter to a 64 KiB pipe. Agreement between two hand-written fixtures
-proves only that the two agree with each other — ADR-0012 rule 3.
+proves only that the two agree with each other — ADR-0012 (verification fidelity and operator attribution) rule 3.
 
 ``real_analyze_file_result.json`` is therefore not written by hand. It is the verbatim
 return value of :func:`phaze.services.analysis.analyze_file` executed with the REAL

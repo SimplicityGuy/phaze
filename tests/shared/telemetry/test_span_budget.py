@@ -48,7 +48,7 @@ def test_the_windowing_constants_match_the_source() -> None:
     ):
         match = re.search(rf"^{name} = (\d+)", text, re.M)
         assert match is not None, f"{name} not found in analysis.py"
-        assert int(match.group(1)) == expected, f"{name} moved to {match.group(1)}; re-derive ADR-0017 section 7d"
+        assert int(match.group(1)) == expected, f"{name} moved to {match.group(1)}; re-derive ADR-0017 (telemetry export topology) section 7d"
 
 
 def spans_for(duration_sec: float) -> int:
@@ -78,7 +78,7 @@ def test_no_span_is_opened_per_WINDOW() -> None:
         offenders = [line.strip() for line in body.splitlines() if "otel.span(" in line or "otel.timed(" in line]
         assert not offenders, (
             f"a SPAN is opened per window inside {loop_header!r}: {offenders}. "
-            "That invalidates the always-on sampling posture in ADR-0017 section 7d -- a 12-hour file "
+            "That invalidates the always-on sampling posture in ADR-0017 (telemetry export topology) section 7d -- a 12-hour file "
             "would emit thousands of spans instead of 388. Use otel.timed_metric (a histogram) instead, "
             "or re-derive the span budget and the sampling decision together."
         )
@@ -94,14 +94,14 @@ def test_no_span_is_opened_per_WINDOW() -> None:
     ],
 )
 def test_the_published_span_table_is_reproducible(duration_sec: float, expected: int) -> None:
-    """Every row of ADR-0017 section 7d's table, recomputed. A doc nobody can recheck is folklore."""
+    """Every row of ADR-0017 (telemetry export topology) section 7d's table, recomputed. A doc nobody can recheck is folklore."""
     assert spans_for(duration_sec) == expected
 
 
 def test_one_file_cannot_overflow_the_bounded_queue() -> None:
     """The worst case in the corpus against the queue phaze configures.
 
-    If this ever fails, the sampling posture is no longer always-on-affordable and ADR-0017
+    If this ever fails, the sampling posture is no longer always-on-affordable and ADR-0017 (telemetry export topology)
     section 7d must be re-argued -- not the queue quietly raised.
     """
     from phaze.telemetry import _env
@@ -117,6 +117,6 @@ def test_the_docs_state_the_span_budget() -> None:
     """Acceptance 7's paper trail: the numbers must be findable where a reader looks."""
     adr = (Path(__file__).resolve().parents[3] / "docs" / "design" / "0017-telemetry-export-topology.md").read_text(encoding="utf-8")
     traces = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "traces.md").read_text(encoding="utf-8")
-    for text, name in ((adr, "ADR-0017"), (traces, "traces.md")):
+    for text, name in ((adr, "ADR-0017 (telemetry export topology)"), (traces, "traces.md")):
         assert "388" in text, f"{name} does not state the worst-case span count"
         assert "566,073" in text, f"{name} does not state the whole-corpus span total"

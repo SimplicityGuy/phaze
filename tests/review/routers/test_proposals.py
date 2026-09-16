@@ -623,7 +623,7 @@ async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSes
 # The three tests here previously pinned the badge's render-if-sampled behaviour and its
 # NULL/false no-op. They are replaced by ONE test asserting the whole surface is absent,
 # because there is no longer a sampled state to render: every file is analyzed exhaustively
-# (ADR-0007 §7), the `analysis.sampled` column is dropped (migration 060), and the timeline
+# (ADR-0007 (windowed analysis) §7), the `analysis.sampled` column is dropped (migration 060), and the timeline
 # route no longer fetches AnalysisResult at all.
 
 
@@ -708,7 +708,7 @@ def test_diff_facet_fields_path_facet() -> None:
     """``_diff_facet_fields``'s path branch (phaze-bk9el.10 coverage finding).
 
     No LIVE route reaches this branch today: ``_row_target`` (and its ``_V7_ROW_FACETS`` map)
-    only ever resolves to the "filename" facet post phaze-tzy6s.11/ADR-0008, since the path/move
+    only ever resolves to the "filename" facet post phaze-tzy6s.11/ADR-0008 (changes review approval boundary), since the path/move
     workspace was retired and Changes Review authorizes filename + destination through one row.
     The function itself still takes a ``facet`` argument and is kept for the day a path-facet row
     is reintroduced (see its own docstring), so this exercises it directly rather than declaring
@@ -983,7 +983,7 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
 # phaze-7tiqp: the retired bulk-approve-high-confidence chain and the dangling row stems
 #
 # PATCH /proposals/bulk-approve-high-confidence was a server-predicate bulk approve whose only two
-# callers were rename_workspace.html and move_workspace.html, deleted by phaze-tzy6s.11 / ADR-0008
+# callers were rename_workspace.html and move_workspace.html, deleted by phaze-tzy6s.11 / ADR-0008 (changes review approval boundary)
 # when Changes Review became the sole surface that authorizes anything. phaze-tzy6s.17 verified the
 # chain was unreachable from every template and deferred the keep-or-retire call; this bead retired
 # it. The tests it used to have were the route's ONLY callers -- they asserted an HX-Target contract

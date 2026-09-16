@@ -131,7 +131,7 @@ def _proposal(index: int) -> ExecuteBatchProposalItem:
 def _seed_fields() -> dict[str, str]:
     """Build the seed mapping with the REAL producer, ``_init_fields`` -- not a hand-written dict.
 
-    ADR-0012 rule 3: the artefact under test is the hash production actually writes, so the fields
+    ADR-0012 (verification fidelity and operator attribution) rule 3: the artefact under test is the hash production actually writes, so the fields
     (``dispatch_summary``'s key set and ordering included -- a wire contract per its docstring)
     come from the function that writes them.
     """

@@ -6,7 +6,7 @@ WHY THIS FILE EXISTS, AND WHY THE EXISTING TESTS DO NOT COVER IT
 :class:`tests._queue_fakes.FakeRedis`, an in-memory ``dict[str, int]``. A dict has no client
 mode at all: it returns whatever was put in it, so the writer and the reader can never disagree
 about bytes-vs-str, and the boundary this module tests is structurally absent from that harness.
-That is the ADR-0012 rule 3 shape -- a claim about a real client's decoding is not discharged by
+That is the ADR-0012 (verification fidelity and operator attribution) rule 3 shape -- a claim about a real client's decoding is not discharged by
 a double that does no decoding -- and it is what the bead calls the E4 "proxy: FakeRedis dict".
 
 THE PRODUCTION PAIR THIS FILE REPRODUCES (measured on the bead, 2026-08-24)
@@ -161,7 +161,7 @@ async def test_the_dashboard_reader_degrades_rather_than_500s_on_a_byte_mode_cli
     byte_mode_redis: redis_async.Redis,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The REAL consumer, handed the wrong client mode, degrades to DB-truth and logs (ADR-0012 rule 3).
+    """The REAL consumer, handed the wrong client mode, degrades to DB-truth and logs (ADR-0012 (verification fidelity and operator attribution) rule 3).
 
     ``_to_int``'s strictness is only defensible because of what its one caller does with the
     raise, so the caller is what this test drives -- not ``read_counters`` in isolation. T-35-09
