@@ -178,10 +178,35 @@ one that matters and this repo cannot constrain it.
 and that the amount grows with concurrency-time; that a bounded per-slot identity fixes it
 exactly; and that delta temporality does not fix it with a stock `prometheus` exporter.
 
-**Does not.** Anything about the **burst lane**. These are two processes on one host, which
-is the host lane's shape. A burst-lane child runs in a one-shot Kueue pod that is
-Postgres-less and shares no memory with its peers, so its slot has to be injected by the
-controller at submit time — not built here. ADR-0017 §8d states it and it is filed as its own
-bead, `phaze-w15ju`. Concurrent burst pods each take slot 0 from their own pod-local pool, so
-they now share `phaze-analysis-0` — the same merge as §3 under a new name, neither better nor
-worse.
+**Does not.** Anything about **where a slot comes from**. These are two processes on one host,
+which is the host lane's shape: its slots come from a pool in the one process that bounds the
+concurrency. A burst-lane child runs in a one-shot Kueue pod that is Postgres-less and shares no
+memory with its peers, so its slot has to be injected by the controller at submit time — not built
+here.
+
+## 7. The burst lane, and why it needed no re-measurement (`phaze-w15ju`, 2026-09-16)
+
+**When this record was written, concurrent burst pods each took slot 0 from their own pod-local pool
+and shared `phaze-analysis-0` — the same merge as §3 under a new name.** `phaze-w15ju` closed that:
+the controller allocates a slot per in-flight burst Job against the `cloud_job` rows, persists it on
+`cloud_job.telemetry_slot`, and code-injects `PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX` into
+the Job env. The bound is the sum of the kueue backends' `cap` values.
+[ADR-0017 §8d](../design/0017-telemetry-export-topology.md) has the mechanism and the release
+property.
+
+**The arms above were NOT re-run for it, and that is a claim about what they measure rather than a
+shortcut.** §3 and §4 characterise the **collector**: what its Prometheus exporter does with one
+identity versus several, at a real version with this repo's own example configuration. That result is
+a property of the collector and is unchanged by which process allocated the index — arm B's per-slot
+exposition is what a burst pod's slot produces too, because the collector cannot tell the difference.
+What `phaze-w15ju` had to establish is different and is not a collector question: that two concurrent
+burst **submissions** reach their pods with different bounded slots. That is a property of phaze's own
+code, and it is asserted against a real Postgres and through the pod's own
+`assign` → `_instance_id` chain by
+`test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities` —
+**not** against the manifest alone, because a correct manifest whose slot the pod then overwrote with
+its own local 0 is exactly the failure that design invited.
+
+**One thing here still stands unfixed** and is recorded rather than implied: the two lanes share one
+slot space and one default base, so a host-lane child and a burst pod on the same index still merge
+when `PHAZE_TELEMETRY_INSTANCE` is unset. Bead `phaze-7nl67`.

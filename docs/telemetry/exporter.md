@@ -130,10 +130,22 @@ bound the child enforces is always the bound its slot was drawn from. Expect ano
 A slot outside the bound is refused and logged, and the process falls back to the shared
 identity — bad, but bounded, which is the safer of the two failure directions.
 
-> **The burst lane is not yet covered.** A one-shot Kueue pod cannot allocate a slot against
-> its peers, so concurrent burst pods still share `phaze-analysis` and still exhibit the merge
-> above. Pinning `PHAZE_TELEMETRY_INSTANCE` per host does not help — the pods share the host.
-> See ADR-0017 §8d.
+**The burst lane is covered too, and an operator sets nothing for it** (`phaze-w15ju`). A one-shot
+Kueue pod cannot allocate a slot against its peers — it is Postgres-less and shares no memory with
+them — so the **controller** allocates one per in-flight burst Job at submit time, from the same
+`cloud_job` rows it already uses to enforce the per-backend cap, and code-injects
+`PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX` into the Job env. The bound there is the sum of
+the kueue backends' `cap` values rather than `worker_process_pool_size`, because `cap` is what
+bounds that lane's concurrency. **Do not put either key in the `phaze-agent-env` ConfigMap** — every
+pod shares that object, so a value there would give every pod one identity, which is the merge
+itself. See ADR-0017 §8d.
+
+> **One thing here is still open, and it is the one case where `PHAZE_TELEMETRY_INSTANCE` matters
+> for correctness rather than for readability.** The host and burst lanes share one slot space and,
+> by default, one base — so a host-lane child on slot 1 and a burst pod on slot 1 both report
+> `phaze-analysis-1` and merge, whenever both lanes are in flight at once. Setting
+> `PHAZE_TELEMETRY_INSTANCE` to a host role on the agent host removes it (`host-compute-1` against
+> `phaze-analysis-1`). Tracked as bead `phaze-7nl67`.
 
 Per-process identity is not thrown away — it is carried on **spans**, where it is stored
 per-occurrence and aged out rather than forever and per-series: `process.pid`, `host.name`,

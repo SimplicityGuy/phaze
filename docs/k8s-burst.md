@@ -967,7 +967,8 @@ stringData:
 The one-shot pod needs more than the file id to run: its entrypoint builds the agent settings and
 calls back to the control plane, so it must know its role, where the control-plane API lives, and
 where the analysis models are on disk. (It also needs to know it is a `"compute"` agent — see the
-`PHAZE_AGENT_KIND` bullet below; that value is code-injected, not part of this ConfigMap.) phaze
+`PHAZE_AGENT_KIND` bullet below; that value is code-injected, not part of this ConfigMap, and so
+are `PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX`.) phaze
 sources that **static, per-deployment** env into the
 suspended Job's analyze container via `envFrom` from an operator-created `core/v1` ConfigMap —
 named **by name only** (the backend's `[backends.kube].env_configmap_name`, default
@@ -1014,6 +1015,20 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   regardless of what this ConfigMap carries. Do **not** add `PHAZE_AGENT_KIND` to the ConfigMap
   above — the code-injected value always wins on conflict (`env` overrides `envFrom` of the same
   name), so a ConfigMap entry would be silent, confusing dead weight, not a second source of truth.
+- **`PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX` do NOT belong in this ConfigMap, and an
+  entry here would defeat the thing they exist for.** The slot is the pod's bounded telemetry
+  identity, and its entire job is to **differ between pods that run at the same time** — up to this
+  backend's `cap` of them. A value in this ConfigMap is a value every pod in the namespace shares,
+  so it would give all of them one `service.instance.id`, which is the defect itself: a collector's
+  Prometheus exporter keeps one series per identity and takes the last write, measured at an
+  `increase()` **84.4%** above the truth
+  ([ADR-0017 §8](design/0017-telemetry-export-topology.md), [the
+  record](telemetry/concurrent-identity.md)). phaze therefore allocates the slot **per submit** in
+  the controller — the only seat that can see the other in-flight Jobs — persists it on
+  `cloud_job.telemetry_slot`, and code-injects both keys into the container `env` beside
+  `PHAZE_JOB_FILE_ID` (phaze-w15ju). `PHAZE_TELEMETRY_INSTANCE` is the key that **is** yours: it
+  names the host or service the slot is appended to. Setting it per host does not help here, because
+  all of a node's burst pods share the host.
 - **`TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` do NOT belong in this
   ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
   derives all three from the host at import (`phaze-rvcn`, `apply_thread_env`) and **never
