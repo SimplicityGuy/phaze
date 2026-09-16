@@ -372,7 +372,7 @@ One ClusterQueue, **no preemption** (`reclaimWithinCohort: Never` + `withinClust
 Never`), covering `cpu` + `memory`. The operator sizes `nominalQuota` for the cluster. There is
 **no `pods` covered resource**, and quota accounting reads `resources.requests` only —
 `resources.limits`, when set (§2.5), is **invisible to Kueue's quota arithmetic** and changes no
-scheduling decision (ADR-0005).
+scheduling decision (ADR-0005 (analyze job memory limits)).
 
 ```bash
 kubectl apply -f clusterqueue.yaml
@@ -423,7 +423,7 @@ memory ceiling of its own, the kernel treats the OOM as **global**
 (`oom-kill:constraint=CONSTRAINT_NONE`) and can pick *any* process on the node by
 `oom_score_adj`, including `coredns`, `metrics-server`, or `local-path-provisioner`. Setting
 `memory_limit` converts that into a deterministic, pod-scoped OOMKill of the offending analyze
-pod instead (ADR-0005 —
+pod instead (ADR-0005 (analyze job memory limits) —
 [`docs/design/0005-analyze-job-memory-limits.md`](design/0005-analyze-job-memory-limits.md)).
 It does **not** reduce peak memory usage by one byte, and it does **not** change what Kueue
 admits — it only changes which process the kernel kills when usage exceeds what the node has.
@@ -447,7 +447,7 @@ the error names the field. Note the two edges that catch operators out: **there 
 `K`. Negative values are refused too, since the apiserver requires a request or limit `>= 0`.
 
 This is **format validation only — it changes no value and imposes no default**, `memory_limit` very
-much included (ADR-0005 point 1 stands: the right value is a property of the operator's node). Two
+much included (ADR-0005 (analyze job memory limits) point 1 stands: the right value is a property of the operator's node). Two
 things it therefore does **not** catch: `cpu_request = "500"` meant as `"500m"` is a *well-formed*
 quantity (500 whole CPUs) and passes — it surfaces instead as a Kueue quota rejection against the
 ClusterQueue `nominalQuota` — and a JSON-Schema check of the manifest would not have caught either
@@ -462,7 +462,7 @@ would promote the pod's QoS class to `Guaranteed`, which this deployment deliber
 `tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable`).
 
 > Leave `memory_limit` unset (**the code default**) and no `limits` key is emitted at all — the
-> manifest is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There
+> manifest is byte-identical to the pre-ADR-0005 (analyze job memory limits), requests-only form (regression-guarded). There
 > is deliberately **no code-computed default**
 > ([ADR-0005](design/0005-analyze-job-memory-limits.md), point 1): the right value is a property
 > of the operator's node, and a shipped default that silently starts OOMKilling somebody's
@@ -617,7 +617,7 @@ generation:
 | --- | ---: | --- | --- |
 | **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | `phaze-5lop`, end to end through the real `analyze_file` on the measurement host; `VmHWM` read once at process exit | the **shipped** pipeline — `phaze-0582` (batch 32), `phaze-rvcn` (host-derived threads), `phaze-ap8y`, and `phaze-5lop`'s streaming decode all present |
 | `memory_request` | **`3Gi`** | derived from the row above — **1.73×** the measured peak | same |
-| `memory_limit` | **`4Gi`** | derived from the row above — **2.30×**; opt-in, no code default (ADR-0005) | same |
+| `memory_limit` | **`4Gi`** | derived from the row above — **2.30×**; opt-in, no code default (ADR-0005 (analyze job memory limits)) | same |
 | `cpu_request` | **`1500m`** | [`phaze-3j67` §9](spikes/phaze-3j67-concurrent-extractor-capacity.md), unchanged | post-`phaze-15sw` image; not re-litigated by `phaze-8r6t4` §10 |
 | `cap` | **4** | [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), **re-measured and confirmed** by [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07), 222 analyze processes, digest-gated | `release/2026.8.1-prep` overlaid on `job:2026.8.0` |
 | throughput knee | **W=2** | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md); reproduces `phaze-3j67` §3 inside 2% | same |
@@ -637,7 +637,7 @@ Three things worth pulling out of that table:
   **1.3381 GiB** at 10 minutes against **1.7383 GiB** at 60: a 6× duration span for a 1.30× peak,
   and the gap was the *cap*, not the duration, since the 60-minute file was the first to saturate
   `fine_cap`. **That conclusion survives phaze-w55w1 unchanged, for a re-derived reason:** the caps
-  are gone (every file is now analyzed exhaustively, ADR-0007 §7), but the tiers process bounded
+  are gone (every file is now analyzed exhaustively, ADR-0007 (windowed analysis) §7), but the tiers process bounded
   CHUNKS whose sizes are exactly the old cap values, so the per-tier residency the figure above
   reflects (~317 MB fine / ~345 MB coarse) is identical and still independent of duration.
   **Do not size `memory_request` or `memory_limit` on file duration or file size** —

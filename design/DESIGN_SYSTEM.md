@@ -36,7 +36,7 @@ Sound is invisible architecture. Every visual mark is a waveform — each line, 
 
 ### Surface, Border & Text Colors (as implemented)
 
-The build defines three Phaze-specific surface/border tokens and six semantic text tokens in `assets/src/app.css`. Templates use the semantic names for direct-surface muted, link/information, and status text; their light/dark values resolve through CSS custom properties, so templates do not carry paired hue/rung utilities. The repainted Tailwind ramp from ADR-0010 remains the low-level palette for borders, focus rings, tinted surfaces, and deep-rung text intentionally rendered on a tint.
+The build defines three Phaze-specific surface/border tokens and six semantic text tokens in `assets/src/app.css`. Templates use the semantic names for direct-surface muted, link/information, and status text; their light/dark values resolve through CSS custom properties, so templates do not carry paired hue/rung utilities. The repainted Tailwind ramp from ADR-0010 (colour contrast tokens) remains the low-level palette for borders, focus rings, tinted surfaces, and deep-rung text intentionally rendered on a tint.
 
 | Token | Value | Tailwind utilities | Usage |
 |-------|-------|--------------------|-------|
@@ -55,7 +55,7 @@ The intent-named direct-surface utilities have one definition per theme. Every t
 | `text-warn` | Needs review, waiting, held | `#9c4c01` / 5.53:1 | `#fcd34d` / 12.79:1 |
 | `text-danger` | Blocked, failed, rejected | `#c7080d` / 5.50:1 | `#fca5a5` / 9.72:1 |
 
-The minimum is the lower result across `#ffffff`/`#f3f4f6` for light and `#10141c`/`#0a0c12` for dark. ADR-0010's repainted rungs still preserve hue and provide the source palette:
+The minimum is the lower result across `#ffffff`/`#f3f4f6` for light and `#10141c`/`#0a0c12` for dark. ADR-0010 (colour contrast tokens)'s repainted rungs still preserve hue and provide the source palette:
 
 | Repainted utility token | Value | Ratio on `#f3f4f6` |
 |-------------------------|-------|------------------------|

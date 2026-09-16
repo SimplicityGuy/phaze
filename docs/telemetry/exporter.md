@@ -138,7 +138,7 @@ them — so the **controller** allocates one per in-flight burst Job at submit t
 the kueue backends' `cap` values rather than `worker_process_pool_size`, because `cap` is what
 bounds that lane's concurrency. **Do not put either key in the `phaze-agent-env` ConfigMap** — every
 pod shares that object, so a value there would give every pod one identity, which is the merge
-itself. See ADR-0017 §8d.
+itself. See ADR-0017 (telemetry export topology) §8d.
 
 > **One thing here is still open, and it is the one case where `PHAZE_TELEMETRY_INSTANCE` matters
 > for correctness rather than for readability.** The host and burst lanes share one slot space and,
@@ -169,7 +169,7 @@ looks like is [`traces.md`](traces.md). Two things to know here:
   files' traces, never a truncated current one.
 - **Sampling is always-on.** No head or tail sampling, because spans are per CHUNK rather than
   per window: ~49.6 spans per file, **~566,073 for a whole-corpus re-analysis**, 0.034
-  spans/second at the measured throughput. The arithmetic is in ADR-0017 §7d.
+  spans/second at the measured throughput. The arithmetic is in ADR-0017 (telemetry export topology) §7d.
 
 ## 4. What happens when the collector is down, slow or absent
 

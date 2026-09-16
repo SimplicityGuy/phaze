@@ -431,7 +431,7 @@ archive filenames and paths remain outside tracked content.
 > re-running it later (e.g. after fixing a failed file) is safe and picks up whatever is still
 > incomplete.
 
-The exhaustive-analysis decision (ADR-0007 section 7, implemented by `phaze-w55w1`) removed the
+The exhaustive-analysis decision (ADR-0007 (windowed analysis) section 7, implemented by `phaze-w55w1`) removed the
 fine/coarse window caps: every file now gets every natural window of both tiers analyzed, not a
 strided subset. Files analyzed **before** that change have a partial analysis on record — every
 concert set past roughly 30/90 minutes was capped, not fully covered. This backfill re-enqueues
@@ -525,7 +525,7 @@ needs no operator action.
 
 #### "blocked" remediation
 
-`process_file` runs `timeout=0` (ADR-0007 section 8 / phaze-w55w1) — SAQ treats `timeout=0` as
+`process_file` runs `timeout=0` (ADR-0007 (windowed analysis) section 8 / phaze-w55w1) — SAQ treats `timeout=0` as
 unbounded, so a `process_file` row stuck in `status='aborting'` or stranded `status='active'` is
 **excluded** from both automatic key reapers (`aborting_reaper` / `active_reaper`, both built on
 the shared `timeout <> 0` guard in `tasks/_saq_reap.py`) and will **not** self-heal on any timer.
@@ -579,7 +579,7 @@ generation will read the newly associated COMPANION context through the normal p
   audio fingerprinting was removed in full, including the evidence the volume-removal step above
   protects.
 - [design/0007-windowed-analysis.md](design/0007-windowed-analysis.md) — the ADR for removing the
-  fine/coarse window caps (ADR-0007 section 7), the decision the re-enqueue backfill above pays off.
+  fine/coarse window caps (ADR-0007 (windowed analysis) section 7), the decision the re-enqueue backfill above pays off.
 
 The removal epic's file-by-file inventory was deleted on 2026-07-29 once the removal was
-complete: ADR-0002 and the git history of epic phaze-0jpe are the record of what changed.
+complete: ADR-0002 (fingerprint removal) and the git history of epic phaze-0jpe are the record of what changed.

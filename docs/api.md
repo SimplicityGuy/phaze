@@ -97,7 +97,7 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 
 `force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` routes through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue) and honors the force-local / cloud-enabled gates.
 
-> **Removed (phaze-w55w1):** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 §7). There is nothing left to deepen.
+> **Removed (phaze-w55w1):** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 (windowed analysis) §7). There is nothing left to deepen.
 
 **Control-side agent callbacks (`/api/internal/agent`).** The Postgres-free file-server / compute / pod agents cannot touch the ORM, so the S3-staging and rsync-push transports report outcomes through these token-authed internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
 
@@ -188,14 +188,14 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 
 > **Removed:** `PATCH /proposals/bulk-approve-high-confidence` (bead `phaze-7tiqp`). The
 > server-predicate bulk approve (confidence ≥ 0.9) lost its only two callers when phaze-tzy6s.11 /
-> ADR-0008 consolidated the Rename and Move workspaces into Changes Review, which bulk-approves a
+> ADR-0008 (changes review approval boundary) consolidated the Rename and Move workspaces into Changes Review, which bulk-approves a
 > reviewed *selection* through `/proposals/bulk` instead. phaze-tzy6s.17 re-verified the whole chain
 > was unreachable from any template and deferred the call; this bead made it. The route, its
 > `_BULK_HIGH_CONFIDENCE_TARGETS` map, the OOB row branch,
 > `_bulk_approve_high_confidence_response.html` and the `approve_pending_above_confidence` service
 > function are all gone. phaze is a single-user admin tool on a private network with no external API
 > consumers, and none were found. A caller that wants the old behaviour selects the rows in Changes
-> Review — which is the point of ADR-0008: nothing is approved without being seen.
+> Review — which is the point of ADR-0008 (changes review approval boundary): nothing is approved without being seen.
 
 ## Execution (`/execution`, `/audit`)
 

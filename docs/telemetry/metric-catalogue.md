@@ -64,7 +64,7 @@ pod.
 **It is also the only thing that keeps CONCURRENT producers apart**, which is a different
 question with a different answer: phaze appends a bounded **worker-slot index**, because four
 analysis children exporting cumulative counters under one identity overwrite each other at the
-collector. §1's multiplier table above states what the slots cost; [ADR-0017
+collector. §1's multiplier table above states what the slots cost; [ADR-0017 (telemetry export topology)
 §8](../design/0017-telemetry-export-topology.md) states why the bound is a multiple of the
 concurrency and never of the corpus.
 
@@ -237,7 +237,7 @@ uv run python scripts/measure_metric_contract.py --minutes 30 --models-dir '<mod
 ```
 
 **Why against a real collector and not against the naming rules.** The OTLP → Prometheus
-translation is the artifact's real consumer (ADR-0012 rule 3), and reading the rules on
+translation is the artifact's real consumer (ADR-0012 (verification fidelity and operator attribution) rule 3), and reading the rules on
 paper would have shipped three defects:
 
 | what the real collector showed | what it would have cost |

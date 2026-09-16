@@ -67,7 +67,7 @@ file:
 | COARSE | ~345 MB | 30 × 180 s × 16,000 Hz × 4 B |
 
 The chunk sizes are the old cap values **on purpose**: they reproduce exactly the per-tier
-residency the capped implementation was measured at, so ADR-0005's Job memory limits stay valid
+residency the capped implementation was measured at, so ADR-0005 (analyze job memory limits)'s Job memory limits stay valid
 across the removal instead of needing re-derivation. The two tiers never stack (fine's chunk is
 released and `malloc_trim`ed before coarse starts).
 
