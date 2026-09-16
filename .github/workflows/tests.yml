@@ -439,7 +439,7 @@ jobs:
   # phaze-8p1uq: that bar was 10 consecutive clean post-merge runs of THIS JOB on main, and it was
   # met on 2026-08-21 -- 14 consecutive green executions from run 32404559677 (`827052af`) through
   # 32451444163 (`ebae0f4`). `continue-on-error` is gone, so this job now fails the build. The
-  # ranked list of what to suspect first when a CI-only failure appears moved to ADR-0009
+  # ranked list of what to suspect first when a CI-only failure appears moved to ADR-0009 (responsive accessibility baseline)
   # (docs/design/0009-responsive-accessibility-baseline.md, § "The browser contract suite"); the
   # promotion scaffolding it lived alongside (tests/browser/FLAKE_RECORD.md) was deleted with this
   # change, and its per-run history stays readable in git history and phaze-8p1uq's comments.

@@ -1230,7 +1230,7 @@ check: lint typecheck test-validate
 # above is UNCHANGED; `just check-all` remains the `molecule` boundary and is the ONLY boundary that
 # still runs the whole suite.
 #
-# OPERATOR DECISIONS, 2026-08-25 (ADR-0012 rule 2). Durable record: bead phaze-pv3kk's COMMENTS --
+# OPERATOR DECISIONS, 2026-08-25 (ADR-0012 (verification fidelity and operator attribution) rule 2). Durable record: bead phaze-pv3kk's COMMENTS --
 # not its description, which records the original request and was superseded twice the same day.
 # Option labels / answers verbatim:
 #   Q: fold change-driven selection into this bead?
@@ -1502,7 +1502,7 @@ db-downgrade:
 db-history:
     uv run alembic history
 
-[doc('Corpus-distribution probe (ADR-0012 SS7 R3 / guardrail G3): fraction of the archive exceeding a duration and/or size bound (phaze-d2hgv.5)')]
+[doc('Corpus-distribution probe (ADR-0012 (verification fidelity and operator attribution) SS7 R3 / guardrail G3): fraction of the archive exceeding a duration and/or size bound (phaze-d2hgv.5)')]
 [group('db')]
 corpus-distribution duration='' size='' dsn='':
     #!/usr/bin/env bash

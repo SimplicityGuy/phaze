@@ -4,7 +4,7 @@
 # phaze-m1drf.5 acceptance 2 is the one that needs a test rather than a reading: *"if rules
 # exist, none may fire on the accepted-drain-rate condition"*. That is a claim about what
 # the rules do NOT do, and the only way to discharge it is to build the condition and watch
-# nothing fire. `promtool` is the REAL consumer of both this file and the rules (ADR-0012
+# nothing fire. `promtool` is the REAL consumer of both this file and the rules (ADR-0012 (verification fidelity and operator attribution)
 # rule 3) -- a YAML schema check would accept PromQL that does not parse and would say
 # nothing at all about whether a rule fires.
 #

@@ -47,7 +47,7 @@ phaze-fqfds by stating if tests run, ok; if they don't also fine."* Durable reco
 so.** "No tests are needed" lifts the requirement to run the suite; it does not forbid running
 anything. An earlier draft of this docstring recorded it as a prohibition -- accurate quotation,
 right date, durable record present, and still a misstatement of what was decided. It was caught
-only because the operator read it back. That is ADR-0012 rule 2's own failure mode occurring inside
+only because the operator read it back. That is ADR-0012 (verification fidelity and operator attribution) rule 2's own failure mode occurring inside
 the record that rule governs, and the lesson generalises past this bead: **a correctly formatted
 citation can still misstate the decision, and the only check is the person who decided reading it
 back.** So what runs here is an ENGINEERING choice made under that permission, and it can be

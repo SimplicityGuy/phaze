@@ -1,6 +1,6 @@
 """Recover operator-decision provenance from local Claude Code session transcripts (phaze-d2hgv.4).
 
-WHY THIS EXISTS. ADR-0012 section 5 swept the tree for "operator decision" claims and reported nine
+WHY THIS EXISTS. ADR-0012 (verification fidelity and operator attribution) section 5 swept the tree for "operator decision" claims and reported nine
 as "not traceable to any recorded answer". Six of those nine WERE traceable -- the 2026-08-20
 archaeology that corrected the ADR found them in one session's own transcript in about an hour of
 ad-hoc `grep`/`jq`. The blind spot is specific and non-obvious: `AskUserQuestion` is recorded as an
