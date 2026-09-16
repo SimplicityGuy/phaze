@@ -53,6 +53,7 @@ import subprocess  # nosec B404 -- fixed argv re-invoking THIS script as a produ
 import sys
 import time
 from typing import TYPE_CHECKING, Any
+import urllib.parse
 import urllib.request
 
 
@@ -115,10 +116,32 @@ def _producer(step: float, start: float, offset: float, period: float, flushes: 
     shutdown_telemetry(3_000)
 
 
+def _checked_scrape_url(url: str) -> str:
+    """Admit only an ``http``/``https`` scrape URL; refuse anything else loudly.
+
+    ``urlopen`` honours whatever scheme it is handed, and the ones that are not HTTP are
+    the interesting ones: ``file:`` turns a scrape into a local file read, and this URL
+    arrives from ``--scrape-url`` on the command line. The scheme is therefore checked
+    against an allowlist rather than checked for the schemes to reject.
+
+    Raises rather than falling back, and is called OUTSIDE :func:`_scrape`'s ``except``:
+    a dead collector is a normal condition this harness reports and continues through, but
+    a URL that is not a scrape endpoint means the run would measure something other than
+    the thing it claims to.
+    """
+    scheme = urllib.parse.urlparse(url).scheme
+    if scheme not in {"http", "https"}:
+        msg = f"--scrape-url must be http or https, not {scheme!r}: {url!r}"
+        raise ValueError(msg)
+    return url
+
+
 def _scrape(url: str) -> dict[str, float]:
     """The collector's exposition for this counter, keyed by its full label set."""
+    checked = _checked_scrape_url(url)
     try:
-        body = urllib.request.urlopen(url, timeout=5).read().decode()  # noqa: S310  # nosec B310 -- the operator's own collector scrape URL, http(s) only
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        body = urllib.request.urlopen(checked, timeout=5).read().decode()  # noqa: S310  # nosec B310 -- the operator's own collector scrape URL, http(s) only
     except Exception as exc:  # pragma: no cover - a dead collector is the operator's signal, not a crash
         _say(f"  scrape failed: {exc}")
         return {}
