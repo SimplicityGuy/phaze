@@ -24,6 +24,8 @@ import kr8s.asyncio
 from kr8s.asyncio.objects import Job, Pod, new_class
 import yaml
 
+from phaze.telemetry import slots as telemetry_slots
+
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -77,13 +79,34 @@ JOB_ENV_FROM_CONFIGMAP: frozenset[str] = frozenset({"PHAZE_ROLE", "PHAZE_AGENT_A
 #: enforced by `_enforce_required_agent_fields`; absent, the pod cannot authenticate its callback.
 JOB_ENV_FROM_SECRET: frozenset[str] = frozenset({"PHAZE_AGENT_TOKEN"})
 
-#: Keys `build_job_manifest` code-injects into the container `env`; these must NOT be
+#: Keys `build_job_manifest` code-injects into EVERY Job's container `env`; these must NOT be
 #: operator-supplied. Two vary per submit or per mount (`PHAZE_JOB_FILE_ID`, `PHAZE_AGENT_CA_FILE`) and one
 #: is a fixed invariant of the lane (`PHAZE_AGENT_KIND`, above). `env` overrides `envFrom` of the
 #: same name, so a ConfigMap entry for any of these is silent dead weight, not a second source of
 #: truth -- docs/k8s-burst.md §6 says so for `PHAZE_AGENT_KIND` and the contract test enforces it
 #: for all three.
-JOB_ENV_CODE_INJECTED: frozenset[str] = frozenset({"PHAZE_AGENT_CA_FILE", "PHAZE_JOB_FILE_ID", "PHAZE_AGENT_KIND"})
+JOB_ENV_CODE_INJECTED_ALWAYS: frozenset[str] = frozenset({"PHAZE_AGENT_CA_FILE", "PHAZE_JOB_FILE_ID", "PHAZE_AGENT_KIND"})
+
+#: The telemetry-identity pair (phaze-w15ju), code-injected when -- and only when -- the controller
+#: managed to allocate a slot for this submit.
+#:
+#: **These belong in `env` and could never come from the ConfigMap, which is the whole point.** The
+#: slot's job is to keep CONCURRENT burst pods apart: a value baked into an object every pod shares
+#: would give every pod the same identity, which IS the defect (`docs/design/0017-telemetry-export-topology.md`
+#: section 8). `PHAZE_TELEMETRY_SLOT` is per-submit, allocated by
+#: `phaze.services.burst_telemetry_slots.allocate_slot` against the in-flight `cloud_job` rows;
+#: `PHAZE_TELEMETRY_SLOT_MAX` travels with it because the POD validates the slot against that bound
+#: and would otherwise fall back to `slots.DEFAULT_SLOT_MAX` and REFUSE the very slots the controller
+#: hands out -- the host lane shipped a slot without its bound once and lost a third of its fleet to
+#: `telemetry_slot_out_of_range` (see `phaze.telemetry.slots.assign`).
+JOB_ENV_CODE_INJECTED_TELEMETRY: frozenset[str] = frozenset({telemetry_slots.SLOT_ENV, telemetry_slots.SLOT_MAX_ENV})
+
+#: Every key phaze code-injects, and therefore every key an operator must NOT put in the agent-env
+#: ConfigMap or the token Secret. The telemetry pair is CONDITIONAL in the manifest (absent when no
+#: slot could be allocated) but UNCONDITIONAL in this contract: an operator-supplied value would be
+#: dead weight on the submits that carry a slot and a false claim about concurrency on the ones that
+#: do not.
+JOB_ENV_CODE_INJECTED: frozenset[str] = JOB_ENV_CODE_INJECTED_ALWAYS | JOB_ENV_CODE_INJECTED_TELEMETRY
 
 #: Where the optional models PVC is mounted, and the value `PHAZE_MODELS_DIR` must carry.
 #:
@@ -296,7 +319,9 @@ async def _api(kube: KubeConfig) -> Any:
     return await kr8s.asyncio.api(kubeconfig=cast("Any", kc), namespace=kube.namespace, context=context)
 
 
-def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
+def build_job_manifest(
+    file_id: uuid.UUID, kube: KubeConfig, *, telemetry_slot: int | None = None, telemetry_slot_max: int | None = None
+) -> dict[str, Any]:
     """Build the suspended ``batch/v1`` Job manifest phaze submits (KSUBMIT-01/05).
 
     Exactly one object phaze writes: ``suspend: true`` (never starts a pod before Kueue gates it),
@@ -350,6 +375,23 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     Secret / ConfigMap it references by name). When ``models_pvc_name`` is None, NO models volume/mount
     is emitted -- the manifest is byte-identical to the CA-only form (regression-guarded). The PVC
     carries ONLY model weights, never secrets/certs (the CA stays on its own ``/certs`` Secret mount).
+
+    **The telemetry worker slot (phaze-w15ju), and why it arrives as an ARGUMENT.** ``telemetry_slot``
+    is the bounded identity index this pod's analysis child exports under, and
+    ``telemetry_slot_max`` is the bound it validates against. Neither can be derived here: the slot's
+    only meaning is "distinct from every pod running beside me", which is a fact about the in-flight
+    ``cloud_job`` rows and is therefore allocated by the controller
+    (:func:`phaze.services.burst_telemetry_slots.allocate_slot`) before the POST. Without it every
+    burst pod exported under ``phaze-analysis-0`` and their cumulative counters overwrote each other
+    at the collector -- measured, an ``increase()`` 84.4% above the truth
+    (``docs/design/0017-telemetry-export-topology.md`` section 8).
+
+    When ``telemetry_slot`` is None (the pool was exhausted, or a caller that allocates nothing) NO
+    telemetry key is emitted at all and the manifest is byte-identical to the pre-phaze-w15ju form --
+    the same backward-compatibility posture as ``models_pvc_name`` / ``active_deadline_seconds`` /
+    ``memory_limit``, and regression-guarded the same way. The pod then falls back to the shared
+    identity: degraded, but bounded, which is the only acceptable direction (an unbounded identity
+    would mint 2,290 series per analyzed file in a Prometheus phaze does not own).
 
     Fail-loud on an unset ``job_image`` / ``cpu_request`` / ``memory_request`` (all ``Optional`` on
     ``KubeConfig``): a half-configured manifest would otherwise carry ``None`` values and surface as
@@ -472,6 +514,18 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     # 3h bound; that killed every long recording at exactly 3h and burned the whole cloud attempt budget
     # per file. The wedged-pod protection 1b39 was reaching for now lives in reconcile as POD-STATE
     # detection (:func:`classify_job_pods`), which cannot mistake a slow analyze for a hang.
+    # phaze-w15ju: the controller-allocated telemetry identity, appended to the code-injected `env`
+    # so it overrides anything of the same name in the operator's ConfigMap. BOTH keys or NEITHER --
+    # a slot without its bound is refused by the pod (`slots.resolve_slot` validates against
+    # `slot_max`, whose default is 4) and a bound without a slot says nothing. `telemetry_slot=None`
+    # emits neither, leaving the manifest byte-identical to the pre-phaze-w15ju form.
+    if telemetry_slot is not None and telemetry_slot_max is not None:
+        manifest["spec"]["template"]["spec"]["containers"][0]["env"].extend(
+            (
+                {"name": telemetry_slots.SLOT_ENV, "value": str(telemetry_slot)},
+                {"name": telemetry_slots.SLOT_MAX_ENV, "value": str(telemetry_slot_max)},
+            )
+        )
     if kube.active_deadline_seconds is not None:
         manifest["spec"]["activeDeadlineSeconds"] = kube.active_deadline_seconds
     # Optional models PVC (additive, entirely separate from the phaze-ca Secret mount above). When set,
@@ -501,16 +555,26 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     return manifest
 
 
-async def submit_job(file_id: uuid.UUID, kube: KubeConfig) -> tuple[str, str]:
+async def submit_job(
+    file_id: uuid.UUID, kube: KubeConfig, *, telemetry_slot: int | None = None, telemetry_slot_max: int | None = None
+) -> tuple[str, str]:
     """Submit the suspended Job for ``file_id`` to ``kube``'s cluster idempotently; return ``(name, uid)`` (KSUBMIT-01).
 
     One fast kube POST against THIS file's backend cluster (``kube``). The deterministic name means a
     duplicate submit hits a 409 AlreadyExists -- swallowed by refreshing the existing object (no error,
     no duplicate) so a re-drive after a partial run is safe. Any non-409 server error surfaces as
     ``KubeStagingError``.
+
+    ``telemetry_slot`` / ``telemetry_slot_max`` (phaze-w15ju) are passed straight through to
+    :func:`build_job_manifest`; the caller allocates them because the allocation is a read of the
+    in-flight ``cloud_job`` rows. **On the 409 path the manifest is never applied** -- k8s keeps the
+    existing object -- so a live Job's pod keeps the identity it was created with rather than having
+    one swapped under it mid-run. That is the correct outcome and it is why
+    :func:`phaze.services.burst_telemetry_slots.allocate_slot` re-validates a row's existing slot
+    instead of always taking a fresh one.
     """
     api = await _api(kube)
-    job = Job(build_job_manifest(file_id, kube), api=api)
+    job = Job(build_job_manifest(file_id, kube, telemetry_slot=telemetry_slot, telemetry_slot_max=telemetry_slot_max), api=api)
     try:
         await job.create()
     except kr8s.ServerError as exc:
