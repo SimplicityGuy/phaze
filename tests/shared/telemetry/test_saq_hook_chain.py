@@ -371,3 +371,20 @@ async def test_a_bounce_mark_left_on_a_context_can_never_leak_a_span(telemetry_s
     assert "phaze.saq.jobs" not in telemetry_sink.metric_names()
     assert telemetry_saq._SPAN_KEY not in ctx
     assert telemetry_saq._START_KEY not in ctx
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_job_whose_before_hook_never_ran_is_still_counted(telemetry_sink: TelemetrySink) -> None:
+    """The other half of the bounce discrimination, and the reason the mark is explicit.
+
+    ``after_process`` reached without its ``before_process`` has no start time and no span.
+    That is a bounce ONLY when the worker says so; unmarked, it describes a telemetry hook
+    that failed internally -- a defect -- and must still be counted, without a duration it
+    cannot measure. Reading the missing start time as a bounce would silence exactly that.
+    """
+    ctx: dict[str, Any] = {"job": _Job("process_file", Status.FAILED)}
+    await telemetry_saq.after_process(ctx)
+
+    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "process_file", "outcome": "error"}]
+    assert telemetry_sink.count("phaze.saq.job.duration") == 0
+    assert telemetry_sink.span_names() == []
