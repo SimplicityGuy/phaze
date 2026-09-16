@@ -211,3 +211,19 @@ def test_a_resize_is_declined_while_slots_are_held(caplog: pytest.LogCaptureFixt
     assert slots.default_pool().size == 4, "the pool was rebuilt while a slot was out"
     assert any("resize_declined" in record.getMessage() for record in caplog.records)
     slots.default_pool().release(held)
+
+
+def test_the_default_pool_is_a_singleton() -> None:
+    """Two calls must return the SAME pool, and the reason is not tidiness.
+
+    A second pool would have its own free list starting at 0, so two live children could
+    both be told they hold slot 0 -- the collision the whole module exists to prevent,
+    reintroduced by an accessor rather than by a scheme. This is the ``_pool is not None``
+    path of the lazy accessor, which nothing else exercises.
+    """
+    first = slots.default_pool()
+    held = first.acquire()
+    second = slots.default_pool()
+
+    assert second is first
+    assert second.acquire() != held, "a second pool handed out a slot the first one already holds"
