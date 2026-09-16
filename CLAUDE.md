@@ -34,7 +34,8 @@ just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate
 just check-fast            # THE per-bead gate: lint + typecheck + the tests repowise says the
                            # change touches, escalating to the full suite when it can't tell
 just check                 # lint + typecheck + full suite WITH coverage (95% LINE floor)
-just check-all             # THE molecule gate: every pre-commit hook + the full suite
+just check-all             # THE molecule gate: every pre-commit hook + the full suite + promtool
+                           # alert-rule tests (alerts-test)
 just branch-check          # Per-bead BRANCH-coverage gate. Free after any `check`
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
 just test-db-for <name>    # Carve an isolated seat — REQUIRED for concurrent worktrees
@@ -56,6 +57,12 @@ it before citing any command as evidence in a bead. The operational summary:
 | `just check` | yes | yes | full suite | 95% line floor | `postland`, `union`, and the manual escape hatch |
 | `just check-all` | via pre-commit | via pre-commit | full suite | 95% line floor | **the molecule gate** — `bh work finish` |
 | `just branch-check` | — | — | — | per-bead branch coverage | free after any `check` |
+
+`just check-all` also runs `alerts-test` (`promtool test rules alerts/phaze-alerts.test.yml`) after
+`pre-commit` and `test-validate`, so the table's "every pre-commit hook + the full suite" undersells
+it by one check. Locally, `alerts-test` **loudly skips** — prints a warning and exits 0 — when
+`promtool` is not on `PATH`; CI's `code-quality.yml` installs `promtool` and runs it for real, so a
+local `check-all` green does not by itself confirm the alert rules.
 
 **No boundary an ad-hoc bead traverses runs the full suite.** `check`, `submit`, `merge` and
 `merge-main` all resolve to `just check-fast`; an ad-hoc bead (parent = NONE) never reaches
@@ -318,10 +325,15 @@ excluded entirely** (`exclude`), not run under a relaxed override, along with `p
 
 **Frozen SHAs, not tags,** for every hook. pre-commit-hooks (large files, executable shebangs, merge
 conflicts, TOML, YAML, JSON check + pretty-format, AWS credentials, private keys, EOF fixer, trailing
-whitespace, mixed line endings) · ruff `--fix` + ruff-format · bandit (`-x tests,services -s B608`) ·
-check-jsonschema (GitHub workflows/actions) · hadolint · actionlint · yamllint strict · shellcheck-py
-(`--shell=bash --severity=warning`) · shfmt (`--indent=2 --case-indent --language-dialect=bash
---write`) · a local `uv run mypy .` hook with `pass_filenames: false`.
+whitespace, mixed line endings) · ruff `--fix` + ruff-format · check-jsonschema (GitHub
+workflows/actions) · hadolint · actionlint · yamllint strict · shellcheck-py (`--shell=bash
+--severity=warning`) · shfmt (`--indent=2 --case-indent --language-dialect=bash --write`) · a local
+`uv run mypy .` hook with `pass_filenames: false` · a local `just bandit` hook (`uv run bandit -r
+src/ -x tests -s B608`, `pass_filenames: false`) — the identical invocation CI's security workflow
+runs, pinned by `tests/shared/test_bandit_invocation_parity.py`. The hook used to run the frozen
+`PyCQA/bandit` repo hook with an unanchored `-x tests,services`, which matched the flag as a
+substring against each file passed individually and silently excluded every file anywhere under
+`src/phaze/services/` — not just the top-level `services/` prototype dir it was meant for.
 
 ## Testing
 
