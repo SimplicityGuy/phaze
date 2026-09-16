@@ -99,6 +99,10 @@ can guard the config half.
 4. **A RED with no pytest summary is UNMEASURED, not failing.** An exit 1 whose transcript says
    `🎯 selector: fail` and `no verdict was produced` is a harness problem to escalate, not a
    regression to hunt — even though the last line printed reads `main is RED in combination`.
+   A red `GATE_EXIT=4` with `All checks passed!` above it and no pytest summary means the selector
+   handed pytest a mapped test id whose file a landed reorganisation moved. Refresh the map with
+   `just repowise-coverage` (or `just repowise-coverage-ci <run>` against the last green `main` run);
+   see `scripts/select_impacted_tests.py`'s failure mode G. Measured 2026-09-15 on `phaze-bzw5y`.
 5. **A gate measures a TREE, and the base may move under it.** Before spending a slot:
    `git fetch origin && git rev-list --left-right --count HEAD...origin/main`.
 
