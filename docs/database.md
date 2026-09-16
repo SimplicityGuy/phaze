@@ -217,10 +217,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-064)
+### Post-baseline chain (040-065)
 
-`alembic/versions/` holds **26** files: the `039` baseline plus a linear chain to the current
-head, **`064`**.
+`alembic/versions/` holds **27** files: the `039` baseline plus a linear chain to the current
+head, **`065`**.
 
 | Rev | Change |
 |-----|--------|
@@ -248,7 +248,8 @@ head, **`064`**.
 | `061` | Durable duplicate-review plans |
 | `062` | Persist reviewed-before tags and review source versions |
 | `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table |
-| `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics — **head** |
+| `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics |
+| `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
