@@ -217,6 +217,20 @@ holder's pid. The most natural way to hit this is re-running a subset "to check 
 terminal while the full suite is going. `PHAZE_TEST_DB_ALLOW_SHARED=1` bypasses it; pytest-xdist
 against one database *is* this defect and is not a reason to set it.
 
+**A tool-call timeout does not kill the run it started.** Measured 2026-09-16
+(`docs/gates-and-isolation.md`, phaze-cpn5k): killing the *shell* running `uv run pytest` with
+`SIGTERM` or `SIGHUP` leaves `uv` and its `pytest` child running to completion — an orphaned run
+finished `1166 passed, 1 warning in 61.05s (0:01:01)` 36 s after its shell died, holding the session
+advisory lock the whole time. Only signalling `uv` itself brought `pytest` down, within 5 s; which of
+the two an agent's timed-out tool call actually signals is not something the agent chooses. **Never
+re-run a gate because a tool call timed out** — the re-run is refused before collection by the
+advisory lock (exit 4, no pytest summary), which by this document's own rules reads as UNMEASURED,
+and if the abandoned run was still in lint/typecheck the refusal lands on the **abandoned** run
+instead. Find the pid (`ps -eo pid,args= | grep pytest`) and either wait for it or kill that pid by
+number. Bare `ps -p <pid>` is **not** a liveness check: on BSD `ps`, `-p` intersects with the
+current-terminal default, so a detached child reads as absent. Use `ps -p <pid> -o pid=`, or read the
+lock holder out of Postgres.
+
 **Scope every `pg_locks` / `pg_stat_activity` query with `current_database()`.** A per-worktree
 database isolates table data completely and the system catalogues not at all, so any such query sees
 every seat's backends — two correctly-isolated suites both went red on an advisory-lock count that
