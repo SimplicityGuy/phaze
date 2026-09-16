@@ -1,4 +1,13 @@
-"""Audit historical evidence without rewriting its point-in-time claims."""
+"""Audit historical evidence without rewriting its point-in-time claims.
+
+An empty or otherwise unremarkable-looking historical file is not on its own evidence of a
+mistake: this checker holds the corpus to identifier-only substitution and unchanged numeric
+content, not to any expectation that every file is non-trivial. Where a file's emptiness needs
+explaining to a reader, that explanation belongs in its archive boundary's own README (see
+`ARCHIVE_BOUNDARIES` below and, for a worked example, the `analysis-run.json` note in
+`docs/telemetry/measurements/README.md`) rather than in this module — the boundary READMEs are
+the per-directory provenance record; this script only verifies against them.
+"""
 
 from __future__ import annotations
 
