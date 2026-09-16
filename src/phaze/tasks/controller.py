@@ -69,7 +69,7 @@ from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 from phaze.tasks.tracklist_drain_control import continue_armed_tracklist_drain, record_drain_slice_completion
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
-from phaze.telemetry.saq import after_process as telemetry_after_process, before_process as telemetry_before_process
+from phaze.telemetry.saq import after_process_chain, before_process as telemetry_before_process
 
 
 if TYPE_CHECKING:
@@ -343,12 +343,18 @@ settings = {
     # (mirrors agent_worker.py's `[repark_if_stage_paused, increment_completed]`).
     # phaze-6nrrf: record_drain_slice_completion is the continuous-drain cron's own after_process
     # half -- see tasks/tracklist_drain_control.py.
-    # phaze-m1drf.1 acceptance 3: telemetry_after_process runs LAST so the duration it
-    # records covers the other hooks' work too -- a ledger clear that becomes slow is part
-    # of what the job cost. Both telemetry hooks swallow every exception; they run in SAQ's
-    # own `finally` alongside the ledger clear and must not be able to displace it.
+    # phaze-m1drf.1 acceptance 3: the telemetry hook runs LAST so the duration it records
+    # covers the other hooks' work too -- a ledger clear that becomes slow is part of what
+    # the job cost. Both telemetry hooks swallow every exception; they run in SAQ's own
+    # `finally` alongside the ledger clear and must not be able to displace it.
+    #
+    # phaze-24dl8: "last in the list" was not enough. SAQ's `_after_process` is a bare loop
+    # and `Worker.process` only logs its exception, so a raise from `record_drain_slice_completion`
+    # abandoned the telemetry hook -- leaking the job's span and dropping its duration and
+    # outcome. `after_process_chain` appends the telemetry hook in a `finally` instead; the
+    # two hooks below keep their order and their abort-on-first-raise relationship.
     "before_process": telemetry_before_process,
-    "after_process": [increment_completed, record_drain_slice_completion, telemetry_after_process],
+    "after_process": [after_process_chain(increment_completed, record_drain_slice_completion)],
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,

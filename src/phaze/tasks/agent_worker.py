@@ -59,7 +59,7 @@ from phaze.tasks._shared.agent_bootstrap import (
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
-from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
+from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
 from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
@@ -71,7 +71,11 @@ from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory
 from phaze.tasks.tag_write import write_file_tags
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
-from phaze.telemetry.saq import after_process as telemetry_after_process, before_process as telemetry_before_process
+from phaze.telemetry.saq import (
+    after_process_chain,
+    before_process as telemetry_before_process,
+    mark_bounced as telemetry_mark_bounced,
+)
 
 
 if TYPE_CHECKING:
@@ -525,11 +529,38 @@ async def _before_process(ctx: dict[str, Any]) -> None:
 
     Composed here rather than passed as a list because SAQ's ``before_process`` is a
     single callable (only ``after_process`` accepts a list). Order is load-bearing: the
-    pause check may repark the job, and a reparked job should still be measured, so
-    telemetry runs after it and unconditionally.
+    pause check must run first, because it is what reparks a job that must not start.
+
+    The pause check does NOT return on a bounce -- it raises ``StagePausedRetry``, so the
+    telemetry hook below is SKIPPED and the attempt is never measured. (An earlier version
+    of this docstring claimed telemetry ran "unconditionally"; it does not, and reading it
+    as though it did is what left every bounce counted as ``outcome="error"`` -- an error
+    storm on a healthy, deliberately paused system, phaze-35eiv.) A bounce ran no function,
+    consumed no retry budget and is a no-op for both neighbouring ``after_process`` hooks
+    by design (Phase 35 D-02), so it is reported as nothing at all rather than as a job
+    outcome: ``mark_bounced`` is what tells the after-hook that, and without it the
+    after-hook cannot distinguish a bounce from a real failure.
     """
-    await enforce_stage_pause_on_process(ctx)
+    try:
+        await enforce_stage_pause_on_process(ctx)
+    except StagePausedRetry:
+        telemetry_mark_bounced(ctx)
+        raise
     await telemetry_before_process(ctx)
+
+
+#: The agent worker's ``after_process`` hooks, in order, EXCLUDING telemetry's -- which
+#: ``after_process_chain`` appends and runs in a ``finally`` (see that function: SAQ's own
+#: hook list is a bare loop the first raising hook abandons).
+#:
+#: ``repark_if_stage_paused`` MUST run BEFORE ``increment_completed``: it authoritatively
+#: restores a pause-bounced job to QUEUED/parked, so ``increment_completed`` never sees a
+#: bounce as a genuine COMPLETE/FAILED terminal outcome (Phase 35 D-02 completed-counter +
+#: scheduling-ledger clear must both stay no-ops for a bounce). That includes the case where
+#: repark RAISES: the chain deliberately preserves SAQ's abort-on-first-raise between these
+#: two, so a failed repark still skips the counter rather than letting it misread the bounce.
+_AFTER_PROCESS_HOOKS = (repark_if_stage_paused, increment_completed)
+_after_process = after_process_chain(*_AFTER_PROCESS_HOOKS)
 
 
 settings = {
@@ -542,11 +573,11 @@ settings = {
     # the two hooks are composed explicitly. The pause check stays FIRST and unchanged --
     # it is what reparks a job that must not start -- and telemetry follows it.
     "before_process": _before_process,
-    # `repark_if_stage_paused` MUST run BEFORE `increment_completed`: it authoritatively
-    # restores a pause-bounced job to QUEUED/parked, so `increment_completed` never sees a
-    # bounce as a genuine COMPLETE/FAILED terminal outcome (Phase 35 D-02 completed-counter +
-    # scheduling-ledger clear must both stay no-ops for a bounce).
-    "after_process": [repark_if_stage_paused, increment_completed, telemetry_after_process],
+    # ONE entry, not three: `_after_process` is `_AFTER_PROCESS_HOOKS` followed by the
+    # telemetry hook in a `finally`, so a raise from either neighbour can no longer abandon
+    # the job's span and metrics (phaze-24dl8). Order and abort semantics are unchanged --
+    # see `_AFTER_PROCESS_HOOKS` above.
+    "after_process": [_after_process],
     # quick-260707-dh1: register ONLY this lane's functions (LANE_TASKS[_lane]); all-mode
     # registers all 8. The union of the four lanes' registered names == AGENT_TASKS (mirror
     # contract, asserted in tests/shared/core/test_task_split.py).

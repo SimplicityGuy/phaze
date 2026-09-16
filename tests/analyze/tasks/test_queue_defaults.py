@@ -227,6 +227,21 @@ def _record(sink: list[str], name: str) -> Any:
     return _hook
 
 
+async def _paused_stage_control(_queue: Any, _stage: str) -> tuple[bool, int]:
+    """The stage-control READ, reporting paused -- so the pause check's own raise is the real one."""
+    return True, 50
+
+
+class _StageJob:
+    """The subset of ``saq.job.Job`` the pause check reads before it raises."""
+
+    def __init__(self, function: str) -> None:
+        self.function = function
+        self.key = f"{function}:a-file-id"
+        self.queue = None
+        self.scheduled = 0
+
+
 def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     """``saq.Worker(**phaze.tasks.agent_worker.settings)`` must NOT raise TypeError.
 
@@ -253,9 +268,11 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     import saq
 
     from phaze.tasks import agent_worker as agent_worker_module
-    from phaze.tasks._shared.stage_control import repark_if_stage_paused
+    from phaze.tasks._shared import stage_control as stage_control_module
+    from phaze.tasks._shared.deterministic_key import increment_completed
+    from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
     from phaze.tasks.agent_worker import settings as agent_settings
-    from phaze.telemetry.saq import after_process as telemetry_after_process
+    from phaze.telemetry import saq as telemetry_saq
 
     worker = saq.Worker(**agent_settings)
     assert worker is not None
@@ -279,9 +296,31 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     asyncio.run(composed({}))
     assert called == ["pause", "telemetry"], "the pause check must run, and must run before telemetry"
 
+    # phaze-35eiv: the order probe above uses non-raising mocks, and the pause check's whole
+    # job is to RAISE -- so on its own it is structurally blind to what actually happens on a
+    # bounce. Drive the real StagePausedRetry through the real composed hook (only the
+    # control-table read is stubbed) and pin what the after-hook is left holding: the bounce
+    # mark, and NO telemetry start -- because telemetry_before_process was skipped.
+    # The outcome that mark produces is pinned in tests/shared/telemetry/test_saq_hook_chain.py,
+    # where a telemetry sink is available.
+    # Put the REAL hooks back (narrowly -- `monkeypatch.undo()` would also revert the env this
+    # module's Worker was built from) and stub only the control-table read.
+    monkeypatch.setattr(agent_worker_module, "enforce_stage_pause_on_process", enforce_stage_pause_on_process)
+    monkeypatch.setattr(agent_worker_module, "telemetry_before_process", telemetry_saq.before_process)
+    monkeypatch.setattr(stage_control_module, "_read_stage_control", _paused_stage_control)
+    bounced: dict[str, Any] = {"job": _StageJob("process_file")}
+    with pytest.raises(StagePausedRetry):
+        asyncio.run(composed(bounced))
+    assert bounced.get(telemetry_saq._BOUNCE_KEY) is True, "a pause bounce must tell telemetry it never started"
+    assert telemetry_saq._START_KEY not in bounced, "telemetry_before_process is SKIPPED by the raise, not run after it"
+
+    # phaze-24dl8: ONE entry, not three. SAQ's after_process list is a bare loop whose first
+    # raising hook abandons the rest, so telemetry is no longer registered as its last element
+    # -- `after_process_chain` runs it in a `finally` instead. The neighbours keep their order
+    # and their abort-on-first-raise relationship; `chain` is the effective order.
     assert worker.after_process is not None
-    assert worker.after_process[0] is repark_if_stage_paused
-    assert worker.after_process[-1] is telemetry_after_process, "telemetry runs LAST so it measures the other hooks' work too"
+    assert len(worker.after_process) == 1
+    assert worker.after_process[0].chain == (repark_if_stage_paused, increment_completed, telemetry_saq.after_process)
 
 
 @pytest.mark.asyncio
