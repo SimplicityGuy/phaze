@@ -98,7 +98,13 @@ cited path, and the focused Mermaid render verifies this ER syntax.
 ### Set projection
 
 Migration `063` adds three nullable columns to `analysis_window`: `energy`, `camelot`, and
-`mood_scores`. It also creates `set_profile`, whose `file_id` is both primary key and foreign key
+`mood_scores`. Migration `066` drops `camelot` again: it is a pure lookup of the same row's
+`musical_key` through the 24-entry Camelot table, not a projection of the separate `features`
+JSONB the way `energy`/`mood_scores` are, so the JSONB-scale argument that justifies persisting
+those two does not apply to it. `AnalysisWindow.camelot` survives as a read-time `@property`
+computed from `musical_key` via `services.set_projection.camelot_code` (operator decision
+2026-09-16, bead `phaze-6r3eh`) — every reader still accesses `window.camelot` unchanged, with no
+backfill. 063 also creates `set_profile`, whose `file_id` is both primary key and foreign key
 to `files.id`. The FK uses `ON DELETE CASCADE`; `FileRecord.set_profile` is the matching optional,
 one-to-one ORM relationship with `delete-orphan` plus `passive_deletes=True` so the database owns
 the cascade.
@@ -217,10 +223,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-065)
+### Post-baseline chain (040-066)
 
-`alembic/versions/` holds **27** files: the `039` baseline plus a linear chain to the current
-head, **`065`**.
+`alembic/versions/` holds **28** files: the `039` baseline plus a linear chain to the current
+head, **`066`**.
 
 | Rev | Change |
 |-----|--------|
@@ -249,7 +255,8 @@ head, **`065`**.
 | `062` | Persist reviewed-before tags and review source versions |
 | `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table |
 | `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics |
-| `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) — **head** |
+| `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) |
+| `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
