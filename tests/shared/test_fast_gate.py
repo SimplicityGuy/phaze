@@ -109,7 +109,7 @@ DOCS_FLOOR_PATH = TESTS_ROOT / "docs_floor.txt"
 # The prose floor's load-bearing members, pinned by name on top of the derivation scan below. The
 # scan keeps the floor from UNDER-covering as new guards land; these three keep it from being
 # emptied out, because they are the ones with an incident behind them: phaze-f70y9 (bare ADR
-# numbers resolving to the wrong document after a renumber) and ADR-0012's attribution form, whose
+# numbers resolving to the wrong document after a renumber) and ADR-0012 (verification fidelity and operator attribution)'s attribution form, whose
 # guard fired for real on a seat's draft during the 2026-08-25 wave.
 REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
     {
@@ -120,9 +120,10 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 )
 
 # The floor exists to be fast; past this it is just the suite with extra steps. Measured
-# 2026-09-12 on seat `structural-audit`: 21 modules, 274 tests,
-# 164.37 s pytest / 185.61 s wall.
-MAX_DOCS_FLOOR_MODULES = 21
+# 2026-09-16 on seat `dev-dnez9` (phaze-dnez9 added test_adr_bare_citation_convention.py, which
+# reads tracked ADR/CONVENTIONS.md prose, to the floor): 22 modules, 291 tests,
+# 70.11 s pytest / 82.13 s wall.
+MAX_DOCS_FLOOR_MODULES = 22
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the only gate a

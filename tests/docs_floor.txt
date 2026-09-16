@@ -27,6 +27,7 @@ tests/shared/telemetry/test_alert_rules.py
 tests/shared/telemetry/test_metric_catalogue.py
 tests/shared/telemetry/test_span_budget.py
 tests/shared/test_adr_0018_weights.py
+tests/shared/test_adr_bare_citation_convention.py
 tests/shared/test_adr_citation_resolution.py
 tests/shared/test_adr_numbering.py
 tests/shared/test_change_gate.py
