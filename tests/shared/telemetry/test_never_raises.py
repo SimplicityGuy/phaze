@@ -20,7 +20,7 @@ from typing import Any
 from opentelemetry import trace
 import pytest
 
-from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments
+from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments, tracing
 from tests.shared.telemetry.conftest import reset_otel_globals
 
 
