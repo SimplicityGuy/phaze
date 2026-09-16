@@ -134,7 +134,7 @@ analysis, and correctly refused to assume they were stale. They are **legitimate
 produced by recovery.** Two disjoint shapes, one verdict:
 
 - **A re-analysis request.** *(At the time this was written that meant the per-file "deepen" action;
-  it was removed by phaze-w55w1 / ADR-0007 §7, but the shape survives it — the operator-gated retry
+  it was removed by phaze-w55w1 / ADR-0007 (windowed analysis) §7, but the shape survives it — the operator-gated retry
   endpoints and a recovery replay produce exactly the same one.)* A re-analysis re-enqueues
   `process_file` for a file that is already analyzed and, by design, **keeps the old
   `analysis_completed_at`** until the fresh `put_analysis` lands. That is

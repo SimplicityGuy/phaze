@@ -25,7 +25,7 @@
 The amd64 app image needs **no change at all** beyond comments: `python:3.14-slim` is already
 trixie and already ffmpeg 7.1.x. The work there was discovering that, not altering it.
 
-### Operator attribution (ADR-0012 rule 2)
+### Operator attribution (ADR-0012 (verification fidelity and operator attribution) rule 2)
 
 | Question as put | Answer as given | Date |
 | --- | --- | --- |
@@ -126,7 +126,7 @@ and the pip manylinux wheels to share one libstdc++ CXX11 ABI, and mixing them i
 [#977](https://github.com/MTG/essentia/issues/977) `undefined symbol: _ZTINSt6thread6_StateE`
 failure. trixie moves system gcc **12 → 14**, changing one half of that matched pair. A #977
 mismatch is a **runtime** symbol resolution failure, so a green `docker build` proves nothing —
-which is exactly the producer's-seam trap ADR-0012 rule 3 is about.
+which is exactly the producer's-seam trap ADR-0012 (verification fidelity and operator attribution) rule 3 is about.
 
 Two risks the bead did not name also had to clear: essentia recompiles against **libav 7.1 rather
 than 5.1** (two majors), and trixie ships **TagLib 2.0.2** where bookworm had 1.x — an API major
@@ -181,7 +181,7 @@ radius than 8.1.
 proves round-tripping rather than compatibility. That is the shape of `phaze-3ea41`, where the
 extracted `.mka` was asserted *"decodable by ffprobe"* while `es.MetadataReader`, the consumer that
 could not read its duration, was never handed the file, and 11,428 files analyzed to zero windows.
-This change swaps the muxer on arm64, so the check is owed (ADR-0012 rule 3).
+This change swaps the muxer on arm64, so the check is owed (ADR-0012 (verification fidelity and operator attribution) rule 3).
 
 In production the extracted file goes to `run_analysis_subprocess` → **essentia**, and its duration
 comes from `_probe_duration_sec`. Both were run against `.mka` files muxed by each version, **same
@@ -209,7 +209,7 @@ inert at phaze's scale: 22 ms against a 60 s fine / 30 s coarse window can only 
 count when a duration lands within 22 ms of a boundary, and the fine tier already drops a short
 trailing window. It is noted because it is real, not because it is thought to matter.
 
-## 5. Blast radius (ADR-0012 rule 4)
+## 5. Blast radius (ADR-0012 (verification fidelity and operator attribution) rule 4)
 
 
 **This changes the analysis path for every file processed by the arm64 agent lane.** The amd64 app

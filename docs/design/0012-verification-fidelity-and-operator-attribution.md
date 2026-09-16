@@ -220,7 +220,7 @@ The history already has durable homes, and this ADR cites them rather than resta
 - `tests/analyze/services/backends/test_kube_staging.py` and
   `tests/analyze/services/pipeline/test_extraction_analysis_handoff.py` carry the regressions.
 
-`ADR-0011` is the precedent for the shape: a process decision, committed to `docs/design/`, whose
+`ADR-0011 (bug hunt cadence)` is the precedent for the shape: a process decision, committed to `docs/design/`, whose
 argument is measurements rather than principle. This is the same kind of document.
 
 ______________________________________________________________________
@@ -428,7 +428,7 @@ ______________________________________________________________________
 
 | | `phaze-1b39` → 2026-07-28 | `phaze-b2qs9` / `phaze-u1n7j` → 2026-08-12/13 | `phaze-3ea41` → 2026-08-14 |
 | --- | --- | --- | --- |
-| **The claim** | a 3 h `activeDeadlineSeconds` bounds hung pods without cutting real work short | peak RSS is a function of chunk size, not of duration; ADR-0005's limits stay valid | `-c:a copy` is bit-identical, so audio-file analysis is unchanged |
+| **The claim** | a 3 h `activeDeadlineSeconds` bounds hung pods without cutting real work short | peak RSS is a function of chunk size, not of duration; ADR-0005 (analyze job memory limits)'s limits stay valid | `-c:a copy` is bit-identical, so audio-file analysis is unchanged |
 | **What verified it** | tests of the recovery path on pods that never start | `test_analysis_long_file.py` — a **mocked** essentia | 704 lines of `test_video_audio.py` against a **faked subprocess**, plus three real-`ffmpeg` tests that stop at `ffprobe` |
 | **What production did** | SIGTERM'd every 2–6 h concert-set analyze at exactly 3 h, burned `cloud_submit_max_attempts=3` per file, barred 14 files from Kueue, stalled the burst lane | +0.31 GiB per fine chunk (R² 0.99959); 4.1854 GiB at 4:00 and 10.2768 at 12:04 against a 4Gi limit — **2.57×** — OOMKilling every file past ~3 h | zero windows for every file in an 11,428-file corpus; 11.5 h of silent total failure |
 | **The reversal** | `phaze-202e` — no wall clock may kill a run; liveness is pod state | `phaze-u1n7j` — disconnect the streaming network, `gc.collect()`; 1.4985 / 1.6500 / 1.6725 GiB at 1:00 / 4:00 / 12:04 | `phaze-l832u.1` — probe with `ffprobe`; skip the remux for plain audio |
@@ -462,7 +462,7 @@ produced it rather than by the component that consumes it. A reviewer applying "
 mocks" to PR #424 would have found real-binary tests over real containers and cleared it. That is
 why guardrail 3 below is written about the *consumer*, not about mocks.
 
-`ADR-0007` §8 had already reached the same conclusion for the memory incident, in one sentence
+`ADR-0007 (windowed analysis)` §8 had already reached the same conclusion for the memory incident, in one sentence
 worth keeping: *"The synthetic proof above measured the right **quantity** on the wrong **scope**,
 and the difference is the whole finding."*
 
@@ -537,7 +537,7 @@ the implementer narrowing it silently and calling it satisfied.
 | incident | verdict |
 | --- | --- |
 | `phaze-1b39` | **Would not have caught.** Its criterion — a Job whose pod never starts is recovered — was met, and tested. The defect lived in a consequence no criterion covered. G1 governs criteria that exist; `1b39`'s gap was a criterion that did not. |
-| `phaze-b2qs9` / `u1n7j` | **Would not have caught.** ADR-0007 §7's condition is criterion-shaped, and `phaze-w55w1` *did* name a test for it: `test_analysis_long_file.py`. G1 asks whether a test is named, not whether it can fail. Only G3 closes that. |
+| `phaze-b2qs9` / `u1n7j` | **Would not have caught.** ADR-0007 (windowed analysis) §7's condition is criterion-shaped, and `phaze-w55w1` *did* name a test for it: `test_analysis_long_file.py`. G1 asks whether a test is named, not whether it can fail. Only G3 closes that. |
 | `phaze-3ea41` | **Would have caught.** No test anywhere named *"existing audio-file analysis is unchanged"* — the suite covered extraction, not the criterion. Both exits from G1 stop the change: writing the test produces `test_extraction_analysis_handoff.py`, which fails against the code as shipped; asking the operator surfaces the fusion in Finding 1. |
 
 ### G2 — "Operator decision" is a citation, not an emphasis marker
@@ -561,7 +561,7 @@ the Sources section do — is the supported form.
 The attribution extends no further than the question asked. When implementation reveals a second
 decision inside the first — here, *which video containers to accept* versus *whether bare audio is
 remuxed at all* — that is a new question, not a corollary. **The symmetric rule also holds:** a decision may not be narrowed
-past the conditions attached to it — ADR-0007 §7 accepted a cost profile *"on the condition that the
+past the conditions attached to it — ADR-0007 (windowed analysis) §7 accepted a cost profile *"on the condition that the
 implementation bead changes the architecture enough to keep it survivable"*, and shipping the
 decision without verifying the condition is the same defect in the other direction.
 
@@ -569,7 +569,7 @@ A claim failing any of the four is not deleted — it is **relabelled as the imp
 which is a perfectly good thing for a decision to be, and which invites exactly the review that the
 operator label suppresses.
 
-Two records in this repo already meet the bar and are the models: **ADR-0007 §7**, which states the
+Two records in this repo already meet the bar and are the models: **ADR-0007 (windowed analysis) §7**, which states the
 recommendation, that the operator declined it, what was decided instead, the date, and the
 conditions; and the operator-decision comment on **`phaze-b62ri`** (2026-08-20), which separates
 *question as put* / *answer as given* / *scope of that answer* / *dispatcher inference, flagged as
@@ -578,7 +578,7 @@ such* / *verified by dispatcher*.
 | incident | verdict |
 | --- | --- |
 | `phaze-1b39` | **Would not have caught.** No operator attribution was involved. The 3 h default was an implementer's choice, presented honestly as one, and it shipped anyway. G2 makes provenance legible; it does not make a bound correct. |
-| `phaze-b2qs9` / `u1n7j` | **Would not have caught.** ADR-0007 §7 is already G2-compliant, and it is the reason we can say precisely what the operator accepted and on what condition. G2 changed nothing about the defect — it is a documentation rule, not a verification rule. (Its new symmetric clause makes the *unverified condition* visible at review, which is a real but partial gain.) |
+| `phaze-b2qs9` / `u1n7j` | **Would not have caught.** ADR-0007 (windowed analysis) §7 is already G2-compliant, and it is the reason we can say precisely what the operator accepted and on what condition. G2 changed nothing about the defect — it is a documentation rule, not a verification rule. (Its new symmetric clause makes the *unverified condition* visible at review, which is a real but partial gain.) |
 | `phaze-3ea41` | **Would have caught.** Six bullets stamped operator-confirmed, and **not one of them carried a citation**. (Amended 2026-08-21: the original text read *"none is citeable"*, which the recovered transcript refutes — three of the six had a real answer, under two hours old at commit time. Not citeable and not cited are different failures, and only the second one happened.) G2 bites either way, because it is owed at the moment the claim is written: producing the four fields would have taken the author back to the exchange, where three bullets survive with a citation and the format-scope bullet cannot be written as an operator decision at all — it would have appeared as what it was, an implementer's scope choice, open to challenge. |
 
 ### G3 — Verify with the artifact's real consumer, not with the tool that produced it
@@ -602,7 +602,7 @@ The general form, of which "a mocked essentia cannot hold this line" is one inst
 | incident | verdict |
 | --- | --- |
 | `phaze-1b39` | **Would not have caught, as drafted. Would have caught, with the distribution clause.** The claim "3 h bounds hung pods without cutting real work short" is a claim about the corpus's duration distribution, and no test at any fidelity can hold it — CI cannot run a 6-hour analysis. What *could* have discharged it is one query against `files.duration` asking how much of the archive exceeds 3 hours. The answer was 2–6 hour sets, in quantity. That is the cheapest check in this document and the only thing on this list that would have stopped `1b39` at review. |
-| `phaze-b2qs9` / `u1n7j` | **Would have caught.** The consumer is real essentia's streaming network; `test_analysis_long_file.py` measured a mock. ADR-0007 §8 states the outcome in its own table: *"it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes**."* |
+| `phaze-b2qs9` / `u1n7j` | **Would have caught.** The consumer is real essentia's streaming network; `test_analysis_long_file.py` measured a mock. ADR-0007 (windowed analysis) §8 states the outcome in its own table: *"it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes**."* |
 | `phaze-3ea41` | **Would have caught — and only this rule would.** The consumer of `extract_audio_track`'s output is `analyze_file` → `_probe_duration_sec`. No test crossed that boundary; the real-`ffmpeg` tests stopped at `probe_audio_streams`, i.e. at `ffprobe` checking `ffmpeg`'s own output. `tests/analyze/services/pipeline/test_extraction_analysis_handoff.py` is what G3 demands, and `phaze-l832u.3` records that every test in it fails against the pre-fix code. |
 
 #### The qualification: an INDEPENDENT consumer is not automatically a DISCRIMINATING one
@@ -867,9 +867,9 @@ looked like before it was searched.
 
 | claim | why it holds |
 | --- | --- |
-| `phaze-w55w1` — *"Operator decision 2026-08-11 (recorded in ADR-0007…)"* | Cites a durable record that itself states recommendation, decline, decision, date and conditions. **ADR-0007 §7 is the best operator-decision record in the repo.** The corroborating artifact exists too: `phaze-dx9al.2`'s state-change reason is *"Operator decision at review: remove the caps entirely (Option A extended)"*. |
+| `phaze-w55w1` — *"Operator decision 2026-08-11 (recorded in ADR-0007 (windowed analysis)…)"* | Cites a durable record that itself states recommendation, decline, decision, date and conditions. **ADR-0007 (windowed analysis) §7 is the best operator-decision record in the repo.** The corroborating artifact exists too: `phaze-dx9al.2`'s state-change reason is *"Operator decision at review: remove the caps entirely (Option A extended)"*. |
 | `phaze-b62ri` (2026-08-20) | Question as put, answer quoted, date, explicit scope limit, and a separately-labelled dispatcher inference. Assessed in §6 below. |
-| `phaze-0jpe.6` — chromaprint retained permanently | Dated 2026-07-29, bead-cited, and consistently stated in four places (`Dockerfile:73`, `CLAUDE.md` ×2, `ADR-0002`). |
+| `phaze-0jpe.6` — chromaprint retained permanently | Dated 2026-07-29, bead-cited, and consistently stated in four places (`Dockerfile:73`, `CLAUDE.md` ×2, `ADR-0002 (fingerprint removal)`). |
 | `phaze-d4eiq` — no `[tool.uv] exclude-newer` | Dated 2026-08-03, bead-cited, and **enforced by a test that asserts the citation survives**: `tests/shared/test_no_exclude_newer_cooldown.py:63` fails if the comment stops naming the date. This is the only operator decision in the repo with a machine-checked citation, and it is the pattern R2 below generalizes. |
 | `phaze-g84sk.2` | Records what the operator **declined** and on what rationale — *"explicitly declined 'failed only' with exactly this rationale presented"*. Recording the rejected option is what makes a later scope challenge decidable. |
 | `phaze-ljiee` / `phaze-mrnjq`, `phaze-5fta` / `config.py:867`, `phaze-pw7v` | Dated, and either bead-cited or accompanied by the reasoning that was put to the operator. |

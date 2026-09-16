@@ -122,14 +122,14 @@ the collector process was recreated. Relevant to homelab if phaze's label set ev
 
 ## 6. Verification
 
-Per ADR-0012 rule 3, the claims above are discharged against real consumers:
+Per ADR-0012 (verification fidelity and operator attribution) rule 3, the claims above are discharged against real consumers:
 
 | claim | discharged by |
 | --- | --- |
 | an unreachable collector cannot fail or stall an analysis | `tests/shared/telemetry/test_telemetry_never_breaks_analysis.py` — a REAL analysis run to completion against an unroutable address, result compared to the telemetry-off run |
 | a SLOW collector cannot either | the same file — a real HTTP listener that accepts and then sleeps past every timeout |
 | exit is bounded | the same file — measured elapsed on `shutdown_telemetry` against that listener |
-| the export timeout is what phaze thinks it is | `tests/shared/telemetry/test_export_timeout_units.py` — constructs the REAL exporter and reads back the resolved timeout, because `OTEL_EXPORTER_OTLP_TIMEOUT` is in SECONDS in opentelemetry-python 1.44.0 while the specification says milliseconds (ADR-0016's shape) |
+| the export timeout is what phaze thinks it is | `tests/shared/telemetry/test_export_timeout_units.py` — constructs the REAL exporter and reads back the resolved timeout, because `OTEL_EXPORTER_OTLP_TIMEOUT` is in SECONDS in opentelemetry-python 1.44.0 while the specification says milliseconds (ADR-0016 (transferred model verification)'s shape) |
 | the metric names and labels survive the OTLP → Prometheus translation | measured against a real `otel/opentelemetry-collector-contrib` 0.140.0, recorded in `docs/telemetry/metric-catalogue.md` §5 — which is how a reserved-label collision that silently DELETED two metrics was found |
 
 ______________________________________________________________________
@@ -142,7 +142,7 @@ file is one trace, crossing the exec'd-analysis process boundary — and the col
 routed those spans to `debug`, which prints a line and drops them. **Emission was built; the
 destination was never specified.**
 
-> **Operator decision 2026-08-27.** Question as put: *"ADR-0017 names no trace backend. Traces
+> **Operator decision 2026-08-27.** Question as put: *"ADR-0017 (telemetry export topology) names no trace backend. Traces
 > are emitted to `/v1/traces` and, as things stand, would arrive at a collector with nowhere to
 > put them. Want me to add it to homelab-73j? It is a small amendment: if you want per-file
 > analysis progress, you need a trace store; the spans already exist."* Answer as given,
@@ -280,7 +280,7 @@ unchanged: a dropped span is acceptable, a failed analyze job is not.
 
 ### 7f. Verification
 
-Per ADR-0012 rule 3, discharged against the real consumer — the trace UI, not an assertion
+Per ADR-0012 (verification fidelity and operator attribution) rule 3, discharged against the real consumer — the trace UI, not an assertion
 that the exporter was called. Recorded in `docs/telemetry/traces.md`.
 
 ______________________________________________________________________
@@ -322,7 +322,7 @@ Harness: `scripts/measure_concurrent_identity.py`.
 
 > **An in-process reader cannot find this, which is why it survived a complete telemetry
 > epic.** Each child's own `InMemoryMetricReader` shows a perfectly monotonic counter — the
-> corruption is in the collector's accumulator. ADR-0012 rule 3, on a component phaze does
+> corruption is in the collector's accumulator. ADR-0012 (verification fidelity and operator attribution) rule 3, on a component phaze does
 > not own.
 
 ### 8b. Decision
