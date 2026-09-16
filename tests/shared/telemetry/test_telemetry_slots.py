@@ -16,7 +16,9 @@ refusal of an out-of-range slot.
 
 from __future__ import annotations
 
+import ast
 import logging
+import pathlib
 
 import pytest
 
@@ -279,3 +281,103 @@ def test_the_default_pool_is_a_singleton() -> None:
 
     assert second is first
     assert second.acquire() != held, "a second pool handed out a slot the first one already holds"
+
+
+# phaze-w15ju: the burst lane injects its slot from outside the process
+
+
+def test_assign_passes_an_inherited_slot_through_and_allocates_nothing() -> None:
+    """THE BURST LANE'S WHOLE MECHANISM, and the branch its correctness rests on.
+
+    A burst pod runs ``run_analysis_subprocess`` exactly like the host lane, so it builds a
+    process-local pool -- of ONE competitor, because the pod shares memory with nobody -- and would
+    acquire index 0. That would overwrite the slot the controller allocated against the other
+    in-flight pods, and every burst pod would export under ``phaze-analysis-0`` again with a
+    correct-looking Job manifest. ADR-0017 section 8d named that trap before this bead existed.
+
+    So an inherited, VALID slot wins: nothing is taken from the pool, the environment is untouched,
+    and the returned slot is None -- which also means the caller's ``finally`` releases nothing it
+    never held.
+    """
+    pool = slots.SlotPool(4)
+    environ, slot = slots.assign({slots.SLOT_ENV: "2", slots.SLOT_MAX_ENV: "4"}, pool=pool)
+
+    assert slot is None
+    assert environ[slots.SLOT_ENV] == "2"
+    assert environ[slots.SLOT_MAX_ENV] == "4"
+    assert pool.acquire() == 0, "the pass-through consumed a slot from the pool"
+    assert bootstrap._instance_id("phaze-analysis", environ) == "phaze-analysis-2"
+
+
+def test_an_inherited_slot_the_child_would_refuse_is_not_honoured(caplog: pytest.LogCaptureFixture) -> None:
+    """An out-of-range or malformed inherited slot falls through to a REAL allocation.
+
+    Deferring to a value ``resolve_slot`` rejects would hand the process the shared identity while a
+    perfectly good slot sat free in its pool -- the worst of both answers. The bound is what decides:
+    slot 9 against a bound of 4 is not a slot, it is a lie about concurrency.
+    """
+    for inherited in ({slots.SLOT_ENV: "9", slots.SLOT_MAX_ENV: "4"}, {slots.SLOT_ENV: "not-a-slot"}):
+        pool = slots.SlotPool(4)
+        with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
+            environ, slot = slots.assign(dict(inherited), pool=pool)
+        assert slot == 0, f"{inherited} should not have been honoured"
+        assert environ[slots.SLOT_ENV] == "0"
+        assert environ[slots.SLOT_MAX_ENV] == "4"
+
+
+def test_a_process_that_allocates_its_own_slots_disowns_an_inherited_one(caplog: pytest.LogCaptureFixture) -> None:
+    """``disown_inherited_slot`` is what keeps the pass-through from breaking the HOST lane.
+
+    Once an inherited slot is honoured, a ``PHAZE_TELEMETRY_SLOT`` set by hand in the agent worker's
+    environment would ride ``child_environment``'s ``os.environ`` copy into EVERY child, collapsing
+    all ``worker_process_pool_size`` of them onto one identity -- the merge the pool exists to
+    prevent, with a plausible-looking environment and a green suite.
+
+    Ownership, not precedence: the seat that bounds the concurrency disowns what it was handed, and
+    logs the discard so the operator's value does not vanish silently. The BOUND is deliberately
+    left in place -- it is a documented override for the ceiling, not a claim about which slot this
+    process holds.
+    """
+    environ = {slots.SLOT_ENV: "3", slots.SLOT_MAX_ENV: "6", "PATH": "/usr/bin"}
+    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
+        assert slots.disown_inherited_slot(environ) == 3
+
+    assert slots.SLOT_ENV not in environ
+    assert environ[slots.SLOT_MAX_ENV] == "6"
+    assert environ["PATH"] == "/usr/bin"
+    assert any("telemetry_slot_inherited_discarded" in record.getMessage() for record in caplog.records)
+
+    # With the inherited value gone, assign is back to allocating from the pool it owns.
+    pool = slots.SlotPool(4)
+    _, slot = slots.assign(dict(environ), pool=pool)
+    assert slot == 0
+
+
+def test_disowning_nothing_is_a_no_op() -> None:
+    """The normal case: no inherited slot, nothing removed, nothing logged."""
+    assert slots.disown_inherited_slot({}) is None
+    assert slots.disown_inherited_slot({slots.SLOT_ENV: "   "}) is None
+
+
+def test_the_agent_worker_startup_disowns_before_it_spawns_anything() -> None:
+    """The host lane's protection is WIRED, not merely available (phaze-w15ju).
+
+    ``disown_inherited_slot`` closes a regression that only exists because ``assign`` now honours an
+    inherited slot, and a helper nobody calls closes nothing. Read at the source level because the
+    alternative is booting a real agent worker (broker, heartbeat, queue readiness) to observe one
+    call, and because what has to hold is an ORDERING: the disown must sit beside
+    ``set_default_pool_size`` in ``startup``, before any child can be spawned.
+    """
+    # Read the file rather than import the module: ``phaze.tasks.agent_worker`` builds
+    # ``AgentSettings`` at import time and raises without the agent env, which is a fixture cost this
+    # assertion does not need.
+    agent_worker = pathlib.Path(slots.__file__).parents[1] / "tasks" / "agent_worker.py"
+    source = agent_worker.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    startup = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
+    called = [node.func.attr for node in ast.walk(startup) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+    assert "set_default_pool_size" in called
+    assert "disown_inherited_slot" in called
+    assert called.index("disown_inherited_slot") > called.index("set_default_pool_size"), (
+        "the pool must be sized from the real concurrency knob before the inherited slot is discarded"
+    )
