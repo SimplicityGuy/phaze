@@ -37,9 +37,17 @@ child, so the identity set is bounded by the CONCURRENCY rather than by the corp
 this affordable and the per-pod id unaffordable.
 
 **A slot is NOT a host, and the two labels stack deliberately.** ``PHAZE_TELEMETRY_INSTANCE``
-remains the per-host override, whose value is the operator's to pick and is bounded by
-the number of hosts; the slot is
-appended to it, so ``host-prod`` with four children is ``host-prod-0 .. host-prod-3``.
+remains the per-host override, whose value is the operator's to pick and is bounded by the
+number of hosts; the slot is appended to it, so ``host-prod`` with four children is
+``host-prod-0 .. host-prod-3``.
+
+**THE BOUND IS SENT WITH THE SLOT, not documented alongside it.** The parent's pool size
+is stamped into the child's environment by :func:`assign`, so a raised
+``worker_process_pool_size`` needs no second variable and no operator action. Telling an
+operator to keep two numbers in step was the drift this module's own design note says
+:func:`set_default_pool_size` exists to prevent, and it cost slots 4 and 5 of a six-slot
+pool -- issued by the parent, refused by the child, shared identity for a third of the
+fleet.
 
 **WHY VALIDATION FAILS CLOSED HERE.** An out-of-range or non-numeric slot is REFUSED and
 the process falls back to the unsuffixed identity -- degraded to the shared-identity merge
@@ -76,8 +84,11 @@ log = logging.getLogger(__name__)
 SLOT_ENV = "PHAZE_TELEMETRY_SLOT"
 
 #: The exclusive upper bound on a slot index, and therefore the cardinality multiplier.
-#: Defaults to :data:`DEFAULT_SLOT_MAX`; the host lane overrides it from the SAME knob that
-#: bounds concurrency (see :func:`set_default_pool_size`), so the two cannot drift.
+#: **The host lane sets this FOR the child** -- :func:`assign` stamps the issuing pool's own
+#: size alongside the slot, so the bound the child enforces is the one the slot was drawn
+#: from and the two cannot drift. An operator does not need to set it to raise
+#: ``worker_process_pool_size``; it remains an explicit override, and the input for a
+#: producer nothing allocates for (the burst lane, ``phaze-w15ju``).
 SLOT_MAX_ENV = "PHAZE_TELEMETRY_SLOT_MAX"
 
 #: Matches ``config_base.Settings.worker_process_pool_size``'s default, which is what
@@ -200,7 +211,10 @@ def set_default_pool_size(size: int) -> None:
 
     The host lane's ceiling is ``worker_process_pool_size``, and this exists so the
     cardinality bound is read from that number rather than from a second copy of it in the
-    environment. Sizing down while slots are held would hand out a duplicate on the next
+    environment. That is only half the job: the size set here is what :func:`assign` then
+    stamps into each child's environment, because the child enforces the bound and would
+    otherwise fall back to :data:`DEFAULT_SLOT_MAX` and refuse the very slots this pool
+    hands out. Sizing down while slots are held would hand out a duplicate on the next
     acquire, so a resize replaces the pool only when nothing is out.
     """
     global _pool  # process-wide singleton, like the providers in bootstrap
@@ -212,7 +226,7 @@ def set_default_pool_size(size: int) -> None:
 
 
 def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[dict[str, str], int | None]:
-    """Stamp a freshly acquired slot into ``environ``; return it and the slot to release.
+    """Stamp a freshly acquired slot AND THE BOUND IT WAS DRAWN FROM into ``environ``.
 
     Returns the SAME mapping it was handed (already a copy, from
     ``context.child_environment``) so the caller has one object to pass to
@@ -220,10 +234,30 @@ def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[di
     release, and it must release it only once the child has EXITED -- a slot released at
     spawn time would be handed to the next child while this one is still exporting under it,
     which is the merge this whole module exists to prevent.
+
+    **THE BOUND TRAVELS WITH THE SLOT, and shipping only the slot was a defect.** The parent
+    sizes its pool from ``worker_process_pool_size``; the child validates what it receives in
+    :func:`resolve_slot` against :func:`slot_max`, which reads the CHILD's environment and
+    defaults to :data:`DEFAULT_SLOT_MAX`. Those are two different numbers the moment an
+    operator raises the pool: measured at ``worker_process_pool_size=6`` with
+    ``PHAZE_TELEMETRY_SLOT_MAX`` unset, the parent issued slots 4 and 5, the child logged
+    ``telemetry_slot_out_of_range slot=5 bound=4`` for each, and two of six children fell
+    back to the shared identity -- silently reinstating the overwrite this module exists to
+    fix, for a third of the fleet, with a green suite.
+
+    Stamping ``pool.size`` closes it at the source rather than in documentation. The parent
+    can never issue a slot at or above its own pool size, so the bound sent here is by
+    construction the SMALLEST one that admits every slot the parent can hand out: it cannot
+    be too small for a real slot, and it cannot be inflated by a stale value inherited from
+    the parent's own environment. ``PHAZE_TELEMETRY_SLOT_MAX`` survives as an explicit
+    operator override and as the input for a producer nothing allocates for -- the burst
+    lane, ``phaze-w15ju``.
     """
-    chosen = (pool or default_pool()).acquire()
+    target = pool or default_pool()
+    chosen = target.acquire()
     if chosen is not None:
         environ[SLOT_ENV] = str(chosen)
+        environ[SLOT_MAX_ENV] = str(target.size)
     return environ, chosen
 
 

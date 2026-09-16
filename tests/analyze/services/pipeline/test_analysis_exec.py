@@ -586,3 +586,36 @@ async def test_a_childs_slot_is_returned_for_reuse_and_bounds_the_identity_set(m
         seen.append(result["echo"]["instance_id"])
 
     assert seen == ["phaze-analysis-0"] * 3, f"a sequential child did not get the lowest free slot back: {seen}"
+
+
+async def test_a_child_accepts_a_slot_above_the_default_bound(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A RAISED pool must reach a real child across the process boundary (phaze-21nnf).
+
+    The bound is enforced in the CHILD, from the child's own environment, where it defaults
+    to 4. So an operator raising `worker_process_pool_size` to 6 used to get slots 4 and 5
+    issued by the parent and refused by the child -- `telemetry_slot_out_of_range slot=5
+    bound=4` -- putting a third of the fleet back on the shared identity. `slots.assign`
+    now sends the issuing pool's size with the slot.
+
+    This is the cross-process half of `test_assign_sends_the_bound_the_slot_was_drawn_from`:
+    that one asks the child-side resolver about the parent's mapping in one process, while
+    this spawns the REAL child and reads back the identity it resolved for itself. A
+    six-slot pool with five slots already held leaves exactly slot 5 for it.
+    """
+    _point_child_at(monkeypatch, "telemetry_identity_analyze")
+    identity_dir = tmp_path / "identities"
+    identity_dir.mkdir()
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_DIR", str(identity_dir))
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_PEERS", "1")
+    monkeypatch.delenv("PHAZE_TELEMETRY_SLOT_MAX", raising=False)
+    slots._reset_for_tests()
+    slots.set_default_pool_size(6)
+    held = [slots.default_pool().acquire() for _ in range(5)]
+    assert held == [0, 1, 2, 3, 4]
+
+    result = await run_analysis_subprocess("/fake/a.mp3", "/fake/models", stall_timeout=30.0)
+
+    assert result["echo"]["slot_env"] == "5"
+    assert result["echo"]["instance_id"] == "phaze-analysis-5", (
+        "the child refused a slot above the default bound, so it fell back to the shared identity"
+    )

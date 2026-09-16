@@ -157,6 +157,57 @@ def test_releasing_none_or_twice_is_harmless() -> None:
     assert pool.acquire() is None, "a double release duplicated a slot in the free list"
 
 
+def test_assign_sends_the_bound_the_slot_was_drawn_from(caplog: pytest.LogCaptureFixture) -> None:
+    """THE REGRESSION TEST FOR A RAISED POOL, and it fails without the stamped bound.
+
+    The parent sizes its pool from ``worker_process_pool_size``; the CHILD enforces the
+    bound, reading it from its own environment where it defaults to ``DEFAULT_SLOT_MAX``.
+    Those are the same number only at the default. At a pool of 6 with nothing stamped, the
+    parent issues slots 4 and 5 and the child refuses both -- measured,
+    ``telemetry_slot_out_of_range slot=5 bound=4`` -- so a third of the fleet silently falls
+    back to the shared identity that this module exists to eliminate, with a green suite and
+    correct-looking dashboards.
+
+    So this drives a SIX-slot pool through the real ``assign`` and then asks the CHILD-side
+    resolver about the environment the parent actually produced. Asserting on
+    ``environ[SLOT_MAX_ENV]`` alone would not do: what has to hold is that ``resolve_slot``
+    accepts the slot, which is the function whose refusal caused the defect.
+    """
+    pool = slots.SlotPool(6)
+    issued = []
+    for _ in range(6):
+        environ, slot = slots.assign({}, pool=pool)
+        issued.append((environ, slot))
+
+    assert [slot for _, slot in issued] == [0, 1, 2, 3, 4, 5]
+    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
+        resolved = [slots.resolve_slot(environ) for environ, _ in issued]
+
+    assert resolved == [0, 1, 2, 3, 4, 5], "the child refused a slot its own parent issued"
+    assert not caplog.records, f"a parent-issued slot was logged as out of range: {[r.getMessage() for r in caplog.records]}"
+    assert issued[5][0][slots.SLOT_MAX_ENV] == "6"
+
+
+def test_assign_sends_a_bound_that_cannot_be_inflated_by_the_parents_own_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stamped bound is the POOL's, not whatever the parent happened to inherit.
+
+    ``child_environment`` copies ``os.environ``, so a stale or operator-set
+    ``PHAZE_TELEMETRY_SLOT_MAX`` rides along into the child. The pool's own size is the only
+    value that is correct by construction -- the parent can never issue a slot at or above
+    it -- so it must win. A larger inherited bound would admit a slot no pool can issue; a
+    smaller one would refuse slots that are perfectly valid.
+    """
+    monkeypatch.setenv(slots.SLOT_MAX_ENV, "2")
+    pool = slots.SlotPool(6)
+    for _ in range(5):
+        pool.acquire()
+    environ, slot = slots.assign({slots.SLOT_MAX_ENV: "2"}, pool=pool)
+
+    assert slot == 5
+    assert environ[slots.SLOT_MAX_ENV] == "6"
+    assert slots.resolve_slot(environ) == 5
+
+
 def test_assign_stamps_the_slot_into_the_childs_environment() -> None:
     """The parent's half of the process boundary: the slot travels in the child's env.
 
@@ -187,6 +238,7 @@ def test_assign_leaves_the_environment_alone_when_no_slot_is_free() -> None:
 
     assert slot is None
     assert slots.SLOT_ENV not in environ
+    assert slots.SLOT_MAX_ENV not in environ, "a bound was sent for a slot that was never issued"
 
 
 def test_the_default_pool_is_sized_from_the_concurrency_knob() -> None:

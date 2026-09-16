@@ -114,7 +114,18 @@ neither:
 | variable | meaning |
 | --- | --- |
 | `PHAZE_TELEMETRY_SLOT` | this process's slot. Assigned by the worker that bounds concurrency — **never set by hand** |
-| `PHAZE_TELEMETRY_SLOT_MAX` | the exclusive bound, default 4. Raise it **with** `worker_process_pool_size`, and expect another 2,290-series block per slot |
+| `PHAZE_TELEMETRY_SLOT_MAX` | the exclusive bound. **Set for you**, from the pool the slot came out of — an explicit override only |
+
+**Raising `worker_process_pool_size` is all an operator does.** The worker sizes its slot
+pool from that knob and sends the pool's own size to each child alongside the slot, so the
+bound the child enforces is always the bound its slot was drawn from. Expect another
+2,290-series block per slot, and nothing else to set.
+
+> **This used to be two numbers, and that was a defect.** The child enforces the bound from
+> its own environment, where it defaults to 4, so a pool of 6 issued slots 4 and 5 and the
+> child refused both — `telemetry_slot_out_of_range slot=5 bound=4` — putting a third of the
+> fleet back on the shared identity with nothing failing. Telling an operator to keep two
+> numbers in step is exactly the drift the single-knob design exists to prevent.
 
 A slot outside the bound is refused and logged, and the process falls back to the shared
 identity — bad, but bounded, which is the safer of the two failure directions.
