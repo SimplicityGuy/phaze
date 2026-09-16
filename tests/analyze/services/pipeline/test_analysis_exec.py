@@ -20,6 +20,7 @@ from structlog.testing import capture_logs
 
 from phaze.analysis_child import _TARGET_ENV
 from phaze.services.analysis_exec import AnalysisStalledError, AnalysisSubprocessError, run_analysis_subprocess
+from phaze.telemetry import slots
 from tests.analyze._child_stubs import _result
 
 
@@ -506,3 +507,115 @@ async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_n
     # silent child cannot expose an orphaned pump -- the very masking the no-op kill exists to undo.
     assert gate.exists(), "the reap never reached proc.kill(), so the orphan probe was never armed"
     assert len(beats) == seen_at_cancel, f"{len(beats) - seen_at_cancel} callback(s) fired after cancellation: a pump outlived the reap"
+
+
+async def test_concurrent_children_get_distinct_telemetry_identities(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """phaze-21nnf: two children alive AT ONCE must not export under one identity.
+
+    **This is the test that would have caught the defect, and it is written to FAIL on the
+    old default.** Before the worker-slot scheme both children resolved
+    ``service.instance.id`` to ``phaze-analysis``, and the collector's Prometheus exporter
+    keeps one series per identity and takes the last write -- measured against
+    ``otel/opentelemetry-collector-contrib`` 0.140.0, that produced a counter series that
+    DECREASED (``100 -> 20 ... 200 -> 30``) and an ``increase()`` 84.4% above the truth. The
+    record is ``docs/telemetry/concurrent-identity.md``.
+
+    Three properties are asserted together, and each one is load-bearing:
+
+    1. the identities are DISTINCT -- the fix;
+    2. each is the base name plus a slot inside the stated bound -- the CARDINALITY half,
+       because an identity that merely differed (a pid, a uuid) would be a per-file series
+       block and the reason ADR-0017 rejected a per-pod id;
+    3. the children genuinely OVERLAPPED -- the stub's barrier means neither returns until
+       both have registered, so this cannot pass by running them one after the other, which
+       is the shape that would pass against a shared identity too.
+
+    The identity is read from the CHILD's own ``bootstrap._instance_id`` across a real
+    process boundary, not from the parent's view of the environment it passed.
+    """
+    _point_child_at(monkeypatch, "telemetry_identity_analyze")
+    identity_dir = tmp_path / "identities"
+    identity_dir.mkdir()
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_DIR", str(identity_dir))
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_PEERS", "2")
+    slots._reset_for_tests()
+    slots.set_default_pool_size(2)
+
+    results = await asyncio.gather(
+        run_analysis_subprocess("/fake/a.mp3", "/fake/models", stall_timeout=30.0),
+        run_analysis_subprocess("/fake/b.mp3", "/fake/models", stall_timeout=30.0),
+    )
+
+    echoes = [result["echo"] for result in results]
+    identities = {echo["instance_id"] for echo in echoes}
+    assert len(identities) == 2, f"concurrent children shared an identity: {identities}"
+    assert identities == {"phaze-analysis-0", "phaze-analysis-1"}, identities
+
+    bound = slots.slot_max()
+    for echo in echoes:
+        assert 0 <= int(echo["slot_env"]) < bound, f"slot {echo['slot_env']!r} outside the stated bound {bound}"
+
+    pids = {echo["pid"] for echo in echoes}
+    assert len(pids) == 2, "the two runs were served by one child process, so nothing was concurrent"
+
+
+async def test_a_childs_slot_is_returned_for_reuse_and_bounds_the_identity_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The slot is REUSED by the next child, which is what bounds the cardinality.
+
+    A scheme that handed every child a fresh identity would be correct about concurrency and
+    catastrophic about series count -- 2,290 analysis series x 11,428 files. So this asserts
+    the thing that makes the bound real: run three children SEQUENTIALLY through a pool of
+    two and every one of them lands back on slot 0.
+
+    It is also the release path's only end-to-end cover. The release lives in a ``finally``
+    around the child's whole lifetime, so a leak would not raise here -- the pool would
+    simply run dry and the third child would silently fall back to the shared identity,
+    which is exactly the assertion below.
+    """
+    _point_child_at(monkeypatch, "telemetry_identity_analyze")
+    identity_dir = tmp_path / "identities"
+    identity_dir.mkdir()
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_DIR", str(identity_dir))
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_PEERS", "1")  # no barrier: these run one at a time
+    slots._reset_for_tests()
+    slots.set_default_pool_size(2)
+
+    seen = []
+    for name in ("a", "b", "c"):
+        result = await run_analysis_subprocess(f"/fake/{name}.mp3", "/fake/models", stall_timeout=30.0)
+        seen.append(result["echo"]["instance_id"])
+
+    assert seen == ["phaze-analysis-0"] * 3, f"a sequential child did not get the lowest free slot back: {seen}"
+
+
+async def test_a_child_accepts_a_slot_above_the_default_bound(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A RAISED pool must reach a real child across the process boundary (phaze-21nnf).
+
+    The bound is enforced in the CHILD, from the child's own environment, where it defaults
+    to 4. So an operator raising `worker_process_pool_size` to 6 used to get slots 4 and 5
+    issued by the parent and refused by the child -- `telemetry_slot_out_of_range slot=5
+    bound=4` -- putting a third of the fleet back on the shared identity. `slots.assign`
+    now sends the issuing pool's size with the slot.
+
+    This is the cross-process half of `test_assign_sends_the_bound_the_slot_was_drawn_from`:
+    that one asks the child-side resolver about the parent's mapping in one process, while
+    this spawns the REAL child and reads back the identity it resolved for itself. A
+    six-slot pool with five slots already held leaves exactly slot 5 for it.
+    """
+    _point_child_at(monkeypatch, "telemetry_identity_analyze")
+    identity_dir = tmp_path / "identities"
+    identity_dir.mkdir()
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_DIR", str(identity_dir))
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_PEERS", "1")
+    monkeypatch.delenv("PHAZE_TELEMETRY_SLOT_MAX", raising=False)
+    slots._reset_for_tests()
+    slots.set_default_pool_size(6)
+    held = [slots.default_pool().acquire() for _ in range(5)]
+    assert held == [0, 1, 2, 3, 4]
+
+    result = await run_analysis_subprocess("/fake/a.mp3", "/fake/models", stall_timeout=30.0)
+
+    assert result["echo"]["slot_env"] == "5"
+    assert result["echo"]["instance_id"] == "phaze-analysis-5", (
+        "the child refused a slot above the default bound, so it fell back to the shared identity"
+    )

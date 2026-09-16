@@ -19,7 +19,7 @@ import time
 from opentelemetry import trace
 import pytest
 
-from phaze.telemetry import _env, bootstrap, tracing
+from phaze.telemetry import _env, bootstrap, slots, tracing
 from tests.shared.telemetry.conftest import reset_otel_globals
 
 
@@ -30,7 +30,7 @@ BLACK_HOLE = "http://192.0.2.1:4318"
 
 @pytest.fixture(autouse=True)
 def _clean_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (_env.ENDPOINT_ENV, _env.TRACES_ENDPOINT_ENV, _env.METRICS_ENDPOINT_ENV, _env.FLUSH_TIMEOUT_ENV):
+    for name in (_env.ENDPOINT_ENV, _env.TRACES_ENDPOINT_ENV, _env.METRICS_ENDPOINT_ENV, _env.FLUSH_TIMEOUT_ENV, slots.SLOT_ENV, slots.SLOT_MAX_ENV):
         monkeypatch.delenv(name, raising=False)
     bootstrap._reset_for_tests()
     # The API's `set_tracer_provider` is one-way within a process, so a provider installed by
@@ -130,22 +130,71 @@ def test_the_metrics_resource_does_not_carry_a_per_pod_instance_id(monkeypatch: 
 
     ``service.instance.id`` becomes the Prometheus ``instance`` label and multiplies EVERY
     series the service emits. The analysis role runs as a k8s Job whose pod name is unique
-    per analyzed file, so defaulting this to the hostname would mint a fresh block of
-    ~1,700 analysis series per file across an 11,428-file archive. It defaults to the
-    service name; the pod identity goes on SPANS instead.
+    per analyzed file, so defaulting this to the hostname would mint a fresh block of 2,290
+    analysis series per file -- 11,428 x 2,290 = 26,170,120 series. The pod identity goes on
+    SPANS instead.
+
+    **What this test does NOT say, and used to be read as saying.** It pinned the resolved
+    id to the bare ``"phaze-analysis"``, which made the equality read as "one identity per
+    role, always" -- and that is the shared-identity defect phaze-21nnf found, not a
+    property worth pinning. What is actually required is that the id carry no PER-POD
+    dimension, so that is what is asserted: the hostname must not leak in, whatever suffix
+    the worker slot adds. ``test_concurrent_producers_get_distinct_bounded_identities``
+    below covers the other half.
     """
     monkeypatch.setenv("HOSTNAME", "phaze-analyze-abc123-xyz")
     monkeypatch.delenv(bootstrap.INSTANCE_ENV, raising=False)
+    monkeypatch.delenv(slots.SLOT_ENV, raising=False)
 
     metric_attributes = bootstrap._resource_attributes("analysis", "phaze-analysis")
     trace_attributes = bootstrap._trace_resource_attributes("analysis", "phaze-analysis")
 
-    assert metric_attributes["service.instance.id"] == "phaze-analysis"
     assert "phaze-analyze-abc123-xyz" not in metric_attributes.values()
+    assert metric_attributes["service.instance.id"].startswith("phaze-analysis")
     assert trace_attributes["host.name"] == "phaze-analyze-abc123-xyz"
 
 
 def test_an_operator_can_pin_the_instance_to_a_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Several hosts is the case the override exists for -- and a HOST is bounded."""
-    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "vox")
-    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "vox"
+    """Several hosts is the case the override exists for -- and a HOST ROLE is bounded."""
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-compute")
+    monkeypatch.delenv(slots.SLOT_ENV, raising=False)
+    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-compute"
+
+
+def test_concurrent_producers_get_distinct_bounded_identities(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-21nnf, and THE TEST THAT REPLACES THE OLD ``== "phaze-analysis"`` PIN.
+
+    Up to ``worker_process_pool_size`` analysis children export their own cumulative
+    counters at once. A collector's Prometheus exporter keeps one series per identity and
+    takes the last write, so under one shared id those totals overwrite each other:
+    measured against ``otel/opentelemetry-collector-contrib`` 0.140.0, the exposed series
+    went ``10 -> 100 -> 20 -> 200 -> 30 -> 300`` -- two counter DECREASES, each of which
+    Prometheus reads as a reset, giving an ``increase()`` of 590 where 320 was delivered
+    (+84.4%, and +221.5% over twice as many exports). Record:
+    ``docs/telemetry/concurrent-identity.md``.
+
+    **This assertion fails on the old default**, which resolved every slot to the bare
+    service name -- verified by reverting ``_instance_id`` and re-running. That is the point
+    of it: the pin it replaces was satisfied BY the defect.
+    """
+    monkeypatch.delenv(bootstrap.INSTANCE_ENV, raising=False)
+    identities = set()
+    for slot in range(slots.DEFAULT_SLOT_MAX):
+        monkeypatch.setenv(slots.SLOT_ENV, str(slot))
+        identities.add(bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"])
+
+    assert identities == {"phaze-analysis-0", "phaze-analysis-1", "phaze-analysis-2", "phaze-analysis-3"}
+    assert len(identities) == slots.DEFAULT_SLOT_MAX
+
+
+def test_a_slot_stacks_on_the_operators_host_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two dimensions compose rather than competing.
+
+    A host override is the operator's statement about WHERE phaze runs; a slot is phaze's
+    statement about WHICH concurrent producer is exporting. An implementation that let one
+    replace the other would either lose the host (breaking a multi-host deployment's
+    ability to tell its producers apart) or lose the slot (reinstating the merge).
+    """
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-compute")
+    monkeypatch.setenv(slots.SLOT_ENV, "2")
+    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-compute-2"

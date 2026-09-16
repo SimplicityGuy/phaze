@@ -70,7 +70,7 @@ from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory
 from phaze.tasks.tag_write import write_file_tags
-from phaze.telemetry import configure_telemetry, shutdown_telemetry
+from phaze.telemetry import configure_telemetry, shutdown_telemetry, slots as telemetry_slots
 from phaze.telemetry.saq import (
     after_process_chain,
     before_process as telemetry_before_process,
@@ -383,6 +383,16 @@ async def startup(ctx: dict[str, Any]) -> None:
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
     # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
     ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
+
+    # ONE knob, read TWICE, on purpose. Every child this semaphore admits exports its own
+    # cumulative counters, so the number of concurrent children is also the number of
+    # distinct telemetry identities needed to keep those counters from overwriting each
+    # other at the collector -- and therefore the cardinality multiplier on the analysis
+    # role's 2,290-series block. Sizing the slot pool from `worker_process_pool_size`
+    # itself is what stops the bound from becoming a second, drifting copy of the
+    # concurrency limit: raise the pool and the identities follow. See
+    # phaze.telemetry.slots and docs/design/0017-telemetry-export-topology.md section 8.
+    telemetry_slots.set_default_pool_size(cfg.worker_process_pool_size)
 
     # phaze-xuec1: prove the worker can actually reach its broker BEFORE claiming
     # "startup complete" -- see _wait_for_queue_ready's docstring. Raises RuntimeError

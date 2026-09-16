@@ -77,16 +77,63 @@ labels:
 | `service.name` | `phaze-api`, `phaze-controller`, `phaze-agent`, `phaze-analysis`, `phaze-watcher` |
 | `service.namespace` | `phaze` |
 | `service.version` | the installed package version |
-| `service.instance.id` | **`PHAZE_TELEMETRY_INSTANCE`, defaulting to the service name** |
+| `service.instance.id` | **`PHAZE_TELEMETRY_INSTANCE` (default: the service name), plus a bounded worker-slot index** |
 | `phaze.role` | `api` / `controller` / `agent` / `analysis` / `watcher` |
 | `deployment.environment.name` | `PHAZE_DEPLOYMENT_ENVIRONMENT`, when set |
 
 > **Do not set `PHAZE_TELEMETRY_INSTANCE` per pod.** `service.instance.id` becomes the
 > Prometheus `instance` label and it multiplies **every** series the service emits. The
-> analysis role emits ~1,700 series and runs as a k8s Job whose pod name is unique per
-> analyzed file, so a per-pod instance id would mint a fresh ~1,700-series block for each of
-> the archive's **11,428** files. Set it to the stable **HOST ROLE** (`host-prod`, `host-compute`) or leave it
-> alone.
+> analysis role's catalogue block is **2,290** series and it runs as a k8s Job whose pod name
+> is unique per analyzed file, so a per-pod instance id would mint a fresh 2,290-series block
+> for each of the archive's **11,428** files — **26,170,120** series. Set it to the stable
+> **HOST ROLE** (`host-prod`, `host-compute`) or leave it alone.
+
+### The worker slot, and why the id is not one value per role
+
+**phaze appends a bounded slot index of its own**, and an operator neither sets nor needs to
+think about it. Up to `worker_process_pool_size` analysis children (default **4**) run at
+once, each its own process exporting its own cumulative counters — and a collector's
+Prometheus exporter keeps one series per identity and takes the last write. Measured against
+a real collector, that produced a counter series that DECREASED and an `increase()` **84.4%**
+above the truth, growing to **221.5%** over twice as many exports
+([the record](concurrent-identity.md),
+[ADR-0017 §8](../design/0017-telemetry-export-topology.md)).
+
+So a producer that holds slot *n* reports `phaze-analysis-<n>`, or `host-compute-<n>` when
+the host is also pinned. **What this costs is bounded and stated:**
+
+| | series |
+| --- | ---: |
+| analysis-role block × 4 slots | 9,160 |
+| whole-catalogue ceiling | 8,587 → **15,457** |
+
+The multiplier is the CONCURRENCY, and slots are reused by the next child, so the figure does
+**not** grow with the archive. Two variables control it, and an operator normally touches
+neither:
+
+| variable | meaning |
+| --- | --- |
+| `PHAZE_TELEMETRY_SLOT` | this process's slot. Assigned by the worker that bounds concurrency — **never set by hand** |
+| `PHAZE_TELEMETRY_SLOT_MAX` | the exclusive bound. **Set for you**, from the pool the slot came out of — an explicit override only |
+
+**Raising `worker_process_pool_size` is all an operator does.** The worker sizes its slot
+pool from that knob and sends the pool's own size to each child alongside the slot, so the
+bound the child enforces is always the bound its slot was drawn from. Expect another
+2,290-series block per slot, and nothing else to set.
+
+> **This used to be two numbers, and that was a defect.** The child enforces the bound from
+> its own environment, where it defaults to 4, so a pool of 6 issued slots 4 and 5 and the
+> child refused both — `telemetry_slot_out_of_range slot=5 bound=4` — putting a third of the
+> fleet back on the shared identity with nothing failing. Telling an operator to keep two
+> numbers in step is exactly the drift the single-knob design exists to prevent.
+
+A slot outside the bound is refused and logged, and the process falls back to the shared
+identity — bad, but bounded, which is the safer of the two failure directions.
+
+> **The burst lane is not yet covered.** A one-shot Kueue pod cannot allocate a slot against
+> its peers, so concurrent burst pods still share `phaze-analysis` and still exhibit the merge
+> above. Pinning `PHAZE_TELEMETRY_INSTANCE` per host does not help — the pods share the host.
+> See ADR-0017 §8d.
 
 Per-process identity is not thrown away — it is carried on **spans**, where it is stored
 per-occurrence and aged out rather than forever and per-series: `process.pid`, `host.name`,

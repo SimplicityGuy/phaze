@@ -27,7 +27,7 @@ a module makes the inventory fail until this page is reconciled.
 | `schemas/` | 21 | Pydantic wire contracts; agent payloads remain ORM-free |
 | `services/` | 122 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 44 | SAQ controller/agent jobs and shared queue policy |
-| `telemetry/` | 11 | OpenTelemetry bootstrap and HTTP, DB, SAQ, and pipeline instrumentation |
+| `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
 
