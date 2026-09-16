@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from phaze.models.base import Base, TimestampMixin
+from phaze.services.set_projection import camelot_code
 
 
 class AnalysisResult(TimestampMixin, Base):
@@ -78,11 +79,17 @@ class AnalysisWindow(TimestampMixin, Base):
     populate ``mood``/``style``/``danceability``/``features``. All analysis
     columns are nullable so either tier can omit the other tier's fields.
 
-    ``energy``, ``camelot`` and ``mood_scores`` are a narrow projection of what
-    ``features`` already holds, not new measurement: reading a ~5 KB JSONB per row
-    does not scale to the 4 million window rows the 200 000-file target implies, so
-    every viewer surface queries these columns instead. The projection writer fills them at analysis
-    completion and can backfill existing rows from stored JSONB without re-analysis.
+    ``energy`` and ``mood_scores`` are a narrow projection of what ``features`` already holds,
+    not new measurement: reading a ~5 KB JSONB per row does not scale to the 4 million window
+    rows the 200 000-file target implies, so every viewer surface queries these columns instead.
+    The projection writer fills them at analysis completion and can backfill existing rows from
+    stored JSONB without re-analysis.
+
+    ``camelot`` is NOT one of these persisted columns (migration 065 dropped it, phaze-6r3eh):
+    unlike ``energy``/``mood_scores``, it is a pure lookup of ``musical_key`` on this same row
+    rather than a projection of the separate ``features`` JSONB, so the JSONB-scale argument
+    above does not apply to it. It is a read-time :func:`property` below, computed from
+    ``musical_key`` via :func:`phaze.services.set_projection.camelot_code` on every access.
 
     ``mood_scores`` keys are the 11 fixed names in the single fixed archive-wide
     order declared in :data:`phaze.services.set_projection.MOOD_ORDER` -- the same
@@ -118,11 +125,23 @@ class AnalysisWindow(TimestampMixin, Base):
     # writer contract rather than a CHECK constraint because validating millions of rows would require
     # an avoidable table scan.
     energy: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Camelot wheel position of this window's key -- "8A", "12B", at most 3 characters. FINE tier
-    # (that is the tier carrying `musical_key`), derived from the "A minor" form via the 24-entry
-    # conversion table, which also accepts Essentia's sharp/flat spellings.
-    camelot: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # The 11 positive-class means for this COARSE window, averaged over the 3 model variants, keyed
     # and ordered by `services.set_projection.MOOD_ORDER`. A flat {name: float} object, ~200 bytes
     # against `features`' ~5 KB -- which is the entire reason this column exists.
     mood_scores: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    @property
+    def camelot(self) -> str | None:
+        """Camelot wheel position of this window's key -- "8A", "12B", at most 3 characters.
+
+        Read-time projection of ``musical_key`` (FINE tier -- that is the tier carrying
+        ``musical_key``) through the 24-entry conversion table, which also accepts Essentia's
+        sharp/flat spellings. NOT a persisted column since migration 065 (phaze-6r3eh, operator
+        decision 2026-09-16, docs/design/0018-set-projection-and-file-viewer.md): unlike
+        ``energy``/``mood_scores``, this is a pure lookup of a sibling column on the SAME row, so
+        the JSONB-scale argument that justifies persisting those two does not apply, and a stored
+        copy would go stale against any fix to ``CAMELOT_TABLE`` until a full rewrite. A plain
+        ``@property`` rather than a SQLAlchemy ``hybrid_property`` -- nothing filters, orders, or
+        indexes on this in SQL, so there is nothing for a hybrid expression to serve.
+        """
+        return camelot_code(self.musical_key)
