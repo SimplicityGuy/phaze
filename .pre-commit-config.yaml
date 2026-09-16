@@ -64,12 +64,6 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/PyCQA/bandit
-    rev: 92ae8b82fb422a639f0ed8d99e96cea769594e08  # frozen: 1.9.4
-    hooks:
-      - id: bandit
-        args: [-x, "tests,services", -s, B608]
-
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: c4654a7e007c9619a5eb63c39a456572a0fa1851  # frozen: 0.38.0
     hooks:
@@ -118,6 +112,24 @@ repos:
       - id: mypy
         name: mypy
         entry: uv run mypy .
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: bandit
+        name: bandit
+        description: >-
+          phaze-stv2i: bandit's `-x` matches path SUBSTRINGS against whatever targets it is
+          given, including a single explicit file. The `pre-commit/bandit` hook has no `-r`
+          and passes each changed Python file individually, so an unanchored `-x
+          tests,services` excluded every file anywhere under src/phaze/services -- not just
+          the top-level services/ prototype dir it was meant for -- and phaze-08fom's B101
+          assert in src/phaze/services/set_glyph_colors.py passed every local gate and only
+          failed on main's post-merge CI, which runs `just bandit` (`-r src/ -x tests`, no
+          "services" exclusion at all). Run the IDENTICAL `just bandit` recipe here instead
+          of a second, drift-prone invocation, and force pass_filenames: false + a fixed
+          `-r src/` target so partial-staged runs cannot under-scan either.
+          tests/shared/test_bandit_invocation_parity.py pins this to `just bandit`.
+        entry: just bandit
         language: system
         pass_filenames: false
         types: [python]

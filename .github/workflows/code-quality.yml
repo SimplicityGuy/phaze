@@ -60,6 +60,20 @@ jobs:
         with:
           hadolint: v2.15.1  # arkade uses this verbatim as the release tag -- the `v` is required
 
+      # phaze-q78v2: a dependabot PR that bumps only pyproject.toml's version
+      # constraints is not lock-synced by construction -- `uv lock` never runs as
+      # part of the dependency-bump commit. Left unchecked, the FIRST `uv` command
+      # that touches the lock (here, `just setup`'s `uv sync`) silently rewrites
+      # uv.lock to match and leaves the working tree dirty, which disarms
+      # `check-fast`'s git-diff-based test selector on every subsequent bead until
+      # someone notices and commits the drift (phaze-q78v2, dependabot PR #553 /
+      # merge 6a127599). Running the check BEFORE `just setup` is load-bearing: it
+      # must fail loudly on the stale lock, not be silently satisfied by a sync
+      # that already fixed it. tests/shared/test_uv_lock_check_gate.py pins both
+      # the step and its position.
+      - name: 🔒 Verify uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
       - name: 📦 Install dependencies
         run: just setup
 
