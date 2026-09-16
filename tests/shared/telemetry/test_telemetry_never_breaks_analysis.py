@@ -25,18 +25,15 @@ The three endpoints, and why each is a different failure:
 from __future__ import annotations
 
 import http.server
-import math
 import threading
 import time
 from typing import TYPE_CHECKING, Any
-import wave
 
-import numpy as np
 import pytest
 
 from phaze.services.analysis import analyze_file
 from phaze.telemetry import _env, bootstrap
-from tests.shared.telemetry.conftest import reset_otel_globals
+from tests.shared.telemetry.conftest import reset_otel_globals, write_two_tone_wav
 
 
 if TYPE_CHECKING:
@@ -58,15 +55,7 @@ _SLOW_RESPONSE_SEC = 30.0
 
 @pytest.fixture
 def audio(tmp_path: Path) -> str:
-    path = str(tmp_path / "sine.wav")
-    t = np.arange(_SOURCE_RATE * _TOTAL_SEC) / _SOURCE_RATE
-    samples = 0.4 * np.sin(2 * math.pi * 220 * t) + 0.3 * np.sin(2 * math.pi * 331 * t)
-    with wave.open(path, "w") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(_SOURCE_RATE)
-        handle.writeframes((samples * 32767).astype("<i2").tobytes())
-    return path
+    return write_two_tone_wav(str(tmp_path / "sine.wav"), total_sec=_TOTAL_SEC, source_rate=_SOURCE_RATE)
 
 
 class _StallingHandler(http.server.BaseHTTPRequestHandler):

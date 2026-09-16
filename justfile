@@ -1270,6 +1270,33 @@ check: lint typecheck test-validate
 [group('lint')]
 check-fast: lint typecheck test-fast
 
+# phaze-jjjy8: promtool is the REAL consumer of alerts/phaze-alerts.yml and its unit tests
+# (alerts/phaze-alerts.test.yml) -- a YAML/PromQL syntax check accepts an expr that parses
+# fine and never fires, which is exactly what test_the_promtool_unit_tests_cover_the_accepted_drain_rate
+# (tests/shared/telemetry/test_alert_rules.py) asserts a promtool case exists for but cannot
+# itself run. Before this recipe, `alerts/phaze-alerts.test.yml` was executed by no workflow
+# and no justfile recipe at all -- only asserted to exist -- so it could diverge from
+# phaze-alerts.yml indefinitely with nothing red.
+#
+# LOUD skip, not a silent one, when `promtool` is not on the local PATH: this must never look
+# like a pass. `.github/workflows/code-quality.yml` installs the pinned v3.10.0 binary (the
+# SAME version tests/shared/telemetry/test_alert_rules.py's module docstring already names
+# for the `docker run` reproduce command) and always runs this recipe for real, so a local
+# skip is never the only place this ran. tests/shared/test_validation_gate_recipes.py and
+# tests/shared/test_ci_workflow_wiring.py pin both halves of this wiring.
+[doc('promtool test rules against alerts/phaze-alerts.test.yml -- LOUD skip if promtool is not on PATH locally; CI always installs it and runs this for real')]
+[group('lint')]
+alerts-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v promtool >/dev/null 2>&1; then
+        echo "⚠️  promtool not found on PATH -- SKIPPING alerts/phaze-alerts.test.yml locally." >&2
+        echo "    Install: 'brew install prometheus' (macOS) or https://prometheus.io/download/ ." >&2
+        echo "    This is NOT a pass -- CI always installs promtool and runs this for real." >&2
+        exit 0
+    fi
+    promtool test rules alerts/phaze-alerts.test.yml
+
 # THE molecule / merge-to-main gate, wired to `work.validate` `molecule:` and `merge-main:`
 # for the phaze rig in `~/.beadhive/config.yaml` (phaze-nqawu). The config shipped that
 # override commented out and naming `just check-all`, a recipe that had never existed in
@@ -1281,10 +1308,12 @@ check-fast: lint typecheck test-fast
 # bandit, shellcheck, shfmt, yamllint, actionlint, hadolint, check-jsonschema and the
 # secret/large-file hooks). Those are the checks a single bead's diff can pass individually
 # while the assembled molecule fails, which is exactly what a pre-land boundary is for.
-# The test step is identical, so this costs one full suite run, not two.
-[doc('THE molecule / merge-to-main gate (`bh work finish`): every pre-commit hook + the full suite with coverage. Strict superset of `just check`.')]
+# The test step is identical, so this costs one full suite run, not two. `alerts-test` is
+# appended for the same reason: a whole-repo external-tool invariant, not something a
+# per-bead change-selector would reliably pick up.
+[doc('THE molecule / merge-to-main gate (`bh work finish`): every pre-commit hook + the full suite with coverage + the promtool alert-rule tests. Strict superset of `just check`.')]
 [group('lint')]
-check-all: pre-commit test-validate
+check-all: pre-commit test-validate alerts-test
 
 [doc('Run pip-audit for dependency vulnerability scanning')]
 [group('security')]

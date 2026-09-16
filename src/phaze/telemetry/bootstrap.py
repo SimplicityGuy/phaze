@@ -62,16 +62,6 @@ _configured = False
 _tracer_provider: TracerProvider | None = None
 _meter_provider: MeterProvider | None = None
 
-#: Roles, and the ``service.name`` each reports. Bounded on purpose: ``service.name``
-#: becomes the Prometheus ``job`` label.
-SERVICE_NAMES: dict[str, str] = {
-    "api": "phaze-api",
-    "controller": "phaze-controller",
-    "agent": "phaze-agent",
-    "analysis": "phaze-analysis",
-    "watcher": "phaze-watcher",
-}
-
 #: Overrides ``service.instance.id``. READ THE DOCSTRING BEFORE SETTING THIS PER POD.
 INSTANCE_ENV = "PHAZE_TELEMETRY_INSTANCE"
 
@@ -208,7 +198,11 @@ def configure_telemetry(role: str, *, service_name: str | None = None) -> bool:
             return False
         try:
             _env.apply_export_defaults()
-            resolved = service_name or SERVICE_NAMES.get(role, f"phaze-{role}")
+            # No per-role lookup table: every role's service.name is exactly this fallback
+            # shape, so a SERVICE_NAMES dict here would be a static echo of the format string
+            # -- inert by construction, not merely today's coincidence (verified: role in
+            # {api, controller, agent, analysis, watcher} all resolve to f"phaze-{role}").
+            resolved = service_name or f"phaze-{role}"
             _tracer_provider, _meter_provider = _install(role, resolved)
         except ProviderNotInstalledError:
             # Distinguished from a generic failure because the operator's action differs:

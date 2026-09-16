@@ -9,8 +9,11 @@ drift apart:
    (phaze-m1drf.3 acceptance 4) -- it fails the build when a label is added without a
    bound, when a forbidden identifier-shaped label appears, or when the documented
    catalogue drifts from this file;
-3. ``docs/telemetry/metric-catalogue.md`` is generated from it, so the artifact homelab
-   wires against cannot describe metrics phaze does not emit.
+3. ``docs/telemetry/metric-catalogue.md`` is hand-maintained AGAINST it, not generated from
+   it -- unlike the dashboards, which ``scripts/build_dashboards.py`` genuinely generates and
+   checks. ``test_the_documented_catalogue_lists_every_metric`` and
+   ``test_the_documented_series_ceiling_matches_the_code`` are what keep the doc from
+   describing a metric phaze does not emit, or omitting one it does.
 
 WHY THE BUDGET IS A HARD CONSTRAINT, not a style preference. phaze does not own the
 Prometheus that scrapes this. A high-cardinality label here damages a SHARED homelab

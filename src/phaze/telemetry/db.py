@@ -76,9 +76,14 @@ def _after(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any
 def instrument_engine(engine: AsyncEngine) -> None:
     """Attach the statement hooks to ``engine``. Idempotent per engine.
 
-    Called for every engine phaze builds -- ``database.build_async_engine`` is the single
-    seam both the api's process-wide engine and the control worker's per-process task
-    engine come through, so one call site covers both.
+    Meant to be called for every engine phaze builds, but this is NOT one call site:
+    ``database.build_async_engine`` is the single seam that CONSTRUCTS both the api's
+    process-wide engine and the control worker's per-process task engine, but it does not
+    instrument what it builds. Each of the two owners calls this explicitly, right after
+    obtaining its engine -- the api's lifespan (``main.py``) on the module-level ``engine``
+    from :mod:`phaze.database`, and the control worker's startup (``tasks/controller.py``)
+    on its own ``build_async_engine(cfg)`` result. A third engine builder would need its own
+    call to this function; nothing enforces that structurally today.
     """
     try:
         _attach(engine)

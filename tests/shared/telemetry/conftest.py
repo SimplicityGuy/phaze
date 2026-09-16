@@ -1,7 +1,8 @@
 """In-memory OTel providers, so a test can read exactly what phaze emitted.
 
 Every fixture here installs a REAL SDK provider with an in-memory exporter -- not a mock
-of phaze's own seam. The distinction matters for the same reason ADR-0012 rule 3 does: a
+of phaze's own seam. The distinction matters for the same reason
+``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3 does: a
 mock of ``instruments.record`` would prove phaze called its own function, while an
 in-memory ``MetricReader`` proves the observation survived instrument creation, the View's
 bucket ladder and the attribute set -- which is where the interesting mistakes are.
@@ -13,8 +14,11 @@ is in production.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
+import wave
 
+import numpy as np
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -29,6 +33,25 @@ from phaze.telemetry import _env, bootstrap, instruments, tracing
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+def write_two_tone_wav(path: str, *, total_sec: int, source_rate: int = 8000) -> str:
+    """Write a two-tone (220 Hz + 331 Hz) sine WAV -- real audio for a real ``analyze_file`` run.
+
+    Extracted from a fixture body duplicated verbatim, down to the two frequencies, between
+    ``test_analysis_instrumentation.py`` and ``test_telemetry_never_breaks_analysis.py``
+    (phaze-aa07i item 3). ``total_sec`` stays a per-caller parameter because the two callers
+    genuinely differ: one wants long enough for several fine windows and more than one
+    coarse window, the other wants short enough to keep three broken-endpoint runs fast.
+    """
+    t = np.arange(source_rate * total_sec) / source_rate
+    samples = 0.4 * np.sin(2 * math.pi * 220 * t) + 0.3 * np.sin(2 * math.pi * 331 * t)
+    with wave.open(path, "w") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(source_rate)
+        handle.writeframes((samples * 32767).astype("<i2").tobytes())
+    return path
 
 
 @pytest.fixture(autouse=True)

@@ -21,6 +21,7 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | Recipe | Classification | Verified consumer or current operator use |
 |---|---|---|
 | `agent-down` | operator convenience | file-server agent topology teardown |
+| `alerts-test` | internal helper | `check-all`; CI code-quality workflow (promtool test rules against alerts/phaze-alerts.test.yml) |
 | `bandit` | internal helper | `security-all`; focused local Python SAST |
 | `benchmark-analyze` | operator convenience | measure Analyze workspace and pipeline-stat scaling |
 | `benchmark-db-down` | operator convenience | dispose the dedicated synthetic benchmark database |

@@ -1,25 +1,36 @@
-"""The CI-runnable half of the alert-rule guarantees (phaze-m1drf.5).
+"""The properties that are cheap in plain Python, plus the catalogue cross-check (phaze-m1drf.5,
+phaze-jjjy8).
 
-The other half is `promtool`, which is the real consumer of both the rules and their unit
-tests (ADR-0012 rule 3) and needs a Prometheus binary CI does not have:
+The other half is `promtool`, the real consumer of both the rules and their unit tests
+(``docs/design/0012-verification-fidelity-and-operator-attribution.md`` rule 3):
 
     docker run --rm -v "$PWD/alerts:/alerts:ro" --entrypoint /bin/promtool \
       prom/prometheus:v3.10.0 test rules /alerts/phaze-alerts.test.yml
 
-What CI holds instead is the set of properties that are about what the rules must NOT do.
-Those are the ones that decay: a rule added later, in a hurry, that fires on something the
-operator has already settled (2026-08-26, bead phaze-m1drf.5 -- the drain rate) or that
-bounds an analysis by wall clock (phaze-1b39) would pass every syntax check ever written and
-would be exactly the regression this epic must not ship.
+phaze-jjjy8 wired that into a gate rather than leaving it a reproduce-by-hand command: `just
+alerts-test` runs it (loudly skipping when `promtool` is not on the local PATH) and is a
+dependency of `just check-all`; `.github/workflows/code-quality.yml` installs the same
+v3.10.0 `promtool` binary and always runs it for real, so CI never merely skips.
+
+What THIS file holds is the set of properties that are cheap to check without a Prometheus
+binary at all: what the rules must NOT do (a rule added later, in a hurry, that fires on
+something the operator has already settled -- 2026-08-26, bead phaze-m1drf.5, the drain rate
+-- or that bounds an analysis by wall clock, phaze-1b39), and, since phaze-jjjy8, that every
+`phaze_*` family the rules reference is one the catalogue actually mints -- the alert-side
+half of the metric-rename guard that only the dashboards had before (see
+`test_every_referenced_metric_family_is_catalogued` below).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
 import yaml
+
+from tests.shared.telemetry._prometheus_translation import prometheus_families
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -31,6 +42,24 @@ DOC_PATH = REPO / "docs" / "telemetry" / "alerting.md"
 def _rules() -> list[dict[str, Any]]:
     document = yaml.safe_load(RULES_PATH.read_text(encoding="utf-8"))
     return [rule for group in document["groups"] for rule in group["rules"]]
+
+
+def test_every_referenced_metric_family_is_catalogued() -> None:
+    """phaze-jjjy8 acceptance 1: renaming a catalogued metric must redden this half too.
+
+    Before this test, only the dashboards half
+    (``test_dashboards.py::test_every_metric_referenced_is_catalogued``) caught a metric
+    rename. These alert exprs would have gone on querying the dead family with green CI --
+    silently, because an unknown label produces an EMPTY vector, not an error, so the pager
+    goes permanently quiet on exactly the family a rename just retired. Reuses the SAME
+    (deduplicated, phaze-aa07i item 3) OTLP -> Prometheus translation the dashboards test
+    uses, so the two guards cannot quietly drift apart from each other.
+    """
+    families = prometheus_families()
+    text = RULES_PATH.read_text(encoding="utf-8")
+    referenced = set(re.findall(r"\bphaze_[a-z0-9_]+", text))
+    unknown = sorted(referenced - families)
+    assert not unknown, f"alerts/phaze-alerts.yml references metric(s) the catalogue does not define: {unknown}"
 
 
 def test_the_rules_parse_and_are_all_alerts() -> None:

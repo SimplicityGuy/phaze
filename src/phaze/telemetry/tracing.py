@@ -142,12 +142,6 @@ def timed(metric: str, span_name: str, *, attributes: dict[str, Any] | None = No
             record(metric, time.perf_counter() - started, **labels)
 
 
-def current_trace_id() -> str | None:
-    """Hex trace id of the active span, for correlating a log line to a trace."""
-    context = trace.get_current_span().get_span_context()
-    return format(context.trace_id, "032x") if context.is_valid else None
-
-
 def _reset_for_tests(factory: Callable[[], trace.Tracer] | None = None) -> None:
     """Rebind the module tracer. Tests only.
 

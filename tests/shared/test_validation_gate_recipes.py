@@ -123,6 +123,20 @@ def test_check_all_exists_and_is_a_strict_superset_of_check() -> None:
     assert VALIDATION_TEST_STEP in check_all
 
 
+def test_check_all_runs_the_alert_rule_promtool_tests() -> None:
+    """phaze-jjjy8: before this recipe, `alerts/phaze-alerts.test.yml` ran in no gate at all --
+    only asserted to exist -- so it could diverge from `phaze-alerts.yml` indefinitely with
+    nothing red. `alerts-test` must be a real dependency of `check-all` (the molecule gate),
+    not merely a recipe that exists and is never invoked.
+    """
+    check_all = _dry_run("check-all")
+
+    assert "promtool test rules alerts/phaze-alerts.test.yml" in check_all
+    # The loud-skip guard belongs to the RECIPE (so a local machine without promtool never
+    # gets a silent pass); check-all must still reach it as a dependency.
+    assert "promtool not found on PATH" in check_all
+
+
 def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> None:
     """`just test` keeps -x -q deliberately, and says so, so nobody mistakes it for the gate."""
     justfile = JUSTFILE_PATH.read_text(encoding="utf-8")

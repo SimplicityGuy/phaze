@@ -79,3 +79,27 @@ jobs:
 
       - name: 🧪 Run pre-commit hooks
         run: just pre-commit
+
+      # phaze-jjjy8: promtool is the REAL consumer of alerts/phaze-alerts.yml and its unit
+      # tests (alerts/phaze-alerts.test.yml) -- see tests/shared/telemetry/test_alert_rules.py's
+      # module docstring. `just alerts-test` loudly SKIPS when promtool is absent, which is
+      # right for a local dev machine but wrong for CI: this step installs the binary so CI
+      # always runs the real check rather than exercising the skip path.
+      #
+      # PINNED to v3.10.0 -- the SAME tag that docstring's `docker run` reproduce command
+      # already names, so a local `docker run ... prom/prometheus:v3.10.0` and this CI
+      # installation test against identical promtool behavior. Downloaded directly from
+      # prometheus/prometheus's GitHub releases (the asset-name pattern is stable and has
+      # been for years); no arkade-get entry is assumed for it, unlike hadolint above.
+      - name: 🔔 Install promtool
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 \
+            -o /tmp/prometheus.tar.gz \
+            https://github.com/prometheus/prometheus/releases/download/v3.10.0/prometheus-3.10.0.linux-amd64.tar.gz
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/prometheus-3.10.0.linux-amd64/promtool /usr/local/bin/promtool
+          promtool --version
+
+      - name: 🔔 Run alert rule unit tests (promtool test rules)
+        run: just alerts-test
