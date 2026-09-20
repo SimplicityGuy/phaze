@@ -554,7 +554,7 @@ def _pod_identity(injected: dict[str, str]) -> tuple[str, int | None]:
     pod-local ``SlotPool`` -- a pool with exactly one competitor, because the pod shares memory with
     nobody -- would acquire index 0 and OVERWRITE the controller's decision on its way to the child.
     Every burst pod would then export under ``phaze-analysis-0`` behind a correct-looking manifest,
-    which is exactly what ADR-0017 section 8d predicted in writing and why a manifest-only assertion
+    which is exactly what ADR-0017 (telemetry export topology) section 8d predicted in writing and why a manifest-only assertion
     cannot close this bead.
 
     So this reproduces the pod: the injected env is the process environment, ``assign`` runs against

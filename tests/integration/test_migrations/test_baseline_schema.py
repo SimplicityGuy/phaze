@@ -277,7 +277,7 @@ def test_baseline_is_the_only_migration() -> None:
     exports under -- a one-shot Kueue pod is Postgres-less and shares no memory with its peers, so
     nothing inside it can allocate against the pods running beside it, and every burst pod was
     therefore reporting the same service.instance.id (an increase() 84.4% above the truth,
-    ADR-0017 section 8).
+    ADR-0017 (telemetry export topology) section 8).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))

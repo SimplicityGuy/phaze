@@ -293,7 +293,7 @@ def test_assign_passes_an_inherited_slot_through_and_allocates_nothing() -> None
     process-local pool -- of ONE competitor, because the pod shares memory with nobody -- and would
     acquire index 0. That would overwrite the slot the controller allocated against the other
     in-flight pods, and every burst pod would export under ``phaze-analysis-0`` again with a
-    correct-looking Job manifest. ADR-0017 section 8d named that trap before this bead existed.
+    correct-looking Job manifest. ADR-0017 (telemetry export topology) section 8d named that trap before this bead existed.
 
     So an inherited, VALID slot wins: nothing is taken from the pool, the environment is untouched,
     and the returned slot is None -- which also means the caller's ``finally`` releases nothing it

@@ -302,7 +302,7 @@ def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[di
     nobody -- would acquire slot 0 and OVERWRITE the controller's decision in the child's
     environment. Every burst pod would then export under ``phaze-analysis-0`` again: the
     manifest would look correct, the injected key would be present and the defect would be
-    untouched. That is precisely the trap ADR-0017 section 8d warned about in writing, and it
+    untouched. That is precisely the trap ADR-0017 (telemetry export topology) section 8d warned about in writing, and it
     is why ``test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities``
     drives the real child-environment path rather than asserting on the manifest alone.
 

@@ -20,7 +20,7 @@ THREE load-bearing invariants:
   Postgres-less and shares no memory with its peers, so nothing inside it can allocate a bounded
   worker slot against the up-to-``cap`` pods beside it -- every one of them exported under
   ``phaze-analysis-0`` and their cumulative counters overwrote each other at the collector
-  (measured: an ``increase()`` 84.4% above the truth, ADR-0017 section 8a). This task is the seat
+  (measured: an ``increase()`` 84.4% above the truth, ADR-0017 (telemetry export topology) section 8a). This task is the seat
   that CAN see the competitors, because it is already the seat that enforces the per-backend cap
   from the same ``cloud_job`` rows. It allocates and COMMITS the slot before the POST
   (``burst_telemetry_slots``), and ``build_job_manifest`` injects it into the Job env. Release is
@@ -116,7 +116,7 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
     # The order is the whole design. A burst pod is Postgres-less and shares no memory with its peers,
     # so it cannot allocate against the pods running beside it -- every one of them exported under
     # ``phaze-analysis-0``, and a collector's Prometheus exporter keeps one series per identity and
-    # takes the last write (measured: an ``increase()`` 84.4% above the truth, ADR-0017 section 8a).
+    # takes the last write (measured: an ``increase()`` 84.4% above the truth, ADR-0017 (telemetry export topology) section 8a).
     # This is the seat that can see the competitors, because it is the seat that already enforces the
     # per-backend cap from these same rows.
     #
