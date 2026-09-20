@@ -16,11 +16,13 @@ number that would not announce a repoint if one happened.
 EXEMPTIONS -- deliberately narrow, and each one is one of only four shapes:
 
 1. `FILE_EXEMPT`: whole files this sweep must not write to. `CLAUDE.md` (root) is a separate docs
-   bead's scope, not this one's -- see the bead. `tests/shared/test_adr_citation_resolution.py` is
-   the self-referential fixture file for the OTHER guard: it quotes the `f4c39654` forward
-   citation verbatim and constructs synthetic bad-citation literals (`ADR-9999`) as test data, so
-   "fixing" its bareness would corrupt its own fixtures -- the same reasoning that file's own
-   `_EXEMPT_FILES` already applies to itself. `docs/documentation-audit-2026-08-19.md` is one of
+   bead's scope, not this one's -- see the bead. `tests/shared/test_adr_citation_resolution.py` and
+   `tests/shared/test_adr_bare_citation_convention.py` (this guard's own test module) are the
+   self-referential fixture files for the resolution guard and this one respectively: each
+   constructs synthetic bad-citation literals -- an unassigned four-digit number, a bare number as
+   a mechanics-test input -- as test data, so "fixing" either's bareness or resolution would corrupt
+   its own fixtures, the same reasoning `test_adr_citation_resolution.py`'s own `_EXEMPT_FILES`
+   already applies to itself. `docs/documentation-audit-2026-08-19.md` is one of
    `scripts.audit_historical_evidence.ARCHIVE_BOUNDARIES`' own boundary keys (see (2)) that happens
    to be a single file rather than a directory.
 2. `DIR_EXEMPT_PREFIXES`: derived from `scripts.audit_historical_evidence.ARCHIVE_BOUNDARIES` --
@@ -96,6 +98,7 @@ FILE_EXEMPT = frozenset(
     {
         "CLAUDE.md",
         "tests/shared/test_adr_citation_resolution.py",
+        "tests/shared/test_adr_bare_citation_convention.py",
     }
     | {boundary for boundary in ARCHIVE_BOUNDARIES if not boundary.endswith("/")}
 )
@@ -108,6 +111,15 @@ LINE_GRANDFATHER = frozenset(
         ("CONVENTIONS.md", 245),
         ("scripts/select_impacted_tests.py", 75),
         ("tests/shared/test_fast_gate.py", 621),
+        # This module's own worked examples, in its module docstring above -- same shapes (a) and
+        # (b) it names: line 46 retells the historical 0014/0015 renumber collision (today's number
+        # to file mapping would misstate what was cited at the time), line 53 quotes
+        # docs/design/0016's illustrative "bare number" cell verbatim, where inserting a
+        # disambiguator would un-bare the example it is illustrating. This comment deliberately does
+        # not spell either citation out with its "ADR" prefix -- doing so once already tripped this
+        # same guard on itself.
+        ("scripts/adr_bare_citation_sweep.py", 46),
+        ("scripts/adr_bare_citation_sweep.py", 53),
         ("tests/shared/test_adr_numbering.py", 25),
         ("docs/design/0016-transferred-model-verification.md", 266),
     }
