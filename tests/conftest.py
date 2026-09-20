@@ -35,6 +35,7 @@ from tests._queue_fakes import install_fake_queues
 from tests._real_models import apply_default as _apply_real_models_default
 from tests.db_guard import (
     SharedTestDatabaseError,
+    TestDatabaseUnreachableError,
     acquire_exclusive_session_lock,
     coerce_async_dsn,
     database_name,
@@ -204,7 +205,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     Refusing here (before collection, before a single test runs) turns hours of false-red
     triage into one line naming the process that already owns the database. If Postgres is not
-    reachable the lock is simply not taken -- see ``acquire_exclusive_session_lock``.
+    reachable the lock is simply not taken -- see ``acquire_exclusive_session_lock`` -- UNLESS
+    ``TEST_DATABASE_URL`` was explicitly exported, in which case a failed connect refuses the run
+    too (phaze-34gkn, operator decision 2026-09-16: "Fail closed when URL is explicit"). A caller
+    who set the variable made a claim about the target, and a slow harness is indistinguishable
+    from an absent one under a mere connect timeout -- see docs/gates-and-isolation.md, "The guard
+    can disable itself, silently and green" (phaze-cpn5k). The DEFAULT URL (nothing exported) keeps
+    failing open, so a bare ``uv run pytest`` with no harness up still runs the DB-free tests.
 
     ``--collect-only`` is exempt: it imports modules and never opens the schema, so it cannot
     corrupt a live run, and it is exactly the command someone reaches for to inspect the suite
@@ -215,9 +222,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if session.config.option.collectonly:
         setattr(session.config, _SESSION_LOCK_ATTR, None)
         return
+    explicit_url = bool(os.environ.get("TEST_DATABASE_URL"))
     try:
-        lock = acquire_exclusive_session_lock(TEST_DATABASE_URL)
-    except SharedTestDatabaseError as exc:
+        lock = acquire_exclusive_session_lock(TEST_DATABASE_URL, explicit=explicit_url)
+    except (SharedTestDatabaseError, TestDatabaseUnreachableError) as exc:
         # `pytest.exit` rather than a raised exception: this is a harness precondition, not a
         # bug in the suite, and it should read as a refusal instead of an INTERNALERROR dump.
         pytest.exit(str(exc), returncode=pytest.ExitCode.USAGE_ERROR)

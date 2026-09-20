@@ -141,6 +141,25 @@ class SharedTestDatabaseError(RuntimeError):
     """
 
 
+class TestDatabaseUnreachableError(RuntimeError):
+    """Raised when an EXPLICITLY set ``TEST_DATABASE_URL`` cannot be reached for the session lock.
+
+    Operator decision, phaze-34gkn (2026-09-16, "Fail closed when URL is explicit (Recommended)"):
+    a caller who exported ``TEST_DATABASE_URL`` made a claim about where the run targets, and a
+    failed connect -- slow or absent, ``connect_timeout`` does not distinguish them -- means that
+    claim could not be honoured. Proceeding "unlocked" would let a SLOW harness read as an ABSENT
+    one, which is exactly the shape in which two pytest processes can share one database with only
+    the word ``unlocked`` in a header ``-q`` suppresses (see docs/gates-and-isolation.md, "The
+    guard can disable itself, silently and green", phaze-cpn5k).
+
+    This is deliberately narrower than :class:`NonTestDatabaseError` / :class:`SharedTestDatabaseError`
+    in one respect: it fires ONLY when the caller set the variable themselves. The DEFAULT URL
+    (nothing exported) must keep failing OPEN, or a bare ``uv run pytest`` with no harness up could
+    no longer run the thousands of DB-free tests -- the exact trade the phaze-34gkn, 2026-09-16
+    operator decision above preserves.
+    """
+
+
 def coerce_async_dsn(dsn: str) -> str:
     """Coerce a libpq / psycopg2 Postgres DSN to the asyncpg driver the async fixtures need.
 
@@ -236,18 +255,29 @@ def _lock_holder_description(conn: psycopg.Connection[tuple[object, ...]]) -> st
     return f"{app_name or 'an unnamed client'} (backend pid {pid}, connected {backend_start})"
 
 
-def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5) -> psycopg.Connection[tuple[object, ...]] | None:
+def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5, explicit: bool = False) -> psycopg.Connection[tuple[object, ...]] | None:
     """Take the "one pytest session owns this database" advisory lock, or refuse to start.
 
     Returns the OPEN connection holding the lock -- the caller must keep it alive for the whole
     pytest session and pass it to :func:`release_exclusive_session_lock` at the end, because a
     session-level advisory lock lives on its connection.
 
-    Three outcomes, matching this module's established shape:
+    ``explicit`` says whether the CALLER supplied ``dsn`` themselves (i.e. exported
+    ``TEST_DATABASE_URL``) rather than getting it from this module's own default. It changes only
+    what happens when Postgres cannot be reached -- see the second outcome below. Passing it wrong
+    only ever makes the guard MORE permissive than intended (the default is ``False``, the fail-open
+    reading), never less, so an omitted keyword at an old call site cannot newly refuse a run.
 
-    * **Postgres unreachable** -> ``None``, no lock, no complaint. A bare ``uv run pytest`` with no
-      harness up must still run the thousands of DB-free tests; connectivity is a skip condition
-      everywhere else in this module and stays one here.
+    Four outcomes:
+
+    * **Postgres unreachable, ``explicit=False``** -> ``None``, no lock, no complaint. A bare
+      ``uv run pytest`` with no harness up must still run the thousands of DB-free tests;
+      connectivity is a skip condition everywhere else in this module and stays one here.
+    * **Postgres unreachable, ``explicit=True``** -> :class:`TestDatabaseUnreachableError`.
+      Operator decision phaze-34gkn, 2026-09-16: a caller who set ``TEST_DATABASE_URL`` themselves
+      made a claim about the target, and a SLOW harness is indistinguishable from an ABSENT one
+      under a mere timeout -- proceeding "unlocked" is the one shape in which two pytest processes
+      can share a database with nothing but an easily-suppressed word in the header to show it.
     * **Lock free** -> acquired, connection returned.
     * **Lock held** -> :class:`SharedTestDatabaseError`. Never a wait: a run that blocks for the
       length of somebody else's suite is a run nobody will diagnose correctly.
@@ -268,7 +298,26 @@ def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5) -> psy
             connect_timeout=connect_timeout,
             application_name=session_lock_application_name(),
         )
-    except psycopg.OperationalError:
+    except psycopg.OperationalError as exc:
+        if explicit:
+            # phaze-34gkn: the caller named this DSN itself, so a failed connect -- including one
+            # that simply outran `connect_timeout`, which reads identically to "nothing is
+            # listening" -- is refused rather than silently downgraded to an unprotected run.
+            raise TestDatabaseUnreachableError(
+                f"Refusing to start: TEST_DATABASE_URL={dsn!r} could not be reached to take the "
+                f"session lock ({connect_timeout}s connect timeout).\n"
+                f"\n"
+                f"Underlying error: {exc}\n"
+                f"\n"
+                f"TEST_DATABASE_URL was explicitly exported, which is a claim about where this run\n"
+                f"targets. A SLOW Postgres and an ABSENT one both raise this error, and proceeding\n"
+                f'"unlocked" would let a loaded harness read as an absent one -- the one shape in\n'
+                f"which two pytest processes can share a database with only the word `unlocked` in\n"
+                f"a header `-q` suppresses (docs/gates-and-isolation.md, phaze-cpn5k).\n"
+                f"\n"
+                f"Fix: bring the harness up (`just test-db`, or `just test-db-for <name>` for an\n"
+                f"isolated seat) and re-run, or unset TEST_DATABASE_URL for a database-free run."
+            ) from exc
         return None  # harness not up (or not this run's problem) -- see docstring
 
     try:

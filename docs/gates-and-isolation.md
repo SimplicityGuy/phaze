@@ -827,6 +827,64 @@ it was green throughout. What it does not cover, and what the above adds, is the
 two independently started runs, the `just` wrapper, where the text lands, and signal propagation.
 No test change is proposed.
 
+### Operator decision, 2026-09-16 (phaze-34gkn): fail closed when the URL is explicit
+
+The gap above was recorded, not fixed, because narrowing the timeout or failing closed
+unconditionally would have broken the DB-free `uv run pytest` the exemption protects — that trade
+belonged to the operator, not the implementer. It has since been decided.
+
+**Operator decision, 2026-09-16, recorded by disp/fable.** Question as put (`AskUserQuestion`, that
+dispatch session): *"phaze-34gkn: the pytest advisory lock returns no lock when its 5-second
+Postgres connect fails, including a timeout, so a slow harness reads as absent and two suites can
+share a database with only the word unlocked in a header that -q hides. Which behaviour should it
+have?"* Answer as given (selected option label, verbatim): **"Fail closed when URL is explicit
+(Recommended)"**. Option description as offered by the assistant, not the operator's words: if
+`TEST_DATABASE_URL` is exported and the connect fails, refuse to run; fail open only on the default
+URL, preserving the database-free bare run. Durable record: bead `phaze-34gkn` comment, 2026-09-16
+21:45, and this section. Scope of the attribution: exactly the question above — timeout values,
+retry counts and the exact refusal text were left to the implementer.
+
+**What shipped.** `tests/db_guard.acquire_exclusive_session_lock` gained an `explicit: bool = False`
+keyword. When the connect raises `psycopg.OperationalError` (unreachable *or* timed out —
+`connect_timeout` still does not distinguish them) and `explicit` is `True`, it now raises a new
+`TestDatabaseUnreachableError` naming the DSN, the underlying error, and the remedy, instead of
+returning `None`. `tests/conftest.py`'s `pytest_sessionstart` passes
+`explicit=bool(os.environ.get("TEST_DATABASE_URL"))` — true precisely when the RUN's own
+environment carried the variable, never when this module's own default filled it in — and turns the
+raised error into the same `pytest.exit(..., USAGE_ERROR)` shape already used for
+`SharedTestDatabaseError`. The default URL path (nothing exported) is untouched: it keeps returning
+`None` on an unreachable connect, so a bare `uv run pytest` with no harness up still runs the
+thousands of DB-free tests. `--collect-only` stays exempt (unchanged), and
+`PHAZE_TEST_DB_ALLOW_SHARED=1` stays the explicit bypass (unchanged, checked before either path).
+
+**Implementer's decisions**, per the attribution scope above: the connect timeout stays the existing
+5 s with no added retry — the operator was not asked to choose a number, and inventing a retry loop
+would only move the same fail-open/fail-closed trade to a different elapsed time without changing
+which side of it a slow harness lands on. The refusal message names the DSN, the underlying
+`OperationalError`, and both remedies (`just test-db` / `just test-db-for <name>` to bring the
+harness up, or unset `TEST_DATABASE_URL` for a database-free run).
+
+**Verified against a real connect failure**, the same address this section's measurement above
+used (`10.255.255.1:5433`, private-range and unrouted from this host — a blackhole, not a fast
+`ECONNREFUSED`): a real second `pytest` subprocess with `TEST_DATABASE_URL` set to that address now
+exits `USAGE_ERROR` with `Refusing to start` naming the DSN, in ~5-7 s, before a single test runs.
+The same subprocess harness with `TEST_DATABASE_URL` unset and the module's own default pointed at
+an unused local port (fast `ECONNREFUSED`, not a timeout) still exits `0` with `unlocked (Postgres
+unreachable or bypass set)` in the header and its trivial DB-free tests passing —
+`tests/shared/test_explicit_test_db_url_fails_closed.py` pins both, against
+`tests/shared/_fixture_trivial_db_free.py` as the trivial DB-free target (a separate file so the
+subprocess's collected set cannot include the very tests spawning it).
+
+**Blast radius: CI.** Every CI job in `.github/workflows/tests.yml` exports `TEST_DATABASE_URL`
+explicitly (both the unit-matrix job and the browser job — see the comments there explaining why it
+is pinned rather than left to the local-dev default). So this is not a hypothetical: a CI Postgres
+service that is up but slow to accept connections, or genuinely down, now fails the job loudly with
+`USAGE_ERROR` instead of completing silently "green" with `unlocked` in a header nothing reads.
+That is the intended effect of the decision, not a regression — a CI run that proceeded on an
+unprotected database was never a trustworthy pass, and CI provisions its own Postgres service
+container per job, so the population affected is "a CI Postgres service that failed to come up or
+answer within 5 s," not ordinary CI runs.
+
 ## `pg_locks` and `pg_stat_activity` are cluster-wide — always scope them
 
 A per-worktree database isolates table data completely and the system catalogues not at all. Any
