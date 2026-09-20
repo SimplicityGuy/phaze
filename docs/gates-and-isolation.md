@@ -827,7 +827,7 @@ it was green throughout. What it does not cover, and what the above adds, is the
 two independently started runs, the `just` wrapper, where the text lands, and signal propagation.
 No test change is proposed.
 
-### Operator decision: fail closed when the URL is explicit (phaze-34gkn)
+### Operator decision, 2026-09-16 (phaze-34gkn): fail closed when the URL is explicit
 
 The gap above was recorded, not fixed, because narrowing the timeout or failing closed
 unconditionally would have broken the DB-free `uv run pytest` the exemption protects — that trade
