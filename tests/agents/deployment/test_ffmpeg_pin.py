@@ -86,7 +86,7 @@ def test_ci_image_ffmpeg_divergence_is_recorded() -> None:
     should move to 7.1.x, the
     operator declined, on the grounds that CI exercises ffmpeg only through the audio-extract path
     and that this is sufficiently isolated. A test asserting equality would encode the opposite of
-    the decision. See ADR-0013 §7.
+    the decision. See ADR-0013 (ffmpeg pin) §7.
     """
     text = _text(TESTS_WORKFLOW)
     required = {

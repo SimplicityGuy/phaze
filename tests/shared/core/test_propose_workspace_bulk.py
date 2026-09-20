@@ -2,7 +2,7 @@
 
 Propose once carried its own bulk bar, and ``PATCH /proposals/bulk`` answered it with a dedicated
 response shape (``_propose_bulk_response.html``) chosen by ``HX-Target``. phaze-tzy6s.7 deleted the
-bar; ADR-0008 made Changes Review the only surface that authorizes anything; phaze-7tiqp deleted the
+bar; ADR-0008 (changes review approval boundary) made Changes Review the only surface that authorizes anything; phaze-7tiqp deleted the
 branch, which by then was reachable only by a hand-built request. This file is what survived that:
 the half of it asserting the deleted response's SHAPE went with the response, and the half asserting
 the ENDPOINT's behaviour stayed, because that behaviour is unchanged and still worth pinning.
@@ -230,7 +230,7 @@ async def test_bulk_action_answers_with_the_changes_review_body_whatever_hx_targ
     ``#proposal-list-container`` fork (``proposal_table.html`` / ``pagination.html`` /
     ``bulk_actions.html`` / ``proposal_list.html`` / ``bulk_response.html``), dead since the v7
     cutover. phaze-7tiqp removed the Propose fallthrough (``_propose_bulk_response.html``), dead
-    since phaze-tzy6s.7 deleted the Propose bulk bar and ADR-0008 made Changes Review the only
+    since phaze-tzy6s.7 deleted the Propose bulk bar and ADR-0008 (changes review approval boundary) made Changes Review the only
     surface that authorizes anything.
 
     So every caller now gets the Changes Review list -- the surface that owns this action -- whether

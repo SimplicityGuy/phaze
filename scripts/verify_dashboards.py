@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Import the committed dashboards into a RUNNING Grafana and check every query.
 
-phaze-m1drf.4 acceptance 1, 2 and 5. ADR-0012 rule 3 decides the shape: *"verify with the
+phaze-m1drf.4 acceptance 1, 2 and 5. ADR-0012 (verification fidelity and operator attribution) rule 3 decides the shape: *"verify with the
 artifact's real consumer"*. The real consumer of Grafana dashboard JSON is **Grafana**, not
 a JSON-schema validator -- a schema check would accept a dashboard whose datasource uid
 does not exist in the target instance, whose panel type Grafana does not have, or whose

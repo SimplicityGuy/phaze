@@ -5,7 +5,7 @@ file's natural window count exceeded ``analysis_fine_cap`` / ``analysis_coarse_c
 was strided evenly across the file instead of analyzed window by window. It drove the amber
 "Sampled -- more data available" badge and gated the per-file "Deepen analysis" action.
 
-The operator removed the caps on 2026-08-11 (ADR-0007 section 7): every file now receives every
+The operator removed the caps on 2026-08-11 (ADR-0007 (windowed analysis) section 7): every file now receives every
 natural window of both tiers, so no analysis can be sampled, and the deepen path that existed to
 un-sample one is gone with it. The column can only ever be NULL (new rows) or a historical True/
 False that describes a policy the code no longer implements -- exactly the shape that misleads a

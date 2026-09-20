@@ -6,7 +6,7 @@ essentia import, no I/O, no dependency on the analysis pipeline.
 
 :func:`_iter_windows` is the exhaustiveness invariant's own function and moved UNCHANGED:
 there is still no window cap, no even stride, no ``sampled`` flag and no ``deepen`` path
-(D-07 / ADR-0007 section 7). What bounds memory is the CHUNKING in ``analysis.py``, which
+(D-07 / ADR-0007 (windowed analysis) section 7). What bounds memory is the CHUNKING in ``analysis.py``, which
 did not move.
 
 ``services/analysis.py`` re-exports every name below, so ``phaze.services.analysis`` stays

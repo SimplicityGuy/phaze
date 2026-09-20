@@ -93,7 +93,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # Left unset, TF sizes its intra-op pool from the machine's core count and gives each worker
 # thread its own allocation arena, which makes the per-process analyze peak a function of the
 # HOST rather than of the workload: every figure in docs/k8s-burst.md would rise silently on
-# a bigger box, reintroducing the node-scoped OOM ADR-0005 exists to prevent. The cap is the
+# a bigger box, reintroducing the node-scoped OOM ADR-0005 (analyze job memory limits) exists to prevent. The cap is the
 # mechanism that decouples the two -- see services/analysis_sizing.py for the policy, the
 # measurements behind the constants, and the env overrides (an operator-set value wins).
 #
@@ -1345,7 +1345,7 @@ def analyze_file(
       * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
         every window with audio is analyzed (no minimum-length floor).
 
-    **Coverage is EXHAUSTIVE (phaze-w55w1 / ADR-0007 §7).** Every natural window of both
+    **Coverage is EXHAUSTIVE (phaze-w55w1 / ADR-0007 (windowed analysis) §7).** Every natural window of both
     tiers is analyzed, on files of every length; there is no cap, no even stride, and no
     "sampled" result. What bounds per-file memory instead is CHUNKING: each tier is decoded
     and analyzed :data:`_FINE_CHUNK_WINDOWS` / :data:`_COARSE_CHUNK_WINDOWS` windows at a

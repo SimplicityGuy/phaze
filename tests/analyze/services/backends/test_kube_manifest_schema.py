@@ -9,7 +9,7 @@ Nothing in this repo ever handed it to one, or to anything that knows what a Job
   thing that built it, which can only ever prove that ``build_job_manifest`` is deterministic;
 - there was **no** ``kubeconform`` / ``kubeval`` / ``kubectl --dry-run`` anywhere in the repo.
 
-This module is the missing consumer-side check, and it is the general form of the lesson ADR-0012
+This module is the missing consumer-side check, and it is the general form of the lesson ADR-0012 (verification fidelity and operator attribution)
 rule 3 states: *verify with the artifact's real consumer, not the tool that produced it.*
 
 **The validator, and why it is this one.** The manifest is validated against
@@ -205,9 +205,9 @@ def _walk_container_specs(manifest: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 def test_memory_limit_reaches_the_schema_as_limits_not_requests() -> None:
-    """ADR-0005's shape survives schema validation: a memory-only limit, requests untouched.
+    """ADR-0005 (analyze job memory limits)'s shape survives schema validation: a memory-only limit, requests untouched.
 
-    Pins the ADR-0005 invariant at the schema layer rather than only against the producer dict --
+    Pins the ADR-0005 (analyze job memory limits) invariant at the schema layer rather than only against the producer dict --
     ``requests`` is Kueue's quota input and must not acquire the limit's value, and no CPU limit may
     appear (a memory-only limit keeps the pod QoS class Burstable, not Guaranteed).
     """

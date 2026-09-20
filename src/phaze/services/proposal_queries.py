@@ -134,9 +134,9 @@ class Pagination:
 class ProposalStats:
     """Aggregate statistics for proposals.
 
-    ``executed`` is its OWN count, not folded into ``approved`` (phaze-te2g3, ADR-0008 amendment).
+    ``executed`` is its OWN count, not folded into ``approved`` (phaze-te2g3, ADR-0008 (changes review approval boundary) amendment).
 
-    ADR-0008 maps the operator state *Approved* onto persisted ``approved`` OR ``executed``, and
+    ADR-0008 (changes review approval boundary) maps the operator state *Approved* onto persisted ``approved`` OR ``executed``, and
     the obvious reading of that table is that ``approved`` here should be the union. It is
     deliberately not, and the reason is that this dataclass feeds the Execute stage, where the
     number an operator wants is "still to dispatch" -- persisted ``approved`` alone. Folding
@@ -154,7 +154,7 @@ class ProposalStats:
     a ``failed`` proposal used to inflate ``total`` while appearing under no visible status, the same
     shape of gap ``executed`` had before phaze-te2g3.
 
-    This is a presentation contract only. ADR-0008's requirement that ``approved`` and ``executed``
+    This is a presentation contract only. ADR-0008 (changes review approval boundary)'s requirement that ``approved`` and ``executed``
     stay DISTINCT in the persisted data is untouched -- nothing here migrates or collapses a status.
     """
 
@@ -195,7 +195,7 @@ async def count_pending_above_confidence(session: AsyncSession, threshold: float
 
     phaze-7tiqp: this used to mirror the predicate of ``approve_pending_above_confidence``, the
     server-evaluated bulk approve behind ``PATCH /proposals/bulk-approve-high-confidence``. That
-    route lost its last UI caller at ADR-0008 and was retired with its service function, so the
+    route lost its last UI caller at ADR-0008 (changes review approval boundary) and was retired with its service function, so the
     predicate below is now stated in its own right rather than as a mirror of a sibling's.
 
     The Rename/Move workspaces' bulk-approve confirm dialog used to quote the RENDERED row count
@@ -427,7 +427,7 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
     the arithmetic the fields exist to fix.
 
     Every existing term is unchanged, deliberately: ``approved`` still counts persisted ``approved``
-    ONLY. See :class:`ProposalStats` for why the ADR-0008 union is a presentation choice made per
+    ONLY. See :class:`ProposalStats` for why the ADR-0008 (changes review approval boundary) union is a presentation choice made per
     surface rather than baked in here.
     """
     stmt = select(

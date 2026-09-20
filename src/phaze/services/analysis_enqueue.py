@@ -129,7 +129,7 @@ async def enqueue_process_file(
         # already in-flight file dedups to a no-op (SAQ incomplete-set; 32-RESEARCH §Q4).
         key=process_file_job_key(file.id),
         # phaze-w55w1: NO wall-clock net. The retired capped-analysis path used timeout=7200 above the
-        # (removed) 6600s inner SIGKILL. Exhaustive analysis (ADR-0007 §7) makes any elapsed-time
+        # (removed) 6600s inner SIGKILL. Exhaustive analysis (ADR-0007 (windowed analysis) §7) makes any elapsed-time
         # bound wrong: a multi-hour concert set legitimately runs past both numbers, and a wall
         # clock cannot tell that apart from a hang -- phaze-1b39 is the incident where trying
         # killed real work. `timeout=0` is SAQ's documented "disabled", already used by

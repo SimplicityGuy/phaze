@@ -1,7 +1,7 @@
 """phaze-x1qr3.10: unit tests for the three pure lookups in ``static/js/analysis_timeline.js``.
 
 Executed in a real browser against the SHIPPED file, because that is the artifact's real
-consumer. This repo has no node and no jsdom, and ADR-0012 rule 3 rules out the alternative
+consumer. This repo has no node and no jsdom, and ADR-0012 (verification fidelity and operator attribution) rule 3 rules out the alternative
 that needs neither: a Python port of the same arithmetic would round, compare and short-circuit
 in Python, and a floating-point boundary rule that held there would say nothing about the one
 that runs in Chromium. The functions are exported on ``window.PhazeAnalysisTimeline`` for

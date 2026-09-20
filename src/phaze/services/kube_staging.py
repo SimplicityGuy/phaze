@@ -167,7 +167,7 @@ DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
 #
 # NARROW on purpose, and matched ONLY against ``status.reason`` (a node-scoped field), never against a
 # container's terminated reason: an in-container OOMKill under an explicit ``resources.limits.memory``
-# (ADR-0005) is the pod paying for its OWN excess and must keep charging the ordinary attempt budget.
+# (ADR-0005 (analyze job memory limits)) is the pod paying for its OWN excess and must keep charging the ordinary attempt budget.
 NODE_LOSS_POD_STATUS_REASONS: frozenset[str] = frozenset(
     {
         "NodeLost",
@@ -341,16 +341,16 @@ def build_job_manifest(
     9.73 GiB against an 8Gi request), and the absence of a limit is what made the resulting kills
     ``constraint=CONSTRAINT_NONE`` global OOMs that took out coredns/metrics-server/
     local-path-provisioner instead of cgroup-OOMKilling the offending pod. Note the stated
-    rationale above is about ``requests`` (true, and ADR-0005 keeps requests authoritative) -- it
+    rationale above is about ``requests`` (true, and ADR-0005 (analyze job memory limits) keeps requests authoritative) -- it
     never supported omitting ``limits``, which Kueue's quota accounting does not read.
 
-    **phaze-k6d5 (this function, implementing ADR-0005):** when the optional
+    **phaze-k6d5 (this function, implementing ADR-0005 (analyze job memory limits)):** when the optional
     ``kube.memory_limit`` is set, the analyze container gains ``resources.limits.memory`` --
     ``requests`` is untouched (Kueue's quota input stays authoritative), and NO CPU limit is
     emitted (a memory-only limit does not promote the pod's QoS class off Burstable -- see
     ``tests/analyze/services/backends/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable``).
     When ``memory_limit`` is unset (the default), NO ``limits`` key is emitted at all -- the
-    manifest is byte-identical to the pre-ADR-0005 form (regression-guarded), the same
+    manifest is byte-identical to the pre-ADR-0005 (analyze job memory limits) form (regression-guarded), the same
     backward-compatibility posture already used for ``models_pvc_name`` /
     ``active_deadline_seconds``.
 
@@ -548,7 +548,7 @@ def build_job_manifest(
     # Kueue's quota accounting reads requests only and is unaffected. Deliberately NO cpu limit
     # (memory-only keeps the pod QoS class Burstable, not Guaranteed -- see
     # test_build_job_manifest_memory_limit_keeps_qos_burstable). Unset (None, the default) -> NO
-    # `limits` key at all, so the manifest stays byte-identical to the pre-ADR-0005 form
+    # `limits` key at all, so the manifest stays byte-identical to the pre-ADR-0005 (analyze job memory limits) form
     # (regression-guarded by test_build_job_manifest_omits_memory_limit_by_default).
     if kube.memory_limit:
         manifest["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"] = {"memory": kube.memory_limit}
@@ -738,7 +738,7 @@ def _node_lost_reason(pod: Any) -> str | None:
     :func:`_node_lost_by_status_reason` and :func:`_node_lost_by_disruption_condition`.
 
     Deliberately reads ONLY node-scoped fields. A container that exited 137 under its own
-    ``resources.limits.memory`` (ADR-0005) is the analyze overrunning its budget -- an ordinary
+    ``resources.limits.memory`` (ADR-0005 (analyze job memory limits)) is the analyze overrunning its budget -- an ordinary
     failure that must keep charging ``attempts`` -- and is not matched here.
     """
     status = getattr(pod, "status", None) or {}

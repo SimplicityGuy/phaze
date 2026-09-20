@@ -12,7 +12,7 @@ rest of the loop: the job's span was never ``__exit__``'d (never ended, never ex
 its duration and outcome were never recorded. The jobs that vanished from the panels were
 exactly the abnormally-ended ones the metrics exist to show.
 
-WHY THESE TESTS BUILD A REAL ``saq.Worker`` (ADR-0012 rule 3). The claim under test is a
+WHY THESE TESTS BUILD A REAL ``saq.Worker`` (ADR-0012 (verification fidelity and operator attribution) rule 3). The claim under test is a
 property of SAQ's hook dispatch, so a hand-rolled ``for hook in hooks`` loop in the test
 would be the producer vouching for itself -- it would pass against the pre-fix list shape
 too, because the loop a test writes is the loop the test expects. Every test here registers

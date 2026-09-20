@@ -90,7 +90,7 @@ async def test_replay_of_a_captured_pre_w55w1_bound_is_pinned_back_to_the_curren
     This test's assertion inverted with the policy change, and the inversion is the point. Those
     rows exist on disk right now, written by the pre-w55w1 producer. Replaying one at its stored
     7200s would put a wall clock back on a job that must not have one -- killing a progressing
-    multi-hour analysis at 2h, which is exactly what ADR-0007 §7 removed. The hook is the single
+    multi-hour analysis at 2h, which is exactly what ADR-0007 (windowed analysis) §7 removed. The hook is the single
     chokepoint that cannot be bypassed by a replay path, so pinning there is what makes the
     removal actually stick.
     """

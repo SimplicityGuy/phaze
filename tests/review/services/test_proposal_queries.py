@@ -164,7 +164,7 @@ async def test_get_proposal_stats_with_data(session: AsyncSession) -> None:
 async def test_get_proposal_stats_counts_executed_separately_from_approved(session: AsyncSession) -> None:
     """phaze-te2g3: `executed` is its own term, and `approved` does NOT absorb it.
 
-    ADR-0008 maps the operator state Approved onto persisted `approved` OR `executed`, and the
+    ADR-0008 (changes review approval boundary) maps the operator state Approved onto persisted `approved` OR `executed`, and the
     amendment this bead made to that ADR records why this query does not: the Execute stage needs
     "still to dispatch", so the union is a per-surface presentation choice, not a query one.
     Both halves are pinned here -- a future change that "conforms" this to the ADR by summing the

@@ -3,7 +3,7 @@
 Why this is here and not in phaze-tzy6s.14
 =========================================
 
-ADR-0009:85-87 claimed axe and computed-contrast checks belonged to ``.14``. Neither shipped;
+ADR-0009 (responsive accessibility baseline):85-87 claimed axe and computed-contrast checks belonged to ``.14``. Neither shipped;
 ``.17`` corrected the ADR text rather than adding the pass, and the operator deferred the checker
 itself to this bead (2026-08-17). Before this module NO automated accessibility check ran anywhere
 in the epic.

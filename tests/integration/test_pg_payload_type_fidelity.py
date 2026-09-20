@@ -9,7 +9,7 @@ function's ``**kwargs`` -> ``<Payload>.model_validate(kwargs)``. Until this modu
 fidelity of that hop was asserted nowhere:
 
 * ``tests/_queue_fakes.py::FakeQueue.enqueue`` recorded the kwargs dict IN-PROCESS and
-  UNSERIALIZED, so it is the producer's own echo -- ADR-0012 rule 3's exact shape. (phaze-9nz1g
+  UNSERIALIZED, so it is the producer's own echo -- ADR-0012 (verification fidelity and operator attribution) rule 3's exact shape. (phaze-9nz1g
   also fixed that: the fake now round-trips through the real ``PostgresQueue`` serializer. This
   module is the other half -- the fake's serializer is the RIGHT one, but a fake broker is still
   not a broker.)
@@ -315,9 +315,9 @@ def test_every_model_validate_consumer_is_covered() -> None:
 # These prove the claim phaze-ot3os actually makes -- that with ``WirePayload`` carrying the
 # discipline in the TYPE, the OMISSION survives it too, so there is no longer anything for a producer
 # to forget. That claim is about bytes on a broker, so it is adjudicated by a broker, not by a
-# same-process assertion about a dict: ADR-0012 rule 3.
+# same-process assertion about a dict: ADR-0012 (verification fidelity and operator attribution) rule 3.
 #
-# The general form of the lesson, since ADR-0012 rule 5 asks for it: a mechanism that makes a class of
+# The general form of the lesson, since ADR-0012 (verification fidelity and operator attribution) rule 5 asks for it: a mechanism that makes a class of
 # input SAFE is verified by driving that exact input through the REAL consumer, together with a
 # negative control proving the consumer still rejects the input the mechanism does NOT cover.
 # Without the control, a green run is equally consistent with "the mechanism works" and "the consumer

@@ -117,7 +117,7 @@ def _repo_coverage(**overrides: object) -> coverage.Coverage:
     """A Coverage object configured EXACTLY as every recipe in this repo configures one.
 
     The real consumer, handed the real config file -- so a key that pyproject sets but
-    coverage.py ignores fails here rather than reading as configured (ADR-0012 rule 3).
+    coverage.py ignores fails here rather than reading as configured (ADR-0012 (verification fidelity and operator attribution) rule 3).
     """
     return coverage.Coverage(config_file=str(PYPROJECT_PATH), **overrides)  # type: ignore[arg-type]
 

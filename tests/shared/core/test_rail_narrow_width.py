@@ -8,7 +8,7 @@ and it is unreachable by keyboard — so on phones the fourteen destinations wer
 assistive tech, and fourteen destinations across four groups is more than an icon strip carries
 legibly anyway. (Fourteen, not the sixteen .13's own ADR recorded: phaze-tzy6s.11 had already
 consolidated the three Rename / Path, Tag write and Move files nodes into one Changes Review
-destination before .13 landed — corrected here and in ADR-0009 by phaze-tzy6s.17.)
+destination before .13 landed — corrected here and in ADR-0009 (responsive accessibility baseline) by phaze-tzy6s.17.)
 
 Below ``lg`` the rail is now an **off-canvas drawer** opened from the header, with every label as
 visible text. At ``lg`` and up it is the static expanded rail the epic's desktop constraint requires.

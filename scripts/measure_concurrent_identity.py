@@ -9,7 +9,7 @@ example compose, not against an in-process reader."*
 each process's own ``InMemoryMetricReader`` shows a perfectly monotonic counter. It is in
 what the COLLECTOR does when two resource identities are identical: its Prometheus exporter
 keeps one series per identity and takes the last write. That behaviour lives in the
-collector, so only the collector can be asked about it. This is ADR-0012 rule 3 applied to
+collector, so only the collector can be asked about it. This is ADR-0012 (verification fidelity and operator attribution) rule 3 applied to
 a claim about a component phaze does not own.
 
 Three arms, because the decision needed all three answered against the same collector:

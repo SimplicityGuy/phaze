@@ -11,7 +11,7 @@ surfaced only as a pod exiting 20, one S3 stage, one submit and one Kueue admiss
 ConfigMap and the Secret are operator-created -- phaze creates neither, and that is deliberate
 (``docs/k8s-burst.md`` §5/§6). So the artifact an operator actually applies is the YAML **in the
 runbook**, and that is what this module parses and asserts against. A fixture restating the keys
-here would prove only that this file agrees with itself, which is precisely the shape ADR-0012
+here would prove only that this file agrees with itself, which is precisely the shape ADR-0012 (verification fidelity and operator attribution)
 rule 3 names: *verify with the artifact's real consumer, not the tool that produced it.* Parsing
 the runbook means a runbook edit that drops a key fails the build.
 
@@ -173,7 +173,7 @@ def test_the_telemetry_slot_is_code_injected_and_never_operator_supplied() -> No
     This is not a naming preference. ``PHAZE_TELEMETRY_SLOT``'s entire job is to differ between pods
     that run CONCURRENTLY, and the agent-env ConfigMap and the token Secret are objects every burst
     pod in the namespace shares -- a value there would give every pod the same slot, which IS the
-    defect ADR-0017 section 8 measured (an ``increase()`` 84.4% above the truth). So the key is
+    defect ADR-0017 (telemetry export topology) section 8 measured (an ``increase()`` 84.4% above the truth). So the key is
     asserted to be code-injected, asserted to be absent from both documented operator objects, and
     asserted to be per-submit: two manifests built with different slots differ in that value.
     """
@@ -208,10 +208,10 @@ def test_a_slot_without_its_bound_is_not_emitted_at_all() -> None:
 def test_an_injected_slot_survives_the_pod_all_the_way_to_the_identity() -> None:
     """The manifest's env, replayed through the pod's OWN chain, yields the bounded identity.
 
-    ADR-0012 rule 3: the artifact's real consumer is not ``build_job_manifest``. It is
+    ADR-0012 (verification fidelity and operator attribution) rule 3: the artifact's real consumer is not ``build_job_manifest``. It is
     ``slots.assign`` (which the pod calls around its analysis child) followed by
     ``bootstrap._instance_id``. A manifest carrying a correct slot that the pod then overwrites with
-    its own local 0 is the failure this test exists to catch, and it is the failure ADR-0017
+    its own local 0 is the failure this test exists to catch, and it is the failure ADR-0017 (telemetry export topology)
     section 8d predicted for exactly this design.
     """
     manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(), telemetry_slot=3, telemetry_slot_max=4)

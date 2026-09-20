@@ -47,7 +47,7 @@ MOOD_NAMES: Final[tuple[str, ...]] = tuple(name for name in MOOD_ORDER if name.s
 # categorical palette, so these hues are picked for separation and validated as such: the
 # guard test asserts all 7 are at least ``MIN_MOOD_HUE_SEPARATION_DEG`` apart around the
 # circle. Hue only -- saturation and lightness stay in the template so the bands can respond
-# to the light/dark theme without a second colour table (ADR-0010, colour contrast tokens).
+# to the light/dark theme without a second colour table (ADR-0010 (colour contrast tokens), colour contrast tokens).
 MOOD_HUES: Final[dict[str, int]] = {
     "mood_acoustic": 32,  # warm amber
     "mood_electronic": 268,  # violet

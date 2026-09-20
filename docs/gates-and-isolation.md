@@ -146,7 +146,7 @@ of attention, because **nothing in the prose changes when the tool moves underne
 cannot catch that. What catches it is a citation that fails loudly and a command that regenerates
 the claim, which is what the two blocks above exist to be.
 
-**Why `postland` stays full, cited in full (ADR-0012 rule 2).** Question as put (dispatcher →
+**Why `postland` stays full, cited in full (ADR-0012 (verification fidelity and operator attribution) rule 2).** Question as put (dispatcher →
 operator, 2026-08-25): *"your decision said 'merge-main too — nothing full-suite before main; CI
 catches it after'. Reading bh 0.14.0's source turned up a boundary that decision didn't enumerate:
 the postland phase — the molecule post-land re-test, which under relaxed fires only when the base

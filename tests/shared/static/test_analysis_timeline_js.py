@@ -21,7 +21,7 @@ honestly measure:
 * **``tests/browser/test_analysis_timeline_lookups.py`` (browser suite):** the three pure lookup
   functions -- ``measuredWindow``, ``segmentAt``, ``keyRunAt`` -- executed from the SHIPPED
   ``analysis_timeline.js`` in a real browser, on a synthetic payload, at a window boundary,
-  inside a gap and at the file end. ADR-0012 rule 3 is the reason it is not a Python port of
+  inside a gap and at the file end. ADR-0012 (verification fidelity and operator attribution) rule 3 is the reason it is not a Python port of
   the same arithmetic: a port is a proxy that cannot exhibit the failure, and the artifact's
   real consumer is a browser.
 * **``tests/browser/test_analysis_timeline.py`` (browser suite):** the interaction contract --

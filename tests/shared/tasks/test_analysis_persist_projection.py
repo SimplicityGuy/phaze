@@ -2,7 +2,7 @@
 fails the analysis it rides along with.
 
 Mirrors ``tests/agents/routers/test_agent_analysis_real_payload.py``'s real-producer/real-consumer
-wiring (ADR-0012 rule 3): the REAL ``analyze_file`` artifact -> the REAL wire payload builder -> the
+wiring (ADR-0012 (verification fidelity and operator attribution) rule 3): the REAL ``analyze_file`` artifact -> the REAL wire payload builder -> the
 REAL ``PhazeAgentClient`` -> the REAL router, so the projection is exercised against genuine
 essentia output shapes (real ``musical_key`` strings, real ``features`` JSONB), never a hand-built
 stub that cannot exhibit the alphabetical-ordering trap ``positive_class_vector`` exists to avoid.
@@ -355,7 +355,7 @@ async def test_a_windows_clear_removes_the_profile_from_every_surface_that_reads
 ) -> None:
     """phaze-qj926 case 1: ``PUT {"windows": []}`` must take the file's ``set_profile`` row with it.
 
-    Asserted through the FOUR real consumers of that row rather than the row alone (ADR-0012 rule
+    Asserted through the FOUR real consumers of that row rather than the row alone (ADR-0012 (verification fidelity and operator attribution) rule
     3), each with its OWN query shape: ``routers/record.py``'s ``session.get`` (the record page),
     ``services/pipeline/files.get_files_page``'s ``selectinload`` (the Files table),
     ``services/search_queries.search``'s outer join (the ⌘K palette) and
@@ -437,7 +437,7 @@ async def test_a_projection_failure_leaves_a_row_the_backfill_actually_repairs(
 
     Verified against the REAL selection predicate and the REAL ``run_backfill``, not against the
     row's absence: absence is this fix's mechanism, and repairability is the property the bead is
-    actually about (ADR-0012 rule 3).
+    actually about (ADR-0012 (verification fidelity and operator attribution) rule 3).
     """
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)

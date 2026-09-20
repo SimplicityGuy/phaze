@@ -24,7 +24,7 @@
    from the dispatch it describes. See that module's D-10 record before adding a read.
 
    Exclusions are rendered, never omitted. Tag writes, duplicate resolution and cue sheets are NOT
-   dispatched by this control (ADR-0008 puts tag authorization on its own append-only log), and an
+   dispatched by this control (ADR-0008 (changes review approval boundary) puts tag authorization on its own append-only log), and an
    operation type silently absent from a manifest reads as "there is none of it". They appear with
    live counts and the stage that does own them.
 
@@ -38,7 +38,7 @@
    card that lands here opens its own SSE stream, and the workspace itself starts no timer. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{# phaze-tzy6s.17 / ADR-0008 operator vocabulary: "needing review", not "pending review". #}
+{# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary) operator vocabulary: "needing review", not "pending review". #}
 {% set subcount = "'" ~ preflight.total ~ " ready to execute · " ~ stats.pending ~ " still needing review'" %}
 {% set _apply_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-warn hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set _eyebrow = 'font-jura text-[11px] uppercase tracking-[0.2em] text-muted ' %}
@@ -169,7 +169,7 @@
         <p class="{{ _eyebrow }} mb-2">Not dispatched by this control</p>
         <p class="text-xs text-muted ">
             EXECUTE APPROVED runs approved filename and destination changes only.
-            Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them.
+            Tag writes are authorized and dispatched separately (ADR-0008 (changes review approval boundary)); this control does not run them.
             Dispatch them from the Tag Changes section of Changes Review.
             Duplicate resolution is its own decision, taken in Duplicates.
             Cue sheets are generated artifacts, written on the Cue sheets stage.
@@ -181,12 +181,12 @@
             <span class="{{ _eyebrow }}">Total</span>
             <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
         </div>
-        {# phaze-tzy6s.17 / ADR-0008: these are proposal statuses, so they carry the operator
+        {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): these are proposal statuses, so they carry the operator
            vocabulary -- `pending` reads "Needs Review".
 
            phaze-te2g3 FIXED the accounting hole .17 filed here. `stats.approved` still counts ONLY
            persisted `approved` -- on THIS card that is the right number, because Execute's question
-           is "what is still to dispatch", and folding ADR-0008's `approved OR executed` union into
+           is "what is still to dispatch", and folding ADR-0008 (changes review approval boundary)'s `approved OR executed` union into
            it would count work this control has already done as work it is about to do. What was
            actually broken is that `executed` was counted by `total` and by nothing else, so an
            executed proposal vanished from every visible status while still inflating Total.

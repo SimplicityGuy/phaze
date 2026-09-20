@@ -19,7 +19,7 @@
 /* Semantic colour vocabulary. Templates consume these intent names instead of
  * coupling meaning to a Tailwind hue/rung pair. Each text token has one light
  * value here and one dark value in the .dark scope below; all combinations
- * exceed the ADR-0010 5.5:1 target on the app's real surfaces. */
+ * exceed the ADR-0010 (colour contrast tokens) 5.5:1 target on the app's real surfaces. */
 :root {
     --phaze-text-muted: #5b6272;
     --phaze-text-link: #006b87;
@@ -59,7 +59,7 @@
 
 @theme {
     /* WCAG AA contrast ramp — deliberately overrides Tailwind's stock values.
-     * Text rungs target at least 5.5:1 against #f3f4f6; see ADR-0010.
+     * Text rungs target at least 5.5:1 against #f3f4f6; see ADR-0010 (colour contrast tokens).
      * Hues remain distinct so status is never conveyed by text/glyph alone. */
     --color-gray-400: #5b6370;
     --color-gray-500: #5b6272;
@@ -75,7 +75,7 @@
     --color-violet-500: #7935e5;
 
     /* Phaze accent palette — replaces default blue; 500-700 also meet the
-     * ADR-0010 contrast target for both text and white-on-fill controls. */
+     * ADR-0010 (colour contrast tokens) contrast target for both text and white-on-fill controls. */
     --color-blue-50: #e6f7fb;
     --color-blue-100: #b3e8f3;
     --color-blue-200: #80d9eb;
@@ -96,7 +96,7 @@
 
 /* Dark text intentionally uses the brighter stock 400 rungs. The light-theme
  * repaint above cannot serve both backgrounds, so restore those values within
- * the theme scope; this asymmetry is the load-bearing part of ADR-0010. */
+ * the theme scope; this asymmetry is the load-bearing part of ADR-0010 (colour contrast tokens). */
 .dark {
     --phaze-text-muted: #99a1af;
     --phaze-text-link: #4dcae3;

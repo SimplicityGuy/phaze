@@ -98,7 +98,7 @@ Three things that trace settles, none of which a metric could have answered:
 The trace was **stable at 45 of 45 spans across five consecutive queries** through Grafana, and
 Tempo's own counters confirmed `tempo_discarded_spans_total` = 0 for every reason.
 
-> **The unstable version of this result is recorded in ADR-0017 §7d, and it is the more useful
+> **The unstable version of this result is recorded in ADR-0017 (telemetry export topology) §7d, and it is the more useful
 > half.** With Tempo's `max_block_duration` below the trace's lifetime, the same analysis was
 > split across 8 blocks and returned **28 spans on one query and 16 on the next, out of 45**,
 > with nothing dropped and no error anywhere. A partial trace that looks complete is the failure

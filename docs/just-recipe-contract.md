@@ -34,7 +34,7 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `check-fast` | external contract | Beadhive check/submit/merge validation |
 | `cloud-agent-down` | operator convenience | cloud-agent deployment teardown |
 | `cloud-agent-up` | operator convenience | cloud-agent deployment bring-up |
-| `corpus-distribution` | historical one-off | reproduce ADR-0012 archive-bound measurements |
+| `corpus-distribution` | historical one-off | reproduce ADR-0012 (verification fidelity and operator attribution) archive-bound measurements |
 | `coverage-combine` | external contract | `.github/workflows/tests.yml` coverage fan-in |
 | `db-current` | operator convenience | inspect the active Alembic revision |
 | `db-downgrade` | operator convenience | migration rollback during development |

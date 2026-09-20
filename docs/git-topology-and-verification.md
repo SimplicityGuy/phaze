@@ -240,14 +240,14 @@ the first, that is a **new question for the operator, not a corollary**. The sym
 holds — a decision may not be narrowed past the conditions attached to it. A claim that fails any
 of the four is not deleted, it is **relabelled as the implementer's decision**, which is a
 perfectly good thing for a decision to be and which invites the review the operator label
-suppresses. `ADR-0007` §7 and the operator-decision comment on `phaze-b62ri` are the models to
-copy. ADR-0012 §5 inventories every such claim currently in the tree.
+suppresses. `ADR-0007 (windowed analysis)` §7 and the operator-decision comment on `phaze-b62ri` are the models to
+copy. ADR-0012 (verification fidelity and operator attribution) §5 inventories every such claim currently in the tree.
 
 **Before writing "operator decision" from memory, check `scripts/recover_operator_decisions.py`.**
 The question-as-put and answer-as-given this rule requires are frequently NOT in anything a normal
 grep finds: an `AskUserQuestion` exchange is recorded as an assistant `tool_use` (the question, every
 option) matched to a `tool_result` (the selection) — neither is a `user` turn, so both are invisible
-to a grep of bead comments or of user messages. That blind spot is why ADR-0012 §5 first read six
+to a grep of bead comments or of user messages. That blind spot is why ADR-0012 (verification fidelity and operator attribution) §5 first read six
 genuine decisions as untraceable (`phaze-d2hgv`, 2026-08-21). The script recovers both that shape and
 plain human-typed turns from local session transcripts, given a date range or a bead id, in output
 quotable directly into the durable record — read its module docstring for what it can and cannot

@@ -2,7 +2,7 @@
 
 Read ``tests/browser/axe.py``'s docstring first -- in particular the paragraph on what this is not.
 This file provides the CAPABILITY the operator deferred here on 2026-08-17; the recorded human
-multi-viewport / dark-theme / screen-reader pass ADR-0009 requires is separate work and is not
+multi-viewport / dark-theme / screen-reader pass ADR-0009 (responsive accessibility baseline) requires is separate work and is not
 duplicated here.
 
 Every scan runs against SEEDED state. That is the point of running it in this bead rather than in
@@ -72,7 +72,7 @@ async def test_a_populated_workspace_has_no_automated_accessibility_violations(o
 @pytest.mark.parametrize("theme", ["light", "dark"])
 @pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "discover"])
 async def test_a_populated_workspace_meets_wcag_aa_contrast(open_page: Any, seed: Seeder, stage: str, theme: str) -> None:
-    """The computed-contrast check ADR-0009 requested, across every seeded workspace."""
+    """The computed-contrast check ADR-0009 (responsive accessibility baseline) requested, across every seeded workspace."""
     await _populate(seed)
 
     page = await open_page("desktop", theme=theme)

@@ -21,7 +21,7 @@ Same shape as ``test_tag_write_sha256_seam.py``: producer (the agent's execute t
 site to grep and no natural home. These tests build the seam explicitly -- the real writer, the real
 wire schema, the real HTTP route, the real database column, handed to the real consumer.
 
-ADR-0012 RULE 3 DECIDES THE SECOND TEST'S CONSUMER. "Verify with the artifact's real consumer, not
+ADR-0012 (verification fidelity and operator attribution) RULE 3 DECIDES THE SECOND TEST'S CONSUMER. "Verify with the artifact's real consumer, not
 with the tool that produced it." Re-reading ``current_path`` through the execute path that wrote it
 round-trips perfectly and CANNOT exhibit this defect at any fidelity.
 
@@ -34,13 +34,13 @@ The consumer chosen is the CUE writer (``routers.cue._eligible_cue_text`` ->
     normalization-INSENSITIVE, so an NFD path happily opens an NFC file there. A test asserting
     "the open fails" would pass on Linux CI and silently prove nothing on a developer's Mac. That
     is a proxy that structurally cannot exhibit the failure on half the platforms that run it,
-    which is the exact ADR-0012 trap these rules exist to close.
+    which is the exact ADR-0012 (verification fidelity and operator attribution) trap these rules exist to close.
 
 The two tests also chain in the product's own order rather than in a contrived one: the execute run
 in the first test is what flips the proposal to EXECUTED, which is what makes ``is_applied`` true,
 which is what makes the tracklist CUE-eligible in the second.
 
-POPULATION (ADR-0012 rule 4 -- measured, not adjectival). Measured against the live catalog on
+POPULATION (ADR-0012 (verification fidelity and operator attribution) rule 4 -- measured, not adjectival). Measured against the live catalog on
 2026-08-24 and recorded on the bead: 0 of 11,428 ``files.current_path`` rows are non-NFC, 60 of
 11,428 (0.52%) carry non-ASCII at all, and ``proposals`` has never held a row
 (``n_tup_ins = 0`` with ``pg_stat_database.stats_reset`` NULL). So this fix changes the path for a
@@ -253,7 +253,7 @@ async def test_the_persisted_current_path_reaches_the_cue_writer_in_the_ingest_f
     session: AsyncSession,
     seed_test_agent: tuple[Agent, str],
 ) -> None:
-    """ADR-0012 rule 3: hand the persisted row to the CUE writer, a consumer that did not write it.
+    """ADR-0012 (verification fidelity and operator attribution) rule 3: hand the persisted row to the CUE writer, a consumer that did not write it.
 
     ``routers.cue._eligible_cue_text`` copies ``Path(file_record.current_path).name`` straight into
     the CUE ``FILE "<name>"`` line. The archive's own filenames are NFC (measured: 0 of 11,428 rows

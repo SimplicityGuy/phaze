@@ -1,4 +1,4 @@
-"""Pin the export-timeout UNITS against the installed SDK (ADR-0016).
+"""Pin the export-timeout UNITS against the installed SDK (ADR-0016 (transferred model verification)).
 
 ``docs/design/0016-transferred-model-verification.md`` names the failure this file exists
 for: *a belief carried in from a neighbouring system presents as something you already know

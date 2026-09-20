@@ -18,7 +18,7 @@ coverage.py's total is the COMBINED figure ``(covered_lines + covered_branches) 
 line-only (verified against coverage 7.15.4). Leaving the floors on that knob would have
 quietly converted both of phaze's repo-wide gates into branch-sensitive gates -- the exact thing
 the operator's decision on phaze-bk9el.21 says not to do ("the repo-wide gate stays on lines at
-95%"), and the exact shape ADR-0012 rule 3 warns about: a gate that keeps its number while
+95%"), and the exact shape ADR-0012 (verification fidelity and operator attribution) rule 3 warns about: a gate that keeps its number while
 silently changing the quantity it measures.
 
 So both floors are read here from ``percent_statements_covered``, which coverage.py reports

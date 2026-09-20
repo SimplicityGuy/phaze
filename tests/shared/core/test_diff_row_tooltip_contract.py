@@ -1,7 +1,7 @@
 """The shared ``_diff_row.html`` tooltip contract, read out of the RENDERED HTML (phaze-n8o9p).
 
 Every assertion here parses the ``title=`` attribute the browser would actually receive. That is
-deliberate and it is the point of the module: ADR-0012 rule 3 says an artifact is verified with its
+deliberate and it is the point of the module: ADR-0012 (verification fidelity and operator attribution) rule 3 says an artifact is verified with its
 REAL consumer, not with the tool that produced it, and the consumer of ``file_tooltip`` is the
 rendered attribute -- never the Python dict a router returns. A sibling bead in this wave proved the
 cost of the other approach concretely: it renamed a serialized field, 56 tests passed, and the wire

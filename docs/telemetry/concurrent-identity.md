@@ -19,7 +19,7 @@ counters. Until this measurement they all reported the same `service.instance.id
 
 Not answerable in process. Each child's own `InMemoryMetricReader` shows a perfectly
 monotonic counter — the corruption happens in the collector's accumulator, so only the
-collector can be asked. ADR-0012 rule 3.
+collector can be asked. ADR-0012 (verification fidelity and operator attribution) rule 3.
 
 ## 2. Environment
 
@@ -168,7 +168,7 @@ running total appears nowhere:
 
 No collector error was logged. Making this arm work needs the `deltatocumulative` processor
 in the collector pipeline — **configuration phaze does not own**, whose absence fails exactly
-this silently. That is the same objection ADR-0017 §3b raised against the pushgateway, so it
+this silently. That is the same objection ADR-0017 (telemetry export topology) §3b raised against the pushgateway, so it
 cannot be answered by adding a processor to the example compose: homelab's collector is the
 one that matters and this repo cannot constrain it.
 

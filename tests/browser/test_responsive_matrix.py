@@ -1,9 +1,9 @@
-"""phaze-fk1ww: the viewport x theme x state matrix ADR-0009 asks for and nothing ran.
+"""phaze-fk1ww: the viewport x theme x state matrix ADR-0009 (responsive accessibility baseline) asks for and nothing ran.
 
 What was missing
 ================
 
-Two lanes claimed to enforce ADR-0009's responsive/accessibility baseline and neither covered the
+Two lanes claimed to enforce ADR-0009 (responsive accessibility baseline)'s responsive/accessibility baseline and neither covered the
 middle of it:
 
 * ``tests/shared/core/test_cross_workspace_responsive_a11y.py`` sweeps every template's **markup**.
@@ -24,12 +24,12 @@ What each cell asserts
 Per workspace, per cell, the four properties that are computed-layout facts and therefore invisible
 to the markup sweep:
 
-1. the document never scrolls sideways (ADR-0009 "Tables");
+1. the document never scrolls sideways (ADR-0009 (responsive accessibility baseline) "Tables");
 2. every visible table sits in a container that actually computes ``overflow-x: auto|scroll``;
 3. the navigation branch matches the width -- expanded rail at ``lg``+, off-canvas drawer below it,
-   and NO icon-only state at any width (ADR-0009 "Breakpoints");
+   and NO icon-only state at any width (ADR-0009 (responsive accessibility baseline) "Breakpoints");
 4. every visible icon-only control has a non-empty accessible name at runtime, not merely an
-   ``aria-label`` attribute in a template (ADR-0009 "Controls").
+   ``aria-label`` attribute in a template (ADR-0009 (responsive accessibility baseline) "Controls").
 
 Plus, per cell, that the theme under test is the one that actually painted: the ``.dark`` class is
 present or absent as pinned AND the resolved background colour differs between the two themes. The
@@ -146,7 +146,7 @@ _PROBE_JS = """
     const unwrapped = [];
     let tables = 0;
     for (const table of document.querySelectorAll('table')) {
-        if (!visible(table)) continue;   // <table hidden> carriers are exempt by ADR-0009.
+        if (!visible(table)) continue;   // <table hidden> carriers are exempt by ADR-0009 (responsive accessibility baseline).
         tables += 1;
         let node = table.parentElement, wrapped = false;
         while (node && node !== doc) {

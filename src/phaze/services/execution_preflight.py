@@ -42,7 +42,7 @@ So the manifest reports them as *explicit exclusions with live counts*, never by
 operation type absent from a manifest reads as "there is none of it"; the honest statement is "there
 are 12 of these and this control will not run them, here is what will".
 
-Per ADR-0008 one RenameProposal carries both the filename and destination decision, so the two
+Per ADR-0008 (changes review approval boundary) one RenameProposal carries both the filename and destination decision, so the two
 participating operation types are facets of one row, split on ``proposed_path``:
 
 * ``""``   -> rename in place (keep the directory, apply the new filename)
@@ -317,7 +317,7 @@ def _build_exclusions(
             label="Tag writes",
             count=tagwrite_pending,
             reason=(
-                "Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them."
+                "Tag writes are authorized and dispatched separately (ADR-0008 (changes review approval boundary)); this control does not run them."
                 + (" At least this many — the queue scan is capped, so the real number may be higher." if tagwrite_pending_at_least else "")
             ),
             next_action="Dispatch them from the Tag Changes section of Changes Review.",

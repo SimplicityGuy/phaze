@@ -1,6 +1,6 @@
-"""phaze-fk1ww: ADR-0009's keyboard and screen-reader smoke pass, mechanized.
+"""phaze-fk1ww: ADR-0009 (responsive accessibility baseline)'s keyboard and screen-reader smoke pass, mechanized.
 
-ADR-0009 §"Keyboard and screen-reader smoke pass" is a six-step manual script whose own line 153
+ADR-0009 (responsive accessibility baseline) §"Keyboard and screen-reader smoke pass" is a six-step manual script whose own line 153
 says "Record the date and result in the PR". No result was ever recorded, and a manual script that
 is only ever run by hand produces evidence exactly once -- for the release it was run against, by
 whoever ran it, in whatever states they happened to be in.
@@ -97,7 +97,7 @@ async def _settle(page: Any, predicate: Any, *, timeout_ms: int = 2000) -> dict[
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_the_first_tab_stops_are_reachable_and_visibly_focused(viewport: str, theme: str, page_at: Any) -> None:
-    """ADR-0009 step 1: Tab from page load reaches navigation, and every stop shows a focus ring.
+    """ADR-0009 (responsive accessibility baseline) step 1: Tab from page load reaches navigation, and every stop shows a focus ring.
 
     Tab is pressed rather than ``.focus()`` called: ``:focus-visible`` -- which is what every ring in
     this design system is gated on -- resolves differently for a scripted focus than for a real
@@ -131,7 +131,7 @@ async def test_the_first_tab_stops_are_reachable_and_visibly_focused(viewport: s
 
 @pytest.mark.parametrize("theme", THEMES)
 async def test_the_closed_drawer_contributes_no_tab_stops_below_lg(theme: str, page_at: Any) -> None:
-    """ADR-0009 step 1, second half -- extended to the tablet band, which was never checked.
+    """ADR-0009 (responsive accessibility baseline) step 1, second half -- extended to the tablet band, which was never checked.
 
     ``test_shell_contract`` proves this at 390px. The ``md`` band takes the same drawer branch and
     was never validated, and "below lg" is a range, not a width: a rule keyed off a phone-only media
@@ -158,7 +158,7 @@ async def test_the_closed_drawer_contributes_no_tab_stops_below_lg(theme: str, p
 @pytest.mark.parametrize("viewport", [v for v in VIEWPORTS if _below_lg(v)])
 @pytest.mark.parametrize("theme", THEMES)
 async def test_the_drawer_opens_from_the_keyboard_traps_focus_and_returns_it(viewport: str, theme: str, page_at: Any) -> None:
-    """ADR-0009 step 2: Enter opens the drawer, focus moves in and is trapped, Escape returns it.
+    """ADR-0009 (responsive accessibility baseline) step 2: Enter opens the drawer, focus moves in and is trapped, Escape returns it.
 
     Driven entirely from the keyboard -- Enter on the focused trigger, not ``click()`` -- because
     the step being verified is that the drawer is operable without a pointer at all.
@@ -197,7 +197,7 @@ async def test_the_drawer_opens_from_the_keyboard_traps_focus_and_returns_it(vie
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewport: str, theme: str, page_at: Any) -> None:
-    """ADR-0009 step 3, at every width -- the palette was only ever checked at 1440px.
+    """ADR-0009 (responsive accessibility baseline) step 3, at every width -- the palette was only ever checked at 1440px.
 
     Both chords are tried: the documented one is Meta+K, but a phone/tablet context is not a macOS
     keyboard, and a palette reachable only via a chord the platform does not produce is unreachable
@@ -247,7 +247,7 @@ async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewp
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: str, theme: str, page_at: Any, seed: Any) -> None:
-    """ADR-0009 step 4 and §Controls: the reason is body text wired via aria-describedby, not a title.
+    """ADR-0009 (responsive accessibility baseline) step 4 and §Controls: the reason is body text wired via aria-describedby, not a title.
 
     A ``title=`` is unreachable by keyboard and absent on touch, so a disabled control explained only
     by one is explained to nobody at the two widths this bead exists to cover.
@@ -290,7 +290,7 @@ async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: 
 
 @pytest.mark.parametrize("viewport", list(VIEWPORTS))
 async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page_at: Any, browser_dsn: str) -> None:
-    """ADR-0009 step 5: the table's own container is what moves.
+    """ADR-0009 (responsive accessibility baseline) step 5: the table's own container is what moves.
 
     Seeded, because an empty table has nothing to scroll and the step is therefore vacuous against
     the empty database every previous check ran on.
@@ -331,7 +331,7 @@ async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_focus_is_not_dropped_to_the_body_when_navigating_by_keyboard(viewport: str, theme: str, page_at: Any) -> None:
-    """ADR-0009 step 6: after a rail swap, focus is somewhere a keyboard user can continue from.
+    """ADR-0009 (responsive accessibility baseline) step 6: after a rail swap, focus is somewhere a keyboard user can continue from.
 
     Focus dropped to ``<body>`` restarts the tab order at the top of the document, so a keyboard user
     who navigates to the ninth destination has to tab past the whole rail again to do anything.
@@ -451,7 +451,7 @@ async def test_the_accessibility_tree_exposes_one_navigation_and_names_every_con
 
     Chromium's accessibility tree, not a template grep. Two landmarks with the same name, or a
     control whose computed name is empty, are invisible to every markup assertion in the repo and
-    are the whole reason ADR-0009 asks for this pass by hand.
+    are the whole reason ADR-0009 (responsive accessibility baseline) asks for this pass by hand.
     """
     async with page_at(viewport=viewport, theme=theme) as page:
         await _open(page)

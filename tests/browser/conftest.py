@@ -80,7 +80,7 @@ trace, no screenshot, no artifact upload. The state that produced the failure wa
 runner the moment the job ended -- and this suite is exactly the kind that produces hard-to-
 reproduce failures (an htmx settle race that vanished under instrumentation, a documented
 ``reset()`` deadlock seen once in 124 runs; recorded in the since-deleted
-``tests/browser/FLAKE_RECORD.md`` -- see ADR-0009 § "The browser contract suite").
+``tests/browser/FLAKE_RECORD.md`` -- see ADR-0009 (responsive accessibility baseline) § "The browser contract suite").
 
 Every context created by ``_browser_pages`` now starts a `Playwright trace
 <https://playwright.dev/python/docs/trace-viewer>`_ (``screenshots=True, snapshots=True,
@@ -318,14 +318,14 @@ def live_server() -> Iterator[str]:
 
 #
 # NAMED, not hardcoded per fixture. The suite shipped with TWO inline page fixtures, 1440x900 and
-# 390x844: the two ends of the responsive contract with its middle missing. ADR-0009's breakpoint
+# 390x844: the two ends of the responsive contract with its middle missing. ADR-0009 (responsive accessibility baseline)'s breakpoint
 # table forks at `lg` (1024px), so every width from `md` (768) up to 1023px takes the SAME drawer
 # branch as the phone while having none of the phone's other properties -- a two-column workspace
 # grid, a wide table, and enough room that a layout bug there is invisible at 390px. That band was
 # never validated, and phaze-mrg1c was found in it.
 #
 # The tablet width is 768 DELIBERATELY. Two independent passes proposed 768 and 820; 768 wins
-# because it is the width the RECORDED evidence was measured at -- ADR-0009's 2026-08-17 validation
+# because it is the width the RECORDED evidence was measured at -- ADR-0009 (responsive accessibility baseline)'s 2026-08-17 validation
 # entry and every row of phaze-mrg1c's overflow table cite "tablet 768". Renaming the constant to
 # 820 would silently invalidate both records. It is also the `md` boundary itself, which is where
 # breakpoint bugs concentrate.

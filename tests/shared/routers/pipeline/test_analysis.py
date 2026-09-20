@@ -645,7 +645,7 @@ def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless
 # phaze-w55w1: POST /pipeline/files/{file_id}/deepen is REMOVED.
 #
 # Phase 44's per-file "deepen" re-enqueued one file at a cap of 0 to lift the
-# window caps for it. With analysis exhaustive by default (ADR-0007 §7) there is no cap to
+# window caps for it. With analysis exhaustive by default (ADR-0007 (windowed analysis) §7) there is no cap to
 # lift, so the endpoint, its progress poll, their templates, and the ~20 tests that pinned
 # their routing/collision/poll-state behaviour are all gone. What replaces them is the two
 # assertions below: the routes 404, and nothing still links to them.

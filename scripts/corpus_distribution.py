@@ -1,6 +1,6 @@
 """One-command corpus-distribution probe for picking duration/size bounds (phaze-d2hgv.5).
 
-ADR-0012 SS7 R3 / guardrail G3's distribution clause: a claim about the archive's distribution
+ADR-0012 (verification fidelity and operator attribution) SS7 R3 / guardrail G3's distribution clause: a claim about the archive's distribution
 must be discharged against the archive's distribution -- a query, not a test. `phaze-1b39` is the
 entire justification -- a 6600s (110min, ~1h50m) wall-clock analysis-kill bound (the removed
 `analysis_inner_timeout_sec`) was adequate for every input the tests used, then SIGTERM'd

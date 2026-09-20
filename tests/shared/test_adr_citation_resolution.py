@@ -40,12 +40,18 @@ CSS file, in a workflow, or in prose, and 344 citations across ~60 files is one 
 
 EXEMPTIONS, AND WHY THE OBVIOUS ONE IS NOT TAKEN.
 
-- ``_EXEMPT_FILES`` holds exactly one entry: **this file**, which must contain dangling-number
-  literals as detector fixtures and quotes the historical ``f4c39654`` line verbatim. Scanning
-  itself, it would fail on its own test data. ``tests/shared/test_operator_attribution_citations.py``
-  is the in-repo precedent for exempting a file that is about the vocabulary it checks, and it
-  found the same thing the same way -- invisible while untracked, since ``git grep`` does not see
-  an untracked file, and surfacing only on the first commit.
+- ``_EXEMPT_FILES`` holds two entries. **This file** must contain dangling-number literals as
+  detector fixtures and quotes the historical ``f4c39654`` line verbatim; scanning itself, it would
+  fail on its own test data. **``tests/shared/test_adr_bare_citation_convention.py``** (phaze-dnez9,
+  the sibling BARENESS guard -- see that file's own module docstring for how it differs from this
+  one) was added for the identical reason: its ``TestDetectorMechanics`` class constructs a
+  synthetic ``ADR-9999`` citation as a mechanics-test fixture (an unassigned number is deliberately
+  used there, to prove the detector does NOT treat it as its concern), which is dangling by
+  construction and would fail this guard on its own test data the moment it landed.
+  ``tests/shared/test_operator_attribution_citations.py`` is the in-repo precedent for exempting a
+  file that is about the vocabulary it checks, and it found the same thing the same way -- invisible
+  while untracked, since ``git grep`` does not see an untracked file, and surfacing only on the
+  first commit.
 - ``CONVENTIONS.md`` and ``CLAUDE.md`` are **NOT** exempt, and this is the deliberate call rather
   than an oversight. Both quote "ADR-0014" as the worked example of a bad citation -- prose that
   DISCUSSES a citation rather than making one, which criterion 5 of this bead requires the guard
@@ -116,7 +122,7 @@ _ADR_FILENAME_RE = re.compile(r"^docs/design/(\d{4})-[^/]*\.md$")
 # correctness guard into a style guard nobody asked for.
 _H1_RE = re.compile(r"^#\s+ADR[ -](\d{4})\b")
 
-_EXEMPT_FILES = frozenset({_SELF_PATH})
+_EXEMPT_FILES = frozenset({_SELF_PATH, "tests/shared/test_adr_bare_citation_convention.py"})
 
 # (path, needle) -- see the module docstring. Empty today by measurement, not by omission.
 _EXEMPT_LINES: tuple[tuple[str, str], ...] = ()

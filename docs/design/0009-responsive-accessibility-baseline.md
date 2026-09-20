@@ -91,7 +91,7 @@ are unaffected and remain correct for modal `max-w` guards.
 | The dark theme actually paints, and is not just a class name | `tests/browser/test_responsive_matrix.py` |
 | The six-step keyboard/screen-reader script, at every width | `tests/browser/test_keyboard_screen_reader.py` (phaze-fk1ww) |
 | Rendered ARIA/labelling violations, per workspace | `tests/browser/test_accessibility.py` + `tests/browser/axe.py` |
-| Computed WCAG AA contrast, both themes | `tests/browser/test_accessibility.py` — **currently a strict xfail; see ADR-0010** |
+| Computed WCAG AA contrast, both themes | `tests/browser/test_accessibility.py` — **currently a strict xfail; see ADR-0010 (colour contrast tokens)** |
 
 The sweep is filesystem-based and covers **all** templates, including partials that render only in
 states a smoke test rarely reaches. Real-browser checks are complementary, not redundant: this lane
@@ -120,7 +120,7 @@ record of what was true on 2026-08-17.
 
 The contrast half is closed differently: the check **runs on every invocation and fails**, recorded
 as a strict xfail across 10 parametrised cells rather than disabled, because the palette itself is
-non-conformant. See **ADR-0010**, which decides the repaint and its target ratio; `phaze-qvid8`
+non-conformant. See **ADR-0010 (colour contrast tokens)**, which decides the repaint and its target ratio; `phaze-qvid8`
 implements it and folds `color-contrast` into `axe.py`'s blocking `RULES`. A guard that runs and is
 red is a different state from one that does not exist, and this ADR should not be read as claiming
 either that contrast is unchecked or that it passes.
@@ -315,7 +315,7 @@ body text `oklch(0.21 0.034 264.665)` vs `oklch(0.928 0.006 264.531)`, identical
    case is the weakest of the five — the area is there but a programmatic scroll did not move an
    `is_mobile` context — and is recorded as such.
 2. **phaze-bdeih (P2) — below `lg`, activating a rail destination from the drawer drops focus to
-   `<body>`.** ADR-0009 step 6, on the path that only exists below `lg`. Intermittent: 8 of 12
+   `<body>`.** ADR-0009 (responsive accessibility baseline) step 6, on the path that only exists below `lg`. Intermittent: 8 of 12
    below-`lg` cell-runs over three consecutive runs, 0 of 6 at desktop, with `activeElement` polled
    for 2 s after the swap marker lands so it is not a read-too-early artefact. The intermittency is
    part of the finding — something is racing the drawer's close transition.
@@ -347,7 +347,7 @@ the entries have to be deleted with the fix instead of surviving as stale text.
   the corrected paragraph above already states.
   *(Superseded 2026-08-18: both landed. The computed-contrast check now runs and FAILS — 15 failing
   light-theme colours across 508 class-string uses, 3 dark-theme across 62, worst case 2.36:1. The
-  repaint that fixes it is ADR-0010, implemented by `phaze-qvid8`. This 2026-08-17 record stands as
+  repaint that fixes it is ADR-0010 (colour contrast tokens), implemented by `phaze-qvid8`. This 2026-08-17 record stands as
   written; it is not amended, only annotated.)*
 - **Step 4's populated half is not covered**: the Execute confirm dialog *with approved work* was
   not driven from the keyboard. Only the disabled/empty branch was.
@@ -515,7 +515,7 @@ Given the session-scope correction above, the existing browser CI job already pa
 cost once per run, which is representative of "CI is the cold shape" as originally stated. Adding a
 second always-on cold-path lane would duplicate that rather than add coverage. What is arguably
 missing is a **periodic fresh-process-per-test stress run** — the shape that actually reproduced
-the `phaze-39eiy` flake — run on the `ADR-0011` bug-hunt cadence rather than on every PR, since that
+the `phaze-39eiy` flake — run on the `ADR-0011 (bug hunt cadence)` bug-hunt cadence rather than on every PR, since that
 is the instrument that forces the worst-case boot/cache-warming variables rather than the CI job's
 steady state. This is a recommendation only; no CI change was made as part of this entry.
 

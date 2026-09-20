@@ -170,8 +170,8 @@ formatters, workspace functions, constants `_MAX_REVIEW_ROWS`, `_REVIEW_SCAN_BAT
 resolution. Literal patch paths occur in three test files. There is no direct runtime import loader;
 FastAPI registration is indirect through the consuming routers.
 
-**Governing decisions and risks.** ADR-0008 keeps rename approval, tag decisions, counts, warning
-copy, and status vocabulary distinct even when one workspace renders them together. ADR-0015 says
+**Governing decisions and risks.** ADR-0008 (changes review approval boundary) keeps rename approval, tag decisions, counts, warning
+copy, and status vocabulary distinct even when one workspace renders them together. ADR-0015 (shared session gather) says
 shared-session concurrency is not intrinsically unsafe, but concurrency remains an explicit
 transaction/snapshot/degrade-path decision. Preserve ordering, pagination, bounded scans,
 degrade-safe empty results, per-workspace transaction ownership, and complete row values.
@@ -202,7 +202,7 @@ continue to intercept the code under test. Prompt templates are loaded from the 
 and LiteLLM dispatch is runtime provider behavior, but there is no dynamic Python module import.
 The controller constructs `ProposalService` during startup and the proposal task calls the facade.
 
-**Governing decisions and risks.** ADR-0015 preserves current sequential persistence and makes any
+**Governing decisions and risks.** ADR-0015 (shared session gather) preserves current sequential persistence and makes any
 future concurrency a separate, evidence-backed transaction/snapshot/degrade decision. Preserve
 malformed-completion telemetry, exact exception classes, salvage and finish-reason behavior,
 companion precedence and limits, prompt lookup, rate-limit semantics, stored context, transaction
@@ -306,9 +306,9 @@ domain-completion names. Preserve the facade and current patch paths for `get_se
 `recover_orphaned_work`, runs it at startup, and registers `backfill_ledger_from_saq_jobs`; the
 operator recovery route calls the same facade. There is no candidate-specific dynamic module load.
 
-**Governing decisions and risks.** ADR-0004 requires expiring payloads to be regenerated from durable
-inputs at replay time. ADR-0006 makes badge/recovery completion parity definitional and requires the
-reaper to clear what recovery ignores. ADR-0003 permanently accepts the narrow backfill/enqueue
+**Governing decisions and risks.** ADR-0004 (ledger replay safety) requires expiring payloads to be regenerated from durable
+inputs at replay time. ADR-0006 (ledger completion coverage) makes badge/recovery completion parity definitional and requires the
+reaper to clear what recovery ignores. ADR-0003 (backfill ledger race residual window) permanently accepts the narrow backfill/enqueue
 residual window instead of adding a coarse lock. Preserve per-row failure isolation, live-key
 deduplication, cloud ownership exclusions, nonfatal startup backfill, session/transaction
 boundaries, owner routing, replay safety, and truthful failure tallies.

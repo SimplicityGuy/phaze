@@ -15,7 +15,7 @@ test_the_schema_does_not_catch_a_bad_quantity_which_is_why_this_module_exists``.
 
 **FORMAT ONLY.** Nothing here judges whether a valid quantity is a *good* quantity, and in
 particular nothing raises, lowers, defaults or normalises ``memory_limit`` -- ``backends.toml`` and
-ADR-0005 are explicit that it is not a knob to change casually, and CLAUDE.md records that
+ADR-0005 (analyze job memory limits) are explicit that it is not a knob to change casually, and CLAUDE.md records that
 duration-linear memory growth is a bug rather than a sizing input. The valid cases below assert the
 string comes back **byte-identical**, which is what keeps a "validator" from quietly becoming a
 rewriter.
@@ -57,7 +57,7 @@ _INVALID = [
 _VALID = [
     "1500m",  # docs/k8s-burst.md: the burst node's cpu_request
     "3Gi",  # docs/k8s-burst.md: the burst node's memory_request
-    "4Gi",  # docs/k8s-burst.md + ADR-0005: the burst node's memory_limit
+    "4Gi",  # docs/k8s-burst.md + ADR-0005 (analyze job memory limits): the burst node's memory_limit
     "2",  # the existing test fixtures' cpu_request -- a bare number is 2 whole CPUs
     "0",  # zero is a legal quantity; only NEGATIVE is refused
     "4G",  # decimalSI: 4 * 10^9, not the same number as 4Gi but a legal string
@@ -122,7 +122,7 @@ def test_none_still_means_unset_and_is_not_promoted_to_required(field: str) -> N
     """Validating the FORMAT of these fields must not make them mandatory.
 
     All three are ``Optional`` and their unset-ness is load-bearing: ``memory_limit = None`` means
-    "emit no ``limits`` key at all" (ADR-0005, byte-identical to the pre-ADR manifest), and an unset
+    "emit no ``limits`` key at all" (ADR-0005 (analyze job memory limits), byte-identical to the pre-ADR manifest), and an unset
     ``cpu_request`` / ``memory_request`` is caught later, BY NAME, in ``build_job_manifest``'s
     fail-loud check -- which produces a better message than a validator here could, because it names
     the backend entry. A field validator that rejected ``None`` would silently move that error and

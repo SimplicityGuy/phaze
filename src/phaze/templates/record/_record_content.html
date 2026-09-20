@@ -17,7 +17,7 @@
 {% set _summary = 'flex cursor-pointer items-center gap-2 font-jura text-[11px] font-medium uppercase tracking-wider text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500' %}
 <div data-record-content class="space-y-6 px-6 py-5">
         {# 1 — Changes needing review for THIS file: a COUNT plus a link into Changes Review.
-           Approval is intentionally centralized (ADR-0008: Changes Review is the ONLY UI workspace
+           Approval is intentionally centralized (ADR-0008 (changes review approval boundary): Changes Review is the ONLY UI workspace
            that authorizes filename, destination, and tag changes) so a record drawer cannot bypass
            the reviewed queue context. This box must never regrow an inline _diff_row approve/edit
            cluster; tests/shared/core/test_record_palette_agents.py holds that boundary.
@@ -25,7 +25,7 @@
            phaze-x1qr3.8 moved it to the top and it carries NO fold: a pending decision that the
            operator has to expand to discover is a pending decision that gets missed. #}
         <div data-review-banner class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-            {# phaze-tzy6s.17 / ADR-0008: operator vocabulary -- the drawer says "Needs Review", not
+            {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): operator vocabulary -- the drawer says "Needs Review", not
                "Pending". The link below already carries `status=needs_review`; only the words the
                operator reads were still on the pre-ADR term. #}
             <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-warn ">Changes needing review for this file</p>

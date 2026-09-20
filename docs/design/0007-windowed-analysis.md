@@ -79,13 +79,13 @@ line 477: "Phase 43 O(1) cap exists because `RhythmExtractor2013` on long buffer
 bound windows analyzed to a constant per file (`docs/essentia-analysis.md`: "cost is O(constant),
 not O(duration) — the root-cause fix for the 4h-timeout incident").
 
-### 2b. Memory: the `analysis_child` >8 GiB spike and ADR-0005
+### 2b. Memory: the `analysis_child` >8 GiB spike and ADR-0005 (analyze job memory limits)
 
 Spike `phaze-esut` (`docs/spikes/phaze-esut-analysis-memory-profile.md`) measured the analyze
 pipeline end to end against a production incident: 55 kernel OOM kills over six days on an
 8 GiB-`request`, no-`limit` pod, with observed peak RSS of **8.5–10.5 GiB**, and pathological
 outliers up to **15.27–30.41 GiB** (`anon-rss`, never reproduced under controlled variation —
-filed as its own open question). This directly produced ADR-0005
+filed as its own open question). This directly produced ADR-0005 (analyze job memory limits)
 (`docs/design/0005-analyze-job-memory-limits.md`): emit `resources.limits.memory` on analyze
 Jobs so a pod-scoped fault stays pod-scoped instead of taking out cluster infrastructure
 (confirmed collateral: `coredns` ×2, `metrics-server` ×2, `local-path-provisioner` ×2).
@@ -170,10 +170,10 @@ this repo's history (`phaze-esut`, `phaze-rc1q`) has a standing lesson that "add
 components" this way has been wrong by a gigabyte before when the components interact (e.g.
 allocator/thread effects). The two figures above don't stack (the passes run sequentially,
 §2b), but either one alone materially raises the pipeline's peak above the current whole-process
-measured floor of 1.7383 GiB (§2b) and above the interim `3Gi`/`4Gi` limit tier ADR-0005 sized
+measured floor of 1.7383 GiB (§2b) and above the interim `3Gi`/`4Gi` limit tier ADR-0005 (analyze job memory limits) sized
 against that floor — i.e. **exhaustive analysis of a multi-hour set plausibly exceeds the memory
-limit ADR-0005 put in place**, and would fail via that limit's designed-in cgroup OOMKill (a
-contained, pod-scoped failure per ADR-0005 — better than the pre-ADR-0005 node-killing failure
+limit ADR-0005 (analyze job memory limits) put in place**, and would fail via that limit's designed-in cgroup OOMKill (a
+contained, pod-scoped failure per ADR-0005 (analyze job memory limits) — better than the pre-ADR-0005 (analyze job memory limits) node-killing failure
 mode, but still a failure, not a completed analysis).
 
 **Wall clock.** Decode cost is unaffected by the cap either way (§2c) — a 12-hour file's two-tier
@@ -197,7 +197,7 @@ in a documented incident rather than an assumption.
 
 **Net:** going exhaustive by default would reproduce, for every long file, the exact class of
 problem (`O(duration)` cost, unbounded wall clock, unbounded memory) that Phase 43's caps and
-ADR-0005's limit were both independently built to close.
+ADR-0005 (analyze job memory limits)'s limit were both independently built to close.
 
 ______________________________________________________________________
 
@@ -239,7 +239,7 @@ ______________________________________________________________________
 
 | Option | Verdict |
 | --- | --- |
-| **A. Offer a new "exhaustive by default" analysis mode** | **Not recommended.** §3 shows it reproduces the exact O(duration) memory/wall-clock blowup Phase 43 and ADR-0005 were built to close, for a benefit (full coverage) that `deepen` already delivers on demand for the files that actually need it. |
+| **A. Offer a new "exhaustive by default" analysis mode** | **Not recommended.** §3 shows it reproduces the exact O(duration) memory/wall-clock blowup Phase 43 and ADR-0005 (analyze job memory limits) were built to close, for a benefit (full coverage) that `deepen` already delivers on demand for the files that actually need it. |
 | **B. Rely on the existing `deepen` path, with discoverability follow-ups** | **Recommended.** |
 | **C. Reject exhaustive mode entirely, do nothing further** | Not recommended as-is — `deepen`'s bulk-action and discoverability gaps (§4) are real and cheap to close; rejecting outright leaves value on the table. |
 
@@ -323,7 +323,7 @@ ______________________________________________________________________
   longer applies verbatim. Its underlying point stands and transfers directly to the
   implementation bead `phaze-w55w1` (§7): the chunked/bounded-memory rework needs the same kind
   of real, measured (not extrapolated) peak-RSS/wall-clock validation on a genuine multi-hour file that
-  this follow-up asked for, so that ADR-0005's limits are re-validated against the new pass
+  this follow-up asked for, so that ADR-0005 (analyze job memory limits)'s limits are re-validated against the new pass
   architecture rather than assumed to still hold.
 
 ______________________________________________________________________
@@ -352,7 +352,7 @@ to keep it survivable. The implementation bead is scoped to:
 - **Rework both passes to chunked, bounded-memory window processing** so the linear-in-duration
   memory growth §3 projects (~7.3 GiB fine / ~2.8 GiB coarse PCM on a 12-hour set, extrapolated)
   does not actually occur — i.e. stop holding all of a tier's windows concurrently, so a file's
-  peak stays a function of chunk size, not of duration, and ADR-0005's memory limits (§2b) remain
+  peak stays a function of chunk size, not of duration, and ADR-0005 (analyze job memory limits)'s memory limits (§2b) remain
   valid against the reworked passes rather than being invalidated by this decision.
 - **Replace the wall-clock timeout (`analysis_inner_timeout_sec` / the SAQ `process_file` outer
   net, currently 6,600 s / 7,200 s, `config.py`) with progress-based (heartbeat/stall) liveness
@@ -391,7 +391,7 @@ The decision above shipped. What landed, and where the reasoning now lives:
 | Heartbeat/stall liveness replacing the wall clock | The **D-08 decision record** in `services/analysis_exec.py`. `analysis_inner_timeout_sec` is deleted and replaced by `analysis_stall_timeout_sec` (default 1800 s, on `BaseSettings` so both roles agree). The SAQ `process_file` job moves to `timeout=0` + SAQ's own `heartbeat`, touched by the lane off the child's heartbeat channel; the burst lane passes the same `stall_timeout` where it previously passed nothing. Since `phaze-esn0g`, each blocking streaming chunk decode also has a watchdog thread emitting `fine_decode` / `coarse_decode` liveness every 60 s while `essentia.run` is in C++. This is structural rather than a larger timeout: `phaze-b2qs9` §5 measured a 930.719 s maximum healthy full-run gap, and one fine chunk-0 decode of a 10-hour 48 kHz archive file took 1,422.391 s — 79.0% of the 1,800 s threshold. The periodic decode beat decouples that threshold from duration and source sample rate. |
 
 **Chunk sizes are the old cap values, deliberately.** 60/30 reproduce exactly the per-tier PCM
-residency §2b documented (~317 MB / ~345 MB), which is what keeps ADR-0005's memory limits valid
+residency §2b documented (~317 MB / ~345 MB), which is what keeps ADR-0005 (analyze job memory limits)'s memory limits valid
 against the reworked passes rather than invalidated by this decision — the condition §7 attached
 to accepting §3's cost profile.
 
@@ -425,7 +425,7 @@ the whole finding:
 | claim in this section | measured |
 | --- | --- |
 | peak PCM is ~317 MB (fine) / ~345 MB (coarse) **independent of duration** | true of the **live PCM**, false of the **process**. Whole-process peak RSS is **linear in duration**: `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB (R² 0.99959, 25 chunk boundaries, 4 files), i.e. **+0.31 GiB per 30 minutes of audio**, with no saturation over a 12× span |
-| "ADR-0005's memory limits stay valid across the removal" | **they do not.** Measured whole-process peak: **2.1107** GiB at 1:00, **2.9287** at 2:00, **4.1854** at 4:00, **5.5211** at 5:38, **10.2768** at 12:04 — the last three are **over** the deployed `memory_limit: 4Gi`, the last by **2.57x**. Every file past roughly 3 hours is an `OOMKilled` pod, which both lanes map to a terminal, un-retried failure |
+| "ADR-0005 (analyze job memory limits)'s memory limits stay valid across the removal" | **they do not.** Measured whole-process peak: **2.1107** GiB at 1:00, **2.9287** at 2:00, **4.1854** at 4:00, **5.5211** at 5:38, **10.2768** at 12:04 — the last three are **over** the deployed `memory_limit: 4Gi`, the last by **2.57x**. Every file past roughly 3 hours is an `OOMKilled` pod, which both lanes map to a terminal, un-retried failure |
 | the chunk gate takes decode from `K × duration` to `duration × (K+1)/2` | the gate **is** taken on the deployed essentia (zero fallbacks, correct output) and **is** worth 18.5–27% of a non-final chunk's decode in a controlled fresh-process A/B — but per-chunk decode wall clock is **not** proportional to the chunk boundary, so that arithmetic does not describe wall clock |
 | `test_analysis_long_file.py` proves "peak RSS moves less than 25 MB between a 2-hour and a 12-hour file" | it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes** |
 
@@ -437,7 +437,7 @@ heartbeat gap observed rises with duration (105.762 s at 1:00 → 565.256 s at 4
 **None of this regresses correctness** — coverage was exhaustive and complete in every run
 (`analyzed == total`, zero skips, on all seven files) — but the memory result invalidates the
 condition §7 attached to accepting §3's cost profile. The spike files nothing and fixes nothing;
-its §7 proposes the follow-ups, headed by the peak-RSS growth and a re-opening of ADR-0005's
+its §7 proposes the follow-ups, headed by the peak-RSS growth and a re-opening of ADR-0005 (analyze job memory limits)'s
 "peak is uncorrelated with duration" premise, which was true of the pre-`w55w1` pipeline and is
 false of this one.
 

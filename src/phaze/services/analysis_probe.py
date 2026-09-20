@@ -72,7 +72,7 @@ def _probe_duration_sec(file_path: str) -> float:
     Two candidate mechanisms were RULED OUT by measurement, not by argument:
 
     * **Not the ffmpeg version.** 7.1.5, 8.1.2 and 9.0.1 all mux a ``.mka`` that macOS reads
-      fine. (This matters because the CI/production ffmpeg split in ADR-0013 section 7 was
+      fine. (This matters because the CI/production ffmpeg split in ADR-0013 (ffmpeg pin) section 7 was
       briefly suspected of causing this. It does not, and that decision needs no amendment on
       account of this finding.)
     * **Not codec support.** ``.mp3`` and ``.m4a`` read fine in the same container, same binary,
@@ -86,7 +86,7 @@ def _probe_duration_sec(file_path: str) -> float:
 
     ARE phaze-3ea41's GUARDS STILL LOAD-BEARING? **YES.** MetadataReader reads 0 from a ``.mka``
     on the deployed platform TODAY, so the zero-duration shape remains reachable for any path
-    that trusts it. Nothing here weakens the ADR-0012 rule 3 lesson either; that lesson -- verify
+    that trusts it. Nothing here weakens the ADR-0012 (verification fidelity and operator attribution) rule 3 lesson either; that lesson -- verify
     with the artifact's REAL consumer, not the tool that produced it -- is what surfaced this
     misattribution in the first place.
 

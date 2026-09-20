@@ -751,7 +751,7 @@ dated v7 design specifications describe the original cutover, not every later re
   Two consolidations produced the grouping above, and both are easy to mis-read from an older
   revision of this file. The Enrich group lost its Fingerprint node and the Identify group its
   Track-ID node when phaze-0jpe removed fingerprinting (2026-07-28). Then phaze-tzy6s.11 /
-  ADR-0008 replaced the three separate Rename / Path, Tag write and Move files nodes with the
+  ADR-0008 (changes review approval boundary) replaced the three separate Rename / Path, Tag write and Move files nodes with the
   single **Changes Review** destination — the only surface that authorizes filename/destination
   proposals and the separate, reversible tag-write decisions — taking the rail from sixteen
   destinations to fourteen. `rename`, `tagwrite`

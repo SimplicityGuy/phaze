@@ -1,7 +1,7 @@
-"""phaze-d2hgv.7: mechanizes ADR-0012 section 7's R2 -- CLAUDE.md guardrail G2, ``"Operator
+"""phaze-d2hgv.7: mechanizes ADR-0012 (verification fidelity and operator attribution) section 7's R2 -- CLAUDE.md guardrail G2, ``"Operator
 decision" is a citation, not an emphasis marker``, made mechanical instead of cultural.
 
-Generalizes ``tests/shared/test_no_exclude_newer_cooldown.py``, ADR-0012 section 5's *only*
+Generalizes ``tests/shared/test_no_exclude_newer_cooldown.py``, ADR-0012 (verification fidelity and operator attribution) section 5's *only*
 operator decision in the repo with a machine-checked citation, from one ``pyproject.toml`` key to
 every tracked file's use of the attribution vocabulary: any paragraph asserting that a decision
 WAS an operator's carries an ISO date and a bead id somewhere in that same paragraph, or it fails
@@ -13,7 +13,7 @@ four rounds of sweeps (dispatcher comment on phaze-d2hgv.7, 2026-08-21):
 1. **Wrap-tolerant DETECTION.** Real citations in this repo wrap across source lines --
    ``src/phaze/services/video_audio.py`` had ``"... -- operator\\ndecision (phaze-3ea41)."`` at
    HEAD before phaze-d2hgv.1 repaired it. A regex anchored to one line cannot match that at all;
-   every line-scoped sweep in this audit missed six such sites, including ADR-0012 section 5's
+   every line-scoped sweep in this audit missed six such sites, including ADR-0012 (verification fidelity and operator attribution) section 5's
    own original inventory. The fix is NOT a bigger regex -- it is scanning whole paragraphs of
    already-whitespace-normalized text (see ``_normalize_paragraph`` below) so a mid-word line
    wrap is invisible to the vocabulary regex by construction.
@@ -32,19 +32,19 @@ citations: ``tests/shared/test_no_exclude_newer_cooldown.py`` itself contains
 ``assert "Operator decision 2026-08-03" in text`` -- a substring being searched FOR, not a claim
 being made. Restricting to ``ast.get_docstring`` (module/class/function/async-function) plus
 ``tokenize`` comment runs removes that whole class of noise -- but this file's OWN docstrings
-(this one included) discuss the vocabulary as their subject matter just as heavily as ADR-0012
+(this one included) discuss the vocabulary as their subject matter just as heavily as ADR-0012 (verification fidelity and operator attribution)
 does, so ``_EXEMPT_FILES`` below exempts this file by its own path for the identical reason it
 exempts the ADR (found the hard way: invisible while this file was untracked, since
 ``_scope_files()`` walks ``git ls-files``, and only surfaced on the first commit).
 
 SCOPE: ``src/``, ``tests/``, ``scripts/``, ``alembic/``, ``docs/``, plus ``CLAUDE.md``, the
-``Dockerfile*`` family and ``justfile`` -- the populations ADR-0012 section 5 actually swept.
-``.planning/`` is deliberately excluded: ADR-0012 counted it as a superseded historical archive
+``Dockerfile*`` family and ``justfile`` -- the populations ADR-0012 (verification fidelity and operator attribution) section 5 actually swept.
+``.planning/`` is deliberately excluded: ADR-0012 (verification fidelity and operator attribution) counted it as a superseded historical archive
 and declined to audit it, and failing the build on it now would re-litigate that settled call.
 
 ALLOWLIST BY SHAPE, NOT BY ENUMERATED FILE (dispatcher comment on phaze-d2hgv.7, 2026-08-21). A
 wrap-tolerant sweep of this molecule found ``tasks/filename_convention.py`` carrying a SECOND
-instance of the exact pattern ADR-0012 section 5 flagged only once, at
+instance of the exact pattern ADR-0012 (verification fidelity and operator attribution) section 5 flagged only once, at
 ``tasks/controller.py:401`` -- a statement that a choice BELONGS TO the operator at runtime,
 versus a claim that a decision WAS MADE. Both were reworded away (commit ``96c79af2``) before this
 check landed, so neither appears in ``_KNOWN_SHAPE_EXCLUSIONS`` below as a per-file entry -- but a
@@ -56,7 +56,7 @@ not a developer one"*) and ``docs/spikes/phaze-b2qs9-exhaustive-analysis-measure
 (*"...are operator decisions, not spike decisions"*) -- two more sites the same shape rule clears
 without being told about either by name.
 
-The three UI-domain shapes are the ones ADR-0012 section 5 counted as its 13 non-attribution
+The three UI-domain shapes are the ones ADR-0012 (verification fidelity and operator attribution) section 5 counted as its 13 non-attribution
 matches: an ``operator-chosen``/``operator-approved`` adjective describing an artifact ("an
 operator-chosen sort key", "a manual, operator-approved cleanup"); an ``an operator choice/decision
 of ...`` noun phrase ('an operator choice of "zero threads"'); and ``awaiting an operator
@@ -149,7 +149,7 @@ _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # the `phaze-` prefix is deliberately NOT accepted: it is the difference between a citation and a
 # word that merely looks like one.
 _BEAD_ID_RE = re.compile(r"\bphaze-[0-9a-z]+(?:\.[0-9]+)*\b", re.IGNORECASE)
-# ADR-0012 section 5's own inventory regex, `operator[- ](decision|confirmed|approved|directed|
+# ADR-0012 (verification fidelity and operator attribution) section 5's own inventory regex, `operator[- ](decision|confirmed|approved|directed|
 # granted|chose|ruling)`, widened with `choice`/`chosen`/`decided` (both appear in this tree, e.g.
 # `tests/analyze/services/pipeline/test_analysis_sizing.py`'s "operator choice of ...") and with
 # `[-\s]+` in place of `[- ]` so a hyphen/space run of any length -- including one that used to
@@ -169,7 +169,7 @@ _SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(r"\ban?\s+operator\s+(?:choice|decision)\s+of\b", re.IGNORECASE),
-        "'an operator choice/decision of ...' names what an operator can configure -- ADR-0012 "
+        "'an operator choice/decision of ...' names what an operator can configure -- ADR-0012 (verification fidelity and operator attribution) "
         "section 5's own example is 'an operator choice of \"zero threads\"'.",
     ),
     (
@@ -199,7 +199,7 @@ _KNOWN_SHAPE_EXCLUSIONS: tuple[tuple[str, str], ...] = (
     # Both are prose ABOUT the citation requirement, so both take the same needle -- the wording
     # is a verbatim extraction and rewording it to dodge the vocabulary would corrupt the rule's
     # own statement of itself. Deliberately NOT an `_EXEMPT_FILES` entry: that document is not
-    # vocabulary-saturated the way ADR-0012 is, so anchoring to the paragraph keeps every OTHER
+    # vocabulary-saturated the way ADR-0012 (verification fidelity and operator attribution) is, so anchoring to the paragraph keeps every OTHER
     # paragraph in it checked (proved by `test_known_meta_exclusions_are_still_narrowly_scoped_
     # to_their_needle` below, which runs against every path listed here rather than just one).
     (
@@ -227,7 +227,7 @@ _SELF_PATH = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
 
 # The ADR that defines and inventories this vocabulary discusses dozens of quoted claims by their
 # original wording -- it is the one file in the tree that is EXPECTED to say "operator decision"
-# far more often than it makes new ones. ADR-0012 section 5 excluded itself from its own docs/
+# far more often than it makes new ones. ADR-0012 (verification fidelity and operator attribution) section 5 excluded itself from its own docs/
 # count for the same reason (9 matches across 8 files is far fewer than this file alone carries).
 # TRADEOFF (deliberate, not overlooked): a whole-file exemption, not a needle-scoped one -- the
 # vocabulary recurs in prose that differs every time across sections 1/4/5/7, so a needle would
@@ -237,10 +237,10 @@ _SELF_PATH = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
 #
 # THIS FILE IS EXEMPT FOR THE SAME REASON, discovered the hard way: once this file is `git add`ed
 # and its own paragraphs enter `_scope_files()`'s population, its module/helper docstrings --
-# which discuss the attribution vocabulary as their subject matter, same as ADR-0012 -- trip the
+# which discuss the attribution vocabulary as their subject matter, same as ADR-0012 (verification fidelity and operator attribution) -- trip the
 # very check they implement. `git ls-files` does not include an untracked file, so this was
 # invisible until the first commit; catch it here rather than relying on that accident of timing.
-# Same tradeoff as ADR-0012: a genuinely new, uncited claim added to a docstring in THIS file would
+# Same tradeoff as ADR-0012 (verification fidelity and operator attribution): a genuinely new, uncited claim added to a docstring in THIS file would
 # not be caught either.
 _EXEMPT_FILES = frozenset(
     {
@@ -470,7 +470,7 @@ def _format_violation(paragraph: _Paragraph, *, has_date: bool, has_bead: bool) 
         f"{paragraph.path}:{paragraph.lineno} asserts an operator decision but is missing "
         f"{' and '.join(missing)} in the same paragraph.\n"
         f"    text: {excerpt!r}\n"
-        "    Add both to the SAME paragraph -- see ADR-0007 section 7 (the phaze-w55w1 windowed-"
+        "    Add both to the SAME paragraph -- see ADR-0007 (windowed analysis) section 7 (the phaze-w55w1 windowed-"
         "analysis decision) or the phaze-b62ri bead comment for the shape to copy: the question as it was "
         "put, the answer as it was given, the date, and the bead id. If this is NOT a claim that a "
         "decision was made -- a UI-domain adjective like 'operator-chosen', or a statement of whose "
@@ -480,7 +480,7 @@ def _format_violation(paragraph: _Paragraph, *, has_date: bool, has_bead: bool) 
 
 
 def test_every_operator_decision_claim_carries_a_date_and_a_bead_id() -> None:
-    """ADR-0012 guardrail G2, mechanized: every tracked-file attribution claim is citable."""
+    """ADR-0012 (verification fidelity and operator attribution) guardrail G2, mechanized: every tracked-file attribution claim is citable."""
     paragraphs: list[_Paragraph] = []
     for path in _scope_files():
         paragraphs.extend(_paragraphs_for_file(path))
@@ -540,7 +540,7 @@ class TestScannerMechanics:
         assert list(_iter_uncited_claims(iter(paragraphs))) == []
 
     def test_ui_domain_shapes_are_not_flagged(self) -> None:
-        """ADR-0012 section 5's own three UI-domain examples, verbatim -- none is a claim."""
+        """ADR-0012 (verification fidelity and operator attribution) section 5's own three UI-domain examples, verbatim -- none is a claim."""
         cases = [
             "# an operator-chosen sort key ties more often than the default one does\n",
             '# not an operator choice of "zero threads"\n',

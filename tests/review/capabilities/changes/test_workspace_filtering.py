@@ -235,7 +235,9 @@ async def test_failed_proposals_have_a_blocked_tab(
     body = (await client.get("/s/propose?status=all", headers=_LIST_TARGET)).text
     assert "status=failed" in body, "the Blocked tab must render with its own filter URL"
     blocked_tab = body.split("status=failed", 1)[1].split("</button>", 1)[0]
-    assert "Blocked" in blocked_tab, "the tab label must read the ADR-0008 operator vocabulary, not the persisted status"
+    assert "Blocked" in blocked_tab, (
+        "the tab label must read the ADR-0008 (changes review approval boundary) operator vocabulary, not the persisted status"
+    )
 
     badges = [int(chunk.split("<")[0].strip()) for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
     total, per_status = badges[0], badges[1:]

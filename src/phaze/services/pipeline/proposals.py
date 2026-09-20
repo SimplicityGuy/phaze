@@ -86,7 +86,7 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # error -- the task NEVER falls back"). These two conjuncts are the DOOR: a file with work
         # in flight is not proposable, so the move cannot be scheduled underneath it.
         #
-        # OPERATOR DECISION 2026-08-25 (ADR-0012 rule 2). Question as put: the mechanism for
+        # OPERATOR DECISION 2026-08-25 (ADR-0012 (verification fidelity and operator attribution) rule 2). Question as put: the mechanism for
         # phaze-3542b's confirmed enqueue-then-execute TOCTOU, offered as labelled options.
         # Answer as given -- the option LABEL the operator selected, and the whole of what they
         # authored: "Close the door: add ~inflight to the propose gate". Durable record: the

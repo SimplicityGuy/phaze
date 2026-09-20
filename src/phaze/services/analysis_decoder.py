@@ -30,7 +30,7 @@ things about that review are worth having here rather than only at the call site
 * **Narrowing any of them is currently unverifiable, and that is measured rather than asserted.**
   Every failure this module's suite injects is a ``RuntimeError`` (eleven sites) or an ``OSError``
   (one).  A narrowing to those types would therefore leave the entire suite green while changing
-  production behaviour for every other exception type -- ADR-0012 rule 3's "verified against a
+  production behaviour for every other exception type -- ADR-0012 (verification fidelity and operator attribution) rule 3's "verified against a
   proxy that structurally cannot exhibit the failure", exactly.  Closing that gap means widening
   the injected type set first; it is not a comment-only change and is not this bead's scope.
 
@@ -492,7 +492,7 @@ def _try_gated_rung(target: DecodeTarget, stop_at_sec: float, signals: DecodeSig
     # rather than exotic.  NARROWING IS UNVERIFIABLE HERE, which is the decisive reason and not a
     # stylistic one: every failure the suite injects at this rung is a RuntimeError, so narrowing to
     # RuntimeError would leave all of those tests green while changing production behaviour for every
-    # other type -- ADR-0012 rule 3's proxy-that-cannot-exhibit-the-failure, verbatim.
+    # other type -- ADR-0012 (verification fidelity and operator attribution) rule 3's proxy-that-cannot-exhibit-the-failure, verbatim.
     # Covered by ``test_a_failing_gate_retries_ungated_before_the_per_window_fallback`` and
     # ``test_a_failing_gated_attempt_beats_before_the_ungated_retry``.
     except Exception:
