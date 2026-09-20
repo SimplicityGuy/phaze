@@ -437,10 +437,13 @@ named. Decision therefore resolves to: **DROP** the persisted column; `AnalysisW
 becomes a read-time property of `musical_key` via `camelot_code`. Durable record: the
 `phaze-6r3eh` bead comment recording this decision, plus this section.
 
-**What shipped.** Migration `065` drops `analysis_window.camelot` (nullable `String(3)`,
-downgrade recreates it nullable and does NOT backfill — every value is trivially recoverable
-from `musical_key`, but recomputing and writing it back at downgrade time is a rewrite over
-however many rows exist then, out of scope for a schema-only downgrade). `AnalysisWindow.camelot`
+**What shipped.** Migration `066` drops `analysis_window.camelot` (originally filed and
+implemented as `065`; renumbered during dispatch to `066` when `phaze-w15ju`'s
+`065_cloud_job_telemetry_slot.py` landed on `main` first — mechanical renumber only, no change
+in content). It is nullable `String(3)`, and downgrade recreates it nullable and does NOT
+backfill — every value is trivially recoverable from `musical_key`, but recomputing and writing
+it back at downgrade time is a rewrite over however many rows exist then, out of scope for a
+schema-only downgrade. `AnalysisWindow.camelot`
 (`models/analysis.py`) becomes a plain `@property` — not a `hybrid_property`, since nothing
 filters, orders, or indexes on it in SQL — computed as `camelot_code(self.musical_key)` on every
 access. `services/set_projection_writer.py`'s `compute_window_projection` stops computing it

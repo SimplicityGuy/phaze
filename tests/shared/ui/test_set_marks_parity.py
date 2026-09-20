@@ -76,7 +76,7 @@ def _geometry(markup: str) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
 
 def _fine(index: int, start: float, end: float, camelot: str) -> AnalysisWindow:
     """``camelot`` names the intended CODE; the window carries the ``musical_key`` that maps to it
-    -- ``camelot`` is a read-time property since migration 065 (phaze-6r3eh), not a settable column.
+    -- ``camelot`` is a read-time property since migration 066 (phaze-6r3eh), not a settable column.
     """
     return AnalysisWindow(
         file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=128.0, musical_key=key_name_for_camelot(camelot)

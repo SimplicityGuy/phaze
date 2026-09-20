@@ -5,7 +5,7 @@
 ``build_file_record_context`` both load every ``AnalysisWindow`` row for a file to compute a
 few medians (``build_track_segments`` / ``build_analysis_timeline_context`` /
 ``build_harmonic_journey`` -- tier/start/end/bpm/musical_key/energy/mood_scores, plus the
-read-time ``camelot`` property those derive from ``musical_key`` since migration 065,
+read-time ``camelot`` property those derive from ``musical_key`` since migration 066,
 phaze-6r3eh). Neither ever reads the ``features`` column: it is the ~5 KB per-coarse-window
 JSONB the narrow projection columns exist specifically so no viewer surface has to decode (see
 the ``AnalysisWindow`` docstring in ``models/analysis.py``). A 12 h set carries ~240 coarse
@@ -113,7 +113,7 @@ async def test_record_page_window_scan_never_selects_features(
     assert _features_selects(statements) == [], f"no statement may name analysis_window.features, saw: {_features_selects(statements)}"
     # The projection columns the join actually reads are still there -- proving this is a
     # narrowed projection, not an accidentally-empty query. `camelot` is NOT one of these any
-    # more: since migration 065 (phaze-6r3eh) it is a read-time property computed from
+    # more: since migration 066 (phaze-6r3eh) it is a read-time property computed from
     # `musical_key` after the row loads, so it never appears in the SQL text at all -- asserting
     # for it here would fail on the very query this test means to prove is correct.
     scan = window_selects[0].lower()

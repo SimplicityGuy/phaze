@@ -61,7 +61,7 @@ _ALL_STAGES = (*_ENRICH_STAGES, *_DOWNSTREAM_STAGES)
 
 async def _seed_keyed_windows(session: AsyncSession, file: FileRecord) -> list[AnalysisWindow]:
     """Seed the synthetic key journey as fine windows whose ``musical_key`` maps to the intended
-    ``camelot`` code -- ``camelot`` is a read-time property since migration 065 (phaze-6r3eh), not
+    ``camelot`` code -- ``camelot`` is a read-time property since migration 066 (phaze-6r3eh), not
     a column this fixture can set directly.
     """
     windows = [

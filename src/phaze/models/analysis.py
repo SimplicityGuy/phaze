@@ -85,7 +85,7 @@ class AnalysisWindow(TimestampMixin, Base):
     The projection writer fills them at analysis completion and can backfill existing rows from
     stored JSONB without re-analysis.
 
-    ``camelot`` is NOT one of these persisted columns (migration 065 dropped it, phaze-6r3eh):
+    ``camelot`` is NOT one of these persisted columns (migration 066 dropped it, phaze-6r3eh):
     unlike ``energy``/``mood_scores``, it is a pure lookup of ``musical_key`` on this same row
     rather than a projection of the separate ``features`` JSONB, so the JSONB-scale argument
     above does not apply to it. It is a read-time :func:`property` below, computed from
@@ -136,7 +136,7 @@ class AnalysisWindow(TimestampMixin, Base):
 
         Read-time projection of ``musical_key`` (FINE tier -- that is the tier carrying
         ``musical_key``) through the 24-entry conversion table, which also accepts Essentia's
-        sharp/flat spellings. NOT a persisted column since migration 065 (phaze-6r3eh, operator
+        sharp/flat spellings. NOT a persisted column since migration 066 (phaze-6r3eh, operator
         decision 2026-09-16, docs/design/0018-set-projection-and-file-viewer.md): unlike
         ``energy``/``mood_scores``, this is a pure lookup of a sibling column on the SAME row, so
         the JSONB-scale argument that justifies persisting those two does not apply, and a stored

@@ -16,7 +16,7 @@ def test_current_maintained_documentation_passes_deterministic_checks() -> None:
 
     assert report["errors"] == []
     assert report["mermaid_errors"] == []
-    assert report["migration_heads"] == ["065"]
+    assert report["migration_heads"] == ["066"]
     assert report["generator_markers"] == 4
     assert report["mermaid_blocks"] == 25
     assert report["mermaid_cli_version"] == "11.12.0"

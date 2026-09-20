@@ -186,7 +186,7 @@ async def test_a_projection_failure_never_fails_the_analysis(
     assert window_count == len(payload.windows or [])
     windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()
     assert all(w.energy is None and w.mood_scores is None for w in windows)
-    # `camelot` is NOT one of the columns this failure leaves NULL: since migration 065
+    # `camelot` is NOT one of the columns this failure leaves NULL: since migration 066
     # (phaze-6r3eh) it is a read-time property of `musical_key`, which the write path sets
     # regardless of whether `annotate_window_rows` (the broken step here) ever runs -- so a fine
     # window with a real key has a real camelot code even when the projection failed.
@@ -469,7 +469,7 @@ async def test_a_projection_failure_leaves_a_row_the_backfill_actually_repairs(
     session.expunge_all()
 
     # The windows were rewritten and carry no STORED projection -- the state that made the old
-    # row a lie. `camelot` is excluded from that claim: since migration 065 (phaze-6r3eh) it is a
+    # row a lie. `camelot` is excluded from that claim: since migration 066 (phaze-6r3eh) it is a
     # read-time property of `musical_key`, set regardless of whether the broken `annotate_window_rows`
     # step ran, so a fine window with a real key still answers a real camelot code here.
     windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()

@@ -58,7 +58,7 @@ _RECORD_BODY = _TEMPLATES / "record" / "record_body.html"
 
 
 def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None) -> AnalysisWindow:
-    """``camelot`` is a read-time property of ``musical_key`` since migration 065 (phaze-6r3eh),
+    """``camelot`` is a read-time property of ``musical_key`` since migration 066 (phaze-6r3eh),
     not a settable column, so there is no ``camelot=`` parameter here any more -- callers that want
     a particular code pass the ``key`` that maps to it (or an unrecognised ``key`` for "no code")."""
     return AnalysisWindow(

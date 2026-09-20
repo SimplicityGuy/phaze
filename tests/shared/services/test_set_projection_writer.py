@@ -121,7 +121,7 @@ def test_annotate_window_orm_objects_sets_the_two_attributes_from_dict_like_rows
     stand-in object -- not a real ``AnalysisWindow`` -- exercises the non-Mapping branch of
     ``_extract`` directly, mirroring what the real ORM instances the backfill loads look like.
 
-    Only ``energy``/``mood_scores`` -- not three attributes any more: since migration 065
+    Only ``energy``/``mood_scores`` -- not three attributes any more: since migration 066
     (phaze-6r3eh) ``camelot`` is a read-time property with no setter, so ``annotate_window_orm_objects``
     does not touch it at all (see its own docstring). A real ``AnalysisWindow`` still answers
     ``.camelot`` correctly off its ``musical_key`` without this function's help; this stand-in has

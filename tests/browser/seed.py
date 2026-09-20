@@ -338,7 +338,7 @@ class Seeder:
 
         ``projected`` (``phaze-x1qr3.10``) additionally fills the two remaining PROJECTION
         columns ``phaze-x1qr3.1`` added -- ``energy`` and ``mood_scores`` on the coarse windows.
-        ``camelot`` is NOT one of these any more: since migration 065 (phaze-6r3eh) it is a
+        ``camelot`` is NOT one of these any more: since migration 066 (phaze-6r3eh) it is a
         read-time property of ``musical_key``, so every fine window below carries its Camelot
         code regardless of ``projected`` -- there is no "analysed but not yet projected" state
         for it left to simulate. It is opt-in and defaults OFF on purpose: the existing journeys
@@ -376,7 +376,7 @@ class Seeder:
                 # Two Camelot runs, so the harmonic wheel draws two nodes and one edge and the
                 # inspection ring has somewhere to move BETWEEN. "A minor" reads as 8A, "C major"
                 # as 8B, its major partner -- an adjacent move on the wheel, which is the common
-                # case. `camelot` is a read-time property of `musical_key` since migration 065
+                # case. `camelot` is a read-time property of `musical_key` since migration 066
                 # (phaze-6r3eh), so the split lives on the key directly now.
                 musical_key="A minor" if index < fine_count / 2 else "C major",
             )

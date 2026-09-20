@@ -146,7 +146,7 @@ async def _track_segments_for(session: AsyncSession, file_id: uuid.UUID, review:
     if review is None or not review.tracks:
         return []
     # phaze-5ergb: this fragment reads only tier/start/end/bpm/energy/mood_scores plus the
-    # read-time `camelot` property derived from `musical_key` (migration 065, phaze-6r3eh)
+    # read-time `camelot` property derived from `musical_key` (migration 066, phaze-6r3eh)
     # (`build_track_segments` below) -- never the ~5 KB `features` JSONB each coarse window
     # carries. Deferring it keeps a single-file button click from transferring and decoding
     # 1-2 MB for a 12 h set's ~240 coarse windows to compute a handful of medians.

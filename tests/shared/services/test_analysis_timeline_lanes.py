@@ -63,7 +63,7 @@ def _coarse(index: int, start: float, end: float, *, energy: float | None = None
 
 
 def _fine(index: int, start: float, end: float, *, bpm: float | None = None, key: str | None = None) -> AnalysisWindow:
-    """No ``camelot`` parameter: since migration 065 (phaze-6r3eh) it is a read-time property of
+    """No ``camelot`` parameter: since migration 066 (phaze-6r3eh) it is a read-time property of
     ``musical_key``, not a settable column, so it always agrees with whatever ``key`` is passed."""
     return AnalysisWindow(
         file_id=uuid.uuid4(),
@@ -289,7 +289,7 @@ def test_a_window_carrying_only_some_of_the_seven_normalises_over_what_it_has() 
 def test_key_ribbons_are_labelled_with_the_key_and_its_camelot_code() -> None:
     """ "A minor · 8A" -- the raw label stays available, the DISPLAY carries the wheel position."""
     # The second window's key is not one of the 24 canonical strings -- unlike a stale/missing
-    # projection (impossible now that `camelot` is a read-time property, migration 065,
+    # projection (impossible now that `camelot` is a read-time property, migration 066,
     # phaze-6r3eh: any `musical_key` deterministically has SOME `camelot`, possibly None), an
     # unrecognised key is a real state essentia can produce and camelot_code must still handle.
     windows = [_fine(0, 0.0, 30.0, key="A minor"), _fine(1, 30.0, 60.0, key="Some Unrecognized Key")]

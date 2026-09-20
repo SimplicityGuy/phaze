@@ -3,7 +3,7 @@
 
 ``services/set_projection.py`` (phaze-x1qr3.2) is pure math with no I/O: ``build_profile`` is an
 AGGREGATOR over ALREADY-POPULATED per-window fields (``energy`` on coarse rows, ``mood_scores`` on
-coarse rows) plus ``camelot`` on fine rows, which since migration 065 (phaze-6r3eh) is a read-time
+coarse rows) plus ``camelot`` on fine rows, which since migration 066 (phaze-6r3eh) is a read-time
 :class:`~phaze.models.analysis.AnalysisWindow` property rather than a stored one -- ``build_profile``
 reads ``window.camelot`` exactly as before, the attribute access is just no longer backed by a
 column. This module no longer computes or persists ``camelot`` at all. Nothing in
@@ -229,7 +229,7 @@ def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
 
     Pure: does not mutate ``windows``. A coarse window without ``features`` gets a fully-``None``
     entry -- the same "not yet knowable" gap every other nullable projection field renders, never
-    a manufactured value. ``camelot`` is NOT one of these fields: since migration 065
+    a manufactured value. ``camelot`` is NOT one of these fields: since migration 066
     (phaze-6r3eh) it is a read-time :class:`~phaze.models.analysis.AnalysisWindow` property
     computed from ``musical_key`` on access, so there is nothing for this module to compute or
     for a caller to persist -- a fine window's ``camelot`` is already correct the moment its
@@ -272,7 +272,7 @@ def annotate_window_rows(rows: list[dict[str, Any]]) -> None:
     through, ``rows`` is left completely untouched rather than half-annotated, so a caller's
     try/except sees an atomic failure and can cleanly skip the projection for this file rather than
     persist a partially-projected window set. Never adds a ``"camelot"`` key: that is a read-time
-    property on the model now (migration 065, phaze-6r3eh), not an insertable column, and each row
+    property on the model now (migration 066, phaze-6r3eh), not an insertable column, and each row
     already carries the ``musical_key`` the property reads.
     """
     computed = compute_window_projection(rows)
@@ -285,7 +285,7 @@ def annotate_window_orm_objects(windows: Sequence[AnalysisWindow]) -> None:
 
     Mutates tracked attributes in place; the caller's own ``session.commit()`` is what turns these
     into an UPDATE (SQLAlchemy's unit of work, not an explicit statement here). Does not touch
-    ``camelot``: since migration 065 (phaze-6r3eh) it is a read-time property with no setter, so
+    ``camelot``: since migration 066 (phaze-6r3eh) it is a read-time property with no setter, so
     there is nothing here to assign -- it already reflects each window's ``musical_key``.
     """
     computed = compute_window_projection(windows)

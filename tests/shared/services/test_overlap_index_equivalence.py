@@ -64,7 +64,7 @@ def _fine_windows() -> list[AnalysisWindow]:
                 start_sec=index * FINE_SEC,
                 end_sec=(index + 1) * FINE_SEC,
                 bpm=None if blank else 118.0 + (index % 23),
-                # `camelot` is a read-time property of `musical_key` since migration 065
+                # `camelot` is a read-time property of `musical_key` since migration 066
                 # (phaze-6r3eh), not a settable column -- carry the key that maps to the intended
                 # code instead.
                 musical_key=None if blank else key_name_for_camelot(_CODES[index % len(_CODES)]),

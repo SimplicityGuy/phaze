@@ -25,7 +25,7 @@ def test_analysis_window_gains_the_two_projection_columns() -> None:
     holding millions of rows, and the bead's premise is that no existing row is rewritten. A NOT
     NULL column here would silently contradict the migration it is supposed to mirror.
 
-    ``camelot`` is deliberately absent from this list: migration 065 (phaze-6r3eh) dropped it as
+    ``camelot`` is deliberately absent from this list: migration 066 (phaze-6r3eh) dropped it as
     a stored column, so it is no longer in ``__table__.columns`` at all -- it is a read-time
     ``@property`` instead (see ``test_analysis_window_camelot_is_a_read_time_property_not_a_column``
     below and ``test_analysis_window_camelot_property_equals_camelot_code_for_every_canonical_key``
@@ -37,7 +37,7 @@ def test_analysis_window_gains_the_two_projection_columns() -> None:
 
 
 def test_analysis_window_camelot_is_a_read_time_property_not_a_column() -> None:
-    """Migration 065 (phaze-6r3eh) dropped the stored ``camelot`` column; the attribute survives
+    """Migration 066 (phaze-6r3eh) dropped the stored ``camelot`` column; the attribute survives
     as a plain Python property, not a mapped column, and the class still answers to ``.camelot``.
     """
     columns = AnalysisWindow.__table__.columns
@@ -153,7 +153,7 @@ async def test_orm_session_delete_also_removes_the_profile(session: AsyncSession
 @pytest.mark.asyncio
 async def test_a_window_round_trips_the_projection_columns(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     """A window stores and reads back energy, a full MOOD_ORDER-keyed dict, and ``musical_key``
-    whose read-time ``camelot`` property (migration 065, phaze-6r3eh -- no longer a stored column)
+    whose read-time ``camelot`` property (migration 066, phaze-6r3eh -- no longer a stored column)
     reflects it after the round trip through the database, same as before the migration.
     """
     record = await make_file()

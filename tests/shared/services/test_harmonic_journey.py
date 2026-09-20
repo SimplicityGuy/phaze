@@ -37,7 +37,7 @@ _WINDOW_SEC = 30.0
 
 def _fine(codes: list[str | None], window_sec: float = _WINDOW_SEC) -> list[AnalysisWindow]:
     """One fine window per intended camelot CODE, contiguous and in order. ``None`` is a window
-    with no key. ``camelot`` is a read-time property of ``musical_key`` since migration 065
+    with no key. ``camelot`` is a read-time property of ``musical_key`` since migration 066
     (phaze-6r3eh), not a settable column, so each window carries the ``musical_key`` that maps to
     ``code`` instead: :func:`key_name_for_camelot` returns ``None`` for ``None`` and for anything
     outside the 24 canonical codes (e.g. a deliberately unplaceable "99Z"), which round-trips to a

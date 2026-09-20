@@ -23,8 +23,8 @@ A caller who downgrades and needs the column populated must run the equivalent o
 ``phaze-x1qr3.3`` backfill (``services.set_projection_backfill``) themselves, adapted to write
 ``camelot`` again since the writer this migration accompanies no longer does.
 
-Revision ID: 065
-Revises: 064
+Revision ID: 066
+Revises: 065
 Create Date: 2026-09-16
 """
 
@@ -35,8 +35,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "065"
-down_revision: str | None = "064"
+revision: str = "066"
+down_revision: str | None = "065"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -50,7 +50,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Recreate ``analysis_window.camelot`` as nullable ``String(3)``, matching migration 063.
+    """Recreate ``analysis_window.camelot`` as nullable ``String(3)``, matching migration 063 (the
+    one that originally added it -- this migration's own predecessor is 065, unrelated).
 
     NOT backfilled -- see the module docstring. Every row reads NULL until something recomputes
     and writes it, same as any newly added nullable column.

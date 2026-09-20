@@ -168,7 +168,7 @@ def test_camelot_code_returns_none_never_raises_for_unknown_keys(musical_key: st
 
 @pytest.mark.parametrize("musical_key", list(CAMELOT_TABLE))
 def test_analysis_window_camelot_property_equals_camelot_code_for_every_canonical_key(musical_key: str) -> None:
-    """``AnalysisWindow.camelot`` is a read-time property since migration 065 (phaze-6r3eh): for
+    """``AnalysisWindow.camelot`` is a read-time property since migration 066 (phaze-6r3eh): for
     every one of the 24 canonical ``musical_key`` strings, the property must equal
     :func:`camelot_code` called directly on that same key -- the property is documented as nothing
     more than that call, and this is what pins the two from drifting apart."""
@@ -326,7 +326,7 @@ def _window(
     mood_scores: dict[str, float] | None = None,
     bpm: float | None = None,
 ) -> AnalysisWindow:
-    # No `camelot` parameter: it is a read-time property of `musical_key` since migration 065
+    # No `camelot` parameter: it is a read-time property of `musical_key` since migration 066
     # (phaze-6r3eh), not a settable column. Nothing here calls with one -- the dedicated
     # `_fine_camelot_windows` helper below builds camelot-bearing windows instead.
     return AnalysisWindow(
@@ -503,7 +503,7 @@ def test_build_profile_glyph_cells_pair_coarse_energy_with_the_overlapping_fine_
 
 def _fine_camelot_windows(codes: Sequence[str]) -> list[AnalysisWindow]:
     """Each window carries the ``musical_key`` that maps to ``code``: ``camelot`` is a read-time
-    property of ``musical_key`` since migration 065 (phaze-6r3eh), not a settable column."""
+    property of ``musical_key`` since migration 066 (phaze-6r3eh), not a settable column."""
     return [
         AnalysisWindow(
             file_id=uuid.uuid4(), tier="fine", window_index=i, start_sec=i * 30.0, end_sec=(i + 1) * 30.0, musical_key=key_name_for_camelot(code)

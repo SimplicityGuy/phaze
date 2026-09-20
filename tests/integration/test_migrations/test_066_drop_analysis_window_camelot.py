@@ -1,4 +1,4 @@
-"""Migration 065 (phaze-6r3eh): drops ``analysis_window.camelot`` -- the inverse of 063's half.
+"""Migration 066 (phaze-6r3eh): drops ``analysis_window.camelot`` -- the inverse of 063's half.
 
 Operator decision, 2026-09-16 (bead ``phaze-6r3eh``, ``docs/design/0018-set-projection-and-file-viewer.md``):
 drop the column; ``AnalysisWindow.camelot`` becomes a read-time property of ``musical_key``
@@ -6,13 +6,13 @@ drop the column; ``AnalysisWindow.camelot`` becomes a read-time property of ``mu
 with zero backfill. ``energy`` and ``mood_scores`` -- the other two columns 063 added -- are
 untouched by this migration; only the ``camelot`` half is reversed.
 
-* ``test_upgrade_drops_only_the_camelot_column`` -- 064 -> 065 removes ``camelot`` and leaves
+* ``test_upgrade_drops_only_the_camelot_column`` -- 065 -> 066 removes ``camelot`` and leaves
   ``energy``/``mood_scores`` (and everything else on the table) exactly as they were.
-* ``test_upgrade_leaves_musical_key_and_other_columns_untouched`` -- rows written BEFORE 065,
+* ``test_upgrade_leaves_musical_key_and_other_columns_untouched`` -- rows written BEFORE 066,
   including a populated ``camelot`` value that matches its own ``musical_key``, are read back
   after the upgrade with every SURVIVING column byte-identical and ``musical_key`` intact -- the
   one column the read-time property depends on to reconstruct the dropped value.
-* ``test_downgrade_recreates_the_column_nullable_and_does_not_backfill`` -- 065 -> 064 adds
+* ``test_downgrade_recreates_the_column_nullable_and_does_not_backfill`` -- 066 -> 065 adds
   ``camelot`` back as nullable, and it reads NULL even for a row whose ``musical_key`` a
   read-time property would happily resolve -- the module docstring's "does NOT backfill" claim.
 """
@@ -36,8 +36,8 @@ from .conftest import (
 )
 
 
-_PREVIOUS_REVISION = "064"
-_THIS_REVISION = "065"
+_PREVIOUS_REVISION = "065"
+_THIS_REVISION = "066"
 
 # The pre-existing row this migration must leave alone apart from `camelot`. `camelot` here is
 # deliberately consistent with `musical_key` ("A minor" -> "8A"), matching what the writer would
@@ -70,7 +70,7 @@ _SURVIVING_COLUMNS = ("tier", "window_index", "start_sec", "end_sec", "bpm", "mu
 
 @pytest_asyncio.fixture
 async def engine_at_previous_revision() -> AsyncGenerator[tuple[AsyncEngine, Config]]:
-    """Reset the migrations DB, upgrade it to 064, and yield an engine plus the alembic config.
+    """Reset the migrations DB, upgrade it to 065, and yield an engine plus the alembic config.
 
     Mirrors ``test_063_set_projection.py``'s fixture of the same name and the same reasoning:
     ``upgrade_to``/``downgrade_to`` are sync and internally ``asyncio.run`` alembic's async env,
@@ -119,8 +119,8 @@ async def _seed_file(engine: AsyncEngine) -> uuid.UUID:
     return file_id
 
 
-async def _seed_pre_065_windows(engine: AsyncEngine, file_id: uuid.UUID) -> None:
-    """Insert the pre-existing window rows using the columns that exist at 064 (063's three
+async def _seed_pre_066_windows(engine: AsyncEngine, file_id: uuid.UUID) -> None:
+    """Insert the pre-existing window rows using the columns that exist at 065 (063's three
     projection columns included)."""
     async with engine.begin() as conn:
         for row in _PRE_EXISTING_ROWS:
@@ -135,7 +135,7 @@ async def _seed_pre_065_windows(engine: AsyncEngine, file_id: uuid.UUID) -> None
 
 
 async def _read_back_surviving_columns(engine: AsyncEngine, file_id: uuid.UUID) -> list[dict[str, object]]:
-    """Read the seeded rows back, ordered, projecting only the columns 065 does not touch."""
+    """Read the seeded rows back, ordered, projecting only the columns 066 does not touch."""
     columns = ", ".join(_SURVIVING_COLUMNS)
     async with engine.connect() as conn:
         rows = await conn.execute(
@@ -147,7 +147,7 @@ async def _read_back_surviving_columns(engine: AsyncEngine, file_id: uuid.UUID) 
 
 @pytest.mark.asyncio
 async def test_upgrade_drops_only_the_camelot_column(engine_at_previous_revision: tuple[AsyncEngine, Config]) -> None:
-    """064 -> 065 removes exactly ``camelot``; ``energy``/``mood_scores`` and everything else stay."""
+    """065 -> 066 removes exactly ``camelot``; ``energy``/``mood_scores`` and everything else stay."""
     engine, cfg = engine_at_previous_revision
     before = await _analysis_window_columns(engine)
     assert "camelot" in before
@@ -158,24 +158,24 @@ async def test_upgrade_drops_only_the_camelot_column(engine_at_previous_revision
     assert await _current_revision(engine) == _THIS_REVISION
     after = await _analysis_window_columns(engine)
     assert "camelot" not in after
-    assert set(before) - set(after) == {"camelot"}, "065 removed a column beyond camelot"
+    assert set(before) - set(after) == {"camelot"}, "066 removed a column beyond camelot"
     assert {"energy", "mood_scores"} <= set(after)
 
 
 @pytest.mark.asyncio
 async def test_upgrade_leaves_musical_key_and_other_columns_untouched(engine_at_previous_revision: tuple[AsyncEngine, Config]) -> None:
-    """Rows written at 064 survive the upgrade with the same count and every surviving value
+    """Rows written at 065 survive the upgrade with the same count and every surviving value
     byte-identical -- ``musical_key`` above all, since the read-time property depends on it."""
     engine, cfg = engine_at_previous_revision
     file_id = await _seed_file(engine)
-    await _seed_pre_065_windows(engine, file_id)
+    await _seed_pre_066_windows(engine, file_id)
     before = await _read_back_surviving_columns(engine, file_id)
     assert len(before) == len(_PRE_EXISTING_ROWS)
 
     await asyncio.to_thread(upgrade_to, cfg, _THIS_REVISION)
 
     after = await _read_back_surviving_columns(engine, file_id)
-    assert after == before, "065 changed a pre-existing analysis_window value it should not touch"
+    assert after == before, "066 changed a pre-existing analysis_window value it should not touch"
 
     async with engine.connect() as conn:
         result = await conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'analysis_window'"))
@@ -184,7 +184,7 @@ async def test_upgrade_leaves_musical_key_and_other_columns_untouched(engine_at_
 
 @pytest.mark.asyncio
 async def test_downgrade_recreates_the_column_nullable_and_does_not_backfill(engine_at_previous_revision: tuple[AsyncEngine, Config]) -> None:
-    """065 -> 064 adds ``camelot`` back NULLABLE, and does NOT recompute it from ``musical_key``.
+    """066 -> 065 adds ``camelot`` back NULLABLE, and does NOT recompute it from ``musical_key``.
 
     The row seeded here has ``musical_key="A minor"`` -- a value a read-time property (or a
     backfill) could trivially resolve to "8A" -- specifically so this test can tell "recreated but
@@ -192,7 +192,7 @@ async def test_downgrade_recreates_the_column_nullable_and_does_not_backfill(eng
     """
     engine, cfg = engine_at_previous_revision
     file_id = await _seed_file(engine)
-    await _seed_pre_065_windows(engine, file_id)
+    await _seed_pre_066_windows(engine, file_id)
 
     await asyncio.to_thread(upgrade_to, cfg, _THIS_REVISION)
     await asyncio.to_thread(downgrade_to, cfg, _PREVIOUS_REVISION)

@@ -6,7 +6,7 @@ then everything rides it". ``phaze-x1qr3.2`` (this bead) is the MATH half: pure 
 from stored rows to the projection, with no I/O anywhere in this module. Everything here
 takes plain values or ``AnalysisWindow`` rows and returns floats, strings or dataclasses, so
 the live write path (``phaze-x1qr3.3``), the backfill, and the tests below all share one
-implementation. ``camelot`` is the one exception to "nullable per-window column": migration 065
+implementation. ``camelot`` is the one exception to "nullable per-window column": migration 066
 (phaze-6r3eh, 2026-09-16) dropped it as a stored column -- it is now a read-time
 ``AnalysisWindow`` property computed from ``musical_key`` via :func:`camelot_code`, so nothing
 writes it and nothing backfills it.
@@ -15,7 +15,7 @@ Four things live here, in the order a caller would reach for them:
 
 1. :func:`camelot_code` -- ``musical_key`` string (essentia's ``"<Note> <mode>"`` form,
    sharp OR flat) to a Camelot wheel position, or ``None`` for anything unrecognised. Since
-   migration 065 this is also what backs ``AnalysisWindow.camelot`` itself, called on every
+   migration 066 this is also what backs ``AnalysisWindow.camelot`` itself, called on every
    access rather than once at write time.
 2. :func:`positive_class_vector` -- one coarse window's raw ``features`` JSONB to the 11-d
    positive-class vector, positional in :data:`MOOD_ORDER`.
