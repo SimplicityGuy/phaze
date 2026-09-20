@@ -191,8 +191,9 @@ async def build_file_record_context(
     # Windowed timeline -- mirror proposals.proposal_timeline (T-31-06-02 file_id scoping).
     # phaze-5ergb: neither this context builder nor its three consumers (the timeline, the
     # track-segment join, the harmonic journey wheel) reads a window's `features` JSONB --
-    # only the narrow projection columns tier/start/end/bpm/camelot/energy/mood_scores exist
-    # for that. Deferring it keeps a record-page/drawer/poster load from transferring and
+    # only the narrow projection columns tier/start/end/bpm/energy/mood_scores, plus the
+    # read-time `camelot` property derived from `musical_key` (migration 066, phaze-6r3eh),
+    # exist for that. Deferring it keeps a record-page/drawer/poster load from transferring and
     # decoding ~5 KB per coarse window (1-2 MB on a 12 h set) to compute a few medians.
     windows_stmt = (
         select(AnalysisWindow)

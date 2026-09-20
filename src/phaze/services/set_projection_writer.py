@@ -2,10 +2,14 @@
 ``services.set_projection.build_profile`` needs before calling it, plus the ``set_profile`` upsert.
 
 ``services/set_projection.py`` (phaze-x1qr3.2) is pure math with no I/O: ``build_profile`` is an
-AGGREGATOR over ALREADY-POPULATED per-window fields (``energy`` on coarse rows, ``camelot`` on fine
-rows, ``mood_scores`` on coarse rows). Nothing in that module computes those per-window fields from
-the raw stored data (``musical_key`` / ``features`` / ``bpm``) -- that is this module's job, shared
-by the two writers phaze-x1qr3.3 adds: the live persist path
+AGGREGATOR over ALREADY-POPULATED per-window fields (``energy`` on coarse rows, ``mood_scores`` on
+coarse rows) plus ``camelot`` on fine rows, which since migration 066 (phaze-6r3eh) is a read-time
+:class:`~phaze.models.analysis.AnalysisWindow` property rather than a stored one -- ``build_profile``
+reads ``window.camelot`` exactly as before, the attribute access is just no longer backed by a
+column. This module no longer computes or persists ``camelot`` at all. Nothing in
+``set_projection.py`` computes ``energy``/``mood_scores`` from the raw stored data
+(``musical_key`` / ``features`` / ``bpm``) either -- that is this module's job, shared by the two
+writers phaze-x1qr3.3 adds: the live persist path
 (``routers/agent_analysis.py::_replace_analysis_windows``) and the backfill
 (``services/set_projection_backfill.py``). Both derive from ALREADY-STORED rows; neither re-runs
 essentia.
@@ -63,7 +67,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.models.set_profile import SetProfile
-from phaze.services.set_projection import MOOD_ORDER, OverlapIndex, build_profile, camelot_code, energy as energy_scalar, positive_class_vector
+from phaze.services.set_projection import MOOD_ORDER, OverlapIndex, build_profile, energy as energy_scalar, positive_class_vector
 
 
 if TYPE_CHECKING:
@@ -221,11 +225,15 @@ def _bpm_z_for_range(index: OverlapIndex, start_sec: float, end_sec: float, stat
 
 
 def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
-    """Per-window ``{"camelot", "energy", "mood_scores"}`` for ``windows``, in the same order.
+    """Per-window ``{"energy", "mood_scores"}`` for ``windows``, in the same order.
 
-    Pure: does not mutate ``windows``. A fine window without a ``musical_key`` and a coarse window
-    without ``features`` both get a fully-``None`` entry -- the same "not yet knowable" gap every
-    other nullable projection field renders, never a manufactured value.
+    Pure: does not mutate ``windows``. A coarse window without ``features`` gets a fully-``None``
+    entry -- the same "not yet knowable" gap every other nullable projection field renders, never
+    a manufactured value. ``camelot`` is NOT one of these fields: since migration 066
+    (phaze-6r3eh) it is a read-time :class:`~phaze.models.analysis.AnalysisWindow` property
+    computed from ``musical_key`` on access, so there is nothing for this module to compute or
+    for a caller to persist -- a fine window's ``camelot`` is already correct the moment its
+    ``musical_key`` is set, with no entry here required.
     """
     facts = [_extract(w) for w in windows]
     fine_ranges = _fine_bpm_ranges(facts)
@@ -238,23 +246,22 @@ def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     for fact in facts:
-        if fact["tier"] == "fine":
-            results.append({"camelot": camelot_code(fact["musical_key"]), "energy": None, "mood_scores": None})
-        elif fact["tier"] == "coarse" and fact["features"]:
+        if fact["tier"] == "coarse" and fact["features"]:
             vector = positive_class_vector(fact["features"])
             scores = dict(zip(MOOD_ORDER, vector, strict=True))
             bpm_z = _bpm_z_for_range(overlap_index, fact["start_sec"], fact["end_sec"], stats)
-            results.append({"camelot": None, "energy": energy_scalar(scores, bpm_z), "mood_scores": scores})
+            results.append({"energy": energy_scalar(scores, bpm_z), "mood_scores": scores})
         else:
-            # Either an unrecognised tier, or a coarse window with no `features` at all (None or
-            # {}) -- a fully-None entry, never a manufactured `energy=0.0` / all-null `mood_scores`
-            # dict computed from nothing (phaze-x1qr3.3 review finding 3). The latter used to reach
+            # Either a fine window (camelot is read-time now, nothing to compute here), an
+            # unrecognised tier, or a coarse window with no `features` at all (None or {}) -- a
+            # fully-None entry, never a manufactured `energy=0.0` / all-null `mood_scores` dict
+            # computed from nothing (phaze-x1qr3.3 review finding 3). The latter used to reach
             # `positive_class_vector({})` and `energy_scalar(all-None scores, bpm_z)`, which does
             # NOT reliably return 0.0 -- a nonzero file-local `bpm_z` alone would clamp01 to a small
             # nonzero "energy" for a window this module measured NOTHING about. It also fed
             # `_mean_vector` (set_projection.py) a non-empty all-`None` dict, which that function's
             # own truthiness check treated as real data (see its docstring fix, same review).
-            results.append({"camelot": None, "energy": None, "mood_scores": None})
+            results.append({"energy": None, "mood_scores": None})
     return results
 
 
@@ -264,7 +271,9 @@ def annotate_window_rows(rows: list[dict[str, Any]]) -> None:
     Computes the FULL result list before touching ``rows`` -- if computation raises partway
     through, ``rows`` is left completely untouched rather than half-annotated, so a caller's
     try/except sees an atomic failure and can cleanly skip the projection for this file rather than
-    persist a partially-projected window set.
+    persist a partially-projected window set. Never adds a ``"camelot"`` key: that is a read-time
+    property on the model now (migration 066, phaze-6r3eh), not an insertable column, and each row
+    already carries the ``musical_key`` the property reads.
     """
     computed = compute_window_projection(rows)
     for row, fields in zip(rows, computed, strict=True):
@@ -275,11 +284,12 @@ def annotate_window_orm_objects(windows: Sequence[AnalysisWindow]) -> None:
     """Merge :func:`compute_window_projection` onto already-loaded ORM instances (backfill path).
 
     Mutates tracked attributes in place; the caller's own ``session.commit()`` is what turns these
-    into an UPDATE (SQLAlchemy's unit of work, not an explicit statement here).
+    into an UPDATE (SQLAlchemy's unit of work, not an explicit statement here). Does not touch
+    ``camelot``: since migration 066 (phaze-6r3eh) it is a read-time property with no setter, so
+    there is nothing here to assign -- it already reflects each window's ``musical_key``.
     """
     computed = compute_window_projection(windows)
     for window, fields in zip(windows, computed, strict=True):
-        window.camelot = fields["camelot"]
         window.energy = fields["energy"]
         window.mood_scores = fields["mood_scores"]
 
@@ -349,9 +359,11 @@ def logged_sources(windows: Sequence[Any]) -> dict[str, str]:
 async def upsert_set_profile(session: AsyncSession, file_id: uuid.UUID, windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
     """``build_profile(windows)`` plus a DIRECT execute of the ``set_profile`` upsert.
 
-    ``windows`` must already carry their own per-window ``camelot``/``energy``/``mood_scores``
+    ``windows`` must already carry their own per-window ``energy``/``mood_scores``
     (:func:`annotate_window_rows` / :func:`annotate_window_orm_objects`) -- this function does no
-    per-window computation of its own, matching ``build_profile``'s own contract.
+    per-window computation of its own, matching ``build_profile``'s own contract. ``camelot`` needs
+    no annotation step at all: it is a read-time property of ``musical_key``, already correct on
+    any window that has one.
 
     This is the BACKFILL's entry point: ``services.set_projection_backfill.run_backfill`` already
     rolls back and counts a per-file failure at its own layer, with no larger request transaction

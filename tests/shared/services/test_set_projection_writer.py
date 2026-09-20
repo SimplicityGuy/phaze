@@ -85,7 +85,7 @@ def test_compute_window_projection_gives_a_featureless_coarse_window_a_fully_non
 
         result = compute_window_projection(windows)
 
-        assert result == [{"camelot": None, "energy": None, "mood_scores": None}]
+        assert result == [{"energy": None, "mood_scores": None}]
 
 
 def test_compute_window_projection_gives_a_fully_none_entry_for_an_unrecognised_tier() -> None:
@@ -96,7 +96,7 @@ def test_compute_window_projection_gives_a_fully_none_entry_for_an_unrecognised_
 
     result = compute_window_projection(windows)
 
-    assert result == [{"camelot": None, "energy": None, "mood_scores": None}]
+    assert result == [{"energy": None, "mood_scores": None}]
 
 
 def test_annotate_window_rows_leaves_rows_untouched_when_computation_raises() -> None:
@@ -116,10 +116,17 @@ def test_annotate_window_rows_leaves_rows_untouched_when_computation_raises() ->
     assert "mood_scores" not in rows[1]
 
 
-def test_annotate_window_orm_objects_sets_the_three_attributes_from_dict_like_rows() -> None:
+def test_annotate_window_orm_objects_sets_the_two_attributes_from_dict_like_rows() -> None:
     """``annotate_window_orm_objects`` reads via ``getattr`` (not ``.get``), so a lightweight
     stand-in object -- not a real ``AnalysisWindow`` -- exercises the non-Mapping branch of
-    ``_extract`` directly, mirroring what the real ORM instances the backfill loads look like."""
+    ``_extract`` directly, mirroring what the real ORM instances the backfill loads look like.
+
+    Only ``energy``/``mood_scores`` -- not three attributes any more: since migration 066
+    (phaze-6r3eh) ``camelot`` is a read-time property with no setter, so ``annotate_window_orm_objects``
+    does not touch it at all (see its own docstring). A real ``AnalysisWindow`` still answers
+    ``.camelot`` correctly off its ``musical_key`` without this function's help; this stand-in has
+    no such property, so this test only asserts what the function itself is responsible for.
+    """
 
     class _FakeWindow:
         def __init__(self, **kwargs: object) -> None:
@@ -131,7 +138,7 @@ def test_annotate_window_orm_objects_sets_the_three_attributes_from_dict_like_ro
 
     annotate_window_orm_objects(windows)  # type: ignore[arg-type]
 
-    assert fine.camelot == "8A"
+    assert not hasattr(fine, "camelot")
     assert fine.energy is None
     assert fine.mood_scores is None
 

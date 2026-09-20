@@ -39,11 +39,12 @@ def _local_name(tag: str) -> str:
 
 
 async def _seed_poster_windows(session: AsyncSession, file: FileRecord) -> None:
-    """Three fine windows (bpm + camelot) and two coarse windows (energy + mood/style)."""
+    """Three fine windows (bpm + musical_key, whose read-time ``camelot`` is "8A"/"8A"/"9A") and
+    two coarse windows (energy + mood/style)."""
     windows = [
-        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=128.0, camelot="8A"),
-        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=130.0, camelot="8A"),
-        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=2, start_sec=60.0, end_sec=90.0, bpm=132.0, camelot="9A"),
+        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=128.0, musical_key="A minor"),
+        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=130.0, musical_key="A minor"),
+        AnalysisWindow(id=uuid.uuid4(), file_id=file.id, tier="fine", window_index=2, start_sec=60.0, end_sec=90.0, bpm=132.0, musical_key="E minor"),
         AnalysisWindow(
             id=uuid.uuid4(), file_id=file.id, tier="coarse", window_index=0, start_sec=0.0, end_sec=45.0, energy=0.3, mood="energetic", style="techno"
         ),

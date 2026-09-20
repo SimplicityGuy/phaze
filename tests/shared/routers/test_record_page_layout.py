@@ -29,7 +29,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.services.record_facts import ABSENT
 from phaze.services.set_glyph_colors import camelot_hue
-from phaze.services.set_projection import flicker_filtered_key_runs
+from phaze.services.set_projection import flicker_filtered_key_runs, key_name_for_camelot
 
 
 if TYPE_CHECKING:
@@ -60,7 +60,10 @@ _ALL_STAGES = (*_ENRICH_STAGES, *_DOWNSTREAM_STAGES)
 
 
 async def _seed_keyed_windows(session: AsyncSession, file: FileRecord) -> list[AnalysisWindow]:
-    """Seed the synthetic key journey as fine windows carrying a stored ``camelot`` code."""
+    """Seed the synthetic key journey as fine windows whose ``musical_key`` maps to the intended
+    ``camelot`` code -- ``camelot`` is a read-time property since migration 066 (phaze-6r3eh), not
+    a column this fixture can set directly.
+    """
     windows = [
         AnalysisWindow(
             id=uuid.uuid4(),
@@ -70,7 +73,7 @@ async def _seed_keyed_windows(session: AsyncSession, file: FileRecord) -> list[A
             start_sec=index * _WINDOW_SEC,
             end_sec=(index + 1) * _WINDOW_SEC,
             bpm=128.0,
-            camelot=code,
+            musical_key=key_name_for_camelot(code),
         )
         for index, code in enumerate(_JOURNEY_KEYS)
     ]

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 from phaze.models.analysis import AnalysisWindow
-from phaze.services.set_projection import OverlapIndex, _glyph_cells, camelot_number, modal_camelot
+from phaze.services.set_projection import OverlapIndex, _glyph_cells, camelot_number, key_name_for_camelot, modal_camelot
 from phaze.services.set_projection_writer import _bpm_stats, _bpm_z_for_range, _extract, _fine_bpm_ranges
 from phaze.services.track_segments import build_track_segments
 
@@ -64,7 +64,10 @@ def _fine_windows() -> list[AnalysisWindow]:
                 start_sec=index * FINE_SEC,
                 end_sec=(index + 1) * FINE_SEC,
                 bpm=None if blank else 118.0 + (index % 23),
-                camelot=None if blank else _CODES[index % len(_CODES)],
+                # `camelot` is a read-time property of `musical_key` since migration 066
+                # (phaze-6r3eh), not a settable column -- carry the key that maps to the intended
+                # code instead.
+                musical_key=None if blank else key_name_for_camelot(_CODES[index % len(_CODES)]),
             )
         )
     return windows

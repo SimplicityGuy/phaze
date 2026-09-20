@@ -166,6 +166,24 @@ def test_camelot_code_returns_none_never_raises_for_unknown_keys(musical_key: st
     assert camelot_code(musical_key) is None
 
 
+@pytest.mark.parametrize("musical_key", list(CAMELOT_TABLE))
+def test_analysis_window_camelot_property_equals_camelot_code_for_every_canonical_key(musical_key: str) -> None:
+    """``AnalysisWindow.camelot`` is a read-time property since migration 066 (phaze-6r3eh): for
+    every one of the 24 canonical ``musical_key`` strings, the property must equal
+    :func:`camelot_code` called directly on that same key -- the property is documented as nothing
+    more than that call, and this is what pins the two from drifting apart."""
+    window = AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, musical_key=musical_key)
+    assert window.camelot == camelot_code(musical_key) == CAMELOT_TABLE[musical_key]
+
+
+def test_analysis_window_camelot_property_is_none_for_a_none_musical_key() -> None:
+    """A window with no ``musical_key`` at all (e.g. a coarse window) reports no ``camelot``,
+    matching :func:`camelot_code`'s own ``None`` -> ``None`` contract -- never a raised
+    ``AttributeError`` or a manufactured code."""
+    window = AnalysisWindow(file_id=uuid.uuid4(), tier="coarse", window_index=0, start_sec=0.0, end_sec=180.0, musical_key=None)
+    assert window.camelot is camelot_code(None) is None
+
+
 # phaze-x1qr3.2: positive_class_vector, against REAL stored feature dicts
 
 
@@ -305,10 +323,12 @@ def _window(
     *,
     tier: str = "coarse",
     energy_value: float | None = None,
-    camelot: str | None = None,
     mood_scores: dict[str, float] | None = None,
     bpm: float | None = None,
 ) -> AnalysisWindow:
+    # No `camelot` parameter: it is a read-time property of `musical_key` since migration 066
+    # (phaze-6r3eh), not a settable column. Nothing here calls with one -- the dedicated
+    # `_fine_camelot_windows` helper below builds camelot-bearing windows instead.
     return AnalysisWindow(
         file_id=uuid.uuid4(),
         tier=tier,
@@ -317,7 +337,6 @@ def _window(
         end_sec=end,
         bpm=bpm,
         energy=energy_value,
-        camelot=camelot,
         mood_scores=mood_scores,
     )
 
@@ -381,8 +400,8 @@ def test_arc_resample_leaves_a_coverage_gap_as_nan_rather_than_bridging_it() -> 
 def test_build_profile_reports_no_arc_or_mean_vector_for_a_fine_only_file() -> None:
     """661 real files today have fine windows only (phaze-hia9z) -- a gap, never manufactured zeros."""
     windows = [
-        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=120.0, camelot="8A"),
-        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=121.0, camelot="8A"),
+        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=120.0, musical_key="A minor"),
+        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=121.0, musical_key="A minor"),
     ]
     profile = build_profile(windows)
     assert profile.arc is None
@@ -472,8 +491,8 @@ def test_build_profile_peak_sec_is_the_elapsed_time_of_the_arcs_maximum() -> Non
 def test_build_profile_glyph_cells_pair_coarse_energy_with_the_overlapping_fine_camelot() -> None:
     coarse = [_window(0, 0.0, 180.0, tier="coarse", energy_value=0.4)]
     fine = [
-        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, camelot="8A"),
-        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, camelot="8A"),
+        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, musical_key="A minor"),
+        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, musical_key="A minor"),
     ]
     profile = build_profile([*coarse, *fine])
     assert profile.glyph == [{"camelot_number": 8, "energy": 0.4}]
@@ -483,8 +502,12 @@ def test_build_profile_glyph_cells_pair_coarse_energy_with_the_overlapping_fine_
 
 
 def _fine_camelot_windows(codes: Sequence[str]) -> list[AnalysisWindow]:
+    """Each window carries the ``musical_key`` that maps to ``code``: ``camelot`` is a read-time
+    property of ``musical_key`` since migration 066 (phaze-6r3eh), not a settable column."""
     return [
-        AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=i, start_sec=i * 30.0, end_sec=(i + 1) * 30.0, camelot=code)
+        AnalysisWindow(
+            file_id=uuid.uuid4(), tier="fine", window_index=i, start_sec=i * 30.0, end_sec=(i + 1) * 30.0, musical_key=key_name_for_camelot(code)
+        )
         for i, code in enumerate(codes)
     ]
 
@@ -551,7 +574,7 @@ def test_a_dropped_blip_is_absorbed_into_the_run_that_closes_over_it() -> None:
 def test_a_window_with_no_camelot_neither_breaks_a_run_nor_extends_it() -> None:
     """An unresolved key is a gap in MEASUREMENT, never a measured key change."""
     windows = _fine_camelot_windows(["8A", "8A", "8A", "8A"])
-    windows[2].camelot = None
+    windows[2].musical_key = None
 
     runs = flicker_filtered_key_runs(windows)
 

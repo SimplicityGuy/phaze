@@ -404,3 +404,77 @@ Experimental-led, 1 Ambient-led). The truncation defect itself is filed separate
 Within the question asked, the directions document's kill criterion — "the energy scalar
 disagrees with the operator's ear on a 20-set blind check" — was not met: **`ENERGY_WEIGHTS` are
 unchanged, `projection_version` remains 2, and the backfill was not re-run.**
+
+### 10.4 Operator decision: drop `analysis_window.camelot`, becomes a read-time property (`phaze-6r3eh`, 2026-09-16)
+
+`phaze-08fom`'s PR #556 review (item 9, its developer, 2026-09-10) flagged `camelot` as a
+persisted pure lookup of the same row's `musical_key` through the 24-entry Camelot table
+(§5) — unlike `energy` and `mood_scores`, it is not a projection of the separate `features`
+JSONB, so §1's JSONB-scale argument that justifies persisting those two does not apply to it.
+Split out as its own decision bead (`phaze-6r3eh`) rather than folded into a cleanup commit,
+because removing it is a schema change: either a migration dropping a column `phaze-x1qr3.1`
+(§3, migration `063`) had just added, or a `hybrid_property` that changes what the ORM can
+filter on in SQL.
+
+**OPERATOR DECISION, 2026-09-16, recorded by disp/fable.** Question as put (`AskUserQuestion`,
+that dispatch session): *"Camelot column (phaze-6r3eh): you said keep it. My recommendation is
+the bead's lean: drop it and compute at read time, unless you plan a SQL filter or index on the
+code, because a stored copy goes stale on any lookup-table fix until a 4-million-row rewrite.
+Keeping is cheap and fine if a SQL use exists. Which do you want recorded as the operator
+decision?"* Answer as given (selected option label, verbatim): *"Drop it, read-time property
+(Recommended)"*. Operator's follow-up in the same turn, verbatim: *"on Camelot, can you tell me
+if we have a SQL use in mind? are we not using it now? if we're not using it or have a planned
+use for it, we can remove it. but first determine its usefullness"*.
+
+Usefulness determined by disp/fable before acting (grep over `src/phaze` and `alembic` at
+`af9ee1ba`): zero SQL-side uses of the column (no filter, no `ORDER BY`, no index;
+`alembic/versions/063_set_projection.py` adds the bare column); every reader takes
+`window.camelot` off an already-loaded row (`services/set_projection.py` lines 446-447 and
+585-592, `services/analysis_timeline.py` line 282); the ~130 other "camelot" references are to
+the `camelot_code`/`key_name_for_camelot`/`camelot_number` helpers, the set profile's
+`camelot_modal`, and the UI hues, none of which read the column in SQL. No planned SQL use was
+named. Decision therefore resolves to: **DROP** the persisted column; `AnalysisWindow.camelot`
+becomes a read-time property of `musical_key` via `camelot_code`. Durable record: the
+`phaze-6r3eh` bead comment recording this decision, plus this section.
+
+**What shipped.** Migration `066` drops `analysis_window.camelot` (originally filed and
+implemented as `065`; renumbered during dispatch to `066` when `phaze-w15ju`'s
+`065_cloud_job_telemetry_slot.py` landed on `main` first — mechanical renumber only, no change
+in content). It is nullable `String(3)`, and downgrade recreates it nullable and does NOT
+backfill — every value is trivially recoverable from `musical_key`, but recomputing and writing
+it back at downgrade time is a rewrite over however many rows exist then, out of scope for a
+schema-only downgrade. `AnalysisWindow.camelot`
+(`models/analysis.py`) becomes a plain `@property` — not a `hybrid_property`, since nothing
+filters, orders, or indexes on it in SQL — computed as `camelot_code(self.musical_key)` on every
+access. `services/set_projection_writer.py`'s `compute_window_projection` stops computing it
+(the fine-tier branch that used to produce `{"camelot": camelot_code(...), ...}` now produces
+only `{"energy": None, "mood_scores": None}`), and `annotate_window_orm_objects` /
+`annotate_window_rows` no longer assign or insert a `camelot` value at all — there is nothing left
+for either to do for this column. Every reader keeps working unchanged because they read the
+attribute off loaded rows exactly as before: `services/set_projection.py`'s `modal_camelot`
+(~446-447) and `_glyph_cells` (~585-592), and `services/analysis_timeline.py`'s
+`inspection_windows` (~282).
+
+**Blast radius.** This changes the `analysis_window` schema for every window row in the
+archive — the model docstring's 200,000-file target implies roughly 4,000,000 window rows — and
+the set-projection writer's behavior for every analyzed file going forward (it simply stops
+writing one column; nothing else about the write path changes). The test fixture population
+exercising this directly is far smaller: the migration test seeds 2 rows (one fine, one coarse)
+to prove the column drops cleanly and the downgrade does not backfill; the model-level property
+test (`tests/shared/services/test_set_projection.py`) exercises all 24 canonical keys plus
+`None`; the full integration suite (`tests/shared/tasks/test_analysis_persist_projection.py`,
+`tests/shared/cli/test_backfill_projection.py`) exercises the live write and backfill paths
+against real analysis payloads. Every existing test asserting `window.camelot` continues to pass
+unchanged, because the property's contract is byte-identical to the column's — with one
+narrowing worth naming: a *simulated projection-annotation failure* (an existing test scenario)
+previously left `camelot` NULL alongside `energy`/`mood_scores`, since all three were populated by
+the same writer step; since `camelot` no longer depends on that step succeeding at all, a fine
+window with a real `musical_key` now has a real `camelot` even when the projection failed. Both
+affected tests (`test_a_projection_failure_never_fails_the_analysis`,
+`test_a_projection_failure_leaves_a_row_the_backfill_actually_repairs`) were updated to assert
+this directly rather than silently losing coverage of the distinction.
+
+**Docs.** This bead also touches `docs/database.md` (the post-baseline migration chain table and
+the set-projection section) — under this repo's workflow rule, any change touching both code and
+docs is a docs change and is routed through a PR for human review rather than merged directly to
+`main`.

@@ -277,7 +277,10 @@ def test_baseline_is_the_only_migration() -> None:
     exports under -- a one-shot Kueue pod is Postgres-less and shares no memory with its peers, so
     nothing inside it can allocate against the pods running beside it, and every burst pod was
     therefore reporting the same service.instance.id (an increase() 84.4% above the truth,
-    ADR-0017 (telemetry export topology) section 8).
+    ADR-0017 (telemetry export topology) section 8); 066 (phaze-6r3eh) drops
+    analysis_window.camelot again -- the inverse of
+    063's half of that column, since it is a pure lookup of the same row's musical_key and became
+    a read-time AnalysisWindow.camelot property instead (operator decision 2026-09-16).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -309,6 +312,7 @@ def test_baseline_is_the_only_migration() -> None:
         "063_set_projection.py",
         "064_orphan_companion_diagnostics.py",
         "065_cloud_job_telemetry_slot.py",
+        "066_drop_analysis_window_camelot.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -337,10 +341,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (065: burst telemetry slot)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (066: drop camelot)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "065"
+    assert version == "066"
 
 
 @pytest.mark.asyncio
@@ -666,7 +670,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "065"
+        assert version == "066"
     finally:
         if engine is not None:
             await engine.dispose()

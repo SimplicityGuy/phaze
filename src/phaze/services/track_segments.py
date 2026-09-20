@@ -45,11 +45,13 @@ if TYPE_CHECKING:
 
 
 # Naming a code rather than reading the window's own ``musical_key`` is deliberate: the modal is
-# computed over the stored ``camelot`` column, and essentia's flat spellings normalise onto one
-# canonical key string on the way in, so the name shown beside a code is always that code's own
-# canonical name and never one of its enharmonic twins. ``phaze-x1qr3.8`` moved the inversion
-# itself into ``set_projection.key_name_for_camelot`` -- the record page's facts list names a
-# code the same way, and one inversion means the two surfaces cannot drift.
+# computed over each window's ``camelot`` (a read-time property of ``musical_key`` since
+# migration 066, phaze-6r3eh -- previously a stored column, same value either way), and
+# essentia's flat spellings normalise onto one canonical key string on the way in, so the name
+# shown beside a code is always that code's own canonical name and never one of its enharmonic
+# twins. ``phaze-x1qr3.8`` moved the inversion itself into ``set_projection.key_name_for_camelot``
+# -- the record page's facts list names a code the same way, and one inversion means the two
+# surfaces cannot drift.
 
 
 @dataclass(frozen=True)
