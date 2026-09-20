@@ -194,10 +194,14 @@ worse than having one that binds.
 
 Everything in this section was read off a **live
 `otel/opentelemetry-collector-contrib` 0.140.0** fed by a **real 30-minute analysis** — real
-essentia, the real 34-graph model set, the real D-07 chunk loop. Recorded output: `measurements/metric-contract-2026-08-26.md`; the run's own report is
-`measurements/analysis-run.json`. The raw 588 KB collector exposition is deliberately NOT
-committed — it is reproducible in one command and its parsed form is the table below.
-Reproduce with:
+essentia, the real 34-graph model set, the real D-07 chunk loop. Recorded output:
+`measurements/metric-contract-2026-08-26.md`. `measurements/analysis-run.json` is committed
+alongside it but carries no run data — that invocation used `scripts/measure_metric_contract.py
+--scrape-only`, which reads the collector's already-exposed series instead of driving a fresh
+analysis, so the script's `report` dict (and the file it serializes to) is `{}` by design; see
+that file's own retention note in `measurements/README.md`. The raw 588 KB collector exposition
+is deliberately NOT committed — it is reproducible in one command and its parsed form is the
+table below. Reproduce with:
 
 ```bash
 docker compose -f docker-compose.telemetry.example.yml up -d
