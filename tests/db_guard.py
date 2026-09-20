@@ -155,7 +155,8 @@ class TestDatabaseUnreachableError(RuntimeError):
     This is deliberately narrower than :class:`NonTestDatabaseError` / :class:`SharedTestDatabaseError`
     in one respect: it fires ONLY when the caller set the variable themselves. The DEFAULT URL
     (nothing exported) must keep failing OPEN, or a bare ``uv run pytest`` with no harness up could
-    no longer run the thousands of DB-free tests -- the exact trade the operator decision preserves.
+    no longer run the thousands of DB-free tests -- the exact trade the phaze-34gkn, 2026-09-16
+    operator decision above preserves.
     """
 
 

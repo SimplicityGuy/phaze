@@ -45,10 +45,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _FIXTURE_TARGET = str(Path(__file__).resolve().parent / "_fixture_trivial_db_free.py")
 
 # A private-use-range address that this host does not route anywhere listening (the same address
-# the phaze-cpn5k spike measured against). Connecting to it does not refuse instantly like a
-# closed local port would -- the SYN goes out and nothing answers, so the connection blocks until
-# `connect_timeout` elapses. That "slow, not instantly absent" shape is exactly what the operator
-# decision is about; a fast ECONNREFUSED would not exercise it.
+# the phaze-cpn5k spike measured against, 2026-09-16). Connecting to it does not refuse instantly
+# like a closed local port would -- the SYN goes out and nothing answers, so the connection blocks
+# until `connect_timeout` elapses. That "slow, not instantly absent" shape is exactly what the
+# phaze-34gkn, 2026-09-16 operator decision is about; a fast ECONNREFUSED would not exercise it.
 _BLACKHOLE_DSN = "postgresql+asyncpg://phaze:phaze@10.255.255.1:5433/phaze_unreachable_test"
 
 # A port nothing listens on, on loopback. Unlike the blackhole address this refuses FAST
@@ -108,9 +108,9 @@ def test_unset_url_with_postgres_unreachable_still_runs_the_db_free_tests() -> N
     Simulated by leaving ``TEST_DATABASE_URL`` unset (so ``explicit`` is ``False``) while pointing
     the module's OWN default at an unused local port via ``PHAZE_TEST_DB_PORT`` -- a fast,
     unambiguous ECONNREFUSED rather than a multi-second timeout, since this test only needs to
-    prove the exemption survives, not re-measure the timeout. This pins the half of the operator
-    decision that must NOT change: a bare ``uv run pytest`` with no harness up keeps running the
-    thousands of DB-free tests.
+    prove the exemption survives, not re-measure the timeout. This pins the half of the phaze-34gkn,
+    2026-09-16 operator decision that must NOT change: a bare ``uv run pytest`` with no harness up
+    keeps running the thousands of DB-free tests.
     """
     result = _run_subprocess_suite(
         env_overrides={"PHAZE_TEST_DB_PORT": _UNUSED_LOCAL_PORT},
