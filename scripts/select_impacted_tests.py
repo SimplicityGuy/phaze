@@ -176,6 +176,37 @@ from ``git rev-parse --git-common-dir`` and asks repowise about the range there.
 
 That in turn means only COMMITTED work is visible, so a dirty tree is refused rather than silently
 under-selected. "Commit before check" is already the dispatch protocol.
+
+**G. A MAPPED TEST ID CAN NAME A FILE THAT NO LONGER EXISTS (phaze-9t647).** ``stale_sources``
+(failure mode A) asks only whether a changed SOURCE file moved after the map was ingested. It never
+asks whether the TEST ids the map hands back still exist. Measured 2026-09-15 on bead phaze-bzw5y: the
+map at ``7fb68365`` (ingested 2026-08-29) named
+``tests/shared/core/test_propose_workspace_filtering.py::test_workspace_renders_filter_tabs_and_search``,
+which commit ``b8c29458`` "test(review): organize tests by capability" (2026-09-12, already on
+``main``) had moved to ``tests/review/capabilities/changes/test_workspace_filtering.py``. Handed to
+pytest, the old path is a usage error -- **exit 4**, no pytest summary -- on a diff that touched
+neither file: the bead's own diff was clean, and the map was stale for every OTHER bead until someone
+refreshed it. ``set -euo pipefail`` propagated the 4 straight through a gate log that otherwise read
+``All checks passed!`` from ruff and mypy, which is the specific shape that reads as a tooling
+accident rather than a real, if unmeasured, gate.
+
+**Chosen: ESCALATE, not drop-silently.** Both were on the table. Dropping the missing ids and running
+the rest would keep the fast path for the common case, but it means the recorded selection no longer
+covers what the map claims to cover -- for THIS diff specifically, since the map is shared and a
+missing id says nothing about how many *other* ids drawn from the same stale window are *also* wrong,
+only silently pointing at files that happen to still exist. Escalating is the same call this file
+already makes for every other whole-tree-map staleness (failure mode A escalates on ANY moved
+source, not just "enough of them"), and it is the honest one: the full suite costs ~21 minutes,
+where a silently-shrunk selection costs nothing and is never visible in the transcript that reports
+it green. So: any missing test id escalates the WHOLE diff, unconditionally -- never a per-id drop --
+with a message naming the count and the fix: *"the coverage map names N test file(s) that no longer
+exist -- run `just repowise-coverage`"*.
+
+**Operational remedy, recorded so the next seat does not rediscover it.** The dispatcher that hit this
+live ran ``just repowise-coverage-ci <run>`` against the last GREEN ``main`` run to refresh the shared
+map out of band, rather than paying the full ~21-minute local ``just repowise-coverage`` per seat.
+That is the fix for the map once it is known stale; this failure mode is what makes the staleness
+show up as a verdict instead of a silent miscount.
 """
 
 from __future__ import annotations
@@ -397,6 +428,31 @@ def stale_sources(repo: Path, map_sha: str, base: str, sources: set[str]) -> lis
     return moved
 
 
+def missing_test_paths(repo: Path, node_ids: list[str]) -> list[str]:
+    """Return the ``node_ids`` whose TEST file no longer exists in the worktree (failure mode G).
+
+    ``stale_sources`` asks whether a changed SOURCE file moved after the map was ingested; this asks
+    the orthogonal question -- whether the TEST id the map hands back still names a real file. A
+    landed test reorganisation (e.g. ``test(review): organize tests by capability``) renames or
+    moves test files without touching any source the bead itself changed, so ``stale_sources`` sees
+    nothing to report while the map still returns the OLD path. Handed to pytest as-is, that path is
+    a usage error -- exit 4, no summary -- which is exactly the "reads like a tooling accident" shape
+    this script exists to turn into a named verdict.
+
+    Deliberately a WORKTREE existence check (``(repo / file).is_file()``), not another git-log query:
+    what decides whether pytest can collect the id is whether the file is present in the tree pytest
+    is about to run against, i.e. this checked-out ``repo`` at HEAD -- not whether some commit in
+    between touched it. PURE apart from that one filesystem read, so a fixture with no git history at
+    all is enough to exercise it.
+    """
+    missing = []
+    for node_id in node_ids:
+        file_part = node_id.split("::", 1)[0]
+        if not (repo / file_part).is_file():
+            missing.append(node_id)
+    return missing
+
+
 def classify(report: dict[str, Any]) -> tuple[list[str], set[str]]:
     """Turn one ``repowise impacted-tests --format json`` report into node ids, or raise ``Refuse``.
 
@@ -515,6 +571,14 @@ def select(repo: Path, base_ref: str) -> tuple[list[str], list[str]]:
             "escalate",
             f"the coverage map predates other commits that moved {len(moved)} of the changed file(s), so its line "
             f"numbers no longer describe them: {', '.join(moved[:5])}" + (" \u2026" if len(moved) > 5 else ""),
+        )
+
+    missing = missing_test_paths(repo, node_ids)
+    if missing:
+        raise Refuse(
+            "escalate",
+            f"the coverage map names {len(missing)} test file(s) that no longer exist \u2014 run `just repowise-coverage`: "
+            f"{', '.join(missing[:5])}" + (" \u2026" if len(missing) > 5 else ""),
         )
 
     n_covered = len(report.get("impacted_tests") or [])

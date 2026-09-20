@@ -761,6 +761,81 @@ def test_a_dirty_worktree_never_reaches_exit_4(tmp_path: Path) -> None:
     assert "uncommitted" in result.stdout
 
 
+def test_a_test_file_the_map_names_but_a_landed_reorganisation_moved_escalates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failure mode G (phaze-9t647): reproduces the phaze-bzw5y shape end to end through ``select``.
+
+    ``stale_sources`` (mode A) only asks whether a changed SOURCE moved after the map was ingested.
+    Here the map names a test id at ``tests/old_location/test_x.py``; a commit landed BETWEEN the
+    map's ``ingested_commit_sha`` and this bead's merge-base moves it to
+    ``tests/new_location/test_x.py`` (mirroring the real ``test(review): organize tests by
+    capability`` commit) -- and the bead's own diff touches neither path, exactly like the incident,
+    where the changed files were ``src/phaze/telemetry/tracing.py`` and
+    ``tests/shared/telemetry/test_never_raises.py``. ``stale_sources`` sees nothing: the covered
+    SOURCE (``src/other.py``) never moved. Only checking the test id's file against the worktree
+    catches it, and the assertion is on ``select``'s real behaviour -- it must never return a path
+    that pytest cannot collect.
+    """
+    root = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)  # noqa: S603, S607
+    git = ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+    # `select` resolves `--git-common-dir` (typically the relative ".git") against the process's
+    # OWN cwd, exactly as it does when the script runs for real with `--repo .` from inside a
+    # worktree -- so calling it in-process needs the same cwd, not `tmp_path`.
+    monkeypatch.chdir(root)
+
+    old_test = root / "tests" / "old_location" / "test_x.py"
+    old_test.parent.mkdir(parents=True, exist_ok=True)
+    old_test.write_text("def test_x():\n    pass\n", encoding="utf-8")
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "thing.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)  # noqa: S603
+    subprocess.run([*git, "commit", "-q", "--no-verify", "-m", "map baseline"], check=True)  # noqa: S603
+    map_sha = subprocess.run(  # noqa: S603
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    # The landed reorganisation: between map_sha and this bead's merge-base, so it is shared
+    # history the bead branched from, not something the bead itself did.
+    new_test = root / "tests" / "new_location" / "test_x.py"
+    new_test.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603
+        [*git, "mv", str(old_test.relative_to(root)), str(new_test.relative_to(root))], check=True
+    )
+    subprocess.run(  # noqa: S603
+        [*git, "commit", "-q", "--no-verify", "-m", "test(review): organize tests by capability"], check=True
+    )
+    base = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()  # noqa: S603
+
+    # The bead's own commit: an unrelated source file, matching the real diff's shape.
+    (root / "src" / "other.py").write_text("y = 1\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)  # noqa: S603
+    subprocess.run([*git, "commit", "-q", "--no-verify", "-m", "fix(telemetry): unrelated change"], check=True)  # noqa: S603
+
+    (root / ".repowise").mkdir()
+
+    def fake_repowise_json(_main_clone: Path, *args: str) -> dict[str, Any]:
+        if args[0] == "coverage":
+            return {"test_map": {"ingested_commit_sha": map_sha, "pair_count": 1, "ingested_at": "2026-08-29"}}
+        if args[0] == "impacted-tests":
+            return {
+                "changed_files": 1,
+                "unknown_files": [],
+                "inferred_tests": [],
+                "impacted_tests": [{"test_id": "tests/old_location/test_x.py::test_x|run", "source_files": ["src/other.py"]}],
+            }
+        raise AssertionError(f"unexpected repowise call: {args}")
+
+    monkeypatch.setattr(SELECTOR, "_repowise_json", fake_repowise_json)
+
+    with pytest.raises(SELECTOR.Refuse) as excinfo:
+        SELECTOR.select(root, base)
+
+    assert excinfo.value.verdict == "escalate"
+    assert "no longer exist" in excinfo.value.reason
+    assert "tests/old_location/test_x.py" in excinfo.value.reason
+    assert "just repowise-coverage" in excinfo.value.reason
+
+
 # The recipes. (The config half is unreachable from here — see the module docstring.)
 
 
