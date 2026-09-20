@@ -34,7 +34,8 @@ just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate
 just check-fast            # THE per-bead gate: lint + typecheck + the tests repowise says the
                            # change touches, escalating to the full suite when it can't tell
 just check                 # lint + typecheck + full suite WITH coverage (95% LINE floor)
-just check-all             # THE molecule gate: every pre-commit hook + the full suite
+just check-all             # THE molecule gate: every pre-commit hook + the full suite + promtool
+                           # alert-rule tests (alerts-test)
 just branch-check          # Per-bead BRANCH-coverage gate. Free after any `check`
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
 just test-db-for <name>    # Carve an isolated seat — REQUIRED for concurrent worktrees
@@ -56,6 +57,12 @@ it before citing any command as evidence in a bead. The operational summary:
 | `just check` | yes | yes | full suite | 95% line floor | `postland`, `union`, and the manual escape hatch |
 | `just check-all` | via pre-commit | via pre-commit | full suite | 95% line floor | **the molecule gate** — `bh work finish` |
 | `just branch-check` | — | — | — | per-bead branch coverage | free after any `check` |
+
+`just check-all` also runs `alerts-test` (`promtool test rules alerts/phaze-alerts.test.yml`) after
+`pre-commit` and `test-validate`, so the table's "every pre-commit hook + the full suite" undersells
+it by one check. Locally, `alerts-test` **loudly skips** — prints a warning and exits 0 — when
+`promtool` is not on `PATH`; CI's `code-quality.yml` installs `promtool` and runs it for real, so a
+local `check-all` green does not by itself confirm the alert rules.
 
 **No boundary an ad-hoc bead traverses runs the full suite.** `check`, `submit`, `merge` and
 `merge-main` all resolve to `just check-fast`; an ad-hoc bead (parent = NONE) never reaches
@@ -92,6 +99,10 @@ can guard the config half.
 4. **A RED with no pytest summary is UNMEASURED, not failing.** An exit 1 whose transcript says
    `🎯 selector: fail` and `no verdict was produced` is a harness problem to escalate, not a
    regression to hunt — even though the last line printed reads `main is RED in combination`.
+   A red `GATE_EXIT=4` with `All checks passed!` above it and no pytest summary means the selector
+   handed pytest a mapped test id whose file a landed reorganisation moved. Refresh the map with
+   `just repowise-coverage` (or `just repowise-coverage-ci <run>` against the last green `main` run);
+   see `scripts/select_impacted_tests.py`'s failure mode G. Measured 2026-09-15 on `phaze-bzw5y`.
 5. **A gate measures a TREE, and the base may move under it.** Before spending a slot:
    `git fetch origin && git rev-list --left-right --count HEAD...origin/main`.
 
@@ -217,6 +228,20 @@ holder's pid. The most natural way to hit this is re-running a subset "to check 
 terminal while the full suite is going. `PHAZE_TEST_DB_ALLOW_SHARED=1` bypasses it; pytest-xdist
 against one database *is* this defect and is not a reason to set it.
 
+**A tool-call timeout does not kill the run it started.** Measured 2026-09-16
+(`docs/gates-and-isolation.md`, phaze-cpn5k): killing the *shell* running `uv run pytest` with
+`SIGTERM` or `SIGHUP` leaves `uv` and its `pytest` child running to completion — an orphaned run
+finished `1166 passed, 1 warning in 61.05s (0:01:01)` 36 s after its shell died, holding the session
+advisory lock the whole time. Only signalling `uv` itself brought `pytest` down, within 5 s; which of
+the two an agent's timed-out tool call actually signals is not something the agent chooses. **Never
+re-run a gate because a tool call timed out** — the re-run is refused before collection by the
+advisory lock (exit 4, no pytest summary), which by this document's own rules reads as UNMEASURED,
+and if the abandoned run was still in lint/typecheck the refusal lands on the **abandoned** run
+instead. Find the pid (`ps -eo pid,args= | grep pytest`) and either wait for it or kill that pid by
+number. Bare `ps -p <pid>` is **not** a liveness check: on BSD `ps`, `-p` intersects with the
+current-terminal default, so a detached child reads as absent. Use `ps -p <pid> -o pid=`, or read the
+lock holder out of Postgres.
+
 **Scope every `pg_locks` / `pg_stat_activity` query with `current_database()`.** A per-worktree
 database isolates table data completely and the system catalogues not at all, so any such query sees
 every seat's backends — two correctly-isolated suites both went red on an advisory-lock count that
@@ -304,10 +329,15 @@ excluded entirely** (`exclude`), not run under a relaxed override, along with `p
 
 **Frozen SHAs, not tags,** for every hook. pre-commit-hooks (large files, executable shebangs, merge
 conflicts, TOML, YAML, JSON check + pretty-format, AWS credentials, private keys, EOF fixer, trailing
-whitespace, mixed line endings) · ruff `--fix` + ruff-format · bandit (`-x tests,services -s B608`) ·
-check-jsonschema (GitHub workflows/actions) · hadolint · actionlint · yamllint strict · shellcheck-py
-(`--shell=bash --severity=warning`) · shfmt (`--indent=2 --case-indent --language-dialect=bash
---write`) · a local `uv run mypy .` hook with `pass_filenames: false`.
+whitespace, mixed line endings) · ruff `--fix` + ruff-format · check-jsonschema (GitHub
+workflows/actions) · hadolint · actionlint · yamllint strict · shellcheck-py (`--shell=bash
+--severity=warning`) · shfmt (`--indent=2 --case-indent --language-dialect=bash --write`) · a local
+`uv run mypy .` hook with `pass_filenames: false` · a local `just bandit` hook (`uv run bandit -r
+src/ -x tests -s B608`, `pass_filenames: false`) — the identical invocation CI's security workflow
+runs, pinned by `tests/shared/test_bandit_invocation_parity.py`. The hook used to run the frozen
+`PyCQA/bandit` repo hook with an unanchored `-x tests,services`, which matched the flag as a
+substring against each file passed individually and silently excluded every file anywhere under
+`src/phaze/services/` — not just the top-level `services/` prototype dir it was meant for.
 
 ## Testing
 
