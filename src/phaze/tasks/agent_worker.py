@@ -394,6 +394,14 @@ async def startup(ctx: dict[str, Any]) -> None:
     # phaze.telemetry.slots and docs/design/0017-telemetry-export-topology.md section 8.
     telemetry_slots.set_default_pool_size(cfg.worker_process_pool_size)
 
+    # phaze-w15ju: this process ALLOCATES its children's slots, so it disowns any slot it was
+    # handed. `slots.assign` now passes an inherited slot through untouched -- which is correct for
+    # a burst pod, where the controller allocated it against the other in-flight pods -- but an
+    # inherited value here would be handed to all `worker_process_pool_size` children at once,
+    # collapsing them onto one identity. Ownership, not precedence: the seat that bounds the
+    # concurrency is the seat whose slots count, and it logs the discard rather than ignoring it.
+    telemetry_slots.disown_inherited_slot()
+
     # phaze-xuec1: prove the worker can actually reach its broker BEFORE claiming
     # "startup complete" -- see _wait_for_queue_ready's docstring. Raises RuntimeError
     # (crashing the process, non-zero exit) if the broker is still unreachable after the

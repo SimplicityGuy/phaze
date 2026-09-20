@@ -16,6 +16,15 @@ THREE load-bearing invariants:
   ``cloud_job`` row. It NEVER imports or writes a scheduling-ledger ``process_file:<id>`` row --
   such a row would let ``reenqueue.recover_orphaned_work`` replay the K8s file onto a LOCAL agent
   queue. The ``cloud_job`` row is the in-flight registry the reconcile cron iterates (D-02).
+* **The seat that allocates the pod's TELEMETRY IDENTITY** (phaze-w15ju). A burst pod is
+  Postgres-less and shares no memory with its peers, so nothing inside it can allocate a bounded
+  worker slot against the up-to-``cap`` pods beside it -- every one of them exported under
+  ``phaze-analysis-0`` and their cumulative counters overwrote each other at the collector
+  (measured: an ``increase()`` 84.4% above the truth, ADR-0017 section 8a). This task is the seat
+  that CAN see the competitors, because it is already the seat that enforces the per-backend cap
+  from the same ``cloud_job`` rows. It allocates and COMMITS the slot before the POST
+  (``burst_telemetry_slots``), and ``build_job_manifest`` injects it into the Job env. Release is
+  derived from ``status``, so nothing here gives a slot back.
 * **Control-only**: reads ``ctx["async_session"]`` (controller worker shape, like
   ``recover_orphaned_work`` / ``stage_cloud_window``) and the kube surface via ``kube_staging`` --
   kube credentials live on the control plane only (DIST-01). Registered in
@@ -40,7 +49,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.services import kube_staging, s3_staging
+from phaze.services import burst_telemetry_slots, kube_staging, s3_staging
 
 
 if TYPE_CHECKING:
@@ -102,10 +111,40 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
         backend_id = (await session.execute(select(CloudJob.backend_id).where(CloudJob.file_id == fid))).scalar_one_or_none()
     kube = _resolve_backend_kube(cfg, backend_id)
 
+    # phaze-w15ju: allocate this pod's BOUNDED TELEMETRY IDENTITY and make it durable BEFORE the POST.
+    #
+    # The order is the whole design. A burst pod is Postgres-less and shares no memory with its peers,
+    # so it cannot allocate against the pods running beside it -- every one of them exported under
+    # ``phaze-analysis-0``, and a collector's Prometheus exporter keeps one series per identity and
+    # takes the last write (measured: an ``increase()`` 84.4% above the truth, ADR-0017 section 8a).
+    # This is the seat that can see the competitors, because it is the seat that already enforces the
+    # per-backend cap from these same rows.
+    #
+    # Committed BEFORE the POST rather than folded into the upsert below: a crash between the two must
+    # leave the slot RECORDED, never issued-but-unrecorded. The former costs at most one slot until the
+    # row leaves the in-flight set (occupancy is derived from ``status``, so the reconcile cron frees it
+    # without being asked); the latter would let the next submit issue the same index to a second pod
+    # while this one is still exporting under it -- the defect itself.
+    #
+    # Its own short session, not the upsert's: ``allocate_slot`` takes a transaction-scoped advisory
+    # lock, and holding that across the kube POST would serialize every submit behind a hung kube API
+    # (kr8s sets no client-side timeout).
+    async with ctx["async_session"]() as session:
+        telemetry_slot = await burst_telemetry_slots.allocate_slot(session, fid, bound=burst_telemetry_slots.burst_slot_bound(cfg))
+        await session.commit()
+
     # One fast kube POST against the resolved cluster. The deterministic name + 409->refresh inside the
     # seam makes a duplicate submit safe (no duplicate Job); on a non-409 server error KubeStagingError
     # surfaces and nothing is written below -- a clean retry leaves no orphan cloud_job row.
-    name, _uid = await kube_staging.submit_job(fid, kube)
+    name, _uid = await kube_staging.submit_job(
+        fid,
+        kube,
+        telemetry_slot=telemetry_slot,
+        # The bound travels WITH the slot: the pod validates what it receives against
+        # ``PHAZE_TELEMETRY_SLOT_MAX`` and would otherwise fall back to ``slots.DEFAULT_SLOT_MAX`` (4)
+        # and refuse any higher index the controller legitimately issued.
+        telemetry_slot_max=burst_telemetry_slots.burst_slot_bound(cfg),
+    )
 
     async with ctx["async_session"]() as session:
         # Idempotent upsert against the unique file_id FK (mirrors the cloud_staging / scheduling_ledger

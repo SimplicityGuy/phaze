@@ -272,7 +272,12 @@ def test_baseline_is_the_only_migration() -> None:
     (energy / camelot / mood_scores) plus the 1:1 set_profile table -- the narrow projection
     section E's file-viewer surfaces query instead of re-reading the ~5 KB features JSONB
     across millions of window rows; 064 adds scan_batches.configured_root plus the scan-owned,
-    metadata-only orphan_companion_diagnostics table.
+    metadata-only orphan_companion_diagnostics table; 065 (phaze-w15ju) adds
+    cloud_job.telemetry_slot, the controller-allocated bounded telemetry identity a burst pod
+    exports under -- a one-shot Kueue pod is Postgres-less and shares no memory with its peers, so
+    nothing inside it can allocate against the pods running beside it, and every burst pod was
+    therefore reporting the same service.instance.id (an increase() 84.4% above the truth,
+    ADR-0017 section 8).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -303,6 +308,7 @@ def test_baseline_is_the_only_migration() -> None:
         "062_tag_write_review_payload.py",
         "063_set_projection.py",
         "064_orphan_companion_diagnostics.py",
+        "065_cloud_job_telemetry_slot.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -331,10 +337,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (064: orphan diagnostics)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (065: burst telemetry slot)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "064"
+    assert version == "065"
 
 
 @pytest.mark.asyncio
@@ -660,7 +666,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "064"
+        assert version == "065"
     finally:
         if engine is not None:
             await engine.dispose()

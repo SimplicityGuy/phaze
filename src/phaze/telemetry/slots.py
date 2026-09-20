@@ -87,8 +87,9 @@ SLOT_ENV = "PHAZE_TELEMETRY_SLOT"
 #: **The host lane sets this FOR the child** -- :func:`assign` stamps the issuing pool's own
 #: size alongside the slot, so the bound the child enforces is the one the slot was drawn
 #: from and the two cannot drift. An operator does not need to set it to raise
-#: ``worker_process_pool_size``; it remains an explicit override, and the input for a
-#: producer nothing allocates for (the burst lane, ``phaze-w15ju``).
+#: ``worker_process_pool_size``; it remains an explicit override. The BURST lane sets it for the
+#: child too, one boundary further out -- the controller injects the pair into the Kueue Job env
+#: (``phaze-w15ju``), and :func:`assign` passes an inherited slot through untouched.
 SLOT_MAX_ENV = "PHAZE_TELEMETRY_SLOT_MAX"
 
 #: Matches ``config_base.Settings.worker_process_pool_size``'s default, which is what
@@ -151,8 +152,11 @@ class SlotPool:
     (``tasks/agent_worker.py``), so a free list in that process sees every competitor it
     needs to. A burst-lane child runs in a one-shot Kueue pod that is Postgres-less and
     shares no memory with its peers, so nothing in the pod can allocate against them --
-    that slot has to be injected by the controller at submit time. Tracked separately as
-    bead ``phaze-w15ju``; see ``docs/design/0017-telemetry-export-topology.md`` section 8d.
+    that slot is injected by the controller at submit time instead
+    (``phaze.services.burst_telemetry_slots``, bead ``phaze-w15ju``; see
+    ``docs/design/0017-telemetry-export-topology.md`` section 8d). A burst pod still builds one
+    of these pools, and :func:`assign` is what stops it from overwriting the controller's slot
+    with its own local 0.
 
     Exhaustion returns None rather than raising or blocking. Instrumentation may never be
     the thing that fails or stalls the work it observes (bootstrap's acceptance-7 contract),
@@ -225,6 +229,38 @@ def set_default_pool_size(size: int) -> None:
         _pool = SlotPool(size)
 
 
+def disown_inherited_slot(environ: dict[str, str] | None = None) -> int | None:
+    """Drop a slot this process INHERITED but does not own. Returns the value removed, or None.
+
+    Called by the seat that bounds a lane's concurrency and therefore owns its slots -- the agent
+    worker, beside :func:`set_default_pool_size`. It exists because of :func:`assign`'s
+    pass-through: once an inherited slot is honoured, a ``PHAZE_TELEMETRY_SLOT`` set by hand in the
+    agent worker's environment would be handed to EVERY child, giving all
+    ``worker_process_pool_size`` of them one identity -- the exact merge the pool prevents, with a
+    green suite and a plausible-looking environment.
+
+    The pass-through is still right: in a burst pod the controller genuinely does own the slot, one
+    process boundary further out. The two are reconciled by *ownership*, not by precedence -- a
+    process that allocates its own slots disowns any it was handed, and says so in its log, which
+    is the whole difference between this and silently ignoring the value.
+
+    ``PHAZE_TELEMETRY_SLOT_MAX`` is deliberately left alone: it is a documented operator override
+    for the BOUND, not a claim about which slot this process holds, and
+    :func:`set_default_pool_size` has already sized the pool from the real concurrency knob.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.pop(SLOT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        inherited = int(raw)
+    except ValueError:
+        log.warning("telemetry_slot_inherited_discarded value=%r reason=not_an_integer", raw)
+        return None
+    log.warning("telemetry_slot_inherited_discarded slot=%d reason=this_process_allocates_its_own", inherited)
+    return inherited
+
+
 def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[dict[str, str], int | None]:
     """Stamp a freshly acquired slot AND THE BOUND IT WAS DRAWN FROM into ``environ``.
 
@@ -249,10 +285,36 @@ def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[di
     can never issue a slot at or above its own pool size, so the bound sent here is by
     construction the SMALLEST one that admits every slot the parent can hand out: it cannot
     be too small for a real slot, and it cannot be inflated by a stale value inherited from
-    the parent's own environment. ``PHAZE_TELEMETRY_SLOT_MAX`` survives as an explicit
-    operator override and as the input for a producer nothing allocates for -- the burst
-    lane, ``phaze-w15ju``.
+    the parent's own environment.
+
+    **AN INHERITED SLOT IS PASSED THROUGH, NOT REALLOCATED (phaze-w15ju), and this is what
+    makes the burst lane work at all.** When ``environ`` already carries a slot that
+    :func:`resolve_slot` accepts, this function consumes nothing from the pool, changes
+    nothing in ``environ``, and returns ``None`` as the slot -- so the caller's ``finally``
+    releases nothing it never took.
+
+    The rule is *whoever bounds the concurrency owns the slot*, and in a burst pod that seat
+    is the CONTROLLER, one process boundary further out: it allocates against the in-flight
+    ``cloud_job`` rows at submit time and injects the pair into the Job env
+    (``kube_staging.JOB_ENV_CODE_INJECTED_TELEMETRY``). A burst pod runs
+    ``run_analysis_subprocess`` exactly like the host lane, so without this branch its
+    process-local pool -- a pool of one competitor, because the pod shares memory with
+    nobody -- would acquire slot 0 and OVERWRITE the controller's decision in the child's
+    environment. Every burst pod would then export under ``phaze-analysis-0`` again: the
+    manifest would look correct, the injected key would be present and the defect would be
+    untouched. That is precisely the trap ADR-0017 section 8d warned about in writing, and it
+    is why ``test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities``
+    drives the real child-environment path rather than asserting on the manifest alone.
+
+    A slot that is present but INVALID (non-numeric, negative, at or above the bound) is not
+    honoured: :func:`resolve_slot` rejects it, so this falls through to a real allocation.
+    Deferring to a value the child would refuse anyway would hand the process the shared
+    identity when a perfectly good slot was available.
     """
+    inherited = resolve_slot(environ)
+    if inherited is not None:
+        log.debug("telemetry_slot_inherited slot=%d not_allocating", inherited)
+        return environ, None
     target = pool or default_pool()
     chosen = target.acquire()
     if chosen is not None:

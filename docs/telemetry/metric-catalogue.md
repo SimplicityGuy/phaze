@@ -132,6 +132,34 @@ buys: a per-pod instance id, unique per analyzed file, would be 2,290 × 11,428 
 **26,170,120** series. Raising `PHAZE_TELEMETRY_SLOT_MAX` costs another 2,290 per slot, and
 nothing else here changes.
 
+#### The burst lane's slots come off a different knob, and cost the same shape
+
+A burst-lane analysis runs in a one-shot Kueue pod, so its concurrency is not
+`worker_process_pool_size` — no process bounds it. It is the **per-backend in-flight `cap`** the
+controller enforces, and the controller allocates the slot at submit time and injects it into the
+Job env (`phaze-w15ju`, [ADR-0017 §8d](../design/0017-telemetry-export-topology.md)). The bound is
+the **sum of the configured kueue backends' `cap` values**, because two clusters' pods both
+reporting `phaze-analysis-2` merge at a shared collector exactly as two pods in one cluster would.
+
+So the analysis block's real multiplier is:
+
+| term | at the deployed configuration |
+| --- | ---: |
+| `worker_process_pool_size` (host lane) | 4 |
+| Σ kueue `cap` (burst lane) | 4 |
+| distinct analysis identities | **4** |
+
+**The two lanes share the slot space rather than adding to it** — both append their index to the
+same base and both count from 0 — so the analysis block is
+`2,290 × max(worker_process_pool_size, Σ kueue cap)` and the ceiling above is unchanged at
+**9,160 / 15,457**. It is `max`, not a sum: writing it as a sum would over-state the ceiling by
+9,160 series. The three rows are kept anyway because the two terms move independently, and because
+that reuse is also a live residual (`phaze-7nl67`) — a host-lane child and a burst pod on the same
+index merge, so a future change giving the lanes distinct bases would make the block
+`2,290 × 8 = 18,320`. **No term here is the corpus**, which is what makes every version of this
+affordable: raising either term past the other costs 2,290 series per index, and
+**reintroduces no per-file series block**.
+
 ### The arithmetic, where the budget is not the cartesian product
 
 A histogram is **not one series**. It is one `_bucket` series per boundary, plus the implicit

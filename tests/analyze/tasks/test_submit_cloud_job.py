@@ -33,6 +33,7 @@ import uuid
 import pytest
 from sqlalchemy import func as sa_func, select, update
 
+from phaze.config_backends import KubeConfig
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
@@ -40,6 +41,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services import kube_staging
 import phaze.tasks.submit_cloud_job as submit_mod
 from phaze.tasks.submit_cloud_job import submit_cloud_job, submit_cloud_job_key
+from phaze.telemetry import bootstrap, slots
 
 
 if TYPE_CHECKING:
@@ -49,6 +51,23 @@ if TYPE_CHECKING:
 # SCHED-05 / MKUE-01: the submit resolves the file's backend via cloud_job.backend_id against the
 # registry; the stub carries a single kueue entry whose id matches the seeded row's backend_id.
 _KUEUE_BACKEND_ID = "kueue-x64"
+
+# phaze-w15ju: the stub registry's per-backend concurrency cap, and therefore the exclusive bound on
+# a burst telemetry slot. Deliberately > 1 so "two concurrent submissions get DIFFERENT slots" is a
+# real claim rather than a pool that could only ever hand out 0.
+_KUEUE_CAP = 4
+
+# A fully-populated KubeConfig for the spy to build a real manifest from. ``_patch_settings``'s
+# KubeConfig deliberately omits the image/request fields (nothing in those tests POSTs), and
+# ``build_job_manifest`` fails loud without them.
+_MANIFEST_KUBE = KubeConfig(
+    api_url="https://kube.example.com",
+    namespace="phaze",
+    local_queue="phaze-lq",
+    job_image="phaze/job-runner:test",
+    cpu_request="1500m",
+    memory_request="3Gi",
+)
 
 
 class _SubmitSpy:
@@ -64,19 +83,35 @@ class _SubmitSpy:
         self.uid = uid
         self.calls: list[uuid.UUID] = []
         self.kubes: list[Any] = []
+        # phaze-w15ju: the REAL manifest this submit would have POSTed, built here from the same
+        # arguments the seam would have passed to ``build_job_manifest``. Recording the manifest
+        # rather than the slot integer is deliberate -- the acceptance criterion is about what
+        # reaches the pod, and the allocator's own return value is exactly the bookkeeping the
+        # criterion says not to assert against.
+        self.manifests: list[dict[str, Any]] = []
 
-    async def __call__(self, file_id: uuid.UUID, kube: Any) -> tuple[str, str]:
+    async def __call__(
+        self, file_id: uuid.UUID, kube: Any, *, telemetry_slot: int | None = None, telemetry_slot_max: int | None = None
+    ) -> tuple[str, str]:
         self.calls.append(file_id)
         self.kubes.append(kube)
+        self.manifests.append(
+            kube_staging.build_job_manifest(file_id, _MANIFEST_KUBE, telemetry_slot=telemetry_slot, telemetry_slot_max=telemetry_slot_max)
+        )
         return self.name, self.uid
+
+    def injected_env(self, index: int) -> dict[str, str]:
+        """The container ``env`` of the ``index``-th recorded manifest, as a plain mapping."""
+        return {entry["name"]: entry["value"] for entry in self.manifests[index]["spec"]["template"]["spec"]["containers"][0]["env"]}
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Pin ``submit_cloud_job.get_settings`` to a one-kueue registry whose id == the seeded backend_id."""
-    from phaze.config_backends import KubeConfig
-
     kube = KubeConfig(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq")
-    settings = SimpleNamespace(backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, kube=kube)])
+    # ``cap`` is not decoration here: phaze-w15ju derives the telemetry slot bound from the kueue
+    # backends' caps (``burst_telemetry_slots.burst_slot_bound``), so a registry stub without one is
+    # not a registry entry the submit path can read.
+    settings = SimpleNamespace(backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, kube=kube, cap=_KUEUE_CAP)])
     monkeypatch.setattr("phaze.tasks.submit_cloud_job.get_settings", lambda: settings)
     return kube
 
@@ -505,3 +540,147 @@ def test_submit_cloud_job_key_is_deterministic() -> None:
     """The deterministic enqueue key mirrors the ``s3_upload:<id>`` / ``push_file:<id>`` idiom."""
     fid = uuid.uuid4()
     assert submit_cloud_job_key(fid) == f"submit_cloud_job:{fid}"
+
+
+# phaze-w15ju: the burst lane's telemetry identity, asserted where it actually lands
+
+
+def _pod_identity(injected: dict[str, str]) -> tuple[str, int | None]:
+    """Replay a burst pod on ``injected``; return its child's identity and any slot the POD allocated.
+
+    **This walks the REAL consumer chain, not the manifest.** A Job env carrying a distinct
+    ``PHAZE_TELEMETRY_SLOT`` per pod is necessary and was never sufficient: the pod runs
+    ``run_analysis_subprocess``, which calls ``slots.assign(telemetry.child_environment())``, and a
+    pod-local ``SlotPool`` -- a pool with exactly one competitor, because the pod shares memory with
+    nobody -- would acquire index 0 and OVERWRITE the controller's decision on its way to the child.
+    Every burst pod would then export under ``phaze-analysis-0`` behind a correct-looking manifest,
+    which is exactly what ADR-0017 section 8d predicted in writing and why a manifest-only assertion
+    cannot close this bead.
+
+    So this reproduces the pod: the injected env is the process environment, ``assign`` runs against
+    a fresh pool, and ``bootstrap._instance_id`` reads the result. Three real functions; only
+    ``os.environ`` is stood in for. The second element is what the pod allocated for ITSELF -- None
+    when it correctly deferred to the controller's slot.
+    """
+    slots._reset_for_tests()
+    environ, taken = slots.assign(dict(injected))
+    return bootstrap._instance_id("phaze-analysis", environ), taken
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ACCEPTANCE 1+2. Two in-flight burst submits carry DIFFERENT bounded slots into their pods.
+
+    Asserted against the built Job manifest and then through the pod-side chain, never against the
+    allocator's return value -- the allocator's own bookkeeping is the thing the criterion says not
+    to trust, because the host lane's version of this bookkeeping was correct while the identity the
+    child actually used was not.
+
+    Both rows stay in flight for the duration: neither is terminalized between the two submits, so
+    the second allocation genuinely has to route around the first.
+    """
+    first, second = _make_file(), _make_file()
+    session.add_all((first, second))
+    await session.commit()
+    await _seed_cloud_job(session, first.id)
+    await _seed_cloud_job(session, second.id)
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy()
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    ctx = _make_ctx(async_engine)
+
+    await submit_cloud_job(ctx, first.id)
+    await submit_cloud_job(ctx, second.id)
+
+    envs = [spy.injected_env(0), spy.injected_env(1)]
+    slot_values = [env[slots.SLOT_ENV] for env in envs]
+    assert slot_values == ["0", "1"]
+    # The bound travels with the slot, and it is the registry's cap -- not slots.DEFAULT_SLOT_MAX,
+    # which the pod would fall back to and which would refuse any index the cap raised above 4.
+    assert {env[slots.SLOT_MAX_ENV] for env in envs} == {str(_KUEUE_CAP)}
+
+    replayed = [_pod_identity(env) for env in envs]
+    # The pod allocated NOTHING for itself: it deferred to the controller's slot. Without that
+    # deference both pods would report `phaze-analysis-0` from their own pools of one.
+    assert [taken for _identity, taken in replayed] == [None, None]
+    identities = [identity for identity, _taken in replayed]
+    assert identities == ["phaze-analysis-0", "phaze-analysis-1"]
+    assert len(set(identities)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_freed_slot_is_reissued_to_the_next_burst_submission(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ACCEPTANCE 1 (the release half), at the submit boundary: index 0 comes back after completion.
+
+    The pool is bounded by the concurrency and NOT by the corpus precisely because of this -- if a
+    finished Job's slot were not reissued, the 11,428th file would need the 11,428th identity and the
+    cardinality argument for the whole scheme would collapse.
+    """
+    finished, successor = _make_file(), _make_file()
+    session.add_all((finished, successor))
+    await session.commit()
+    await _seed_cloud_job(session, finished.id)
+    await _seed_cloud_job(session, successor.id)
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy()
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    ctx = _make_ctx(async_engine)
+
+    await submit_cloud_job(ctx, finished.id)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == finished.id).values(status=CloudJobStatus.SUCCEEDED.value))
+    await session.commit()
+
+    await submit_cloud_job(ctx, successor.id)
+
+    assert spy.injected_env(0)[slots.SLOT_ENV] == "0"
+    assert spy.injected_env(1)[slots.SLOT_ENV] == "0"
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_pool_still_submits_the_job_without_a_slot(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instrumentation never fails the work: a slotless submit still POSTs, and the pod degrades.
+
+    The manifest carries NO telemetry key in that case -- byte-identical to the pre-phaze-w15ju form
+    -- so the pod falls back to allocating from its own pool of one and reports
+    ``phaze-analysis-0``, exactly as every burst pod did before this bead. **That is the degraded
+    state, stated rather than dressed up:** an over-cap pod merges with whichever pod holds slot 0.
+    It is still the right direction to fail in, because the alternative -- minting an unbounded
+    identity -- would put 2,290 series per analyzed file into storage phaze does not own, and that
+    cannot be undone once scraped.
+    """
+    files = [_make_file() for _ in range(_KUEUE_CAP + 1)]
+    session.add_all(files)
+    await session.commit()
+    for file in files:
+        await _seed_cloud_job(session, file.id)
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy()
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    ctx = _make_ctx(async_engine)
+
+    for file in files:
+        await submit_cloud_job(ctx, file.id)
+
+    overflow = spy.injected_env(_KUEUE_CAP)
+    assert slots.SLOT_ENV not in overflow
+    assert slots.SLOT_MAX_ENV not in overflow
+    assert set(overflow) == kube_staging.JOB_ENV_CODE_INJECTED_ALWAYS
+    # The pod allocates its own slot 0 -- the pre-fix behaviour, reached only past the cap.
+    assert _pod_identity(overflow) == ("phaze-analysis-0", 0)
+    # The submit itself still happened for every file, slot or no slot.
+    assert len(spy.calls) == _KUEUE_CAP + 1

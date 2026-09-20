@@ -44,6 +44,7 @@ import yaml
 from phaze.config import AgentSettings, get_settings
 from phaze.config_backends import KubeConfig
 from phaze.services import kube_staging
+from phaze.telemetry import bootstrap, slots
 
 
 _RUNBOOK = Path(__file__).parents[3].parent / "docs" / "k8s-burst.md"
@@ -143,14 +144,83 @@ def test_the_manifest_names_the_objects_the_runbook_documents() -> None:
     ]
 
 
+def _injected_names(**kwargs: object) -> frozenset[str]:
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(), **kwargs)  # type: ignore[arg-type]
+    return frozenset(entry["name"] for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"])
+
+
 def test_the_code_injected_env_is_exactly_the_contract_says_it_is() -> None:
-    """``build_job_manifest``'s literal ``env`` names ``JOB_ENV_CODE_INJECTED``, and no operator key overlaps it."""
-    env = kube_staging.build_job_manifest(uuid.uuid4(), _kube())["spec"]["template"]["spec"]["containers"][0]["env"]
-    assert {entry["name"] for entry in env} == kube_staging.JOB_ENV_CODE_INJECTED
+    """``build_job_manifest``'s literal ``env`` names the contract, and no operator key overlaps it.
+
+    Two manifests, because the telemetry pair is CONDITIONAL (phaze-w15ju): a submit the controller
+    allocated a slot for carries :data:`JOB_ENV_CODE_INJECTED`, and one it could not (an exhausted
+    pool) carries :data:`JOB_ENV_CODE_INJECTED_ALWAYS` and is byte-identical to the pre-phaze-w15ju
+    form. Asserting only the with-slot shape would let the fallback drift into emitting an empty or
+    partial pair, which ``slots.resolve_slot`` would refuse and which would read in a manifest dump
+    as if an identity had been assigned.
+    """
+    assert _injected_names(telemetry_slot=2, telemetry_slot_max=4) == kube_staging.JOB_ENV_CODE_INJECTED
+    assert _injected_names() == kube_staging.JOB_ENV_CODE_INJECTED_ALWAYS
 
     # `env` wins over `envFrom` of the same name, so an overlap would be an operator key that
     # silently does nothing -- the confusing-dead-weight case docs/k8s-burst.md §6 warns about.
     assert not kube_staging.JOB_ENV_CODE_INJECTED & (_documented_configmap_keys() | _documented_secret_keys())
+
+
+def test_the_telemetry_slot_is_code_injected_and_never_operator_supplied() -> None:
+    """ACCEPTANCE 3. The slot pair is in the code-injected column, and could not be in any other.
+
+    This is not a naming preference. ``PHAZE_TELEMETRY_SLOT``'s entire job is to differ between pods
+    that run CONCURRENTLY, and the agent-env ConfigMap and the token Secret are objects every burst
+    pod in the namespace shares -- a value there would give every pod the same slot, which IS the
+    defect ADR-0017 section 8 measured (an ``increase()`` 84.4% above the truth). So the key is
+    asserted to be code-injected, asserted to be absent from both documented operator objects, and
+    asserted to be per-submit: two manifests built with different slots differ in that value.
+    """
+    assert kube_staging.JOB_ENV_CODE_INJECTED_TELEMETRY <= kube_staging.JOB_ENV_CODE_INJECTED
+    assert kube_staging.JOB_ENV_CODE_INJECTED_TELEMETRY.isdisjoint(_documented_configmap_keys())
+    assert kube_staging.JOB_ENV_CODE_INJECTED_TELEMETRY.isdisjoint(_documented_secret_keys())
+    # The pair is exactly the two keys the pod's own validator reads -- named from the slots module
+    # rather than restated, so a rename cannot leave this test agreeing with itself.
+    assert {slots.SLOT_ENV, slots.SLOT_MAX_ENV} == kube_staging.JOB_ENV_CODE_INJECTED_TELEMETRY
+
+    def _env(slot: int) -> dict[str, str]:
+        manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(), telemetry_slot=slot, telemetry_slot_max=4)
+        return {entry["name"]: entry["value"] for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    assert _env(0)[slots.SLOT_ENV] == "0"
+    assert _env(3)[slots.SLOT_ENV] == "3"
+
+
+def test_a_slot_without_its_bound_is_not_emitted_at_all() -> None:
+    """Both keys or neither: a slot whose bound is missing would be REFUSED by the pod.
+
+    ``slots.resolve_slot`` validates the slot against ``slots.slot_max``, which falls back to
+    :data:`slots.DEFAULT_SLOT_MAX` (4) when the bound is absent. Emitting slot 5 of a six-slot pool
+    without its bound is therefore a slot the pod logs ``telemetry_slot_out_of_range`` for and
+    discards -- the measured host-lane defect that cost two of six children their identity. Emitting
+    nothing is the honest form of the same outcome.
+    """
+    assert _injected_names(telemetry_slot=2) == kube_staging.JOB_ENV_CODE_INJECTED_ALWAYS
+    assert _injected_names(telemetry_slot_max=4) == kube_staging.JOB_ENV_CODE_INJECTED_ALWAYS
+
+
+def test_an_injected_slot_survives_the_pod_all_the_way_to_the_identity() -> None:
+    """The manifest's env, replayed through the pod's OWN chain, yields the bounded identity.
+
+    ADR-0012 rule 3: the artifact's real consumer is not ``build_job_manifest``. It is
+    ``slots.assign`` (which the pod calls around its analysis child) followed by
+    ``bootstrap._instance_id``. A manifest carrying a correct slot that the pod then overwrites with
+    its own local 0 is the failure this test exists to catch, and it is the failure ADR-0017
+    section 8d predicted for exactly this design.
+    """
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(), telemetry_slot=3, telemetry_slot_max=4)
+    injected = {entry["name"]: entry["value"] for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    slots._reset_for_tests()
+    environ, taken = slots.assign(dict(injected))
+    assert taken is None
+    assert bootstrap._instance_id("phaze-analysis", environ) == "phaze-analysis-3"
 
 
 # The real consumer: what the pod's own startup does with that env

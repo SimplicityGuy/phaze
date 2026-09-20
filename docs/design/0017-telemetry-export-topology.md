@@ -353,6 +353,28 @@ The multiplier follows `worker_process_pool_size` rather than being a second cop
 semaphore, and `test_the_default_bound_matches_the_worker_pool_default` fails the build if the
 two defaults drift.
 
+**The BURST lane's multiplier is the same quantity read off a different knob (`phaze-w15ju`).** Its
+concurrency is not `worker_process_pool_size` — no process bounds it — but the per-backend
+in-flight `cap` the controller already enforces from the `cloud_job` rows, so the bound is
+`burst_telemetry_slots.burst_slot_bound` = **the sum of the configured kueue backends' `cap`
+values**. The sum, not one backend's cap, because the identity space is global: two clusters' pods
+both reporting `phaze-analysis-2` merge at a shared collector exactly as two pods in one cluster
+would, and nothing in phaze's configuration establishes that distinct kueue backends push to
+distinct collectors (the endpoint comes from the operator's own ConfigMap). In the deployed
+single-cluster configuration the sum **is** that backend's own cap, so the table above is unchanged
+at cap 4: **9,160** for the analysis block, **15,457** for the catalogue ceiling.
+
+**Two lanes, ONE slot space.** Both append their index to the same base, and both count from 0, so
+the host lane's identities are *reused* by burst pods rather than added to them: the analysis block
+is `2,290 x max(worker_process_pool_size, Σ kueue caps)`, which is `2,290 x 4` at the deployed
+configuration. Not a sum — writing it as one would over-state the ceiling by 9,160 series. **No term
+in it is the corpus**, which is the property the whole scheme exists for; raising `worker_process_pool_size`
+or a `cap` past the other costs 2,290 per index and nothing else.
+
+That reuse is what keeps the ceiling flat, and it is also a residual: it is **not** a claim that the
+two lanes never run concurrently, and when they do, a host child and a burst pod on the same index
+merge. §8d states it and it is filed as its own bead.
+
 **Dashboards and alert rules are unchanged, and that was checked rather than assumed.** Every
 expression in `dashboards/*.json` and `alerts/phaze-alerts.yml` already wraps its selector in
 `sum(...)` or `sum by (<label>)(...)`; summing after `rate` is the canonical Prometheus
@@ -391,27 +413,75 @@ treatment of one series per producer. Measured: the per-slot arm's summed final 
   pod and the pods are still concurrent, and it would move per-file counters through the
   callback path — a far larger blast radius than a label.
 
-### 8d. What is NOT fixed, and why it is separate
+### 8d. The burst lane — CLOSED by `phaze-w15ju` (2026-09-16)
 
-**The burst lane still shares one identity.** The slot pool is process-local, which is exactly
-right for the host lane — concurrent children there are bounded by a single
-`asyncio.Semaphore(worker_process_pool_size)` in one agent-worker process, so a free list in
-that process sees every competitor. A burst-lane child runs in a **one-shot Kueue pod that is
-Postgres-less and shares no memory with its peers**, so nothing inside the pod can allocate
-against them. Its slot must be injected by the controller at submit time, which needs the
-in-flight slot set persisted (a `cloud_job` column and a migration) and a fourth code-injected
-key in the Job env contract (`kube_staging.JOB_ENV_CODE_INJECTED`).
+**This section previously said the burst lane still shared one identity. It no longer does.** The
+gap and its remedy are recorded here rather than deleted, because the remedy's shape is the
+interesting part and the trap it had to avoid is one this ADR predicted in writing.
 
-That is a schema change and a separate bead — **`phaze-w15ju`** — filed as such rather than
-bolted on here. **Until it lands, concurrent burst pods still exhibit §8a** — and an operator setting
-`PHAZE_TELEMETRY_INSTANCE` per host does not help, because all four pods share the host.
+**The gap.** The slot pool of §8b is process-local, which is exactly right for the host lane —
+concurrent children there are bounded by a single `asyncio.Semaphore(worker_process_pool_size)` in
+one agent-worker process, so a free list in that process sees every competitor. A burst-lane child
+runs in a **one-shot Kueue pod that is Postgres-less and shares no memory with its peers**, so
+nothing inside the pod could allocate against them. A burst pod runs `run_analysis_subprocess` too,
+so it built its own pool of one and its single child always took slot 0: every burst pod reported
+**`phaze-analysis-0`**, the same merge under a new name. That is why this could never be closed by
+observing that the identity "has a slot in it".
 
-**Be precise about what they now share, because the string changed and the defect did not.** A
-burst pod runs `run_analysis_subprocess` too, so it builds its own process-local pool and its
-single child always takes slot 0: every burst pod reports **`phaze-analysis-0`**, not
-`phaze-analysis`. That is the same merge under a new name — no better, and no worse. It is
-also why `phaze-w15ju` cannot be closed by observing that the identity "has a slot in it";
-the test it needs is that two CONCURRENT submissions get DIFFERENT slots.
+**What shipped.** The slot is allocated by the **controller at submit time** — the only seat that can
+see the other in-flight Jobs, and already the seat that enforces the per-backend cap from the same
+rows. `submit_cloud_job` calls `burst_telemetry_slots.allocate_slot`, which takes a transaction-scoped
+advisory lock, reads the slots held by other in-flight `cloud_job` rows, takes the lowest free index
+and **persists it on `cloud_job.telemetry_slot`** (migration `065`) before the POST.
+`kube_staging.build_job_manifest` then code-injects `PHAZE_TELEMETRY_SLOT` and
+`PHAZE_TELEMETRY_SLOT_MAX` into the container `env` — the fourth and fifth code-injected keys, now
+enumerated in `JOB_ENV_CODE_INJECTED` and asserted disjoint from both documented operator objects by
+`test_the_telemetry_slot_is_code_injected_and_never_operator_supplied`.
+
+- **Persistence is not bookkeeping convenience.** A controller restarted between two submits would
+  otherwise allocate from an empty view and hand the second pod a slot the first is still exporting
+  under.
+- **Release is DERIVED from `status`, so nothing releases a slot.** Occupancy is "the slots on other
+  `cloud_job` rows whose status is in `backends.base.IN_FLIGHT`", so a row that goes
+  succeeded/failed — or is spilled back to `'awaiting'` by the reconcile cron or by
+  `KueueBackend._reap_stranded_staging` — frees its slot at that instant. **That is what makes a
+  crashed, evicted or node-lost pod safe**: the same tick that terminalizes its row frees its slot,
+  and a leaked slot cannot permanently shrink the pool. An explicit persisted free list could not
+  have this property; every terminal writer in the lane would need a release call, and the one that
+  was missed would shrink the pool for good.
+- **Exhaustion degrades, it does not fail.** Past the cap, no telemetry key is emitted at all and
+  the manifest is byte-identical to the pre-`phaze-w15ju` form; the pod falls back to its own pool
+  and reports `phaze-analysis-0`, i.e. the pre-fix merge. Instrumentation may never fail the work it
+  observes, and of the two failure directions only this one is recoverable.
+
+**THE TRAP THIS ADR PREDICTED, AND WHY A MANIFEST ASSERTION WOULD NOT HAVE CAUGHT IT.** Injecting the
+env is necessary and was **not** sufficient. The pod's own `slots.assign` would have acquired its
+local index 0 and **overwritten the controller's slot on the way to the child** — every burst pod
+back on `phaze-analysis-0`, behind a manifest that looked entirely correct. So `assign` now passes an
+inherited, valid slot through untouched and allocates nothing, on the rule that *whoever bounds the
+concurrency owns the slot*; `test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities`
+drives the manifest env through `assign` and `bootstrap._instance_id` rather than asserting on the
+manifest, and it fails against the un-passed-through version (verified by reverting the branch).
+That pass-through created a second hazard in the host lane, where an operator-set
+`PHAZE_TELEMETRY_SLOT` would now reach all four children: `agent_worker.startup` therefore calls
+`slots.disown_inherited_slot`, logging the discard rather than ignoring it.
+
+**The real-collector demonstration was NOT repeated for this change and did not need to be.**
+`phaze-21nnf` measured the collector's behaviour under one and many identities (§8a, and the
+per-slot arm's exact 330-against-330); that finding is about the collector and is unchanged by where
+the slot is allocated. What `phaze-w15ju` had to establish is that two concurrent burst submissions
+reach their pods with different bounded slots, which is a property of phaze's own code and is
+asserted by the tests above against a real Postgres.
+
+**THE RESIDUAL, which is a NEW finding and not part of this bead's scope.** The two lanes share one
+slot space and one default base. A host-lane child holding slot 1 and a burst pod holding slot 1 both
+report `phaze-analysis-1` and merge, and the lanes **can** run concurrently — `select_backend` routes
+per file, so a local dispatch and a kueue dispatch can be in flight at the same time. An operator who
+has followed `telemetry/exporter.md` §3 and set `PHAZE_TELEMETRY_INSTANCE` to a host role on the
+agent host does not have this: that host's children become `host-compute-1` while the pods stay
+`phaze-analysis-1`. So the residual is real but conditional on the base being unset, and closing it
+is a decision about what a burst pod's base should be — an operator-facing question, not a corollary
+of this one. Filed separately as **`phaze-7nl67`**; it is deliberately **not** fixed here.
 
 ### 8e. Blast radius
 
@@ -424,3 +494,23 @@ resolve to the unchanged base, so their identity is byte-identical to before.
 `test_concurrent_producers_get_distinct_bounded_identities` and
 `test_concurrent_children_get_distinct_telemetry_identities` prove the analysis role's new
 behaviour; both fail against the old default, which was verified by reverting it.
+
+**`phaze-w15ju`'s own blast radius, measured rather than adjectival.** It changes the submit path for
+**every file routed to a kueue backend** — in code, every file for which `select_backend` returns a
+`kueue` entry, which is `cloud_job` rows with `backend_id` naming that entry; at the deployed
+`cap = 4` at most **4 of them are in flight at once**, out of the 11,428-file corpus, and the path is
+`submit_cloud_job` -> `kube_staging.submit_job` -> `build_job_manifest`. The HOST lane's submit path
+is untouched; `run_analysis_subprocess` is shared and gains one branch.
+
+What currently works that this could break, and the test for each:
+
+| what could break | the test |
+| --- | --- |
+| the Job manifest, for a submit with no slot (exhausted pool) | `test_the_code_injected_env_is_exactly_the_contract_says_it_is` — the no-slot manifest is byte-identical to the pre-change form |
+| the submit itself, if allocation raised or blocked | `test_an_exhausted_pool_still_submits_the_job_without_a_slot` — every file still POSTs |
+| the HOST lane's four distinct identities, via `assign`'s new pass-through | `test_a_process_that_allocates_its_own_slots_disowns_an_inherited_one`, plus the unchanged `test_concurrent_children_get_distinct_telemetry_identities` |
+| the lane's in-flight accounting, if the new column confused a status writer | the whole `tests/analyze/tasks/test_submit_cloud_job.py` suite, which asserts the upsert/CAS behaviour unchanged |
+| the schema, on an existing database | migration `065` is one nullable column plus a CHECK; `tests/integration/test_migrations/` round-trips upgrade and downgrade and the autogenerate drift set is unchanged |
+
+The one thing it does **not** change is the identity of any role with no slot (api, controller, agent,
+watcher) or of the host lane's children, whose strings are byte-identical to before.
