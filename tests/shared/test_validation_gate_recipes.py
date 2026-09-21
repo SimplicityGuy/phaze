@@ -203,6 +203,17 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
     assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
 
 
+def test_branch_gate_writes_a_separate_scoped_branch_report() -> None:
+    """Branch-check collects its own selected-test evidence without changing the fast gate."""
+    step = _dry_run("branch-check")
+    assert "just _test-branch-scoped" in step
+    scoped = _dry_run("_test-branch-scoped")
+    assert "COVERAGE_FILE=.coverage.fast uv run pytest" in scoped
+    assert "--cov-fail-under=0" in scoped
+    assert "scripts/write_fast_coverage.py" in scoped
+    assert "--cov-report=json" not in scoped
+
+
 #
 # Question as put to the operator during phaze-bk9el.21, 2026-08-21: what should this epic do about
 # branch coverage being off? Answer as given (selected option label, verbatim): "Enable it, gate the

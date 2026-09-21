@@ -83,6 +83,7 @@ import sys
 
 
 DEFAULT_COVERAGE = "coverage.json"
+SCOPED_COVERAGE = ".fast-coverage.json"
 DEFAULT_BASELINE = ".coverage-baseline.json"
 # Only source files can regress a bead's branch coverage; tests are excluded from the coverage
 # report anyway (`omit = ["tests/*"]`), so a touched test file simply never appears here.
@@ -234,7 +235,7 @@ def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-bead branch-coverage regression check.")
-    parser.add_argument("--coverage", default=DEFAULT_COVERAGE, help="coverage json report to read")
+    parser.add_argument("--coverage", help="coverage json report to read (default: selected report when present, otherwise full report)")
     parser.add_argument("--baseline", default=DEFAULT_BASELINE, help="recorded baseline to compare against")
     parser.add_argument("--base-ref", default="main", help="ref the touched-file set is diffed against")
     parser.add_argument("--file", action="append", default=[], help="check this file instead of the git-derived set (repeatable)")
@@ -246,15 +247,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    data = load_coverage(Path(args.coverage))
+    checked = args.file or touched_files(args.base_ref)
+    if not args.write_baseline and not checked:
+        print(f"✅ No tracked {TRACKED_PREFIX}*.py files changed against '{args.base_ref}' — nothing to check.")  # noqa: T201
+        return 0
+
+    # An explicit --coverage remains authoritative (including for baseline writes). The selected
+    # artifact wins over a possibly stale full report only on the ordinary per-bead path.
+    report_path = Path(args.coverage or (SCOPED_COVERAGE if not args.write_baseline and Path(SCOPED_COVERAGE).exists() else DEFAULT_COVERAGE))
+    data = load_coverage(report_path)
     if args.write_baseline:
         return write_baseline(data, Path(args.baseline), args.base_ref)
 
     files = _files_of(data)
-    checked = args.file or touched_files(args.base_ref)
-    if not checked:
-        print(f"✅ No tracked {TRACKED_PREFIX}*.py files changed against '{args.base_ref}' — nothing to check.")  # noqa: T201
-        return 0
+    scope = data.get("_phaze_scope")
+    scoped = isinstance(scope, dict) and scope.get("kind") == "selected-tests"
+    if isinstance(scope, dict) and scoped and (scope.get("head") != _git("rev-parse", "HEAD").strip() or _git("status", "--porcelain").strip()):
+        print(f"❌ {report_path} belongs to a different or now-dirty checkout; rerun `just check-fast`.")  # noqa: T201
+        return 2
 
     baseline_path = Path(args.baseline)
     baseline: dict[str, dict[str, float]] = {}
@@ -274,13 +284,27 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Branch coverage for the {len(checked)} tracked file(s) this bead touched (base-ref '{args.base_ref}'):")  # noqa: T201
     regressions: list[str] = []
+    unjudgeable: list[str] = []
     for path in checked:
         info = files.get(path)
         if info is None:
-            print(f"   ―― {path}: not present in the coverage report (deleted, renamed, or never imported)")  # noqa: T201
+            if scoped:
+                unjudgeable.append(path)
+                print(f"   ❌ {path}: absent from selected-test coverage; cannot judge against the full-suite baseline")  # noqa: T201
+            else:
+                print(f"   ―― {path}: not present in the coverage report (deleted, renamed, or never imported)")  # noqa: T201
             continue
-        current = branch_percent(_summary_of(info))
+        summary = _summary_of(info)
+        if scoped and summary.get("num_statements", 0) and not summary.get("covered_lines", 0):
+            unjudgeable.append(path)
+            print(f"   ❌ {path}: selected tests executed no lines; cannot judge this touched file")  # noqa: T201
+            continue
+        current = branch_percent(summary)
         if current is None:
+            if scoped and baseline.get(path, {}).get("num_branches", 0):
+                unjudgeable.append(path)
+                print(f"   ❌ {path}: selected tests measured no branches; cannot judge against the full-suite baseline")  # noqa: T201
+                continue
             print(f"   ―― {path}: no branches to measure")  # noqa: T201
             continue
         before = baseline.get(path, {}).get("percent_branches_covered") if have_baseline else None
@@ -294,11 +318,21 @@ def main(argv: list[str] | None = None) -> int:
         # Float equality is the wrong test on two percentages computed from different runs; a
         # hundredth of a point is below the reporting precision and is not a regression.
         if delta < -0.005:
-            regressions.append(path)
-            print(f"   ❌ {path}: {current:6.2f}% vs baseline {float(before):6.2f}%  ({delta:+.2f}) — {detail}")  # noqa: T201
+            if scoped:
+                unjudgeable.append(path)
+                print(  # noqa: T201
+                    f"   ❌ {path}: selected tests covered {current:6.2f}% vs full baseline {float(before):6.2f}%; cannot judge a regression — {detail}"
+                )
+            else:
+                regressions.append(path)
+                print(f"   ❌ {path}: {current:6.2f}% vs baseline {float(before):6.2f}%  ({delta:+.2f}) — {detail}")  # noqa: T201
         else:
             print(f"   ✅ {path}: {current:6.2f}% vs baseline {float(before):6.2f}%  ({delta:+.2f}) — {detail}")  # noqa: T201
 
+    if unjudgeable:
+        print(f"\n❌ {len(unjudgeable)} touched file(s) cannot be judged from selected tests: {', '.join(unjudgeable)}")  # noqa: T201
+        print("   Run the full suite for a complete branch comparison.")  # noqa: T201
+        return 2
     if regressions:
         print(f"\n❌ {len(regressions)} file(s) lowered branch coverage against the baseline: {', '.join(regressions)}")  # noqa: T201
         print("   Cover the branch lines listed above, or say in the bead why the branch is unreachable.")  # noqa: T201
