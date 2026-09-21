@@ -14,11 +14,10 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 
 Wire-format conversion (D-26):
 - ``analyze_file`` returns ``mood``/``style`` as strings (dominant label).
-- ``AnalysisWritePayload`` requires ``mood``/``style`` as ``dict[str, float]``.
-- We rebuild the dicts from ``analysis["features"]`` so the wire contract is
-  honored end-to-end: ``mood`` averages each ``mood_*`` set's positive-class
-  prediction across the 3 variants; ``style`` takes the genre predictions
-  returned by the discogs effnet model.
+- ``AnalysisWritePayload.mood`` carries ``dict[str, float]`` rebuilt from the
+  positive-class predictions across the 3 variants.
+- ``style`` carries a ranked array of duration-weighted genre scores from coarse
+  windows; ``dominant_style`` carries ``analyze_file``'s aggregate label.
 """
 
 from __future__ import annotations
@@ -35,10 +34,10 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload
+from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
-from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
+from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
 from phaze.services.video_audio import AudioExtractionError, NoAudioTrackError, extract_audio_track
 
@@ -451,7 +450,10 @@ def _analysis_reports_zero_natural_windows(fine_total: int | None, coarse_total:
 def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
     """Build the wire payload from the ``analyze_file`` result dict (D-26, CR-01).
 
-    ``mood``/``style`` are rebuilt from ``analysis["features"]`` (see module docstring);
+    ``mood`` is rebuilt from ``analysis["features"]``; ``style`` is a ranked
+    duration-weighted score array from coarse windows, with the top-level genre
+    features used only when those windows are missing (phaze-z66hq). The separate
+    ``dominant_style`` preserves ``analyze_file``'s aggregate category;
     ``windows`` is built from the plain per-window dicts (Phase 31 ANL-01) -- NO ORM/database
     import (D-25 import boundary; tests/shared/core/test_task_split.py). ``exclude_unset`` on the
     resulting model preserves partial-PUT semantics for absent keys (phaze-w55w1 dropped the
@@ -463,13 +465,20 @@ def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
     result = analysis if isinstance(analysis, dict) else {}
     features = result.get("features", {})
     mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
-    style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
-    windows = [AnalysisWindowPayload(**w) for w in result.get("windows", [])]
+    raw_windows = result.get("windows", [])
+    windows = [AnalysisWindowPayload(**w) for w in raw_windows]
+    style_rows = aggregate_style_scores(raw_windows)
+    if not style_rows and isinstance(features, dict):
+        fallback = _features_to_style_dict(features) or {}
+        style_rows = [{"name": name, "score": score} for name, score in sorted(fallback.items(), key=lambda item: (-item[1], item[0]))]
+    style_scores = [StyleScore(**row) for row in style_rows] if style_rows else None
+    dominant_style = result.get("style")
     return AnalysisWritePayload(
         bpm=result.get("bpm"),
         musical_key=result.get("musical_key"),
         mood=mood_dict,
-        style=style_dict,
+        style=style_scores,
+        dominant_style=dominant_style if isinstance(dominant_style, str) else None,
         danceability=result.get("danceability"),
         energy=result.get("energy"),
         fine_windows_analyzed=result.get("fine_windows_analyzed"),

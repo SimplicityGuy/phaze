@@ -63,7 +63,7 @@ def _make_analysis(file_id: uuid.UUID | None = None) -> MagicMock:
     analysis.bpm = 128.0
     analysis.musical_key = "Am"
     analysis.mood = "dark"
-    analysis.style = "techno"
+    analysis.dominant_style = "techno"
     analysis.features = {"energy": 0.85}
     return analysis
 

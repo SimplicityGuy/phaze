@@ -141,6 +141,7 @@ _EXPECTED_PARTIAL_INDEXES = frozenset(
 
 _EXPECTED_GIN_INDEXES = frozenset(
     {
+        "ix_analysis_style_gin",
         "ix_files_search_vector",
         "ix_files_filename_trgm",
         "ix_metadata_search_vector",
@@ -280,7 +281,9 @@ def test_baseline_is_the_only_migration() -> None:
     ADR-0017 (telemetry export topology) section 8); 066 (phaze-6r3eh) drops
     analysis_window.camelot again -- the inverse of
     063's half of that column, since it is a pure lookup of the same row's musical_key and became
-    a read-time AnalysisWindow.camelot property instead (operator decision 2026-09-16).
+    a read-time AnalysisWindow.camelot property instead (operator decision 2026-09-16);
+    067 (phaze-z66hq) restores file-level ranked style scores in JSONB and a separate
+    duration-modal category label from stored coarse windows.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -313,6 +316,7 @@ def test_baseline_is_the_only_migration() -> None:
         "064_orphan_companion_diagnostics.py",
         "065_cloud_job_telemetry_slot.py",
         "066_drop_analysis_window_camelot.py",
+        "067_backfill_dominant_style.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -341,10 +345,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (066: drop camelot)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (067: ranked style)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "066"
+    assert version == "067"
 
 
 @pytest.mark.asyncio
@@ -670,7 +674,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "066"
+        assert version == "067"
     finally:
         if engine is not None:
             await engine.dispose()

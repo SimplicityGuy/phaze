@@ -67,7 +67,7 @@ async def _seed_query_file_and_neighbours(session: AsyncSession, count: int) -> 
     await session.commit()
     for record in (query, *neighbours):
         session.add(SetProfile(file_id=record.id, mean_vector=list(_VECTOR), arc=list(_ARC), camelot_modal="8A", glyph=_GLYPH))
-        session.add(AnalysisResult(id=uuid.uuid4(), file_id=record.id, bpm=128.0, style="techno", mood="energetic"))
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=record.id, bpm=128.0, dominant_style="techno", mood="energetic"))
     await session.commit()
     return query
 

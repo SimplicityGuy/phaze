@@ -21,7 +21,10 @@ class AnalysisResult(TimestampMixin, Base):
     bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
     musical_key: Mapped[str | None] = mapped_column(String(10), nullable=True)
     mood: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    style: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Queryable ranked file-level genre scores. Entries have {name, score} wire shape.
+    style: Mapped[list[dict[str, str | float]] | None] = mapped_column(JSONB, nullable=True)
+    # Duration-modal top label from coarse windows; grouping/similarity use this discrete category.
+    dominant_style: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Windowed-analysis progress counts (migration 021; `sampled` dropped by migration 060,
     # phaze-w55w1). All nullable: pre-43 rows and empty-body PUTs leave them NULL. These are
@@ -59,6 +62,7 @@ class AnalysisResult(TimestampMixin, Base):
     # migration 058 creates -- the ORM half of the empty-autogenerate-diff contract, same convention as
     # the two indexes above.
     __table_args__ = (
+        Index("ix_analysis_style_gin", "style", postgresql_using="gin", postgresql_ops={"style": "jsonb_path_ops"}),
         Index("ix_analysis_completed", "file_id", postgresql_where=text("analysis_completed_at IS NOT NULL")),
         Index("ix_analysis_failed", "file_id", postgresql_where=text("failed_at IS NOT NULL")),
         Index("ix_analysis_completed_at_when", "analysis_completed_at", postgresql_where=text("analysis_completed_at IS NOT NULL")),

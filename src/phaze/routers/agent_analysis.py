@@ -4,13 +4,10 @@ Mirrors `agent_metadata.py` exactly: `pg_insert` + `on_conflict_do_update` with
 `exclude_unset` semantics (Phase 25 CR-01 fix). Natural key:
 `AnalysisResult.file_id` (unique=True per models/analysis.py:19).
 
-Storage representation: `AnalysisResult.mood` and `.style` are `String(50)`
-columns (Phase 5 schema). D-26's wire format is `dict[str, float]`. The handler
-converts each incoming dict to a "key1=score1,key2=score2,key3=score3" summary
-string bounded at 50 chars (top-3 highest-score keys, deterministic alphabetical
-tiebreak on equal scores). This avoids an Alembic migration in Phase 26 while
-preserving enough information for downstream displays. A future migration to
-JSONB columns is deferred.
+Storage representation: `AnalysisResult.mood` is a `String(50)` summary.
+`AnalysisResult.style` is a JSONB array of typed name/score objects, while
+`dominant_style` is a `String(50)` duration-modal label. An old agent's score
+dict is converted to the ranked array during a rolling upgrade (phaze-z66hq).
 
 Overflow funnel: D-26's wire schema also includes `danceability` and `energy`
 fields that have no dedicated column on `AnalysisResult` yet. The handler
@@ -66,6 +63,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisFailureResponse,
     AnalysisProgressPayload,
     AnalysisProgressResponse,
+    AnalysisWindowPayload,
     AnalysisWritePayload,
     AnalysisWriteResponse,
 )
@@ -104,6 +102,7 @@ _ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset(
         "musical_key",
         "mood",
         "style",
+        "dominant_style",
         "fingerprint",
         "features",
         # Windowed-analysis progress counts -- dedicated columns (migration 021),
@@ -122,7 +121,7 @@ def _summarize_dict_to_string(value: dict[str, float]) -> str:
     Sort order: primary by ``-score`` (descending), secondary by ``key``
     (ascending alphabetical) for deterministic tiebreak when scores are equal
     (W6 invariant -- verified by `test_summarize_dict_to_string`). Hard 50-char
-    cap matches the existing `AnalysisResult.mood/style` `String(50)` columns.
+    cap matches the existing `AnalysisResult.mood` `String(50)` column.
     """
     items = sorted(value.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
     summary = ",".join(f"{k}={v:.2f}" for k, v in items)
@@ -326,31 +325,48 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
                     )
 
 
+def _dominant_from_windows(windows: list[AnalysisWindowPayload]) -> str | None:
+    """Reconstruct the duration-modal style for callbacks from older agents."""
+    weights: dict[str, float] = {}
+    for window in sorted(windows, key=lambda item: item.window_index):
+        if window.tier == "coarse" and window.style:
+            weights[window.style] = weights.get(window.style, 0.0) + (window.end_sec - window.start_sec)
+    return max(weights, key=lambda name: weights[name]) if weights else None
+
+
 def _fold_wire_fields(dumped: dict[str, Any]) -> None:
     """Fold the wire payload into this model's columns, in place.
 
     Two boundary conversions that must both happen before the upsert is built, and that the
     metadata sibling performs identically:
 
-    - ``mood``/``style`` arrive as ``dict[str, float]`` from essentia but are ``String(50)``
-      columns, so they collapse to a bounded "k=v,k=v" summary.
+    - ``mood`` scores collapse to a bounded "k=v,k=v" summary. A legacy ``style``
+      dict or string becomes the typed ranked array used by the new JSONB column.
     - Any wire field without a dedicated column funnels into the ``features`` JSONB. D-26's wire
       schema includes ``danceability``/``energy`` (and future-proofs additions) while the model
-      only has bpm/musical_key/mood/style columns; the funnel keeps the wire contract intact
+      only has bpm/musical_key/mood/style/dominant_style columns; the funnel keeps the wire contract intact
       without a migration, and merges rather than clobbers ``features`` the caller set itself.
     """
-    # Storage conversion at the boundary: AnalysisResult.mood/.style are String(50).
-    # Wire format from essentia is dict[str, float]; we serialize to a "k=v,k=v"
-    # summary bounded at 50 chars. The conversion stays inside ``dumped`` so the
-    # rest of the upsert pipeline is identical to agent_metadata.py.
-    for field in ("mood", "style"):
-        raw = dumped.get(field)
-        if isinstance(raw, dict):
-            dumped[field] = _summarize_dict_to_string(raw)
+    # Storage conversion stays inside ``dumped`` so the rest of the upsert pipeline
+    # remains identical to agent_metadata.py.
+    raw_mood = dumped.get("mood")
+    if isinstance(raw_mood, dict):
+        dumped["mood"] = _summarize_dict_to_string(raw_mood)
+    raw_style = dumped.get("style")
+    if isinstance(raw_style, dict):
+        ranked = sorted(raw_style.items(), key=lambda item: (-item[1], item[0]))
+        dumped["style"] = [{"name": name, "score": score} for name, score in ranked]
+        if ranked and "dominant_style" not in dumped:
+            dumped["dominant_style"] = ranked[0][0]
+    elif isinstance(raw_style, str):
+        dumped["style"] = [{"name": raw_style, "score": 1.0}]
+        dumped.setdefault("dominant_style", raw_style)
+    elif isinstance(raw_style, list) and raw_style and "dominant_style" not in dumped:
+        dumped["dominant_style"] = raw_style[0]["name"]
 
     # Funnel any wire-format fields without a dedicated column into `features` JSONB.
     # D-26's wire schema includes `danceability`/`energy` (and future-proofs additions);
-    # the model currently only has columns for bpm/musical_key/mood/style. The funnel
+    # the model currently only has columns for bpm/musical_key/mood/style/dominant_style. The funnel
     # keeps the wire contract intact without requiring a migration this phase.
     overflow = {k: dumped.pop(k) for k in list(dumped) if k not in _ANALYSIS_COLUMN_FIELDS}
     if overflow:
@@ -376,10 +392,9 @@ async def put_analysis(
     already on the row. `agent_id` comes from the auth dep, NEVER from body
     (AUTH-01); `extra='forbid'` on the payload returns 422 on attempted forgery.
 
-    Storage conversion: incoming ``mood`` and ``style`` dicts are reduced to a
-    bounded summary string before storage (see `_summarize_dict_to_string`),
-    because the existing columns are ``String(50)``. Future migration to JSONB
-    will lift this constraint without changing the wire contract.
+    Storage conversion: incoming ``mood`` scores become a bounded summary;
+    a legacy ``style`` dict becomes a ranked array. ``dominant_style`` retains
+    the separate duration-modal category label.
 
     Empty-body PUT (``{}``) is a no-op against an existing row: the INSERT path
     falls back to ``ON CONFLICT DO NOTHING`` (Postgres rejects an empty SET
@@ -394,6 +409,11 @@ async def put_analysis(
     # guarded on `body.windows is not None` (partial-PUT). The bool of an empty list is
     # falsy, so read the field off `body` directly to distinguish [] from None.
     dumped.pop("windows", None)
+
+    if "dominant_style" not in dumped and body.windows:
+        dominant = _dominant_from_windows(body.windows)
+        if dominant is not None:
+            dumped["dominant_style"] = dominant
 
     _fold_wire_fields(dumped)
 

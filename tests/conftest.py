@@ -989,7 +989,7 @@ def seed_file_with_windows(session: AsyncSession, make_file):  # type: ignore[no
             bpm=128.0,
             musical_key="Am",
             mood="energetic",
-            style="techno",
+            dominant_style="techno",
             fine_windows_analyzed=fine_count,
             fine_windows_total=fine_count,
             coarse_windows_analyzed=coarse_count,

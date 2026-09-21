@@ -15,8 +15,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `scan_batches`        | Scan operation progress and status (`ScanStatus`)                     |
 | `orphan_companion_diagnostics` | Metadata-only accepted companion paths skipped because their directory had no media; owned by a scan batch |
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
-| `analysis`            | BPM, key, mood, style results (1:1 with `files`)                       |
-| `analysis_window`     | Per-window time series plus nullable energy/Camelot/mood projection columns (1:many with `files`, `ON DELETE CASCADE`) |
+| `analysis`            | BPM, key, mood, ranked style scores and dominant style (1:1 with `files`) |
+| `analysis_window`     | Per-window time series plus nullable energy and mood score projections (1:many with `files`, `ON DELETE CASCADE`) |
 | `set_profile`         | Whole-set projection (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
@@ -48,6 +48,28 @@ the *existing* queued backlog that the `before_enqueue` hook can only stamp on n
 `saq_jobs` has no `function` column (the name lives inside the serialized `job` BYTEA blob),
 those helpers filter on the Phase-35 deterministic key prefix `key LIKE '<function>:%'`, always
 guarded by `status = 'queued'`.
+
+### Style queries
+
+`analysis.style` is a JSONB array of `{ "name": string, "score": number }` objects,
+ranked by descending score. The scores are duration-weighted averages over coarse
+analysis windows. A GIN index supports containment queries for any predicted style;
+filter the matching object's score when a minimum is needed:
+
+```sql
+SELECT file_id
+FROM analysis
+WHERE style @> '[{"name":"Electronic/Psy-Trance"}]'::jsonb
+  AND EXISTS (
+    SELECT 1 FROM jsonb_array_elements(style) AS candidate
+    WHERE candidate->>'name' = 'Electronic/Psy-Trance'
+      AND (candidate->>'score')::double precision >= 0.6
+  );
+```
+
+`analysis.dominant_style` is the separate duration-modal coarse-window label,
+with a B-tree index for category filters and grouping. It can differ from the
+highest averaged score; record views and similarity use that single label.
 
 ### Entity relationships
 
@@ -223,10 +245,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-066)
+### Post-baseline chain (040-067)
 
-`alembic/versions/` holds **28** files: the `039` baseline plus a linear chain to the current
-head, **`066`**.
+`alembic/versions/` holds **29** files: the `039` baseline plus a linear chain to the current
+head, **`067`**.
 
 | Rev | Change |
 |-----|--------|
@@ -256,7 +278,8 @@ head, **`066`**.
 | `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table |
 | `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics |
 | `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) |
-| `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) — **head** |
+| `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) |
+| `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

@@ -405,11 +405,11 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
     ar = AnalysisResult(
         file_id=uuid.uuid4(),
         mood=result["mood"],
-        style=result["style"],
+        dominant_style=result["style"],
         features=result["features"],
     )
     assert isinstance(ar.mood, str) and len(ar.mood) > 0
-    assert isinstance(ar.style, str) and len(ar.style) > 0
+    assert isinstance(ar.dominant_style, str) and len(ar.dominant_style) > 0
     # features is a dict with all 11 model set names plus genre
     assert isinstance(ar.features, dict)
     assert "genre" in ar.features
