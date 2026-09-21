@@ -545,6 +545,7 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     awaiting row (D-13 keeps the flip; D-14 reaps the row at the analyze-terminal seam) is
     analyze-in-flight, so it is excluded from BOTH the count and the drain candidate set.
     """
+    from phaze.models.stage_skip import StageSkip
     from phaze.services.pipeline import get_awaiting_cloud_count, get_cloud_staging_candidates
 
     # (1) A genuinely-parked awaiting file: awaiting row, no ledger, no analysis -> counted.
@@ -552,10 +553,16 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     # (2) A locally-dispatched long file: still carries its awaiting row (D-13) but is analyze-in-flight
     #     (a committed process_file:<id> ledger row) -> excluded from the count AND the drain.
     analyzing = _make_file()
-    session.add_all([parked, analyzing])
+    # (3) A force-skipped analyze file must be excluded by the count's marker set and by the
+    # drain's correlated marker. A metadata-only skip on the parked file must not affect analyze.
+    skipped = _make_file()
+    session.add_all([parked, analyzing, skipped])
     await session.commit()
     session.add(CloudJob(id=uuid.uuid4(), file_id=parked.id, status=CloudJobStatus.AWAITING.value))
     session.add(CloudJob(id=uuid.uuid4(), file_id=analyzing.id, status=CloudJobStatus.AWAITING.value))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=skipped.id, status=CloudJobStatus.AWAITING.value))
+    session.add(StageSkip(file_id=skipped.id, stage="analyze", reason="test analyze skip"))
+    session.add(StageSkip(file_id=parked.id, stage="metadata", reason="test metadata skip"))
     session.add(
         SchedulingLedger(key=f"process_file:{analyzing.id}", function="process_file", routing="agent", payload={"file_id": str(analyzing.id)})
     )

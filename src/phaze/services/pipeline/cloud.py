@@ -16,6 +16,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, _safe_count
 from phaze.services.stage_status import (
@@ -56,8 +57,17 @@ async def get_awaiting_cloud_count(session: AsyncSession) -> int:
         session,
         # INNER-join FileRecord so the correlated ``~exists(... file_id == FileRecord.id)`` clause builders
         # resolve (they reference FileRecord.id); cloud_job.file_id is unique, so the join is 1:1 and the
-        # COUNT matches the drain's candidate set exactly.
-        select(func.count(CloudJob.id)).select_from(CloudJob).join(FileRecord, FileRecord.id == CloudJob.file_id).where(awaiting_candidate_clause()),
+        # COUNT matches the drain's candidate set exactly. The skip membership subquery is hashed
+        # once here: production EXPLAIN showed the default correlated predicate probing stage_skip
+        # once for each of 6,847 awaiting rows on every 5s poll. A LEFT JOIN still chose 5,137
+        # probes; this membership form chose one. Both IDs are NOT NULL, so membership has the same
+        # truth value as marker existence. The drain keeps its default predicate for the bounded page.
+        select(func.count(CloudJob.id))
+        .select_from(CloudJob)
+        .join(FileRecord, FileRecord.id == CloudJob.file_id)
+        .where(
+            awaiting_candidate_clause(skipped_override=FileRecord.id.in_(select(StageSkip.file_id).where(StageSkip.stage == Stage.ANALYZE.value)))
+        ),
         node="awaiting_cloud",
     )
 

@@ -298,7 +298,7 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     return inflight_for_function(func_name)
 
 
-def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
+def domain_completed_clause(stage: Stage, *, skipped_override: ColumnElement[bool] | None = None) -> ColumnElement[bool]:
     """SQL twin of :func:`phaze.enums.stage.domain_completed` -- has ``stage`` reached a DOMAIN-COMPLETE state?
 
     ``DONE`` and ``SKIPPED`` (D-08 force-skip marker) are always domain-complete; a ``FAILED`` stage
@@ -326,6 +326,9 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     incident class) while staying a green no-op for the drain/card (which already conjoin
     ``~inflight_clause`` separately in :func:`awaiting_candidate_clause`). This clause answers ONLY
     "has the domain reached a terminal state?" and must stay orthogonal to in-flight-ness.
+
+    A caller with an equivalent skip predicate may pass ``skipped_override``. The default
+    remains the canonical correlated existence predicate.
     """
     if stage not in FAILURE_IS_TERMINAL:
         # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
@@ -334,7 +337,7 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     # D-08: a force-skipped stage is ALWAYS domain-complete (recovery must never re-enqueue it), so
     # `skipped_clause` is an unconditional disjunct alongside `done_clause` (matching the Python twin's
     # `st in (DONE, SKIPPED)`). The terminal-failure disjunct stays gated on FAILURE_IS_TERMINAL.
-    disjuncts = [done_clause(stage), skipped_clause(stage)]
+    disjuncts = [done_clause(stage), skipped_override if skipped_override is not None else skipped_clause(stage)]
     if FAILURE_IS_TERMINAL[stage]:
         disjuncts.append(failed_clause(stage))
     return or_(*disjuncts)
@@ -386,7 +389,7 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
     return and_(*conjuncts)
 
 
-def awaiting_candidate_clause() -> ColumnElement[bool]:
+def awaiting_candidate_clause(*, skipped_override: ColumnElement[bool] | None = None) -> ColumnElement[bool]:
     """Return the single-source awaiting-cloud candidate predicate (D-08/D-09).
 
     A file is an awaiting-cloud candidate iff it carries a ``cloud_job(status='awaiting')`` sidecar
@@ -413,12 +416,13 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
 
     Callers MUST provide the ``CloudJob`` ⋈ ``FileRecord`` join (INNER, on
     ``CloudJob.file_id == FileRecord.id``) so the correlated ``~exists(... == FileRecord.id)`` inside
-    the composed builders resolves.
+    the composed builders resolves. The polled count may pass a hashed skip membership predicate as
+    ``skipped_override``; the drain keeps the default correlated predicate.
     """
     return and_(
         CloudJob.status == CloudJobStatus.AWAITING.value,
         ~inflight_clause(Stage.ANALYZE),
-        ~domain_completed_clause(Stage.ANALYZE),
+        ~domain_completed_clause(Stage.ANALYZE, skipped_override=skipped_override),
     )
 
 
