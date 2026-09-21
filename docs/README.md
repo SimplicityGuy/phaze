@@ -4,6 +4,10 @@
 
 This is the repository's documentation index. For the project overview, quick start, and technology stack, see the [main README](../README.md).
 
+The [Jev versus Essentia investigation](evaluations/jev-phaze/README.md) is a
+long-lived branch archive of prototype code and aggregate findings. It is not
+a proposed production integration.
+
 The documents listed below describe the current product and maintained developer contract. Dated
 design specifications, spikes, and most of the `.planning/` tree are historical evidence: retain
 their measurements and conclusions, but do not treat an old “current” label as the live backlog.
