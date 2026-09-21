@@ -11,6 +11,7 @@ minus the DB dependency this module's wrapper does not need to prove.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -132,12 +133,24 @@ async def test_run_reenqueue_incomplete_analyses_exits_nonzero_when_nothing_prod
     assert "summary: no_active_agent=1" in capsys.readouterr().out
 
 
-def test_main_backfill_dispatches_to_the_async_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``main(["backfill", "reenqueue-incomplete-analyses"])`` reaches the async runner and returns its exit code."""
-    monkeypatch.setattr(cli, "_run_reenqueue_incomplete_analyses", AsyncMock(return_value=0))
+@pytest.mark.parametrize(
+    ("args", "runner_name", "runner_kwargs"),
+    [
+        (["reenqueue-incomplete-analyses"], "_run_reenqueue_incomplete_analyses", {}),
+        (["set-projection"], "_run_backfill_set_projection", {}),
+        (["recover-stranded-analyses", "--enqueue"], "_run_recover_stranded_analyses", {"enqueue": True}),
+    ],
+)
+def test_main_backfill_dispatches_to_the_async_runner(
+    monkeypatch: pytest.MonkeyPatch, args: list[str], runner_name: str, runner_kwargs: dict[str, bool]
+) -> None:
+    """Each backfill subcommand reaches its own runner with the operator's flags."""
+    runner = AsyncMock(return_value=0)
+    monkeypatch.setattr(cli, runner_name, runner)
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
-    assert cli.main(["backfill", "reenqueue-incomplete-analyses"]) == 0
+    assert cli.main(["backfill", *args]) == 0
+    runner.assert_awaited_once_with(**runner_kwargs)
 
 
 def test_main_backfill_propagates_nonzero_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,3 +158,41 @@ def test_main_backfill_propagates_nonzero_exit_code(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
     assert cli.main(["backfill", "reenqueue-incomplete-analyses"]) == 1
+
+
+def test_stranded_recovery_requires_explicit_enqueue_flag() -> None:
+    parser = cli._build_parser()
+
+    assert parser.parse_args(["backfill", "recover-stranded-analyses"]).enqueue is False
+    assert parser.parse_args(["backfill", "recover-stranded-analyses", "--enqueue"]).enqueue is True
+
+
+@pytest.mark.asyncio
+async def test_stranded_recovery_dry_run_only_counts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], _stub_io: AsyncMock
+) -> None:
+    keys = {"process_file:synthetic-1", "process_file:synthetic-2"}
+    monkeypatch.setattr(cli, "select_stranded_analysis_keys", AsyncMock(return_value=keys))
+    recover = AsyncMock()
+    monkeypatch.setattr(cli, "recover_orphaned_work", recover)
+
+    assert await cli._run_recover_stranded_analyses(enqueue=False) == 0
+    assert capsys.readouterr().out == "2 stranded analysis file(s) selected\n"
+    recover.assert_not_awaited()
+    _stub_io.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stranded_recovery_enqueues_only_selected_keys(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], _stub_io: AsyncMock
+) -> None:
+    keys = {"process_file:synthetic-1", "process_file:synthetic-2"}
+    monkeypatch.setattr(cli, "select_stranded_analysis_keys", AsyncMock(return_value=keys))
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(queue_url="unused", redis_url="unused"))
+    recover = AsyncMock(return_value={"stages": {"process_file": {"reenqueued": 2, "skipped": 0, "errored": 0, "unreplayable": 0}}})
+    monkeypatch.setattr(cli, "recover_orphaned_work", recover)
+
+    assert await cli._run_recover_stranded_analyses(enqueue=True) == 0
+    assert "summary: reenqueued=2 skipped=0 errored=0 unreplayable=0" in capsys.readouterr().out
+    assert recover.await_args.kwargs == {"force": True, "only_keys": keys}
+    _stub_io.assert_awaited_once()

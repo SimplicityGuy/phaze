@@ -71,14 +71,22 @@ from phaze.tasks.recovery_replay import (  # noqa: F401 -- compatibility facade
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from phaze.config import ControlSettings
+    from phaze.models.scheduling_ledger import SchedulingLedger
 
 
 logger = structlog.get_logger(__name__)
 
 
-async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
-    """Detect queue loss and replay each owned orphan with per-row failure isolation."""
+def _scope_recovery_rows(rows: Sequence[SchedulingLedger], only_keys: set[str] | None) -> Sequence[SchedulingLedger]:
+    """Keep an operator-requested exact key set without changing the default recovery population."""
+    return rows if only_keys is None else [row for row in rows if row.key in only_keys]
+
+
+async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False, only_keys: set[str] | None = None) -> dict[str, Any]:
+    """Detect queue loss and replay owned orphans, optionally scoped to exact ledger keys."""
     _ = cast("ControlSettings", get_settings())
 
     async with ctx["async_session"]() as session:
@@ -88,7 +96,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
             logger.info("recover_orphaned_work no-op: queue durable (Phase-36 restart)", inflight=inflight)
             return {"detected_loss": False, "forced": False, "unreplayable": 0, "stages": {}}
 
-        rows = await get_ledger_rows(session)
+        rows = _scope_recovery_rows(await get_ledger_rows(session), only_keys)
         live = await get_live_job_keys(session)
         done_sets = await _build_done_sets(session, _ledger_fids(rows))
         in_flight = await _in_flight_cloud_job_ids(session)

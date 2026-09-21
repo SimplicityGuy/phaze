@@ -15,10 +15,12 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, _compute_stage_orphan_counts, get_live_job_keys, get_stage_orphan_counts
 from phaze.services.scheduling_ledger import get_ledger_rows
+from phaze.services.stranded_analysis_recovery import select_stranded_analysis_keys
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import (
     _CLOUD_OWNED_FUNCTIONS,
@@ -112,6 +114,36 @@ async def _ledger(session: AsyncSession, stage: str, file: FileRecord) -> str:
     )
     await session.flush()
     return key
+
+
+@pytest.mark.asyncio
+async def test_stranded_analysis_selector_is_exact(db_session: AsyncSession) -> None:
+    """A targeted recovery excludes live, cloud-owned, unfinished-fine, failed, and moved files."""
+    selected, live, cloud, partial, failed, moved = [await _file(db_session) for _ in range(6)]
+    keys = {file.id: await _ledger(db_session, "analyze", file) for file in (selected, live, cloud, partial, failed, moved)}
+    for file in (selected, live, cloud, partial, failed, moved):
+        db_session.add(
+            AnalysisResult(
+                id=uuid.uuid4(),
+                file_id=file.id,
+                fine_windows_analyzed=4 if file is not partial else 3,
+                fine_windows_total=4,
+                failed_at=datetime.now(UTC) if file is failed else None,
+            )
+        )
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=cloud.id, status=CloudJobStatus.AWAITING.value))
+    db_session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=moved.id,
+            proposed_filename="song-renamed.mp3",
+            status=ProposalStatus.EXECUTED,
+        )
+    )
+    await db_session.flush()
+    await _live_job(db_session, keys[live.id])
+
+    assert await select_stranded_analysis_keys(db_session) == {keys[selected.id]}
 
 
 async def _recovery_candidate_counts(session: AsyncSession) -> dict[str, int]:

@@ -756,6 +756,30 @@ async def test_force_bypasses_gate_not_dedup(
     assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
+@pytest.mark.asyncio
+async def test_forced_recovery_only_replays_named_keys(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A targeted recovery cannot sweep unrelated orphaned ledger rows."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 1)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    selected, unrelated = _make_file(), _make_file()
+    session.add_all([selected, unrelated])
+    await session.commit()
+    selected_key = await _seed_ledger(session, function="process_file", file_id=selected.id)
+    await _seed_ledger(session, function="process_file", file_id=unrelated.id)
+
+    router = DedupFakeTaskRouter()
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")), force=True, only_keys={selected_key})
+
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert [policy["key"] for policy in router.queue_for("nox", "analyze").captured_policy] == [selected_key]
+
+
 async def _seed_cloud_job(
     session: AsyncSession,
     file_id: uuid.UUID,

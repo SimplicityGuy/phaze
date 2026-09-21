@@ -5,6 +5,7 @@ Command groups:
     phaze agents add --id <id> --name <name> --scan-roots /a,/b
     phaze queue status --queue <name>
     phaze backfill reenqueue-incomplete-analyses
+    phaze backfill recover-stranded-analyses [--enqueue]
     phaze backfill set-projection
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
@@ -64,6 +65,8 @@ from phaze.services.reanalysis_backfill import (
     enqueue_incomplete_reanalysis,
 )
 from phaze.services.set_projection_backfill import run_backfill
+from phaze.services.stranded_analysis_recovery import select_stranded_analysis_keys
+from phaze.tasks.reenqueue import recover_orphaned_work
 
 
 if TYPE_CHECKING:
@@ -250,6 +253,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "no-op; a future projection_version bump re-fills only the rows that change."
         ),
     )
+    stranded = backfill_sub.add_parser(
+        "recover-stranded-analyses",
+        help="Count incomplete fine-tier analyses with lost queue keys; --enqueue replays only those keys (phaze-hia9z).",
+    )
+    stranded.add_argument("--enqueue", action="store_true", help="Replay the selected keys; without this flag the command reads and counts only.")
     return parser
 
 
@@ -300,6 +308,8 @@ def _main_backfill(args: argparse.Namespace) -> int:
         return asyncio.run(_run_reenqueue_incomplete_analyses())
     if args.backfill_command == "set-projection":
         return asyncio.run(_run_backfill_set_projection())
+    if args.backfill_command == "recover-stranded-analyses":
+        return asyncio.run(_run_recover_stranded_analyses(enqueue=args.enqueue))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -320,6 +330,26 @@ async def _run_backfill_set_projection() -> int:
     print(f"{report.files_failed} file(s) failed")
     print(f"wall clock: {report.wall_clock_sec:.2f}s")
     return 1 if report.files_failed else 0
+
+
+async def _run_recover_stranded_analyses(*, enqueue: bool) -> int:
+    """Count the exact phaze-hia9z population, then optionally replay only those keys."""
+    async with async_session() as session:
+        keys = await select_stranded_analysis_keys(session)
+    print(f"{len(keys)} stranded analysis file(s) selected")
+    if not enqueue or not keys:
+        return 0
+
+    settings = get_settings()
+    task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
+    try:
+        result = await recover_orphaned_work({"async_session": async_session, "queue": None, "task_router": task_router}, force=True, only_keys=keys)
+    finally:
+        await task_router.close()
+
+    tally = result["stages"]["process_file"]
+    print("summary: " + " ".join(f"{name}={tally[name]}" for name in ("reenqueued", "skipped", "errored", "unreplayable")))
+    return 0 if tally["reenqueued"] == len(keys) else 1
 
 
 async def _run_reenqueue_incomplete_analyses() -> int:
