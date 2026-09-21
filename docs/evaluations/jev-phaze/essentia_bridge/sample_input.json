@@ -1,0 +1,63 @@
+{
+  "context": {
+    "bpm": 118,
+    "key": "A minor",
+    "setting": "small restaurant, conversation should remain easy"
+  },
+  "goal": "Choose upbeat but unobtrusive music for an early-evening dinner playlist.",
+  "labels": [
+    "Electronic---Deep House",
+    "Electronic---Downtempo",
+    "mood_happy",
+    "mood_aggressive",
+    "mood_relaxed",
+    "voice_instrumental"
+  ],
+  "model": {
+    "name": "illustrative-essentia-classifier-ensemble",
+    "output_activation": "mixed",
+    "version": "poc-1"
+  },
+  "predictions": [
+    [
+      0.78,
+      0.38,
+      0.71,
+      0.12,
+      0.63,
+      0.82
+    ],
+    [
+      0.81,
+      0.41,
+      0.75,
+      0.16,
+      0.66,
+      0.79
+    ],
+    [
+      0.69,
+      0.52,
+      0.68,
+      0.1,
+      0.74,
+      0.86
+    ],
+    [
+      0.74,
+      0.47,
+      0.73,
+      0.14,
+      0.69,
+      0.83
+    ]
+  ],
+  "presence_threshold": 0.5,
+  "taxonomy": {
+    "dinner_background": "Warm, sociable background music that does not dominate conversation.",
+    "late_night_dance": "Prominent, energetic music intended for dancing.",
+    "manual_review": "The available evidence does not support a reliable placement.",
+    "quiet_reflection": "Low-energy, introspective listening."
+  },
+  "top_k": 6
+}

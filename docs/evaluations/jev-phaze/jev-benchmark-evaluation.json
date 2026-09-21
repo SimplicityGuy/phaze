@@ -1,0 +1,5731 @@
+{
+  "accuracy_vs_coverage": {
+    "hybrid": [
+      {
+        "accuracy_vs_essentia_threshold": 0.9417142857142857,
+        "certainty_floor": 0.0,
+        "coverage": 1.0,
+        "covered_decisions": 3500,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.972956170345042,
+        "certainty_floor": 0.2,
+        "coverage": 0.9191428571428572,
+        "covered_decisions": 3217,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.9957219251336898,
+        "certainty_floor": 0.4,
+        "coverage": 0.8014285714285714,
+        "covered_decisions": 2805,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 1.0,
+        "certainty_floor": 0.6,
+        "coverage": 0.532,
+        "covered_decisions": 1862,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 1.0,
+        "certainty_floor": 0.8,
+        "coverage": 0.1457142857142857,
+        "covered_decisions": 510,
+        "total_decisions": 3500
+      }
+    ],
+    "jev_only": [
+      {
+        "accuracy_vs_essentia_threshold": 0.7565714285714286,
+        "certainty_floor": 0.0,
+        "coverage": 1.0,
+        "covered_decisions": 3500,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.8376172990616075,
+        "certainty_floor": 0.2,
+        "coverage": 0.7002857142857143,
+        "covered_decisions": 2451,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.9128498727735369,
+        "certainty_floor": 0.4,
+        "coverage": 0.4491428571428571,
+        "covered_decisions": 1572,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.953662182361734,
+        "certainty_floor": 0.6,
+        "coverage": 0.19114285714285714,
+        "covered_decisions": 669,
+        "total_decisions": 3500
+      },
+      {
+        "accuracy_vs_essentia_threshold": 0.9583333333333334,
+        "certainty_floor": 0.8,
+        "coverage": 0.013714285714285714,
+        "covered_decisions": 48,
+        "total_decisions": 3500
+      }
+    ]
+  },
+  "aggregate_probability": {
+    "hybrid": {
+      "brier_soft_target": 0.007208384928241138,
+      "macro_f1_at_0_5": 0.9198878272201245,
+      "macro_pr_auc_average_precision": 0.9888810740778669,
+      "mean_absolute_error": 0.06334551005561441,
+      "mean_squared_error_soft_target": 0.007208384928241138,
+      "pearson_correlation": 0.9659431853378119,
+      "root_mean_squared_error": 0.08490220802924467
+    },
+    "jev_only": {
+      "brier_soft_target": 0.04715028214811208,
+      "macro_f1_at_0_5": 0.6718521499844748,
+      "macro_pr_auc_average_precision": 0.7259638761264008,
+      "mean_absolute_error": 0.17361158960091183,
+      "mean_squared_error_soft_target": 0.04715028214811208,
+      "pearson_correlation": 0.637403461251374,
+      "root_mean_squared_error": 0.21714115719529561
+    }
+  },
+  "created_at": "2026-09-21T05:52:12.321427+00:00",
+  "disagreements": [
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B001"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B002"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B003"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B004"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B005"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B006"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B007"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B008"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B009"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B010"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B011"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B012"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B013"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B014"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B015"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B016"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B017"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B018"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B019"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B020"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B021"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B022"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B023"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B024"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B025"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B026"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B027"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B028"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B029"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B030"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B031"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B032"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B033"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "sad",
+      "subject_code": "B034"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B035"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B036"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "acoustic"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B037"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B038"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B039"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "sad",
+      "subject_code": "B040"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B041"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B042"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "sad",
+      "subject_code": "B043"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B044"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B045"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B046"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B047"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B048"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "party",
+      "subject_code": "B049"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B050"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B051"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B052"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B053"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B054"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B055"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B056"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B057"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B058"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B059"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B060"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B061"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B062"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B063"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B064"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B065"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B066"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B067"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B068"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B069"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B070"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B071"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B072"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B073"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B074"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B075"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B076"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B077"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B078"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B079"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B080"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B081"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B082"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B083"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B084"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B085"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B086"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B087"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B088"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B089"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B090"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B091"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B092"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B093"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B094"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B095"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B096"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B097"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B098"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B099"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B100"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B101"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B102"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B103"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B104"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B105"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B106"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B107"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B108"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B109"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B110"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B111"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B112"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B113"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B114"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B115"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B116"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B117"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "party",
+      "subject_code": "B118"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B119"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "happy",
+      "subject_code": "B120"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B121"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B122"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B123"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B124"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B125"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B126"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B127"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B128"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B129"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B130"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B131"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B132"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B133"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B134"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "happy",
+      "subject_code": "B135"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B136"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B137"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B138"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B139"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B140"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B141"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B142"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B143"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B144"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B145"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B146"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B147"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "happy",
+      "subject_code": "B148"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B149"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B150"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B151"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B152"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B153"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B154"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B155"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B156"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "happy",
+      "subject_code": "B157"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B158"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B159"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B160"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B161"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B162"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B163"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B164"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "party",
+      "subject_code": "B165"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "happy",
+      "subject_code": "B166"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B167"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B168"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B169"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B170"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B171"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B172"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B173"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B174"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B175"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B176"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B177"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B178"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B179"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B180"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B181"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B182"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B183"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B184"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B185"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B186"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B187"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B188"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B189"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B190"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B191"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B192"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B193"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B194"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B195"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B196"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B197"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B198"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B199"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B200"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B201"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B202"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B203"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B204"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B205"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B206"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B207"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B208"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B209"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B210"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B211"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B212"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B213"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B214"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B215"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B216"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B217"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B218"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B219"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B220"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B221"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B222"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B223"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B224"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B225"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B226"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B227"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B228"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B229"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B230"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B231"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B232"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B233"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B234"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B235"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B236"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B237"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B238"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B239"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B240"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B241"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B242"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B243"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B244"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B245"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B246"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B247"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B248"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B249"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B250"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B251"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B252"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B253"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B254"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B255"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B256"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B257"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B258"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B259"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B260"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "happy",
+      "subject_code": "B261"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B262"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B263"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B264"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B265"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B266"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B267"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B268"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B269"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B270"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B271"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B272"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "happy",
+      "subject_code": "B273"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B274"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B275"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B276"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B277"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B278"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B279"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B280"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B281"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B282"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B283"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B284"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B285"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B286"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "happy",
+      "subject_code": "B287"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "party",
+      "subject_code": "B288"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B289"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B290"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B291"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B292"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "happy"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B293"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B294"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B295"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B296"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B297"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B298"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B299"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B300"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B301"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B302"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B303"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B304"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B305"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B306"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B307"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B308"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "happy",
+      "subject_code": "B309"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B310"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B311"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B312"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B313"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B314"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B315"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B316"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B317"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B318"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B319"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B320"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B321"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B322"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B323"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B324"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B325"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B326"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B327"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B328"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B329"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B330"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B331"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B332"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B333"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B334"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B335"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B336"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B337"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B338"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B339"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "happy",
+      "subject_code": "B340"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B341"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B342"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B343"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B344"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B345"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "relaxed"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B346"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B347"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "sad"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B348"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B349"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B350"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B351"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B352"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B353"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B354"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B355"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B356"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B357"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B358"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B359"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B360"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B361"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B362"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B363"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B364"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B365"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B366"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B367"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B368"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B369"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B370"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B371"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B372"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B373"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B374"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "happy",
+      "subject_code": "B375"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "happy",
+      "subject_code": "B376"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B377"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B378"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B379"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "happy",
+      "subject_code": "B380"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B381"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B382"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "sad"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B383"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "happy"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B384"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B385"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B386"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B387"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B388"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B389"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B390"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B391"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B392"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B393"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B394"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B395"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B396"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "aggressive"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B397"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B398"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B399"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B400"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B401"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B402"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B403"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B404"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B405"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B406"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B407"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B408"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B409"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B410"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B411"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "sad"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B412"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B413"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B414"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B415"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B416"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B417"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B418"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B419"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B420"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B421"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B422"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B423"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B424"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B425"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B426"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B427"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B428"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B429"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B430"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B431"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B432"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B433"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B434"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B435"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B436"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B437"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "acoustic"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B438"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B439"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B440"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B441"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B442"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B443"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "party",
+      "subject_code": "B444"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B445"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B446"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B447"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B448"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B449"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B450"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B451"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B452"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B453"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B454"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B455"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B456"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B457"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B458"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B459"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B460"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B461"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B462"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B463"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B464"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B465"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B466"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B467"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B468"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B469"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B470"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "sad"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "sad",
+      "subject_code": "B471"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B472"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B473"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B474"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B475"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B476"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B477"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B478"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "happy",
+      "subject_code": "B479"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B480"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B481"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B482"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "sad",
+      "subject_code": "B483"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "party"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B484"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B485"
+    },
+    {
+      "essentia_dominant": "electronic",
+      "essentia_top_two": [
+        "electronic",
+        "relaxed"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B486"
+    },
+    {
+      "essentia_dominant": "happy",
+      "essentia_top_two": [
+        "happy",
+        "party"
+      ],
+      "hybrid_dominant": "happy",
+      "jev_only_dominant": "happy",
+      "subject_code": "B487"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B488"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B489"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "aggressive"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "party",
+      "subject_code": "B490"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "relaxed",
+      "subject_code": "B491"
+    },
+    {
+      "essentia_dominant": "party",
+      "essentia_top_two": [
+        "party",
+        "electronic"
+      ],
+      "hybrid_dominant": "party",
+      "jev_only_dominant": "party",
+      "subject_code": "B492"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "electronic"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "sad",
+      "subject_code": "B493"
+    },
+    {
+      "essentia_dominant": "relaxed",
+      "essentia_top_two": [
+        "relaxed",
+        "sad"
+      ],
+      "hybrid_dominant": "relaxed",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B494"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "relaxed"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B495"
+    },
+    {
+      "essentia_dominant": "sad",
+      "essentia_top_two": [
+        "sad",
+        "happy"
+      ],
+      "hybrid_dominant": "sad",
+      "jev_only_dominant": "sad",
+      "subject_code": "B496"
+    },
+    {
+      "essentia_dominant": "acoustic",
+      "essentia_top_two": [
+        "acoustic",
+        "sad"
+      ],
+      "hybrid_dominant": "acoustic",
+      "jev_only_dominant": "acoustic",
+      "subject_code": "B497"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B498"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "electronic"
+      ],
+      "hybrid_dominant": "electronic",
+      "jev_only_dominant": "electronic",
+      "subject_code": "B499"
+    },
+    {
+      "essentia_dominant": "aggressive",
+      "essentia_top_two": [
+        "aggressive",
+        "party"
+      ],
+      "hybrid_dominant": "aggressive",
+      "jev_only_dominant": "aggressive",
+      "subject_code": "B500"
+    }
+  ],
+  "dominant_and_top_two": {
+    "hybrid": {
+      "dominant_agreement": 0.65,
+      "dominant_in_essentia_top_two": 0.898,
+      "dominant_in_essentia_top_two_count": 449,
+      "dominant_matches": 325,
+      "mean_top_two_set_overlap": 0.836
+    },
+    "jev_only": {
+      "dominant_agreement": 0.358,
+      "dominant_in_essentia_top_two": 0.634,
+      "dominant_in_essentia_top_two_count": 317,
+      "dominant_matches": 179,
+      "mean_top_two_set_overlap": 0.585
+    }
+  },
+  "interpretation": "Fidelity to stored Essentia mood probabilities, not independent human or semantic truth.",
+  "leakage_diagnostics": {
+    "distinct_artist_release_groups": 437,
+    "groups_with_two_tracks": 63,
+    "maximum_tracks_per_group": 2,
+    "single_track_groups": 374
+  },
+  "operations": {
+    "by_arm": {
+      "hybrid": {
+        "average_input_tokens_per_successful_request": 1221.34,
+        "failures": 0,
+        "input_tokens": 1832010,
+        "latency_ms_p50": 167.73000000000002,
+        "latency_ms_p95": 237.77094999999997,
+        "output_tokens": 184500,
+        "public_rate_cost_usd": 0.07694442,
+        "requests": 1500,
+        "retries": 0,
+        "successful_requests": 1500
+      },
+      "jev_only": {
+        "average_input_tokens_per_successful_request": 995.756,
+        "failures": 0,
+        "input_tokens": 1493634,
+        "latency_ms_p50": 167.2595,
+        "latency_ms_p95": 232.2060499999999,
+        "output_tokens": 184500,
+        "public_rate_cost_usd": 0.062732628,
+        "requests": 1500,
+        "retries": 0,
+        "successful_requests": 1500
+      }
+    },
+    "captured_summary_cost_usd": 0.139677048,
+    "combined": {
+      "average_input_tokens_per_successful_request": 1108.548,
+      "failures": 0,
+      "input_tokens": 3325644,
+      "latency_ms_p50": 167.35500000000002,
+      "latency_ms_p95": 235.5698,
+      "output_tokens": 369000,
+      "public_rate_cost_usd": 0.139677048,
+      "requests": 3000,
+      "retries": 0,
+      "successful_requests": 3000
+    },
+    "prior_terminal_attempt_history": {
+      "errors": [
+        "network gaierror"
+      ],
+      "events": 3,
+      "failures": 3,
+      "internal_retries": 6,
+      "transport_attempts": 9
+    },
+    "public_rate_projections": {
+      "12": {
+        "hybrid_one_run_usd": 0.00061555536,
+        "jev_only_one_run_usd": 0.000501861024,
+        "two_arms_one_run_usd": 0.0011174163840000002,
+        "two_arms_three_runs_usd": 0.0033522491520000005
+      },
+      "500": {
+        "hybrid_one_run_usd": 0.025648140000000003,
+        "jev_only_one_run_usd": 0.020910876000000002,
+        "two_arms_one_run_usd": 0.04655901600000001,
+        "two_arms_three_runs_usd": 0.139677048
+      },
+      "5583": {
+        "hybrid_one_run_usd": 0.28638713124,
+        "jev_only_one_run_usd": 0.23349084141600002,
+        "two_arms_one_run_usd": 0.519877972656,
+        "two_arms_three_runs_usd": 1.559633917968
+      },
+      "93444": {
+        "hybrid_one_run_usd": 4.79332958832,
+        "jev_only_one_run_usd": 3.9079917938880007,
+        "two_arms_one_run_usd": 8.701321382208002,
+        "two_arms_three_runs_usd": 26.103964146624
+      }
+    }
+  },
+  "per_label": {
+    "hybrid": {
+      "acoustic": {
+        "brier_soft_target": 0.006294628116895239,
+        "essentia_positive_count": 87,
+        "f1_at_0_5": 0.8877551020408163,
+        "mean_absolute_error": 0.05500938432191039,
+        "mean_squared_error_soft_target": 0.006294628116895239,
+        "pearson_correlation": 0.9745106876518576,
+        "pr_auc_average_precision": 0.9937397446549057,
+        "root_mean_squared_error": 0.07933869243247735
+      },
+      "aggressive": {
+        "brier_soft_target": 0.004404081481869557,
+        "essentia_positive_count": 251,
+        "f1_at_0_5": 0.9418386491557224,
+        "mean_absolute_error": 0.04953727388766265,
+        "mean_squared_error_soft_target": 0.004404081481869557,
+        "pearson_correlation": 0.9807704039146217,
+        "pr_auc_average_precision": 0.9996772372972071,
+        "root_mean_squared_error": 0.06636325400302157
+      },
+      "electronic": {
+        "brier_soft_target": 0.01571059480120526,
+        "essentia_positive_count": 319,
+        "f1_at_0_5": 0.9437869822485208,
+        "mean_absolute_error": 0.10125488570178016,
+        "mean_squared_error_soft_target": 0.01571059480120526,
+        "pearson_correlation": 0.9560106939473642,
+        "pr_auc_average_precision": 0.9988144386092708,
+        "root_mean_squared_error": 0.12534191159067767
+      },
+      "happy": {
+        "brier_soft_target": 0.007752868926773485,
+        "essentia_positive_count": 120,
+        "f1_at_0_5": 0.8125,
+        "mean_absolute_error": 0.06778384876052398,
+        "mean_squared_error_soft_target": 0.007752868926773485,
+        "pearson_correlation": 0.9148097410086001,
+        "pr_auc_average_precision": 0.9337226394416223,
+        "root_mean_squared_error": 0.08805037720971719
+      },
+      "party": {
+        "brier_soft_target": 0.0063372641703246324,
+        "essentia_positive_count": 289,
+        "f1_at_0_5": 0.9490968801313628,
+        "mean_absolute_error": 0.06054414470732937,
+        "mean_squared_error_soft_target": 0.0063372641703246324,
+        "pearson_correlation": 0.9772887094533218,
+        "pr_auc_average_precision": 0.9994915932145776,
+        "root_mean_squared_error": 0.07960693544110735
+      },
+      "relaxed": {
+        "brier_soft_target": 0.007289466246394312,
+        "essentia_positive_count": 167,
+        "f1_at_0_5": 0.9201101928374655,
+        "mean_absolute_error": 0.0691104364479645,
+        "mean_squared_error_soft_target": 0.007289466246394312,
+        "pearson_correlation": 0.9600889171204154,
+        "pr_auc_average_precision": 0.9976172957584752,
+        "root_mean_squared_error": 0.08537837106899096
+      },
+      "sad": {
+        "brier_soft_target": 0.00266979075422548,
+        "essentia_positive_count": 156,
+        "f1_at_0_5": 0.9841269841269841,
+        "mean_absolute_error": 0.04017859656212982,
+        "mean_squared_error_soft_target": 0.00266979075422548,
+        "pearson_correlation": 0.9821279222386131,
+        "pr_auc_average_precision": 0.9991045695690098,
+        "root_mean_squared_error": 0.05167001794295682
+      }
+    },
+    "jev_only": {
+      "acoustic": {
+        "brier_soft_target": 0.040341936640109634,
+        "essentia_positive_count": 87,
+        "f1_at_0_5": 0.7891891891891892,
+        "mean_absolute_error": 0.16588651665096332,
+        "mean_squared_error_soft_target": 0.040341936640109634,
+        "pearson_correlation": 0.7826851549378212,
+        "pr_auc_average_precision": 0.8365617564181504,
+        "root_mean_squared_error": 0.20085302248188758
+      },
+      "aggressive": {
+        "brier_soft_target": 0.05184277881607521,
+        "essentia_positive_count": 251,
+        "f1_at_0_5": 0.7448275862068966,
+        "mean_absolute_error": 0.18178257243005053,
+        "mean_squared_error_soft_target": 0.05184277881607521,
+        "pearson_correlation": 0.7304488045067933,
+        "pr_auc_average_precision": 0.8755490370669957,
+        "root_mean_squared_error": 0.22769009380312358
+      },
+      "electronic": {
+        "brier_soft_target": 0.029940631079002883,
+        "essentia_positive_count": 319,
+        "f1_at_0_5": 0.8970814132104454,
+        "mean_absolute_error": 0.13404365658953477,
+        "mean_squared_error_soft_target": 0.029940631079002883,
+        "pearson_correlation": 0.7751359268435886,
+        "pr_auc_average_precision": 0.9361332730706996,
+        "root_mean_squared_error": 0.1730336125699365
+      },
+      "happy": {
+        "brier_soft_target": 0.05400023563320202,
+        "essentia_positive_count": 120,
+        "f1_at_0_5": 0.375886524822695,
+        "mean_absolute_error": 0.18604807703385248,
+        "mean_squared_error_soft_target": 0.05400023563320202,
+        "pearson_correlation": 0.16715978756794075,
+        "pr_auc_average_precision": 0.3580319043481199,
+        "root_mean_squared_error": 0.23237950777381816
+      },
+      "party": {
+        "brier_soft_target": 0.04419350307178269,
+        "essentia_positive_count": 289,
+        "f1_at_0_5": 0.8062283737024222,
+        "mean_absolute_error": 0.16940912678133177,
+        "mean_squared_error_soft_target": 0.04419350307178269,
+        "pearson_correlation": 0.6538800305235763,
+        "pr_auc_average_precision": 0.8807837318108003,
+        "root_mean_squared_error": 0.2102225084803782
+      },
+      "relaxed": {
+        "brier_soft_target": 0.0445613088921714,
+        "essentia_positive_count": 167,
+        "f1_at_0_5": 0.6270270270270271,
+        "mean_absolute_error": 0.16408406120978483,
+        "mean_squared_error_soft_target": 0.0445613088921714,
+        "pearson_correlation": 0.5254958846179063,
+        "pr_auc_average_precision": 0.652689591829773,
+        "root_mean_squared_error": 0.21109549709117767
+      },
+      "sad": {
+        "brier_soft_target": 0.06517158090444072,
+        "essentia_positive_count": 156,
+        "f1_at_0_5": 0.46272493573264784,
+        "mean_absolute_error": 0.21402711651086495,
+        "mean_squared_error_soft_target": 0.06517158090444072,
+        "pearson_correlation": 0.3454486544169405,
+        "pr_auc_average_precision": 0.5419978383402666,
+        "root_mean_squared_error": 0.2552872517468131
+      }
+    }
+  },
+  "repeat_variability": {
+    "hybrid": {
+      "mean_population_stddev": 0.003909070890541197,
+      "per_label_mean_population_stddev": {
+        "acoustic": 0.0031858694057565664,
+        "aggressive": 0.0034279855366043488,
+        "electronic": 0.0040938319815385215,
+        "happy": 0.004764661588598393,
+        "party": 0.003631796929704975,
+        "relaxed": 0.004226436235144518,
+        "sad": 0.004032914556441055
+      }
+    },
+    "jev_only": {
+      "mean_population_stddev": 0.005692456158712164,
+      "per_label_mean_population_stddev": {
+        "acoustic": 0.005454090149944401,
+        "aggressive": 0.00537634500177634,
+        "electronic": 0.006177291152877923,
+        "happy": 0.005708226720259789,
+        "party": 0.006043205626699136,
+        "relaxed": 0.0053966361081852305,
+        "sad": 0.005691398351242327
+      }
+    }
+  },
+  "schema_version": "phaze-jev-fidelity-evaluation-v2",
+  "stratified": {
+    "dominant_mood": {
+      "acoustic": {
+        "hybrid": {
+          "brier_soft_target": 0.004580075215816434,
+          "dominant_agreement": 1.0,
+          "mean_absolute_error": 0.047684125932421356,
+          "mean_squared_error_soft_target": 0.004580075215816434,
+          "pearson_correlation": 0.9812921190946512,
+          "root_mean_squared_error": 0.06767625296820469,
+          "threshold_agreement": 0.9629629629629629
+        },
+        "jev_only": {
+          "brier_soft_target": 0.031128256469466997,
+          "dominant_agreement": 0.8888888888888888,
+          "mean_absolute_error": 0.13946500253230432,
+          "mean_squared_error_soft_target": 0.031128256469466997,
+          "pearson_correlation": 0.8496495063317345,
+          "root_mean_squared_error": 0.1764320165657781,
+          "threshold_agreement": 0.8518518518518519
+        },
+        "subjects": 27
+      },
+      "aggressive": {
+        "hybrid": {
+          "brier_soft_target": 0.0062478865735259344,
+          "dominant_agreement": 0.6692307692307692,
+          "mean_absolute_error": 0.06088459257705868,
+          "mean_squared_error_soft_target": 0.0062478865735259344,
+          "pearson_correlation": 0.9716541532277789,
+          "root_mean_squared_error": 0.07904357389140457,
+          "threshold_agreement": 0.9802197802197802
+        },
+        "jev_only": {
+          "brier_soft_target": 0.05387721815650547,
+          "dominant_agreement": 0.3153846153846154,
+          "mean_absolute_error": 0.18764303355741277,
+          "mean_squared_error_soft_target": 0.05387721815650547,
+          "pearson_correlation": 0.6295619430774655,
+          "root_mean_squared_error": 0.2321146659659951,
+          "threshold_agreement": 0.7868131868131868
+        },
+        "subjects": 130
+      },
+      "electronic": {
+        "hybrid": {
+          "brier_soft_target": 0.004487166422873059,
+          "dominant_agreement": 1.0,
+          "mean_absolute_error": 0.050816508796156026,
+          "mean_squared_error_soft_target": 0.004487166422873059,
+          "pearson_correlation": 0.9824152196847207,
+          "root_mean_squared_error": 0.06698631519103779,
+          "threshold_agreement": 0.9453781512605042
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04026049340672165,
+          "dominant_agreement": 0.7647058823529411,
+          "mean_absolute_error": 0.16042696991169372,
+          "mean_squared_error_soft_target": 0.04026049340672165,
+          "pearson_correlation": 0.704150651945612,
+          "root_mean_squared_error": 0.20065017669247553,
+          "threshold_agreement": 0.7703081232492998
+        },
+        "subjects": 102
+      },
+      "happy": {
+        "hybrid": {
+          "brier_soft_target": 0.015048219570835963,
+          "dominant_agreement": 0.38,
+          "mean_absolute_error": 0.09708233999468105,
+          "mean_squared_error_soft_target": 0.015048219570835963,
+          "pearson_correlation": 0.8912693995637638,
+          "root_mean_squared_error": 0.12267118476168706,
+          "threshold_agreement": 0.8171428571428572
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04571053121131651,
+          "dominant_agreement": 0.1,
+          "mean_absolute_error": 0.17151151577327922,
+          "mean_squared_error_soft_target": 0.04571053121131651,
+          "pearson_correlation": 0.3385441921101182,
+          "root_mean_squared_error": 0.21380021330980123,
+          "threshold_agreement": 0.6114285714285714
+        },
+        "subjects": 50
+      },
+      "party": {
+        "hybrid": {
+          "brier_soft_target": 0.005745662937364768,
+          "dominant_agreement": 0.2727272727272727,
+          "mean_absolute_error": 0.056960608472648326,
+          "mean_squared_error_soft_target": 0.005745662937364768,
+          "pearson_correlation": 0.9796711279099333,
+          "root_mean_squared_error": 0.07580015130172742,
+          "threshold_agreement": 0.9523809523809523
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04985140866170741,
+          "dominant_agreement": 0.19696969696969696,
+          "mean_absolute_error": 0.17957560419273297,
+          "mean_squared_error_soft_target": 0.04985140866170741,
+          "pearson_correlation": 0.6749431260946425,
+          "root_mean_squared_error": 0.22327429019416323,
+          "threshold_agreement": 0.7597402597402597
+        },
+        "subjects": 66
+      },
+      "relaxed": {
+        "hybrid": {
+          "brier_soft_target": 0.007155106865995291,
+          "dominant_agreement": 0.7142857142857143,
+          "mean_absolute_error": 0.06382081401370016,
+          "mean_squared_error_soft_target": 0.007155106865995291,
+          "pearson_correlation": 0.9606103340354103,
+          "root_mean_squared_error": 0.08458786476791627,
+          "threshold_agreement": 0.9510204081632653
+        },
+        "jev_only": {
+          "brier_soft_target": 0.053596076409431995,
+          "dominant_agreement": 0.1,
+          "mean_absolute_error": 0.1845739854274256,
+          "mean_squared_error_soft_target": 0.053596076409431995,
+          "pearson_correlation": 0.5051635218567697,
+          "root_mean_squared_error": 0.23150826423571144,
+          "threshold_agreement": 0.7428571428571429
+        },
+        "subjects": 70
+      },
+      "sad": {
+        "hybrid": {
+          "brier_soft_target": 0.010511490737719247,
+          "dominant_agreement": 0.4,
+          "mean_absolute_error": 0.07647324646397154,
+          "mean_squared_error_soft_target": 0.010511490737719247,
+          "pearson_correlation": 0.9459825284485411,
+          "root_mean_squared_error": 0.10252556138699874,
+          "threshold_agreement": 0.922077922077922
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04175681055727921,
+          "dominant_agreement": 0.2,
+          "mean_absolute_error": 0.16246090533314803,
+          "mean_squared_error_soft_target": 0.04175681055727921,
+          "pearson_correlation": 0.6624278867214581,
+          "root_mean_squared_error": 0.20434483247021248,
+          "threshold_agreement": 0.7584415584415585
+        },
+        "subjects": 55
+      }
+    },
+    "duration_band": {
+      "long_gt_360s": {
+        "hybrid": {
+          "brier_soft_target": 0.006880944474680257,
+          "dominant_agreement": 0.6546184738955824,
+          "mean_absolute_error": 0.06316286026179588,
+          "mean_squared_error_soft_target": 0.006880944474680257,
+          "pearson_correlation": 0.9705612370120129,
+          "root_mean_squared_error": 0.08295145854462269,
+          "threshold_agreement": 0.9403327596098681
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04065447443481957,
+          "dominant_agreement": 0.3654618473895582,
+          "mean_absolute_error": 0.16068263082664822,
+          "mean_squared_error_soft_target": 0.04065447443481957,
+          "pearson_correlation": 0.6803659637218673,
+          "root_mean_squared_error": 0.20162954752421475,
+          "threshold_agreement": 0.7751004016064257
+        },
+        "subjects": 249
+      },
+      "medium_180_360s": {
+        "hybrid": {
+          "brier_soft_target": 0.007671086346381139,
+          "dominant_agreement": 0.6134969325153374,
+          "mean_absolute_error": 0.06430581285560963,
+          "mean_squared_error_soft_target": 0.007671086346381139,
+          "pearson_correlation": 0.9622017207636062,
+          "root_mean_squared_error": 0.08758473809049805,
+          "threshold_agreement": 0.9439088518843121
+        },
+        "jev_only": {
+          "brier_soft_target": 0.05402966493122247,
+          "dominant_agreement": 0.32515337423312884,
+          "mean_absolute_error": 0.18857488942294423,
+          "mean_squared_error_soft_target": 0.05402966493122247,
+          "pearson_correlation": 0.5721807721932687,
+          "root_mean_squared_error": 0.23244282077797643,
+          "threshold_agreement": 0.7300613496932515
+        },
+        "subjects": 163
+      },
+      "short_lt_180s": {
+        "hybrid": {
+          "brier_soft_target": 0.007298928021280367,
+          "dominant_agreement": 0.7011494252873564,
+          "mean_absolute_error": 0.062129845963568534,
+          "mean_squared_error_soft_target": 0.007298928021280367,
+          "pearson_correlation": 0.9634167472174324,
+          "root_mean_squared_error": 0.08543376394190043,
+          "threshold_agreement": 0.9408866995073891
+        },
+        "jev_only": {
+          "brier_soft_target": 0.052685659950522754,
+          "dominant_agreement": 0.40229885057471265,
+          "mean_absolute_error": 0.18209366022400356,
+          "mean_squared_error_soft_target": 0.052685659950522754,
+          "pearson_correlation": 0.642111440190033,
+          "root_mean_squared_error": 0.22953357042167657,
+          "threshold_agreement": 0.7520525451559934
+        },
+        "subjects": 87
+      },
+      "unknown": {
+        "hybrid": {
+          "brier_soft_target": 0.005443477613667548,
+          "dominant_agreement": 1.0,
+          "mean_absolute_error": 0.05805872832520247,
+          "mean_squared_error_soft_target": 0.005443477613667548,
+          "pearson_correlation": 0.9795215955543393,
+          "root_mean_squared_error": 0.0737799269020209,
+          "threshold_agreement": 1.0
+        },
+        "jev_only": {
+          "brier_soft_target": 0.061689140301223015,
+          "dominant_agreement": 0.0,
+          "mean_absolute_error": 0.21596430919228435,
+          "mean_squared_error_soft_target": 0.061689140301223015,
+          "pearson_correlation": 0.7599394229899805,
+          "root_mean_squared_error": 0.24837298625499316,
+          "threshold_agreement": 0.8571428571428571
+        },
+        "subjects": 1
+      }
+    },
+    "margin_band": {
+      "ambiguous": {
+        "hybrid": {
+          "brier_soft_target": 0.006620008061274645,
+          "dominant_agreement": 0.36683417085427134,
+          "mean_absolute_error": 0.0597039145910833,
+          "mean_squared_error_soft_target": 0.006620008061274645,
+          "pearson_correlation": 0.97109361392481,
+          "root_mean_squared_error": 0.08136343196593077,
+          "threshold_agreement": 0.949748743718593
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04614768128401695,
+          "dominant_agreement": 0.2814070351758794,
+          "mean_absolute_error": 0.17192471919787716,
+          "mean_squared_error_soft_target": 0.04614768128401695,
+          "pearson_correlation": 0.6597731084057443,
+          "root_mean_squared_error": 0.21482011377898708,
+          "threshold_agreement": 0.7631012203876526
+        },
+        "subjects": 199
+      },
+      "clear": {
+        "hybrid": {
+          "brier_soft_target": 0.00793443791995317,
+          "dominant_agreement": 1.0,
+          "mean_absolute_error": 0.06770399891221425,
+          "mean_squared_error_soft_target": 0.00793443791995317,
+          "pearson_correlation": 0.9555049993840538,
+          "root_mean_squared_error": 0.08907546194072288,
+          "threshold_agreement": 0.9339622641509434
+        },
+        "jev_only": {
+          "brier_soft_target": 0.05032630128195388,
+          "dominant_agreement": 0.44339622641509435,
+          "mean_absolute_error": 0.17887185779013287,
+          "mean_squared_error_soft_target": 0.05032630128195388,
+          "pearson_correlation": 0.5692136771583983,
+          "root_mean_squared_error": 0.2243352430670533,
+          "threshold_agreement": 0.7371967654986523
+        },
+        "subjects": 106
+      },
+      "close": {
+        "hybrid": {
+          "brier_soft_target": 0.007414156104676301,
+          "dominant_agreement": 0.7487179487179487,
+          "mean_absolute_error": 0.0646925750742919,
+          "mean_squared_error_soft_target": 0.007414156104676301,
+          "pearson_correlation": 0.9655235811928498,
+          "root_mean_squared_error": 0.08610549404466768,
+          "threshold_agreement": 0.9377289377289377
+        },
+        "jev_only": {
+          "brier_soft_target": 0.04644699775717721,
+          "dominant_agreement": 0.38974358974358975,
+          "mean_absolute_error": 0.17247363463756035,
+          "mean_squared_error_soft_target": 0.04644699775717721,
+          "pearson_correlation": 0.6480858595388972,
+          "root_mean_squared_error": 0.21551565548047133,
+          "threshold_agreement": 0.7604395604395604
+        },
+        "subjects": 195
+      }
+    },
+    "metadata_completeness": {
+      "complete": {
+        "hybrid": {
+          "brier_soft_target": 0.007579877036924075,
+          "dominant_agreement": 0.62,
+          "mean_absolute_error": 0.06461828704215956,
+          "mean_squared_error_soft_target": 0.007579877036924075,
+          "pearson_correlation": 0.9633449300750522,
+          "root_mean_squared_error": 0.08706248926445921,
+          "threshold_agreement": 0.9353571428571429
+        },
+        "jev_only": {
+          "brier_soft_target": 0.049175623353237434,
+          "dominant_agreement": 0.33,
+          "mean_absolute_error": 0.17706035404098372,
+          "mean_squared_error_soft_target": 0.049175623353237434,
+          "pearson_correlation": 0.6164986803099948,
+          "root_mean_squared_error": 0.2217557741147622,
+          "threshold_agreement": 0.7435714285714285
+        },
+        "subjects": 400
+      },
+      "incomplete": {
+        "hybrid": {
+          "brier_soft_target": 0.005722416493509387,
+          "dominant_agreement": 0.77,
+          "mean_absolute_error": 0.05825440210943381,
+          "mean_squared_error_soft_target": 0.005722416493509387,
+          "pearson_correlation": 0.9762298327270877,
+          "root_mean_squared_error": 0.07564665553419653,
+          "threshold_agreement": 0.9671428571428572
+        },
+        "jev_only": {
+          "brier_soft_target": 0.03904891732761069,
+          "dominant_agreement": 0.47,
+          "mean_absolute_error": 0.1598165318406241,
+          "mean_squared_error_soft_target": 0.03904891732761069,
+          "pearson_correlation": 0.7177375416836458,
+          "root_mean_squared_error": 0.1976079890277989,
+          "threshold_agreement": 0.8085714285714286
+        },
+        "subjects": 100
+      }
+    }
+  },
+  "subjects": 500,
+  "thresholds": {
+    "certainty_floors": [
+      0.0,
+      0.2,
+      0.4,
+      0.6,
+      0.8
+    ],
+    "essentia_positive": 0.5,
+    "jev_decision": 0.5
+  }
+}

@@ -1,0 +1,1815 @@
+{
+  "created_at": "2026-09-21T04:34:09.665777+00:00",
+  "price_basis": {
+    "output_tokens": "free at the public price retrieved 2026-09-20",
+    "usd_per_million_input_tokens": 0.042
+  },
+  "records": [
+    {
+      "answers": {
+        "acoustic": 0.58,
+        "aggressive": 0.36,
+        "electronic": 0.26,
+        "happy": 0.49,
+        "party": 0.63,
+        "relaxed": 0.29,
+        "sad": 0.43
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 189.69,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 983,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.58,
+        "aggressive": 0.38,
+        "electronic": 0.28,
+        "happy": 0.49,
+        "party": 0.65,
+        "relaxed": 0.29,
+        "sad": 0.42
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 173.799,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 983,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.59,
+        "aggressive": 0.37,
+        "electronic": 0.27,
+        "happy": 0.5,
+        "party": 0.63,
+        "relaxed": 0.28,
+        "sad": 0.42
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 172.371,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 983,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.93,
+        "aggressive": 0.05,
+        "electronic": 0.08,
+        "happy": 0.16,
+        "party": 0.09,
+        "relaxed": 0.83,
+        "sad": 0.81
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 172.462,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1212,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.93,
+        "aggressive": 0.05,
+        "electronic": 0.08,
+        "happy": 0.15,
+        "party": 0.08,
+        "relaxed": 0.83,
+        "sad": 0.82
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 225.18,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1212,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.94,
+        "aggressive": 0.05,
+        "electronic": 0.08,
+        "happy": 0.16,
+        "party": 0.09,
+        "relaxed": 0.84,
+        "sad": 0.81
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P01",
+      "latency_ms": 162.198,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1212,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.18,
+        "aggressive": 0.75,
+        "electronic": 0.28,
+        "happy": 0.57,
+        "party": 0.75,
+        "relaxed": 0.1,
+        "sad": 0.13
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 163.825,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 998,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.17,
+        "aggressive": 0.75,
+        "electronic": 0.28,
+        "happy": 0.59,
+        "party": 0.73,
+        "relaxed": 0.1,
+        "sad": 0.13
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 163.548,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 998,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.18,
+        "aggressive": 0.76,
+        "electronic": 0.28,
+        "happy": 0.59,
+        "party": 0.74,
+        "relaxed": 0.1,
+        "sad": 0.13
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 164.549,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 998,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.93,
+        "electronic": 0.24,
+        "happy": 0.53,
+        "party": 0.79,
+        "relaxed": 0.15,
+        "sad": 0.12
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 216.437,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.93,
+        "electronic": 0.24,
+        "happy": 0.53,
+        "party": 0.78,
+        "relaxed": 0.15,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 237.93,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.93,
+        "electronic": 0.26,
+        "happy": 0.54,
+        "party": 0.78,
+        "relaxed": 0.16,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P02",
+      "latency_ms": 178.063,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.21,
+        "aggressive": 0.4,
+        "electronic": 0.8,
+        "happy": 0.17,
+        "party": 0.49,
+        "relaxed": 0.46,
+        "sad": 0.61
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 199.326,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 992,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.21,
+        "aggressive": 0.41,
+        "electronic": 0.8,
+        "happy": 0.18,
+        "party": 0.49,
+        "relaxed": 0.43,
+        "sad": 0.62
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 156.539,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 992,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.2,
+        "aggressive": 0.41,
+        "electronic": 0.82,
+        "happy": 0.18,
+        "party": 0.49,
+        "relaxed": 0.44,
+        "sad": 0.61
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 229.968,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 992,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.04,
+        "aggressive": 0.41,
+        "electronic": 0.93,
+        "happy": 0.61,
+        "party": 0.85,
+        "relaxed": 0.19,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 211.061,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1220,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.04,
+        "aggressive": 0.4,
+        "electronic": 0.94,
+        "happy": 0.61,
+        "party": 0.86,
+        "relaxed": 0.2,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 171.276,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1220,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.04,
+        "aggressive": 0.41,
+        "electronic": 0.94,
+        "happy": 0.61,
+        "party": 0.85,
+        "relaxed": 0.2,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P03",
+      "latency_ms": 182.813,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1220,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.37,
+        "aggressive": 0.55,
+        "electronic": 0.5,
+        "happy": 0.24,
+        "party": 0.53,
+        "relaxed": 0.33,
+        "sad": 0.56
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 172.177,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 994,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.35,
+        "aggressive": 0.54,
+        "electronic": 0.51,
+        "happy": 0.25,
+        "party": 0.53,
+        "relaxed": 0.35,
+        "sad": 0.55
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 192.427,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 994,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.35,
+        "aggressive": 0.54,
+        "electronic": 0.5,
+        "happy": 0.25,
+        "party": 0.54,
+        "relaxed": 0.33,
+        "sad": 0.55
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 296.877,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 994,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.1,
+        "aggressive": 0.76,
+        "electronic": 0.32,
+        "happy": 0.77,
+        "party": 0.8,
+        "relaxed": 0.2,
+        "sad": 0.16
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 154.737,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1218,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.1,
+        "aggressive": 0.77,
+        "electronic": 0.33,
+        "happy": 0.78,
+        "party": 0.8,
+        "relaxed": 0.19,
+        "sad": 0.16
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 218.271,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1218,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.11,
+        "aggressive": 0.77,
+        "electronic": 0.33,
+        "happy": 0.8,
+        "party": 0.8,
+        "relaxed": 0.19,
+        "sad": 0.16
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P04",
+      "latency_ms": 168.575,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1218,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.14,
+        "aggressive": 0.52,
+        "electronic": 0.82,
+        "happy": 0.2,
+        "party": 0.68,
+        "relaxed": 0.34,
+        "sad": 0.51
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 158.693,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1004,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.16,
+        "aggressive": 0.52,
+        "electronic": 0.81,
+        "happy": 0.2,
+        "party": 0.68,
+        "relaxed": 0.33,
+        "sad": 0.5
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 151.528,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1004,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.14,
+        "aggressive": 0.52,
+        "electronic": 0.82,
+        "happy": 0.2,
+        "party": 0.69,
+        "relaxed": 0.33,
+        "sad": 0.5
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 213.254,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1004,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.67,
+        "electronic": 0.89,
+        "happy": 0.75,
+        "party": 0.9,
+        "relaxed": 0.14,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 306.732,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1229,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.67,
+        "electronic": 0.9,
+        "happy": 0.76,
+        "party": 0.9,
+        "relaxed": 0.14,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 243.438,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1229,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.68,
+        "electronic": 0.89,
+        "happy": 0.75,
+        "party": 0.89,
+        "relaxed": 0.14,
+        "sad": 0.09
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P05",
+      "latency_ms": 206.611,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1229,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.61,
+        "aggressive": 0.34,
+        "electronic": 0.24,
+        "happy": 0.15,
+        "party": 0.15,
+        "relaxed": 0.61,
+        "sad": 0.7
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 169.777,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 987,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.6,
+        "aggressive": 0.35,
+        "electronic": 0.24,
+        "happy": 0.15,
+        "party": 0.15,
+        "relaxed": 0.6,
+        "sad": 0.71
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 160.222,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 987,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.61,
+        "aggressive": 0.34,
+        "electronic": 0.24,
+        "happy": 0.15,
+        "party": 0.15,
+        "relaxed": 0.61,
+        "sad": 0.7
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 199.316,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 987,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.77,
+        "aggressive": 0.11,
+        "electronic": 0.35,
+        "happy": 0.05,
+        "party": 0.04,
+        "relaxed": 0.9,
+        "sad": 0.85
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 221.336,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1214,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.76,
+        "aggressive": 0.11,
+        "electronic": 0.36,
+        "happy": 0.04,
+        "party": 0.05,
+        "relaxed": 0.9,
+        "sad": 0.85
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 1539.898,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1214,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.76,
+        "aggressive": 0.11,
+        "electronic": 0.35,
+        "happy": 0.04,
+        "party": 0.05,
+        "relaxed": 0.9,
+        "sad": 0.85
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P06",
+      "latency_ms": 206.333,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1214,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.56,
+        "aggressive": 0.22,
+        "electronic": 0.54,
+        "happy": 0.23,
+        "party": 0.22,
+        "relaxed": 0.63,
+        "sad": 0.66
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 139.837,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 995,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.54,
+        "aggressive": 0.23,
+        "electronic": 0.56,
+        "happy": 0.22,
+        "party": 0.23,
+        "relaxed": 0.63,
+        "sad": 0.67
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 198.375,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 995,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.54,
+        "aggressive": 0.22,
+        "electronic": 0.56,
+        "happy": 0.22,
+        "party": 0.21,
+        "relaxed": 0.63,
+        "sad": 0.66
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 196.418,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 995,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.88,
+        "aggressive": 0.04,
+        "electronic": 0.15,
+        "happy": 0.05,
+        "party": 0.04,
+        "relaxed": 0.89,
+        "sad": 0.89
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 272.252,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1221,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.88,
+        "aggressive": 0.04,
+        "electronic": 0.15,
+        "happy": 0.05,
+        "party": 0.04,
+        "relaxed": 0.89,
+        "sad": 0.89
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 166.667,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1221,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.88,
+        "aggressive": 0.04,
+        "electronic": 0.15,
+        "happy": 0.05,
+        "party": 0.04,
+        "relaxed": 0.88,
+        "sad": 0.89
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P07",
+      "latency_ms": 204.072,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1221,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.1,
+        "aggressive": 0.73,
+        "electronic": 0.81,
+        "happy": 0.67,
+        "party": 0.85,
+        "relaxed": 0.11,
+        "sad": 0.12
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 154.452,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 978,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.1,
+        "aggressive": 0.73,
+        "electronic": 0.8,
+        "happy": 0.68,
+        "party": 0.84,
+        "relaxed": 0.1,
+        "sad": 0.12
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 155.274,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 978,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.1,
+        "aggressive": 0.72,
+        "electronic": 0.8,
+        "happy": 0.67,
+        "party": 0.84,
+        "relaxed": 0.11,
+        "sad": 0.12
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 127.746,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 978,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.81,
+        "electronic": 0.87,
+        "happy": 0.62,
+        "party": 0.87,
+        "relaxed": 0.13,
+        "sad": 0.14
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 219.224,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.81,
+        "electronic": 0.86,
+        "happy": 0.61,
+        "party": 0.86,
+        "relaxed": 0.14,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 153.344,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.82,
+        "electronic": 0.87,
+        "happy": 0.63,
+        "party": 0.86,
+        "relaxed": 0.14,
+        "sad": 0.14
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P08",
+      "latency_ms": 159.946,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.21,
+        "aggressive": 0.76,
+        "electronic": 0.38,
+        "happy": 0.16,
+        "party": 0.6,
+        "relaxed": 0.15,
+        "sad": 0.46
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 145.301,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.18,
+        "aggressive": 0.75,
+        "electronic": 0.41,
+        "happy": 0.16,
+        "party": 0.63,
+        "relaxed": 0.15,
+        "sad": 0.47
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 177.139,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.19,
+        "aggressive": 0.76,
+        "electronic": 0.39,
+        "happy": 0.16,
+        "party": 0.62,
+        "relaxed": 0.14,
+        "sad": 0.45
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 194.997,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.09,
+        "aggressive": 0.81,
+        "electronic": 0.8,
+        "happy": 0.27,
+        "party": 0.76,
+        "relaxed": 0.16,
+        "sad": 0.18
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 187.127,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.09,
+        "aggressive": 0.8,
+        "electronic": 0.8,
+        "happy": 0.28,
+        "party": 0.76,
+        "relaxed": 0.16,
+        "sad": 0.18
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 172.807,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.09,
+        "aggressive": 0.8,
+        "electronic": 0.79,
+        "happy": 0.28,
+        "party": 0.77,
+        "relaxed": 0.16,
+        "sad": 0.18
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P09",
+      "latency_ms": 207.254,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1225,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.36,
+        "aggressive": 0.33,
+        "electronic": 0.62,
+        "happy": 0.24,
+        "party": 0.56,
+        "relaxed": 0.45,
+        "sad": 0.61
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 172.349,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 996,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.34,
+        "aggressive": 0.32,
+        "electronic": 0.63,
+        "happy": 0.25,
+        "party": 0.58,
+        "relaxed": 0.45,
+        "sad": 0.6
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 171.748,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 996,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.36,
+        "aggressive": 0.32,
+        "electronic": 0.59,
+        "happy": 0.25,
+        "party": 0.57,
+        "relaxed": 0.45,
+        "sad": 0.61
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 181.308,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 996,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.53,
+        "electronic": 0.9,
+        "happy": 0.45,
+        "party": 0.87,
+        "relaxed": 0.19,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 220.031,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1222,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.54,
+        "electronic": 0.91,
+        "happy": 0.46,
+        "party": 0.87,
+        "relaxed": 0.19,
+        "sad": 0.12
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 242.066,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1222,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.05,
+        "aggressive": 0.54,
+        "electronic": 0.9,
+        "happy": 0.46,
+        "party": 0.87,
+        "relaxed": 0.19,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P10",
+      "latency_ms": 184.204,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1222,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.34,
+        "aggressive": 0.38,
+        "electronic": 0.63,
+        "happy": 0.24,
+        "party": 0.52,
+        "relaxed": 0.48,
+        "sad": 0.56
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 152.928,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1025,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.32,
+        "aggressive": 0.37,
+        "electronic": 0.61,
+        "happy": 0.23,
+        "party": 0.52,
+        "relaxed": 0.5,
+        "sad": 0.57
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 230.648,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1025,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.34,
+        "aggressive": 0.39,
+        "electronic": 0.57,
+        "happy": 0.22,
+        "party": 0.51,
+        "relaxed": 0.5,
+        "sad": 0.57
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 192.398,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1025,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.56,
+        "electronic": 0.88,
+        "happy": 0.39,
+        "party": 0.85,
+        "relaxed": 0.17,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 182.502,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1249,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.58,
+        "electronic": 0.89,
+        "happy": 0.43,
+        "party": 0.85,
+        "relaxed": 0.16,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 149.661,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1249,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.56,
+        "electronic": 0.9,
+        "happy": 0.41,
+        "party": 0.85,
+        "relaxed": 0.17,
+        "sad": 0.12
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P11",
+      "latency_ms": 211.737,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1249,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.19,
+        "aggressive": 0.37,
+        "electronic": 0.85,
+        "happy": 0.2,
+        "party": 0.68,
+        "relaxed": 0.4,
+        "sad": 0.47
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 136.338,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1012,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.19,
+        "aggressive": 0.37,
+        "electronic": 0.86,
+        "happy": 0.21,
+        "party": 0.68,
+        "relaxed": 0.39,
+        "sad": 0.47
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 143.208,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1012,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.2,
+        "aggressive": 0.37,
+        "electronic": 0.84,
+        "happy": 0.21,
+        "party": 0.68,
+        "relaxed": 0.38,
+        "sad": 0.46
+      },
+      "arm": "jev_only",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 162.975,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1012,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.56,
+        "electronic": 0.9,
+        "happy": 0.66,
+        "party": 0.86,
+        "relaxed": 0.23,
+        "sad": 0.14
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 149.841,
+      "repeat": 1,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1238,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.55,
+        "electronic": 0.9,
+        "happy": 0.65,
+        "party": 0.86,
+        "relaxed": 0.24,
+        "sad": 0.15
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 131.248,
+      "repeat": 2,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1238,
+        "output_tokens": 123
+      }
+    },
+    {
+      "answers": {
+        "acoustic": 0.06,
+        "aggressive": 0.57,
+        "electronic": 0.9,
+        "happy": 0.65,
+        "party": 0.86,
+        "relaxed": 0.23,
+        "sad": 0.13
+      },
+      "arm": "hybrid",
+      "attempts": 1,
+      "errors": [],
+      "file_id": "P12",
+      "latency_ms": 183.131,
+      "repeat": 3,
+      "resolved_model": "jev-1.13.0",
+      "retries": 0,
+      "status": "ok",
+      "usage": {
+        "input_tokens": 1238,
+        "output_tokens": 123
+      }
+    }
+  ],
+  "request_contract": {
+    "arms": {
+      "hybrid": "the same state plus the seven stored Essentia mood probabilities",
+      "jev_only": "metadata plus BPM, key, and duration; no classifier evidence"
+    },
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "questions": {
+      "acoustic": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible acoustic character.",
+          "true": "The track is likely to have a perceptible acoustic character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound acoustic? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "aggressive": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible aggressive character.",
+          "true": "The track is likely to have a perceptible aggressive character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound aggressive? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "electronic": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible electronic character.",
+          "true": "The track is likely to have a perceptible electronic character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound electronic? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "happy": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible happy character.",
+          "true": "The track is likely to have a perceptible happy character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound happy? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "party": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible party character.",
+          "true": "The track is likely to have a perceptible party character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound party? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "relaxed": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible relaxed character.",
+          "true": "The track is likely to have a perceptible relaxed character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound relaxed? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      },
+      "sad": {
+        "criteria": {
+          "false": "The track is unlikely to have a perceptible sad character.",
+          "true": "The track is likely to have a perceptible sad character."
+        },
+        "instructions": "Based only on the supplied state, is this track likely to sound sad? Treat metadata and measurements as fallible evidence. Do not assume that a missing signal means no.",
+        "type": "noul"
+      }
+    },
+    "repeats": 3,
+    "requested_model": "jev-latest"
+  },
+  "schema_version": "phaze-jev-mood-pilot-v1",
+  "source_data_redacted": true,
+  "summary": {
+    "cost_usd_public_rate": 0.003356262,
+    "failed_requests": 0,
+    "input_tokens": 79911,
+    "output_tokens": 8856,
+    "requests": 72,
+    "subjects": 12,
+    "successful_requests": 72
+  }
+}
