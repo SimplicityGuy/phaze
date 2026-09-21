@@ -73,11 +73,10 @@ Running NOTHING was the other real option and is defensible -- it is simpler, an
 manifest to drift. It was rejected because 9.6 s is not a saving worth having, and because the
 gap it opens is not hypothetical: ``test_adr_citation_resolution.py`` exists because of
 ``phaze-f70y9``, where eight bare "ADR-0014" citations came to resolve to the wrong document after
-a renumber and were caught once, by a human reading prose. CI does not close it either --
-``ci.yml``'s ``test`` job is gated on ``detect-changes.outputs.code-changed == 'true'`` and skips
-on a docs-only push, leaving only pre-commit and secret scanning. Without the floor, a bad citation
-lands on ``main`` and surfaces as a red gate in the NEXT bead's transcript, on prose that bead did
-not write.
+a renumber and were caught once, by a human reading prose. At the time CI did not close it either:
+``ci.yml`` gated its ``test`` job on ``detect-changes.outputs.code-changed == 'true'`` and skipped
+a docs-only push. Since phaze-1cwgr (2026-09-21), CI runs the full test workflow on docs-only
+changes; the local prose floor still provides a fast guard before submission.
 
 **THE MANIFEST IS DERIVED, NOT CURATED, WHICH IS WHAT ANSWERS THE DRIFT OBJECTION.**
 ``tests/shared/test_fast_gate.py`` scans every test module for a reference to a tracked prose path

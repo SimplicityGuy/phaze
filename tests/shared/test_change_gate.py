@@ -1,10 +1,10 @@
 """Regression tests for the CI doc-only change-gate classifier (Phase 63-04, CI-04 / D-09).
 
 ``scripts/classify-changed-files.sh`` decides whether a PR's changed files are
-documentation-only (skip the heavy security/test/docker jobs) or contain code (run
-the full pipeline). ``ci.yml``'s ``detect-changes`` job delegates to it via
-``just detect-code-changes``; ``aggregate-results`` then reports SUCCESS on a
-doc-only change so branch protection stays satisfied (skip-with-success).
+documentation-only (skip Docker and code-focused security scans) or contain code
+(run the full pipeline). ``ci.yml``'s ``detect-changes`` job delegates to it via
+``just detect-code-changes``; tests always run, including on documentation-only
+changes, and ``aggregate-results`` requires their success.
 
 These tests feed crafted changed-file lists through the *real* script over a
 subprocess (the same interface CI uses) and assert the printed ``code-changed``

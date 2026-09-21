@@ -140,6 +140,39 @@ def test_root_ci_does_not_serialize_tests_behind_quality() -> None:
     assert {"quality", "test"} <= set(jobs["aggregate-results"]["needs"])
 
 
+@pytest.mark.parametrize(("test_result", "expected_exit"), [("success", 0), ("failure", 1), ("skipped", 1)])
+def test_docs_only_pr_requires_a_passing_test_job(test_result: str, expected_exit: int) -> None:
+    """The docs-only PR #559 shape must reach the whole-tree guards and fail if they fail."""
+    jobs = _load_root_workflow()["jobs"]
+    test_job = jobs["test"]
+    assert test_job["needs"] == ["detect-changes"]
+    assert "if" not in test_job, "docs-only changes must not skip the test workflow"
+
+    classifier = _REPO_ROOT / "scripts" / "classify-changed-files.sh"
+    changed_files = "docs/design/0018-set-projection-and-file-viewer.md\n"
+    classified = subprocess.run(  # noqa: S603 - fixed in-repo script
+        [str(classifier)], input=changed_files, capture_output=True, text=True, check=True
+    )
+    assert classified.stdout.strip() == "code-changed=false"
+
+    gate = _find_run_step(jobs["aggregate-results"], "Pipeline Results Summary")["run"]
+    env = {
+        **os.environ,
+        "CODE_CHANGED": "false",
+        "DETECT_RESULT": "success",
+        "QUALITY_RESULT": "success",
+        "TEST_RESULT": test_result,
+        "SECURITY_RESULT": "success",
+        "DOCKER_RESULT": "skipped",
+    }
+    result = subprocess.run(["/bin/bash", "-c", gate], env=env, capture_output=True, text=True, check=False)  # noqa: S603 - trusted workflow
+    assert result.returncode == expected_exit, result.stdout
+    if expected_exit:
+        assert "Tests did not succeed on docs-only change" in result.stdout
+    else:
+        assert "All required pipeline workflows passed" in result.stdout
+
+
 def test_python_security_job_calls_the_public_bandit_recipe() -> None:
     """The workflow must use the current public recipe name, not the retired alias."""
     steps = _load_security_workflow()["jobs"]["python-security"]["steps"]

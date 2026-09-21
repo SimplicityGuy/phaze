@@ -408,8 +408,8 @@ test-validate-serial:
 # three would have sailed past a break in docs/runbook.md, docs/configuration.md or
 # docs/k8s-burst.md while announcing that "the prose guards ran". A gate whose output overstates
 # its coverage is the defect this repo has already paid for twice. Running NOTHING was the other
-# real option; 9.6 s was not a saving worth the phaze-f70y9 gap, given CI's `test` job is gated on
-# `detect-changes.outputs.code-changed == "true"` and skips on a docs-only push too.
+# real option; 9.6 s was not a saving worth the phaze-f70y9 gap. CI now runs the full test workflow
+# for docs-only pushes and PRs (phaze-1cwgr), while this local gate retains its prose floor.
 #
 # tests/docs_floor.txt is DERIVED: tests/shared/test_fast_gate.py fails the build when a test
 # module references a prose path and is missing from it. Do not hand-prune it.
@@ -510,8 +510,8 @@ test-fast:
         # guards" -- see the header above for why the curated version was measured and rejected.
         echo "📄 DOCS-ONLY: ${verdict#docs }"
         echo "   Running tests/docs_floor.txt -- every test module that reads tracked prose -- and"
-        echo "   NOT the suite. Ruff and mypy ran above. CI will not re-check this either: its test"
-        echo "   job is gated on code-changed and skips on a docs-only push."
+        echo "   NOT the suite. Ruff and mypy ran above. CI runs its full test workflow"
+        echo "   on docs-only pushes and PRs (phaze-1cwgr)."
         mapfile -t docs_args < "$selection"
         if [ "${#docs_args[@]}" -eq 0 ]; then
             echo "❌ the prose floor is empty — refusing to report a green gate over zero tests." >&2

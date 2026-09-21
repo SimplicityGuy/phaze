@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Classify a newline-delimited list of changed file paths (read from stdin) as
-# documentation-only or code, for the CI doc-only skip gate (CI-04, D-08/D-09).
+# documentation-only or code, for CI's Docker/code-scanner skip gate (CI-04, D-08/D-09).
 #
 # Prints exactly one line to stdout:
-#   code-changed=false   every changed path is documentation (skip heavy jobs)
+#   code-changed=false   every changed path is documentation (skip Docker/code scanners; run tests)
 #   code-changed=true    at least one path is code / tests / workflow / config
 #
 # The output is intentionally in GitHub Actions `name=value` form so `ci.yml`'s
@@ -12,7 +12,7 @@
 # CONSERVATIVE by construction (security mitigation T-63-04-01): only paths that
 # clearly match a documentation pattern are treated as docs. ANYTHING else — a
 # source file, a test, a workflow, pyproject.toml, or an unrecognised path — keeps
-# code-changed=true, so a code change can never skip the security/test/docker jobs.
+# code-changed=true, so a code change can never skip the code security/Docker jobs.
 # A change set that mixes docs and code is therefore always classified as code.
 #
 # Anything under a shipped-source tree (src/, tests/, scripts/, services/) is code
@@ -72,7 +72,7 @@ fi
 code_files="$(printf '%s\n%s\n' "${source_tree_files}" "${other_code_files}" | grep -v '^[[:space:]]*$' || true)"
 
 if [[ -z "${code_files}" ]]; then
-  # Every changed path is documentation -> skip the heavy jobs.
+  # Every changed path is documentation -> skip Docker/code scanners; tests still run.
   echo "code-changed=false"
 else
   echo "code-changed=true"
