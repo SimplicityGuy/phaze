@@ -29,6 +29,8 @@ class FileProposalResponse(BaseModel):
     stage: str | None = None
     day_number: int | None = None
     b2b_partners: list[str] = []
+    episode_number: int | None = None
+    part: int | None = None
     reasoning: str
 
 
