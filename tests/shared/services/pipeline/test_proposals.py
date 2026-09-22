@@ -18,6 +18,7 @@ from tests.shared.services.pipeline._shared import (
     datetime,
     get_proposal_pending_batches,
     pytest,
+    seed_active_agent,
     uuid,
 )
 
@@ -373,6 +374,8 @@ async def test_get_proposal_pending_batches_does_not_cross_agent_boundaries(sess
     keeps each agent's 2 files as its own (non-oversized) group, so the greedy pack keeps every
     batch pure to a single agent.
     """
+    await seed_active_agent(session, "agent-one")
+    await seed_active_agent(session, "agent-two")
     agent_one = [_make_pipeline_file(agent_id="agent-one", original_path=f"/music/Shared Folder Name/{i:02d}.mp3") for i in range(2)]
     agent_two = [_make_pipeline_file(agent_id="agent-two", original_path=f"/music/Shared Folder Name/{i:02d}.mp3") for i in range(2)]
     session.add_all([*agent_one, *agent_two])
