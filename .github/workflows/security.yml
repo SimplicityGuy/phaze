@@ -55,7 +55,7 @@ jobs:
         run: just bandit
 
       - name: 🌐 Run osv-scanner
-        uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67  # v2.5.1
+        uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc  # v2.6.0
 
   semgrep:
     name: Semgrep CE Scan
@@ -111,7 +111,7 @@ jobs:
         if: always()
 
       - name: 📤 Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         with:
           sarif_file: semgrep.sarif
         if: always()
@@ -133,7 +133,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c  # frozen: v3.97.4
+        uses: trufflesecurity/trufflehog@f714bf454f350590f4a24c3ddb1aef02c35bf5b6  # frozen: v3.97.5
         with:
           path: ./
           # Lob is excluded because its detector matches pytest function names, not secrets.
@@ -166,7 +166,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       - name: 📤 Upload trivy SARIF results
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         if: always()
         with:
           sarif_file: trivy-results.sarif
