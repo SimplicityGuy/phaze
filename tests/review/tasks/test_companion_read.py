@@ -132,6 +132,95 @@ class TestReadCompanionFilesTask:
         assert await _run([{"filename": "info.nfo", "path": str(companion)}], []) == []
 
     @pytest.mark.asyncio
+    async def test_decodes_cp437_nfo_art_instead_of_utf8_replacement(self, tmp_path: Path) -> None:
+        """phaze-j9b3z: a CP437-encoded .nfo decodes as CP437, not U+FFFD replacement chars.
+
+        Box-drawing bytes (e.g. 0xC9 '╔') are not valid UTF-8 continuation sequences, so the
+        strict-UTF-8 attempt fails and the .nfo-eligible CP437 fallback takes over.
+        """
+        border = "╔" + "═" * 20 + "╗"
+        text = f"{border}\nGROUP: EXAMPLE\n{border}\n"
+        companion = tmp_path / "release.nfo"
+        companion.write_bytes(text.encode("cp437"))
+
+        contents = await _run([{"filename": "release.nfo", "path": str(companion)}], [str(tmp_path)])
+
+        assert "�" not in contents[0]["content"]
+        assert contents[0]["content"] == text
+
+    @pytest.mark.asyncio
+    async def test_decodes_cp437_txt_art_instead_of_utf8_replacement(self, tmp_path: Path) -> None:
+        """phaze-j9b3z: the same scene tooling emits .txt sidecars in the same code page."""
+        border = "╔" + "═" * 20 + "╗"
+        text = f"{border}\nGROUP: EXAMPLE\n{border}\n"
+        companion = tmp_path / "release.txt"
+        companion.write_bytes(text.encode("cp437"))
+
+        contents = await _run([{"filename": "release.txt", "path": str(companion)}], [str(tmp_path)])
+
+        assert "�" not in contents[0]["content"]
+        assert contents[0]["content"] == text
+
+    @pytest.mark.asyncio
+    async def test_utf8_nfo_content_is_unchanged_by_the_cp437_fallback(self, tmp_path: Path) -> None:
+        """phaze-j9b3z acceptance: a genuinely UTF-8 companion decodes exactly as before.
+
+        Includes non-ASCII (accented) text so a wrong decode would visibly corrupt it -- strict
+        UTF-8 must succeed first and the CP437 fallback must never run.
+        """
+        text = "Artist: Café Del Mar\nVenue: Über Club\nDate: 2024.05.15\n"
+        companion = tmp_path / "info.nfo"
+        companion.write_text(text, encoding="utf-8")
+
+        contents = await _run([{"filename": "info.nfo", "path": str(companion)}], [str(tmp_path)])
+
+        assert contents[0]["content"] == text
+
+    @pytest.mark.asyncio
+    async def test_non_nfo_txt_extension_keeps_the_old_utf8_replacement_behavior(self, tmp_path: Path) -> None:
+        """phaze-j9b3z: the CP437 fallback is scoped to .nfo/.txt -- .m3u is ASCII/UTF-8 by spec.
+
+        Invalid-UTF-8 bytes in an .m3u still fall back to ``errors='replace'`` (U+FFFD), never
+        CP437 -- guessing CP437 for a playlist would manufacture mojibake, not remove it.
+        """
+        companion = tmp_path / "playlist.m3u"
+        companion.write_bytes(b"#EXTM3U\n\xc9\xcd\xcd track.mp3\n")
+
+        contents = await _run([{"filename": "playlist.m3u", "path": str(companion)}], [str(tmp_path)])
+
+        assert "�" in contents[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_cp437_nfo_through_the_rendered_proposal_context_has_no_replacement_chars(self, tmp_path: Path) -> None:
+        """phaze-j9b3z rule 3: verify through read -> clean -> the context content the prompt sees.
+
+        A CP437 NFO with box-drawing/block-art framing around a date field: the rendered companion
+        content must carry zero U+FFFD, the art lines must be stripped, and the date field -- which
+        sits well past the small ``max_chars`` bound used here -- must survive because
+        ``clean_companion_content`` strips the art BEFORE truncating.
+        """
+        from phaze.services.proposal import clean_companion_content
+
+        top = "╔" + "═" * 40 + "╗"
+        shade = "░▒▓█" * 10
+        bottom = "╚" + "═" * 40 + "╝"
+        art = "\n".join([top, shade, bottom])
+        info = "GROUP: EXAMPLE\nRELDATE: 2024.05.15\nSOURCE: SBD"
+        text = f"{art}\n{info}\n"
+        assert text.index("RELDATE") > 100  # the date field is past the max_chars bound below
+
+        companion = tmp_path / "release.nfo"
+        companion.write_bytes(text.encode("cp437"))
+
+        raw_contents = await _run([{"filename": "release.nfo", "path": str(companion)}], [str(tmp_path)], max_chars=100)
+        rendered = clean_companion_content(raw_contents[0]["content"], max_chars=100)
+
+        assert "�" not in rendered
+        assert "═" not in rendered  # box-drawing art line stripped
+        assert "█" not in rendered  # block-element art line stripped
+        assert "RELDATE: 2024.05.15" in rendered
+
+    @pytest.mark.asyncio
     async def test_reads_run_off_the_event_loop(self, tmp_path: Path) -> None:
         """phaze-cycw: ONE offload for the whole list, never a blocking read on the agent's loop."""
         companion = tmp_path / "info.nfo"
