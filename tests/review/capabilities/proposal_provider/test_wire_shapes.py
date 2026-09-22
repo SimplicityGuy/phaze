@@ -74,7 +74,18 @@ decision on bead ``phaze-02v1s`` was taken on (that decision is quoted in full i
 ``services/proposal.py``); it is kept here as the historical record, not as current behaviour.
 Originally litellm 1.97.0; every cell below re-measured unchanged against **litellm 1.98.0** /
 pydantic 2.13.4 / openai 2.54.0 / httpx 0.28.1 (phaze-o6wg7, 2026-08-23).
-"Anthropic" is ``claude-sonnet-5``, the configured default (``config.llm_model``).
+"Anthropic" in this table means ``claude-sonnet-4-20250514`` (``ANTHROPIC_TOOL_CALL_MODEL``) --
+every row was measured through the mocks in ``anthropic_tool_use()``, and litellm forces a
+``json_tool_call`` tool for THAT model (see the paragraph below). **It is not the configured
+default.** ``config.llm_model`` -- ``CONFIGURED_DEFAULT_MODEL``, ``claude-sonnet-5`` -- takes a
+different litellm code path entirely: native Anthropic structured outputs (``output_format``, no
+tool at all), verified separately in ``TestConfiguredDefaultWireShape`` and the native happy-path
+case in ``TestWellFormedProviderResponse``. This split was discovered by the dispatcher's review of
+``phaze-hqa6y`` (2026-09-22): an earlier pass of this bead swapped the model string bound to
+``ANTHROPIC_MODEL`` from ``claude-sonnet-4-20250514`` to ``claude-sonnet-5`` without re-measuring
+which litellm mechanism the new string actually takes, silently reverting every claim in this table
+and in the surrounding prose to being ABOUT the fallback model while being LABELLED as the
+configured one.
 "OpenAI" is ``gpt-4o``, reachable by changing that one setting.
 
 | # | Mode | BEFORE (both providers unless noted) | AFTER |
@@ -107,12 +118,24 @@ TWO CORRECTIONS TO THE BEAD'S OWN PREMISE, both measured here:
   This mode is already handled -- by the library, not by phaze -- and needs no guard. It is pinned
   anyway, because that guarantee lives entirely in a pinned dependency.
 
-On the Anthropic path modes 1 and 2 arrive only via a **text-only** response. litellm converts
-``response_format`` into a forced ``json_tool_call`` tool call for Anthropic models
-(``AnthropicConfig.map_response_format_to_anthropic_tool`` + ``tool_choice``), and when that tool
-call comes back it replaces ``message.content`` with ``json.dumps(args)`` -- clean JSON, no fence
-possible. See ``TestWhyFenceStrippingLooksDeadOnTheConfiguredModel`` for what makes them reachable
-anyway; the defence is not dead code.
+On ``claude-sonnet-4-20250514`` (``ANTHROPIC_TOOL_CALL_MODEL``) modes 1 and 2 arrive only via a
+**text-only** response. litellm converts ``response_format`` into a forced ``json_tool_call`` tool
+call for that model (``AnthropicConfig.map_response_format_to_anthropic_tool`` + ``tool_choice``),
+and when that tool call comes back it replaces ``message.content`` with ``json.dumps(args)`` --
+clean JSON, no fence possible. See ``TestWhyFenceStrippingLooksDeadOnTheToolCallModel`` for what
+makes them reachable anyway; the defence is not dead code.
+
+On the CONFIGURED DEFAULT, ``claude-sonnet-5``, litellm takes a different path for the same
+``response_format=BatchProposalResponse`` kwarg: native Anthropic structured outputs
+(``optional_params["output_format"]``, a ``json_schema``-typed grammar), with no tool and no
+``tool_choice`` at all -- measured directly against installed litellm 1.100.1 via
+``litellm.get_optional_params(model="claude-sonnet-5", custom_llm_provider="anthropic",
+response_format=BatchProposalResponse)``, which returns ``{"json_mode", "output_format"}`` and no
+``tools``/``tool_choice`` key. Every response on this path -- success or not -- is therefore a plain
+Anthropic **text** content block (there is no tool_use block to unwrap), so the reasoning above
+about fences being reachable only via refusal/early-stop bypassing a forced tool does not carry over
+unmodified; see ``TestConfiguredDefaultWireShape`` and the native happy-path case in
+``TestWellFormedProviderResponse`` for what is actually verified about this model's wire shape.
 
 BLAST RADIUS (CLAUDE.md rule 4, population measured -- AC 5)
 ------------------------------------------------------------
@@ -159,6 +182,8 @@ import pydantic
 import pytest
 from structlog.testing import capture_logs
 
+from phaze.config_control import ControlSettings
+
 
 # litellm starts a per-event-loop background logging worker on every ``acompletion``. pytest-asyncio
 # tears the loop down before that worker drains, so litellm's own teardown emits a "coroutine ...
@@ -167,10 +192,25 @@ from structlog.testing import capture_logs
 pytestmark = pytest.mark.filterwarnings("ignore:coroutine 'Logging.async_success_handler' was never awaited:RuntimeWarning")
 
 
-# The configured default (``config.llm_model``) and the most likely alternative. Both are named
-# explicitly because litellm's transform -- and therefore several of the verdicts above --
-# differs between them.
-ANTHROPIC_MODEL = "claude-sonnet-5"
+# Three models, three different litellm code paths for the identical
+# ``response_format=BatchProposalResponse`` kwarg phaze always sends -- named explicitly because the
+# TESTS below split along exactly this boundary, not along "Anthropic vs OpenAI".
+#
+# CONFIGURED_DEFAULT_MODEL is read from ``ControlSettings`` itself, not restated as a literal here --
+# restating it would let this file drift from the value it is supposed to be testing, which is
+# exactly the defect phaze-hqa6y's dispatcher review found (the model string changed in
+# ``config_control.py`` without the mocks in this file changing to match its real wire mechanism).
+# Measured against installed litellm 1.100.1 (``MEASURED_LITELLM_MINOR`` below):
+# ``litellm.get_optional_params(model=<model>, custom_llm_provider="anthropic",
+# response_format=BatchProposalResponse)`` returns:
+#   * ANTHROPIC_TOOL_CALL_MODEL  -> {"json_mode", "tool_choice", "tools"}, tool_choice a forced
+#     ``json_tool_call``. This is the FALLBACK mechanism -- reachable if ``config.llm_model`` is ever
+#     changed back to a Sonnet-4-family id -- and is what every pre-existing mock in this file below
+#     actually exercises.
+#   * CONFIGURED_DEFAULT_MODEL   -> {"json_mode", "output_format"}, no tool at all. This is native
+#     Anthropic structured outputs, and is what ``config.llm_model`` actually takes today.
+ANTHROPIC_TOOL_CALL_MODEL = "claude-sonnet-4-20250514"
+CONFIGURED_DEFAULT_MODEL = ControlSettings.model_fields["llm_model"].default
 OPENAI_MODEL = "gpt-4o"
 
 # One valid proposal, as a plain dict. NEVER built from BatchProposalResponse: that is the whole
@@ -196,13 +236,17 @@ VALID_JSON = json.dumps(VALID_PROPOSALS)
 # response schemas, hand-constructed (see EVIDENTIARY CLASS in the module docstring).
 
 
-def anthropic_response(content: list[dict[str, Any]], *, stop_reason: str = "tool_use") -> dict[str, Any]:
-    """A raw Anthropic ``/v1/messages`` response body."""
+def anthropic_response(content: list[dict[str, Any]], *, model: str, stop_reason: str = "tool_use") -> dict[str, Any]:
+    """A raw Anthropic ``/v1/messages`` response body.
+
+    ``model`` is required (no default) so every call site below states, explicitly, which litellm
+    code path it means to exercise -- ``ANTHROPIC_TOOL_CALL_MODEL`` or ``CONFIGURED_DEFAULT_MODEL``.
+    """
     return {
         "id": "msg_01SeamE6",
         "type": "message",
         "role": "assistant",
-        "model": ANTHROPIC_MODEL,
+        "model": model,
         "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": None,
@@ -210,22 +254,32 @@ def anthropic_response(content: list[dict[str, Any]], *, stop_reason: str = "too
     }
 
 
-def anthropic_tool_use(payload: dict[str, Any], *, stop_reason: str = "tool_use") -> dict[str, Any]:
-    """The HAPPY provider shape for ``response_format`` on Anthropic: a forced ``json_tool_call``.
+def anthropic_tool_use(payload: dict[str, Any], *, model: str = ANTHROPIC_TOOL_CALL_MODEL, stop_reason: str = "tool_use") -> dict[str, Any]:
+    """The HAPPY provider shape for ``response_format`` on ``ANTHROPIC_TOOL_CALL_MODEL``: a forced ``json_tool_call``.
 
     litellm names the tool ``json_tool_call`` and forces it via ``tool_choice``; on the way back it
     unwraps ``input["values"]`` into ``message.content``. Reproducing that name and nesting is what
-    makes this a provider payload rather than a phaze one.
+    makes this a provider payload rather than a phaze one. This shape is reachable ONLY on
+    ``ANTHROPIC_TOOL_CALL_MODEL`` -- litellm never builds a forced tool for ``CONFIGURED_DEFAULT_MODEL``
+    (see the constants comment above), so ``model`` defaults here rather than on ``anthropic_text``.
     """
     return anthropic_response(
         [{"type": "tool_use", "id": "toolu_01SeamE6", "name": "json_tool_call", "input": {"values": payload}}],
+        model=model,
         stop_reason=stop_reason,
     )
 
 
-def anthropic_text(text: str, *, stop_reason: str = "end_turn") -> dict[str, Any]:
-    """A TEXT-only Anthropic response -- the shape that reopens fences and preambles."""
-    return anthropic_response([{"type": "text", "text": text}], stop_reason=stop_reason)
+def anthropic_text(text: str, *, model: str, stop_reason: str = "end_turn") -> dict[str, Any]:
+    """A TEXT-only Anthropic response.
+
+    On ``ANTHROPIC_TOOL_CALL_MODEL`` this is the shape that reopens fences and preambles (reachable
+    via refusal/early-stop bypassing the forced tool). On ``CONFIGURED_DEFAULT_MODEL`` this is the
+    ONLY shape a response ever takes, success or not, because native structured outputs never uses a
+    tool at all. ``model`` has no default here precisely because which of those two meanings applies
+    is the entire point of each call site.
+    """
+    return anthropic_response([{"type": "text", "text": text}], model=model, stop_reason=stop_reason)
 
 
 def openai_response(choices: list[dict[str, Any]]) -> dict[str, Any]:
@@ -247,21 +301,29 @@ def openai_message(content: str | None, *, finish_reason: str = "stop") -> dict[
 # Driving the REAL litellm over a mocked socket
 
 
-def _mock_transport(payload: dict[str, Any], status_code: int = 200) -> httpx.MockTransport:
-    def handler(_request: httpx.Request) -> httpx.Response:
+def _mock_transport(payload: dict[str, Any], status_code: int = 200, *, captured_requests: list[httpx.Request] | None = None) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if captured_requests is not None:
+            captured_requests.append(request)
         return httpx.Response(status_code, json=payload, headers={"content-type": "application/json"})
 
     return httpx.MockTransport(handler)
 
 
-def _client_for(model: str, payload: dict[str, Any]) -> Any:
+def _client_for(model: str, payload: dict[str, Any], *, captured_requests: list[httpx.Request] | None = None) -> Any:
     """The provider client litellm will use, wired to a transport that returns *payload*.
 
     Two client types, because litellm reaches the two providers through different stacks: Anthropic
     goes through litellm's own ``AsyncHTTPHandler``, OpenAI through the ``openai`` SDK. Both accept
     an httpx transport, so in each case everything above the socket is the production code path.
+
+    ``captured_requests``, when given, receives every ``httpx.Request`` the transport actually saw --
+    i.e. the real outgoing HTTP body litellm built, after its own request-transformation code has run
+    (``AnthropicConfig.transform_request`` maps ``optional_params`` -- ``output_format`` included --
+    straight into the JSON body). This is what item 1 of the phaze-hqa6y dispatcher review requires:
+    pinning the wire body, not a litellm internal like ``get_optional_params``.
     """
-    transport = _mock_transport(payload)
+    transport = _mock_transport(payload, captured_requests=captured_requests)
     if model == OPENAI_MODEL:
         return openai.AsyncOpenAI(api_key="sk-test-not-a-real-key", http_client=httpx.AsyncClient(transport=transport))
     handler = AsyncHTTPHandler()
@@ -269,7 +331,7 @@ def _client_for(model: str, payload: dict[str, Any]) -> Any:
     return handler
 
 
-async def call_generate_batch(model: str, payload: dict[str, Any]) -> Any:
+async def call_generate_batch(model: str, payload: dict[str, Any], *, captured_requests: list[httpx.Request] | None = None) -> Any:
     """Run ``ProposalService.generate_batch`` against a provider that returns *payload*.
 
     ``acompletion`` is patched only to bind ``client=`` -- it remains the real
@@ -279,7 +341,7 @@ async def call_generate_batch(model: str, payload: dict[str, Any]) -> Any:
     from phaze.services.proposal import ProposalService
 
     service = ProposalService(model=model, prompt_template="Files:\n{files_json}", max_rpm=30)
-    bound = functools.partial(litellm.acompletion, client=_client_for(model, payload))
+    bound = functools.partial(litellm.acompletion, client=_client_for(model, payload, captured_requests=captured_requests))
     with patch("phaze.services.proposal.acompletion", bound):
         return await service.generate_batch([{"index": 0, "original_filename": "track.mp3"}])
 
@@ -311,7 +373,25 @@ class TestWellFormedProviderResponse:
     """The control case. Without it, every failing assertion below could be a broken harness."""
 
     async def test_anthropic_forced_tool_call_parses(self) -> None:
-        result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_tool_use(VALID_PROPOSALS))
+        """The FALLBACK model's happy path: ``ANTHROPIC_TOOL_CALL_MODEL`` forces a ``json_tool_call``."""
+        result = await call_generate_batch(ANTHROPIC_TOOL_CALL_MODEL, anthropic_tool_use(VALID_PROPOSALS, model=ANTHROPIC_TOOL_CALL_MODEL))
+
+        assert len(result.proposals) == 1
+        assert result.proposals[0].proposed_filename == "Artist - Event 2024 - Set (2024).mp3"
+        assert result.proposals[0].confidence == pytest.approx(0.91)
+
+    async def test_configured_default_native_structured_output_parses(self) -> None:
+        """The CONFIGURED DEFAULT's actual happy path (phaze-hqa6y dispatcher review, item 2).
+
+        ``CONFIGURED_DEFAULT_MODEL`` (``claude-sonnet-5``) never gets a forced tool call --
+        litellm's ``get_optional_params`` returns only ``{"json_mode", "output_format"}`` for it
+        (measured against installed litellm 1.100.1; no ``tools``/``tool_choice`` key at all). Its
+        native-structured-output response is therefore a plain Anthropic **text** content block
+        whose text IS the JSON, not a ``tool_use`` block -- the shape ``anthropic_text`` builds.
+        This is the mock that was missing: every other happy-path test in this class exercises the
+        fallback tool-call model or OpenAI, and neither is what production actually calls today.
+        """
+        result = await call_generate_batch(CONFIGURED_DEFAULT_MODEL, anthropic_text(VALID_JSON, model=CONFIGURED_DEFAULT_MODEL))
 
         assert len(result.proposals) == 1
         assert result.proposals[0].proposed_filename == "Artist - Event 2024 - Set (2024).mp3"
@@ -364,6 +444,84 @@ class TestWellFormedProviderResponse:
         assert consumer_generated != VALID_JSON
 
 
+# The configured default's own wire shape (phaze-hqa6y dispatcher review, items 1 and 5)
+
+
+class TestConfiguredDefaultWireShape:
+    """What litellm actually sends over the wire for ``CONFIGURED_DEFAULT_MODEL``, captured whole.
+
+    Item 1 of the dispatcher review: pin the OUTGOING request body, not a litellm internal.
+    ``get_optional_params`` (used in the module docstring and the constants comment above to
+    DECIDE which mechanism a model takes) is one hop upstream of the JSON that actually reaches
+    Anthropic -- ``AnthropicConfig.transform_request`` still has to fold ``optional_params`` into
+    the request body, and a defect there would be invisible to a test that only inspects
+    ``get_optional_params``'s return value. These tests capture the real ``httpx.Request`` the
+    mocked transport receives, via ``call_generate_batch(..., captured_requests=...)``, so the
+    assertion is against what litellm actually built to send -- one layer closer to production than
+    anywhere else in this file gets for this model.
+    """
+
+    async def test_the_outgoing_request_carries_native_output_format_and_no_forced_tool(self) -> None:
+        captured: list[httpx.Request] = []
+
+        await call_generate_batch(CONFIGURED_DEFAULT_MODEL, anthropic_text(VALID_JSON, model=CONFIGURED_DEFAULT_MODEL), captured_requests=captured)
+
+        assert len(captured) == 1
+        body = json.loads(captured[0].content)
+        assert body["model"] == CONFIGURED_DEFAULT_MODEL
+        assert "tools" not in body
+        assert "tool_choice" not in body
+        output_format = body["output_format"]
+        assert output_format["type"] == "json_schema"
+        assert output_format["schema"]["additionalProperties"] is False
+
+    async def test_the_emitted_schema_uses_none_of_the_features_anthropic_structured_outputs_rejects(self) -> None:
+        """Anthropic's ``output_format`` API 400s on several ordinary JSON Schema features.
+
+        litellm's own ``AnthropicConfig.filter_anthropic_output_schema`` (installed litellm
+        1.100.1) strips ``minimum``/``maximum``/``exclusiveMinimum``/``exclusiveMaximum``/
+        ``multipleOf`` and several others before the schema ever reaches the wire -- so this test
+        is not asserting phaze wrote a clean schema by hand, it is pinning that the SENT schema
+        (post-filter, exactly what ``test_the_outgoing_request_carries_native_output_format_and_no_forced_tool``
+        above also captures) stays clean. ``FileProposalResponse``'s own docstring on ``confidence``
+        already records why no numeric constraint is declared in the first place: "constrained
+        floats are not compatible with every supported LiteLLM provider."
+
+        Recursive/external refs are checked by walking for ``$ref``/``$defs`` entirely -- phaze's
+        schema nests ``FileProposalResponse`` inline rather than through a ``$defs`` indirection
+        (measured directly against the emitted schema, not assumed), so a future self-referential or
+        external ``$ref`` would be a real structural change this test is meant to catch, not a
+        pre-existing shape it has to special-case around.
+        """
+        captured: list[httpx.Request] = []
+
+        await call_generate_batch(CONFIGURED_DEFAULT_MODEL, anthropic_text(VALID_JSON, model=CONFIGURED_DEFAULT_MODEL), captured_requests=captured)
+
+        schema = json.loads(captured[0].content)["output_format"]["schema"]
+
+        forbidden_keys = {
+            "$ref",
+            "$defs",
+            "minimum",
+            "maximum",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "multipleOf",
+        }
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                present = forbidden_keys & node.keys()
+                assert not present, f"schema node uses a feature Anthropic structured outputs rejects: {present} in {node}"
+                for value in node.values():
+                    _walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(schema)
+
+
 # Mode 1 -- markdown fences (now defended)
 
 
@@ -373,7 +531,7 @@ class TestMarkdownFences:
     FENCED = f"```json\n{VALID_JSON}\n```"
 
     async def test_anthropic_text_only_fenced_response_is_recovered(self) -> None:
-        result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_text(self.FENCED))
+        result = await call_generate_batch(ANTHROPIC_TOOL_CALL_MODEL, anthropic_text(self.FENCED, model=ANTHROPIC_TOOL_CALL_MODEL))
 
         assert len(result.proposals) == 1
         assert result.proposals[0].proposed_filename == "Artist - Event 2024 - Set (2024).mp3"
@@ -418,7 +576,7 @@ class TestProsePreamble:
     PREAMBLED = f"Here is the JSON you requested:\n\n{VALID_JSON}"
 
     async def test_anthropic_text_only_preamble_is_recovered(self) -> None:
-        result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_text(self.PREAMBLED))
+        result = await call_generate_batch(ANTHROPIC_TOOL_CALL_MODEL, anthropic_text(self.PREAMBLED, model=ANTHROPIC_TOOL_CALL_MODEL))
 
         assert len(result.proposals) == 1
 
@@ -441,27 +599,43 @@ class TestProsePreamble:
 
 
 class TestWhyFenceStrippingLooksDeadOnTheConfiguredModel:
-    """Why modes 1/2 are near-unreachable on today's model, so nobody deletes the defence.
+    """Why modes 1/2 are near-unreachable on ``ANTHROPIC_TOOL_CALL_MODEL``, so nobody deletes the defence.
 
-    Measured in half 1: for Anthropic models litellm turns ``response_format`` into a FORCED
-    ``json_tool_call`` and unwraps the tool arguments into ``message.content`` as
-    ``json.dumps(args)``. A fence cannot survive that, so on ``claude-sonnet-5`` -- the
-    configured default -- the stripping rung will essentially never fire.
+    **The class name is now inaccurate and is kept anyway** -- it is a pinned node id in
+    ``tests/review/capabilities/scenario_node_map.tsv``, which a change-selected gate run
+    (``just check-fast`` / ``scripts/select_impacted_tests.py``) resolves by exact path, so
+    renaming it here without also updating that map risks silently dropping this class from
+    selected runs. Read "the configured model" below as ``ANTHROPIC_TOOL_CALL_MODEL``
+    (``claude-sonnet-4-20250514``) -- **NOT** ``config.llm_model`` / ``CONFIGURED_DEFAULT_MODEL``
+    (``claude-sonnet-5``), which this class does not exercise at all.
+
+    Measured in half 1, and true of ``ANTHROPIC_TOOL_CALL_MODEL`` only: litellm turns
+    ``response_format`` into a FORCED ``json_tool_call`` and unwraps the tool arguments into
+    ``message.content`` as ``json.dumps(args)``. A fence cannot survive that, so on
+    ``ANTHROPIC_TOOL_CALL_MODEL`` the stripping rung will essentially never fire.
 
     Three things reopen it, and each is ordinary rather than exotic:
 
     1. a **refusal or a safety stop**, which returns a text block and no tool call;
     2. an **early stop** before the tool block is emitted, same shape;
     3. a **model switch** -- ``config.llm_model`` is one setting, and every non-Anthropic path
-       carries raw string content where a fence survives intact.
+       carries raw string content where a fence survives intact. As of phaze-hqa6y a switch to the
+       CONFIGURED DEFAULT is also such a case, though by an entirely different mechanism: on
+       ``CONFIGURED_DEFAULT_MODEL`` there is no tool call to bypass, because litellm never builds
+       one for that model -- every response, success or not, is already the text shape. See
+       ``TestConfiguredDefaultWireShape`` and ``TestWellFormedProviderResponse`` for what is
+       actually verified there; this class says nothing about it.
 
-    The test below pins mechanism (1)/(2): a text-only Anthropic reply really does arrive with the
-    fence intact, so the defence has live work to do on the configured model.
+    The test below pins mechanism (1)/(2) on ``ANTHROPIC_TOOL_CALL_MODEL``: a text-only Anthropic
+    reply really does arrive with the fence intact, so the defence has live work to do whenever
+    ``config.llm_model`` names that model.
     """
 
     async def test_a_text_only_anthropic_reply_delivers_the_fence_intact(self) -> None:
         with capture_logs() as captured:
-            result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_text(f"```json\n{VALID_JSON}\n```"))
+            result = await call_generate_batch(
+                ANTHROPIC_TOOL_CALL_MODEL, anthropic_text(f"```json\n{VALID_JSON}\n```", model=ANTHROPIC_TOOL_CALL_MODEL)
+            )
 
         assert len(result.proposals) == 1
         assert "fenced" in _parse_modes(captured)
@@ -469,7 +643,7 @@ class TestWhyFenceStrippingLooksDeadOnTheConfiguredModel:
     async def test_the_forced_tool_call_path_never_carries_a_fence(self) -> None:
         """The complement: on the tool-call path the content is already clean, so no rung fires."""
         with capture_logs() as captured:
-            result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_tool_use(VALID_PROPOSALS))
+            result = await call_generate_batch(ANTHROPIC_TOOL_CALL_MODEL, anthropic_tool_use(VALID_PROPOSALS, model=ANTHROPIC_TOOL_CALL_MODEL))
 
         assert len(result.proposals) == 1
         assert _parse_modes(captured) == []
@@ -517,7 +691,7 @@ class TestContentIsNone:
         from phaze.services.proposal import MalformedCompletionError
 
         with pytest.raises(MalformedCompletionError) as exc_info:
-            await call_generate_batch(ANTHROPIC_MODEL, anthropic_response([], stop_reason="max_tokens"))
+            await call_generate_batch(ANTHROPIC_TOOL_CALL_MODEL, anthropic_response([], model=ANTHROPIC_TOOL_CALL_MODEL, stop_reason="max_tokens"))
 
         assert exc_info.value.mode == "content_none"
 
@@ -615,7 +789,9 @@ class TestModeFiveASalvage:
         return {"proposals": items}
 
     async def test_anthropic_truncated_tool_input_keeps_the_complete_items(self) -> None:
-        result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_tool_use(self._mixed_batch(), stop_reason="max_tokens"))
+        result = await call_generate_batch(
+            ANTHROPIC_TOOL_CALL_MODEL, anthropic_tool_use(self._mixed_batch(), model=ANTHROPIC_TOOL_CALL_MODEL, stop_reason="max_tokens")
+        )
 
         assert len(result.proposals) == 9
         assert [proposal.file_index for proposal in result.proposals] == list(range(9))
@@ -630,7 +806,9 @@ class TestModeFiveASalvage:
         """
         from phaze.services.proposal import BatchProposalResponse, SalvagedBatchProposalResponse
 
-        result = await call_generate_batch(ANTHROPIC_MODEL, anthropic_tool_use(self._mixed_batch(), stop_reason="max_tokens"))
+        result = await call_generate_batch(
+            ANTHROPIC_TOOL_CALL_MODEL, anthropic_tool_use(self._mixed_batch(), model=ANTHROPIC_TOOL_CALL_MODEL, stop_reason="max_tokens")
+        )
 
         assert isinstance(result, SalvagedBatchProposalResponse)
         assert isinstance(result, BatchProposalResponse)
@@ -638,7 +816,9 @@ class TestModeFiveASalvage:
 
     async def test_salvage_is_logged_with_what_it_discarded(self) -> None:
         with capture_logs() as captured:
-            await call_generate_batch(ANTHROPIC_MODEL, anthropic_tool_use(self._mixed_batch(), stop_reason="max_tokens"))
+            await call_generate_batch(
+                ANTHROPIC_TOOL_CALL_MODEL, anthropic_tool_use(self._mixed_batch(), model=ANTHROPIC_TOOL_CALL_MODEL, stop_reason="max_tokens")
+            )
 
         assert "item_invalid" in _parse_modes(captured)
         salvage_events = [event for event in captured if event.get("parse_mode") == "item_invalid"]
