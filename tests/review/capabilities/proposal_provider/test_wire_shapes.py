@@ -74,7 +74,7 @@ decision on bead ``phaze-02v1s`` was taken on (that decision is quoted in full i
 ``services/proposal.py``); it is kept here as the historical record, not as current behaviour.
 Originally litellm 1.97.0; every cell below re-measured unchanged against **litellm 1.98.0** /
 pydantic 2.13.4 / openai 2.54.0 / httpx 0.28.1 (phaze-o6wg7, 2026-08-23).
-"Anthropic" is ``claude-sonnet-4-20250514``, the configured default (``config.llm_model``).
+"Anthropic" is ``claude-sonnet-5``, the configured default (``config.llm_model``).
 "OpenAI" is ``gpt-4o``, reachable by changing that one setting.
 
 | # | Mode | BEFORE (both providers unless noted) | AFTER |
@@ -170,7 +170,7 @@ pytestmark = pytest.mark.filterwarnings("ignore:coroutine 'Logging.async_success
 # The configured default (``config.llm_model``) and the most likely alternative. Both are named
 # explicitly because litellm's transform -- and therefore several of the verdicts above --
 # differs between them.
-ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL = "claude-sonnet-5"
 OPENAI_MODEL = "gpt-4o"
 
 # One valid proposal, as a plain dict. NEVER built from BatchProposalResponse: that is the whole
@@ -445,7 +445,7 @@ class TestWhyFenceStrippingLooksDeadOnTheConfiguredModel:
 
     Measured in half 1: for Anthropic models litellm turns ``response_format`` into a FORCED
     ``json_tool_call`` and unwraps the tool arguments into ``message.content`` as
-    ``json.dumps(args)``. A fence cannot survive that, so on ``claude-sonnet-4-20250514`` -- the
+    ``json.dumps(args)``. A fence cannot survive that, so on ``claude-sonnet-5`` -- the
     configured default -- the stripping rung will essentially never fire.
 
     Three things reopen it, and each is ordinary rather than exotic:

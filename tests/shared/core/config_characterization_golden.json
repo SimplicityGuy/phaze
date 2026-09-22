@@ -643,7 +643,7 @@
     "llm_batch_size": 10,
     "llm_max_companion_chars": 3000,
     "llm_max_rpm": 30,
-    "llm_model": "claude-sonnet-4-20250514",
+    "llm_model": "claude-sonnet-5",
     "log_json": null,
     "log_level": "INFO",
     "models_path": "/models",
