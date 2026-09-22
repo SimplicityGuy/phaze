@@ -35,7 +35,12 @@ MAX_COMPANION_CHARS = 3000
 _COMPANION_READ_TIMEOUT_S = 30.0
 _COMPANION_CHUNK = 200
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-_ASCII_ART_RE = re.compile(r"^[\s\-=_*#~|/\\]{10,}$")
+# Box drawing (U+2500-257F), block elements (U+2580-259F, the shade/solid blocks CP437 ANSI art
+# uses for fills) and geometric shapes (U+25A0-25FF, arrows/triangles used as rule ornaments) --
+# added alongside the original ASCII separator set now that phaze-j9b3z decodes CP437 .nfo/.txt
+# companions for real instead of replacing them with U+FFFD, which is what made this regex's
+# ASCII-only reach look sufficient before (phaze-j9b3z).
+_ASCII_ART_RE = re.compile(r"^[\s\-=_*#~|/\\─-╿▀-▟■-◿]{10,}$")
 
 _DATE_CONVENTION_PLACEHOLDER = "{date_convention_guidance}\n"
 _DATE_CONVENTION_GUIDANCE = (

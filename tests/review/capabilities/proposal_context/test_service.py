@@ -78,6 +78,23 @@ class TestCleanCompanionContent:
         assert "Date: 2024.05.15" in result
         assert "Source: SBD" in result
 
+    def test_strips_box_drawing_and_block_element_art_lines(self):
+        """phaze-j9b3z: CP437 NFO art decodes to box-drawing/block-element Unicode, not ASCII."""
+        from phaze.services.proposal import clean_companion_content
+
+        top = "╔" + "═" * 20 + "╗"  # box drawing: double-line frame
+        shade = "░▒▓█" * 5  # block elements: shade ramp + solid block
+        bottom = "╚" + "═" * 20 + "╝"
+        text = f"{top}\nArtist: DJ Test\n{shade}\nDate: 2024.05.15\n{bottom}"
+
+        result = clean_companion_content(text)
+
+        assert top not in result
+        assert shade not in result
+        assert bottom not in result
+        assert "Artist: DJ Test" in result
+        assert "Date: 2024.05.15" in result
+
 
 class TestBuildFileContext:
     """Tests for build_file_context function."""
