@@ -45,6 +45,21 @@ class TestLoadPromptTemplate:
         with pytest.raises(FileNotFoundError):
             load_prompt_template("nonexistent_template_xyz")
 
+    def test_carries_the_ambiguous_date_rule(self):
+        """phaze-soc1q, operator decision 2026-09-22 (Q1, 'Use xx + cap confidence (Recommended)'):
+        an ambiguous NN-NN-YYYY token with no resolved date must be written YYYY.xx.xx unless
+        another source in the file's own input confirms the order, confidence capped below 0.8,
+        and the model must never guess the order. This asserts the rule text survives in the
+        rendered template, not just in a Python constant."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+
+        assert "Ambiguous day/month order" in content
+        assert "never guess the order" in content
+        assert "YYYY.xx.xx" in content
+        assert "confidence for that file below 0.8" in content
+
 
 class TestCleanCompanionContent:
     """Tests for clean_companion_content function."""

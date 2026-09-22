@@ -44,6 +44,17 @@ Always use `YYYY.MM.DD` for dates:
 
 Use `x` for unknown date components.
 
+### Ambiguous day/month order
+
+A filename date token shaped `NN-NN-YYYY` (e.g. `06-12-2014`) is ambiguous whenever both readings
+-- day-first and month-first -- are valid calendar dates: nothing in the token itself says which
+one it is. If this file's own input already gives you a resolved date for that token, use it
+instead of reading the token yourself. Otherwise, never guess the order: write `YYYY.xx.xx` for
+the month and day (e.g. `2014.xx.xx`) unless another source in THIS file's own input -- a companion
+NFO's stated air date, or its tags -- independently confirms the order, in which case you may
+write the confirmed `YYYY.MM.DD`. Either way, cap your confidence for that file below 0.8 when the
+date order was ambiguous.
+
 ## Extension Rule
 
 Always preserve the original file extension exactly as-is. Never change, normalize, or remove the extension.
