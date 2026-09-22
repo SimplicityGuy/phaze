@@ -178,12 +178,14 @@ async def test_sse_emits_waiting_when_hash_absent(smoke_sse_app: tuple[FastAPI, 
 
     redis.hgetall = fake_hgetall  # AsyncMock-compatible: hgetall is an async def
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                assert resp.status_code == 200
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            assert resp.status_code == 200
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     assert b"Waiting for execution to start" in body
     assert b"event: progress" in body
@@ -196,12 +198,14 @@ async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI,
     # hgetall always returns {} -- an empty dispatch, reaped batch, or unknown batch_id.
     redis.hgetall = AsyncMock(return_value={})
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                assert resp.status_code == 200
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            assert resp.status_code == 200
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     # The generator closed on its own: a terminal 'complete' event was emitted and the stream ended.
     assert b"event: complete" in body
@@ -234,12 +238,14 @@ async def test_sse_falls_back_when_dispatch_summary_is_malformed_json(
     )
     # Render through real Jinja but skip the sleep.
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                assert resp.status_code == 200
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            assert resp.status_code == 200
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     # Generator did NOT raise (would have returned a 500 or closed without events).
     # We expect a normal SSE stream that includes the agents_table event (rendered with
@@ -267,11 +273,13 @@ async def test_sse_with_valid_dispatch_summary_succeeds(
         }
     )
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     assert b"event: agents_table" in body
     assert b"event: complete" in body
@@ -295,12 +303,14 @@ async def test_sse_status_terminal_path_emits_close_after_complete_with_errors(
         }
     )
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                assert resp.status_code == 200
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            assert resp.status_code == 200
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     assert b"event: complete_with_errors" in body
     assert b"event: close" in body
@@ -1029,12 +1039,14 @@ async def test_sse_wrong_key_type_still_emits_a_terminal_close(
     redis.hgetall = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
 
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
-                assert resp.status_code == 200
-                body = b""
-                async for chunk in resp.aiter_bytes():
-                    body += chunk
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac,
+            ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp,
+        ):
+            assert resp.status_code == 200
+            body = b""
+            async for chunk in resp.aiter_bytes():
+                body += chunk
 
     # Degrades to the empty-hash path, which is bounded by _MAX_EMPTY_POLLS and closes the stream.
     assert b"event: complete" in body
