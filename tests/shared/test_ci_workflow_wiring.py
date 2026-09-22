@@ -61,6 +61,7 @@ _CODE_QUALITY_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "code-quali
 _DOCKER_PUBLISH_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 _SECURITY_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "security.yml"
 _ROOT_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_DEPENDABOT_PATH = _REPO_ROOT / ".github" / "dependabot.yml"
 _PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
 _BUCKETS_JSON = _REPO_ROOT / "tests" / "buckets.json"
 _CI_SHARDS_JSON = _REPO_ROOT / "tests" / "ci_shards.json"
@@ -104,6 +105,18 @@ def _load_security_workflow() -> dict[str, Any]:
     assert _SECURITY_WORKFLOW_PATH.is_file(), f"missing workflow: {_SECURITY_WORKFLOW_PATH}"
     loaded: dict[str, Any] = yaml.safe_load(_SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
     return loaded
+
+
+def test_dependabot_update_directories_exist() -> None:
+    """Every Dependabot update entry must point at a directory present in the repository."""
+    assert _DEPENDABOT_PATH.is_file(), f"missing Dependabot config: {_DEPENDABOT_PATH}"
+    config: dict[str, Any] = yaml.safe_load(_DEPENDABOT_PATH.read_text(encoding="utf-8"))
+
+    for update in config["updates"]:
+        directory = update["directory"]
+        assert isinstance(directory, str) and directory.startswith("/"), directory
+        path = _REPO_ROOT / directory.lstrip("/")
+        assert path.is_dir(), f"Dependabot directory does not exist: {directory}"
 
 
 def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
@@ -279,7 +292,7 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     (test_results_step,) = test_job_hits
     assert test_results_step.get("name") == "📊 Upload test results to Codecov", test_results_step
     assert test_results_step.get("if") == "${{ !cancelled() }}", test_results_step
-    assert test_results_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", test_results_step
+    assert test_results_step.get("uses") == "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5", test_results_step
     assert test_results_step.get("with") == {
         "disable_search": True,
         "files": "./junit.xml",
@@ -290,7 +303,7 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     combine_job_hits = _find_codecov_token_steps(jobs["combine"])
     assert len(combine_job_hits) == 1, f"expected exactly one CODECOV_TOKEN-bearing step in combine, found {len(combine_job_hits)}"
     (codecov_step,) = combine_job_hits
-    assert codecov_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", codecov_step
+    assert codecov_step.get("uses") == "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5", codecov_step
     assert codecov_step.get("with") == {"flags": "unittests", "disable_search": True, "files": "./coverage.xml"}, codecov_step
     assert codecov_step.get("env") == {"CODECOV_TOKEN": "${{ secrets.CODECOV_TOKEN }}"}, codecov_step
 
