@@ -43,6 +43,22 @@ instead of a bare date presented as fact. The ``source`` field is what distingui
 ``supporting_count`` / ``contradicting_count`` / ``ambiguous_count`` / ``confidence`` are copied
 from the exact convention row that was applied (with its ``id`` and ``computed_at``), so the UI can
 show the evidence as it stood when the inference was made rather than as it stands at render time.
+
+## The parent-directory fallback (phaze-soc1q)
+
+Operator decision 2026-09-22 (phaze-soc1q, Q2 as put: *"should the date resolver also read the
+parent folder name when the filename has no date?"*, answer *"Yes, fallback to folder
+(Recommended)"*): **the filename's own token always wins**; only when the filename carries NO
+``\\d{2}-\\d{2}-\\d{4}`` token at all (:attr:`~phaze.services.filename_convention_learner.DateVerdict.NONE_PRESENT`)
+is the parent directory name of ``original_path`` read for one, with the identical precedence and
+gating rules applied to whatever token is found there. A filename token that exists but is
+ambiguous, not-a-date, or conflicting is still the filename's own answer -- unresolved is a
+fail-closed outcome, not a licence to keep looking. :data:`DateProvenance.origin` records
+which string the applied token actually came from (:data:`ORIGIN_FILENAME` or
+:data:`ORIGIN_FOLDER`), independently of ``source`` -- an ambiguous token found in the
+folder name can still only be resolved via a release-group convention (the group tag itself is
+always read from the filename, per ``release_group.py``'s own scene-tail rules), so ``source`` and
+``origin`` vary independently and a reviewer needs both to know what happened.
 """
 
 from __future__ import annotations
@@ -72,6 +88,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONTEXT_KEY",
+    "ORIGIN_FILENAME",
+    "ORIGIN_FOLDER",
+    "SOURCE_CONVENTION",
+    "SOURCE_FILENAME",
     "DateProvenance",
     "annotate_date_conventions",
     "load_release_group_conventions",
@@ -88,10 +108,20 @@ CONTEXT_KEY = "date_convention"
 "flag off => key absent" invariant is checkable with one membership test."""
 
 SOURCE_FILENAME = "filename"
-"""The date resolved itself from the filename. The convention store was NOT consulted."""
+"""The date resolved itself from its token. The convention store was NOT consulted. Orthogonal to
+:data:`ORIGIN_FILENAME` / :data:`ORIGIN_FOLDER` -- this says how the order was decided
+(read off the string), not which string it was read from."""
 
 SOURCE_CONVENTION = "release_group_convention"
 """The date was ambiguous and was resolved by a learned convention that cleared both gates."""
+
+ORIGIN_FILENAME = "filename"
+"""The applied ``\\d{2}-\\d{2}-\\d{4}`` token was read from ``original_filename``."""
+
+ORIGIN_FOLDER = "folder"
+"""The applied token was read from the parent directory name of ``original_path`` -- only
+attempted when the filename carried no date token at all (phaze-soc1q, operator decision
+2026-09-22). The filename's own token always wins when one is present, ambiguous or not."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,12 +136,16 @@ class DateProvenance:
     date: str
     """The resolved date, ISO ``YYYY-MM-DD``."""
     raw: str
-    """The date token exactly as it appeared in the filename, e.g. ``04-05-2014``."""
+    """The date token exactly as it appeared in the source string, e.g. ``04-05-2014``."""
     date_order: str
     """Which reading was applied: a :class:`~phaze.services.filename_convention_learner.DateOrder`."""
     source: str
     """:data:`SOURCE_FILENAME` or :data:`SOURCE_CONVENTION` -- the single field a reviewer needs to
-    know whether this date is a fact about the filename or an inference about its uploader."""
+    know whether this date is a fact about the token or an inference about its uploader."""
+    origin: str = ORIGIN_FILENAME
+    """:data:`ORIGIN_FILENAME` or :data:`ORIGIN_FOLDER` -- which string the applied
+    token was actually read from. Always populated, including for a self-resolving filename date,
+    so a reviewer never has to infer origin from absence."""
     scope: str | None = None
     scope_value: str | None = None
     convention_kind: str | None = None
@@ -146,20 +180,28 @@ def resolve_date(
     convention: FilenameConvention | None,
     min_supporting: int,
     min_purity: float,
+    origin: str = ORIGIN_FILENAME,
 ) -> DateProvenance | None:
     """Resolve *filename*'s date, or return ``None`` when it cannot be resolved safely.
 
     Args:
-        filename: the filename to read. Only its ``\\d{2}-\\d{2}-\\d{4}`` token is considered.
+        filename: the string to read -- normally ``original_filename``, but the caller may pass a
+            parent directory name instead (phaze-soc1q's folder fallback) when the filename carries
+            no date token at all. Only its ``\\d{2}-\\d{2}-\\d{4}`` token is considered.
         convention: the learned ``date_order`` row for this filename's release group, or ``None``
-            when the group is unknown or has no row. IGNORED when the filename resolves itself.
+            when the group is unknown or has no row. IGNORED when *filename* resolves itself. The
+            group is always the one extracted from the ORIGINAL FILENAME regardless of
+            *origin* -- scene release-group tags live in filenames, not directory names.
         min_supporting: the evidence bar (``convention_date_min_supporting``).
         min_purity: the purity bar (``convention_date_min_purity``).
+        origin: :data:`ORIGIN_FILENAME` or :data:`ORIGIN_FOLDER` -- which string
+            *filename* actually is, recorded verbatim onto the returned provenance so a reviewer
+            can tell a folder-derived date from a filename-derived one.
 
     Returns:
         A :class:`DateProvenance` when a date was resolved, else ``None``. ``None`` covers every
-        fail-closed case: no date in the filename, a token that is no date under either reading,
-        two conflicting tokens, no convention for the group, and a convention below either bar.
+        fail-closed case: no date in *filename*, a token that is no date under either reading, two
+        conflicting tokens, no convention for the group, and a convention below either bar.
 
     This function does NOT check the feature flag -- :func:`annotate_date_conventions` owns that,
     so the flag is enforced at exactly one place and the resolution rule stays independently
@@ -169,11 +211,17 @@ def resolve_date(
 
     self_resolved_order = reading.order
     if self_resolved_order is not None:
-        # PRECEDENCE: the filename answered its own question. The store is not consulted.
+        # PRECEDENCE: the string answered its own question. The store is not consulted.
         resolved = reading.as_date(self_resolved_order)
         if resolved is None or reading.raw is None:  # pragma: no cover -- a self-resolving reading always has both
             return None
-        return DateProvenance(date=resolved.isoformat(), raw=reading.raw, date_order=str(self_resolved_order), source=SOURCE_FILENAME)
+        return DateProvenance(
+            date=resolved.isoformat(),
+            raw=reading.raw,
+            date_order=str(self_resolved_order),
+            source=SOURCE_FILENAME,
+            origin=origin,
+        )
 
     if reading.verdict is not DateVerdict.AMBIGUOUS or reading.raw is None:
         # No date, no date under either reading, or two conflicting tokens: nothing to fall back on.
@@ -207,6 +255,7 @@ def resolve_date(
         raw=reading.raw,
         date_order=str(order),
         source=SOURCE_CONVENTION,
+        origin=origin,
         scope=convention.scope,
         scope_value=convention.scope_value,
         convention_kind=convention.convention_kind,
@@ -242,6 +291,21 @@ async def load_release_group_conventions(session: AsyncSession, groups: Collecti
     return {row.scope_value: row for row in rows}
 
 
+def _parent_directory_name(original_path: str) -> str:
+    """The immediate parent directory's own name in *original_path*, or ``""`` if there is none.
+
+    Pure string handling, no filesystem access -- this module never touches disk, the same
+    convention as ``release_group.py``'s ``_basename``. Both POSIX and Windows separators are
+    honoured since ``original_path`` may have been recorded from either. A path with fewer than two
+    components (a bare filename, or empty) has no parent to read.
+    """
+    normalized = original_path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return parts[-2]
+
+
 async def annotate_date_conventions(
     session: AsyncSession,
     contexts: Sequence[dict[str, Any]],
@@ -266,17 +330,40 @@ async def annotate_date_conventions(
 
     Returns:
         How many contexts were annotated.
+
+    The filename's own token always wins (phaze-soc1q, operator decision 2026-09-22): the parent
+    directory name of ``original_path`` is consulted only when ``original_filename`` carries no
+    ``\\d{2}-\\d{2}-\\d{4}`` token at all (:attr:`~phaze.services.filename_convention_learner.DateVerdict.NONE_PRESENT`).
+    An ambiguous, not-a-date, or multi-token filename is still the filename's own answer and is left
+    unresolved exactly as before -- it does not fall through to the folder.
     """
     if not enabled:
         return 0
 
     filenames = [str(context.get("original_filename") or "") for context in contexts]
-    # Only AMBIGUOUS filenames need a group looked up -- a self-resolving one never consults the
+    original_paths = [str(context.get("original_path") or "") for context in contexts]
+
+    # The string each context's date is actually resolved from (filename, or its parent directory
+    # name when the filename has no token at all) plus where that string came from. The release
+    # group used for a convention lookup is ALWAYS read from `original_filename` regardless of
+    # `origin` -- scene release-group tags live in filenames, per release_group.py.
+    resolve_from: list[str] = []
+    origins: list[str] = []
+    for name, path in zip(filenames, original_paths, strict=True):
+        text, origin = name, ORIGIN_FILENAME
+        if read_date_order(name).verdict is DateVerdict.NONE_PRESENT:
+            folder = _parent_directory_name(path)
+            if folder and read_date_order(folder).verdict is not DateVerdict.NONE_PRESENT:
+                text, origin = folder, ORIGIN_FOLDER
+        resolve_from.append(text)
+        origins.append(origin)
+
+    # Only AMBIGUOUS strings need a group looked up -- a self-resolving one never consults the
     # store, so resolving its group would be a query nobody reads.
     wanted: set[str] = set()
     groups: list[str | None] = []
-    for name in filenames:
-        if read_date_order(name).verdict is DateVerdict.AMBIGUOUS:
+    for name, text in zip(filenames, resolve_from, strict=True):
+        if read_date_order(text).verdict is DateVerdict.AMBIGUOUS:
             group = extract_release_group(name)
             groups.append(group)
             if group is not None:
@@ -287,12 +374,13 @@ async def annotate_date_conventions(
     conventions = await load_release_group_conventions(session, wanted)
 
     annotated = 0
-    for context, name, group in zip(contexts, filenames, groups, strict=True):
+    for context, text, origin, group in zip(contexts, resolve_from, origins, groups, strict=True):
         provenance = resolve_date(
-            name,
+            text,
             convention=conventions.get(group) if group is not None else None,
             min_supporting=min_supporting,
             min_purity=min_purity,
+            origin=origin,
         )
         if provenance is None:
             continue
@@ -306,5 +394,6 @@ async def annotate_date_conventions(
                 supporting_count=provenance.supporting_count,
                 contradicting_count=provenance.contradicting_count,
                 resolved_date=provenance.date,
+                origin=provenance.origin,
             )
     return annotated

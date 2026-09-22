@@ -22,9 +22,12 @@ import pytest
 from phaze.models.filename_convention import FilenameConvention
 from phaze.services.date_convention import (
     CONTEXT_KEY,
+    ORIGIN_FILENAME,
+    ORIGIN_FOLDER,
     SOURCE_CONVENTION,
     SOURCE_FILENAME,
     DateProvenance,
+    _parent_directory_name,
     annotate_date_conventions,
     load_release_group_conventions,
     resolve_date,
@@ -42,6 +45,7 @@ AMBIGUOUS = "Artist - Event - 04-05-2014 - sbd-alphagrp.mp3"
 SELF_RESOLVING_MONTH_FIRST = "Artist - Event - 04-25-2014 - sbd-alphagrp.mp3"
 SELF_RESOLVING_DAY_FIRST = "Artist - Event - 25-04-2014 - sbd-alphagrp.mp3"
 NO_GROUP = "Artist - Event - 04-05-2014.mp3"
+NO_DATE_ANYWHERE_IN_FILENAME = "Artist - Event - sbd-alphagrp.mp3"
 
 
 def _convention(
@@ -206,7 +210,46 @@ class TestProvenanceShape:
             "computed_at",
         ]
         assert all(payload[key] is None for key in convention_fields)
-        assert set(payload) == {"date", "raw", "date_order", "source", *convention_fields}
+        assert set(payload) == {"date", "raw", "date_order", "source", "origin", *convention_fields}
+
+    def test_origin_defaults_to_filename_and_is_never_null(self) -> None:
+        """Unlike the convention fields, ``origin`` is always populated -- a reviewer must
+        never have to infer origin from absence."""
+        provenance = _resolve(SELF_RESOLVING_MONTH_FIRST, None)
+        assert provenance is not None
+        assert provenance.origin == ORIGIN_FILENAME
+
+    def test_origin_is_recorded_verbatim_when_the_caller_supplies_it(self) -> None:
+        """``resolve_date`` trusts its caller about where the string came from -- it never inspects
+        *filename* itself to guess. The folder-fallback wiring lives in ``annotate_date_conventions``."""
+        provenance = _resolve(SELF_RESOLVING_MONTH_FIRST, None, origin=ORIGIN_FOLDER)
+        assert provenance is not None
+        assert provenance.origin == ORIGIN_FOLDER
+
+    def test_origin_is_recorded_on_a_convention_derived_date_too(self) -> None:
+        provenance = _resolve(AMBIGUOUS, _convention(convention_value="DD-MM"), origin=ORIGIN_FOLDER)
+        assert provenance is not None
+        assert provenance.source == SOURCE_CONVENTION
+        assert provenance.origin == ORIGIN_FOLDER
+
+
+# The parent-directory-name reader (phaze-soc1q) -- pure string handling, no filesystem access
+
+
+class TestParentDirectoryName:
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("/archive/Coachella 2024/Artist - Set.mp3", "Coachella 2024"),
+            ("archive/Coachella 2024/Artist - Set.mp3", "Coachella 2024"),
+            (r"C:\archive\Coachella 2024\Artist - Set.mp3", "Coachella 2024"),
+            ("Artist - Set.mp3", ""),
+            ("", ""),
+            ("/Artist - Set.mp3", ""),
+        ],
+    )
+    def test_reads_the_immediate_parent_directory_name(self, path: str, expected: str) -> None:
+        assert _parent_directory_name(path) == expected
 
 
 # Batched store lookup + context annotation (real Postgres)
@@ -322,3 +365,87 @@ class TestAnnotateDateConventions:
 
         assert await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99) == 0
         assert await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.9) == 1
+
+
+# The parent-directory fallback wired into annotate_date_conventions (phaze-soc1q)
+
+
+class TestFolderFallback:
+    """The filename's own token always wins; the parent directory of ``original_path`` is read
+    only when the filename carries no ``NN-NN-YYYY`` token at all (operator decision 2026-09-22,
+    phaze-soc1q: 'Yes, fallback to folder (Recommended)')."""
+
+    async def test_a_date_only_in_the_parent_directory_yields_an_annotation(self, session: AsyncSession) -> None:
+        contexts = [
+            {
+                "original_filename": NO_DATE_ANYWHERE_IN_FILENAME,
+                "original_path": "/archive/Coachella 04-25-2014/" + NO_DATE_ANYWHERE_IN_FILENAME,
+            }
+        ]
+
+        annotated = await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99)
+
+        assert annotated == 1
+        provenance = contexts[0][CONTEXT_KEY]
+        assert provenance["source"] == SOURCE_FILENAME
+        assert provenance["origin"] == ORIGIN_FOLDER
+        assert provenance["date"] == "2014-04-25"
+        assert provenance["raw"] == "04-25-2014"
+
+    async def test_an_ambiguous_folder_token_is_resolved_by_a_qualifying_convention(self, session: AsyncSession) -> None:
+        """The release group is still read from the FILENAME even though the date token is not --
+        scene release-group tags live in filenames, per release_group.py."""
+        row = await _persist(session, scope_value="alphagrp", convention_value="DD-MM", supporting_count=500, contradicting_count=0)
+        contexts = [
+            {
+                "original_filename": NO_DATE_ANYWHERE_IN_FILENAME,
+                "original_path": "/archive/Coachella 04-05-2014/" + NO_DATE_ANYWHERE_IN_FILENAME,
+            }
+        ]
+
+        annotated = await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99)
+
+        assert annotated == 1
+        provenance = contexts[0][CONTEXT_KEY]
+        assert provenance["source"] == SOURCE_CONVENTION
+        assert provenance["origin"] == ORIGIN_FOLDER
+        assert provenance["convention_id"] == str(row.id)
+        assert provenance["date"] == "2014-05-04"
+
+    async def test_a_filename_token_wins_over_a_conflicting_folder_token(self, session: AsyncSession) -> None:
+        filename = "Artist - Event - 04-25-2014 - sbd-alphagrp.mp3"
+        contexts = [{"original_filename": filename, "original_path": "/archive/Coachella 01-02-2016/" + filename}]
+
+        annotated = await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99)
+
+        assert annotated == 1
+        provenance = contexts[0][CONTEXT_KEY]
+        assert provenance["origin"] == ORIGIN_FILENAME
+        assert provenance["date"] == "2014-04-25"
+
+    async def test_an_ambiguous_unresolved_filename_token_does_not_fall_through_to_the_folder(self, session: AsyncSession) -> None:
+        """A filename token that exists but cannot be resolved is still the filename's own answer --
+        left unresolved, exactly as before the folder fallback existed, rather than reaching for a
+        resolvable folder date."""
+        contexts = [{"original_filename": AMBIGUOUS, "original_path": "/archive/Coachella 04-25-2014/" + AMBIGUOUS}]
+
+        annotated = await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99)
+
+        assert annotated == 0
+        assert CONTEXT_KEY not in contexts[0]
+
+    async def test_no_date_in_either_filename_or_folder_leaves_the_context_untouched(self, session: AsyncSession) -> None:
+        path = "/archive/Coachella/" + NO_DATE_ANYWHERE_IN_FILENAME
+        contexts = [{"original_filename": NO_DATE_ANYWHERE_IN_FILENAME, "original_path": path}]
+
+        annotated = await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99)
+
+        assert annotated == 0
+        assert CONTEXT_KEY not in contexts[0]
+
+    async def test_a_missing_original_path_is_survived(self, session: AsyncSession) -> None:
+        """No path at all -> nothing to fall back to; same as before the folder fallback existed."""
+        contexts = [{"original_filename": NO_DATE_ANYWHERE_IN_FILENAME}]
+
+        assert await annotate_date_conventions(session, contexts, enabled=True, min_supporting=50, min_purity=0.99) == 0
+        assert CONTEXT_KEY not in contexts[0]

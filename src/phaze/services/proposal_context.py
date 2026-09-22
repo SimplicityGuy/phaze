@@ -39,13 +39,15 @@ _ASCII_ART_RE = re.compile(r"^[\s\-=_*#~|/\\]{10,}$")
 
 _DATE_CONVENTION_PLACEHOLDER = "{date_convention_guidance}\n"
 _DATE_CONVENTION_GUIDANCE = (
-    "- `date_convention`: Present only when the filename carries an `NN-NN-YYYY` scene date that was resolved. "
-    "`date` is that date as ISO `YYYY-MM-DD` and `raw` is the token it came from. `source` is `filename` when the "
-    "token could only be read one way, or `release_group_convention` when the token was genuinely ambiguous and was "
-    "resolved from the release group's learned date-order convention -- in which case `scope_value`, "
-    "`convention_value`, `supporting_count` and `contradicting_count` are the evidence behind it. Prefer this `date` "
-    "over your own reading of that token: it is either a fact about the string or an inference backed by counted "
-    "evidence. It is absent for every other date shape; read those yourself as usual.\n"
+    "- `date_convention`: Present only when an `NN-NN-YYYY` scene date token was resolved, from the filename or "
+    "(only when the filename carries no such token at all) from its parent directory name. `date` is that date as "
+    "ISO `YYYY-MM-DD` and `raw` is the token it came from; `origin` is `filename` or `folder`. `source` is "
+    "`filename` when the token could only be read one way, or `release_group_convention` when the token was "
+    "genuinely ambiguous and was resolved from the release group's learned date-order convention -- in which case "
+    "`scope_value`, `convention_value`, `supporting_count` and `contradicting_count` are the evidence behind it. "
+    "Prefer this `date` over your own reading of that token: it is either a fact about the string or an inference "
+    "backed by counted evidence. It is absent for every other date shape, and for an ambiguous token that failed to "
+    "resolve -- see the Ambiguous day/month order rule above for those.\n"
 )
 
 
