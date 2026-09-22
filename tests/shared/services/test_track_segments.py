@@ -19,8 +19,9 @@ import pytest
 
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.tracklist import TracklistTrack
-from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, hue_for
-from phaze.services.set_projection import key_name_for_camelot
+from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, ribbons
+from phaze.services.set_glyph_colors import camelot_hue
+from phaze.services.set_projection import camelot_number, key_name_for_camelot
 from phaze.services.track_segments import TrackSegment, build_track_segments
 
 
@@ -151,7 +152,7 @@ def test_per_track_values_are_the_median_bpm_modal_key_argmax_mood_and_mean_ener
     assert first.bpm == 128.0
     assert first.camelot == "8A"
     assert first.key == "A minor"
-    assert first.key_hue == hue_for("A minor")
+    assert first.key_hue == camelot_hue(camelot_number("8A"))
     assert first.mood == "mood_happy"
     assert first.mood_label == MOOD_LABELS["mood_happy"]
     assert first.mood_hue == MOOD_HUES["mood_happy"]
@@ -224,7 +225,7 @@ def test_the_derived_readings_cannot_contradict_the_measurements_they_come_from(
 
     assert segment.camelot == "8A"
     assert segment.key == key_name_for_camelot("8A")
-    assert segment.key_hue == hue_for(key_name_for_camelot("8A") or "8A")
+    assert segment.key_hue == camelot_hue(camelot_number("8A"))
     with pytest.raises((AttributeError, TypeError)):
         TrackSegment(position=1, start_sec=0.0, end_sec=1.0, bpm=None, camelot="8A", mood=None, energy=None, key="F# minor")  # type: ignore[call-arg]
 
@@ -283,3 +284,14 @@ def test_the_mood_dot_reads_the_same_palette_as_the_river_and_never_its_own() ->
 
     assert segment.mood_hue == MOOD_HUES["mood_electronic"]
     assert segment.mood_label == "Electronic"
+
+
+@pytest.mark.parametrize("key", ["Ab minor", "G# minor"])
+def test_key_dot_and_timeline_ribbon_share_the_camelot_hue_for_enharmonic_spellings(key: str) -> None:
+    window = AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, musical_key=key)
+
+    segment = build_track_segments([_track(1, "0:00")], [window], 600.0)[0]
+    ribbon = ribbons([window], "musical_key", 600.0, code_attr="camelot")[0]
+
+    assert segment.camelot == "1A"
+    assert segment.key_hue == ribbon["hue"] == camelot_hue(camelot_number(segment.camelot))

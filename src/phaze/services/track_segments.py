@@ -32,9 +32,10 @@ import math
 import statistics
 from typing import TYPE_CHECKING, Any
 
-from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES, hue_for
+from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES
 from phaze.services.cue_generator import parse_timestamp_string
-from phaze.services.set_projection import key_name_for_camelot, modal_camelot
+from phaze.services.set_glyph_colors import camelot_hue
+from phaze.services.set_projection import camelot_number, key_name_for_camelot, modal_camelot
 
 
 if TYPE_CHECKING:
@@ -101,10 +102,8 @@ class TrackSegment:
 
     @property
     def key_hue(self) -> int | None:
-        """``analysis_timeline.hue_for`` of the key NAME -- the identical call the key ribbon on
-        the timeline makes, so one key is one colour on both surfaces. An open vocabulary of key
-        strings is exactly what that hash is for, and is why the moods use a table instead."""
-        return hue_for(key_name_for_camelot(self.camelot) or self.camelot) if self.camelot else None
+        """The shared Camelot hue used by the timeline ribbon, glyph and harmonic journey."""
+        return camelot_hue(camelot_number(self.camelot)) if self.camelot else None
 
     @property
     def mood_label(self) -> str | None:
