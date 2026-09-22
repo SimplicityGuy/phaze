@@ -292,7 +292,7 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     (test_results_step,) = test_job_hits
     assert test_results_step.get("name") == "📊 Upload test results to Codecov", test_results_step
     assert test_results_step.get("if") == "${{ !cancelled() }}", test_results_step
-    assert test_results_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", test_results_step
+    assert test_results_step.get("uses") == "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5", test_results_step
     assert test_results_step.get("with") == {
         "disable_search": True,
         "files": "./junit.xml",
@@ -303,7 +303,7 @@ def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() 
     combine_job_hits = _find_codecov_token_steps(jobs["combine"])
     assert len(combine_job_hits) == 1, f"expected exactly one CODECOV_TOKEN-bearing step in combine, found {len(combine_job_hits)}"
     (codecov_step,) = combine_job_hits
-    assert codecov_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", codecov_step
+    assert codecov_step.get("uses") == "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5", codecov_step
     assert codecov_step.get("with") == {"flags": "unittests", "disable_search": True, "files": "./coverage.xml"}, codecov_step
     assert codecov_step.get("env") == {"CODECOV_TOKEN": "${{ secrets.CODECOV_TOKEN }}"}, codecov_step
 
