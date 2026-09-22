@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   # ============================================================================
-  # CHANGE DETECTION - Skip heavy jobs for docs-only changes
+  # CHANGE DETECTION - Skip Docker and code-focused security jobs for docs-only changes
   # ============================================================================
   detect-changes:
     runs-on: ubuntu-latest
@@ -86,7 +86,7 @@ jobs:
           echo "${CODE_CHANGED}" >> "${GITHUB_OUTPUT}"
 
           if [[ "${CODE_CHANGED}" == "code-changed=false" ]]; then
-            echo "📄 Only documentation/planning files changed — skipping tests and docker jobs (secret scanning still runs)"
+            echo "📄 Only documentation/planning files changed — running tests, skipping docker (secret scanning still runs)"
           else
             echo "💻 Code changes detected — running full pipeline"
           fi
@@ -99,7 +99,7 @@ jobs:
 
   test:
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.code-changed == 'true'
+    # Whole-tree guards read tracked prose, so docs-only changes must run tests too (phaze-1cwgr).
     uses: ./.github/workflows/tests.yml
     # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- in-repo reusable workflow; inherit is intentional.
     secrets: inherit
@@ -186,16 +186,17 @@ jobs:
             exit 1
           fi
 
-          # Docs-only change: test/docker are intentionally skipped.
-          # Accept 'skipped' (skip-with-success) but reject failure/cancelled.
+          # Docs-only change: tests must pass; only Docker may be skipped.
           if [[ "${CODE_CHANGED}" == "false" ]]; then
-            for result in "${TEST_RESULT}" "${DOCKER_RESULT}"; do
-              if [[ "${result}" != "skipped" && "${result}" != "success" ]]; then
-                echo "❌ Docs-only change but a gated job ended '${result}' (expected skipped)"
-                exit 1
-              fi
-            done
-            echo "📄 Docs-only change — gated jobs skipped as expected"
+            if [[ "${TEST_RESULT}" != "success" ]]; then
+              echo "❌ Tests did not succeed on docs-only change (${TEST_RESULT})"
+              exit 1
+            fi
+            if [[ "${DOCKER_RESULT}" != "skipped" && "${DOCKER_RESULT}" != "success" ]]; then
+              echo "❌ Docs-only change but Docker ended '${DOCKER_RESULT}' (expected skipped)"
+              exit 1
+            fi
+            echo "📄 Docs-only change — tests passed; Docker skipped as expected"
             echo "✅ All required pipeline workflows passed!"
             exit 0
           fi

@@ -122,12 +122,12 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # The floor exists to be fast; past this it is just the suite with extra steps. Measured
 # 2026-09-16 on seat `dev-dnez9` (phaze-dnez9 added test_adr_bare_citation_convention.py, which
 # reads tracked ADR/CONVENTIONS.md prose, to the floor): 22 modules, 291 tests,
-# 70.11 s pytest / 82.13 s wall.
-MAX_DOCS_FLOOR_MODULES = 22
+# phaze-1cwgr: 23 modules, 325 passed, 29.01 s pytest / 30.0 s wall (isolated seat, direct pytest).
+MAX_DOCS_FLOOR_MODULES = 23
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
-# costs milliseconds in the floor, a false negative is a guard that never runs on the only gate a
-# docs bead traverses. Written as literals a module would have to contain to touch prose at all.
+# costs milliseconds in the floor, a false negative is a guard that never runs on the local docs
+# gate. Written as literals a module would have to contain to touch prose at all.
 PROSE_PATH_MARKERS = ('"docs/', '"docs"', '"CLAUDE.md"', '"README.md"', '"CONVENTIONS.md"', '".planning', '"design/')
 
 

@@ -4,12 +4,14 @@
 # diff is prose, and `just test-fast` runs exactly this list instead of the ~21-minute suite.
 # Measured 2026-09-12 on seat `structural-audit`: 21 modules, 274 tests,
 # 164.37 s pytest / 185.61 s wall.
+# Measured 2026-09-21 on an isolated seat: 23 modules, 325 passed,
+# 29.01 s pytest / 30.0 s wall (direct pytest, no coverage).
 #
 # THIS FILE IS DERIVED, NOT CURATED. `tests/shared/test_fast_gate.py` scans every test module for a
 # reference to a tracked prose path and fails the build if one is missing here, so a prose guard
 # written next month joins this floor or breaks the gate. The scan deliberately OVER-matches: a
 # module that merely mentions `docs/` costs a few milliseconds, while one that reads prose and is
-# absent from this file is a silent hole in the only gate a docs bead traverses.
+# absent from this file is a silent hole in the local docs gate.
 #
 # So do not hand-prune it. If a module here looks irrelevant, the fix is to stop it referencing a
 # prose path, not to delete the line -- and if you are ADDING one, add it because the scan told you
@@ -31,6 +33,7 @@ tests/shared/test_adr_bare_citation_convention.py
 tests/shared/test_adr_citation_resolution.py
 tests/shared/test_adr_numbering.py
 tests/shared/test_change_gate.py
+tests/shared/test_ci_workflow_wiring.py
 tests/shared/test_developer_documentation.py
 tests/shared/test_documentation_integrity.py
 tests/shared/test_fast_gate.py
