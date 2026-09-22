@@ -10,7 +10,14 @@ import math
 from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
 
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.services.set_projection import GAP_TOLERANCE_SEC, MOOD_ORDER, flicker_filtered_key_runs, placeable_key_runs
+from phaze.services.set_glyph_colors import camelot_hue
+from phaze.services.set_projection import (
+    GAP_TOLERANCE_SEC,
+    MOOD_ORDER,
+    camelot_number,
+    flicker_filtered_key_runs,
+    placeable_key_runs,
+)
 
 
 if TYPE_CHECKING:
@@ -378,6 +385,7 @@ def ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float, *, c
         code = getattr(window, code_attr) if code_attr is not None else None
         start = min(max(window.start_sec, 0.0), total_sec)
         end = min(max(window.end_sec, start), total_sec)
+        key_hue = camelot_hue(camelot_number(code)) if code_attr == "camelot" and isinstance(code, str) else None
         result.append(
             {
                 "label": label,
@@ -392,7 +400,7 @@ def ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float, *, c
                 # wrong ribbon at a boundary, which is exactly where the outline is being read.
                 "start_sec": start,
                 "end_sec": end,
-                "hue": hue_for(str(label)),
+                "hue": key_hue if key_hue is not None else hue_for(str(label)),
             }
         )
     return result
