@@ -46,6 +46,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
+| **[Pipeline Stats Performance](pipeline-stats-performance.md)** | ⏱️ Current poll baseline, skip-probe diagnosis, and post-deployment verification |
 | **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |
 | **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
 | **[Historical Evidence Audit](historical-evidence-audit-2026-09-11.md)** | 🧾 Reproducible identifier, numeric-equivalence, archive-boundary, link, Mermaid, and graph-reference reconciliation |
