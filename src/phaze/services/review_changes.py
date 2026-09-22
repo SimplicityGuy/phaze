@@ -148,10 +148,15 @@ def _build_changes_review_row(
 
 
 def _proposal_row_base(proposal: RenameProposal) -> dict[str, Any]:
+    """Build the shared six-key row shape used by pending and Propose workspace reads.
+
+    ``current_path`` is intentionally absent: the Propose list renders ``filename`` as its
+    tooltip, while the separate Changes Review row retains ``current_path`` for its Destination
+    facet. Keeping the path here would expose a documented value with no consumer.
+    """
     return {
         "id": proposal.id,
         "filename": proposal.file.original_filename,
-        "current_path": proposal.file.current_path,
         "proposed_filename": proposal.proposed_filename,
         "proposed_path": proposal.proposed_path,
         "confidence": proposal.confidence,

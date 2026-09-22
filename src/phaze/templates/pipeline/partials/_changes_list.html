@@ -157,7 +157,7 @@
                            class="mt-1 rounded border-gray-300 focus:ring-2 focus:ring-blue-500 disabled:opacity-40 dark:border-phaze-border"
                            aria-label="Select {{ p.filename }}" aria-describedby="changes-eligibility-{{ p.id }}">
                     <div class="min-w-0 flex-1 -mx-4 -mt-3">
-                    {% with row_id_prefix="rename-row", pid=p.id, file=p.filename, file_tooltip=p.filename,
+                    {% with row_id_prefix="rename-row", pid=p.id, file=p.filename,
                             profile=p.set_profile,
                             diff_label="Filename", before=p.filename, after=p.proposed_filename,
                             secondary_label="Destination", secondary_before=p.current_path,
@@ -218,7 +218,7 @@
                 {% if f.has_blanking %}{% set _ = tag_warnings.append("An existing tag would be blanked; excluded from bulk approval.") %}{% endif %}
                 {% if f.discrepancies %}{% set _ = tag_warnings.append("Verification discrepancy: " ~ f.discrepancies) %}{% endif %}
                 {% if f.error_message %}{% set _ = tag_warnings.append("Last error: " ~ f.error_message) %}{% endif %}
-                {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename, file_tooltip=f.filename,
+                {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename,
                         profile=f.set_profile,
                         diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
                          approve_url="/tags/" ~ f.file_id ~ "/write", approve_method="post",

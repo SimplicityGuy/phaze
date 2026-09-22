@@ -1,19 +1,13 @@
-"""The shared ``_diff_row.html`` tooltip contract, read out of the RENDERED HTML (phaze-n8o9p).
+"""The shared ``_diff_row.html`` tooltip contract, read out of the RENDERED HTML.
 
 Every assertion here parses the ``title=`` attribute the browser would actually receive. That is
 deliberate and it is the point of the module: ADR-0012 (verification fidelity and operator attribution) rule 3 says an artifact is verified with its
-REAL consumer, not with the tool that produced it, and the consumer of ``file_tooltip`` is the
-rendered attribute -- never the Python dict a router returns. A sibling bead in this wave proved the
-cost of the other approach concretely: it renamed a serialized field, 56 tests passed, and the wire
-key had silently reverted, because every one of those tests exchanged Python objects and none named
-the serialized form.
+REAL consumer, not with the tool that produced it, and the consumer is the rendered attribute --
+never the Python dict a router returns. The tooltip now derives directly from the visible ``file``
+value (phaze-ogcrr), so a separate context slot cannot be omitted or drift.
 
-Two properties make a naive test here structurally unable to fail, so both are defended:
+One property makes a naive test here structurally unable to fail, so it is defended:
 
-* **No template in this repo runs under ``StrictUndefined``.** Every ``Jinja2Templates`` instance
-  takes the default ``Undefined``, so a binding that still passes the OLD key name renders
-  ``title=""`` -- no exception, no log line, no failing assertion anywhere else. The empty-tooltip
-  check below is what turns that silent revert into a red test.
 * **``make_file`` seeds ``original_path`` and ``current_path`` to DIFFERENT values** (they differ by
   a uuid path segment). Asserting the tooltip is the filename is therefore decisive in both
   directions: it can distinguish the filename from either column. A fixture that set the two columns
@@ -22,6 +16,12 @@ Two properties make a naive test here structurally unable to fail, so both are d
 The contract itself, per the operator's 2026-08-25 decision recorded on phaze-n8o9p: the tooltip
 UN-TRUNCATES the visible display name, so it carries the FILENAME at every binding and never a path.
 A path belongs in the Destination facet.
+
+Blast-radius evidence re-measured for phaze-ogcrr on 2026-09-22: the latest operator inventory
+record contains 0 proposals, 0 ``tag_write_log`` rows, and 11,428 files. This change is confined to
+the five rendered review surfaces covered below (Changes Review rename and tag-write sections, the
+two row-swap responses, and the Propose list); it does not alter persisted data or the Destination
+facet's path value. The file count is expected to change when propose/execute is enabled.
 """
 
 from __future__ import annotations
@@ -55,10 +55,6 @@ def _assert_tooltip_is_the_filename(body: str, file: FileRecord) -> None:
     """The rendered tooltip un-truncates the filename and leaks neither path column."""
     pairs = _tooltips(body)
     assert pairs, "no _diff_row.html tooltip rendered at all -- the partial did not reach the response"
-
-    # The silent-revert guard. A producer still emitting the pre-phaze-n8o9p key name leaves
-    # `file_tooltip` undefined, and default Jinja renders that as the empty string.
-    assert all(tooltip for tooltip, _ in pairs), f"empty tooltip rendered (a binding still passes the old key name): {pairs}"
 
     assert any(tooltip == file.original_filename for tooltip, _ in pairs), (
         f"filename {file.original_filename!r} is not the tooltip on any row: {pairs}"
