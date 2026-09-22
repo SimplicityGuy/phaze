@@ -159,7 +159,7 @@ def test_variadic_flags_are_forwarded_as_discrete_argv(tmp_path: Path) -> None:
     fake_uv.chmod(0o755)
     sentinel = "branch; $(touch never)"
     result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
-        [JUST, "branch-check", "--base-ref", sentinel],
+        [JUST, "branch-check", "--coverage", "coverage.json", "--base-ref", sentinel],
         cwd=REPO_ROOT,
         env=os.environ | {"ARGV_LOG": str(log), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         text=True,

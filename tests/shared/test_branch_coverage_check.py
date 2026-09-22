@@ -50,6 +50,7 @@ def _summary(*, num_branches: int, covered: int, statements: int = 100) -> dict[
     pct = 0.0 if num_branches == 0 else covered / num_branches * 100.0
     return {
         "num_statements": statements,
+        "covered_lines": statements,
         "missing_lines": 0,
         "percent_statements_covered": 100.0,
         "num_branches": num_branches,
@@ -91,6 +92,65 @@ def test_a_file_that_lowers_branch_coverage_fails(tmp_path: Path, capsys: pytest
     out = capsys.readouterr().out
     assert "src/phaze/core/job_runner.py" in out
     assert "lowered branch coverage" in out
+
+
+def test_scoped_report_fails_closed_when_selected_tests_cannot_match_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=7), "missing_branches": [[9, 10]]}})
+    report = json.loads(coverage.read_text(encoding="utf-8"))
+    report["_phaze_scope"] = {"kind": "selected-tests", "head": "same-head"}
+    coverage.write_text(json.dumps(report), encoding="utf-8")
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py") == 2
+    assert "cannot be judged" in capsys.readouterr().out
+
+
+def test_scoped_report_fails_closed_when_touched_file_is_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load()
+    coverage = _write_coverage(tmp_path, {})
+    report = json.loads(coverage.read_text(encoding="utf-8"))
+    report["_phaze_scope"] = {"kind": "selected-tests", "head": "same-head"}
+    coverage.write_text(json.dumps(report), encoding="utf-8")
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py") == 2
+    assert "src/phaze/a.py" in capsys.readouterr().out
+
+
+def test_scoped_report_fails_closed_for_unexecuted_new_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load()
+    summary = _summary(num_branches=10, covered=0)
+    summary["covered_lines"] = 0
+    coverage = _write_coverage(tmp_path, {"src/phaze/new.py": {"summary": summary, "missing_branches": [[9, 10]]}})
+    report = json.loads(coverage.read_text(encoding="utf-8"))
+    report["_phaze_scope"] = {"kind": "selected-tests", "head": "same-head"}
+    coverage.write_text(json.dumps(report), encoding="utf-8")
+    baseline = _write_baseline(tmp_path, {})
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/new.py") == 2
+    assert "selected tests executed no lines" in capsys.readouterr().out
+
+
+def test_scoped_report_can_prove_coverage_at_least_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=10), "missing_branches": []}})
+    report = json.loads(coverage.read_text(encoding="utf-8"))
+    report["_phaze_scope"] = {"kind": "selected-tests", "head": "same-head"}
+    coverage.write_text(json.dumps(report), encoding="utf-8")
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py") == 0
 
 
 def test_holding_steady_and_raising_both_pass(tmp_path: Path) -> None:

@@ -431,9 +431,8 @@ test-validate-serial:
 # NO `--cov` ON THE SELECTED RUN (operator decision 2026-08-25, bead phaze-pv3kk; answer as given:
 # "No coverage gate on the fast suite -- keep it where the full suite runs").
 # A subset's figure is meaningless against the 95% floor and must not be quotable as one, and a
-# `coverage.json` written here would overwrite the artifact `just branch-check` reads. When this
-# recipe ESCALATES it delegates to `just test-validate`, which is the full gate and whose coverage is
-# the real thing -- that is correct, not a leak: at that point this is no longer a subset run.
+# `coverage.json` written here would overwrite the artifact `just branch-check` reads. The separate
+# branch-check recipe collects scoped branch evidence when needed (phaze-6e2hj).
 #
 # repowise is READ here and never written. Its coverage still comes only from `just
 # repowise-coverage` and `just repowise-coverage-ci`, so the "not for repowise" constraint holds.
@@ -666,9 +665,9 @@ test-bucket NAME PATHS MODE="serial":
 # module differs between the two metrics (`src/phaze/routers/duplicates.py`: 91.20% statements,
 # 75.00% branches, 88.59% combined), so a per-module floor left on the combined number would fail a
 # module that has regressed nothing. Nothing here is disarmed; the line gate is simply explicit.
-# THE PER-BEAD BRANCH GATE (phaze-bk9el.21). Run it from your bead's worktree after any
-# coverage-producing run -- `just check`, `just test-validate` and `just coverage-combine` all
-# leave the `coverage.json` it reads, so it costs seconds rather than a second full suite.
+# THE PER-BEAD BRANCH GATE (phaze-bk9el.21, phaze-6e2hj). Run it from your bead's worktree
+# after check-fast. It reruns the selected tests under branch instrumentation, writing a separate
+# .fast-coverage.json. A scoped run below the full baseline is unjudgeable and fails closed.
 #
 # It checks ONLY the `src/phaze/**.py` files your bead changed against `--base-ref` (committed,
 # staged and unstaged changes all count, so it is useful mid-flight and not just at submit), and
@@ -693,9 +692,51 @@ test-bucket NAME PATHS MODE="serial":
 branch-check *flags:
     #!/usr/bin/env bash
     set -euo pipefail
+    # An explicit report is used as-is; the ordinary path produces its own scoped evidence.
+    if [[ " $* " != *" --coverage "* ]]; then
+        just _test-branch-scoped
+    fi
     # Trust boundary: these are operator-authored branch-check CLI arguments, forwarded as
     # discrete argv entries. "$@" is never reparsed as shell syntax.
     uv run python scripts/branch_coverage_check.py "$@"
+
+[doc('Collect separate selected-test branch evidence for branch-check; never apply the repo-wide line floor to a subset')]
+[group('test')]
+_test-branch-scoped:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -f .fast-coverage.json .coverage.fast
+    selection="$(git rev-parse --show-toplevel)/.fast-selection.txt"
+    rc=0
+    verdict="$(uv run python scripts/select_impacted_tests.py --floor tests/fast_floor.txt --docs-floor tests/docs_floor.txt --out "$selection")" || rc=$?
+    case "$rc" in
+      0)
+        mapfile -t fast_args < "$selection"
+        ((${#fast_args[@]} > 0)) || { echo "❌ empty branch selection" >&2; exit 1; }
+        seat="$(bash scripts/derive-validate-seat-name.sh)"
+        eval "$(bash scripts/ensure-test-seat.sh \
+            "$seat" \
+            "{{test_db_container}}" \
+            "{{test_db_port}}" \
+            "{{test_redis_container}}" \
+            "{{test_redis_port}}" \
+            "{{test_redis_databases}}" \
+            "$(git rev-parse --show-toplevel)")"
+        COVERAGE_FILE=.coverage.fast uv run pytest "${fast_args[@]}" --cov --cov-report= --cov-fail-under=0
+        uv run python scripts/write_fast_coverage.py
+        ;;
+      3)
+        echo "⏫ BRANCH-ESCALATION: ${verdict#escalate }"
+        just test-validate
+        ;;
+      4)
+        echo "📄 No source files changed; no branch evidence needed."
+        ;;
+      *)
+        echo "❌ branch test selector failed (exit ${rc}): ${verdict}" >&2
+        exit "$rc"
+        ;;
+    esac
 
 # ORDERING (phaze-jktlb). `combine` first because everything else reads what it writes; then the
 # ARTIFACTS, alphabetically; then the GATES. That artifacts-before-gates split is a deliberate
