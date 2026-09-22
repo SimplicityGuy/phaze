@@ -150,7 +150,12 @@ async def get_changes_review_page(
 
 
 async def get_pending_proposal_rows(session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows:
-    """Return the bounded pending rows and the two uncapped operator-facing totals."""
+    """Return bounded rows with the shared ``_proposal_row_base`` six-key shape plus ``updated_at``.
+
+    The row contract is ``id``, ``filename``, ``proposed_filename``, ``proposed_path``,
+    ``confidence``, ``status``, and ``updated_at``. It deliberately does not include ``current_path``;
+    the Propose list uses ``filename`` for its tooltip and has no path consumer.
+    """
     return await _changes_reader().get_pending_proposal_rows(session, confidence_threshold=confidence_threshold)
 
 
@@ -163,7 +168,12 @@ async def get_proposal_workspace_page(
     page_size: int,
     sort: SortState | None = None,
 ) -> ProposalWorkspacePage:
-    """Return one filtered, searched, sorted Propose page and its tab counts."""
+    """Return one filtered, searched, sorted Propose page with the pending-row base shape.
+
+    Each row contains ``id``, ``filename``, ``proposed_filename``, ``proposed_path``, ``confidence``,
+    and ``status``. This is the same base shape as :func:`get_pending_proposal_rows` before that
+    function adds ``updated_at``; neither contract carries the now-unread ``current_path`` key.
+    """
     return await _changes_reader().get_proposal_workspace_page(
         session,
         status=status,
