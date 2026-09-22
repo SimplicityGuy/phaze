@@ -1250,6 +1250,19 @@ typecheck:
 pre-commit:
     uv run pre-commit run --all-files
 
+# phaze-ofrxb: the first step of BOTH gates is a checkout-integrity probe that runs with no
+# `uv run` and no venv. bh worktrees used to live under $TMPDIR, where macOS's dirhelper
+# (launchd, 03:35 daily, CLEAN_FILES_OLDER_THAN_DAYS=3) deletes files not accessed for three
+# days; a multi-day seat lost 2527 tracked files, its .git pointer and the module files inside
+# .venv, and the gate reported it as `ModuleNotFoundError` in ruff/mypy -- read as a code
+# regression and bounced as one, three times, before the cause was measured. The root has moved
+# to ~/.beadhive/worktrees; this recipe is what turns the next hollowing into a one-line named
+# failure instead. See scripts/worktree-integrity.sh and docs/design/0016-transferred-model-verification.md §3.8.
+[doc('Fail loudly when this checkout is hollowed (missing .git pointer, pyproject.toml, tracked files, or venv modules) instead of letting lint/mypy die with ModuleNotFoundError')]
+[group('lint')]
+worktree-integrity:
+    bash scripts/worktree-integrity.sh
+
 # THE full local/postland gate. This used to be the per-bead gate (phaze-nqawu), but
 # `work.validate_cmd` now points at `check-fast`; keep this whole-suite recipe as the manual
 # escape hatch and as the postland/union validation command documented in
@@ -1264,7 +1277,7 @@ pre-commit:
 # See its comment for why each of those three matters.
 [doc('Full manual/postland gate: lint + typecheck + the full suite with coverage; auto-provisions an isolated test seat when no caller-owned database is exported')]
 [group('lint')]
-check: lint typecheck test-validate
+check: worktree-integrity lint typecheck test-validate
 
 # THE per-bead gate (phaze-pv3kk). The phaze rig's `work.validate_cmd` points here, so this is what
 # `bh work check`, `bh work submit`, `bh work merge` and `bh work merge-main` run. `just check`
@@ -1309,7 +1322,7 @@ check: lint typecheck test-validate
 # stale-`review:*`-label shape (phaze-s3d1u).
 [doc('THE per-bead gate (`bh work check` / `submit` / `merge` run this): lint + typecheck + the tests repowise says the change touches, escalating to the full suite when it cannot tell. `bh work finish` still runs `just check-all`.')]
 [group('lint')]
-check-fast: lint typecheck test-fast
+check-fast: worktree-integrity lint typecheck test-fast
 
 # phaze-jjjy8: promtool is the REAL consumer of alerts/phaze-alerts.yml and its unit tests
 # (alerts/phaze-alerts.test.yml) -- a YAML/PromQL syntax check accepts an expr that parses

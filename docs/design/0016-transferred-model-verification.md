@@ -227,6 +227,32 @@ The general form is the one this ADR already states, with the twist that this be
 *of the same tool* — the neighbouring system was an earlier version of BuildKit, and the
 mitigation was the three-line stamp probe, which took under a minute once it was run.
 
+### 3.8 "A directory is durable until something deletes it" — and the correction that was itself a transferred belief
+
+Held by every seat that provisioned a bh worktree between 2026-09-06 and 2026-09-21, and by bh's
+own config comment (*"worktrees live in an OS temp dir, are session-scoped + disposable"*), which
+was true of the session-length checkouts the mode was designed for and silently false of a
+multi-day dispatcher seat. The belief has a Linux shape: `$TMPDIR` there is cleared at boot, or
+by a `systemd-tmpfiles` age rule that is off for `/tmp` on most desktop distributions, so "it's
+under tmp" means "it survives until reboot". The seat it was carried into runs macOS.
+
+| | |
+| --- | --- |
+| **True where** | Linux, and on macOS for anything touched within the last three days — which is every file a seat is actively editing, so a seat that is *working* never sees it. Only the files it is not touching go: the untouched tracked files, the `.git` pointer, and the venv's module files. |
+| **False here** | macOS **26.6.2 (25G83)**. `plutil -p /System/Library/LaunchDaemons/com.apple.bsd.dirhelper.plist` → `CLEAN_FILES_OLDER_THAN_DAYS => "3"`, `StartCalendarInterval => {Hour => 3, Minute => 35}`, `ProgramArguments => ["/usr/libexec/dirhelper"]`. Files under `$TMPDIR` (`/var/folders/<xx>/<hash>/T`) not **accessed** for three days are removed at 03:35 daily. Every seat directory the purge had emptied carried an mtime of exactly `03:35` on the day it was hollowed (`ls -la` on 2026-09-21: `10 Sep 03:35`, `17 Sep 03:35`, `18 Sep 03:35`, `19 Sep 03:35`). |
+| **Measured** | 2026-09-09, dispatcher seat `phaze-x1qr3` (created 2026-09-06): **2527** tracked files missing from the checkout, the `.git` pointer file gone (`git status` → *not a git repository*; the main clone listed it *prunable*), the branch intact at `6445b84a` locally and on `origin`. 2026-09-19, `disp/fable`: eight seats provisioned 2026-09-16 and idle ~72 h; the first gate on resume died in mypy with `ModuleNotFoundError` (`mypy.__main__`, then `mypy_extensions`), `uv` reporting *missing RECORD file … incomplete environment*. 2026-09-21, while migrating: **14** seat directories across seven hives contained **0 files**; every branch behind them was intact. |
+| **The correction that was also wrong** | The first fix — *"rebuild the venv with `UV_LINK_MODE=copy`, so the files get a fresh access time"* — was a second transferred belief, this time from the copy primitive: `cp` semantics, where a copy is a new file. `uv` **0.12.5** (`/Users/Robert/.local/bin/uv`; `which -a uv` also lists a nix-profile copy, so name the one you ran) defaults to `clone` on macOS, and its `copy` mode reaches `std::fs::copy`, which on macOS calls `fclonefileat` — both **preserve the source's timestamps**. Re-verified 2026-09-21 on a venv rebuilt *that evening* at the new root: `stat -f 'atime=%Sa mtime=%Sm birth=%SB links=%l' .venv/lib/python3.14/site-packages/defusedxml/__init__.py` → `atime=Sep 14 18:48:17 2026 mtime=Sep 14 16:10:15 2026 birth=Sep 14 16:10:15 2026 links=1`; the cache file `~/.cache/uv/archive-v0/…/defusedxml/__init__.py` shows the identical `atime`. A minutes-old venv was already a week stale to dirhelper, and `links=1` also retires the bead's original "hard-link mode shares inodes" mechanism — that one was uv's *Linux* default. |
+| **How it surfaced** | not as a purge. As *"three worktree venvs damaged"* in the 2026-09-08 dispatch log of epic `phaze-x1qr3` — `defusedxml` ImportError across 16 tests in the `.4` seat's gate log, `pre_commit.main` and `cfgv` missing in the epic seat — attributed to a contention episode because all three venvs belonged to seats running the full suite at the same moment. Two seats had already been repaired with `uv sync --reinstall` under that story before the dispatcher seat itself lost its `pyproject.toml` and the story stopped fitting. |
+| **What it cost** | three venv rebuilds under the wrong diagnosis, a seat re-added by hand, one gate run reporting a code regression that was not one (the 2026-09-19 instance was fixed with `rm -rf .venv && uv sync`, not a bounce), and roughly a day of the 2026-09-08 wave's attention. The corrected fix was two config keys: `worktrees.ephemeral: false` and `worktrees.path: ~/.beadhive/worktrees`, applied 2026-09-21 with the operator; every live seat was moved with `git worktree move` and its venv rebuilt. |
+| **Durable record** | bead `phaze-ofrxb` (operator decision and migration in its comments). The guard is `scripts/worktree-integrity.sh`, wired as the **first** dependency of both `just check` and `just check-fast` and pinned by `tests/shared/scripts/test_worktree_integrity.py`: it names a missing `.git` pointer, a missing `pyproject.toml`, deleted tracked files, and a hollowed venv, each with its remedy, and it runs with no `uv run` so the thing that is missing is never the thing expected to report it. The epic's 2026-09-09 comment corrects the contention framing at its source. |
+
+The general form is the one this ADR states, twice over. First, the durable-directory belief had
+no pointer because the seat *was* working — the files it touched survived, so the checkout looked
+fine from the inside. Second, the remedy was reasoned from the name of an operation (`copy`) rather
+than measured with a `stat`, and it was refuted in under a minute once it was. The mitigation this
+time is not a rule about tmp directories; it is the guard, which turns the next transferred belief
+about where a checkout lives into a one-line named failure at the top of the gate.
+
 ______________________________________________________________________
 
 ## 4. The trigger
