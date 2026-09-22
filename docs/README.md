@@ -50,6 +50,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |
 | **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
 | **[Historical Evidence Audit](historical-evidence-audit-2026-09-11.md)** | 🧾 Reproducible identifier, numeric-equivalence, archive-boundary, link, Mermaid, and graph-reference reconciliation |
+| **[Stranded Analysis Recovery](stranded-analysis-recovery.md)** | 🔄 Diagnosis, measured replay cost, and the scoped operator command for orphaned fine-tier analyses |
 | **[UI Design Reference](ui-design-reference.md)** | 🎛️ Current production visual and interaction contract |
 | **[UI Reference Fixtures](ui-reference-fixtures.html)** | 🖼️ Maintained visual fixture catalogue used by the UI reference |
 
