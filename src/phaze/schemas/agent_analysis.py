@@ -1,8 +1,9 @@
 """Pydantic schemas for ``PUT /api/internal/agent/analysis/{file_id}``.
 
 The endpoint idempotently upserts on ``AnalysisResult.file_id``. Optional fields preserve partial-PUT
-semantics. The wire carries mood and style as score dictionaries; the router owns their bounded string
-summaries for the current ``String(50)`` columns.
+semantics. Mood carries scores for its bounded summary. Style carries ranked genre scores,
+while dominant_style carries the duration-modal label. A score dictionary remains accepted
+for rolling-upgrade agents.
 """
 
 from typing import Any, Literal
@@ -18,11 +19,9 @@ def _reject_pg_unsafe_json(v: object, info: ValidationInfo) -> object:
     """Shared field_validator body for a dict field bound for `features`/JSONB or dict-summarized
     into a `String` column (phaze-hvve5, site 4).
 
-    ``features`` lands straight into a JSONB column; ``mood``/``style`` on
-    :class:`AnalysisWritePayload` are reduced to a bounded summary string by
-    ``_summarize_dict_to_string`` (routers/agent_analysis.py) BEFORE storage, but a NUL nested in a
-    dict KEY survives that reduction and lands in the ``String(50)`` column, while a NaN/Infinity
-    VALUE reaches ``json.dumps`` (``allow_nan=True`` by default) for the JSONB ``features`` case.
+    ``features`` lands straight into a JSONB column; ``mood`` is reduced to a
+    bounded string and ``style`` is stored as JSONB. A NUL nested in a dict key
+    or NaN/Infinity value is unsafe for those destinations.
     Neither hazard is caught by a scalar ``Field(ge=..., le=...)`` bound -- those only guard a
     top-level float, never one buried inside a dict value. REJECT (422) rather than silently drop
     the offending key/value: this is analysis data, and silently discarding part of it would make
@@ -97,6 +96,17 @@ class AnalysisWindowPayload(BaseModel):
     _reject_pg_unsafe_features = field_validator("features", mode="after")(_reject_pg_unsafe_json)
 
 
+class StyleScore(BaseModel):
+    """One validated style candidate in the file-level ranked array."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=50)
+    score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    _reject_pg_unsafe_name = field_validator("name", mode="after")(_reject_pg_unsafe_json)
+
+
 class AnalysisWritePayload(BaseModel):
     """Audio analysis upsert body. All optional -- partial-PUT preserves unset fields."""
 
@@ -109,9 +119,29 @@ class AnalysisWritePayload(BaseModel):
     # investigation), so the wire is capped to match rather than the column widened.
     musical_key: str | None = Field(default=None, max_length=10)
     mood: dict[str, float] | None = None
-    style: dict[str, float] | None = None
+    # New agents send duration-weighted scores plus a separate modal label. Dict/string inputs
+    # remain accepted for callbacks from older agents during a rolling upgrade.
+    style: list[StyleScore] | dict[str, float] | str | None = None
+    dominant_style: str | None = Field(default=None, max_length=50)
 
-    _reject_pg_unsafe_mood_style = field_validator("mood", "style", mode="after")(_reject_pg_unsafe_json)
+    _reject_pg_unsafe_mood_style = field_validator("mood", "style", "dominant_style", mode="after")(_reject_pg_unsafe_json)
+
+    @field_validator("style", mode="after")
+    @classmethod
+    def _style_label_fits_column(cls, value: list[StyleScore] | str | dict[str, float] | None) -> list[StyleScore] | str | dict[str, float] | None:
+        if isinstance(value, list):
+            if len({item.name for item in value}) != len(value):
+                raise ValueError("style names must be unique")
+            return sorted(value, key=lambda item: (-item.score, item.name))
+        if isinstance(value, str):
+            label = value
+        elif isinstance(value, dict) and value:
+            label = sorted(value.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        else:
+            label = None
+        if label is not None and len(label) > 50:
+            raise ValueError("style label exceeds the 50-character storage limit")
+        return value
 
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     energy: float | None = Field(default=None, ge=0.0, le=1.0)

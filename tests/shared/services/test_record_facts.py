@@ -25,7 +25,7 @@ from phaze.services.record_facts import ABSENT, build_record_facts
 
 
 def _analysis(**overrides: object) -> AnalysisResult:
-    kwargs: dict[str, object] = {"file_id": uuid.uuid4(), "bpm": None, "mood": None, "style": None}
+    kwargs: dict[str, object] = {"file_id": uuid.uuid4(), "bpm": None, "mood": None, "dominant_style": None}
     kwargs.update(overrides)
     return AnalysisResult(**kwargs)  # type: ignore[arg-type]
 
@@ -134,7 +134,7 @@ def test_the_modal_key_row_names_the_code_and_the_key_it_stands_for() -> None:
 
 def test_the_mood_and_style_row_reads_the_analysis_result_row_verbatim() -> None:
     """``mood``/``style`` are read straight off ``AnalysisResult``, not re-derived from windows."""
-    assert _facts(analysis=_analysis(mood="dark", style="techno"))["Mood · style"] == "dark · techno"
+    assert _facts(analysis=_analysis(mood="dark", dominant_style="techno"))["Mood · style"] == "dark · techno"
     assert _facts(analysis=_analysis())["Mood · style"] == ABSENT
     assert _facts(analysis=None)["Mood · style"] == ABSENT
 
@@ -165,10 +165,10 @@ def test_the_median_bpm_row_matches_the_similarity_terms_own_reading_of_analysis
     ``confidence == 0.0`` at write time and so contributed nothing to ``aggregate_bpm``, yet the
     aggregate itself is still a real, persisted number.
     """
-    analysis = _analysis(bpm=120.2, mood="dark", style="techno")
+    analysis = _analysis(bpm=120.2, mood="dark", dominant_style="techno")
 
     facts = _facts(analysis=analysis)
 
     similarity_reads = analysis.bpm  # the exact expression routers/record.py hands find_similar_sets
     assert facts["Median BPM"] == str(round(similarity_reads))
-    assert facts["Mood · style"] == f"{analysis.mood} · {analysis.style}"
+    assert facts["Mood · style"] == f"{analysis.mood} · {analysis.dominant_style}"

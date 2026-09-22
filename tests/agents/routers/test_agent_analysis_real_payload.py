@@ -189,6 +189,8 @@ async def test_the_pod_lanes_real_payload_bytes_are_accepted_by_the_same_real_ro
     session.expire_all()
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert row.musical_key == result["musical_key"]
+    assert row.dominant_style == result["style"]
+    assert row.style == payload.model_dump()["style"]
     window_count = (await session.execute(select(func.count()).select_from(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalar_one()
     assert window_count == len(result["windows"])
 

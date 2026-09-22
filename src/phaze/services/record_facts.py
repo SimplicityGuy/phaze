@@ -14,7 +14,7 @@ never re-derived from windows (phaze-duyyw).** This module used to recompute a m
 fine windows' ``bpm`` and a duration-weighted mode over the coarse windows' ``mood``/``style`` --
 a second implementation of exactly what ``analysis_windows.aggregate_bpm`` /
 ``aggregate_dominant`` already computed once, at analysis completion, into
-``AnalysisResult.bpm`` / ``.mood`` / ``.style``. The two implementations could disagree, and did:
+``AnalysisResult.bpm`` / ``.mood`` / ``.dominant_style``. The two implementations could disagree, and did:
 ``aggregate_bpm`` excludes windows with ``confidence == 0.0`` (unreliable BPM on short/silent
 audio), but ``AnalysisWindow`` carries no ``confidence`` column and ``FineWindow.as_payload_dict``
 never persists it, so the window-re-derivation here could not reproduce that gate and fell back to
@@ -112,14 +112,14 @@ def build_record_facts(
 
     ``analysis`` is the file's (at most one) ``AnalysisResult`` row -- ``None`` for a file never
     analyzed to completion. Median BPM and Mood · style read ``analysis.bpm`` / ``.mood`` /
-    ``.style`` verbatim (rounding BPM for display only); see the module docstring for why this
+    ``.dominant_style`` verbatim (rounding BPM for display only); see the module docstring for why this
     module must not re-derive them from windows.
     """
     glyph, tone = _LANE_PRESENTATION.get(lane_kind or "", _LANE_FALLBACK)
     digest = sha256_hash or ""
     tempo = analysis.bpm if analysis is not None else None
     mood = analysis.mood if analysis is not None else None
-    style = analysis.style if analysis is not None else None
+    style = analysis.dominant_style if analysis is not None else None
     return [
         RecordFact(label="Format", value=file_type or ABSENT),
         RecordFact(label="Duration", value=format_elapsed_time(total_sec) if total_sec > 0 else ABSENT),

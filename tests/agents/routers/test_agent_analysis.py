@@ -185,17 +185,41 @@ async def test_analysis_put_happy_path(seed_test_agent: tuple[Agent, str], sessi
     # must stamp `payload["id"] = uuid.uuid4()` so pg_insert doesn't fail NOT NULL.
     assert row.id is not None
     assert isinstance(row.id, uuid.UUID)
-    # Storage conversion: dict[str, float] -> summary string for mood/style (String(50) columns).
+    # Mood retains its score summary; a legacy style dict becomes a typed ranked array.
     assert row.mood is not None
     assert "energetic=0.80" in row.mood
     assert "happy=0.70" in row.mood
     assert row.style is not None
-    assert "electronic=0.90" in row.style
-    assert "house=0.60" in row.style
+    assert row.style == [{"name": "electronic", "score": 0.9}, {"name": "house", "score": 0.6}]
+    assert row.dominant_style == "electronic"
     # Overflow funnel: wire fields without dedicated columns land in `features` JSONB.
     assert row.features is not None
     assert row.features.get("danceability") == 0.85
     assert row.features.get("energy") == 0.92
+
+
+@pytest.mark.asyncio
+async def test_style_stores_one_label_from_a_long_legacy_composite(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A rolling-upgrade agent's score dict must never become a truncated category."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    scores = {"Electronic/Psy-Trance": 0.66, "Electronic/Progressive House": 0.31, "Electronic/Breakbeat": 0.03}
+    assert len(",".join(f"{label}={score:.2f}" for label, score in scores.items())) > 50
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"style": scores})
+        assert response.status_code == 200, response.text
+        session.expire_all()
+        row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+        assert row.dominant_style == "Electronic/Psy-Trance"
+        assert row.style == [{"name": name, "score": score} for name, score in scores.items()]
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"style": "Electronic/House"})
+        assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.dominant_style == "Electronic/House"
+    assert row.style == [{"name": "Electronic/House", "score": 1.0}]
 
 
 @pytest.mark.asyncio

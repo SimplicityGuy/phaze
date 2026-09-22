@@ -9,18 +9,25 @@ SQLAlchemy imports. Both the SAQ worker and the DB-less one-shot pod load it, so
 it must never cross the agent import boundary (mirrors the phaze.tasks.functions
 invariant, enforced by tests/shared/core/test_task_split.py).
 
-Wire-format conversion (D-26):
-- ``analyze_file`` returns ``mood``/``style`` as strings (dominant label).
-- ``AnalysisWritePayload`` requires ``mood``/``style`` as ``dict[str, float]``.
-- These converters rebuild the dicts from ``analysis["features"]`` so the wire
-  contract is honored end-to-end: ``mood`` averages each ``mood_*`` set's
-  positive-class prediction across the 3 variants; ``style`` takes the genre
-  predictions returned by the discogs effnet model.
+Wire-format conversion (D-26, phaze-z66hq):
+- ``analyze_file`` returns ``mood``/``style`` as dominant-label strings.
+- ``AnalysisWritePayload.mood`` is a score dict rebuilt from positive-class
+  predictions. ``style`` is a ranked array of duration-weighted genre scores;
+  ``dominant_style`` carries the aggregate label separately.
+- The top-level style converter remains as a fallback for older results without
+  persisted windows.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
+
+
+class StyleScoreRow(TypedDict):
+    """One file-level genre score before Pydantic validates the callback wire."""
+
+    name: str
+    score: float
 
 
 _MOOD_SET_NAMES = frozenset(
@@ -129,3 +136,37 @@ def _features_to_style_dict(features: dict[str, Any]) -> dict[str, float] | None
         if pair is not None:
             out[pair[0]] = pair[1]
     return out or None
+
+
+def aggregate_style_scores(windows: list[dict[str, Any]]) -> list[StyleScoreRow]:
+    """Duration-weighted genre scores across every coarse window of a file.
+
+    A model reports its top genres per window. Missing labels contribute zero for that
+    window, so every score uses the same total coarse duration as its denominator.
+    The result is sorted by score, then name, for stable JSON and queries.
+    """
+    weighted: dict[str, float] = {}
+    total_duration = 0.0
+    for window in windows:
+        if not isinstance(window, dict) or window.get("tier") != "coarse":
+            continue
+        try:
+            duration = float(window["end_sec"]) - float(window["start_sec"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if duration <= 0:
+            continue
+        total_duration += duration
+        features = window.get("features")
+        genre = features.get("genre") if isinstance(features, dict) else None
+        predictions = genre.get("predictions") if isinstance(genre, dict) else None
+        if not isinstance(predictions, list):
+            continue
+        for entry in predictions:
+            pair = _style_entry(entry)
+            if pair is not None:
+                name, score = pair
+                weighted[name] = weighted.get(name, 0.0) + score * duration
+    if total_duration <= 0:
+        return []
+    return [{"name": name, "score": value / total_duration} for name, value in sorted(weighted.items(), key=lambda item: (-item[1], item[0]))]

@@ -60,9 +60,10 @@ from phaze.schemas.agent_analysis import (
     AnalysisWindowPayload,
     AnalysisWritePayload,
     PresignDownloadMetadata,
+    StyleScore,
 )
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
-from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
+from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
 from phaze.services.video_audio import AudioSource, NoAudioTrackError, extract_audio_track
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
@@ -375,21 +376,29 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
 def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
     """Convert an ``analyze_file`` result dict into the callback wire payload.
 
-    Mirrors ``phaze.tasks.functions.process_file`` exactly: rebuild mood/style as
-    ``dict[str, float]`` from ``result["features"]`` (D-26) and forward the
+    Mirrors ``phaze.tasks.functions.process_file`` exactly: rebuild mood scores
+    from ``result["features"]``, rank style scores from coarse windows, preserve
+    the separate dominant style label, and forward the
     per-window time-series + the five-field coverage contract.
     """
     features = result.get("features", {})
     if not isinstance(features, dict):
         features = {}
     mood_dict = _features_to_mood_dict(features)
-    style_dict = _features_to_style_dict(features)
-    windows = [AnalysisWindowPayload(**w) for w in (result.get("windows") or [])]
+    raw_windows = result.get("windows") or []
+    windows = [AnalysisWindowPayload(**w) for w in raw_windows]
+    style_rows = aggregate_style_scores(raw_windows)
+    if not style_rows:
+        fallback = _features_to_style_dict(features) or {}
+        style_rows = [{"name": name, "score": score} for name, score in sorted(fallback.items(), key=lambda item: (-item[1], item[0]))]
+    style_scores = [StyleScore(**row) for row in style_rows] if style_rows else None
+    dominant_style = result.get("style")
     return AnalysisWritePayload(
         bpm=result.get("bpm"),
         musical_key=result.get("musical_key"),
         mood=mood_dict,
-        style=style_dict,
+        style=style_scores,
+        dominant_style=dominant_style if isinstance(dominant_style, str) else None,
         danceability=result.get("danceability"),
         energy=result.get("energy"),
         fine_windows_analyzed=result.get("fine_windows_analyzed"),

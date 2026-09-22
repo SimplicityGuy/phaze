@@ -26,6 +26,7 @@ def test_analysis_write_payload_accepts_empty_body() -> None:
     assert payload.musical_key is None
     assert payload.mood is None
     assert payload.style is None
+    assert payload.dominant_style is None
     assert payload.danceability is None
     assert payload.energy is None
 
@@ -44,6 +45,25 @@ def test_analysis_write_payload_accepts_full_body() -> None:
     assert payload.bpm == 128.5
     assert payload.mood == {"happy": 0.8, "sad": 0.1}
     assert payload.style == {"electronic": 0.9, "rock": 0.0}
+
+
+def test_analysis_write_payload_validates_ranked_style_objects() -> None:
+    payload = AnalysisWritePayload(
+        style=[{"name": "Electronic/House", "score": 0.31}, {"name": "Electronic/Psy-Trance", "score": 0.66}],
+        dominant_style="Electronic/Psy-Trance",
+    )
+    assert payload.model_dump()["style"] == [
+        {"name": "Electronic/Psy-Trance", "score": 0.66},
+        {"name": "Electronic/House", "score": 0.31},
+    ]
+    for style in (
+        [{"name": "House", "score": 1.1}],
+        [{"name": "House", "score": 0.6, "unexpected": True}],
+        [{"name": "", "score": 0.6}],
+        [{"name": "House", "score": 0.6}, {"name": "House", "score": 0.4}],
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            AnalysisWritePayload(style=style)
 
 
 def test_analysis_write_payload_rejects_unknown_field() -> None:

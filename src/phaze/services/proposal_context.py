@@ -81,7 +81,7 @@ def build_file_context(
             "bpm": analysis.bpm,
             "musical_key": analysis.musical_key,
             "mood": analysis.mood,
-            "style": analysis.style,
+            "style": analysis.dominant_style,
             "features": analysis.features,
         }
 

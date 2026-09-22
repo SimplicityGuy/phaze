@@ -23,7 +23,7 @@ def _make_analysis() -> MagicMock:
     analysis.bpm = 140.0
     analysis.musical_key = "Am"
     analysis.mood = "dark"
-    analysis.style = "techno"
+    analysis.dominant_style = "techno"
     analysis.features = {"energy": 0.85}
     return analysis
 

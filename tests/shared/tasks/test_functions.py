@@ -11,6 +11,7 @@ from pydantic import ValidationError
 import pytest
 from saq import Status
 
+from phaze.services.analysis_wire import aggregate_style_scores
 from phaze.services.video_audio import AudioSource
 from phaze.tasks.functions import (
     _features_to_mood_dict,
@@ -58,6 +59,27 @@ MOCK_ANALYSIS: dict[str, Any] = {
         },
     },
 }
+
+
+def test_aggregate_style_scores_weights_all_coarse_windows() -> None:
+    windows = [
+        {
+            "tier": "coarse",
+            "start_sec": 0.0,
+            "end_sec": 60.0,
+            "features": {"genre": {"predictions": [{"label": "Electronic---House", "confidence": 0.9}]}},
+        },
+        {
+            "tier": "coarse",
+            "start_sec": 60.0,
+            "end_sec": 180.0,
+            "features": {"genre": {"predictions": [{"label": "Electronic---Techno", "confidence": 0.6}]}},
+        },
+    ]
+    assert aggregate_style_scores(windows) == [
+        {"name": "Electronic/Techno", "score": pytest.approx(0.4)},
+        {"name": "Electronic/House", "score": pytest.approx(0.3)},
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -308,7 +330,9 @@ async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
     assert body.bpm == 128.0
     assert body.musical_key == "C minor"
     assert isinstance(body.mood, dict)
-    assert isinstance(body.style, dict)
+    assert body.dominant_style == "Electronic/House"
+    assert body.style is not None
+    assert isinstance(body.style, list)
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -397,6 +421,7 @@ async def test_process_file_preserves_completed_non_dict_analysis(mock_pool: Asy
         "musical_key": None,
         "mood": None,
         "style": None,
+        "dominant_style": None,
         "danceability": None,
         "energy": None,
         "fine_windows_analyzed": None,

@@ -12,7 +12,7 @@ gender, tonality, voice_instrumental) -- so cosine similarity over it is a real,
 signal, but it is **not** the same claim as the brief's "style and dominant-mood agreement":
 `MOOD_ORDER` carries no Discogs-style genre at all, so a `mean_vector`-only score would narrow
 that criterion rather than discharge it (review finding, phaze-x1qr3.11 changes-requested
-round 1). The fix is two DISCRETE agreement terms read off `AnalysisResult.style` and
+round 1). The fix is two DISCRETE agreement terms read off `AnalysisResult.dominant_style` and
 `AnalysisResult.mood` -- the same duration-weighted dominant labels
 `services.record_facts.build_record_facts` reads for the sidebar's own "Mood · style" fact row
 (`phaze-duyyw`: both surfaces read the identical `AnalysisResult` fields rather than each keeping
@@ -27,7 +27,7 @@ over stored fine windows, which would turn one candidate row into an N+1 window 
 same predicate the harmonic journey wheel colours edges with).
 
 The six terms, in `SIMILARITY_WEIGHTS`: `vector` (cosine over `mean_vector`), `arc_shape`
-(Euclidean over `arc`), `style` and `mood` (binary agreement over `AnalysisResult.style` /
+(Euclidean over `arc`), `style` and `mood` (binary agreement over `AnalysisResult.dominant_style` /
 `.mood` -- no "adjacent" bucket, since neither label carries an ordering relation the way
 Camelot positions do), `bpm`, and `key`.
 
@@ -131,7 +131,7 @@ KEY_ADJACENT: Final[float] = 0.6
 KEY_OTHER: Final[float] = 0.0
 
 # Style/mood term values: exact label agreement or none. Unlike Camelot codes, an
-# `AnalysisResult.style` / `.mood` label ("techno", "energetic") carries no ordering relation
+# `AnalysisResult.dominant_style` / `.mood` label ("techno", "energetic") carries no ordering relation
 # to another label, so there is no "adjacent" middle bucket -- only match or no match (which
 # includes either side missing).
 CATEGORICAL_MATCH: Final[float] = 1.0
@@ -245,7 +245,7 @@ def _categorical_agreement(a: str | None, b: str | None) -> float:
     """``CATEGORICAL_MATCH`` when both sides carry the same non-empty label, else
     ``CATEGORICAL_NO_MATCH`` -- including when either side is missing (no credit for "I don't
     know" agreeing with anything). Shared by the ``style`` and ``mood`` terms, which read
-    ``AnalysisResult.style`` / ``.mood`` -- the same duration-weighted dominant labels
+    ``AnalysisResult.dominant_style`` / ``.mood`` -- the same duration-weighted dominant labels
     ``services.record_facts.build_record_facts`` reads for the sidebar's "Mood · style" fact row,
     here read pre-computed rather than re-derived from windows.
     """
@@ -353,7 +353,7 @@ async def find_similar_sets(
             SetProfile.camelot_modal,
             title_column.label("title"),
             AnalysisResult.bpm,
-            AnalysisResult.style,
+            AnalysisResult.dominant_style,
             AnalysisResult.mood,
         )
         .join(FileRecord, FileRecord.id == SetProfile.file_id)

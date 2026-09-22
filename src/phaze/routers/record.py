@@ -291,7 +291,7 @@ async def build_file_record_context(
             file_id,
             set_profile,
             analysis.bpm if analysis is not None else None,
-            analysis.style if analysis is not None else None,
+            analysis.dominant_style if analysis is not None else None,
             analysis.mood if analysis is not None else None,
         )
 

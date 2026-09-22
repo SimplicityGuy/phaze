@@ -78,7 +78,7 @@ async def _seed_profile(
     file = await make_file(original_filename=original_filename)
     session.add(SetProfile(file_id=file.id, mean_vector=mean_vector, arc=arc, camelot_modal=camelot_modal))
     if bpm is not None or style is not None or mood is not None:
-        session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, bpm=bpm, style=style, mood=mood))
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, bpm=bpm, dominant_style=style, mood=mood))
     await session.commit()
     await session.refresh(file)
     return file
@@ -622,7 +622,7 @@ async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_fi
                 id=uuid.uuid4(),
                 file_id=files[i].id,
                 bpm=100.0 + (i % 60),
-                style=rng_styles[i % len(rng_styles)],
+                dominant_style=rng_styles[i % len(rng_styles)],
                 mood=rng_moods[i % len(rng_moods)],
             )
             for i in range(corpus_size)
