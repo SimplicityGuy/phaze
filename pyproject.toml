@@ -411,7 +411,7 @@ constraint-dependencies = [
 
 [dependency-groups]
 browser = [
-    "playwright==1.62.0",
+    "playwright==1.63.0",
 ]
 dev = [
     "bandit>=1.9.4",
