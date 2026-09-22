@@ -103,6 +103,7 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `worker-health` | operator convenience | application-server SAQ worker probe |
 | `worker-logs` | operator convenience | follow application-server worker logs |
 | `worker-restart` | operator convenience | restart the application-server worker |
+| `worktree-integrity` | internal helper | first step of `check` and `check-fast` (checkout-integrity probe, phaze-ofrxb); focused diagnosis of a hollowed seat |
 
 ## Compatibility rules
 
