@@ -362,6 +362,42 @@ async def test_get_proposal_pending_batches_splits_an_oversized_folder_determini
 
 
 @pytest.mark.asyncio
+async def test_get_proposal_pending_batches_closes_a_pending_small_batch_before_an_oversized_folder(
+    session: AsyncSession,
+) -> None:
+    """A small folder already packed into the in-progress batch is CLOSED OUT, as its own batch,
+    the moment an oversized folder is reached -- rather than being silently dropped or merged into
+    the oversized folder's slices.
+
+    ``test_..._splits_an_oversized_folder_deterministically`` only ever reaches the oversized-folder
+    branch with an EMPTY in-progress batch (alphabetically, "Big Release" sorts before "Small
+    Release", so nothing has been packed into ``current`` yet). This test sorts a small folder
+    BEFORE the oversized one ("AAA Warmup" < "ZZZ Big Release") so the in-progress-batch-close path
+    is the one actually exercised.
+    """
+    warmup = [_make_pipeline_file(original_path="/music/AAA Warmup/00.mp3")]
+    big = [_make_pipeline_file(original_path=f"/music/ZZZ Big Release/{i:02d}.mp3") for i in range(5)]
+    session.add_all([*warmup, *big])
+    await session.flush()
+    for f in [*warmup, *big]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 2)
+
+    warmup_ids = sorted(str(f.id) for f in warmup)
+    big_ids = sorted(str(f.id) for f in big)
+    # The warmup folder was packed into `current`, then closed out as its OWN batch (not dropped,
+    # not merged into the oversized folder's slices) the moment the oversized folder was reached.
+    warmup_batches = [b for b in batches if set(b) & set(warmup_ids)]
+    assert warmup_batches == [warmup_ids]
+    big_batches = [b for b in batches if set(b) & set(big_ids)]
+    assert [len(b) for b in big_batches] == [2, 2, 1]
+    assert [fid for b in big_batches for fid in b] == big_ids
+    assert len(batches) == 4, "warmup's own batch, plus the big folder's 3 deterministic slices"
+
+
+@pytest.mark.asyncio
 async def test_get_proposal_pending_batches_does_not_cross_agent_boundaries(session: AsyncSession) -> None:
     """Two DIFFERENT agents whose files happen to share a directory STRING are not treated as
     siblings -- ``original_path`` is unique only per agent, so a path collision across agents must
