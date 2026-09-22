@@ -186,16 +186,22 @@ def _make_tracklist(n: int) -> Tracklist:
 # recovery producer read, so the two paths cannot drift apart.
 
 
-def _make_pipeline_file(*, file_type: str = "mp3") -> FileRecord:
-    """Build a fully-populated FileRecord row for the pending-set helper tests."""
+def _make_pipeline_file(*, file_type: str = "mp3", agent_id: str = "test-fileserver", original_path: str | None = None) -> FileRecord:
+    """Build a fully-populated FileRecord row for the pending-set helper tests.
+
+    phaze-hk7b8: ``original_path`` and ``agent_id`` are overridable so a sibling-grouping test can
+    place several files under a shared parent directory (or under two different agents at the same
+    path, to exercise the ``(agent_id, parent)`` grouping key) -- the default still mints a unique
+    path per call, exactly as before, so every existing caller is unaffected.
+    """
     uid = uuid.uuid4()
     return FileRecord(
-        agent_id="test-fileserver",
+        agent_id=agent_id,
         id=uid,
         sha256_hash=uid.hex,
-        original_path=f"/music/{uid.hex}.{file_type}",
+        original_path=original_path if original_path is not None else f"/music/{uid.hex}.{file_type}",
         original_filename=f"{uid.hex}.{file_type}",
-        current_path=f"/music/{uid.hex}.{file_type}",
+        current_path=original_path if original_path is not None else f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
     )
