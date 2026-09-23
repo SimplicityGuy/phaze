@@ -146,18 +146,28 @@ any other name leaves the worktree dirty and `check-fast`'s selector refuses to 
 
 #### Before launching a gate: check headroom, not a gate count
 
+**There is no swap-based launch gate.** One stood here — `sysctl vm.swapusage`, hard NO-GO if
+`used` was non-zero — and it is retired: macOS never drains swap back to zero once a machine has
+touched it (`phaze-u92y9`, measured on molecule `phaze-48ghg` 2026-08-26 — `192.19M` used, unchanged
+for ~50 minutes across a full drain of the load that caused it, while free memory recovered from 38%
+to 59% over the same window), so a level-based reading of it is permanently unsatisfiable after the
+first swap event: it blocks every future gate regardless of actual headroom. **Operator decision
+2026-09-22** (dispatch session, `AskUserQuestion`). Question as put: *"Swap shows 5,231 MB used out
+of 6,144 MB. CLAUDE.md treats any non-zero swap as a hard NO-GO for launching a gate, but open bead
+phaze-u92y9 says macOS swap never drains, so as written the rule blocks forever. Memory pressure
+reads 62% free. How should I run gates for this dispatch?"* Answer as given (free text, verbatim):
+*"waves of 4 is fine. but this whole launch gate is junk. please remove the gate on the swap."*
+Durable record: bead `phaze-u92y9`. The gate is removed outright, not re-calibrated to a rate-based
+check — do not reintroduce a swap threshold, calibrated or otherwise.
+
 ```bash
-sysctl vm.swapusage                                                 # hard NO-GO if "used" is non-zero
 memory_pressure | tail -1                                           # the headroom read
 ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest'  # context, not a verdict
 ```
 
-Swap is **necessary, not sufficient**: it answers *"is this machine thrashing now"*, while a launch
-decision needs *"will it thrash if I add ~1.3 GB"*. Non-zero swap is a hard no-go; `0.00M` establishes
-only that nothing is thrashing *now*. There is deliberately **no calibrated threshold** on the
-headroom read — none has been derived, and inventing one would be exactly the unmeasured arithmetic
-this rule replaced. **Record the swap reading and the wait into the gate log** so the next kill either
-confirms or refutes the discriminator.
+`memory_pressure`'s free percentage is the headroom read. There is deliberately **no calibrated
+threshold** on it — none has been derived, and inventing one would be exactly the unmeasured
+arithmetic the old gate-count rule was replaced to avoid.
 
 A **gate count is context, never a verdict** — it may make you more conservative, never less, and is
 **never** a reason to kill a running gate. Per-gate cost is unstable in three independent ways (the
@@ -173,7 +183,7 @@ Waiting is cheap — one seat lost ~1,190 s to a kill, then waited 390 s and ran
 waited=0
 while [ "$(ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest')" -gt 1 ] \
       && [ "$waited" -lt 3600 ]; do sleep 30; waited=$((waited+30)); done
-echo "WAITED_SEC=$waited SWAP=$(sysctl -n vm.swapusage)"   # into the gate log, before the gate
+echo "WAITED_SEC=$waited"   # into the gate log, before the gate
 ```
 
 ### Test databases and seat isolation
