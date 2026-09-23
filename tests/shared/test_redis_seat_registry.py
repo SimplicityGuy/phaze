@@ -134,6 +134,23 @@ def throwaway_redis() -> Iterator[str]:
         _docker("rm", "-f", container)
 
 
+def _postgres_ready(container: str) -> bool:
+    """True once the FINAL server -- not the image's temporary init server -- is accepting connections.
+
+    ``postgres:18-alpine``'s entrypoint initialises a fresh data directory by starting a TEMPORARY
+    server with ``listen_addresses=''`` (Unix socket only), running ``initdb``, then stopping it and
+    starting the real server. A readiness probe over the socket (``docker exec ... psql -tAc 'select
+    1'`` with no ``-h``) can observe that temporary server as ready, and the *next* probe then lands
+    in the stop/restart gap -- exactly the ``psql: error: connection to server on socket ... No such
+    file or directory`` failure this fixture used to produce intermittently (phaze-avcxd). The
+    temporary server never listens on TCP, so probing over ``-h 127.0.0.1`` instead only ever
+    observes the final server. Confirmed against a live container: the socket probe transitions
+    fail -> succeed (temporary server) -> fail (restart gap) -> succeed (final server), while a
+    TCP probe stays failed until the final server's own success.
+    """
+    return _docker("exec", container, "psql", "-h", "127.0.0.1", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0
+
+
 @pytest.fixture(scope="module")
 def throwaway_postgres() -> Iterator[str]:
     """A private Postgres for the L2 tests, held to the same discipline as the Redis one.
@@ -153,7 +170,7 @@ def throwaway_postgres() -> Iterator[str]:
         pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()}")
     try:
         for _ in range(160):
-            if _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
+            if _postgres_ready(container):
                 break
             time.sleep(0.25)
         else:
