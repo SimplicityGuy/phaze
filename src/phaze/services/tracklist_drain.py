@@ -30,7 +30,13 @@ from phaze.enums.tracklist_candidate import CacheDecision, DuplicateConfidence, 
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.text_repair import repair_mojibake
-from phaze.services.tracklist_candidate_queue import CandidateQueue, QueuedCandidate, build_queue_from_signals, load_candidate_signals
+from phaze.services.tracklist_candidate_queue import (
+    CandidateQueue,
+    QueuedCandidate,
+    admitted_signals,
+    build_queue_from_signals,
+    load_candidate_signals,
+)
 from phaze.services.tracklist_candidates import UniqueSet, group_unique_sets
 from phaze.services.tracklist_lookup_cache import IN_CLAUSE_CHUNK_SIZE, chunked, lookup, lookup_many, record_outcome
 from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
@@ -237,9 +243,11 @@ async def build_drain_queue(
     persisted_flags = await load_flagged_file_ids(session)
     flagged = set(flagged_file_ids) | persisted_flags
 
-    provisional = group_unique_sets([s for s in signals if not s.already_tracklisted or s.file_id in flagged])
+    provisional = group_unique_sets(admitted_signals(signals, force_file_ids=flagged))
     verdicts = await lookup_many(session, [u.key for u in provisional], now=moment)
-    queue: CandidateQueue = build_queue_from_signals(signals, verdicts, include_unknown=include_unknown, force_file_ids=flagged)
+    queue: CandidateQueue = build_queue_from_signals(
+        signals, verdicts, include_unknown=include_unknown, force_file_ids=flagged, unique_sets=provisional
+    )
 
     added_at = await _load_added_at(session, {member.file_id for entry in queue.entries for member in entry.unique_set.members})
 

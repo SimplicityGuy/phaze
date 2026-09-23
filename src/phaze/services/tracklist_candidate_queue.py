@@ -246,12 +246,26 @@ class CandidateQueue:
     that vanished from the queue can be explained rather than merely missing."""
 
 
+def admitted_signals(signals: Sequence[CandidateSignals], *, force_file_ids: Collection[uuid.UUID] = ()) -> list[CandidateSignals]:
+    """The files the funnel GROUPS: everything not already tracklisted, plus the forced refreshes.
+
+    The one definition of admission, shared by :func:`build_queue_from_signals` and by every caller
+    that groups ahead of it to learn the cache keys. Keeping it in one place is what lets those
+    callers hand their grouping back in (``unique_sets=``) instead of paying for it twice
+    (phaze-ih3zd): grouping is the dominant cost of a queue build, and two admission rules that
+    drifted apart would make a reused grouping silently describe the wrong files.
+    """
+    forced = frozenset(force_file_ids)
+    return [item for item in signals if not item.already_tracklisted or item.file_id in forced]
+
+
 def build_queue_from_signals(
     signals: Sequence[CandidateSignals],
     verdicts: dict[str, CacheVerdict],
     *,
     include_unknown: bool = False,
     force_file_ids: Collection[uuid.UUID] = (),
+    unique_sets: Sequence[UniqueSet] | None = None,
 ) -> CandidateQueue:
     """Run the funnel over already-loaded signals. Pure -- no session, no clock.
 
@@ -267,6 +281,11 @@ def build_queue_from_signals(
     deliberate: :func:`phaze.tasks.tracklist.refresh_tracklists` clears the cache row and sets the
     flag together, and a flag left behind on an answered set must be inert rather than a permanent
     re-query.
+
+    ``unique_sets`` (phaze-ih3zd) is ``group_unique_sets(admitted_signals(signals,
+    force_file_ids=force_file_ids))`` when the caller already computed it to learn the cache keys.
+    Grouping is pure, so passing it back changes nothing but the cost -- measured, the second
+    grouping was about a quarter of every drain-status render. ``None`` groups here as before.
     """
     forced = frozenset(force_file_ids)
     skipped_embedded = skipped_cue = skipped_scraped = 0
@@ -290,7 +309,8 @@ def build_queue_from_signals(
             continue
         candidates.append(item)
 
-    unique_sets = group_unique_sets(candidates)
+    if unique_sets is None:
+        unique_sets = group_unique_sets(candidates)
     wanted: list[UniqueSet] = []
     for unique_set in unique_sets:
         candidate_class = unique_set.classification.candidate_class
@@ -360,11 +380,12 @@ async def build_candidate_queue(
     signals = await load_candidate_signals(session, agent_id=agent_id, derived_queries=derived_queries)
 
     # Group once to learn the keys, ask the cache about all of them in one round trip, then run
-    # the funnel. Grouping is pure and cheap relative to the query, so doing it twice is a better
-    # trade than either holding the whole ORM result open or issuing per-key SELECTs.
-    provisional = group_unique_sets([s for s in signals if not s.already_tracklisted])
+    # the funnel over that SAME grouping. Grouping is pure, and it is not cheap: measured against a
+    # production-shaped corpus it was the largest single cost of the build (phaze-ih3zd), so it is
+    # handed back in rather than recomputed.
+    provisional = group_unique_sets(admitted_signals(signals))
     verdicts = await lookup_many(session, [u.key for u in provisional], now=moment)
-    return build_queue_from_signals(signals, verdicts, include_unknown=include_unknown)
+    return build_queue_from_signals(signals, verdicts, include_unknown=include_unknown, unique_sets=provisional)
 
 
 def format_corpus_report(stats: CandidateQueueStats) -> str:

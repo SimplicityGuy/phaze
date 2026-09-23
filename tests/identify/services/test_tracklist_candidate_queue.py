@@ -28,13 +28,14 @@ from phaze.services.tracklist_candidate_queue import (
     HOST_REQUESTS_PER_DAY,
     MEDIA_FILE_TYPES,
     REQUESTS_PER_LOOKUP,
+    admitted_signals,
     build_candidate_queue,
     build_queue_from_signals,
     format_corpus_report,
     load_candidate_signals,
     project_drain_days,
 )
-from phaze.services.tracklist_candidates import CandidateSignals
+from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
 from phaze.services.tracklist_lookup_cache import CacheVerdict, record_outcome
 
 
@@ -118,6 +119,43 @@ class TestFunnel:
         queue = build_queue_from_signals([answered], {key: CacheVerdict(key, CacheDecision.HIT_POSITIVE)}, force_file_ids=[answered.file_id])
         assert queue.stats.queued == 0
         assert len(queue.cached) == 1
+
+    def test_a_precomputed_grouping_yields_the_identical_queue(self) -> None:
+        """phaze-ih3zd: ``unique_sets=`` may change the cost of a build, never its result.
+
+        The corpus exercises every admission path -- an un-forced skip, a forced refresh, a
+        duplicate pair, a track and a cached set -- so a caller whose grouping disagreed with the
+        funnel's own admission rule would show up as a different queue, not a slower one.
+        """
+        answered = signals("A - Live @ E 2024-04-12.mp3", duration=3600.0, has_scraped_tracklist=True)
+        other = signals("Other - Live @ Event 2024-05-01.mp3", duration=3600.0)
+        corpus = [
+            answered,
+            signals("B - Live @ E 2024-04-13.mp3", duration=3600.0, has_cue_companion=True),
+            signals("Artist - Live @ Event 2024-04-12.mp3", duration=3600.0),
+            signals("Artist_-_Live_@_Event_2024-04-12-WEB-FLAC-CREW.flac", duration=3608.0),
+            other,
+            signals("01. Artist - Title (Original Mix).mp3", duration=360.0),
+        ]
+        forced = [answered.file_id]
+        grouped = group_unique_sets(admitted_signals(corpus, force_file_ids=forced))
+        other_key = next(u.key for u in grouped if u.canonical_file_id == other.file_id)
+        verdicts = {other_key: CacheVerdict(other_key, CacheDecision.SUPPRESSED_NEGATIVE)}
+
+        regrouped = build_queue_from_signals(corpus, verdicts, force_file_ids=forced)
+        reused = build_queue_from_signals(corpus, verdicts, force_file_ids=forced, unique_sets=grouped)
+
+        assert reused == regrouped
+        assert reused.stats.refresh_forced == 1
+        assert len(reused.cached) == 1
+
+    def test_admission_keeps_unanswered_and_forced_files_only(self) -> None:
+        answered = signals("A - Live @ E 2024-04-12.mp3", duration=3600.0, has_scraped_tracklist=True)
+        skipped = signals("B - Live @ E 2024-04-13.mp3", duration=3600.0, has_embedded_tracklist=True)
+        fresh = signals("C - Live @ E 2024-04-14.mp3", duration=3600.0)
+
+        assert admitted_signals([answered, skipped, fresh]) == [fresh]
+        assert admitted_signals([answered, skipped, fresh], force_file_ids=[answered.file_id]) == [answered, fresh]
 
     def test_tracks_are_classified_out(self) -> None:
         corpus = [

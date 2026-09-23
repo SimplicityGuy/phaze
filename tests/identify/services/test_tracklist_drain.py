@@ -681,6 +681,41 @@ class TestDrainPass:
         assert "GRVMSTR" not in entry.derived.query
         assert entry.added_at is not None
 
+    async def test_the_corpus_is_grouped_exactly_once_per_build(
+        self,
+        session: AsyncSession,
+        make_file,
+        monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """phaze-ih3zd: the grouping learned for the cache keys is the grouping the funnel runs on.
+
+        Measured against a production-shaped corpus, ``group_unique_sets`` was the largest single
+        cost of the drain-status render, and it used to run twice per build -- once to learn the
+        cache keys, once more inside ``build_queue_from_signals`` over the identical input. Counted
+        in BOTH modules, so a regression that reintroduces either call site fails here.
+        """
+        import phaze.services.tracklist_candidate_queue as queue_module
+        import phaze.services.tracklist_drain as drain_module
+
+        calls: list[int] = []
+
+        def counting(candidates: Sequence[CandidateSignals]) -> Any:
+            calls.append(len(candidates))
+            return group_unique_sets(candidates)
+
+        monkeypatch.setattr(drain_module, "group_unique_sets", counting)
+        monkeypatch.setattr(queue_module, "group_unique_sets", counting)
+
+        flagged = await self._seed(make_file, session, "Zed - Live @ Late Event 2024-09-09.mp3")
+        for index in range(3):
+            await self._seed(make_file, session, f"Artist{index} - Live @ Event 2024-04-1{index}.mp3")
+
+        queue = await build_drain_queue(session, flagged_file_ids=[flagged.id], now=NOW)
+
+        assert calls == [4]
+        assert len(queue.entries) == 4
+        assert queue.entries[0].flagged is True
+
     async def test_added_at_is_correct_when_load_added_at_is_chunked(
         self,
         session: AsyncSession,
