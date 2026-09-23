@@ -18,12 +18,15 @@ from tests.shared.services.pipeline._shared import (
     datetime,
     get_proposal_pending_batches,
     pytest,
+    seed_active_agent,
     uuid,
 )
 
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.models.file import FileRecord
 
 
 @pytest.mark.asyncio
@@ -272,3 +275,155 @@ async def test_propose_gate_still_accepts_a_file_whose_metadata_succeeded(sessio
 
     assert str(ok.id) in batched, "a metadata-SUCCEEDED, analysis-complete file must stay proposable"
     assert await count_proposal_pending_files(session) == 1
+
+
+# phaze-hk7b8: sibling grouping by parent directory (FileRecord.original_path), replacing the old
+# flat sorted-UUID chunking that scattered one release's files across unrelated batches.
+
+
+async def _converge(session: AsyncSession, f: FileRecord) -> None:
+    """Make one already-inserted FileRecord clear the propose convergence gate (metadata + analysis)."""
+    session.add(FileMetadata(file_id=f.id, artist="A", title="T"))
+    session.add(AnalysisResult(file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_groups_siblings_that_fit_in_one_batch(session: AsyncSession) -> None:
+    """Two releases (folders) of 3 files each, batch_size == folder size: each folder is its OWN batch.
+
+    Combined (6) exceeds ``batch_size`` (3), so the two folders cannot share one batch -- but the
+    greedy pack still keeps each folder WHOLE rather than falling back to the old flat 3/3 slice,
+    which (given arbitrary UUID sort order) could have split either folder across both batches.
+    """
+    album_a = [_make_pipeline_file(original_path=f"/music/Album A/{i:02d}.mp3") for i in range(3)]
+    album_b = [_make_pipeline_file(original_path=f"/music/Album B/{i:02d}.mp3") for i in range(3)]
+    session.add_all([*album_a, *album_b])
+    await session.flush()
+    for f in [*album_a, *album_b]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 3)
+
+    assert len(batches) == 2
+    ids_a = sorted(str(f.id) for f in album_a)
+    ids_b = sorted(str(f.id) for f in album_b)
+    assert sorted(batches[0]) == ids_a, "Album A's 3 siblings must land together in one batch"
+    assert sorted(batches[1]) == ids_b, "Album B's 3 siblings must land together in one batch"
+    # Determinism: identical pending set, second call, byte-identical batches (not just membership).
+    assert await get_proposal_pending_batches(session, 3) == batches
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_packs_small_folders_together(session: AsyncSession) -> None:
+    """Two small releases that TOGETHER fit in one batch are packed into the SAME batch."""
+    album_a = [_make_pipeline_file(original_path=f"/music/Album A/{i:02d}.mp3") for i in range(2)]
+    album_b = [_make_pipeline_file(original_path=f"/music/Album B/{i:02d}.mp3") for i in range(2)]
+    session.add_all([*album_a, *album_b])
+    await session.flush()
+    for f in [*album_a, *album_b]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 10)
+
+    assert len(batches) == 1, "both small folders fit inside one batch_size=10 batch"
+    expected = sorted(str(f.id) for f in [*album_a, *album_b])
+    assert sorted(batches[0]) == expected
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_splits_an_oversized_folder_deterministically(session: AsyncSession) -> None:
+    """A folder LARGER than batch_size must still be split, deterministically, and NEVER blended
+    with an unrelated sibling folder's files (each resulting batch's provenance stays simple: it is
+    either whole small folders, or a slice of exactly one oversized folder)."""
+    big = [_make_pipeline_file(original_path=f"/music/Big Release/{i:02d}.mp3") for i in range(5)]
+    small = [_make_pipeline_file(original_path="/music/Small Release/00.mp3")]
+    session.add_all([*big, *small])
+    await session.flush()
+    for f in [*big, *small]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 2)
+
+    big_ids = sorted(str(f.id) for f in big)
+    small_ids = sorted(str(f.id) for f in small)
+    # The 5-file "Big Release" folder splits into deterministic contiguous slices of <= 2.
+    big_batches = [b for b in batches if set(b) & set(big_ids)]
+    assert [len(b) for b in big_batches] == [2, 2, 1]
+    assert [fid for b in big_batches for fid in b] == big_ids, "slices are sorted-id contiguous chunks"
+    assert all(set(b).issubset(big_ids) for b in big_batches), "no oversized-folder batch mixes in another folder's files"
+    # The small folder is untouched -- its own, separate, whole batch.
+    small_batches = [b for b in batches if set(b) & set(small_ids)]
+    assert small_batches == [small_ids]
+    # Determinism across repeated calls against the identical pending set.
+    assert await get_proposal_pending_batches(session, 2) == batches
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_closes_a_pending_small_batch_before_an_oversized_folder(
+    session: AsyncSession,
+) -> None:
+    """A small folder already packed into the in-progress batch is CLOSED OUT, as its own batch,
+    the moment an oversized folder is reached -- rather than being silently dropped or merged into
+    the oversized folder's slices.
+
+    ``test_..._splits_an_oversized_folder_deterministically`` only ever reaches the oversized-folder
+    branch with an EMPTY in-progress batch (alphabetically, "Big Release" sorts before "Small
+    Release", so nothing has been packed into ``current`` yet). This test sorts a small folder
+    BEFORE the oversized one ("AAA Warmup" < "ZZZ Big Release") so the in-progress-batch-close path
+    is the one actually exercised.
+    """
+    warmup = [_make_pipeline_file(original_path="/music/AAA Warmup/00.mp3")]
+    big = [_make_pipeline_file(original_path=f"/music/ZZZ Big Release/{i:02d}.mp3") for i in range(5)]
+    session.add_all([*warmup, *big])
+    await session.flush()
+    for f in [*warmup, *big]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 2)
+
+    warmup_ids = sorted(str(f.id) for f in warmup)
+    big_ids = sorted(str(f.id) for f in big)
+    # The warmup folder was packed into `current`, then closed out as its OWN batch (not dropped,
+    # not merged into the oversized folder's slices) the moment the oversized folder was reached.
+    warmup_batches = [b for b in batches if set(b) & set(warmup_ids)]
+    assert warmup_batches == [warmup_ids]
+    big_batches = [b for b in batches if set(b) & set(big_ids)]
+    assert [len(b) for b in big_batches] == [2, 2, 1]
+    assert [fid for b in big_batches for fid in b] == big_ids
+    assert len(batches) == 4, "warmup's own batch, plus the big folder's 3 deterministic slices"
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_does_not_cross_agent_boundaries(session: AsyncSession) -> None:
+    """Two DIFFERENT agents whose files happen to share a directory STRING are not treated as
+    siblings -- ``original_path`` is unique only per agent, so a path collision across agents must
+    not merge unrelated files into one batch (mirrors ``services/companion.py``'s ``(agent_id,
+    parent)`` grouping key, and the same reasoning).
+
+    Two files per agent, same directory string, batch_size=3: if grouping ignored ``agent_id`` the
+    4 files would collapse into ONE 4-file "folder" -- oversized against batch_size=3 -- and split
+    into slices that MIX the two agents' files together. Grouping on ``(agent_id, parent)`` instead
+    keeps each agent's 2 files as its own (non-oversized) group, so the greedy pack keeps every
+    batch pure to a single agent.
+    """
+    await seed_active_agent(session, "agent-one")
+    await seed_active_agent(session, "agent-two")
+    agent_one = [_make_pipeline_file(agent_id="agent-one", original_path=f"/music/Shared Folder Name/{i:02d}.mp3") for i in range(2)]
+    agent_two = [_make_pipeline_file(agent_id="agent-two", original_path=f"/music/Shared Folder Name/{i:02d}.mp3") for i in range(2)]
+    session.add_all([*agent_one, *agent_two])
+    await session.flush()
+    for f in [*agent_one, *agent_two]:
+        await _converge(session, f)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 3)
+
+    ids_one = sorted(str(f.id) for f in agent_one)
+    ids_two = sorted(str(f.id) for f in agent_two)
+    assert len(batches) == 2, "each agent's 2-file group is its own batch, never merged across agents"
+    matched = {frozenset(b) for b in batches}
+    assert matched == {frozenset(ids_one), frozenset(ids_two)}, "no batch may mix files from two different agents"

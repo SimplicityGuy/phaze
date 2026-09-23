@@ -6,6 +6,7 @@ The in-flight gate checked by trigger routes (``get_proposal_busy_count``) is a 
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
@@ -138,25 +139,58 @@ async def count_proposal_pending_files(session: AsyncSession) -> int:
 
 
 async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -> list[list[str]]:
-    """Return the ``generate_proposals`` pending set as deterministic, sorted file-id batches.
+    """Return the ``generate_proposals`` pending set as deterministic, sibling-grouped file-id batches.
 
     Runs the convergence query (files NOT yet proposed -- ``~done_clause(PROPOSE)`` -- with BOTH a
     ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row, and since phaze-3542b with NEITHER
-    enrich stage in flight -- the EXACT set the manual proposals triggers use), then SORTS the
-    file-id strings before chunking into ``batch_size`` groups.
-    PR-A/Pitfall 4: the propose-exclusion replaces the retired ``files.state`` membership,
-    so an already-proposed file is never re-batched.
+    enrich stage in flight -- the EXACT set the manual proposals triggers use), then GROUPS the
+    pending files by the parent directory of ``FileRecord.original_path`` before packing them into
+    ``batch_size`` groups. PR-A/Pitfall 4: the propose-exclusion replaces the retired
+    ``files.state`` membership, so an already-proposed file is never re-batched.
 
-    Sorting BEFORE chunking makes a SINGLE call's batches deterministic (order-independent), which
-    matters because ``generate_proposals`` is keyed on ``generate_proposals:<sha256(sorted
-    file_ids)>`` (an order-independent SET hash, D-04, 42-RESEARCH Pitfall 2). Pure ORM / bound
-    params, NO f-string SQL (T-42-03).
+    phaze-hk7b8: WHY GROUP BY DIRECTORY. Before this change the pending file-id strings were sorted
+    (by UUID) and sliced into ``batch_size`` chunks, which scatters sibling files of one release --
+    tracks of one album, episodes of one podcast series -- across unrelated batches. Each batch is
+    proposed by an independent LLM call with no visibility into the others, so siblings split across
+    batches got inconsistent naming (a 2026-09-22 trial: tracks of one 2CD compilation landed in two
+    batches; podcast episodes came back with the year present on some and absent on others, because
+    each batch reasoned about the release in isolation). Grouping by parent directory gives the model
+    the full release's files -- and therefore the context to name them consistently -- in one batch,
+    whenever the folder is small enough to fit.
+
+    PACKING STRATEGY (decided here, since the bead left the exact algorithm to the implementer).
+    Folders are visited in ``(agent_id, parent directory)`` sort order -- the pair, not the bare
+    directory string, because ``original_path`` is unique only PER AGENT
+    (``uq_files_agent_id_original_path``), so two fileserver agents can legitimately share a
+    directory path; ``services/companion.py::_group_by_directory`` keys on the identical pair for the
+    identical reason, and this function would otherwise merge two unrelated agents' files into one
+    batch on a path coincidence. Within a folder, file ids are sorted (as before). Batches are built
+    by GREEDILY packing whole small folders together: a folder whose file count fits in the space
+    left in the current batch is appended to it; a folder that does not fit (but would fit in a
+    fresh batch) closes the current batch and starts a new one. A folder LARGER than ``batch_size``
+    can never share a batch by construction, so it is handled separately: the current batch (if any)
+    is closed first, then the oversized folder is sliced into contiguous ``batch_size`` chunks (the
+    same deterministic slicing the old flat sort used), each chunk becoming its own batch, and
+    packing resumes fresh with the next folder afterward. This keeps every batch's provenance simple
+    to reason about -- a batch is either one-or-more whole small folders, or a slice of exactly one
+    oversized folder -- rather than letting an oversized folder's remainder blend into a neighbour's
+    unrelated files.
+
+    Both sort keys are pure data (directory path, agent id, file id), so packing a single call's
+    pending set is deterministic (order-independent of the query's row order), which matters because
+    ``generate_proposals`` is keyed on ``generate_proposals:<sha256(sorted file_ids)>`` (an
+    order-independent SET hash, D-04, 42-RESEARCH Pitfall 2) -- this function does not need to
+    produce a globally sorted flat id list any more, only a deterministic partition of the pending
+    set, since the hash is computed per-batch over that batch's (sorted) membership regardless of
+    which batch a file lands in. Pure ORM / bound params, NO f-string SQL (T-42-03); the SELECT reads
+    only ``id``, ``agent_id`` and ``original_path`` -- not whole ``FileRecord`` rows -- since those
+    three columns are all this function uses.
 
     phaze-8qheu CORRECTION: this does NOT make two SEPARATE calls dedup against each other, and
     recovery does not call this helper at all (it replays by stored scheduling-ledger key, not by
     re-deriving the pending set -- see ``tasks/reenqueue.py``). The pending set this query reads is
     a MOVING target: as soon as one file's proposal lands, ``~done_clause(PROPOSE)`` excludes it,
-    every later chunk's boundary shifts, and every recomputed batch hashes to a KEY that shares
+    every later batch's boundary shifts, and every recomputed batch hashes to a KEY that shares
     nothing with the in-flight batches it overlaps. A second manual trigger mid-drain therefore
     dedups nothing and can re-propose files whose first proposal already landed (including
     already-approved/executed files, since the store's dedup is scoped to PENDING proposals only).
@@ -164,17 +198,43 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     trigger is still in flight -- see :func:`get_proposal_busy_count`, which both trigger routes
     gate on for exactly this reason.
 
-    phaze-ceuvd: ``batch_size`` is used as the ``range()`` step below, so it degrades rather
-    than crashes on a misconfigured value -- ``llm_batch_size`` now carries ``gt=0`` at the
-    config layer (config.py), but this clamp is the second, independent layer: 0 previously
-    raised ``ValueError: range() arg 3 must not be zero`` (unhandled 500 on GENERATE ALL) and a
-    negative value made ``range(0, N, -k)`` empty, silently returning zero batches (success
-    with nothing enqueued). Both non-positive inputs clamp to 1 (one file per batch) instead.
+    phaze-ceuvd: ``batch_size`` bounds both the greedy-pack threshold and the oversized-folder slice
+    step below, so it degrades rather than crashes on a misconfigured value -- ``llm_batch_size`` now
+    carries ``gt=0`` at the config layer (config.py), but this clamp is the second, independent
+    layer: 0 previously raised ``ValueError: range() arg 3 must not be zero`` (unhandled 500 on
+    GENERATE ALL) and a negative value made ``range(0, N, -k)`` empty, silently returning zero
+    batches (success with nothing enqueued). Both non-positive inputs clamp to 1 (one file per
+    batch) instead.
     """
     if batch_size < 1:
         logger.warning("proposal_pending_batches_size_clamped", requested_batch_size=batch_size, clamped_to=1)
         batch_size = 1
-    stmt = select(FileRecord).where(*_proposal_pending_clauses())
+
+    stmt = select(FileRecord.id, FileRecord.agent_id, FileRecord.original_path).where(*_proposal_pending_clauses())
     result = await session.execute(stmt)
-    file_ids = sorted(str(f.id) for f in result.scalars().all())
-    return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
+
+    folders: dict[tuple[str, str], list[str]] = {}
+    for file_id, agent_id, original_path in result.all():
+        parent = str(PurePosixPath(original_path).parent)
+        folders.setdefault((agent_id, parent), []).append(str(file_id))
+
+    batches: list[list[str]] = []
+    current: list[str] = []
+    for key in sorted(folders):
+        ids = sorted(folders[key])
+        if len(ids) > batch_size:
+            # Oversized folder: never shares a batch. Close the in-progress batch (if any), slice
+            # this folder on its own, then resume packing fresh with the next folder.
+            if current:
+                batches.append(current)
+                current = []
+            batches.extend(ids[i : i + batch_size] for i in range(0, len(ids), batch_size))
+        elif len(current) + len(ids) <= batch_size:
+            current.extend(ids)
+        else:
+            batches.append(current)
+            current = list(ids)
+    if current:
+        batches.append(current)
+
+    return batches
