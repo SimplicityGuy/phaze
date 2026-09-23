@@ -279,6 +279,51 @@ number. Bare `ps -p <pid>` is **not** a liveness check: on BSD `ps`, `-p` inters
 current-terminal default, so a detached child reads as absent. Use `ps -p <pid> -o pid=`, or read the
 lock holder out of Postgres.
 
+**Scope any `pkill -f` to the worktree path — and know that the bare path is STILL not scoped.**
+Every `just check` / `just check-fast` pytest process now carries an argv-visible
+`--rootdir=<this worktree's absolute path>` marker (phaze-7w18f) on every invocation, so a target
+string is always there without adding anything yourself. Before this, `uv run pytest tests/ -x -q`
+was byte-identical in every worktree: during epic `phaze-1i0h6`, an agent meaning to stop its OWN
+suite ran `pkill -f "uv run pytest tests/ -x -q"` and instead killed FOUR concurrent runs across
+different worktrees — its own, two other beads' full validations, and an epic-branch validation at
+59% complete — all exited 143 (SIGTERM) with zero test failures, and root cause was established only
+because the responsible agent self-reported.
+
+**`pkill -f "<bare worktree path>"` is NOT a safe pattern** — verified with harmless self-launched
+processes before writing this, never against a real run. `-f` is an unanchored substring/regex match
+against the WHOLE command line, and `.` in a path is a regex wildcard, so a bare path both
+PREFIX-COLLIDES (a worktree at `.../phaze-bk9el.1` also matches `.../phaze-bk9el.19` or
+`.../phaze-bk9el.21` — real sibling bead ids in this repo, both cited elsewhere in this file) and
+OVER-MATCHES (it hits every process whose argv merely contains that path, not only pytest — the
+`sh -c '... > <worktree>/gate.log'` wrapper, `bh work check`/`submit`, an editor with the worktree
+open, `tail -f <worktree>/...`, repowise).
+
+Correct forms, in order of preference:
+
+- **Capture the PID at launch and kill that PID by number** (`kill <pid>`) — the only form with no
+  blast radius at all.
+- **Dry-run first, anchored on the marker, not the bare path**:
+  `` pgrep -af -- "--rootdir=$(git rev-parse --show-toplevel)( |\$)" `` — the trailing `( |\$)`
+  requires the path to end there (a following space or end of line), which is what stops the
+  prefix collision; shows exactly what a worktree-scoped, pytest-only pattern would match. A `.`
+  inside the path is still an unescaped regex wildcard here, so this is not a byte-exact match —
+  but the trailing anchor is what turns a real prefix collision into no collision at all, so this
+  residual is close enough to harmless that escaping the whole path is not worth the extra
+  complexity.
+- **If you must `pkill -f`, anchor on that same marker**:
+  `` pkill -f -- "--rootdir=$(git rev-parse --show-toplevel)( |\$)" ``. `pkill -f
+  "$(git rev-parse --show-toplevel)"` — the bare path with no anchor — looks like the obvious fix
+  and is not one: it still has both defects above. (It did not cause the `phaze-1i0h6` incident
+  itself, which matched a bare COMMAND line, not a bare path — it is the natural-looking "fix" to
+  that incident that turns out to still be broken.)
+
+**The diagnostic signature of external interference, not a real test failure**: exit 143, zero
+`FAILED`/`ERROR` lines in the pytest summary, landing on multiple unrelated seats at the same moment.
+Memory pressure kills with SIGKILL and does not read argv, so it cannot produce a clean, simultaneous
+143 across several unrelated seats — an unscoped kill from another agent on the same machine can.
+Recognizing this signature is what let phaze-1i0h6's four kills finally be attributed instead of read
+as four unrelated timeouts.
+
 **Scope every `pg_locks` / `pg_stat_activity` query with `current_database()`.** A per-worktree
 database isolates table data completely and the system catalogues not at all, so any such query sees
 every seat's backends — two correctly-isolated suites both went red on an advisory-lock count that
