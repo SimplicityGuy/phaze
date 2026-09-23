@@ -37,19 +37,18 @@ Run with real PG via ``just integration-test``. Package auto-marked ``integratio
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.scan_deletion import delete_scan_cascade
-from tests.db_guard import BLOCKED_WAITER_SQL
+from tests._lock_barrier import run_contender_behind_held_lock
 
 
 if TYPE_CHECKING:
@@ -97,25 +96,6 @@ async def _seed_batch_with_one_file(session: AsyncSession) -> tuple[uuid.UUID, u
     return batch_id, file_id
 
 
-async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
-
-    Mirrors ``test_scan_reaper_concurrency.py``'s helper: proves the cascade's own lock acquisition has
-    reached Postgres and is blocked behind the worker's held ``FOR KEY SHARE`` -- deterministic, not a
-    guessed sleep duration.
-    """
-
-    async def _poll() -> None:
-        while True:
-            async with session_factory() as probe:
-                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
-            if waiting:
-                return
-            await asyncio.sleep(0.02)
-
-    await asyncio.wait_for(_poll(), timeout=timeout)
-
-
 async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_of_fk_violating(
     committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
 ) -> None:
@@ -142,20 +122,13 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
     holder_session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id))
     await holder_session.flush()
 
-    async def _release_after_waiter() -> None:
-        await _wait_for_blocked_waiter(session_factory)
-        await holder_session.commit()
-
     async def _run_cascade() -> dict[str, int]:
         async with session_factory() as cascade_session:
             counts = await delete_scan_cascade(cascade_session, batch_id)
             await cascade_session.commit()
             return counts
 
-    try:
-        _release_result, counts = await asyncio.gather(_release_after_waiter(), _run_cascade())
-    finally:
-        await holder_session.close()
+    counts = await run_contender_behind_held_lock(session_factory, holder_session, _run_cascade(), release=holder_session.commit)
 
     # The cascade's OWN analysis delete step -- which runs AFTER the lock is granted, i.e.
     # AFTER the worker's row is committed -- sweeps it up too: the row is never orphaned, and the
@@ -231,20 +204,13 @@ async def test_cascade_blocks_on_in_flight_new_file_insert_then_sweeps_it_instea
     )
     await holder_session.flush()
 
-    async def _release_after_waiter() -> None:
-        await _wait_for_blocked_waiter(session_factory)
-        await holder_session.commit()
-
     async def _run_cascade() -> dict[str, int]:
         async with session_factory() as cascade_session:
             counts = await delete_scan_cascade(cascade_session, batch_id)
             await cascade_session.commit()
             return counts
 
-    try:
-        _release_result, counts = await asyncio.gather(_release_after_waiter(), _run_cascade())
-    finally:
-        await holder_session.close()
+    counts = await run_contender_behind_held_lock(session_factory, holder_session, _run_cascade(), release=holder_session.commit)
 
     # The cascade's OWN files delete step -- which runs AFTER the ScanBatch lock is granted,
     # i.e. AFTER the worker's new file row is committed -- sweeps it up too: both the

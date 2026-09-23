@@ -23,15 +23,14 @@ Run with real PG via ``just integration-test``. Package auto-marked ``integratio
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from phaze.models import PipelineStageControl
 from phaze.routers import pipeline_stages
-from tests.db_guard import BLOCKED_WAITER_SQL
+from tests._lock_barrier import run_contender_behind_held_lock
 
 
 if TYPE_CHECKING:
@@ -40,24 +39,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
-
-    Mirrors ``test_scan_reaper_concurrency.py``'s helper: proves the racing call has reached
-    Postgres and is blocked behind the lock holder -- deterministic, not a guessed sleep.
-    """
-
-    async def _poll() -> None:
-        while True:
-            async with session_factory() as probe:
-                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
-            if waiting:
-                return
-            await asyncio.sleep(0.02)
-
-    await asyncio.wait_for(_poll(), timeout=timeout)
 
 
 async def test_pause_blocks_on_concurrently_held_control_row_lock(
@@ -69,8 +50,9 @@ async def test_pause_blocks_on_concurrently_held_control_row_lock(
     NO-NET-CHANGE -- exactly the elision hazard from the bug report. Before the fix
     (``lock=False``), that no-op write means SQLAlchemy's autoflush emits no control-row UPDATE
     at all, so ``pause`` never issues a locking SELECT, is never observed as a waiter here, and
-    completes immediately regardless of the held lock (this test would time out demonstrating
-    that on the pre-fix code, same as the analogous ``resume`` test below).
+    completes immediately regardless of the held lock -- which the barrier reports on the pre-fix
+    code as ``LockBarrierError`` ("the contender finished without ever being observed queued"),
+    same as the analogous ``resume`` test below.
     """
     _queue, session_factory = stage_env
 
@@ -82,18 +64,11 @@ async def test_pause_blocks_on_concurrently_held_control_row_lock(
     holder_session = session_factory()
     await holder_session.execute(select(PipelineStageControl).where(PipelineStageControl.stage == "analyze").with_for_update())
 
-    async def _release_after_waiter() -> None:
-        await _wait_for_blocked_waiter(session_factory)
-        await holder_session.commit()
-
     async def _call_pause() -> dict[str, object]:
         async with session_factory() as session:
             return await pipeline_stages.pause(stage="analyze", session=session)
 
-    try:
-        _release_result, pause_result = await asyncio.gather(_release_after_waiter(), _call_pause())
-    finally:
-        await holder_session.close()
+    pause_result = await run_contender_behind_held_lock(session_factory, holder_session, _call_pause(), release=holder_session.commit)
 
     assert pause_result == {"stage": "analyze", "priority": 50, "paused": True}
 
@@ -107,17 +82,10 @@ async def test_resume_blocks_on_concurrently_held_control_row_lock(
     holder_session = session_factory()
     await holder_session.execute(select(PipelineStageControl).where(PipelineStageControl.stage == "analyze").with_for_update())
 
-    async def _release_after_waiter() -> None:
-        await _wait_for_blocked_waiter(session_factory)
-        await holder_session.commit()
-
     async def _call_resume() -> dict[str, object]:
         async with session_factory() as session:
             return await pipeline_stages.resume(stage="analyze", session=session)
 
-    try:
-        _release_result, resume_result = await asyncio.gather(_release_after_waiter(), _call_resume())
-    finally:
-        await holder_session.close()
+    resume_result = await run_contender_behind_held_lock(session_factory, holder_session, _call_resume(), release=holder_session.commit)
 
     assert resume_result == {"stage": "analyze", "priority": 50, "paused": False}
