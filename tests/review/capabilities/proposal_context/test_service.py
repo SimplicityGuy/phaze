@@ -211,7 +211,7 @@ class TestSettingsLlmFields:
         from phaze.config import Settings
 
         s = Settings()
-        assert s.llm_model == "claude-sonnet-4-20250514"
+        assert s.llm_model == "claude-sonnet-5"
 
     def test_anthropic_api_key_default_none(self):
         from phaze.config import Settings

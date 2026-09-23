@@ -134,7 +134,7 @@ class ControlSettings(BaseSettings):
     # LLM API keys + config
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
-    llm_model: str = "claude-sonnet-4-20250514"
+    llm_model: str = "claude-sonnet-5"
     llm_max_rpm: int = 30
     # phaze-ceuvd: bounded gt=0, matching the sibling knobs in this class (e.g.
     # cloud_route_threshold_sec above). Used as a range() step in
