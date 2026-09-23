@@ -25,6 +25,8 @@ import shutil
 from typing import TYPE_CHECKING, Literal, Protocol
 import uuid
 
+import structlog
+
 from phaze.services.containment import resolve_and_check_containment
 
 
@@ -42,6 +44,11 @@ COPY_TMP_SUFFIX = ".phaze-tmp"
 COMMIT_MARKER_SUFFIX = ".phaze-committed"
 
 _LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
+# Filesystems that cannot fsync a directory fd say so with one of these; any other
+# errno is a real failure and propagates.
+_DIR_FSYNC_UNSUPPORTED_ERRNOS = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -83,6 +90,8 @@ class FilesystemPrimitives(Protocol):
 
     def committed_copy_marker_path(self, proposed: Path, proposal_id: uuid.UUID) -> Path: ...
 
+    def write_commit_marker(self, marker: Path, proposal_id: uuid.UUID) -> None: ...
+
     def same_filesystem(self, src: Path, dst_dir: Path) -> bool: ...
 
     def is_same_file(self, a: Path, b: Path) -> bool: ...
@@ -113,6 +122,9 @@ class ExecutionFilesystemEngine(Protocol):
 class LocalFilesystemPrimitives:
     """Concrete local-filesystem adapter used by ``LocalExecutionFilesystemEngine``."""
 
+    def __init__(self) -> None:
+        self._dir_fsync_unsupported: set[Path] = set()
+
     def resolve_containment(self, candidate: str, roots: list[str]) -> tuple[Path, Path]:
         return resolve_and_check_containment(candidate, roots)
 
@@ -139,6 +151,44 @@ class LocalFilesystemPrimitives:
     def committed_copy_marker_path(self, proposed: Path, proposal_id: uuid.UUID) -> Path:
         """Return the per-proposal marker for a committed cross-filesystem copy."""
         return proposed.with_name(f"{proposed.name}{COMMIT_MARKER_SUFFIX}.{proposal_id}")
+
+    def fsync_directory(self, directory: Path) -> None:
+        """Make the directory's entries (creates, links, unlinks) durable, where the filesystem can.
+
+        Best-effort: a destination filesystem that cannot fsync a directory fd
+        (reported by some network and FUSE mounts) must not turn every cross-fs
+        move onto it into a failure.  It is logged once per directory, without
+        the path, and the move proceeds with the pre-phaze-ihje6 durability.
+        """
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in _DIR_FSYNC_UNSUPPORTED_ERRNOS:
+                raise
+            if directory not in self._dir_fsync_unsupported:
+                self._dir_fsync_unsupported.add(directory)
+                logger.warning(
+                    "directory fsync unsupported; continuing", path_role="destination_dir", errno=exc.errno, error=errno.errorcode.get(exc.errno)
+                )
+        finally:
+            os.close(fd)
+
+    def write_commit_marker(self, marker: Path, proposal_id: uuid.UUID) -> None:
+        """Durably create the commit marker: its bytes, then its directory entry.
+
+        phaze-ihje6: the marker exists to survive a crash between publish and
+        source unlink, so returning from ``write`` is not enough -- a power loss
+        can drop an un-fsynced file or directory entry.  The marker is a sibling
+        of the published destination, so the directory fsync also makes the
+        destination's own link durable, which ``atomic_cross_fs_copy`` does not.
+        """
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(str(proposal_id))
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.fsync_directory(marker.parent)
 
     def unique_tmp_path(self, dst: Path) -> Path:
         """Return a destination-sibling staging path unique to this attempt."""
@@ -313,7 +363,17 @@ class LocalExecutionFilesystemEngine:
                 suffix=" (post-publish re-verify)",
             )
         marker = self._primitives.committed_copy_marker_path(proposed, item.proposal_id)
-        marker.write_text(str(item.proposal_id))
+        # Durability order (phaze-ihje6): copy bytes fsynced (streamed_copy) ->
+        # publish link -> marker fsynced -> destination directory fsynced -> only
+        # then unlink the source.  Source and destination are on DIFFERENT
+        # filesystems with independent journals, so nothing else orders the
+        # source unlink after the destination entry: without the directory
+        # fsync a power loss can keep the unlink and lose the published file.
+        # A durable marker is what lets the replay reclaim the destination
+        # instead of refusing it as a foreign occupant.
+        # The directory fsync is best-effort on mounts that cannot fsync a
+        # directory fd (see fsync_directory); the file fsync is mandatory.
+        await asyncio.to_thread(self._primitives.write_commit_marker, marker, item.proposal_id)
         step.current = "delete"
         original.unlink()
         marker.unlink(missing_ok=True)
