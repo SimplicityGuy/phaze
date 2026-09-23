@@ -815,8 +815,12 @@ cmd_release() {
   # call on this path (phaze-4xsbe): a second, non-atomic EVAL here would reopen the exact window
   # this fix closes -- refuse first, mutate never.
   # drop_pg=0, explicitly: `release` -- force or not -- never drops a Postgres database. Only
-  # `cmd_reclaim`'s `--apply` loop passes 1 (phaze-robzi.1's operator-approved contract change is
-  # scoped to reclaim alone).
+  # `cmd_reclaim`'s `--apply` loop passes 1. That contract change is an operator decision of
+  # 2026-08-25, durable record the phaze-robzi epic description, implemented by phaze-robzi.1:
+  # asked "`reclaim` is currently documented as the NON-destructive counterpart to `test-db-down`
+  # ... Dropping databases changes that contract. How far should it go?", answered "Drop the seat's
+  # own 2 DBs under --apply". The question was about reclaim only, so the decision does not extend
+  # to `release`.
   if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw" 0; then
     echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
     echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2

@@ -151,10 +151,23 @@ time of the fix, 2 of the 19 excluded occurrences in scope sit in a sentence wit
 and belong to the adjective shape: ``docs/k8s-burst.md``'s table cell (an ``operator-chosen``
 configurable -- a non-claim) and ``scripts/redis-seat-registry.sh``'s *"phaze-robzi.1's
 operator-approved contract change"*, which reads as a claim and is left for its own bead rather
-than widened into this one. THE RESIDUAL, stated rather than hidden: a sentence in one of the two
-yielding shapes with NEITHER a date NOR a bead id is still excused, because with no evidence at all
+than widened into this one. THE RESIDUAL, stated rather than hidden: a sentence in a
+yielding shape with NEITHER a date NOR a bead id is still excused, because with no evidence at all
 it is grammatically indistinguishable from the non-claims above; the guard catches a HALF-cited
 claim in these shapes, not an entirely uncited one.
+
+THE ADJECTIVE SHAPE YIELDS TOO (phaze-h8ug4, 2026-09-23). The redis-seat-registry.sh sentence
+above was the instance the previous paragraph was waiting for: *"(phaze-robzi.1's operator-approved
+contract change is scoped to reclaim alone)"* carried a bead id and no date, and the unyielding
+adjective shape excused it whole. So ``operator-chosen``/``operator-approved`` now yields on the same
+sentence-scoped rule as the other two (pinned by
+``test_the_adjective_shape_no_longer_swallows_the_registry_claim``, built from that sentence's own
+text). The claim itself was recovered rather than relabelled: the decision is on record in the
+phaze-robzi epic description, dated 2026-08-25, and is now cited in place. The UI-domain adjectives
+still pass, because none of them shares a sentence with a date or a bead id. The one adjective that
+did, ``docs/k8s-burst.md``'s table cell, was a non-claim naming a configurable cap whose bead ids cite
+the RECOMMENDATION. So it was reworded to ``operator-configurable``, which is outside the vocabulary,
+rather than allowlisted. That reword was the dispatcher's decision on phaze-h8ug4, not an operator's.
 
 WHY EXCLUDED OCCURRENCES ARE NOT REPORTED ON A GREEN RUN (phaze-71q9y acceptance criterion 5,
 decided here). Reporting was weighed and declined. After the narrowing, a yielding exclusion cannot
@@ -221,13 +234,14 @@ _VOCAB_RE = re.compile(
 # docstring's "ALLOWLIST BY SHAPE" section for what each one is and where it was found. The third
 # field is YIELDS TO CITATION EVIDENCE (phaze-71q9y): when True, the exclusion does not fire on an
 # occurrence whose own sentence carries an ISO date or a bead id -- see the module docstring's
-# "AN ALLOWLIST THAT SWALLOWED ITS OWN SUBJECT" section for why exactly these two yield.
+# "AN ALLOWLIST THAT SWALLOWED ITS OWN SUBJECT" section, and "THE ADJECTIVE SHAPE YIELDS TOO" (phaze-h8ug4)
+# for the third.
 _SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
     (
         re.compile(r"\boperator[- ](chosen|approved)\b", re.IGNORECASE),
         "'operator-chosen'/'operator-approved' is an adjective describing an artifact or affordance "
         "(a sort key, a cue sheet, a cleanup step), not a claim that a decision was made.",
-        False,
+        True,
     ),
     (
         re.compile(r"\ban?\s+operator\s+(?:choice|decision)\s+of\b", re.IGNORECASE),
@@ -707,6 +721,31 @@ class TestScannerMechanics:
         for removed in ("2026-08-22", "phaze-jktlb"):
             paragraphs = _comment_run_paragraphs_python("fixture.py", source.replace(removed, ""))
             assert len(list(_iter_uncited_claims(iter(paragraphs)))) == 1, f"removing {removed!r} was swallowed"
+
+    # phaze-h8ug4: scripts/redis-seat-registry.sh's pre-fix sentence, verbatim -- a bead id, no date.
+    _ADJECTIVE_REGISTRY_CLAIM = (
+        "# Only `cmd_reclaim`'s `--apply` loop passes 1 (phaze-robzi.1's operator-approved contract change is\n# scoped to reclaim alone).\n"
+    )
+
+    def test_the_adjective_shape_no_longer_swallows_the_registry_claim(self) -> None:
+        """phaze-h8ug4: the adjective shape yields to a bead id in its own sentence, so the half-cited
+        registry claim fails for its missing date and passes once the date is added.
+
+        The first assertion proves the fixture is inside the adjective shape, so the red result is
+        the exclusion yielding, not the vocabulary simply missing. The last one pins the residual:
+        with the bead id deleted too, the sentence has no evidence and is excused like any UI adjective.
+        """
+        source = self._ADJECTIVE_REGISTRY_CLAIM
+        assert _SHAPE_EXCLUSIONS[0][0].search(_normalize_paragraph(source.replace("#", ""))), "fixture no longer exercises the shape"
+
+        violations = list(_iter_uncited_claims(iter(_comment_run_paragraphs_python("fixture.py", source))))
+        assert len(violations) == 1, "the bead-id-only claim was swallowed"
+
+        dated = source.replace("contract change", "contract change of 2026-08-25")
+        assert list(_iter_uncited_claims(iter(_comment_run_paragraphs_python("fixture.py", dated)))) == []
+
+        undated_unbeaded = source.replace("phaze-robzi.1's ", "the ")
+        assert list(_iter_uncited_claims(iter(_comment_run_paragraphs_python("fixture.py", undated_unbeaded)))) == []
 
     def test_a_yielding_shape_still_excuses_its_non_claim_when_a_bead_is_named_in_another_sentence(self) -> None:
         """Acceptance criterion 2's other half: the yield is SENTENCE-scoped, not paragraph-scoped.
