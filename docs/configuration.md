@@ -376,7 +376,7 @@ These fields exist only on `ControlSettings` (the application server).
 
 | Variable                  | Required | Default                      | Description                                       |
 |---------------------------|----------|------------------------------|---------------------------------------------------|
-| `LLM_MODEL`               | No       | `claude-sonnet-4-20250514`   | LLM model used for filename/path proposals.       |
+| `LLM_MODEL`               | No       | `claude-sonnet-5`            | LLM model used for filename/path proposals.       |
 | `ANTHROPIC_API_KEY`       | No*      | (none)                       | Anthropic API key (`SecretStr`). Required only if using an Anthropic model. |
 | `OPENAI_API_KEY`          | No*      | (none)                       | OpenAI API key (`SecretStr`). Required only if using an OpenAI model. |
 | `LLM_MAX_RPM`             | No       | `30`                         | Max LLM requests per minute.                      |
@@ -555,7 +555,7 @@ Defaults are defined in `src/phaze/config_base.py`, `src/phaze/config_control.py
 - `api_host` → `0.0.0.0`, `api_port` → `8000`
 - `scan_path` → `/data/music`, `output_path` → `/data/output`, `models_path` → `/models`
 - `worker_max_jobs` → `8`, `worker_job_timeout` → `600`, `worker_max_retries` → `4`
-- `llm_model` → `claude-sonnet-4-20250514`, `llm_max_rpm` → `30`, `llm_batch_size` → `10`
+- `llm_model` → `claude-sonnet-5`, `llm_max_rpm` → `30`, `llm_batch_size` → `10`
 - `agent_env` → `dev`, `agent_ca_file` → `/certs/phaze-ca.crt`
 - `watcher_settle_seconds` → `10`, `watcher_sweep_interval_seconds` → `2`, `scan_chunk_size` → `500`
 
