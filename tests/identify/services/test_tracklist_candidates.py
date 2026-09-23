@@ -10,6 +10,7 @@ archive; the scene-tag shapes are reproduced faithfully, the artists and events 
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 
 import pytest
@@ -17,6 +18,7 @@ import pytest
 from phaze.enums.tracklist_candidate import CandidateClass, DuplicateConfidence, meets_confidence
 from phaze.services.tracklist_candidates import (
     CandidateSignals,
+    _strip_diacritics,
     _UnionFind,
     classify,
     collapse_ratio,
@@ -100,6 +102,15 @@ class TestNormalizeQuery:
 
     def test_diacritics_fold(self) -> None:
         assert normalize_query("Mónica Solstice - Live") == normalize_query("Monica Solstice - Live")
+
+    def test_the_ascii_fast_path_is_the_identity_the_full_fold_would_have_produced(self) -> None:
+        """phaze-ih3zd: pure ASCII skips the per-character fold, which is only safe because no ASCII
+        code point is changed by it. Pinned over all 128 so the argument is checked, not asserted."""
+        every_ascii = "".join(map(chr, range(128)))
+        full_fold = "".join(ch for ch in unicodedata.normalize("NFKD", every_ascii) if not unicodedata.combining(ch))
+        assert full_fold == every_ascii
+        assert _strip_diacritics(every_ascii) is every_ascii
+        assert _strip_diacritics("Mónica") == "Monica"
 
     def test_leading_track_index_and_domain_prefixes_are_dropped(self) -> None:
         assert normalize_query("03. Artist - Title") == normalize_query("Artist - Title")

@@ -279,7 +279,13 @@ def _strip_diacritics(text: str) -> str:
 
     Scene releases routinely transliterate; the mojibake-repaired filename
     (``files.original_filename_repaired``) fixes encoding damage but not transliteration.
+
+    Pure ASCII is returned as-is: no ASCII code point has an NFKD decomposition or is a combining
+    mark, so the fold is the identity there. It is also the common case, and the per-character
+    scan below it was the single hottest line of a queue build (phaze-ih3zd).
     """
+    if text.isascii():
+        return text
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
