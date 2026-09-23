@@ -253,6 +253,28 @@ than measured with a `stat`, and it was refuted in under a minute once it was. T
 time is not a rule about tmp directories; it is the guard, which turns the next transferred belief
 about where a checkout lives into a one-line named failure at the top of the gate.
 
+### 3.9 "uv's shared package cache means `uv cache clean`/`prune` can gut an already-installed venv"
+
+Written into bead `phaze-4ggby` (filed 2026-08-20) as the explanation for three independently
+observed hollowed-venv incidents during epic `phaze-1i0h6`: *"uv-managed venvs hardlink their
+package contents into a shared uv cache. A `uv cache clean` or `uv cache prune` run from ANY
+session on this machine therefore strips file contents out of EVERY worktree's `.venv`
+simultaneously."* The bead's acceptance criteria asked `CLAUDE.md` to document this as the hazard
+and to instruct agents never to run `uv cache clean`/`prune` while another seat is live.
+
+| | |
+| --- | --- |
+| **True where** | not established to be true anywhere. The belief conflates "shares storage with the cache" with "removable through the cache", which does not hold for a hardlink on *any* POSIX filesystem: `unlink()` — what `rm`, `uv cache clean` and `uv cache prune` all resolve to — removes one directory entry and decrements the link count; it does not truncate or mutate the inode's data, which survives until every link naming it is gone. It holds even less for the `clone`/`copy` (APFS `clonefile`/reflink) modes those two other link modes use, where the venv's copy is independent data from the moment the clone call returns. |
+| **False here** | macOS **26.6.2 (25G83)**, `uv 0.12.1` (`/Users/Robert/.nix-profile/bin/uv`, aarch64-apple-darwin). uv's link mode here is `clone`, not hardlink: a real worktree's `.venv/…/_pytest/config/__init__.py` has `links=1`, `inode=979071278`, against the cache's copy at `inode=960106650` — two independent files, not one shared by two names. Forcing `UV_LINK_MODE=hardlink` in an isolated `UV_CACHE_DIR` does produce a shared inode (`links=2`, identical inode both sides) — but `uv cache clean` against that same isolated cache then removed only the cache-side entry (`links=2` → `links=1`); the venv-side file was untouched: identical MD5 before and after, still importable. The `clone`-mode case (uv's actual default here) survived the identical test trivially, since it was never sharing storage to begin with. |
+| **Measured** | 2026-09-23, worktree `wt/bead/issue/phaze-4ggby`, scratch dir under the session scratchpad. `stat -f 'links=%l inode=%i'` on the worktree file and its `~/.cache/uv/archive-v0/…` counterpart (read-only, `~/.cache/uv` never written to). Isolated round-trip with `UV_CACHE_DIR=<scratch>/uvc`: `uv venv <scratch>/v && uv pip install --python <scratch>/v/bin/python six` (clone mode, default), then `uv cache clean` — cache dir removed (`Removed 17 files`), venv's `six.py` MD5 unchanged (`71e8581c332473a17735159487901fb5`) and still importable. Repeated with `UV_LINK_MODE=hardlink`: pre-clean `links=2` both sides, identical inode `980157183`; post-clean venv side `links=1`, same inode, same MD5, still importable. Separately reproduced the bead's own recorded symptom shape without any cache operation at all, to confirm it is real and orthogonal to the cause: a scratch project's `uv sync`-installed pytest with 47 of 48 `_pytest/*.py` files deleted (dist-info left intact) reports `Resolved 7 packages / Checked 5 packages` on a following `uv sync` and repairs nothing — `ImportError: cannot import name '__version__' from '_pytest' (unknown location)` persists; `uv sync --reinstall` does repair it. `scripts/worktree-integrity.sh` run against that same hollowed scratch project reports it correctly: `"the venv has been hollowed … not a code regression"` with the `rm -rf .venv && uv sync` remedy. |
+| **How it surfaced** | a dispatcher review of the bead's CLAUDE.md draft, checking the load-bearing hardlink claim against `stat` before merge, per this ADR's own §4 trigger. Not caught by the filing agent, who reasoned from the symptom shape (a hollowed venv, `uv sync` not fixing it) to a plausible-sounding cause without running `uv cache clean` against anything. §3.8 — filed and measured independently, about a month later, against the identical symptom shape — had already retired the "hard-link mode shares inodes" half of this exact belief as "uv's Linux default", not macOS's; this instance is the other half (that even hardlinking would make cache-clean destructive), which §3.8 did not test because its own cause was the `dirhelper` purge, not a cache operation. |
+| **What it cost** | caught in review before merge — no shipped incident. Cost was the verification itself: about 20 minutes across two isolated-cache round trips, one forced-hardlink contrast, and one from-scratch reproduction of the bead's own recorded symptom to confirm that part independently of the (refuted) cause. Avoided: `CLAUDE.md` would otherwise have carried an unverified causal claim and an operational instruction ("never run `uv cache clean`/`prune` while a seat is live") with no supporting mechanism on this machine, which every future agent reading it would have inherited as fact. |
+
+The general form is the same one §3.8 already states for its own half of this belief: a plausible
+mechanism reasoned from a symptom's shape is a claim, not knowledge, however well the shape fits —
+and a filed bead's own "Remedy that works" and "measured the underlying state" language is real
+evidence about the *symptom*, never license to skip verifying the *cause* it is filed under.
+
 ______________________________________________________________________
 
 ## 4. The trigger
