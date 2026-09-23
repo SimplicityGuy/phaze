@@ -56,13 +56,19 @@ def _coverage_config(*section: str) -> dict[str, object]:
 VALIDATION_TEST_STEP = "just test-cov"
 
 
-def _dry_run(recipe: str) -> str:
-    """Return what ``just`` would execute for ``recipe``, without executing it."""
+def _dry_run(recipe: str, *, cwd: Path = REPO_ROOT) -> str:
+    """Return what ``just`` would execute for ``recipe``, without executing it.
+
+    ``cwd`` defaults to this checkout's own root; a caller proving the phaze-7w18f argv marker
+    differs between worktrees passes a second directory holding its own copy of the justfile --
+    ``justfile_directory()`` resolves from wherever the invoked justfile itself lives, exactly as
+    it would for a second `bh`-provisioned worktree.
+    """
     just = shutil.which("just")
     assert just is not None, "just is not on PATH"
     result = subprocess.run(  # noqa: S603 - fixed executable, recipe names are literals below
         [just, "--dry-run", recipe],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         check=False,
         capture_output=True,
         text=True,
@@ -102,6 +108,44 @@ def test_the_validation_test_step_does_not_suppress_the_pytest_header() -> None:
 
     assert not re.search(r"(?<!\S)-q(?!\S)", step), step
     assert not re.search(r"(?<!\S)--quiet(?!\S)", step), step
+
+
+def test_the_validation_test_step_carries_an_argv_visible_worktree_marker() -> None:
+    """phaze-7w18f: a path- or seat-scoped `pkill -f` needs something in argv to scope ON.
+
+    Before this, every worktree's gate ran the byte-identical `uv run pytest --cov ...`, so a
+    broad `pkill -f` pattern carried no worktree path and could not tell one seat's run from a
+    sibling's -- and once didn't: an agent meaning to stop its own suite matched that pattern
+    against four concurrent runs across different worktrees, all exited 143 with zero test
+    failures. `--rootdir` is a genuine, documented pytest option and a no-op for collection here
+    (this worktree's own `pyproject.toml` already sits at exactly this path, so pytest's own
+    rootdir inference would already land here) -- its only observable effect is that the
+    worktree's absolute path now appears in `ps`/`pgrep -af` output.
+    """
+    step = _dry_run("test-cov")
+
+    assert re.search(rf"--rootdir=['\"]?{re.escape(str(REPO_ROOT))}", step), step
+
+
+def test_the_argv_marker_is_unique_per_worktree(tmp_path: Path) -> None:
+    """The marker must differ between two worktrees, or a path-scoped `pkill -f` still can't discriminate.
+
+    Simulates a second worktree by copying the justfile to another directory instead of spinning
+    up a real second checkout: `justfile_directory()` resolves from wherever the invoked justfile
+    itself lives, which is exactly what makes it distinct in a real second `bh`-provisioned
+    worktree too.
+    """
+    other_root = tmp_path / "other-worktree"
+    other_root.mkdir()
+    shutil.copy(JUSTFILE_PATH, other_root / "justfile")
+
+    this_step = _dry_run("test-cov")
+    other_step = _dry_run("test-cov", cwd=other_root)
+
+    this_marker = re.search(r"--rootdir=(\S+)", this_step)
+    other_marker = re.search(r"--rootdir=(\S+)", other_step)
+    assert this_marker and other_marker, (this_step, other_step)
+    assert this_marker.group(1) != other_marker.group(1), (this_step, other_step)
 
 
 def test_check_runs_lint_typecheck_and_the_validation_test_step() -> None:

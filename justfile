@@ -119,6 +119,34 @@ api_base := "https://localhost:" + api_port
 # naming it twice is the duplication this bead exists to remove.
 cov_reports := "--cov-report=json --cov-report=term --cov-report=xml"
 
+# phaze-7w18f: an argv-visible, per-worktree marker for every `just check` / `just check-fast`
+# pytest invocation. Before this, every seat's gate ran the byte-identical `uv run pytest
+# tests/ -x -q` (or its `--cov` equivalent), so a `pkill -f` pattern with no worktree path
+# could not tell one seat's run from another's -- and once didn't: a same-machine agent meaning
+# to stop its OWN suite matched that pattern against four concurrent runs across different
+# worktrees, all exited 143 with zero test failures, and the interference was undiagnosable from
+# outside the killed processes. `justfile_directory()` is this worktree's own absolute root
+# (each linked worktree carries its own copy of this file), so it is unique per seat and stable
+# for the run's lifetime. `--rootdir` is a genuine, documented pytest option -- not a fabricated
+# flag pytest would reject -- and passing it explicitly is a NO-OP for test collection: a
+# `pyproject.toml` with `[tool.pytest.ini_options]` already sits at exactly this directory, so
+# pytest's own rootdir inference would already land here. The only observable effect is that the
+# path now appears in `ps`/`pgrep -af` output, which is the point: a pattern ANCHORED on the
+# marker -- `pgrep -af -- "--rootdir=$(git rev-parse --show-toplevel)( |\$)"` -- now matches this
+# seat's pytest and no other's. The bare worktree path alone is NOT that pattern and must not be
+# used as one: `-f` is an unanchored substring/regex match against the WHOLE command line, so a
+# bare path both PREFIX-COLLIDES (a worktree at `.../phaze-bk9el.1` also matches
+# `.../phaze-bk9el.19`, a real sibling bead id shape in this repo) and OVER-MATCHES (it hits any
+# process whose argv merely contains that path -- the `sh -c '... > <worktree>/gate.log'` wrapper,
+# `bh work check`/`submit`, an editor, `tail -f <worktree>/...` -- not only pytest). See CLAUDE.md's
+# "Scope any `pkill -f` to the worktree path" section for the verified forms.
+# Do not derive this from a seat NAME instead (e.g. `derive-validate-seat-name.sh`) -- that
+# script shells out and hashes, which is failure surface a marker has no business adding; the
+# worktree path is already unique and already known to `just` without a subprocess.
+# tests/shared/test_validation_gate_recipes.py pins its presence on the `check`/`check-fast` test
+# steps.
+test_rootdir := justfile_directory()
+
 [doc('List all available commands')]
 default:
     @just --list
@@ -333,7 +361,7 @@ test:
 [doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% line floor + 90% per-module line floor enforced)')]
 [group('test')]
 test-cov:
-    uv run pytest --cov {{cov_reports}}
+    uv run pytest --cov {{cov_reports}} --rootdir={{quote(test_rootdir)}}
     uv run python scripts/coverage_floor.py
 
 [doc('Run the default non-browser coverage gate in two isolated, order-preserving local lanes')]
@@ -480,7 +508,7 @@ test-fast:
         fi
         ensure_seat
         started=$SECONDS
-        uv run pytest "${fast_args[@]}"
+        uv run pytest "${fast_args[@]}" --rootdir={{quote(test_rootdir)}}
         echo "⏱️  just test-fast: ${#fast_args[@]} selected in $((SECONDS - started))s. NOT the full suite — \`just check\` is."
         ;;
       3)
@@ -518,7 +546,7 @@ test-fast:
         fi
         ensure_seat
         started=$SECONDS
-        uv run pytest "${docs_args[@]}"
+        uv run pytest "${docs_args[@]}" --rootdir={{quote(test_rootdir)}}
         echo "⏱️  just test-fast: ${#docs_args[@]} prose-guard module(s) in $((SECONDS - started))s. NOT the full suite."
         # Durable, same argument as the escalation log: "how often does this gate narrow itself"
         # is a trend question, and a per-run transcript cannot answer it. `.git/` is shared by

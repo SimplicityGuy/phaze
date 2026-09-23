@@ -283,6 +283,12 @@ class ParallelTestSupervisor:
                 "junit_family=legacy",
                 "-o",
                 f"cache_dir={cache_dir}",
+                # phaze-7w18f: argv-visible, per-worktree marker so a path-scoped `pkill -f`
+                # cannot match a sibling seat's lane. `--rootdir` is a genuine pytest option and
+                # a no-op for collection here (pyproject.toml already sits at `self._repo_root`,
+                # so this is where pytest would already land), same reasoning as the justfile
+                # recipes' `--rootdir={{justfile_directory()}}`.
+                f"--rootdir={self._repo_root}",
             )
             launches.append(LaneLaunch(name=lane.name, command=command, environment=environment))
         return tuple(launches)
