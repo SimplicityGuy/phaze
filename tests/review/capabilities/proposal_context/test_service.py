@@ -61,6 +61,127 @@ class TestLoadPromptTemplate:
         assert "confidence for that file below 0.8" in content
 
 
+class TestInputFormatDocumentsEveryContextKey:
+    """phaze-ts2cq, item 5 + the bead's acceptance criterion: a prompt-render test asserts the
+    Input Format section documents every key ``build_file_context`` emits. Keys are derived from
+    the function's own return dict, not a hardcoded copy, so a future field added to the context
+    dict fails this test until the prompt catches up."""
+
+    def test_documents_every_build_file_context_key(self):
+        from phaze.services.proposal import build_file_context, load_prompt_template
+
+        file_rec = _make_file_record()
+        ctx = build_file_context(file_rec, None, [])
+        keys = list(ctx.keys())
+        assert keys, "build_file_context returned no keys to check against"
+
+        content = load_prompt_template()
+        start = content.index("## Input Format")
+        end = content.index("## File Data", start)
+        input_format_section = content[start:end]
+
+        for key in keys:
+            assert f"`{key}`" in input_format_section, f"Input Format section does not document `{key}`"
+
+
+class TestNamingPromptOperatorDecisions:
+    """Operator decisions 2026-09-22 on bead phaze-ts2cq (AskUserQuestion; each quoted answer is
+    the selected option LABEL, verbatim, per the bead comment). Each test below asserts the
+    decided rule's text survives in the rendered template, not just as a Python constant."""
+
+    def test_carries_the_va_compilation_rule(self):
+        """phaze-ts2cq, operator decision 2026-09-22, item 1 -- Q as put: 'where should tracks
+        from Various Artists compilations go?' Answer (selected label, verbatim):
+        'music/Compilations/{Album}/' (filename format unchanged:
+        '{Track Artist} - {##} - {Title}')."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "music/Compilations/{Album}/" in content
+        assert "Various Artists compilation" in content
+        assert "{Track Artist} - {Track #} - {Track Title}.{ext}" in content
+
+    def test_no_example_line_uses_the_literal_various_artists_as_a_track_artist(self):
+        """phaze-ts2cq, dispatcher review changes-requested 2026-09-23: an example filename
+        literally starting with 'Various Artists - ' contradicts the VA compilation rule itself
+        (item 1: 'that TRACK's own artist, never the literal string "Various Artists"') -- a
+        regression guard so a future example can't reintroduce the contradiction."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        example_lines = [line for line in content.splitlines() if line.strip().startswith("- `")]
+        assert example_lines, "no example lines found to check"
+        offenders = [line for line in example_lines if line.strip().startswith("- `Various Artists - ")]
+        assert not offenders, f"example line(s) use the literal 'Various Artists' as a track artist: {offenders}"
+
+    def test_carries_the_multi_disc_track_number_rule(self):
+        """phaze-ts2cq, operator decision 2026-09-22, item 2 -- Q as put: 'how should multi-disc
+        track numbers appear in filenames?' Answer (selected label, verbatim):
+        '{Disc}{Track:02} e.g. 210 (Recommended)' (multi-disc only; single-disc stays
+        two-digit)."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "{Disc}{Track:02}" in content
+        assert "disc 2 track 10 is `210`" in content
+        assert "never `110`" in content
+
+    def test_carries_the_episode_and_part_rule(self):
+        """phaze-ts2cq, operator decision 2026-09-22, item 3 -- Q as put: 'how should podcast /
+        radio episode numbers and multi-part broadcasts appear?' Answer (selected label,
+        verbatim): 'In event name + Pt N (Recommended)' (episode in event name, parts as PtN
+        before the date; ADD structured episode_number + part fields to the response schema)."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "episode number belongs in the event name" in content
+        assert "PtN" in content
+        assert "`episode_number`" in content
+        assert "`part`" in content
+
+    def test_carries_the_nfo_date_priority_rule(self):
+        """phaze-ts2cq, operator decision 2026-09-22, item 4 -- Q as put: 'when an NFO lists
+        several dates, which one names the file?' Answer (selected label, verbatim):
+        'Air/record only, else xx'."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "Multiple dates in a companion file" in content
+        assert "Only the air date or record date names the file" in content
+        assert "never substitute a release/rip/store date" in content
+
+    def test_documents_the_tags_object(self):
+        """phaze-ts2cq, 2026-09-22, item 5 (not an operator question -- a plain bug-fix item on
+        the bead): the tags object (artist/title/album/year/genre/raw_tags) is sent in every
+        file context and must be documented in the Input Format section."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "`tags`: Embedded tag metadata" in content
+        assert "raw_tags" in content
+
+    def test_dedupes_the_date_format_lines(self):
+        """phaze-ts2cq, 2026-09-22, item 6 (not an operator question -- a plain bug-fix item on
+        the bead): 'Month unknown: 2024.xx.xx' and 'Year only: 2024.xx.xx' were two separate
+        lines with an identical example -- now a single 'Year only' line."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert content.count("2024.xx.xx") == 1
+        assert "Month unknown" not in content
+
+    def test_carries_the_video_taxonomy_rule(self):
+        """phaze-ts2cq, operator decision 2026-09-22, item 7 -- Q as put: 'where should video
+        files go (music videos, festival broadcasts)?' Answer (selected label, verbatim):
+        'Same taxonomy as audio (Recommended)' (festival broadcast = performance; music video ->
+        music/{Artist}/Videos/)."""
+        from phaze.services.proposal import load_prompt_template
+
+        content = load_prompt_template()
+        assert "Video files use the SAME taxonomy as audio" in content
+        assert "music/{Artist}/Videos/" in content
+
+
 class TestCleanCompanionContent:
     """Tests for clean_companion_content function."""
 

@@ -70,6 +70,8 @@ async def store_proposals(
             "stage": proposal.stage,
             "day_number": proposal.day_number,
             "b2b_partners": proposal.b2b_partners,
+            "episode_number": proposal.episode_number,
+            "part": proposal.part,
             "input_context": files_context[idx],
         }
         date_provenance = files_context[idx].get(DATE_CONVENTION_CONTEXT_KEY)

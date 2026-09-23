@@ -165,3 +165,53 @@ class TestFileProposalResponsePath:
             reasoning="test",
         )
         assert resp.proposed_path is None
+
+
+class TestFileProposalResponseEpisodeAndPart:
+    """phaze-ts2cq, operator decision 2026-09-22 (item 3, Q as put: 'how should podcast / radio
+    episode numbers and multi-part broadcasts appear?', answer 'In event name + Pt N
+    (Recommended)'): structured episode_number + part fields, nullable ints, NO Field
+    constraints (Anthropic native structured outputs cannot carry ge/le or recursive refs --
+    phaze-hqa6y guards that shape elsewhere)."""
+
+    def test_accepts_episode_number_and_part(self):
+        from phaze.services.proposal import FileProposalResponse
+
+        resp = FileProposalResponse(
+            file_index=0,
+            proposed_filename="test.mp3",
+            confidence=0.9,
+            reasoning="test",
+            episode_number=42,
+            part=2,
+        )
+        assert resp.episode_number == 42
+        assert resp.part == 2
+
+    def test_defaults_episode_number_and_part_to_none(self):
+        from phaze.services.proposal import FileProposalResponse
+
+        resp = FileProposalResponse(
+            file_index=0,
+            proposed_filename="test.mp3",
+            confidence=0.9,
+            reasoning="test",
+        )
+        assert resp.episode_number is None
+        assert resp.part is None
+
+    def test_episode_number_and_part_have_no_numeric_constraints(self):
+        """No ge/le -- a value outside any "sane" episode/part range must still validate, exactly
+        like day_number and confidence do elsewhere in this model."""
+        from phaze.services.proposal import FileProposalResponse
+
+        resp = FileProposalResponse(
+            file_index=0,
+            proposed_filename="test.mp3",
+            confidence=0.9,
+            reasoning="test",
+            episode_number=-1,
+            part=999,
+        )
+        assert resp.episode_number == -1
+        assert resp.part == 999

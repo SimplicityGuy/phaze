@@ -244,6 +244,74 @@ class TestStoreProposals:
             assert ctx_used["input_context"] == input_ctx[0]
 
     @pytest.mark.asyncio
+    async def test_stores_episode_number_and_part_in_context_used(self):
+        """phaze-ts2cq, item 3: episode_number and part are persisted into context_used
+        alongside the other extracted fields, the same way day_number and b2b_partners are."""
+        from unittest.mock import patch
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    event_name="Essential Mix Episode 42",
+                    episode_number=42,
+                    part=2,
+                    reasoning="test",
+                )
+            ]
+        )
+        input_ctx = [{"original_filename": "test.mp3"}]
+
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
+            await store_proposals(session, [file_id], batch, input_ctx)
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            ctx_used = row["context_used"]
+            assert ctx_used["episode_number"] == 42
+            assert ctx_used["part"] == 2
+
+    @pytest.mark.asyncio
+    async def test_stores_null_episode_number_and_part_when_not_applicable(self):
+        from unittest.mock import patch
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    reasoning="test",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            ctx_used = row["context_used"]
+            assert ctx_used["episode_number"] is None
+            assert ctx_used["part"] is None
+
+    @pytest.mark.asyncio
     async def test_sanitizes_nul_bytes_before_persist(self):
         """NUL bytes anywhere in the persisted row are stripped so the JSONB write cannot abort (phaze-qj9e).
 
@@ -287,3 +355,59 @@ class TestStoreProposals:
         import json
 
         assert "\x00" not in json.dumps(row["context_used"])
+
+
+class TestEpisodeAndPartRoundTripThroughParse:
+    """phaze-ts2cq, item 3: episode_number and part round-trip through the FULL
+    parse -> store_proposals -> context_used path, not just through FileProposalResponse
+    in isolation -- proving parse_completion's own JSON-decode boundary carries the new
+    fields, not only the Pydantic constructor."""
+
+    @pytest.mark.asyncio
+    async def test_episode_number_and_part_survive_parse_and_store(self):
+        import json
+        from unittest.mock import patch
+
+        import structlog
+
+        from phaze.services.proposal import parse_completion, store_proposals
+
+        raw_completion = json.dumps(
+            {
+                "proposals": [
+                    {
+                        "file_index": 0,
+                        "proposed_filename": "Annie Mac - Live @ BBC Radio 1 Essential Mix Episode 42 Pt2 2024.04.12.mp3",
+                        "confidence": 0.9,
+                        "event_name": "Essential Mix Episode 42",
+                        "episode_number": 42,
+                        "part": 2,
+                        "reasoning": "Multi-part radio broadcast",
+                    }
+                ]
+            }
+        )
+
+        batch = parse_completion(
+            raw_completion,
+            model="test-model",
+            batch_size=1,
+            finish_reason="stop",
+            logger=structlog.get_logger("test"),
+        )
+        assert batch.proposals[0].episode_number == 42
+        assert batch.proposals[0].part == 2
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = MagicMock()
+        session.execute.return_value = mock_result
+
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+
+        ctx_used = row["context_used"]
+        assert ctx_used["episode_number"] == 42
+        assert ctx_used["part"] == 2
