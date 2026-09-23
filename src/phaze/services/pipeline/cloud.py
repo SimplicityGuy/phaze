@@ -12,6 +12,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.enums.stage import Stage
+from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
@@ -62,11 +63,21 @@ async def get_awaiting_cloud_count(session: AsyncSession) -> int:
         # once for each of 6,847 awaiting rows on every 5s poll. A LEFT JOIN still chose 5,137
         # probes; this membership form chose one. Both IDs are NOT NULL, so membership has the same
         # truth value as marker existence. The drain keeps its default predicate for the bounded page.
+        # phaze-y0upq: the analysis done/failed disjuncts had the same shape -- production EXPLAIN
+        # showed 6,798 + 5,088 correlated ``analysis`` probes (and a nested-loop ``files`` lookup per
+        # awaiting row) per invocation, ~23,700 index scans, the largest single share of the
+        # /s/analyze and /pipeline/stats fan-out. In membership form every subquery hashes once and
+        # the join becomes a hash join: same count (2,718), 21.0 -> 10.2 ms, and the lower plan cost
+        # also stops tripping JIT. ``analysis.file_id`` is NOT NULL, so membership is existence.
         select(func.count(CloudJob.id))
         .select_from(CloudJob)
         .join(FileRecord, FileRecord.id == CloudJob.file_id)
         .where(
-            awaiting_candidate_clause(skipped_override=FileRecord.id.in_(select(StageSkip.file_id).where(StageSkip.stage == Stage.ANALYZE.value)))
+            awaiting_candidate_clause(
+                skipped_override=FileRecord.id.in_(select(StageSkip.file_id).where(StageSkip.stage == Stage.ANALYZE.value)),
+                done_override=FileRecord.id.in_(select(AnalysisResult.file_id).where(AnalysisResult.analysis_completed_at.isnot(None))),
+                failed_override=FileRecord.id.in_(select(AnalysisResult.file_id).where(AnalysisResult.failed_at.isnot(None))),
+            )
         ),
         node="awaiting_cloud",
     )
