@@ -120,6 +120,62 @@ the fix). The general lesson -- ``--bead`` mode's search form cannot return part
 to enumerate whenever the deciding exchange never names the bead -- is recorded here rather than
 just fixed silently, per this molecule's own rule that a lesson learned at one site states its
 general form.
+
+AN ALLOWLIST THAT SWALLOWED ITS OWN SUBJECT (phaze-71q9y, found 2026-08-22 by dev/w4-jktlb by
+deliberately breaking its own citations and expecting this guard to complain -- two of three did
+not). Two of the four ``_SHAPE_EXCLUSIONS`` were written as GRAMMATICAL patterns, and the sentences
+the guard exists to check share the grammar:
+
+* the noun-phrase shape ``an operator (choice|decision) of`` also matches *"AN OPERATOR DECISION
+  OF 2026-08-22"* -- the most natural way in English to date a decision;
+* the authority-contrast shape ``is an operator decision ..., not`` also matches *"...that IS AN
+  OPERATOR DECISION of 2026-08-22 recorded on bead phaze-jktlb, NOT an implementer's shortcut."*
+
+Both still excluded those sentences whole, so deleting the date or the bead id from either passed
+silently. The fix NARROWS them rather than deleting them -- both were added for false positives
+that are still in the tree (``test_ui_domain_shapes_are_not_flagged`` and
+``test_authority_contrast_shape_is_not_flagged`` below pin them verbatim), and trading a silent false
+negative for a noisy false positive is a different failure, not a fix. The semantic distinction
+both were reaching for is "names a configurable value, or says WHO decides" versus "records THAT
+a decision was taken", and the one observable difference is citation evidence: a sentence carrying
+an ISO date or a bead id is citing. So these two exclusions YIELD -- they do not fire on an
+occurrence whose own sentence carries either -- and with only one of the two present the sentence
+is then judged like any other and fails for the missing half.
+
+WHY THE SENTENCE, NOT THE PARAGRAPH: measured, a paragraph-scoped gate reddened
+``docs/spikes/phaze-han03-essentia-seek.md``, whose authority contrast is a genuine non-claim in a
+paragraph that names a bead elsewhere. WHY ONLY THOSE TWO: the adjective shape
+(``operator-chosen``) and the pending shape (``awaiting an operator decision``) were not shown to
+swallow a real citation, and making them yield would be widening on a hypothesis. Measured at the
+time of the fix, 2 of the 19 excluded occurrences in scope sit in a sentence with citation evidence
+and belong to the adjective shape: ``docs/k8s-burst.md``'s table cell (an ``operator-chosen``
+configurable -- a non-claim) and ``scripts/redis-seat-registry.sh``'s *"phaze-robzi.1's
+operator-approved contract change"*, which reads as a claim and is left for its own bead rather
+than widened into this one. THE RESIDUAL, stated rather than hidden: a sentence in one of the two
+yielding shapes with NEITHER a date NOR a bead id is still excused, because with no evidence at all
+it is grammatically indistinguishable from the non-claims above; the guard catches a HALF-cited
+claim in these shapes, not an entirely uncited one.
+
+WHY EXCLUDED OCCURRENCES ARE NOT REPORTED ON A GREEN RUN (phaze-71q9y acceptance criterion 5,
+decided here). Reporting was weighed and declined. After the narrowing, a yielding exclusion cannot
+fire on any sentence that carries a date or a bead id -- that is, on the text of anyone who was
+trying to cite -- so the population "I expected to be checked and was silently excused" is exactly
+the residual above. The rest of what the allowlist excuses is stable UI adjectives, pending
+states and authority contrasts; a block reprinting them on every green run is read once and then
+habituated, which is invisible in a different way, and pytest captures a passing test's output
+anyway. THE CHECK AN AUTHOR SHOULD RUN INSTEAD -- and the general form this bead exists for: **a
+green guard proves the guard did not object, not that it examined you.** For any check carrying an
+allowlist, the only way to know your case is covered is to break it deliberately -- delete the date
+or the bead id from your paragraph -- and confirm this test goes red.
+
+SCANNING SURFACE INCLUDES UNTRACKED FILES (phaze-71q9y, acceptance criterion 4). ``_scope_files``
+used to enumerate with ``git ls-files`` (tracked files only), so a NEW, not-yet-staged file was not
+scanned at all -- a developer writing a citation in a new module got a green run that meant nothing,
+at exactly the moment they were most likely to be writing one. It now lists ``--cached --others
+--exclude-standard``: tracked files plus untracked files git would add, minus anything
+``.gitignore`` excludes (gate ``*.log`` files, ``.venv``). In CI the untracked set is empty, so this
+changes nothing there; locally, an untracked in-scope scratch file IS scanned and can fail the run
+-- deliberately, since it would fail the moment it was committed.
 """
 
 from __future__ import annotations
@@ -132,6 +188,8 @@ import re
 import subprocess
 import tokenize
 from typing import TYPE_CHECKING
+
+import pytest
 
 
 if TYPE_CHECKING:
@@ -160,28 +218,40 @@ _VOCAB_RE = re.compile(
 )
 
 # Grammatical shapes that match the vocabulary but are not attribution claims -- see the module
-# docstring's "ALLOWLIST BY SHAPE" section for what each one is and where it was found.
-_SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+# docstring's "ALLOWLIST BY SHAPE" section for what each one is and where it was found. The third
+# field is YIELDS TO CITATION EVIDENCE (phaze-71q9y): when True, the exclusion does not fire on an
+# occurrence whose own sentence carries an ISO date or a bead id -- see the module docstring's
+# "AN ALLOWLIST THAT SWALLOWED ITS OWN SUBJECT" section for why exactly these two yield.
+_SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
     (
         re.compile(r"\boperator[- ](chosen|approved)\b", re.IGNORECASE),
         "'operator-chosen'/'operator-approved' is an adjective describing an artifact or affordance "
         "(a sort key, a cue sheet, a cleanup step), not a claim that a decision was made.",
+        False,
     ),
     (
         re.compile(r"\ban?\s+operator\s+(?:choice|decision)\s+of\b", re.IGNORECASE),
         "'an operator choice/decision of ...' names what an operator can configure -- ADR-0012 (verification fidelity and operator attribution) "
         "section 5's own example is 'an operator choice of \"zero threads\"'.",
+        True,
     ),
     (
         re.compile(r"\bawait(?:s|ing)?\s+an?\s+operator\s+decision\b", re.IGNORECASE),
         "'awaiting an operator decision' is a PENDING state -- no decision has been made yet to cite.",
+        False,
     ),
     (
         re.compile(r"\b(?:is|are|remains?|stays?)\s+(?:an?\s+)?operator\s+decisions?\b[^.]{0,60}?,?\s*not\s", re.IGNORECASE),
         "an authority-contrast statement ('...is an operator decision, not a developer one') says WHO "
         "decides a class of choice, not that one specific decision WAS made on a date.",
+        True,
     ),
 )
+
+# A sentence ends at `.`, `!` or `?` followed by whitespace or end of text -- so the dot inside a
+# child bead id (`phaze-bk9el.19`) or a filename (`foo.py`) does not end one. Abbreviations like
+# "e.g. " do end one; that only ever SHRINKS the window a yielding exclusion inspects for evidence.
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
 
 # Narrow, file-scoped exemptions for text the shape rules above genuinely cannot express: prose
 # ABOUT the citation vocabulary/requirement itself, not a new claim. Each entry is a (path, needle)
@@ -238,8 +308,9 @@ _SELF_PATH = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
 # THIS FILE IS EXEMPT FOR THE SAME REASON, discovered the hard way: once this file is `git add`ed
 # and its own paragraphs enter `_scope_files()`'s population, its module/helper docstrings --
 # which discuss the attribution vocabulary as their subject matter, same as ADR-0012 (verification fidelity and operator attribution) -- trip the
-# very check they implement. `git ls-files` does not include an untracked file, so this was
-# invisible until the first commit; catch it here rather than relying on that accident of timing.
+# very check they implement. `git ls-files` did not then include an untracked file, so this was
+# invisible until the first commit (untracked files have been scanned since phaze-71q9y); catch it
+# here rather than relying on that accident of timing.
 # Same tradeoff as ADR-0012 (verification fidelity and operator attribution): a genuinely new, uncited claim added to a docstring in THIS file would
 # not be caught either.
 _EXEMPT_FILES = frozenset(
@@ -413,15 +484,38 @@ def _paragraphs_for_file(repo_path: Path, *, rel: str | None = None) -> list[_Pa
     return _split_into_paragraphs(rel, 1, text)
 
 
-def _scope_files() -> list[Path]:
+def _scope_files(root: Path = _REPO_ROOT) -> list[Path]:
+    """Every in-scope file git knows about OR would add: tracked (``--cached``) plus untracked but
+    not ignored (``--others --exclude-standard``).
+
+    phaze-71q9y: ``--cached`` alone made a brand-new, not-yet-staged file invisible, so an author
+    writing a citation in a new module got a green run that had not read it -- see the module
+    docstring's "SCANNING SURFACE INCLUDES UNTRACKED FILES" section.
+    """
     completed = subprocess.run(  # noqa: S603 -- fixed argv, no shell, trusted git binary
-        ["git", "ls-files", "--", *_SCOPE_PATHSPECS],  # noqa: S607
-        cwd=_REPO_ROOT,
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", *_SCOPE_PATHSPECS],  # noqa: S607
+        cwd=root,
         capture_output=True,
         text=True,
         check=True,
     )
-    return [_REPO_ROOT / line for line in completed.stdout.splitlines() if line]
+    return [root / line for line in dict.fromkeys(completed.stdout.splitlines()) if line]
+
+
+def _sentence_carries_citation_evidence(text: str, start: int, end: int) -> bool:
+    """True if the sentence enclosing ``text[start:end]`` carries an ISO date or a bead id.
+
+    phaze-71q9y: a sentence naming a date or a bead is CITING a decision, not naming a
+    configurable value or saying whose authority a class of choice belongs to -- so a yielding
+    shape exclusion must not excuse it. Scoped to the SENTENCE, not the paragraph, on measurement:
+    ``docs/spikes/phaze-han03-essentia-seek.md``'s authority contrast (*"that is an operator
+    decision, not a developer one"*) sits in a paragraph that names a bead elsewhere, and a
+    paragraph-scoped gate turned that genuine non-claim into a false positive.
+    """
+    left = max((m.end() for m in _SENTENCE_END_RE.finditer(text, 0, start)), default=0)
+    right_match = _SENTENCE_END_RE.search(text, end)
+    sentence = text[left : right_match.end() if right_match else len(text)]
+    return bool(_ISO_DATE_RE.search(sentence) or _BEAD_ID_RE.search(sentence))
 
 
 def _has_unexcluded_vocab_match(text: str) -> bool:
@@ -435,11 +529,20 @@ def _has_unexcluded_vocab_match(text: str) -> bool:
     an unrelated claim sitting next to it. Every ``_SHAPE_EXCLUSIONS`` regex is written so its own
     match span always contains the ``operator ... <word>`` text it is excusing, so span
     containment is enough to associate an exclusion with the specific occurrence it covers.
+
+    A YIELDING exclusion's span is dropped when its own sentence carries citation evidence (see
+    :func:`_sentence_carries_citation_evidence`), so the occurrence it would have excused is judged
+    like any other.
     """
     vocab_matches = list(_VOCAB_RE.finditer(text))
     if not vocab_matches:
         return False
-    shape_spans = [m.span() for pattern, _ in _SHAPE_EXCLUSIONS for m in pattern.finditer(text)]
+    shape_spans = [
+        m.span()
+        for pattern, _, yields_to_citation in _SHAPE_EXCLUSIONS
+        for m in pattern.finditer(text)
+        if not (yields_to_citation and _sentence_carries_citation_evidence(text, *m.span()))
+    ]
     return any(not any(start <= vm.start() and vm.end() <= end for start, end in shape_spans) for vm in vocab_matches)
 
 
@@ -574,6 +677,78 @@ class TestScannerMechanics:
         )
         violations = list(_iter_uncited_claims(iter(paragraphs)))
         assert len(violations) == 1
+
+    # phaze-71q9y: dev/w4-jktlb's two measured examples, verbatim in their load-bearing phrase --
+    # each a real citation that a yielding shape exclusion used to excuse whole.
+    _NOUN_PHRASE_CITATION = "# Pinning the floor here was AN OPERATOR DECISION OF 2026-08-22, recorded on bead phaze-jktlb.\n"
+    _AUTHORITY_CONTRAST_CITATION = (
+        "# Pinning the floor here is deliberate: that IS AN OPERATOR DECISION of 2026-08-22 recorded on bead phaze-jktlb,\n"
+        "# NOT an implementer's shortcut.\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("source", "shape_index"),
+        [(_NOUN_PHRASE_CITATION, 1), (_AUTHORITY_CONTRAST_CITATION, 3)],
+        ids=["noun-phrase-shape", "authority-contrast-shape"],
+    )
+    def test_a_yielding_shape_no_longer_swallows_a_half_cited_claim(self, source: str, shape_index: int) -> None:
+        """Acceptance criterion 1: delete the date OR the bead id and the guard fires.
+
+        The first assertion is what makes the other three mean anything: it proves the fixture
+        really is inside the shape exclusion under test, so a red result is the exclusion yielding
+        -- not the vocabulary regex simply never matching an excluded shape to begin with.
+        """
+        pattern = _SHAPE_EXCLUSIONS[shape_index][0]
+        assert pattern.search(_normalize_paragraph(source.replace("#", ""))), "fixture no longer exercises the shape"
+
+        cited = _comment_run_paragraphs_python("fixture.py", source)
+        assert list(_iter_uncited_claims(iter(cited))) == [], "the fully cited form must pass"
+
+        for removed in ("2026-08-22", "phaze-jktlb"):
+            paragraphs = _comment_run_paragraphs_python("fixture.py", source.replace(removed, ""))
+            assert len(list(_iter_uncited_claims(iter(paragraphs)))) == 1, f"removing {removed!r} was swallowed"
+
+    def test_a_yielding_shape_still_excuses_its_non_claim_when_a_bead_is_named_in_another_sentence(self) -> None:
+        """Acceptance criterion 2's other half: the yield is SENTENCE-scoped, not paragraph-scoped.
+
+        The shape of ``docs/spikes/phaze-han03-essentia-seek.md``, where an authority contrast sits
+        in a paragraph that names a bead elsewhere -- a paragraph-scoped gate flagged it.
+        """
+        cases = [
+            "# See phaze-han03 for the patch. If MTG ask for a CLA, that is an operator decision, not a developer one.\n",
+            '# Tuned under phaze-bk9el.19. `FOO=` in a ConfigMap is not an operator choice of "zero threads".\n',
+        ]
+        for source in cases:
+            paragraphs = _comment_run_paragraphs_python("fixture.py", source)
+            assert list(_iter_uncited_claims(iter(paragraphs))) == [], f"wrongly flagged: {source!r}"
+
+    def test_a_child_bead_id_does_not_end_a_sentence(self) -> None:
+        """``phaze-bk9el.19``'s dot is not a sentence end, so the bead id before it stays in the sentence.
+
+        The ONLY evidence is the bead id, and it sits before the dot: a terminator regex that ends a
+        sentence at any ``.`` would cut it off and report no evidence.
+        """
+        text = "Scoped under phaze-bk9el.19 as an operator decision of the hive."
+        match = _SHAPE_EXCLUSIONS[1][0].search(text)
+        assert match is not None
+        assert _sentence_carries_citation_evidence(text, *match.span())
+
+    def test_scope_includes_untracked_files_but_not_ignored_ones(self, tmp_path: Path) -> None:
+        """Acceptance criterion 4: a new, never-staged file is scanned; a gitignored one is not."""
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)  # noqa: S603, S607
+
+        git("init", "-q")
+        (tmp_path / "src").mkdir()
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        (tmp_path / "src" / "tracked.py").write_text("x = 1\n")
+        git("add", "src/tracked.py")
+        (tmp_path / "src" / "untracked.py").write_text("# Operator decision: ship it faster.\n")
+        (tmp_path / "src" / "gate.log").write_text("operator decision\n")
+
+        found = {path.relative_to(tmp_path).as_posix() for path in _scope_files(tmp_path)}
+        assert found == {"src/tracked.py", "src/untracked.py"}
 
     def test_known_meta_exclusions_are_still_narrowly_scoped_to_their_needle(self) -> None:
         """A `_KNOWN_SHAPE_EXCLUSIONS` entry is (path, needle) -- an unrelated, uncited claim added
