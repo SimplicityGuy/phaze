@@ -556,8 +556,19 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     # (3) A force-skipped analyze file must be excluded by the count's marker set and by the
     # drain's correlated marker. A metadata-only skip on the parked file must not affect analyze.
     skipped = _make_file()
-    session.add_all([parked, analyzing, skipped])
+    # (4)-(6) phaze-y0upq: the count's analysis done/failed membership sets must agree with the drain's
+    # correlated predicates -- a completed and a terminally-failed analysis are excluded, while a
+    # PARTIAL (in-progress, neither completed nor failed) analysis row stays a candidate.
+    completed = _make_file()
+    failed = _make_file()
+    partial = _make_file()
+    session.add_all([parked, analyzing, skipped, completed, failed, partial])
     await session.commit()
+    for done_file in (completed, failed, partial):
+        session.add(CloudJob(id=uuid.uuid4(), file_id=done_file.id, status=CloudJobStatus.AWAITING.value))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=completed.id, analysis_completed_at=datetime.now(UTC)))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC)))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=partial.id, fine_windows_analyzed=1, fine_windows_total=10))
     session.add(CloudJob(id=uuid.uuid4(), file_id=parked.id, status=CloudJobStatus.AWAITING.value))
     session.add(CloudJob(id=uuid.uuid4(), file_id=analyzing.id, status=CloudJobStatus.AWAITING.value))
     session.add(CloudJob(id=uuid.uuid4(), file_id=skipped.id, status=CloudJobStatus.AWAITING.value))
@@ -568,11 +579,12 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     )
     await session.commit()
 
-    # Only the genuinely-parked file is counted; the analyze-in-flight file is excluded.
-    assert await get_awaiting_cloud_count(session) == 1
+    # Only the genuinely-parked and partially-analyzed files are counted; in-flight, skipped, completed
+    # and failed files are excluded.
+    assert await get_awaiting_cloud_count(session) == 2
     # And the count agrees with the drain candidate set exactly (card and drain cannot disagree).
     candidates = await get_cloud_staging_candidates(session, limit=10)
-    assert {f.id for f, _ in candidates} == {parked.id}
+    assert {f.id for f, _ in candidates} == {parked.id, partial.id}
 
 
 @pytest.mark.asyncio

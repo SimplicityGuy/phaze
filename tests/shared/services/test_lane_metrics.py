@@ -437,6 +437,21 @@ async def test_analyze_queue_totals_degrades_to_none_when_any_lane_queued_is_unk
     assert totals == {"total_queued": None, "unrouted_queued": 5}
 
 
+@pytest.mark.asyncio
+async def test_analyze_queue_totals_reuses_caller_buckets_without_a_second_read(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-y0upq: a caller that already holds the ANALYZE buckets never pays for the bucket read twice."""
+
+    async def _must_not_run(_session: AsyncSession, _stage: object) -> dict[str, int]:
+        raise AssertionError("the ANALYZE bucket aggregate was recomputed")
+
+    monkeypatch.setattr(backends_metrics_mod, "_safe_bucket_counts", _must_not_run)
+    lanes = [{"queued": 2}, {"queued": 3}]
+
+    totals = await get_analyze_queue_totals(session, lanes, analyze_buckets={"not_started": 7, "in_flight": 1, "total": 20})
+
+    assert totals == {"total_queued": 12, "unrouted_queued": 7}
+
+
 # --------------------------------------------------------------------------- AC9: cross-page single source of truth
 
 
