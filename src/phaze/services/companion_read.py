@@ -44,25 +44,37 @@ def read_companion_bounded_sync(path: str, max_chars: int) -> str:
     multi-hundred-MB mis-categorized companion (a big log, an oversized .nfo, or an image matched by
     a COMPANION extension) is a small, fixed multiple of ``max_chars`` -- not the file size.
 
-    Tries strict UTF-8 first -- unchanged behavior, and the common case for anything not produced
-    by scene release tooling. On a decode failure, a companion whose suffix is in
-    ``CP437_FALLBACK_SUFFIXES`` is re-read as CP437 (a full 256-code-point page, so this second
-    read cannot itself raise ``UnicodeDecodeError``); anything else falls back to the previous
-    UTF-8-with-replacement behavior, unchanged. Each attempt is its own bounded read -- never a
-    whole-file slurp -- so the worst case is two small reads, not one large one.
+    Tries strict UTF-8 first -- via the ``utf-8-sig`` codec (phaze-mi5y0, seam C3), which strips a
+    leading BOM when one is present and is otherwise byte-for-byte identical to plain ``utf-8``
+    decoding, so a companion with no BOM is completely unaffected. Without this, a BOM survives
+    strict ``utf-8`` decoding as a literal, non-whitespace U+FEFF character (strict ``utf-8`` never
+    raises on a BOM, so this was never the ``UnicodeDecodeError`` branch below) that neither
+    ``clean_companion_content``'s ``.strip()`` nor ``sanitize_pg_text`` removes -- U+FEFF is
+    Unicode category Cf, not whitespace -- so it reached the LLM prompt verbatim and could corrupt
+    a line-start parser reading the companion's first line. This matters for every companion, not
+    only phaze-generated ``.cue`` sidecars (``cue_generator.write_cue_file`` encodes
+    ``utf-8-sig``, so every phaze-written CUE starts with one): any third-party companion file --
+    .nfo, .txt, .m3u, .cue -- saved by an editor that adds a BOM hits the identical mismatch.
+
+    On a decode failure, a companion whose suffix is in ``CP437_FALLBACK_SUFFIXES`` is re-read as
+    CP437 (a full 256-code-point page, so this second read cannot itself raise
+    ``UnicodeDecodeError``); anything else falls back to the previous UTF-8-with-replacement
+    behavior, unchanged (also via ``utf-8-sig`` so a BOM'd-but-otherwise-invalid file does not leak
+    a stray U+FEFF ahead of the replacement characters). Each attempt is its own bounded read --
+    never a whole-file slurp -- so the worst case is two small reads, not one large one.
 
     Must be run via ``asyncio.to_thread`` by the caller: the open()+read() here is still
     synchronous, blocking disk I/O.
     """
     limit = max_chars * COMPANION_READ_CHAR_MARGIN
     try:
-        with Path(path).open(encoding="utf-8", errors="strict") as f:
+        with Path(path).open(encoding="utf-8-sig", errors="strict") as f:
             return f.read(limit)
     except UnicodeDecodeError:
         pass
 
     if Path(path).suffix.lower() not in CP437_FALLBACK_SUFFIXES:
-        with Path(path).open(encoding="utf-8", errors="replace") as f:
+        with Path(path).open(encoding="utf-8-sig", errors="replace") as f:
             return f.read(limit)
 
     with Path(path).open(encoding="cp437") as f:
