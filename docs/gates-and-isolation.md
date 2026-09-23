@@ -1159,7 +1159,7 @@ prints none of them.
 phaze-qsyc0 above establishes that a gate's **M** is a property of a RUN, never of a command. This
 is that same idea one level down — **a count is a property of a run, never of a suite.**
 
-## Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw, revised phaze-o24tm)
+## Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw, revised phaze-o24tm, swap gate retired phaze-u92y9)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
 capacity does not look like a failure, it looks like a SIGTERM that a wrapper renders as exit 0.
@@ -1170,48 +1170,80 @@ from 2026-08-22, and the argument is below rather than assumed — the count was
 reasons and deserves one. Before launching a gate:
 
 ```bash
-sysctl vm.swapusage                                                 # hard NO-GO if "used" is non-zero
 memory_pressure | tail -1                                           # the headroom read: "free percentage: N%"
 ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest'  # who else is here — context, not a verdict
 ```
 
-**Swap at `0.00M` is NECESSARY, not SUFFICIENT — and the difference is the whole rule.** Swap
-answers *"is this machine thrashing right now"*; a launch decision needs *"will it thrash if I add
-~1.3 GB"*. Those are different questions, and only the second is a launch decision. So non-zero swap
-is a **hard no-go** — by the time swap moves, free memory is already exhausted and you are past the
-point the check existed to catch, which makes it a stop signal rather than the primary signal.
-Clearing it establishes only that nothing is thrashing *now*; it does **not** establish headroom.
-The forward-looking read is `memory_pressure`'s free percentage, and it still carries **no
-calibrated threshold** — none has been derived, inventing one here would be exactly the unmeasured
-arithmetic this section exists to correct, and it is recorded so that one can be. Between the two,
-a seat is exercising judgement rather than reading a verdict, and that is an honest description of
-what the evidence supports rather than a gap in the rule.
+`memory_pressure`'s free percentage carries **no calibrated threshold** — none has been derived,
+and inventing one here would be exactly the unmeasured arithmetic this section exists to correct.
 
-Swap earns the no-go slot on evidence, and how thin that evidence is has to be stated plainly,
-because carrying a claim stronger than its evidence is this section's own defect. **Exactly one kill
-has a recorded memory state**: 2026-08-22, **461 MB of 1024 MB** in use across the
-five-gate run in which one gate was SIGTERM'd — and even that is the wave's state, not a reading
-taken at the instant of the kill. The two 2026-08-25 kills (**18%** and **21%**, below) have **no
-recorded memory state at all**. If either of them died at `0.00M`, this discriminator is wrong, and
-nothing in the record can currently say. It therefore rests on **one measured kill with swap in use,
-plus every measured survivor at `0.00M`** — survivors over the old count included. **That is why the
-launch check is something you RECORD, not merely read:** write the swap reading and `WAITED_SEC`
-into the gate log, and the next kill either confirms this discriminator or refutes it. A rule that
-accumulates the evidence for its own threshold is more than the count it replaces ever had.
+### The swap-based hard NO-GO that used to stand here, and why it was retired (phaze-u92y9)
 
-**Why swap is a stop signal and not the primary one: it LAGS.** It moves only once free memory is
-already exhausted, so `0.00M` describes the state you are **in**, never the state your launch will
-**produce**. It is kept in the no-go slot for two reasons: on macOS swap moving *is* approximately
-"free is exhausted", so the reading is sound about what it reports, and every reading a seat reaches
-for instead is easier to misread (see the `vm_stat` trap below). Read it as *nothing is thrashing
-right now* — never as *nothing will be*. That limit binds every quantity here, the count it replaced
-included: a launch check is a snapshot, which is why the check-then-launch race below is reported
-rather than closed.
+From phaze-o24tm (2026-08-25) through phaze-u92y9 (2026-09-22), this section also read
+`sysctl vm.swapusage` as a **level**: `used = 0.00M` permitted a launch, any non-zero value was a
+**hard no-go**. The reasoning was sound as far as it went and is preserved below because the next
+reader should not have to re-derive it — but it rested on an assumption about the OS the original
+rule never tested, and that assumption was wrong.
+
+**Why it was adopted.** Swap answers *"is this machine thrashing right now"*; a launch decision
+needs *"will it thrash if I add ~1.3 GB"* — different questions, and only the second is a launch
+decision, which is why swap was kept as a **stop signal**, not the primary one: it moves only once
+free memory is already exhausted, so `0.00M` described the state a seat was **in**, never the state
+a launch would **produce**. It was chosen over a free-memory threshold specifically because free
+memory can lie about pressure — the record shows one instance where free memory read **higher** at
+the moment swap first went non-zero than in the reading immediately before it (below) — and a
+zero/non-zero read was seen as the one number "hard to get wrong under pressure." The evidence for
+the threshold itself was always thin, and that was stated plainly at the time: **exactly one kill
+had a recorded memory state** — 2026-08-22, 461 MB of 1024 MB in use across a five-gate run in which
+one gate was SIGTERM'd, and even that was the wave's state, not a reading at the instant of the
+kill — against every measured survivor at `0.00M`.
+
+**Measured, molecule `phaze-48ghg`, 2026-08-26 — the refutation.** Six concurrent seats drove a
+32 GB machine into swap:
+
+| moment | swap used | free | pytest procs |
+|---|---|---|---|
+| dispatch, before any gate | `0.00M` | 56% | 0 |
+| 6 seats gating | `0.00M` | 52% | 6 |
+| 6 seats, full suites | `0.00M` | 38% | 6 |
+| **swap event** | **`192.19M`** | 45% | 6 |
+| load draining | `192.19M` | 51% | 4 |
+| load drained | `192.19M` | 55% | 0–1 |
+| **~50 min after the event** | **`192.19M`** | **59%** | **1** |
+
+`192.19M`, unchanged, for ~50 minutes across a full drain of the load that caused it, while free
+memory recovered from 38% to 59% over the same window — the machine was demonstrably healthy and a
+level-based rule still said NO-GO. **macOS does not return swap to zero once pressure has forced it
+non-zero: the pages stay written, there is no drain.** A level-based read of a non-draining counter
+has exactly one transition available — zero to non-zero — and never the reverse, so the first swap
+event on a machine's uptime permanently forbade every gate afterward, independent of actual
+headroom. (The row where swap first went non-zero also shows free memory reading **higher**, 45%,
+than the row before it, 38% — that half of the original reasoning, favoring swap over a free-memory
+threshold, was never what broke.) Surfaced by the `phaze-48ghg.11` seat, which noticed the counter
+had not moved after its own run finished and its seat released, and said so rather than assuming the
+dispatcher's stale reading.
+
+Further evidence the rule was already shaky before its retirement: `phaze-x1qr3.1`'s gate run
+(2026-09-06, dev/x1qr3-1) read swap at `5138.19M`, byte-identical across six readings at 20 s
+intervals, while memory-free moved 58% to 51% with zero other pytest processes on the machine; the
+gate ran anyway under that stable non-zero swap and completed green twice on the full escalated
+suite (8325/8326 passed, 28:37 and 27:15) — a flat high-water mark did not thrash.
+
+**Operator decision 2026-09-22** (dispatch session, `AskUserQuestion`). Question as put: *"Swap
+shows 5,231 MB used out of 6,144 MB. CLAUDE.md treats any non-zero swap as a hard NO-GO for
+launching a gate, but open bead phaze-u92y9 says macOS swap never drains, so as written the rule
+blocks forever. Memory pressure reads 62% free. How should I run gates for this dispatch?"* Answer
+as given (free text, verbatim): *"waves of 4 is fine. but this whole launch gate is junk. please
+remove the gate on the swap."* Durable record: bead `phaze-u92y9`. **The gate was removed outright,
+not recalibrated to a rate-based (swap-growing-vs-flat) check** — a rate-based replacement is what
+this bead was originally scoped to build, and the operator declined that path in favor of deletion.
+Do not reintroduce a swap threshold of any kind, calibrated or rate-based, here or in CLAUDE.md.
 
 The process count survives only as context, and it may make you **more** conservative, never less:
-three live gates is a reason to look at swap, not on its own a reason to wait, and **never** a
-reason to kill a running gate. Two seats declined to kill healthy runs on a count alone during the
-2026-08-25 wave and were right both times. If the count moves under you *after* you launch, report
+three live gates is a reason to look at `memory_pressure`'s free percentage, not on its own a reason
+to wait, and **never** a reason to kill a running gate. Two seats declined to kill healthy runs on a
+count alone during the 2026-08-25 wave and were right both times. If the count moves under you
+*after* you launch, report
 it rather than act — a check-then-launch race cannot be closed by a poller, and the shared lock file
 that would close it is the writable-path collision this repo keeps relearning.
 
@@ -1223,7 +1255,7 @@ cap the poll so a stuck wait surfaces as a late gate rather than a silent hang.
 waited=0
 while [ "$(ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest')" -gt 1 ] \
       && [ "$waited" -lt 3600 ]; do sleep 30; waited=$((waited+30)); done
-echo "WAITED_SEC=$waited SWAP=$(sysctl -n vm.swapusage)"   # into the gate log, before the gate
+echo "WAITED_SEC=$waited"   # into the gate log, before the gate
 ```
 
 That seat's first attempt launched at three concurrent and was SIGTERM'd at **21%** after ~20
@@ -1263,10 +1295,14 @@ were recorded as failing verdicts, never the memory state at the moment of the k
 gap named above. So the rule
 was wrong in *both* directions at once — it permitted the runs that died, and here it would have
 forbidden three runs with ample room — and a rule wrong in both directions is not repaired by moving
-its threshold. What the count had going for it in 2026-08-22 was real, and is why this is a swap
-rather than a deletion: it is one command, easy to check and hard to get wrong under pressure.
-`sysctl vm.swapusage` keeps that property, because `used = 0.00M` is a zero/non-zero read with no
-threshold to get wrong.
+its threshold. What the count had going for it in 2026-08-22 was real, and is why this became a swap
+check rather than a deletion at the time: it was one command, easy to check and — on the mistaken
+premise that `used = 0.00M` is a zero/non-zero read with no threshold to get wrong — thought hard to
+get wrong under pressure. That premise is exactly what `phaze-u92y9` refuted: a zero/non-zero read
+has no threshold to get wrong only if the counter can return to zero, and on macOS it cannot, so the
+"easy to check" property doubled as "impossible to un-trip." The swap check itself was retired for
+that reason (above); the count-based ceiling this paragraph is about stayed retired for its own,
+independent reasons.
 
 **Re-measure the figures above rather than inheriting them — and sample LATE.** Read a live gate's
 RSS in KB with `ps -eo rss=,args= | grep -E '/\.venv/bin/python[0-9.]* .*pytest'` (**M**,
@@ -1293,9 +1329,13 @@ the machine beats one assembled by matching process names.
 value is the **healthy steady state** rather than a warning. Measured 2026-08-25 on this 32 GB
 machine: `Pages free` **0.12 GB** against **9.87 GB** inactive — about **10.07 GB** actually
 available — while `memory_pressure` reported **63%** free and swap read `0.00M` at the same instant.
-A seat reading `Pages free` alone concluded the machine was tight when it had ~10 GB spare. That is
-the sharpest argument for `sysctl vm.swapusage` holding the no-go slot: not that it is the most
-informative number available, but that it is the hardest one to read backwards.
+A seat reading `Pages free` alone concluded the machine was tight when it had ~10 GB spare. While the
+swap check held the no-go slot, this was the sharpest argument for it: not that it was the most
+informative number available, but that it was the hardest one to read backwards — a virtue that
+turned out to cut the other way once non-zero, since a level that cannot go backwards on this OS is
+exactly a level that cannot come back down (`phaze-u92y9`). With the swap check retired, the
+practical guidance this paragraph leaves standing is narrower and still holds: don't use `vm_stat`'s
+`Pages free` as a headroom read; use `memory_pressure`'s free percentage instead.
 
 **The general form: the old ceiling was sound arithmetic on stale inputs.** It was not wrong when it
 was written, and nothing about it looked wrong afterwards, because **a ceiling derived from a
