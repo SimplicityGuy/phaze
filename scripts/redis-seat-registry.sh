@@ -154,6 +154,7 @@
 #   redis-seat-registry.sh reclaim  --redis-container C --capacity N
 #                                   (--pg-container C | --no-postgres-check)
 #                                   [--apply] [--include-unstamped]
+#   redis-seat-registry.sh has-seat --redis-container C --seat S
 #
 # Exit codes: 0 ok, 1 error, 2 usage, 3 capacity exhausted (allocate), 4 refused because the seat
 # is in use (release), 5 nothing to release -- the named seat holds no Redis logical DB (release).
@@ -163,6 +164,13 @@
 # release" prose as success. Scripted callers can `case $? in 5) ... ;; esac` without parsing
 # English; a human reading the terminal still sees the same prose, on stderr like every other
 # non-zero release outcome.
+#
+# `has-seat` is a read-only probe (phaze-cohbr): 0 if `S` is an EXACT key in the registry, 1
+# otherwise. Nothing is printed on either outcome -- it exists for a caller to branch on, not to
+# read. It is what lets `just test-db-release` accept a name copy-pasted verbatim from
+# `just test-db-seats` (already the derived, registered identifier) without re-deriving it into a
+# different, unregistered string -- see that recipe for the fallback to `derive-seat-name.sh` when
+# the probe misses.
 set -euo pipefail
 
 readonly REGISTRY_KEY="phaze:test:redis-db-index"
@@ -191,6 +199,7 @@ usage() {
   echo "  $0 release  --redis-container C --seat S [--pg-container C] [--force]" >&2
   echo "  $0 list     --redis-container C [--capacity N] [--pg-container C]" >&2
   echo "  $0 reclaim  --redis-container C --capacity N (--pg-container C | --no-postgres-check) [--apply] [--include-unstamped]" >&2
+  echo "  $0 has-seat --redis-container C --seat S" >&2
   exit 2
 }
 
@@ -816,6 +825,16 @@ cmd_release() {
   echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
 }
 
+# Read-only probe (phaze-cohbr): does `$seat` exist as an EXACT key in the registry? No output
+# either way -- callers branch on the exit code, same shape as `[ -f file ]`. `HEXISTS` rather than
+# `HGET` because a corrupt-but-present value (see `cmd_release`'s sanitizing comment above) must
+# still read as "yes, this is a registered seat" -- a hollow string is not the same question as an
+# absent field.
+cmd_has_seat() {
+  [ -n "$seat" ] || usage
+  [ "$(registry_cli HEXISTS "$REGISTRY_KEY" "$seat")" = "1" ]
+}
+
 # Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.
 # Emits one TAB-separated record per seat:
 #
@@ -1082,5 +1101,6 @@ case "$subcommand" in
   release) cmd_release ;;
   list) cmd_list ;;
   reclaim) cmd_reclaim ;;
+  has-seat) cmd_has_seat ;;
   *) usage ;;
 esac
