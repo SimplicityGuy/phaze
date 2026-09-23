@@ -110,7 +110,7 @@ LINE_GRANDFATHER = frozenset(
         ("CONVENTIONS.md", 223),
         ("CONVENTIONS.md", 245),
         ("scripts/select_impacted_tests.py", 75),
-        ("tests/shared/test_fast_gate.py", 621),
+        ("tests/shared/test_fast_gate.py", 622),
         # This module's own worked examples, in its module docstring above -- same shapes (a) and
         # (b) it names: line 46 retells the historical 0014/0015 renumber collision (today's number
         # to file mapping would misstate what was cited at the time), line 53 quotes

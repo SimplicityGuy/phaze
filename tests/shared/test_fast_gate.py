@@ -42,6 +42,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -876,6 +877,21 @@ def test_the_fast_step_runs_the_selector_and_can_escalate() -> None:
     # And durably, because "is this gate escalating on most beads?" is a TREND question about how
     # stale the coverage map has become, and a per-run transcript cannot answer it.
     assert "fast-gate-escalations.log" in recipe, "`just test-fast` no longer records what escalated"
+
+
+def test_the_fast_step_carries_an_argv_visible_worktree_marker() -> None:
+    """phaze-7w18f: both `test-fast` pytest invocations (the selected run and the docs-floor run)
+    must carry the same per-worktree `--rootdir` marker that `test-cov` does, or the fast-gate
+    path (what `bh work check` / `submit` / `merge` actually run) is left just as indistinguishable
+    to a `pkill -f` as the full gate used to be. `--rootdir` is a no-op for collection here (this
+    worktree's own `pyproject.toml` already sits at exactly this path).
+    """
+    recipe = _dry_run("test-fast")
+    marker = re.search(rf"--rootdir=['\"]?{re.escape(str(REPO_ROOT))}", recipe)
+    assert marker, recipe
+    # Both call sites (the selected-subset run and the docs-only-floor run) must carry it, not
+    # just whichever branch happens to render first.
+    assert recipe.count("--rootdir=") >= 2, recipe
 
 
 def test_the_fast_step_produces_no_coverage() -> None:

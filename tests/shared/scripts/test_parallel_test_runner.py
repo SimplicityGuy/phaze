@@ -179,6 +179,41 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
     ]
 
 
+def test_each_lane_carries_an_argv_visible_worktree_marker(tmp_path: Path) -> None:
+    """phaze-7w18f: the two-worker path is what `just check` runs by DEFAULT when no caller-owned
+    seat is exported, so its lanes need the same `--rootdir` marker `test-cov`'s single-process
+    invocation carries -- otherwise a path-scoped `pkill -f` still can't tell this worktree's
+    parallel lanes from a sibling worktree's.
+    """
+    harness = Harness()
+
+    status, _ = _run(tmp_path, harness)
+
+    assert status == 0
+    first, second = harness.launches
+    # Both lanes belong to the SAME worktree, so they share one marker -- distinguishing lanes
+    # from each other is not the ask; distinguishing this worktree from a sibling's is.
+    assert f"--rootdir={tmp_path}" in first.command
+    assert f"--rootdir={tmp_path}" in second.command
+
+
+def test_the_argv_marker_is_unique_per_worktree(tmp_path: Path) -> None:
+    """Two different `repo_root`s (i.e. two different worktrees) must render two different markers."""
+    first_root = tmp_path / "worktree-a"
+    second_root = tmp_path / "worktree-b"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_harness = Harness()
+    second_harness = Harness()
+
+    _run(first_root, first_harness)
+    _run(second_root, second_harness)
+
+    first_marker = next(arg for arg in first_harness.launches[0].command if arg.startswith("--rootdir="))
+    second_marker = next(arg for arg in second_harness.launches[0].command if arg.startswith("--rootdir="))
+    assert first_marker != second_marker
+
+
 def test_lane_failure_skips_coverage_commands_and_propagates_status(tmp_path: Path) -> None:
     harness = Harness(child_statuses=(0, 7))
 
