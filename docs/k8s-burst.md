@@ -490,7 +490,7 @@ different ceilings** on concurrent analysis, they are far apart, and only one of
 
 | ceiling | on the measurement host (4 physical cores) | what sets it | measured by |
 | --- | ---: | --- | --- |
-| **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-chosen; recommended in [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
+| **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-configurable; recommended in [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
 | **Throughput knee** — where extra concurrency stops paying | **W=2** | 4 physical cores; node CPU is 85.4% busy at W=2 and ≥98.5% from W=4 | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md) — **63.7%** of everything concurrency buys arrives at W=2, **84.6%** by W=3 |
 | **Memory wall** — where the node would actually run out | **W≈33** | node RSS grows **+0.880 GiB per worker** (R² 0.9965) on 31.31 GiB | [`phaze-8r6t4` §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
 
