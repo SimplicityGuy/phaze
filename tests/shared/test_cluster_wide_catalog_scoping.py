@@ -327,13 +327,18 @@ def test_the_three_barrier_modules_share_one_definition() -> None:
 
     It was three copies of one expression, and all three carried the same bug. One definition in
     ``tests/db_guard`` means the next correction lands everywhere at once -- the argument that
-    module's own docstring makes about the test-database predicate.
+    module's own docstring makes about the test-database predicate. The same argument then applied a
+    second time to the poll loop around it (phaze-lz69g: three copies of a 5 s ``wait_for`` budget, all
+    flaky under multi-seat load), so the modules now reach the SQL through ``tests/_lock_barrier``.
     """
+    barrier = (REPO_ROOT / "tests/_lock_barrier.py").read_text(encoding="utf-8")
+    assert "from tests.db_guard import BLOCKED_WAITER_SQL" in barrier, "the lock barrier must use the shared scoped SQL"
     for module in (
         "tests/integration/test_stage_pause_resume_lock.py",
         "tests/integration/test_scan_deletion_concurrency.py",
         "tests/integration/test_scan_reaper_concurrency.py",
     ):
         text = (REPO_ROOT / module).read_text(encoding="utf-8")
-        assert "from tests.db_guard import BLOCKED_WAITER_SQL" in text, f"{module} must import the shared barrier"
+        assert "from tests._lock_barrier import run_contender_behind_held_lock" in text, f"{module} must use the shared barrier"
         assert "FROM pg_locks WHERE NOT granted" not in text, f"{module} re-inlined the unscoped barrier"
+        assert "BLOCKED_WAITER_SQL" not in text, f"{module} re-typed its own barrier loop instead of using tests/_lock_barrier"

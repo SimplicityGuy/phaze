@@ -8,11 +8,12 @@ where the reaper and the "owning agent" each open their OWN pool connection and 
 
 Connection A (``_completer``) holds ``SELECT ... FOR UPDATE`` on the stale RUNNING batch from the START,
 simulating the owning agent's in-flight terminal ``patch_scan_batch`` transaction. The reaper is launched
-concurrently (``asyncio.gather``): its own write to the SAME row -- whether the pre-fix blind
+concurrently as its own task: its own write to the SAME row -- whether the pre-fix blind
 ``UPDATE ... WHERE id = :id`` or the fixed guarded ``UPDATE ... WHERE status='running' AND
 heartbeat<cutoff`` -- needs that row's write lock and therefore BLOCKS until A commits. A does not
-guess a sleep duration to land in this window; it polls ``pg_locks`` for a genuine queued waiter on the
-``scan_batches`` relation, so the ordering is deterministic rather than timing-dependent. Once a waiter
+guess a sleep duration to land in this window; it waits on ``tests/_lock_barrier.py``, which polls
+``pg_locks`` for a genuine queued waiter in this database with no fixed deadline (phaze-lz69g), so the
+ordering is deterministic rather than timing-dependent -- and stays so on a heavily loaded machine. Once a waiter
 is observed, A finalizes: flips the row to COMPLETED with a fresh heartbeat and commits, releasing the
 lock. The reaper's blocked write then resumes, and its outcome is exactly what distinguishes the two
 implementations:
@@ -29,19 +30,18 @@ Run with real PG via ``just integration-test``. Package auto-marked ``integratio
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.tasks.scan_reaper import reap_stalled_scans
-from tests.db_guard import BLOCKED_WAITER_SQL
+from tests._lock_barrier import run_contender_behind_held_lock
 
 
 if TYPE_CHECKING:
@@ -82,27 +82,6 @@ async def _seed_stale_running_batch(session: AsyncSession, *, last_progress_at: 
     return batch_id
 
 
-async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
-
-    Proves the reaper's write has reached Postgres and is blocked behind the completer's held row lock --
-    deterministic, not a guessed sleep-and-hope duration. A backend blocked on an in-use ROW (as opposed
-    to the whole relation) waits on a ``transactionid`` lock keyed to the lock-holder's xid -- NOT a
-    ``relation``-scoped lock row -- so this deliberately does not filter by relation; on this dedicated,
-    single-purpose ephemeral test database the only contender in this window is the reaper's write.
-    """
-
-    async def _poll() -> None:
-        while True:
-            async with session_factory() as probe:
-                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
-            if waiting:
-                return
-            await asyncio.sleep(0.02)
-
-    await asyncio.wait_for(_poll(), timeout=timeout)
-
-
 async def test_lost_update_race_does_not_clobber_concurrently_completed_batch(
     committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
     monkeypatch: pytest.MonkeyPatch,
@@ -117,15 +96,14 @@ async def test_lost_update_race_does_not_clobber_concurrently_completed_batch(
 
     reaper_ctx = {"async_session": async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)}
 
-    # Hold the row's write lock BEFORE the reaper is even started (awaited synchronously, outside the
-    # gather below) -- mirrors the owning agent's open terminal PATCH transaction. Starting the reaper
+    # Hold the row's write lock BEFORE the reaper is even started (awaited synchronously, before the
+    # reaper task is created) -- mirrors the owning agent's open terminal PATCH transaction. Starting the reaper
     # only after this completes fully removes any ambiguity about which side reaches the row first;
     # the reaper's own write is GUARANTEED to queue behind this already-held lock.
     completer_session = session_factory()
     await completer_session.execute(select(ScanBatch).where(ScanBatch.id == batch_id).with_for_update())
 
     async def _finalize_completer() -> None:
-        await _wait_for_blocked_waiter(session_factory)
         batch = await completer_session.get(ScanBatch, batch_id)
         assert batch is not None
         batch.status = ScanStatus.COMPLETED.value
@@ -135,10 +113,9 @@ async def test_lost_update_race_does_not_clobber_concurrently_completed_batch(
         batch.last_progress_at = datetime.now(UTC)
         await completer_session.commit()
 
-    try:
-        _finalize_result, reaper_result = await asyncio.gather(_finalize_completer(), reap_stalled_scans(reaper_ctx))
-    finally:
-        await completer_session.close()
+    reaper_result = await run_contender_behind_held_lock(
+        session_factory, completer_session, reap_stalled_scans(reaper_ctx), release=_finalize_completer
+    )
 
     async with session_factory() as session:
         final = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
