@@ -463,7 +463,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # Stage.ANALYZE not_started bucket. Seeded IDENTICALLY in pipeline_stats_partial() below so the
     # OOB-swapped card re-push agrees with this first-load render (the OOB swap contract). Degrade-safe
     # at the service layer, so NO router try/except -- mirrors the lanes wiring immediately above.
-    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes, analyze_buckets=stage_progress["analyze"])
 
     # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
     # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
@@ -650,7 +650,7 @@ async def pipeline_stats_partial(
     # seeds on first load, re-pushed on every 5s poll so the total-queued card stays live via its OOB
     # swap (the OOB swap contract: both render paths must agree). Depends on the JUST-resolved `lanes`
     # value, so it runs sequentially here rather than inside the gather above.
-    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes, analyze_buckets=stage_progress["analyze"])
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store

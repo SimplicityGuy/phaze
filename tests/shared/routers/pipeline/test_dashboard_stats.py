@@ -610,3 +610,38 @@ async def test_staged_analyzing_and_admission_agree_per_row(client: AsyncClient,
     assert "Queued (quota)" in admission_card
     assert "Running" in admission_card
     assert re.search(r"Queued \(quota\)", admission_card)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["/s/analyze", "/pipeline/stats"])
+async def test_analyze_buckets_are_read_once_per_render(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """phaze-y0upq: the ANALYZE bucket aggregate runs ONCE per page render and per poll tick.
+
+    ``get_analyze_queue_totals`` used to recompute the buckets ``get_stage_progress`` had just read --
+    measured on host-prod at ~50 ms of duplicate SQL on both paths. The TOTAL QUEUED card now reuses
+    the ``stage_progress`` value, so the aggregate (and its orphan split) runs exactly once.
+    """
+    import phaze.services.backends.lane_metrics as lane_metrics_mod
+    from phaze.services.pipeline import buckets as buckets_mod
+    import phaze.services.pipeline.stages as stages_mod
+
+    session.add_all([_make_file() for _ in range(3)])
+    await session.commit()
+    real = buckets_mod._safe_bucket_counts
+    stages: list[object] = []
+
+    async def _spy(s: AsyncSession, stage: object) -> dict[str, int]:
+        stages.append(stage)
+        return await real(s, stage)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(stages_mod, "_safe_bucket_counts", _spy)
+    monkeypatch.setattr(lane_metrics_mod, "_safe_bucket_counts", _spy)
+
+    resp = await client.get(url)
+
+    assert resp.status_code == 200
+    from phaze.enums.stage import Stage
+
+    assert stages.count(Stage.ANALYZE) == 1

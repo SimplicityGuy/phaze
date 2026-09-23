@@ -189,7 +189,9 @@ async def _lane_processed_counts(session: AsyncSession, *, backend_id: str | Non
     return windowed, lifetime
 
 
-async def get_analyze_queue_totals(session: AsyncSession, lanes: list[dict[str, Any]]) -> dict[str, int | None]:
+async def get_analyze_queue_totals(
+    session: AsyncSession, lanes: list[dict[str, Any]], *, analyze_buckets: dict[str, int | None] | None = None
+) -> dict[str, int | None]:
     """Return the global "TOTAL QUEUED (analyze)" figure + its unrouted remainder (phaze-5c6i2, acceptance rule 2).
 
     ``unrouted_queued`` = Stage.ANALYZE's ``not_started`` bucket
@@ -206,9 +208,17 @@ async def get_analyze_queue_totals(session: AsyncSession, lanes: list[dict[str, 
     UNDERSTATE the total exactly the way a 0-degrade would, so one unknown component propagates to the
     whole total rather than being quietly dropped. ``unrouted_queued`` keeps ``_safe_bucket_counts``'s
     OWN pre-existing degrade discipline (0 on error) unchanged -- it is not a new read this bead adds.
+
+    phaze-y0upq: a caller that already holds the Stage.ANALYZE buckets (the dashboard page and the
+    /pipeline/stats poll both do, from :func:`~phaze.services.pipeline.get_stage_progress`) passes them
+    as ``analyze_buckets``. Recomputing them here re-ran the bucket aggregate and its orphan split --
+    measured on host-prod at ~50 ms of duplicate SQL per render. A degraded bucket read is all-zero in
+    both sources, so the passed value degrades exactly as the recomputed one would.
     """
-    buckets = await _safe_bucket_counts(session, Stage.ANALYZE)
-    unrouted = buckets["not_started"]
+    if analyze_buckets is not None:
+        unrouted = int(analyze_buckets.get("not_started") or 0)
+    else:
+        unrouted = (await _safe_bucket_counts(session, Stage.ANALYZE))["not_started"]
     queued_values = [lane.get("queued") for lane in lanes]
     if any(value is None for value in queued_values):
         return {"total_queued": None, "unrouted_queued": unrouted}
