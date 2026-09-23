@@ -106,6 +106,19 @@ def throwaway_redis() -> Iterator[str]:
         _docker("rm", "-f", container)
 
 
+def _postgres_ready(container: str) -> bool:
+    """True once the FINAL server -- not the image's temporary init server -- is accepting connections.
+
+    Matches ``_postgres_ready`` in ``tests/shared/test_redis_seat_registry.py`` (phaze-avcxd):
+    ``postgres:18-alpine``'s entrypoint starts a TEMPORARY server with ``listen_addresses=''`` (Unix
+    socket only) to run ``initdb``, then stops it and starts the real server. A socket-only probe can
+    observe that temporary server as ready and then land in the stop/restart gap on the next probe.
+    The temporary server never listens on TCP, so probing over ``-h 127.0.0.1`` only ever observes
+    the final server.
+    """
+    return _docker("exec", container, "psql", "-h", "127.0.0.1", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0
+
+
 @pytest.fixture(scope="module")
 def throwaway_postgres() -> Iterator[str]:
     """A private Postgres for this module alone -- never the shared ``phaze-test-db``.
@@ -123,7 +136,7 @@ def throwaway_postgres() -> Iterator[str]:
         pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()}")
     try:
         for _ in range(160):
-            if _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
+            if _postgres_ready(container):
                 break
             time.sleep(0.25)
         else:
