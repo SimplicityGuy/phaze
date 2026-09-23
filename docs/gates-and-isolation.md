@@ -16,7 +16,11 @@ coverage and `bh work check`/`submit` ran no tests at all, and that gap produced
 phaze-1i0h6's four-of-four unevidenced validation claims. **Since 2026-08-25 (phaze-pv3kk), every
 per-bead boundary — `check`, `submit`, `merge`, `merge-main` — stopped running the full suite too.**
 They now run a change-driven subset selected by repowise's per-test coverage map (`just
-check-fast`), escalating to the full suite whenever that map cannot speak for the change.
+check-fast`), escalating to the full suite whenever that map cannot speak for the change — and,
+since phaze-fqfds (2026-08-25), running only the prose guards in `tests/docs_floor.txt` when every
+changed path is tracked prose. That is three populations, not two, and only the escalation prints a
+coverage line; "A gate is green only if its own pytest summary line says so" below enumerates every
+outcome the recipe can produce and how to classify each transcript.
 Three boundaries still run a full suite unconditionally or near it — `molecule`, `postland` and
 `union` — but **no boundary an ad-hoc bead traverses does**: `check`, `submit`, `merge` and
 `merge-main` are all fast, and an ad-hoc bead never reaches `molecule`/`postland`/`union` at all.
@@ -32,7 +36,7 @@ failure recurring under a new cause: a change-selected run cited as though it we
 | `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below, and as `check-fast`'s escalation delegate |
 | `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below. Since phaze-pv3kk this is no longer any per-bead boundary's default recipe — it survives as the `postland`/`union` recipe, as `check-fast`'s escalation target, and as the manual escape hatch |
 | `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish`. The only *routinely traversed* full-suite boundary — `postland`/`union` (below) also run a full suite, but conditionally |
-| `just check-fast` | yes | yes | **change-selected subset + a fixed always-run floor**, escalating to the whole suite when the coverage map cannot speak for the change | no on a selected run (a subset's figure is meaningless against the 95% floor and would overwrite the artifact `just branch-check` reads); the full 95% floor on an escalated run, because escalation delegates to `just test-validate` | yes | **M** — measured 2026-08-25 (dev/fastsuite): RUN verdict 417 passed, 1 skipped, 35.57s; ESCALATE verdict on this bead's (phaze-pv3kk's) own diff — 5 changed files with no coverage-map rows — exit 3, deferring to `just check`'s 19:37; FAIL verdict on a dirty worktree, exit 1 |
+| `just check-fast` | yes | yes | **change-selected subset + a fixed always-run floor**, escalating to the whole suite when the coverage map cannot speak for the change; **`tests/docs_floor.txt` only** when every changed path is tracked prose (phaze-fqfds) | no on a selected run (a subset's figure is meaningless against the 95% floor and would overwrite the artifact `just branch-check` reads); no on a docs run, for the same two reasons; the full 95% floor on an escalated run, because escalation delegates to `just test-validate` | yes | **M** — measured 2026-08-25 (dev/fastsuite): RUN verdict 417 passed, 1 skipped, 35.57s; ESCALATE verdict on this bead's (phaze-pv3kk's) own diff — 5 changed files with no coverage-map rows — exit 3, deferring to `just check`'s 19:37; FAIL verdict on a dirty worktree, exit 1. DOCS verdict measured 2026-08-25 (phaze-fqfds): 193 passed in 9.88s, no coverage line. Every outcome, with real transcripts: "A gate is green only if its own pytest summary line says so" below |
 
 **M** = the command itself was executed and its transcript read; the cell says which run.
 **I** = inferred from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase
@@ -1005,11 +1009,119 @@ just check > gate.log 2>&1; GATE_EXIT=$?; echo "GATE_EXIT=$GATE_EXIT" >> gate.lo
 
 | what the log holds | verdict |
 |---|---|
-| `GATE_EXIT=0` + pytest summary + coverage line | green |
-| `GATE_EXIT=1` + pytest summary | genuinely red — a verdict |
+| `GATE_EXIT=0` + pytest summary with no failures, header naming **your** seat | green — now read the population table below for *what* was green |
+| `GATE_EXIT` non-zero + pytest summary | genuinely red — a verdict. Includes an all-passed summary followed by a missed coverage floor |
+| `GATE_EXIT` non-zero, **no** pytest summary — a bare `no tests ran` line is not one | **UNMEASURED.** A pre-test step failed (worktree integrity, ruff, mypy — a real verdict on *that step*, none on the tests), or the harness refused: `🎯 selector: fail`, an empty selection, the advisory lock, a pytest usage error (exit 4, which prints `no tests ran`) |
+| `GATE_EXIT=0`, **no** pytest summary | **not green.** No `check-fast` arm exits 0 without running pytest; you are reading another recipe, or a `validation verdict reused (…)` replay |
 | **no `GATE_EXIT` line at all**, log truncated | **KILLED. Not a verdict.** |
 
-The third row is what earns the technique: the line's **absence** is diagnostic, because a SIGTERM
+The coverage line says **which population ran**, not whether the gate ran, so it lives in a second
+table keyed on the line `just test-fast` prints before it runs anything:
+
+| selector line (`just check-fast`) | what ran | coverage line |
+|---|---|---|
+| `run <n>`, then `⏱️  just test-fast: <n> selected … NOT the full suite` | the always-run floor + the change-selected tests | **none** — expected |
+| `docs <n> prose-guard module(s) …`, then `📄 DOCS-ONLY` | `tests/docs_floor.txt` only | **none** — expected |
+| `escalate <reason>`, then `⏫ FAST-GATE-ESCALATION` | the full suite, via `just test-validate` | **required**, plus `✅ Repo-wide LINE coverage` |
+| `fail <reason>` | nothing | none — and no pytest summary: UNMEASURED |
+| *no selector line*, summary + coverage line | not `check-fast` at all — `just check` / `check-all` | required |
+
+That is every arm of `test-fast`'s `case` statement (exit 0 / 3 / 4 / anything else from
+`scripts/select_impacted_tests.py`, whose `VERDICT_EXIT` is `{"escalate": 3, "fail": 1, "docs": 4}`)
+as of 2026-09-22. **The recipe is authoritative**: a selector verdict this table does not name is a
+shape it does not describe, not a shape it forgot to call green.
+
+**Why the table changed, and why it changed this way (phaze-xveae).** Until 2026-09-22 this table
+had three rows and its green row read `GATE_EXIT=0` + pytest summary + coverage line. Four hundred
+lines away in `CLAUDE.md`, and in the recipes table at the top of this file, `just check-fast` is
+recorded as printing **no** coverage line on a selected run — deliberately, for phaze-pv3kk's two
+reasons given in that table's `check-fast` row. So a green `check-fast` RUN transcript matched no
+row, and after phaze-fqfds a green DOCS transcript matched none either. **The gap predates
+phaze-o24tm, which wrote the table, and phaze-fqfds, which added the second coverage-less arm: it
+arrived with phaze-pv3kk**, which made a coverage-less green possible in the first place. Each bead
+was right about its own subject; the contradiction was between them, and no test reads either.
+
+Three shapes were considered:
+
+- **Make the coverage line conditional** — *"+ a coverage line if the recipe produces one"*.
+  Rejected: it is the cheapest edit and it turns the table's one mechanical property into a
+  judgement call, at exactly the moment a reader wants a verdict. A reader holding a coverage-less
+  transcript must then decide *whether this recipe should have produced one* — which is the question
+  the table existed to answer, handed back unanswered. It also cannot catch an escalated run whose
+  coverage line is missing, which is a real finding.
+- **Add rows for the fast-gate shapes** — a RUN row and a DOCS row beside the old three. Rejected as
+  the *whole* fix: it multiplies status × population, so every future selector arm adds a row to a
+  table whose job is exit-status reading, and the set of populations has already grown once
+  (the phaze-ljfi5 paragraph below makes the same point about counts). It also keeps the coverage
+  line looking like a *liveness* signal, which it never was.
+- **Re-anchor on what discriminates** — **chosen.** The load-bearing signals for *did the gate run
+  and what did it find* are `GATE_EXIT` and the pytest summary; the coverage line is evidence about
+  *which recipe branch ran*. So the verdict table keys on those two alone, and the rows-per-shape
+  idea survives where it belongs — in the second table, keyed on the `🎯 selector:` line the recipe
+  itself prints, where adding an arm adds one row and changes no verdict. Re-anchoring also forced
+  two rows the old table silently lacked: non-zero with no summary (the selector-fail and
+  pytest-usage-error cases `CLAUDE.md`'s rule 4 already describes as UNMEASURED) and zero with no
+  summary (a replay, or the wrong recipe). The cost is a bigger edit to a table phaze-o24tm had just
+  landed; its **KILLED** row and its reasoning are unchanged.
+
+**Worked against real transcripts.** Excerpts — the lines each table reads, nothing else; the logs
+are `*.log` files inside their bead worktrees, as "Capturing a gate's status" in `CLAUDE.md` asks.
+
+A green **RUN** — `just check-fast`, 2026-09-22, bead phaze-gdfml:
+
+```text
+Success: no issues found in 390 source files
+  selected: 0 coverage-backed + 1 changed-test
+🎯 selector: run 37
+phaze test database: 'phaze_phaze_gdfml_cd4d02bc_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)
+================= 500 passed, 1 skipped, 3 warnings in 41.65s ==================
+⏱️  just test-fast: 37 selected in 47s. NOT the full suite — `just check` is.
+GATE_EXIT=0
+```
+
+First table: `GATE_EXIT=0`, a pytest summary with no failures, the header naming the seat's own
+database — **green**. Second table: `run 37` — floor plus selection, coverage line **none, expected**.
+Under the old table this transcript matched no row. Note `37 selected` against `500 passed`: the
+selection is 37 pytest *arguments* (files and node ids), not 37 tests — cite the summary's count.
+
+A green **ESCALATE** — `bh work check`, 2026-09-22, bead phaze-cohbr (1,118 lines; 22:42 of pytest):
+
+```text
+🎯 selector: escalate 2 changed file(s) have no coverage, no test reaching them and no paired test: justfile, scripts/redis-seat-registry.sh
+⏫ FAST-GATE-ESCALATION: 2 changed file(s) have no coverage, no test reaching them and no paired test: justfile, scripts/redis-seat-registry.sh
+phaze test database: 'phaze_phaze_cohbr_18c8ff13_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)
+Required test coverage of 95.0% reached. Total coverage: 98.63%
+== 9086 passed, 6 skipped, 189 deselected, 39 warnings in 1362.76s (0:22:42) ===
+✅ Repo-wide LINE coverage 99.13% ≥ 95%; all tracked modules ≥ 90% lines.  (branch coverage 96.32%, measured but not gated repo-wide — see `just branch-check`)
+GATE_EXIT=0
+```
+
+First table: **green**. Second table: `escalate` — coverage line **required, present**. This is
+also the only shape that matched the old table's green row.
+
+A green **DOCS** — `just check-fast`, 2026-09-22, this bead's (phaze-xveae's) own diff, before this excerpt was added to it:
+
+```text
+Success: no issues found in 390 source files
+🎯 selector: docs 23 prose-guard module(s) for 2 documentation path(s): CLAUDE.md, docs/gates-and-isolation.md
+📄 DOCS-ONLY: 23 prose-guard module(s) for 2 documentation path(s): CLAUDE.md, docs/gates-and-isolation.md
+phaze test database: 'phaze_phaze_xveae_92709f76_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)
+======================= 331 passed, 1 warning in 34.23s ========================
+⏱️  just test-fast: 23 prose-guard module(s) in 70s. NOT the full suite.
+GATE_EXIT=0
+```
+
+First table: **green**. Second table: `docs` — coverage line **none, expected**. Under the old table
+this matched no row either. The prose floor has grown since phaze-fqfds measured it at 11 modules
+and 193 tests: a count is a property of a run (phaze-ljfi5, below), and this one is no exception.
+
+**A usage error prints something summary-shaped, which is why the third row qualifies "summary".**
+Measured 2026-09-22 in this repo: `uv run pytest --noconftest -p no:cacheprovider
+tests/does_not_exist_xyz.py` exits **4** and ends `============================ no tests ran in 0.00s
+=============================` — a line in the summary's position with no counts. It is not a
+summary in this table's sense.
+
+The **KILLED** row is still what earns the technique: the line's **absence** is diagnostic, because a SIGTERM
 kills the shell before the appended `echo` can run, so a killed gate cannot forge it. Both
 2026-08-25 kills were identified this way. Two bounds come with it, and without them the tell is
 actively misleading.
@@ -1131,8 +1243,10 @@ to it**:
   19**, both green, both printing a summary line. **Do not read that as a list of two.** The set of
   populations one command can produce has already grown once (`phaze-fqfds`, 2026-08-25), so it is
   the *variation* that is the hazard rather than any particular count of branches; this note
-  deliberately does not enumerate them, and a reader who needs the enumeration should read
-  `scripts/select_impacted_tests.py`, which is the thing that decides.
+  deliberately does not enumerate them. The population table in "A gate is green only if its own
+  pytest summary line says so" above does, keyed on the selector line each run prints — and it
+  defers to `scripts/select_impacted_tests.py` and `test-fast`'s `case`, which are the things that
+  decide.
 
 **And the number moves even with the recipe held fixed.** This file records two green full-suite
 runs eleven apart — **8027 passed** in the ledger section above, and the **8038 passed of 8041**

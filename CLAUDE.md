@@ -32,7 +32,8 @@ uv run pre-commit run --all-files
 
 just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate
 just check-fast            # THE per-bead gate: lint + typecheck + the tests repowise says the
-                           # change touches, escalating to the full suite when it can't tell
+                           # change touches, escalating to the full suite when it can't tell,
+                           # or only the prose guards on a docs-only diff (see the outcome table)
 just check                 # lint + typecheck + full suite WITH coverage (95% LINE floor)
 just check-all             # THE molecule gate: every pre-commit hook + the full suite + promtool
                            # alert-rule tests (alerts-test)
@@ -53,7 +54,7 @@ it before citing any command as evidence in a bead. The operational summary:
 | Command | ruff | mypy | tests | coverage | Where it runs |
 |---|---|---|---|---|---|
 | `just test` | — | — | `-x -q`, stops at first failure | no | local iteration — **not a gate** |
-| `just check-fast` | yes | yes | change-selected subset, escalating to the full suite | only on an escalated run | **the per-bead gate** — `bh work check` / `submit` / `merge` / `merge-main` |
+| `just check-fast` | yes | yes | one of three populations, named by its `🎯 selector:` line — a change-selected subset (`run`), the full suite (`escalate`), or `tests/docs_floor.txt` on a prose-only diff (`docs`) | only on `escalate` | **the per-bead gate** — `bh work check` / `submit` / `merge` / `merge-main` |
 | `just check` | yes | yes | full suite | 95% line floor | `postland`, `union`, and the manual escape hatch |
 | `just check-all` | via pre-commit | via pre-commit | full suite | 95% line floor | **the molecule gate** — `bh work finish` |
 | `just branch-check` | — | — | — | per-bead branch coverage | free after any `check` |
@@ -85,7 +86,9 @@ can guard the config half.
 
 1. **A gate is green only if its OWN pytest summary line says so.** Never a wrapper's exit code,
    never a background-task "completed", never the absence of visible errors. Read the pytest summary
-   **and** the coverage line, and confirm the pytest header names **your own** seat's database.
+   **and** the coverage line wherever the population that ran produces one (the second table under
+   "Capturing a gate's status" says which do), and confirm the pytest header names **your own**
+   seat's database.
 2. **A gate's verdict is a property of a RUN, never of a COMMAND.** `bh work submit` consults a
    verdict ledger keyed on `(tree hash, validate-cmd hash)` and on a hit skips the checkout entirely,
    printing `validation verdict reused (…)`. That submit ran no tests. A replay prints **no** pytest
@@ -130,16 +133,40 @@ trimming:
 just check > gate.log 2>&1; GATE_EXIT=$?; echo "GATE_EXIT=$GATE_EXIT" >> gate.log
 ```
 
+The verdict rests on **two** signals — the `GATE_EXIT` line and the gate's own pytest summary:
+
 | what the log holds | verdict |
 |---|---|
-| `GATE_EXIT=0` + pytest summary + coverage line | green |
-| `GATE_EXIT=1` + pytest summary | genuinely red — a verdict |
+| `GATE_EXIT=0` + pytest summary with no failures, header naming **your** seat | green — now read the second table for *what* was green |
+| `GATE_EXIT` non-zero + pytest summary | genuinely red — a verdict. Includes an all-passed summary followed by a missed coverage floor |
+| `GATE_EXIT` non-zero, **no** pytest summary — a bare `no tests ran` line is not one | **UNMEASURED.** A pre-test step failed (worktree integrity, ruff, mypy — a real verdict on *that step*, none on the tests), or the harness refused: `🎯 selector: fail`, an empty selection, the advisory lock, a pytest usage error (exit 4, which prints `no tests ran`) |
+| `GATE_EXIT=0`, **no** pytest summary | **not green.** No `check-fast` arm exits 0 without running pytest; you are reading another recipe, or a `validation verdict reused (…)` replay |
 | **no `GATE_EXIT` line at all**, log truncated | **KILLED. Not a verdict.** |
 
-The third row is what earns the technique: SIGTERM kills the shell before the appended `echo`, so a
+The last row is what earns the technique: SIGTERM kills the shell before the appended `echo`, so a
 killed gate cannot forge it. **It also makes any enclosing wrapper's status permanently meaningless**
 — the `echo` always succeeds, so the wrapper reports 0 by construction. Append it **and** read the
 log; the two halves are one instruction.
+
+The coverage line is not in the first table because it says **which population ran**, not whether
+the gate ran. `just check-fast` prints one only when it escalates, deliberately — the reasons are in
+`docs/gates-and-isolation.md`'s recipes table (phaze-pv3kk). The `🎯 selector:` line names the
+population, and the coverage line must agree with it:
+
+| selector line (`just check-fast`) | what ran | coverage line |
+|---|---|---|
+| `run <n>`, then `⏱️  just test-fast: <n> selected … NOT the full suite` | the always-run floor + the change-selected tests | **none** — expected |
+| `docs <n> prose-guard module(s) …`, then `📄 DOCS-ONLY` | `tests/docs_floor.txt` only | **none** — expected |
+| `escalate <reason>`, then `⏫ FAST-GATE-ESCALATION` | the full suite, via `just test-validate` | **required**, plus `✅ Repo-wide LINE coverage` |
+| `fail <reason>` | nothing | none — and no pytest summary: UNMEASURED |
+| *no selector line*, summary + coverage line | not `check-fast` at all — `just check` / `check-all` | required |
+
+That is every arm of `test-fast`'s `case` as of this writing; **the recipe is authoritative**, and a
+selector verdict this table does not name is a shape it does not describe. Worked against real
+transcripts in `docs/gates-and-isolation.md` ("A gate is green only if its own pytest summary line
+says so"). The gap this closes predates the first table: phaze-pv3kk made a coverage-less green
+possible, phaze-o24tm then wrote the table as though every green printed coverage, and phaze-fqfds
+added a second coverage-less arm — each bead right about its own subject.
 
 Name gate logs `*.log`. `.gitignore` carries `*.log`, so the file stays invisible to `git status`;
 any other name leaves the worktree dirty and `check-fast`'s selector refuses to run anything at all.
