@@ -245,10 +245,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-067)
+### Post-baseline chain (040-068)
 
-`alembic/versions/` holds **29** files: the `039` baseline plus a linear chain to the current
-head, **`067`**.
+`alembic/versions/` holds **30** files: the `039` baseline plus a linear chain to the current
+head, **`068`**.
 
 | Rev | Change |
 |-----|--------|
@@ -279,7 +279,8 @@ head, **`067`**.
 | `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics |
 | `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) |
 | `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) |
-| `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) — **head** |
+| `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) |
+| `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op (phaze-3agnm) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
