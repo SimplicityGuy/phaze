@@ -26,9 +26,11 @@ burst node) and lives in the bead's before/after table.
 
 from __future__ import annotations
 
+import gc
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
+import weakref
 
 import numpy as np
 import pytest
@@ -115,6 +117,31 @@ def _build_mock_es() -> MagicMock:
             inst.side_effect = lambda audio: _predictions_for(graphFilename, audio)
             return inst
 
+        setattr(mock_es, cls_name, MagicMock(side_effect=_ctor))
+
+    return mock_es
+
+
+def _build_flaky_mock_es() -> MagicMock:
+    """Mock essentia whose classifiers raise on every call, instead of returning activations
+    (phaze-gdfml).
+
+    ``_build_mock_es``'s classifiers succeed, which is why the retention test used to patch
+    ``_predict_single`` directly rather than going through this mock -- but patching
+    ``_predict_single`` also bypasses ``_get_classifier``/``_classifier_cache`` entirely, so
+    that test's ``_classifier_cache == {}`` assertion held trivially (the cache was never
+    populated in the first place, not "populated then correctly released"). Here the
+    classifiers are real ``_construct_classifier`` products -- real cache entries, real
+    releases -- so a weakref taken on one is discriminating.
+    """
+    mock_es = MagicMock()
+
+    def _ctor(*, graphFilename: str, batchSize: int) -> MagicMock:
+        inst = MagicMock()
+        inst.side_effect = RuntimeError("everything fails")
+        return inst
+
+    for cls_name in ("TensorflowPredictMusiCNN", "TensorflowPredictVGGish", "TensorflowPredictEffnetDiscogs"):
         setattr(mock_es, cls_name, MagicMock(side_effect=_ctor))
 
     return mock_es
@@ -333,46 +360,61 @@ def test_failed_window_is_not_retried_by_later_models() -> None:
 
 
 def test_failures_are_reported_without_retaining_the_exception() -> None:
-    """The kill list is indices, not exceptions.
+    """The kill list is indices, not exceptions -- and a released classifier proves it.
 
     Retaining the exception retains its traceback, which holds ``_predict_single``'s frame,
     which holds ``classifier`` -- pinning the graph past ``_release_classifier`` and quietly
     rebuilding the co-residency this restructure removes.
 
-    **WHAT THIS TEST DOES NOT CHECK -- read this before trusting its name (phaze-c3v6q).**
-    The name and the paragraph above carry the traceback-retention lesson; the ASSERTIONS below
-    do not check it. ``reported`` records that a report HAPPENED, not the frame it happened in --
-    it would hold ``[0, 1, 2]`` identically with ``on_failure`` fired from OUTSIDE the handler.
-    ``all(isinstance(x, int) for x in failed)`` pins the KILL LIST's element type, which is a
-    different property from the handler frame's lifetime: it passes with a retained exception
-    sitting in a local. Nothing here weighs the classifier's referrers or this process's RSS.
+    **phaze-gdfml: this test now DOES observe that (it did not, before).** ``reported`` records
+    that a report happened, not the frame it happened in, and ``isinstance(x, int)`` pins the
+    kill list's element type -- neither would notice a retained exception sitting in a local, so
+    on their own they are exactly the over-claiming shape phaze-gdfml is about (a name/docstring
+    carrying a lesson the assertions do not check). What closes the gap is ``built_refs``: every
+    classifier this sweep constructs is real (this test no longer patches ``_predict_single``
+    directly -- doing so bypassed ``_get_classifier``/``_classifier_cache`` entirely, which is
+    also why the old ``_classifier_cache == {}`` assertion held trivially, on a cache that was
+    never populated rather than one populated-then-released), so a ``weakref`` taken on one is a
+    real, mutation-proven discriminator: retain the exception outside the handler (the exact bug
+    this test's name warns about) and the classifier it pins stays reachable, so
+    ``built_refs``' weakrefs survive ``gc.collect()`` and the final assertion goes red. Verified
+    by hand against that mutation while writing this test (not committed -- see the bead).
 
-    What DOES guard the extraction that split this path (phaze-48ghg.3, ``_sweep_one_model`` ->
-    ``_infer_live_windows`` -> ``_infer_one_window``) is the CONTROL-FLOW half, in two other
-    tests. :func:`test_single_buffer_wrapper_still_propagates` asserts ``pytest.raises(
-    RuntimeError, match="graph is broken")`` and the ``match=`` is what makes it bite -- calling
-    a bare-``raise`` reporter from outside its handler also yields a RuntimeError, namely
-    ``No active exception to reraise`` (measured on Python 3.14.5, this checkout), so without the
-    ``match=`` both outcomes pass. :func:`test_sweep_releases_the_graph_even_when_the_sweep_raises`
+    This still does not weigh real ``.pb``-file memory or this process's RSS; that needs the
+    34-model set, which is absent from this repository and from CI (the same absence that
+    leaves the coarse tier unpinned end-to-end in ``test_analysis_output_equivalence.py``, one
+    gap not two) and stays out of scope here. What it now does check is the exact mechanism the
+    docstring names: nothing outside ``_infer_one_window``'s handler holds a live reference to
+    the classifier a failed window's exception would otherwise pin.
+
+    The CONTROL-FLOW half is guarded separately, in two other tests. :func:`test_single_buffer_wrapper_still_propagates`
+    asserts ``pytest.raises(RuntimeError, match="graph is broken")`` and the ``match=`` is what
+    makes it bite -- calling a bare-``raise`` reporter from outside its handler also yields a
+    RuntimeError, namely ``No active exception to reraise`` (measured on Python 3.14.5, this
+    checkout), so without the ``match=`` both outcomes pass. :func:`test_sweep_releases_the_graph_even_when_the_sweep_raises`
     expects ``MemoryError`` and so goes red outright.
-
-    Closing the memory half needs ``gc.get_referrers`` on the classifier, or an RSS delta across a
-    failing sweep with REAL graphs. That needs the 34-model set, which is absent from this
-    repository and from CI -- the same absence that leaves the coarse tier unpinned end-to-end in
-    ``test_analysis_output_equivalence.py``. One gap, not two.
     """
-    mock_es = _build_mock_es()
+    mock_es = _build_flaky_mock_es()
     buffers = [(i, np.full(1024, float(i * 180), dtype=np.float32)) for i in range(3)]
     reported: list[int] = []
 
-    def flaky(audio: Any, model: Any, models_dir: str) -> Any:
-        msg = "everything fails"
-        raise RuntimeError(msg)
+    built_refs: list[weakref.ReferenceType[Any]] = []
+    seen_filenames: set[str] = set()
+    real_get_classifier = analysis_mod._get_classifier
+
+    def _spying_get_classifier(model: Any, models_dir: str) -> Any:
+        # Wraps the REAL _get_classifier so construction and caching happen for real; only
+        # records a weakref on the call that actually builds (the first per filename), since
+        # later calls in the same sweep are cache hits returning the identical object.
+        classifier = real_get_classifier(model, models_dir)
+        if model.filename not in seen_filenames:
+            seen_filenames.add(model.filename)
+            built_refs.append(weakref.ref(classifier))
+        return classifier
 
     with (
         patch.object(analysis_mod, "es", mock_es),
-        patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels),
-        patch.object(analysis_mod, "_predict_single", side_effect=flaky),
+        patch.object(analysis_mod, "_get_classifier", side_effect=_spying_get_classifier),
     ):
         _features, failed = analysis_mod._run_model_sets_over_windows(buffers, "/fake/models", reported.append)
 
@@ -380,6 +422,18 @@ def test_failures_are_reported_without_retaining_the_exception() -> None:
     assert all(isinstance(x, int) for x in failed), "the kill list must carry indices, never exception objects"
     assert sorted(reported) == [0, 1, 2], "each window must be reported exactly once, in-handler"
     assert analysis_mod._classifier_cache == {}, "the failing sweep must still release its graph (the finally)"
+    # Every window fails on the FIRST model this flaky mock builds -- so every later model's
+    # sweep finds no live buffers left (``_infer_live_windows`` skips windows already in
+    # ``failed``) and never calls ``_get_classifier`` at all. Exactly one classifier is built,
+    # not 34; that is itself a real, separate invariant (a fully-dead file stops constructing
+    # graphs it has nothing left to run) and this assertion pins it so a regression that keeps
+    # building past total failure would be caught here too.
+    assert len(built_refs) == 1, "only the first model's classifier should ever be constructed once every window has failed"
+    gc.collect()
+    assert all(ref() is None for ref in built_refs), (
+        "every classifier built during a failing sweep must be collectible once released -- a surviving weakref means "
+        "something (an exception, its traceback, the frame it pins) is keeping the classifier reachable"
+    )
 
 
 def test_single_buffer_wrapper_still_propagates() -> None:
