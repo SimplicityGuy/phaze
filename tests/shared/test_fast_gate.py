@@ -124,7 +124,9 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # 2026-09-16 on seat `dev-dnez9` (phaze-dnez9 added test_adr_bare_citation_convention.py, which
 # reads tracked ADR/CONVENTIONS.md prose, to the floor): 22 modules, 291 tests,
 # phaze-1cwgr: 23 modules, 325 passed, 29.01 s pytest / 30.0 s wall (isolated seat, direct pytest).
-MAX_DOCS_FLOOR_MODULES = 23
+# phaze-eaf3y (test_selector_verdict_table.py, which reads tracked CLAUDE.md, joined the floor):
+# 24 modules, 335 passed, 30.72 s pytest / 36.47 s wall (seat `phaze-eaf3y`, direct pytest).
+MAX_DOCS_FLOOR_MODULES = 24
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the local docs

@@ -41,3 +41,4 @@ tests/shared/test_historical_evidence_audit.py
 tests/shared/test_just_recipe_contract.py
 tests/shared/test_maintenance_inventory.py
 tests/shared/test_operator_attribution_citations.py
+tests/shared/test_selector_verdict_table.py
