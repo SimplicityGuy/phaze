@@ -379,6 +379,67 @@ bead's own worktree, which is per-bead by construction.
 > per-bead scratchpads."* Durable record: bead `phaze-rlshw`. The operator said **per-bead**, not
 > per-seat as the question offered — the bead id outlives a seat being reassigned or resumed.
 
+### A hollowed venv: the symptom, the remedy, and a cause that turned out NOT to be `uv cache clean`/`prune`
+
+A worktree's `.venv` can end up with intact `dist-info` directories but missing or partial package
+files underneath them. The corruption is silent until something imports, then presents as:
+
+    ImportError: cannot import name '_console_main' from '_pytest.config' (unknown location)
+    ModuleNotFoundError: No module named 'mypy_extensions'
+
+**`uv sync` reports success and repairs nothing.** It validates dist-info metadata, not file
+contents, so it prints `Resolved N packages / Checked N packages` over a gutted venv while leaving
+it broken — reproduced directly (2026-09-23): a scratch venv with 47 of 48 `_pytest/*.py` files
+deleted still `Checked` clean on the next `uv sync`, and `import pytest` still failed with
+`ImportError: cannot import name '__version__' from '_pytest' (unknown location)`. One seat
+measured a real incident's underlying state directly: `_pytest` reduced to 7 entries, `pluggy`
+likewise, 145 of 174 dist-info directories missing their `RECORD` file — an intact dist-info
+directory reads as installed regardless of what is left under it. Observed three times
+independently, on three different worktrees, during epic `phaze-1i0h6`; one occurrence killed an
+epic-branch validation run in one second (mypy and pytest both exiting 1 immediately, while ruff
+passed because it is a standalone binary that does not need the venv's packages).
+
+**Remedy, in order: `uv sync --reinstall` first; escalate to `rm -rf .venv && uv sync` only if
+that is insufficient** (one seat needed the stronger form; both are fast when the cache itself is
+intact). Verified directly (2026-09-23): `uv sync --reinstall` alone fully repaired the scratch
+reproduction above. `worktree-integrity` (`scripts/worktree-integrity.sh`, wired FIRST into both
+`check` and `check-fast`, before lint/typecheck/tests) already probes `mypy`/`pytest`/`defusedxml`
+imports before anything else runs — a venv hollowed this way fails there with a named diagnosis
+("the venv has been hollowed … not a code regression") instead of surfacing as a bare
+`ImportError`/`ModuleNotFoundError` from inside mypy or pytest; re-run against the scratch
+reproduction, it correctly named the finding and gave the same remedy. This already covers the
+canary-import design note for a hollowed venv, whatever the cause.
+
+**The originally-suspected cause — a shared `uv` cache + hardlinked venv files, gutted by any
+session's `uv cache clean`/`prune` — is REFUTED on this machine, not merely undocumented.**
+`docs/design/0016-transferred-model-verification.md` §3.9 has the full evidence trail; the short
+version: `uv`'s link mode here (macOS, `uv 0.12.1`) is `clone` (APFS copy-on-write), not hardlink —
+a worktree venv file and its cache counterpart are separate inodes (`stat -f 'links=%l inode=%i'`
+disagrees on both). Forcing `UV_LINK_MODE=hardlink` in an isolated, disposable cache and then
+running `uv cache clean` against that same isolated cache *still* left the venv-side file
+byte-identical and importable — `unlink()`, what `clean`/`prune` both resolve to, only removes one
+directory entry and never touches a shared inode's data. **Do not carry the "hardlink cache
+sharing means cache-clean is destructive" belief into a decision on this machine without
+re-reading §3.9 first** — see `CLAUDE.md`'s own "a belief that is true in a neighbouring system is
+a claim" (uv defaults to hardlink on Linux, which is where the hardlink half of this belief comes
+from; the forced-hardlink test above shows that even there, `clean`/`prune` removes only the
+cache's directory entry).
+
+**The better-evidenced candidate for the `phaze-1i0h6` incidents is the one §3.8 already
+documents and already fixed**: worktrees used to live under a macOS temp directory that
+`dirhelper` purges files out of after three days of no *access*, and a freshly built venv's files
+already carry the cache file's original timestamps (clone/copy preserve them), so a newly-rebuilt
+venv could already read as stale to that purge. The worktree root has since moved to a persistent
+path (`~/.beadhive/worktrees`, bead `phaze-ofrxb`), which should prevent a recurrence of that
+specific mechanism; `worktree-integrity` is the standing guard regardless of which mechanism
+recurs. Whether this fully accounts for the three `phaze-1i0h6` incidents specifically was not
+re-verified here — flagged as the leading candidate, not confirmed identical.
+
+**No instruction to avoid `uv cache clean`/`prune` while other seats are live is given here.** The
+mechanism that would have justified one is refuted above; a *different* hazard — a `uv sync` or
+`uv pip install` reading a cache entry concurrently being deleted by another session's `clean`/
+`prune` — was not tested and is not asserted as either present or absent.
+
 ## Code Quality
 
 ### Ruff

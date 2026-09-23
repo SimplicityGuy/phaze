@@ -121,8 +121,9 @@ LINE_GRANDFATHER = frozenset(
         ("scripts/adr_bare_citation_sweep.py", 46),
         ("scripts/adr_bare_citation_sweep.py", 53),
         ("tests/shared/test_adr_numbering.py", 25),
-        # Line 266 until phaze-ofrxb inserted §3.8 above it (2026-09-21).
-        ("docs/design/0016-transferred-model-verification.md", 292),
+        # Line 266 until phaze-ofrxb inserted §3.8 above it (2026-09-21); line 292 until
+        # phaze-4ggby inserted §3.9 above it (2026-09-23).
+        ("docs/design/0016-transferred-model-verification.md", 314),
     }
 )
 
