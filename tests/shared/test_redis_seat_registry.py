@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -1623,3 +1624,135 @@ def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_
     assert "nothing was released" in combined, combined
     assert "just test-db-seats" in combined, combined
     assert "just test-db-reclaim" in combined, combined
+
+
+# `test-db-release` accepting a copy-pasted, already-registered identifier verbatim (phaze-cohbr)
+#
+# `just test-db-release <name>` used to re-derive UNCONDITIONALLY (normalize + hash of the raw
+# name), so passing the exact identifier `just test-db-seats` itself prints -- e.g.
+# `refresh_data_548751b3` -- normalized+hashed it AGAIN into a different, unregistered string
+# (`refresh_data_548751b3_8cc94c4b`) and missed the seat, same failure shape as phaze-robzi.5's
+# wrong-guessed name but self-inflicted: the operator copied the tool's OWN output. All three
+# acceptance cases live in the RECIPE, one layer above `cmd_release` -- the script only ever sees
+# an already-resolved `--seat`, so these drive the real `just test-db-release` (and, for the
+# headline case, the real `just test-db-seats` that produces the pasted identifier) end to end
+# rather than the script directly, the same discipline `test_a_no_op_release_through_the_real_recipe_...`
+# above already uses for the no-op path.
+
+
+def _run_test_db_release_recipe(redis_container: str, pg_container: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Drive ``just test-db-release`` itself -- the name resolution under test is the recipe's."""
+    just = shutil.which("just")
+    assert just is not None
+    return subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or a throwaway container name
+        [
+            just,
+            "--set",
+            "test_redis_container",
+            redis_container,
+            "--set",
+            "test_db_container",
+            pg_container,
+            "test-db-release",
+            *args,
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_test_db_seats_recipe(redis_container: str, pg_container: str) -> subprocess.CompletedProcess[str]:
+    """Drive ``just test-db-seats`` -- the real producer of the identifiers an operator pastes."""
+    just = shutil.which("just")
+    assert just is not None
+    return subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or a throwaway container name
+        [just, "--set", "test_redis_container", redis_container, "--set", "test_db_container", pg_container, "test-db-seats"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+# `  %-6s  %-40s  %-9s  %s` -- DB, SEAT, STATE, EVIDENCE (`cmd_list`'s own printf). EVIDENCE is the
+# only field that can contain spaces, so the row pattern stops matching after the first three
+# columns rather than trying to also capture it.
+_SEATS_TABLE_ROW = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+")
+
+
+def _seat_names_from_test_db_seats_output(stdout: str) -> set[str]:
+    """The SEAT column of ``just test-db-seats``'s table -- the exact artifact an operator pastes."""
+    return {match.group(2) for line in stdout.splitlines() if (match := _SEATS_TABLE_ROW.match(line))}
+
+
+def _derive_seat_name(raw_name: str) -> str:
+    """Run the real derivation script -- the same interface ``test-db-for``/``test-db-release`` use."""
+    derive_script = _REPO_ROOT / "scripts" / "derive-seat-name.sh"
+    result = subprocess.run(  # noqa: S603 - fixed, in-repo executable; input is a test literal
+        [str(derive_script), raw_name],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_release_accepts_the_identifier_copied_verbatim_from_test_db_seats(registry: str, tmp_path: Path) -> None:
+    """The headline acceptance case: paste the SEAT column of ``test-db-seats`` straight back in.
+
+    Allocates under a REAL derived identifier (``derive-seat-name.sh`` on a raw name, exactly what
+    ``test-db-for`` would produce), confirms ``test-db-seats`` really does print that identifier
+    verbatim, then feeds that harvested string straight into ``test-db-release`` -- never a
+    hand-built one. Before the fix, this re-derived the already-derived string into a second,
+    different, unregistered one and released nothing.
+    """
+    derived = _derive_seat_name("refresh-data")
+    _index_of(_allocate(registry, derived, origin=str(tmp_path)))
+
+    seats = _run_test_db_seats_recipe(registry, _ABSENT_PG_CONTAINER)
+    assert seats.returncode == 0, seats.stderr
+    listed = _seat_names_from_test_db_seats_output(seats.stdout)
+    assert derived in listed, f"the seat should be listed under its real, derived identifier: {seats.stdout}"
+
+    released = _run_test_db_release_recipe(registry, _ABSENT_PG_CONTAINER, derived, "--force")
+    combined = released.stdout + released.stderr
+
+    assert released.returncode == 0, combined
+    assert "using it verbatim" in combined, combined
+    assert "-> identifier" not in combined, f"a copy-pasted identifier must not be re-derived into a second string: {combined}"
+    assert _allocated_seats(registry) == {}, "the exact seat pasted back in must actually be released"
+
+
+def test_release_still_derives_for_an_ordinary_raw_seat_name(registry: str, tmp_path: Path) -> None:
+    """Derived-name callers are unaffected -- the second acceptance case.
+
+    An ordinary raw, operator-chosen name is never itself an exact registry key --
+    ``derive-seat-name.sh`` always appends a hash suffix -- so it must still resolve through
+    derivation and release exactly as it did before this fix.
+    """
+    raw_name = "review-polite"
+    derived = _derive_seat_name(raw_name)
+    assert derived != raw_name, "the fixture is only meaningful if derivation actually changes the name"
+    _index_of(_allocate(registry, derived, origin=str(tmp_path)))
+
+    released = _run_test_db_release_recipe(registry, _ABSENT_PG_CONTAINER, raw_name, "--force")
+    combined = released.stdout + released.stderr
+
+    assert released.returncode == 0, combined
+    assert f"-> identifier '{derived}'" in combined, combined
+    assert _allocated_seats(registry) == {}
+
+
+def test_release_of_a_name_matching_neither_form_still_exits_5(registry: str) -> None:
+    """The third acceptance case: phaze-robzi.5's exit-5 semantics survive the new probe.
+
+    A name that is neither an exact registry key nor derives into one is still a real no-op, not a
+    crash and not silent success (see :func:`test_release_of_an_unknown_seat_is_distinguishable_from_a_real_release`
+    for the script-level pin of the same contract) -- driven here through the real recipe, where
+    the new exact-match probe now runs ahead of derivation.
+    """
+    released = _run_test_db_release_recipe(registry, _ABSENT_PG_CONTAINER, "never-allocated-seat-xyz")
+
+    assert released.returncode == 5, released.stdout + released.stderr

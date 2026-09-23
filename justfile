@@ -1104,11 +1104,24 @@ test-db-release name *flags:
     # after `just test-db-seats` shows you why, if you know better.
     raw_name="$1"
     shift
-    name="$(bash scripts/derive-seat-name.sh "$raw_name")"
+    # phaze-cohbr: `just test-db-seats` prints the ALREADY-DERIVED registered identifier (e.g.
+    # `refresh_data_548751b3`), and re-deriving that unconditionally, as this recipe used to,
+    # normalizes+hashes it AGAIN into a different, unregistered string (`..._8cc94c4b`) -- a
+    # copy-paste of the tool's own output then misses the seat. So: try the name verbatim against
+    # the registry first (`has-seat`, a read-only probe); only derive when it is not itself a
+    # registered identifier. A raw operator-chosen name (`laqf`, `my-seat`, a bead id) is never an
+    # exact registry key -- `derive-seat-name.sh` always appends a hash suffix -- so this changes
+    # nothing for that, the ordinary, case.
+    if bash scripts/redis-seat-registry.sh has-seat --redis-container "{{test_redis_container}}" --seat "$raw_name"; then
+        name="$raw_name"
+        echo "Seat '${raw_name}' is already a registered identifier; using it verbatim."
+    else
+        name="$(bash scripts/derive-seat-name.sh "$raw_name")"
+        echo "Seat '${raw_name}' -> identifier '${name}'."
+    fi
     for flag in "$@"; do
         [[ "$flag" == "--force" ]] || { echo "❌ test-db-release accepts only --force" >&2; exit 2; }
     done
-    echo "Seat '${raw_name}' -> identifier '${name}'."
     # phaze-robzi.5: the script exits 5 (not 0) when the derived identifier holds no Redis index --
     # e.g. a wrong-guessed name, hyphen vs. underscore. `set -euo pipefail` above means that non-zero
     # exit stops THIS recipe right here, so the trailing paragraph below never runs for a no-op --
