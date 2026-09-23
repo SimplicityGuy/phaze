@@ -8,6 +8,7 @@ from sqlalchemy import ColumnElement, Subquery, delete, func, select, text, tupl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.dedup_resolution import DedupResolution
@@ -205,28 +206,50 @@ def _select_capped_group_members(hash_filter: ColumnElement[bool], cap: int = _M
     A plain ``.limit()`` on the outer query would cap the TOTAL row count across every group
     ``hash_filter`` matches, not each group independently -- for the two multi-hash callers that would
     starve whichever hashes happen to sort last. Instead, ``ROW_NUMBER() OVER (PARTITION BY
-    sha256_hash ORDER BY original_path)`` ranks each group's members independently, and only ids with
+    sha256_hash ORDER BY original_path)`` ranks each group's members independently, and only members with
     rank <= ``cap`` + 1 are kept. Fetching one row PAST the cap (rather than exactly ``cap``) is what
     lets :func:`_build_metadata_groups` tell "exactly ``cap`` members" apart from "more than ``cap``
     members" and set ``truncated`` accordingly, without a second COUNT query per group.
+
+    phaze-nrww1: the ranked rows are read straight out of the windowed subquery (``aliased`` onto it)
+    rather than filtered back through ``files.id IN (SELECT id FROM ranked ...)``. The IN form made
+    ``files`` appear twice, and when ``files`` was last ANALYZEd at 0-1 rows the planner estimated one
+    outer row and chose a Nested Loop Semi Join with the WHOLE WindowAgg -- and, beneath it, the
+    GROUP BY/HAVING page aggregate -- as its inner side, re-evaluated per outer row: measured 52-73 s
+    against 0.005-0.013 s for the same 503 rows, the aggregate executing 252,508 times. With ``files`` read
+    once, the window has no outer row to be re-run for. The multi-hash callers pass
+    :func:`_dup_hash_page_filter`, whose MATERIALIZED CTE likewise computes the page aggregate once
+    however the window's own scan is joined to it.
     """
     ranked = (
         select(
-            FileRecord.id,
+            FileRecord,
             func.row_number().over(partition_by=FileRecord.sha256_hash, order_by=FileRecord.original_path).label("rn"),
         )
         .where(hash_filter)
         .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
     ).subquery()
-    capped_ids = select(ranked.c.id).where(ranked.c.rn <= cap + 1)
+    ranked_file = aliased(FileRecord, ranked)
 
     return (
-        select(FileRecord, FileMetadata)
-        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
-        .where(FileRecord.id.in_(capped_ids))
-        .order_by(FileRecord.sha256_hash, FileRecord.original_path)
+        select(ranked_file, FileMetadata)
+        .outerjoin(FileMetadata, ranked_file.id == FileMetadata.file_id)
+        .where(ranked.c.rn <= cap + 1)
+        .order_by(ranked_file.sha256_hash, ranked_file.original_path)
     )
+
+
+def _dup_hash_page_filter(limit: int, offset: int) -> ColumnElement[bool]:
+    """``files.sha256_hash IN`` the :func:`_dup_hash_subquery` page, computed ONCE via a MATERIALIZED CTE.
+
+    phaze-nrww1: as a plain ``IN (subquery)`` the page's GROUP BY/HAVING aggregate could land on the
+    inner side of a nested loop under stale ``files`` statistics and be re-aggregated per candidate
+    row. ``MATERIALIZED`` makes Postgres evaluate it exactly once into a tuplestore of at most
+    ``limit`` hashes; a rescan then reads that store, never the aggregate.
+    """
+    page = select(_dup_hash_subquery(limit, offset).c.sha256_hash).cte("dup_hash_page").prefix_with("MATERIALIZED")
+    return FileRecord.sha256_hash.in_(select(page.c.sha256_hash))
 
 
 _METADATA_DERIVED_FIELDS = ["bitrate", "duration", "artist", "title", "album", "genre", "year", "track_number"]
@@ -307,11 +330,9 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = GROUP_PAGE_S
     shared hash, member count, and file details (id, path, size, type).
     Excludes files carrying a dedup_resolution marker (marker-existence is authority, not FileRecord.state).
     """
-    dup_hashes = _dup_hash_subquery(limit, offset)
-
     stmt = (
         select(FileRecord)
-        .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
+        .where(_dup_hash_page_filter(limit, offset))
         .where(_dedup_population_clause())
         .where(~dedup_resolved_clause())
         .order_by(FileRecord.sha256_hash, FileRecord.original_path)
@@ -347,12 +368,10 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
     bitrate, duration, artist, title, album, genre, year, track_number
     and tag completeness info in each file dict.
     """
-    dup_hashes = _dup_hash_subquery(limit, offset)
-
     # Main query with outerjoin to metadata -- phaze-z4p5q: capped to _MAX_GROUP_MEMBERS + 1 members
     # PER hash (this call can select many hashes' worth of members at once via the `limit` page of
-    # GROUPS above; the per-member cap here is independent of that page size).
-    stmt = _select_capped_group_members(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
+    # GROUPS; the per-member cap here is independent of that page size).
+    stmt = _select_capped_group_members(_dup_hash_page_filter(limit, offset))
     result = await session.execute(stmt)
     return _build_metadata_groups(result.all(), cap=_MAX_GROUP_MEMBERS)
 
