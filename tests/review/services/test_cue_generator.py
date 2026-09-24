@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 from pathlib import Path
 
+from cueparser import CueSheet
 import pytest
 
 from phaze.services.cue_generator import (
@@ -627,3 +628,133 @@ class TestRetargetCueFileLine:
         doubled = self._sheet("<set-01>.mp3") + 'FILE "<set-02>.mp3" MP3\n'
         with pytest.raises(ValueError, match="2 FILE directives"):
             retarget_cue_file_line(doubled, "<set-03>.mp3")
+
+
+class TestRealCueConsumer:
+    """Seam C2 (phaze-bp8h1): the ``.cue`` file :func:`write_cue_file` puts on disk had never been
+    READ by anything but phaze's own substring/line-count assertions on the string
+    :func:`generate_cue_content` returned. ``cueparser`` (PyPI ``CueParser``, MIT license,
+    github.com/artur-shaik/CueParser, actively maintained) is a real, independent third-party
+    implementation that shares no code and no assumptions with
+    :mod:`phaze.services.cue_generator` -- these tests hand it the REAL bytes the real producer
+    pipeline (:func:`generate_cue_content` then :func:`write_cue_file`) writes: UTF-8 BOM, bare
+    ``\\n`` line endings, quote-stripped fields, 75fps ``INDEX``.
+
+    CAVEAT, so this is not over-read: ``cueparser``'s own ``TITLE``/``PERFORMER`` regex is loose
+    (it strips only the first and last character of the matched line -- it does not implement
+    CUE's real quoting grammar). It therefore says nothing about phaze's choice to STRIP embedded
+    quotes rather than escape them (see :func:`_cue_quote`'s docstring) -- only about whether the
+    produced bytes are structurally readable by a real consumer at all: file name, track count,
+    titles, performers and INDEX offsets. It also never observes CRLF vs LF, because it splits
+    purely on ``\\n``. Neither foobar2000 nor a real ``cuetools`` binary was available in this
+    environment to cross-check independently; a check of this machine's ffmpeg (9.0.2, Homebrew)
+    found NO cue demuxer/format/protocol at all, so the "ffmpeg's cue demuxer is already a system
+    dependency" alternative the bead named does not hold here either -- recorded on the bead.
+
+    :class:`TestRealCueConsumerIsDiscriminating` below shows this consumer is not a rubber stamp
+    (CLAUDE.md rule 3): it reports a truncated sheet's track count correctly, echoes a wrong
+    ``INDEX`` value rather than "correcting" it, and desyncs on an unescaped newline in a quoted
+    field.
+    """
+
+    def _parse(self, raw: str) -> CueSheet:
+        sheet = CueSheet()
+        sheet.setOutputFormat("", "")
+        sheet.setData(raw)
+        sheet.parse()
+        return sheet
+
+    def test_real_parser_reads_track_count_titles_performers_and_index_offsets(self, tmp_path):
+        """The end-to-end producer path, read by a real external consumer -- not phaze reading its own output back."""
+        tracks = [
+            CueTrackData(
+                position=1, title='Opening "Act" One', artist='DJ Quo"te', timestamp_seconds=0.0, genre="House", label="<label-01>", year=2024
+            ),
+            CueTrackData(position=2, title="Second Track", artist="Artist Two", timestamp_seconds=125.5),
+            CueTrackData(position=3, title="Third Track", artist="Artist Three", timestamp_seconds=3661.24),
+        ]
+        content = generate_cue_content("<track-01>.mp3", "mp3", tracks)
+        audio = tmp_path / "<track-01>.mp3"
+        audio.touch()
+        path, _version = write_cue_file(content, audio)
+
+        # A spec-aware reader decodes utf-8-sig, exactly like the existing readback tests above.
+        sheet = self._parse(path.read_text(encoding="utf-8-sig"))
+
+        assert sheet.file == "<track-01>.mp3"
+        assert len(sheet.tracks) == 3
+        assert [t.title for t in sheet.tracks] == ["Opening Act One", "Second Track", "Third Track"]
+        assert [t.performer for t in sheet.tracks] == ["DJ Quote", "Artist Two", "Artist Three"]
+        assert [t.offset for t in sheet.tracks] == [
+            seconds_to_cue_timestamp(0.0),
+            seconds_to_cue_timestamp(125.5),
+            seconds_to_cue_timestamp(3661.24),
+        ]
+
+    def test_real_parser_still_resolves_track_structure_without_bom_stripping(self, tmp_path):
+        """FINDING, recorded per the AC, not escalated: this consumer does not reject the BOM.
+
+        Decoded via plain ``utf-8`` -- the BOM survives as a literal U+FEFF, the same shape
+        ``companion_read.read_companion_bounded_sync`` had before its own fix for READS
+        (phaze-mi5y0, a sibling bead) -- this consumer's line-oriented recursive parser loses only
+        the ``REM COMMENT`` header line (its ``^REM `` regex does not match a BOM-prefixed line)
+        and resynchronizes on the very next line, so FILE/TRACK/INDEX parsing is unaffected. No
+        format-decision escalation follows from this test: the artifact remains readable by this
+        real consumer either way.
+        """
+        tracks = [CueTrackData(position=1, title="T1", artist="A1", timestamp_seconds=90.0)]
+        content = generate_cue_content("<track-01>.mp3", "mp3", tracks)
+        audio = tmp_path / "<track-01>.mp3"
+        audio.touch()
+        path, _version = write_cue_file(content, audio)
+
+        raw_with_literal_bom = path.read_text(encoding="utf-8")
+        assert raw_with_literal_bom[0] == "﻿"  # confirms the BOM really is still there, unstripped
+
+        sheet = self._parse(raw_with_literal_bom)
+        assert sheet.file == "<track-01>.mp3"
+        assert len(sheet.tracks) == 1
+        assert sheet.tracks[0].title == "T1"
+        assert sheet.tracks[0].offset == seconds_to_cue_timestamp(90.0)
+
+
+class TestRealCueConsumerIsDiscriminating:
+    """CLAUDE.md rule 3: an independent consumer means something only once it is shown to REJECT
+    or MIS-REPORT a deliberately wrong sheet -- accepting phaze's real output alone is not enough.
+    """
+
+    def _parse(self, raw: str) -> CueSheet:
+        sheet = CueSheet()
+        sheet.setOutputFormat("", "")
+        sheet.setData(raw)
+        sheet.parse()
+        return sheet
+
+    def test_a_truncated_sheet_reports_fewer_tracks_than_a_correct_one(self):
+        truncated = 'REM COMMENT "Generated by Phaze"\nFILE "<track-01>.mp3" MP3\n  TRACK 01 AUDIO\n    TITLE "T1"\n    INDEX 01 00:00:00\n'
+        sheet = self._parse(truncated)
+        assert len(sheet.tracks) == 1  # a correct 2-track sheet would report 2 here
+
+    def test_a_wrong_index_frame_value_is_echoed_verbatim_not_corrected(self):
+        correct = seconds_to_cue_timestamp(90.49)
+        wrong = 'REM COMMENT "Generated by Phaze"\nFILE "<track-01>.mp3" MP3\n  TRACK 01 AUDIO\n    TITLE "T1"\n    INDEX 01 01:30:00\n'
+        sheet = self._parse(wrong)
+        assert sheet.tracks[0].offset != correct
+        assert sheet.tracks[0].offset == "01:30:00"
+
+    def test_an_unescaped_newline_in_a_quoted_field_desyncs_the_parse(self):
+        """The FILE-injection shape :func:`_cue_quote` exists to prevent (phaze-4ea3): a raw
+        ``\\n`` surviving inside a quoted value lets it terminate the record early. Real
+        production content never reaches this state -- ``_cue_quote`` strips every control
+        character before a value is interpolated -- so this constructs the sheet BY HAND,
+        bypassing the generator entirely, to show the real consumer is sensitive to exactly the
+        corruption the generator's own sanitization prevents.
+        """
+        clean = 'REM COMMENT "Generated by Phaze"\nFILE "<track-01>.mp3" MP3\n  TRACK 01 AUDIO\n    TITLE "Evil"\n    INDEX 01 00:00:00\n'
+        injected = 'REM COMMENT "Generated by Phaze"\nFILE "<track-01>.mp3" MP3\n  TRACK 01 AUDIO\n    TITLE "Evil\nFILE "hijack.mp3" WAVE"\n    INDEX 01 00:00:00\n'
+
+        clean_sheet = self._parse(clean)
+        injected_sheet = self._parse(injected)
+
+        assert clean_sheet.tracks[0].title == "Evil"
+        assert injected_sheet.tracks[0].title != clean_sheet.tracks[0].title or len(injected_sheet.tracks) != len(clean_sheet.tracks)

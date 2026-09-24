@@ -490,6 +490,18 @@ wheels = [
 ]
 
 [[package]]
+name = "cueparser"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/e6/cd1ec0b83447489eb139e4b0a676fc537dd6102e078f5f2e59a0ef73f5c3/cueparser-1.3.3.tar.gz", hash = "sha256:ccfa64330ba91f83506e9c98734c2c724fac63a4a77b13dc1ced68d3420f0142", size = 6402, upload-time = "2026-01-07T12:19:11.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/c6/662f428d9a312d2a41c8db3faa7c13b069bcaf629c0bc0e855386e1e3806/cueparser-1.3.3-py2.py3-none-any.whl", hash = "sha256:89ef33b6c26ff9876c7553fc1248a16c99831baf2be80fc36cdfa7505e600a7a", size = 7163, upload-time = "2026-01-07T12:19:09.585Z" },
+]
+
+[[package]]
 name = "cyclonedx-python-lib"
 version = "11.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1551,6 +1563,7 @@ browser = [
 ]
 dev = [
     { name = "bandit" },
+    { name = "cueparser" },
     { name = "defusedxml" },
     { name = "greenlet" },
     { name = "httpx" },
@@ -1608,6 +1621,7 @@ requires-dist = [
 browser = [{ name = "playwright", specifier = "==1.62.0" }]
 dev = [
     { name = "bandit", specifier = ">=1.9.4" },
+    { name = "cueparser", specifier = "==1.3.3" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "greenlet", specifier = ">=3.5.6" },
     { name = "httpx", specifier = ">=0.28.1" },
