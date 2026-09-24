@@ -968,7 +968,7 @@ The one-shot pod needs more than the file id to run: its entrypoint builds the a
 calls back to the control plane, so it must know its role, where the control-plane API lives, and
 where the analysis models are on disk. (It also needs to know it is a `"compute"` agent — see the
 `PHAZE_AGENT_KIND` bullet below; that value is code-injected, not part of this ConfigMap, and so
-are `PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX`.) phaze
+are `PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX` / `PHAZE_TELEMETRY_LANE`.) phaze
 sources that **static, per-deployment** env into the
 suspended Job's analyze container via `envFrom` from an operator-created `core/v1` ConfigMap —
 named **by name only** (the backend's `[backends.kube].env_configmap_name`, default
@@ -1029,6 +1029,17 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   `PHAZE_JOB_FILE_ID` (phaze-w15ju). `PHAZE_TELEMETRY_INSTANCE` is the key that **is** yours: it
   names the host or service the slot is appended to. Setting it per host does not help here, because
   all of a node's burst pods share the host.
+- **`PHAZE_TELEMETRY_LANE` does NOT belong in this ConfigMap either, and needs no operator action.**
+  `build_job_manifest` code-injects `PHAZE_TELEMETRY_LANE=burst` into **every** Job's `env`, so a
+  burst pod's identity is `<base>-burst-<slot>`, e.g. `phaze-analysis-burst-1`, never the host-lane
+  child's `phaze-analysis-1` (phaze-7nl67). Both lanes number their slots from 0 and neither can see
+  the other's, so without the lane a host child and a burst pod on the same index merged at the
+  collector. The value is a closed set: anything else is refused. The code-injected value always wins
+  on conflict, so an entry here would be dead weight. For the same reason, a `burst` segment in an
+  analysis process's `PHAZE_TELEMETRY_INSTANCE` is escaped: `host-burst` becomes `host-burst_`.
+  That host keeps its own identity, and it can never look like a lane. The lane separates host from
+  burst only. With more than one agent host running analysis, each host still needs its own distinct
+  `PHAZE_TELEMETRY_INSTANCE` ([exporter §3](telemetry/exporter.md)).
 - **`TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` do NOT belong in this
   ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
   derives all three from the host at import (`phaze-rvcn`, `apply_thread_env`) and **never

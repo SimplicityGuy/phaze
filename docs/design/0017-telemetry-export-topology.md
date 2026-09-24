@@ -338,9 +338,11 @@ the process falls back to the shared identity rather than minting an unbounded o
 | | series |
 | --- | ---: |
 | analysis-role catalogue block | 2,290 |
-| × 4 slots | **9,160** |
+| × 4 slots (host lane, `phaze-21nnf`) | **9,160** |
+| × (4 host-lane + 4 burst-lane slots), separate identity spaces (`phaze-7nl67`) | **18,320** |
 | whole-catalogue ceiling, before | 8,587 |
-| whole-catalogue ceiling, after | **15,457** |
+| whole-catalogue ceiling, host lane only | 15,457 |
+| whole-catalogue ceiling, both lanes (current) | **24,617** |
 | a per-pod id instead: 2,290 × 11,428 files | **26,170,120** |
 
 **The bound is a multiple of the CONCURRENCY, not of the corpus.** Slots are reused by the
@@ -361,19 +363,43 @@ values**. The sum, not one backend's cap, because the identity space is global: 
 both reporting `phaze-analysis-2` merge at a shared collector exactly as two pods in one cluster
 would, and nothing in phaze's configuration establishes that distinct kueue backends push to
 distinct collectors (the endpoint comes from the operator's own ConfigMap). In the deployed
-single-cluster configuration the sum **is** that backend's own cap, so the table above is unchanged
-at cap 4: **9,160** for the analysis block, **15,457** for the catalogue ceiling.
+single-cluster configuration the sum **is** that backend's own cap: 4.
 
-**Two lanes, ONE slot space.** Both append their index to the same base, and both count from 0, so
-the host lane's identities are *reused* by burst pods rather than added to them: the analysis block
-is `2,290 x max(worker_process_pool_size, Σ kueue caps)`, which is `2,290 x 4` at the deployed
-configuration. Not a sum — writing it as one would over-state the ceiling by 9,160 series. **No term
-in it is the corpus**, which is the property the whole scheme exists for; raising `worker_process_pool_size`
-or a `cap` past the other costs 2,290 per index and nothing else.
+**Two lanes, TWO identity spaces, so the terms ADD (`phaze-7nl67`, 2026-09-24).** Both lanes count
+their slots from 0. As first shipped, both also appended the index to the same base, so a burst pod
+*reused* the host lane's identities: the block was `2,290 x max(worker_process_pool_size, Σ kueue
+caps)` = 9,160. That reuse was the residual §8d recorded, not a saving: a host child and a burst pod
+on the same index merged. Every burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`,
+which `_instance_id` puts between the base and the slot (`phaze-analysis-burst-<n>`), so the two
+lanes' identities are disjoint. **The analysis block is now
+`2,290 x (worker_process_pool_size + Σ kueue caps)`**, which is `2,290 x 8` = **18,320** at the
+deployed pool of 4 and cap of 4. The whole-catalogue ceiling is **24,617**. That is 9,160 series
+more than the shared-space figure, and it is the price of not merging.
 
-That reuse is what keeps the ceiling flat, and it is also a residual: it is **not** a claim that the
-two lanes never run concurrently, and when they do, a host child and a burst pod on the same index
-merge. §8d states it and it is filed as its own bead.
+**Why no collision-free design costs less: 8 producers need 8 identities.** When both lanes are
+busy, up to `worker_process_pool_size + Σ kueue caps` = 4 + 4 = **8** analysis producers export
+cumulative counters at once, and two producers under one identity merge (§8a). So any design that
+never merges needs at least 8 distinct identities, which is 2,290 × 8 = 18,320 series:
+- a distinct burst lane (shipped) meets exactly that floor;
+- offsetting burst slots above the host pool meets it too;
+- one shared allocator would have to be sized 8, and so meets it as well;
+- requiring `PHAZE_TELEMETRY_INSTANCE` on the agent host meets it whenever the operator does it.
+
+The old 9,160 was reachable only because producers collided. A deployment that already set
+`PHAZE_TELEMETRY_INSTANCE` on the agent host, as `telemetry/exporter.md` §3 advises, was already
+paying 18,320.
+
+**The 8-producer floor and the 24,617 ceiling are PER AGENT HOST.** Each agent host that runs
+analysis has its own slot pool counting from 0: the fileserver agent and every `kind="compute"`
+agent (`docs/k8s-burst.md`). The burst term is shared across the whole deployment, but each host adds
+its own pool. So the general form is `2,290 x (Σ over analysis hosts of worker_process_pool_size + Σ
+kueue caps)`. Those hosts' identities are kept apart only by `PHAZE_TELEMETRY_INSTANCE`, not by the
+lane. The lane separates the host lane from the burst lane, never one host from another. With more
+than one analysis host, a distinct `PHAZE_TELEMETRY_INSTANCE` per host is therefore **required for
+correctness**, and `telemetry/exporter.md` §3 says so.
+
+**No term in it is the corpus**, which is the property the whole scheme exists for. Raising
+`worker_process_pool_size` or a `cap` costs 2,290 per index and nothing else.
 
 **Dashboards and alert rules are unchanged, and that was checked rather than assumed.** Every
 expression in `dashboards/*.json` and `alerts/phaze-alerts.yml` already wraps its selector in
@@ -413,7 +439,7 @@ treatment of one series per producer. Measured: the per-slot arm's summed final 
   pod and the pods are still concurrent, and it would move per-file counters through the
   callback path — a far larger blast radius than a label.
 
-### 8d. The burst lane — CLOSED by `phaze-w15ju` (2026-09-16)
+### 8d. The burst lane — CLOSED by `phaze-w15ju` (2026-09-16); cross-lane collision CLOSED by `phaze-7nl67` (2026-09-24)
 
 **This section previously said the burst lane still shared one identity. It no longer does.** The
 gap and its remedy are recorded here rather than deleted, because the remedy's shape is the
@@ -450,8 +476,9 @@ enumerated in `JOB_ENV_CODE_INJECTED` and asserted disjoint from both documented
   have this property; every terminal writer in the lane would need a release call, and the one that
   was missed would shrink the pool for good.
 - **Exhaustion degrades, it does not fail.** Past the cap, no telemetry key is emitted at all and
-  the manifest is byte-identical to the pre-`phaze-w15ju` form; the pod falls back to its own pool
-  and reports `phaze-analysis-0`, i.e. the pre-fix merge. Instrumentation may never fail the work it
+  the manifest is byte-identical to the pre-`phaze-w15ju` form apart from the unconditional
+  `PHAZE_TELEMETRY_LANE` below; the pod falls back to its own pool and reports
+  `phaze-analysis-burst-0`, i.e. the pre-fix merge, now confined to the burst lane. Instrumentation may never fail the work it
   observes, and of the two failure directions only this one is recoverable.
 
 **THE TRAP THIS ADR PREDICTED, AND WHY A MANIFEST ASSERTION WOULD NOT HAVE CAUGHT IT.** Injecting the
@@ -473,15 +500,103 @@ the slot is allocated. What `phaze-w15ju` had to establish is that two concurren
 reach their pods with different bounded slots, which is a property of phaze's own code and is
 asserted by the tests above against a real Postgres.
 
-**THE RESIDUAL, which is a NEW finding and not part of this bead's scope.** The two lanes share one
-slot space and one default base. A host-lane child holding slot 1 and a burst pod holding slot 1 both
-report `phaze-analysis-1` and merge, and the lanes **can** run concurrently — `select_backend` routes
-per file, so a local dispatch and a kueue dispatch can be in flight at the same time. An operator who
-has followed `telemetry/exporter.md` §3 and set `PHAZE_TELEMETRY_INSTANCE` to a host role on the
-agent host does not have this: that host's children become `host-compute-1` while the pods stay
-`phaze-analysis-1`. So the residual is real but conditional on the base being unset, and closing it
-is a decision about what a burst pod's base should be — an operator-facing question, not a corollary
-of this one. Filed separately as **`phaze-7nl67`**; it is deliberately **not** fixed here.
+**THE CROSS-LANE COLLISION — CLOSED by `phaze-7nl67` (2026-09-24).** `phaze-w15ju` left one case
+open. The two lanes shared one slot space and one default base, so a host-lane child holding slot 1
+and a burst pod holding slot 1 both reported `phaze-analysis-1` and merged. The lanes **can** run
+concurrently: `select_backend` routes per file, so a local dispatch and a kueue dispatch can be in
+flight at the same time. Setting `PHAZE_TELEMETRY_INSTANCE` to a host role on the agent host avoided
+it, but the default (unset) did not, and the documented `phaze-agent-env` ConfigMap left every burst
+pod on the service-name base.
+
+*The operator decision, which took four rounds between 2026-09-22 and 2026-09-24.* Every round was an
+`AskUserQuestion` in a dispatch session, and every round is recorded as a comment on bead
+`phaze-7nl67`, which is the durable record. The quoted questions are verbatim; the bracketed
+filenames are editorial insertions, added so each ADR number in a quote resolves to a file.
+
+1. **2026-09-22.** Question as put: *"phaze-7nl67 (host-lane and burst-lane telemetry slots share
+   one identity space) can't be worked until you decide which option phaze takes. Which one?"*
+   Answer as given (selected option label): *"Skip it this round"*.
+2. **2026-09-24.** Question as put: *"phaze-7nl67, host-lane and burst-lane telemetry identities can
+   collide. Which fix?"* Answer as given (selected option label): *"Code-inject burst base
+   (Recommended)"*.
+3. **2026-09-24, suspended.** The bead had told the operator that option 1 costs "the same number".
+   It does not: the lanes shared one slot space, so the block was a `max` (below), and separating
+   them makes it a sum. The question was put again with that correction. Question as put: *"phaze-7nl67
+   (telemetry slots): your pick "Code-inject burst base" rested on the bead saying cardinality would
+   be "the same number". The seat found that's wrong. Today host and burst lanes SHARE one slot space
+   (ADR-0017 [`0017-telemetry-export-topology.md`, this file] §8b: 2,290 × max(pool, Σcaps) =
+   9,160). A distinct burst base makes it a sum: 2,290 ×
+   (pool + Σcaps) = 18,320 at pool=4/cap=4. The catalogue ceiling goes from 15,457 to 24,617 series
+   (+9,160, ~+59%). That's still bounded by concurrency, not by the corpus. Proceed with
+   code-inject?"* Answer as given (selected option label): *"Stop and reconsider"*. Round 2's
+   decision was suspended.
+4. **2026-09-24, re-put, and the decision that stands.** Question as put: *"phaze-7nl67, re-put with
+   corrected cardinality. When both lanes are busy, up to 8 producers (host pool 4 + burst cap 4)
+   export at once. Each needs its own identity or their counters merge. So EVERY collision-free fix
+   costs 2,290 × 8 = 18,320 series (catalogue ceiling 15,457 → 24,617). Today's 9,160 exists only
+   because producers collide, which over-counts by +84% to +221% when both lanes run
+   (ADR-0017 [`0017-telemetry-export-topology.md`, this file] §8a).
+   A deployment that already sets PHAZE_TELEMETRY_INSTANCE on the agent host pays 18,320 today. A 5th
+   option (one shared allocator sized 8) costs the same and is the biggest change, so I left it
+   out. Which approach?"* Options were *Code-inject burst lane (Recommended)* / *Offset burst slots*
+   / *Docs: require INSTANCE* / *Accept the collision*. Answer as given (selected option label):
+   *"Code-inject burst lane (Recommended)"*.
+
+Round 4 decides that code injects a burst lane, and accepts the +9,160-series cost. The rejected
+options were:
+
+- **offsetting burst slots above the host pool.** The controller would have to know each host's pool
+  size, and if that copy drifts, the collision silently comes back.
+- **documenting `PHAZE_TELEMETRY_INSTANCE` as required** to keep host and burst apart. Correctness
+  would rest on an operator step nothing enforces. It is still required for a different job:
+  keeping one agent host apart from another (§8b), which the lane does not do.
+- **accepting the collision.** Counters stay wrong whenever both lanes run.
+
+*What shipped, and whose decision each part is.* Injecting a burst lane is the operator's decision
+(round 4). Round 4's question never asked how to implement it, so the rest are the IMPLEMENTER'S
+decisions (dev/telemetry). The dispatcher's correction comment on `phaze-7nl67` (2026-09-24) records
+this, withdrawing an earlier comment that had read the answer as covering the choice of key.
+
+- **Implementer's decision:** the lane travels in its own key, `PHAZE_TELEMETRY_LANE`, rather than by
+  injecting `PHAZE_TELEMETRY_INSTANCE`. That keeps `PHAZE_TELEMETRY_INSTANCE` as the operator's
+  override on both lanes. It is the sixth code-injected Job env key.
+- **Implementer's decision:** `kube_staging.build_job_manifest` code-injects
+  `PHAZE_TELEMETRY_LANE=burst` into **every** Job (`JOB_ENV_CODE_INJECTED_ALWAYS`), including a
+  submit with no slot. That way an over-cap pod degrades onto another burst pod's identity, never a
+  host child's.
+- `bootstrap._instance_id` puts the lane between the base and the slot:
+  `phaze-analysis-burst-<n>`, or `host-compute-burst-<n>` if the pod's ConfigMap pins a base.
+- **The two spaces are disjoint, not merely different by default.** Two implementer's decisions
+  make that hold:
+  - the lane is a closed set (`slots.LANES`), refused and logged otherwise, like a bad slot;
+  - on the analysis role, a reserved lane segment in the operator's base is escaped
+    (`slots.escape_reserved_lanes`: `host-burst` → `host-burst_`, logged). An analysis identity in
+    the host lane therefore never has a `burst` segment, and a burst identity always does, whatever
+    `PHAZE_TELEMETRY_INSTANCE` says. The base is escaped rather than replaced by the service name,
+    because two hosts falling back to one name would merge. Other roles keep the base verbatim, since
+    their `service.name` differs from a burst pod's.
+  `test_no_host_identity_equals_any_burst_identity` enumerates both spaces over every slot, including
+  adversarial bases.
+- **Implementer's decision:** the agent worker, which is the host lane's seat, calls
+  `slots.disown_inherited_lane` beside
+  `disown_inherited_slot`. That stops a hand-set lane from moving every host child into the burst
+  space.
+
+**Cardinality: the lanes' slots now ADD rather than share**, as restated in §8b: 18,320 for the
+analysis block and 24,617 for the catalogue ceiling at the deployed configuration, which is +9,160
+series. **No collision-free design costs less.** Eight concurrent producers need eight identities.
+
+`test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_identities` drives a real
+host-lane analysis child and a real burst-pod process **concurrently, on the same slot index** (a
+stub barrier proves the overlap). The pod's environment is built from a real Job manifest. The test
+asserts that their `service.instance.id` values differ. It fails when the lane injection is removed
+from the manifest, and when `_instance_id` ignores the lane. Both were verified by mutation.
+
+*The general form* (CLAUDE.md rule 5): **two allocators that each hand out indices from 0 into one
+shared namespace collide, however correct each is on its own terms.** Each lane's allocator was
+right about its own competitors. Neither could see the other's, and nothing partitioned the
+namespace they wrote into. When a second allocator is added for an identity, give it its own space,
+or name the seat that sees both.
 
 ### 8e. Blast radius
 
@@ -514,3 +629,21 @@ What currently works that this could break, and the test for each:
 
 The one thing it does **not** change is the identity of any role with no slot (api, controller, agent,
 watcher) or of the host lane's children, whose strings are byte-identical to before.
+
+**`phaze-7nl67`'s blast radius.** It changes the metrics identity of **every burst pod**: every file
+routed to a kueue backend, at most **4** in flight at the deployed `cap`. Those pods go from
+`phaze-analysis-<n>` to `phaze-analysis-burst-<n>`. It also changes the Job manifest for every
+kueue submit, which gains one `env` entry. For the host lane, and for every role outside a pod,
+nothing changes with one exception: an analysis-role process whose `PHAZE_TELEMETRY_INSTANCE` has a
+`burst` segment. That segment is now escaped (`host-burst-1` → `host-burst_-1`), so the host keeps a
+distinct identity rather than being merged onto the service name. Every other role keeps such a value
+byte-identical. What currently works that this could break, and the test for each:
+
+| what could break | the test |
+| --- | --- |
+| a consumer keyed on a burst pod's exact `instance` string | none in this repo: every dashboard and alert expression aggregates `instance` away (`test_dashboards.py` / `test_alert_rules.py`) |
+| the pod's startup, if `AgentSettings` rejected the new env key | `test_the_documented_objects_are_exactly_what_agentsettings_needs`, which boots `get_settings()` on the documented ConfigMap plus the manifest's `env` |
+| the manifest's code-injected env contract | `test_the_code_injected_env_is_exactly_the_contract_says_it_is` |
+| an operator's burst-segment base on a non-analysis role, or host distinctness on the analysis role | `test_a_non_analysis_role_keeps_a_burst_segment_base_verbatim`, `test_an_analysis_base_claiming_the_burst_lane_is_escaped_not_discarded` |
+| the host lane's four distinct identities | `test_concurrent_children_get_distinct_telemetry_identities`, with its expected strings unchanged |
+| the burst lane's distinct slots, through the pod's own chain | `test_two_concurrent_burst_submissions_reach_the_child_with_distinct_identities` |

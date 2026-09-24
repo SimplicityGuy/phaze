@@ -207,6 +207,11 @@ code, and it is asserted against a real Postgres and through the pod's own
 **not** against the manifest alone, because a correct manifest whose slot the pod then overwrote with
 its own local 0 is exactly the failure that design invited.
 
-**One thing here still stands unfixed** and is recorded rather than implied: the two lanes share one
-slot space and one default base, so a host-lane child and a burst pod on the same index still merge
-when `PHAZE_TELEMETRY_INSTANCE` is unset. Bead `phaze-7nl67`.
+**The cross-lane collision is closed too** (`phaze-7nl67`). The two lanes used to share one slot
+space and one default base, so a host-lane child and a burst pod on the same index merged when
+`PHAZE_TELEMETRY_INSTANCE` was unset. Every burst Job now carries a code-injected
+`PHAZE_TELEMETRY_LANE=burst`, which gives burst pods `phaze-analysis-burst-<n>`.
+`test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_identities` drives a real
+host-lane child and a real burst-pod process at the same time, on the same slot index, and asserts
+that their identities differ. The decision and its cardinality cost are in
+[ADR-0017 §8d](../design/0017-telemetry-export-topology.md).

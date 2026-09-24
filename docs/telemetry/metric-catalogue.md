@@ -106,14 +106,15 @@ not what the naming rules suggest on paper.
 | `phaze_pipeline_backlog` | gauge | `backlog` (12) | 12 | 12 |
 | | | | **total** | **8,587** |
 
-### The instance multiplier: 8,587 becomes 15,457, and the reason it stops there
+### The instance multiplier: 8,587 becomes 24,617, and the reason it stops there
 
 **The table above is per INSTANCE.** `service.instance.id` becomes the Prometheus `instance`
 label, so the real ceiling is the table multiplied by the number of distinct identities phaze
 ever reports — a dimension that lives outside the label sets and is easy to read past.
 
 phaze appends a **bounded worker-slot index** to that id (`phaze-analysis-0` …
-`phaze-analysis-3`), because up to `worker_process_pool_size` analysis children run at once
+`phaze-analysis-3` on the host lane, `phaze-analysis-burst-0` … `phaze-analysis-burst-3` on the
+burst lane), because up to `worker_process_pool_size` analysis children run at once
 and, under a single identity, a collector's Prometheus exporter keeps one series and takes the
 last write — measured, that produced a DECREASING counter and an `increase()` 84.4% above the
 truth ([the record](concurrent-identity.md),
@@ -122,15 +123,15 @@ truth ([the record](concurrent-identity.md),
 | | series |
 | --- | ---: |
 | analysis-role block (the `phaze_analysis_*` rows above) | 2,290 |
-| × 4 slots | 9,160 |
+| × (4 host-lane slots + 4 burst-lane slots) | 18,320 |
 | everything else, one instance | 6,297 |
-| **ceiling** | **15,457** |
+| **ceiling** | **24,617** |
 
 **The multiplier is the CONCURRENCY, never the corpus.** A slot is reused by the next child,
 so this figure does not move as the archive grows. The rejected alternative shows what that
 buys: a per-pod instance id, unique per analyzed file, would be 2,290 × 11,428 =
-**26,170,120** series. Raising `PHAZE_TELEMETRY_SLOT_MAX` costs another 2,290 per slot, and
-nothing else here changes.
+**26,170,120** series. Raising either lane's bound costs another 2,290 per slot, and nothing
+else here changes.
 
 #### The burst lane's slots come off a different knob, and cost the same shape
 
@@ -147,18 +148,28 @@ So the analysis block's real multiplier is:
 | --- | ---: |
 | `worker_process_pool_size` (host lane) | 4 |
 | Σ kueue `cap` (burst lane) | 4 |
-| distinct analysis identities | **4** |
+| distinct analysis identities | **8** |
 
-**The two lanes share the slot space rather than adding to it** — both append their index to the
-same base and both count from 0 — so the analysis block is
-`2,290 × max(worker_process_pool_size, Σ kueue cap)` and the ceiling above is unchanged at
-**9,160 / 15,457**. It is `max`, not a sum: writing it as a sum would over-state the ceiling by
-9,160 series. The three rows are kept anyway because the two terms move independently, and because
-that reuse is also a live residual (`phaze-7nl67`) — a host-lane child and a burst pod on the same
-index merge, so a future change giving the lanes distinct bases would make the block
-`2,290 × 8 = 18,320`. **No term here is the corpus**, which is what makes every version of this
-affordable: raising either term past the other costs 2,290 series per index, and
-**reintroduces no per-file series block**.
+**The two lanes have SEPARATE identity spaces, so they add** (`phaze-7nl67`). Both lanes number
+their slots from 0 and neither can see the other's allocations, and they used to append their index
+to the same base. So a host-lane child and a burst pod on the same index both reported
+`phaze-analysis-<n>` and merged at the collector, whenever `PHAZE_TELEMETRY_INSTANCE` was unset. Every
+burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the lane between the
+base and the slot (`phaze-analysis-burst-<n>`). The analysis block is therefore
+`2,290 × (worker_process_pool_size + Σ kueue cap)` = `2,290 × 8` = **18,320**, and the ceiling is
+**24,617**. Before this change the lanes shared one slot space, and the block was
+`2,290 × max(worker_process_pool_size, Σ kueue cap)` = 9,160, with a ceiling of 15,457. That lower
+figure came from the merge itself: 9,160 more series is the price of not merging. **No
+collision-free design costs less, because 8 concurrent producers need 8 identities.** Two producers
+under one identity merge, so the 8 that can run at once need 8 identities, which is 2,290 × 8
+whichever way the space is split. A deployment that already set `PHAZE_TELEMETRY_INSTANCE` on the
+agent host was already paying 18,320. **These figures are for ONE agent host running analysis.**
+Each further one adds 2,290 × its own `worker_process_pool_size`. A distinct `PHAZE_TELEMETRY_INSTANCE`
+per host is what keeps those hosts apart; the lane only separates host from burst
+([exporter.md §3](exporter.md)). The decision, with its cost stated to the operator:
+[ADR-0017 §8d](../design/0017-telemetry-export-topology.md). **No term here is
+the corpus**, which is what makes it affordable. Raising either term costs 2,290 series per index
+and **reintroduces no per-file series block**.
 
 ### The arithmetic, where the budget is not the cartesian product
 
