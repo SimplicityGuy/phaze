@@ -37,10 +37,19 @@ does, so ``_EXEMPT_FILES`` below exempts this file by its own path for the ident
 exempts the ADR (found the hard way: invisible while this file was untracked, since
 ``_scope_files()`` walks ``git ls-files``, and only surfaced on the first commit).
 
-SCOPE: ``src/``, ``tests/``, ``scripts/``, ``alembic/``, ``docs/``, plus ``CLAUDE.md``, the
-``Dockerfile*`` family and ``justfile`` -- the populations ADR-0012 (verification fidelity and operator attribution) section 5 actually swept.
-``.planning/`` is deliberately excluded: ADR-0012 (verification fidelity and operator attribution) counted it as a superseded historical archive
-and declined to audit it, and failing the build on it now would re-litigate that settled call.
+SCOPE: the whole tree except ``.planning/``. ``.planning/`` is deliberately excluded: ADR-0012 (verification fidelity and operator attribution) counted it as a superseded historical archive and
+declined to audit it, and failing the build on it now would re-litigate that settled call.
+
+WHY THE WHOLE TREE, NOT A LIST OF DIRECTORIES (phaze-bo0sm, 2026-09-23). The scope used to be the
+populations ADR-0012 (verification fidelity and operator attribution) section 5 swept -- ``src/``, ``tests/``, ``scripts/``, ``alembic/``, ``docs/``,
+``CLAUDE.md``, ``justfile`` and ``Dockerfile*``. That list silently left out every root config file,
+and ``pyproject.toml`` held two claims it would have failed on: the litellm cap raise and the
+``[tool.uv]`` cooldown comment, each dated with no bead id. An allowlist of directories is an
+enumeration, and it misses whatever lands outside it next, exactly like the per-file allowlist in the
+next section. So the scope is now the complement of one named exclusion. The ``#`` comment dialect
+was widened to ``.toml``/``.ini``/``.cfg`` and the dotfiles that use it, so a TOML comment is read as
+comment paragraphs, not as prose fused with the code around it. Choosing the whole tree over adding
+single files was the implementer's call on phaze-bo0sm.
 
 ALLOWLIST BY SHAPE, NOT BY ENUMERATED FILE (dispatcher comment on phaze-d2hgv.7, 2026-08-21). A
 wrap-tolerant sweep of this molecule found ``tasks/filename_convention.py`` carrying a SECOND
@@ -212,7 +221,11 @@ if TYPE_CHECKING:
 # tests/shared/test_operator_attribution_citations.py -> parents[2] == repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_SCOPE_PATHSPECS = ("src", "tests", "scripts", "alembic", "docs", "CLAUDE.md", "justfile", "Dockerfile*")
+_SCOPE_PATHSPECS = (".", ":(exclude).planning")
+
+# Files whose comments are `#` lines, read by :func:`_comment_run_paragraphs` (phaze-bo0sm).
+_HASH_COMMENT_SUFFIXES = frozenset({".sh", ".yml", ".yaml", ".toml", ".ini", ".cfg"})
+_HASH_COMMENT_NAMES = frozenset({"justfile", ".gitignore", ".dockerignore", ".pip-audit-ignores"})
 
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # This hive's beads are always `phaze-<slug>` (optionally `.{child}` for a sub-issue) -- the
@@ -491,7 +504,8 @@ def _paragraphs_for_file(repo_path: Path, *, rel: str | None = None) -> list[_Pa
         # Markdown has no comment syntax of its own here -- the whole file is already prose, so a
         # blank-line split is the paragraph boundary directly.
         return _split_into_paragraphs(rel, 1, text)
-    if repo_path.name.startswith("Dockerfile") or repo_path.name == "justfile" or repo_path.suffix in {".sh", ".yml", ".yaml"}:
+    name = repo_path.name
+    if name.startswith(("Dockerfile", ".env")) or name in _HASH_COMMENT_NAMES or repo_path.suffix in _HASH_COMMENT_SUFFIXES:
         return _comment_run_paragraphs(rel, text)
     # Anything else in scope (patches, fixtures, HTML) is treated as plain prose: safe default,
     # and nothing in the current tree's scope needs a third comment dialect.
@@ -787,7 +801,7 @@ class TestScannerMechanics:
         (tmp_path / "src" / "gate.log").write_text("operator decision\n")
 
         found = {path.relative_to(tmp_path).as_posix() for path in _scope_files(tmp_path)}
-        assert found == {"src/tracked.py", "src/untracked.py"}
+        assert found == {".gitignore", "src/tracked.py", "src/untracked.py"}
 
     def test_known_meta_exclusions_are_still_narrowly_scoped_to_their_needle(self) -> None:
         """A `_KNOWN_SHAPE_EXCLUSIONS` entry is (path, needle) -- an unrelated, uncited claim added
@@ -819,3 +833,22 @@ class TestScannerMechanics:
             if not any(needle in paragraph.text for paragraph in _paragraphs_for_file(_REPO_ROOT / path))
         ]
         assert not stale, "stale _KNOWN_SHAPE_EXCLUSIONS entries (file renamed, prose reworded, or text moved):\n  " + "\n  ".join(stale)
+
+    def test_pyproject_is_scanned_and_its_cited_claim_fails_without_its_bead_id(self) -> None:
+        """phaze-bo0sm: ``pyproject.toml`` is in scope, read as ``#`` comment paragraphs, and judged.
+
+        Built on the REAL file, not a fixture. A fixture proves the helpers work. It cannot prove that
+        the real-tree test reaches ``pyproject.toml``, and the missing scope was the whole defect.
+        The litellm cap's 1.100.x paragraph cites ``phaze-dkqor``. It passes as written, and it fails
+        once that id is deleted.
+        """
+        pyproject = _REPO_ROOT / "pyproject.toml"
+        assert pyproject in _scope_files(), "pyproject.toml is not in the guard's scan set"
+
+        cited = [p for p in _paragraphs_for_file(pyproject) if "phaze-dkqor" in p.text and _VOCAB_RE.search(p.text)]
+        assert len(cited) == 1, "the phaze-dkqor litellm-cap paragraph moved or was reworded; re-pick a cited pyproject claim"
+        assert "litellm>=" not in cited[0].text, "TOML was read as prose: the dependency line fused into the comment paragraph"
+        assert list(_iter_uncited_claims(iter(cited))) == [], "the cited form must pass"
+
+        stripped = _Paragraph(cited[0].path, cited[0].lineno, cited[0].text.replace("phaze-dkqor", ""))
+        assert len(list(_iter_uncited_claims(iter([stripped])))) == 1, "removing the bead id was not caught"
