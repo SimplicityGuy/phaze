@@ -40,7 +40,7 @@ Rather than assume a regime, each test PROBES the real ``tmp_path`` volume for t
     exactly one of the two contents, never a mix).
   * case-sensitive / normalization-sensitive (verified separately below to be REACHABLE on this same
     machine via a real "Case-sensitive APFS" volume for the case axis -- see
-    ``test_case_only_pair_is_not_even_a_collision_on_a_case_sensitive_volume``; genuine byte-sensitive
+    ``test_case_only_pair_is_not_even_a_collision_on_a_real_case_sensitive_volume``; genuine byte-sensitive
     Unicode normalization is NOT reachable on any macOS-native volume -- APFS normalizes lookups for
     comparison regardless of its case-sensitivity flag, confirmed by direct probe on a
     "Case-sensitive APFS" test volume, so the NFC/NFD test's case-sensitive branch is exercised only
