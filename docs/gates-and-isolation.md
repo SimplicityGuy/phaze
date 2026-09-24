@@ -1643,10 +1643,26 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   the line figure on most files here, so a repo-wide branch floor would fail on day one and the
   backfill would dwarf whatever work it was meant to protect. Do **not** raise `fail_under` against
   branches.
-- **Per bead, branch coverage is gated on the files that bead touched.** `just branch-check` reads
-  the `coverage.json` any gate run leaves behind, checks only the `src/phaze/**.py` files changed
-  against `--base-ref` (committed, staged *and* unstaged, so it is useful mid-flight), names every
-  file it checked, and prints the **uncovered branch line numbers** rather than a bare percentage.
+- **Per bead, branch coverage is gated on the files that bead touched.** `just branch-check` reuses
+  a `coverage.json` / `.fast-coverage.json` a prior gate run left behind **only when it was stamped
+  for this exact tree** — a clean working tree at the START of that run, and HEAD unchanged for its
+  whole duration (`scripts/stamp_coverage_scope.py`, `find_reusable_report` in `scripts/
+  branch_coverage_check.py`, phaze-vad6y). Reading HEAD only at the END of a multi-minute run
+  cannot tell a commit that landed mid-run, or a `git stash` that made a dirty tree look clean by
+  stamp time, from a genuinely trustworthy measurement — see that script's own docstring for both
+  worked scenarios. Before that bead nothing checked freshness at all: the recipe unconditionally
+  re-ran real tests on every invocation regardless — a cheaper selected subset when the diff mapped
+  cleanly, a full-suite escalation otherwise — despite this same "reads whatever a prior run left
+  behind" claim already being written down; every invocation the 2026-09-22/23 dispatch actually
+  recorded escalated, costing ~20-24 minutes each time. Absent a fresh artifact it says so and
+  produces one itself — but reuse never trusts a DIRTY tree, and neither does a selected-subset
+  fallback (exit 2, not a pass: the check needs an exact, git-addressable tree to compare
+  against). An escalation to the full suite is the one path that still judges a dirty tree — its
+  coverage.json goes unstamped, so `branch-check` scores it as measured rather than refusing it
+  outright. It checks only the
+  `src/phaze/**.py` files changed against `--base-ref` (committed, staged *and* unstaged, so the
+  FILE SELECTION itself is useful mid-flight even though artifact reuse is not), names every file
+  it checked, and prints the **uncovered branch line numbers** rather than a bare percentage.
   Raising branch coverage is welcome, holding it steady is fine, **lowering it fails the bead**. A
   file the bead did not touch is out of scope for that bead's check.
 - **It fails closed on a missing baseline** — if the check could not perform a comparison, it did

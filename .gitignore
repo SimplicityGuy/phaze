@@ -52,6 +52,7 @@ htmlcov/
 .coverage
 .coverage.*
 .fast-coverage.json
+.coverage-scope-start.json
 coverage.xml
 coverage.json
 *.cover

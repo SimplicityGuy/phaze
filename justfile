@@ -351,17 +351,38 @@ test:
 #   * `{{cov_reports}}` -- json, term and xml, from the single variable at the top of this
 #     file. `scripts/coverage_floor.py` reads `coverage.json`, and so does `just
 #     branch-check`, which is how a bead proves it did not lower branch coverage on a file
-#     it touched (phaze-bk9el.21); emitting it here means the per-bead branch check is free
-#     after any gate run instead of costing a second 20-minute suite. The xml is there so
-#     that no consumer is coupled to whichever recipe the developer happened to run
-#     (phaze-jktlb): Codecov's artifact is now produced by the local gate too, not only by
-#     `coverage-combine` in CI. Destinations come from pyproject, not from a `:DEST` here.
+#     it touched (phaze-bk9el.21). Emitting it here is necessary but was not, by itself,
+#     SUFFICIENT to make the per-bead branch check free after this gate: measured on the
+#     2026-09-22/23 dispatch, `just branch-check` re-ran real tests unconditionally on every
+#     invocation regardless (a cheaper selected subset, or a ~20-24 minute full-suite
+#     escalation -- every invocation that dispatch actually hit escalated), because nothing
+#     recorded which TREE this report was measured against, so branch-check had no way to
+#     trust it (phaze-vad6y). `scripts/stamp_coverage_scope.py`, bracketing this recipe with a
+#     per-run TOKEN (`--record-start` above, `--expect-token` right after this step), is what
+#     closes that gap -- see its docstring and `scripts/branch_coverage_check.py`'s
+#     `find_reusable_report`.
+#     The xml is there so that no consumer is coupled to whichever recipe the developer
+#     happened to run (phaze-jktlb): Codecov's artifact is now produced by the local gate
+#     too, not only by `coverage-combine` in CI. Destinations come from pyproject, not from
+#     a `:DEST` here.
 #
 # tests/shared/test_validation_gate_recipes.py fails the build if any of these regress.
 [doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% line floor + 90% per-module line floor enforced)')]
 [group('test')]
 test-cov:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-vad6y: a shebang script, not plain `just` lines, because the stamp bracket needs a
+    # TOKEN threaded from --record-start to the final stamp call across this recipe's own local
+    # shell state -- plain (non-shebang) `just` lines each run as their OWN separate `sh`
+    # invocation, so a variable set on one line does not survive to the next (verified directly:
+    # `x="hi"` on one line, `echo "$x"` on the next, in a bare recipe -- "unbound variable").
+    # `|| token=""` keeps a record-start failure (HEAD unresolvable) from aborting the whole test
+    # run under `set -e`; an empty token then simply never matches any marker, so the final stamp
+    # call degrades to "nothing to stamp" instead of failing this recipe outright.
+    token="$(uv run python scripts/stamp_coverage_scope.py --record-start)" || token=""
     uv run pytest --cov {{cov_reports}} --rootdir={{quote(test_rootdir)}}
+    uv run python scripts/stamp_coverage_scope.py --expect-token "$token"
     uv run python scripts/coverage_floor.py
 
 [doc('Run the default non-browser coverage gate in two isolated, order-preserving local lanes')]
@@ -693,12 +714,22 @@ test-bucket NAME PATHS MODE="serial":
 # module differs between the two metrics (`src/phaze/routers/duplicates.py`: 91.20% statements,
 # 75.00% branches, 88.59% combined), so a per-module floor left on the combined number would fail a
 # module that has regressed nothing. Nothing here is disarmed; the line gate is simply explicit.
-# THE PER-BEAD BRANCH GATE (phaze-bk9el.21, phaze-6e2hj). Run it from your bead's worktree
-# after check-fast. It reruns the selected tests under branch instrumentation, writing a separate
-# .fast-coverage.json. A scoped run below the full baseline is unjudgeable and fails closed.
+# THE PER-BEAD BRANCH GATE (phaze-bk9el.21, phaze-6e2hj, phaze-vad6y). Run it from your bead's
+# worktree after check-fast. If a coverage.json / .fast-coverage.json already matches this exact
+# tree -- a CLEAN working tree at the START of the run that produced it, and HEAD unchanged for
+# its whole duration -- it reuses that, no test run at all. A tree that is dirty RIGHT NOW is never
+# reused, and a selected-subset fallback still can't judge it either (exit 2: the check needs an
+# exact, git-addressable tree to compare against) -- but an ESCALATION to the full suite is the one
+# path that still judges a dirty tree: its coverage.json comes back unstamped (dirty at start), and
+# an absent stamp reads as "unmeasured for freshness", not "refuse", so the file gets scored
+# against the baseline anyway. Otherwise it reruns the selected tests under branch instrumentation,
+# writing a separate .fast-coverage.json, or escalates to the full suite when the selection can't
+# speak for the diff (`_test-branch-scoped`, unchanged). A scoped run below the full baseline is
+# unjudgeable and fails closed either way.
 #
 # It checks ONLY the `src/phaze/**.py` files your bead changed against `--base-ref` (committed,
-# staged and unstaged changes all count, so it is useful mid-flight and not just at submit), and
+# staged and unstaged changes all count, so the FILE SELECTION itself is useful mid-flight and not
+# just at submit -- even though, per above, artifact REUSE is not: a dirty tree still exits 2), and
 # it names every file it checked. The rule is one-directional: raising branch coverage is welcome,
 # holding it steady is fine, LOWERING it against the recorded baseline fails. It reports the
 # uncovered branch LINE NUMBERS, not just a percentage, so the answer is actionable.
@@ -720,10 +751,11 @@ test-bucket NAME PATHS MODE="serial":
 branch-check *flags:
     #!/usr/bin/env bash
     set -euo pipefail
-    # An explicit report is used as-is; the ordinary path produces its own scoped evidence.
-    if [[ " $* " != *" --coverage "* ]]; then
-        just _test-branch-scoped
-    fi
+    # phaze-vad6y: the reuse-or-run decision lives in scripts/branch_coverage_check.py itself
+    # (find_reusable_report / run_scoped_evidence_pass), not here. It reuses a same-tree
+    # coverage.json / .fast-coverage.json when one exists and says so; only when none does does
+    # it shell back out to `just _test-branch-scoped`, exactly as this recipe used to do
+    # unconditionally -- which is what made "free after any check" false: nothing ever checked.
     # Trust boundary: these are operator-authored branch-check CLI arguments, forwarded as
     # discrete argv entries. "$@" is never reparsed as shell syntax.
     uv run python scripts/branch_coverage_check.py "$@"
@@ -771,6 +803,17 @@ _test-branch-scoped:
 # departure from straight alphabetical order -- `report` sorts between `json` and `xml` -- and the
 # reason is that a coverage failure must still leave behind the two reports that explain WHICH
 # module dropped. Gate first and a red run destroys its own evidence.
+#
+# NOT `stamp_coverage_scope.py` (phaze-vad6y). An earlier draft of that bead bracketed this recipe
+# with `--record-start` / a plain stamp call, matching `test-cov`. That was wrong and has been
+# removed: each shard (`test-bucket`) runs pytest SEPARATELY, at its own moment, with no promise
+# the tree was clean or unchanging during any one shard's run, and `combine` itself never runs
+# pytest -- it only merges already-written `.coverage.*` data files after every shard has already
+# finished. A bracket placed around `combine`/`json` here would describe "was the tree clean when
+# `combine` started", a fact with no relationship to what any shard actually measured, stamping
+# the WRONG tree with false confidence. See `scripts/stamp_coverage_scope.py`'s own docstring
+# ("WHY NOT `coverage-combine`") for the full reasoning. CI does not upload `coverage.json` either,
+# so nothing downstream would have read a stamp here regardless.
 #
 # `--fail-under=0` on the two artifact steps (phaze-jktlb). Without it they inherit pyproject's
 # `fail_under = 95`, and a report writer WRITES its file and only then exits nonzero on the floor

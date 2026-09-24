@@ -233,6 +233,78 @@ def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) 
     return 0
 
 
+def find_reusable_report() -> tuple[Path | None, list[str]]:
+    """Look for an existing coverage artifact this exact tree already produced (phaze-vad6y).
+
+    CLAUDE.md documents `just branch-check` as "free after any `check`" -- reading whatever
+    ``coverage.json`` a prior gate run left behind. Nothing ever checked that claim: the recipe
+    unconditionally regenerated branch evidence (``just _test-branch-scoped``) on every
+    invocation regardless -- a cheaper selected-test subset when the diff mapped cleanly, a
+    full-suite escalation otherwise. Every invocation the 2026-09-22/23 dispatch actually
+    recorded escalated, costing a genuine ~20-24 minutes each time. This is the missing check.
+
+    "This exact tree" means: HEAD has not moved since the report was stamped AND the working
+    tree carries no staged or unstaged changes at all -- the same all-or-nothing freshness test
+    ``main()`` already applied to a scoped report's ``_phaze_scope.head``, generalised here to
+    also cover a full-suite report (stamped by ``scripts/stamp_coverage_scope.py``, wired into
+    ``test-cov`` and ``coverage-combine``). Any dirtiness invalidates a report, even in a file
+    the report would never cover, because "did anything change since this was measured" is a
+    yes/no question and there is no way from here to know a stray edit was harmless.
+
+    DEFAULT_COVERAGE (the full-suite report an escalated `check-fast` or `just check` leaves
+    behind) is preferred over SCOPED_COVERAGE: it matches CLAUDE.md's documented intent -- "free
+    after any check" -- and it is a strictly more authoritative baseline comparison than a
+    selected-tests report, which fails closed the moment a touched file falls outside what was
+    selected (see the ``scoped`` branches in ``main()``).
+
+    Returns the usable report's path and an empty reason list on success, or ``None`` and one
+    reason per candidate explaining why it could not be reused.
+    """
+    head = _git("rev-parse", "HEAD").strip()
+    dirty = bool(_git("status", "--porcelain").strip())
+    reasons: list[str] = []
+    for candidate, kind in ((DEFAULT_COVERAGE, "full"), (SCOPED_COVERAGE, "selected-tests")):
+        path = Path(candidate)
+        if not path.is_file():
+            reasons.append(f"{path} does not exist")
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError) as exc:
+            reasons.append(f"{path} is not valid JSON ({exc})")
+            continue
+        if not isinstance(data, dict) or "num_branches" not in (data.get("totals") or {}):
+            reasons.append(f"{path} carries no branch data")
+            continue
+        scope = data.get("_phaze_scope")
+        if not isinstance(scope, dict) or scope.get("kind") != kind or "head" not in scope:
+            reasons.append(f"{path} was not stamped as a {kind!r} report for this tree")
+            continue
+        if dirty:
+            reasons.append(f"{path} cannot be trusted against a dirty working tree")
+            continue
+        if not head or scope["head"] != head:
+            reasons.append(f"{path} was stamped at {scope.get('head')!r}, HEAD is now {head!r}")
+            continue
+        return path, []
+    return None, reasons
+
+
+def run_scoped_evidence_pass() -> int:
+    """Fall back to ``just _test-branch-scoped`` -- the pre-existing scoped/escalated evidence pass.
+
+    Kept as a real ``just`` recipe rather than reimplemented here: it composes seat provisioning,
+    ``scripts/select_impacted_tests.py`` and the escalation path to ``just test-validate``, and
+    duplicating that in Python would be a second copy of a selection policy that already lives in
+    exactly one place.
+    """
+    just = shutil.which("just")
+    if just is None:
+        print("❌ `just` not found on PATH -- cannot produce branch evidence.", file=sys.stderr)  # noqa: T201
+        return 127
+    return subprocess.run([just, "_test-branch-scoped"], check=False).returncode  # noqa: S603 - nosec B603, fixed argv, no shell
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-bead branch-coverage regression check.")
     parser.add_argument("--coverage", help="coverage json report to read (default: selected report when present, otherwise full report)")
@@ -252,18 +324,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"✅ No tracked {TRACKED_PREFIX}*.py files changed against '{args.base_ref}' — nothing to check.")  # noqa: T201
         return 0
 
-    # An explicit --coverage remains authoritative (including for baseline writes). The selected
-    # artifact wins over a possibly stale full report only on the ordinary per-bead path.
-    report_path = Path(args.coverage or (SCOPED_COVERAGE if not args.write_baseline and Path(SCOPED_COVERAGE).exists() else DEFAULT_COVERAGE))
+    # An explicit --coverage remains authoritative (including for baseline writes), matching the
+    # pre-phaze-vad6y contract exactly. `--write-baseline` never triggers the reuse-or-run branch
+    # below either: it is always run deliberately, after a FULL-suite coverage run the operator
+    # already produced (see "ON THE MISSING BASELINE" above), and a scoped report was never a
+    # valid input for it.
+    if args.write_baseline:
+        report_path = Path(args.coverage or DEFAULT_COVERAGE)
+    elif args.coverage is not None:
+        report_path = Path(args.coverage)
+    else:
+        # phaze-vad6y: reuse a same-tree artifact if one exists instead of unconditionally
+        # re-running tests. See `find_reusable_report`'s docstring for what "same tree" means
+        # and why the bug went unnoticed (CLAUDE.md's "free after any check" was never checked).
+        reusable, reasons = find_reusable_report()
+        if reusable is not None:
+            print(f"✅ Reusing {reusable} for this tree — no test run needed.")  # noqa: T201
+            report_path = reusable
+        else:
+            print("⏱️  No usable coverage artifact for this tree:")  # noqa: T201
+            for reason in reasons:
+                print(f"   - {reason}")  # noqa: T201
+            print("   Producing fresh branch evidence (`just _test-branch-scoped`).")  # noqa: T201
+            rc = run_scoped_evidence_pass()
+            if rc != 0:
+                return rc
+            report_path = Path(SCOPED_COVERAGE) if Path(SCOPED_COVERAGE).exists() else Path(DEFAULT_COVERAGE)
+
     data = load_coverage(report_path)
     if args.write_baseline:
         return write_baseline(data, Path(args.baseline), args.base_ref)
 
     files = _files_of(data)
     scope = data.get("_phaze_scope")
-    scoped = isinstance(scope, dict) and scope.get("kind") == "selected-tests"
-    if isinstance(scope, dict) and scoped and (scope.get("head") != _git("rev-parse", "HEAD").strip() or _git("status", "--porcelain").strip()):
-        print(f"❌ {report_path} belongs to a different or now-dirty checkout; rerun `just check-fast`.")  # noqa: T201
+    scope_kind = scope.get("kind") if isinstance(scope, dict) else None
+    scoped = scope_kind == "selected-tests"
+    if (
+        isinstance(scope, dict)
+        and scope_kind in ("selected-tests", "full")
+        and (scope.get("head") != _git("rev-parse", "HEAD").strip() or _git("status", "--porcelain").strip())
+    ):
+        print(f"❌ {report_path} belongs to a different or now-dirty checkout; rerun `just check-fast` / `just check`.")  # noqa: T201
         return 2
 
     baseline_path = Path(args.baseline)
