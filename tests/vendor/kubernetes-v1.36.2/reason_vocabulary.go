@@ -85,30 +85,44 @@ const (
 	EvictionReason = "Evicted"
 )
 
-// --- pkg/kubelet/nodeshutdown/nodeshutdown_manager.go ---
-// Fetched via: curl -sL https://raw.githubusercontent.com/kubernetes/kubernetes/v1.36.2/pkg/kubelet/nodeshutdown/nodeshutdown_manager.go
+// --- pkg/kubelet/nodeshutdown/nodeshutdown_manager.go (and its pre-split predecessor,
+//     nodeshutdown_manager_linux.go, at older tags) ---
+// Fetched via: curl -sL https://raw.githubusercontent.com/kubernetes/kubernetes/<tag>/pkg/kubelet/nodeshutdown/nodeshutdown_manager<_linux>.go
 //
-// TWO DISTINCT, BOTH-REAL reasons -- do not conflate them (phaze's old comment did, see below):
+// THREE DISTINCT, ALL-REAL reasons across k8s history -- CORRECTED (phaze-pe41d review): an earlier
+// version of this file claimed "Shutdown" was NEVER real anywhere, which was WRONG. It was the actual
+// KILL reason at v1.20 and v1.21 (confirmed directly against both tags' source below), renamed to
+// "Terminated" by kubernetes/kubernetes#102840 (merged 2021-06-16, first shipped in v1.22). The
+// PROVENANCE note this file originally cited (commit 86acf3bc, "Fix nodeShutdownReason for node
+// shutdown e2e", PR #104540) is REAL but was misread: that PR fixed an E2E TEST that had not been
+// updated for #102840's rename, months after the rename shipped -- it is evidence the STRING CHANGED
+// in 2021, not evidence "Shutdown" was never real. Lesson: a "some code got a string wrong" citation
+// proves the string was wrong AT THAT COMMIT, not across all of history -- check the tags on both
+// sides of a rename before concluding a string was never real.
+//
+//	v1.20.0: nodeShutdownReason = "Shutdown"    (pkg/kubelet/nodeshutdown/nodeshutdown_manager_linux.go:40)
+//	v1.21.0: nodeShutdownReason = "Shutdown"    (same file/line)
+//	v1.22.0: nodeShutdownReason = "Terminated"  (pkg/kubelet/nodeshutdown/nodeshutdown_manager_linux.go:39, PR #102840)
+//	v1.36.2: nodeShutdownReason = "Terminated"  (pkg/kubelet/nodeshutdown/nodeshutdown_manager.go, this file's own fetch)
+//
+// phaze's NODE_LOSS_POD_STATUS_REASONS keeps "Shutdown" as a defensive/historical match (the deployed
+// k8s version is v1.36.2, where it no longer fires, but removing a string that WAS real anywhere in
+// the fleet's plausible version range buys nothing and risks a real miss) and deliberately does NOT
+// add "Terminated" (too generic -- would misclassify any container-level termination as node loss;
+// the modern, reason-agnostic DisruptionTarget/TerminationByKubelet condition below is the intended
+// v1.22+ replacement signal, and phaze already reads it independently).
 const (
 	// NodeShutdownNotAdmittedReason: a pod that FAILS ADMISSION because its node is already shutting
-	// down. The pod never ran.
+	// down. The pod never ran. Real and unchanged at v1.36.2; did not exist yet at v1.20 (this
+	// admission-rejection path was added later).
 	NodeShutdownNotAdmittedReason = "NodeShutdown"
 
 	// nodeShutdownReason: the status.Reason stamped on a pod kubelet's shutdown manager ACTUALLY
-	// KILLS during a graceful node shutdown. NOT "Shutdown" (see the 2021 fix below) -- and phaze does
-	// NOT match on this value (it is too generic to key node-loss detection on safely); the same kill
-	// also stamps a DisruptionTarget=True/TerminationByKubelet condition, which
-	// kube_staging.py's _node_lost_by_disruption_condition catches independently, reason-agnostic.
+	// KILLS during a graceful node shutdown, AT v1.22+ (see the table above for v1.20/v1.21). phaze
+	// does NOT match on this value -- too generic -- relying instead on the DisruptionTarget/
+	// TerminationByKubelet condition the same kill also stamps.
 	nodeShutdownReason = "Terminated"
 )
-
-// PROVENANCE for removing "Shutdown" from phaze's NODE_LOSS_POD_STATUS_REASONS (phaze-pe41d):
-// commit kubernetes/kubernetes@86acf3bc8f3594df1cc284bef7c7830caddec53f, "Fix nodeShutdownReason for
-// node shutdown e2e" (merged 2021, PR #104540) changed an in-tree E2E test from asserting
-// `pod.Status.Reason != "Shutdown"` to `pod.Status.Reason != nodeShutdownReason` (i.e. "Terminated") --
-// evidence that "Shutdown" was never the real value kubelet produced, even when that test was
-// originally written; it was a test-author assumption error, not a value that was later renamed.
-// Fetched via: gh api repos/kubernetes/kubernetes/commits/86acf3bc8f3594df1cc284bef7c7830caddec53f -q '.files[].patch'
 
 // --- pkg/scheduler/framework/plugins/names/names.go + pkg/kubelet/lifecycle/predicate.go ---
 // Fetched via:

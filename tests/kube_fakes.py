@@ -16,7 +16,7 @@ HTTP against a real cluster, so a Kueue/k8s upgrade that renames or adds a reaso
 no failing test here. The condition/reason strings below are checked against a real, tagged upstream
 by ``tests/analyze/services/backends/test_kueue_k8s_reason_vocabulary.py`` (see
 ``tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py`` for the pinned vocabulary and
-``tests/vendor/kueue-v0.19.6``/``tests/vendor/kubernetes-v1.36.2`` for the vendored upstream source) --
+``tests/vendor/kueue-v0.19.0``/``tests/vendor/kubernetes-v1.36.2`` for the vendored upstream source) --
 NOT, as a previous version of this docstring claimed, "verified against Context7": Context7 is a docs
 MCP tool, not a real, versioned source, and made no verifiable claim about which Kueue/k8s release the
 strings below belonged to.

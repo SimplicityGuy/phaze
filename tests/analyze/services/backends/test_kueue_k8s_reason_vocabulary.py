@@ -6,7 +6,7 @@ research notes with nothing checking them against a real, versioned Kueue/k8s.
 Every assertion here is a MEMBERSHIP check: "every literal phaze's reconciler actually branches on is
 a real value from a real, cited upstream source at a declared tag/commit" (see
 ``tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py`` and the vendored source under
-``tests/vendor/kueue-v0.19.6/`` / ``tests/vendor/kubernetes-v1.36.2/``). This is deliberately NOT the
+``tests/vendor/kueue-v0.19.0/`` / ``tests/vendor/kubernetes-v1.36.2/``). This is deliberately NOT the
 reverse direction (asserting phaze's set equals the FULL authoritative vocabulary) -- Kueue's granular
 QuotaReserved=False reasons (``WaitingForQuota``, ``NoMatchingFlavor``, ...) are real and current but
 phaze does not yet recognise them; that gap is the exact drift this bead's ACs require to be surfaced
@@ -17,6 +17,16 @@ MUTATION PROOF (recorded here rather than committed as a permanent test, per thi
 manually changing ``cloud_reconcile_observation._REASON_INADMISSIBLE`` from ``"Inadmissible"`` to a
 typo'd ``"Inadmisible"`` and re-running this file turns every test below RED (each fails a membership
 assertion against the pinned vocabulary) -- verified 2026-09-24 on this branch, then reverted.
+
+KUEUE VERSION: deployed Kueue release CONFIRMED -- operator-authorized read-only ``kubectl`` on the
+real cluster found image ``registry.k8s.io/kueue/kueue:v0.19.0`` (recorded as a comment on
+phaze-pe41d and phaze-tkkor). This file's Kueue assertions are anchored to that exact tag; re-verified
+directly that ``apis/kueue/v1beta1/workload_types.go`` is byte-identical between v0.19.0 and v0.19.6
+(the latest-stable tag this bead checked first), so nothing here changed as a result of re-anchoring.
+See ``_kueue_k8s_reason_vocabulary.py``'s docstring for the full measurement (including the confirmed
+feature-gate state) and the cross-check against v0.5.0 (the oldest stable tag with the ``v1beta1`` API
+package phaze's manifests target) showing all five pinned Kueue strings are unchanged across that
+whole range, which the confirmed v0.19.0 sits inside.
 """
 
 from __future__ import annotations
@@ -35,7 +45,7 @@ from tests.analyze.services.backends._kueue_k8s_reason_vocabulary import (
 
 
 def test_kueue_workload_condition_types_are_real() -> None:
-    """``_TYPE_QUOTA_RESERVED`` / ``_TYPE_ADMITTED`` / ``_TYPE_EVICTED`` are real Kueue v0.19.6 Workload condition types."""
+    """``_TYPE_QUOTA_RESERVED`` / ``_TYPE_ADMITTED`` / ``_TYPE_EVICTED`` are real Kueue v0.19.0 (confirmed deployed) Workload condition types."""
     literals = {
         cloud_reconcile_observation._TYPE_QUOTA_RESERVED,
         cloud_reconcile_observation._TYPE_ADMITTED,
@@ -45,7 +55,7 @@ def test_kueue_workload_condition_types_are_real() -> None:
 
 
 def test_kueue_quota_reserved_false_reasons_are_real() -> None:
-    """``_REASON_PENDING`` / ``_REASON_INADMISSIBLE`` are the real (legacy, default-emitted) Kueue v0.19.6 reasons."""
+    """``_REASON_PENDING`` / ``_REASON_INADMISSIBLE`` are the real (legacy, default-emitted) Kueue v0.19.0 (confirmed deployed) reasons."""
     literals = {
         cloud_reconcile_observation._REASON_PENDING,
         cloud_reconcile_observation._REASON_INADMISSIBLE,
@@ -79,12 +89,17 @@ def test_dead_before_start_waiting_reasons_are_real() -> None:
 
 
 def test_node_loss_pod_status_reasons_are_real() -> None:
-    """Every ``NODE_LOSS_POD_STATUS_REASONS`` entry is a real k8s-produced pod ``status.reason`` at v1.36.2.
+    """Every ``NODE_LOSS_POD_STATUS_REASONS`` entry is a real k8s-produced pod ``status.reason``,
+    somewhere in the plausible deployed-version range -- not necessarily all at the SAME version.
 
-    Regression pin (phaze-pe41d): ``"Shutdown"`` was REMOVED from this frozenset because no k8s v1.36.2
-    source produces it as a pod status.reason -- see the vendor file's PROVENANCE note. This test would
-    have failed while it was still present (it is not a member of the authoritative set), which is the
-    point: this bead's own fix is itself provable by the same mechanism it introduces.
+    ``"Shutdown"`` is HISTORICAL (real only at k8s v1.20/v1.21; see
+    ``tests/vendor/kubernetes-v1.20.0-v1.21.0/nodeshutdown_reason.go``) -- kept deliberately even though
+    the version measured in production (v1.36.2) no longer produces it, because removing a defensive
+    match string buys nothing and risks a real miss against an older cluster. An earlier revision of
+    this bead removed it on the mistaken belief it was never real anywhere; this test's membership
+    check (against a vocabulary that includes it, sourced from actual v1.20/v1.21 kubelet source) is
+    what would have caught that mistake, same as it would catch any OTHER literal that turns out not to
+    be real at all.
     """
     assert kube_staging.NODE_LOSS_POD_STATUS_REASONS <= K8S_NODE_LOSS_POD_STATUS_REASONS
-    assert "Shutdown" not in kube_staging.NODE_LOSS_POD_STATUS_REASONS
+    assert "Shutdown" in kube_staging.NODE_LOSS_POD_STATUS_REASONS

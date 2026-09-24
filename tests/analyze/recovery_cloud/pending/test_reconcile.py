@@ -409,7 +409,7 @@ async def test_unknown_workload_disposition_is_loud_not_silent(
     (``apis/kueue/v1beta1/workload_types.go``'s ``WorkloadQuotaReservedReasonWaitingForQuota``,
     returned INSTEAD OF the legacy ``"Pending"`` phaze recognises once Kueue's
     ``UnadmittedWorkloadsObservability`` feature gate is enabled -- Alpha, default OFF at v0.19, per
-    ``tests/vendor/kueue-v0.19.6/workload_types.go``) -- exactly the reason-vocabulary drift this
+    ``tests/vendor/kueue-v0.19.0/workload_types.go``) -- exactly the reason-vocabulary drift this
     bead's AC2 requires to stop being a silent held row. Before phaze-pe41d, this fell through
     ``classify_workload`` to :attr:`WorkloadDisposition.UNKNOWN` and ``_reconcile_workload_state``
     did nothing but a bare, unlogged ``session.commit()``.

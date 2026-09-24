@@ -189,16 +189,30 @@ DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
 # * ``Evicted`` -- ``pkg/kubelet/eviction/helpers.go``'s ``Reason``: kubelet node-pressure eviction
 #   (memory/disk). On a node whose RAM was exhausted by the very pod being evicted, this is the
 #   *node* reporting duress, not the analyze reporting a fault.
-#
-# REMOVED (phaze-pe41d): ``"Shutdown"`` was never a real k8s-produced ``status.reason`` value -- it
-# does not appear anywhere in the v1.36.2 source, and a 2021 upstream fix
-# (kubernetes/kubernetes@86acf3bc, "Fix nodeShutdownReason for node shutdown e2e") shows even an
-# in-tree E2E test's assumption of ``"Shutdown"`` was wrong at the time and was corrected to the real
-# value. A pod actually KILLED by graceful node shutdown gets ``status.reason == "Terminated"``
-# (``nodeshutdown_manager.go``'s ``nodeShutdownReason``) -- too generic to match safely here -- paired
-# with a ``DisruptionTarget=True`` / ``TerminationByKubelet`` condition, which
-# :func:`_node_lost_by_disruption_condition` already catches independently (reason-agnostic). So
-# removing the dead ``"Shutdown"`` entry changes matching behaviour for zero real inputs.
+# * ``Shutdown`` -- HISTORICAL. Exact tags/paths checked directly (phaze-pe41d):
+#     - v1.20.0: ``pkg/kubelet/nodeshutdown/nodeshutdown_manager_linux.go:40`` --
+#       ``nodeShutdownReason = "Shutdown"``
+#     - v1.21.0: same file/line -- ``nodeShutdownReason = "Shutdown"`` (unchanged from v1.20.0)
+#     - v1.22.0: ``pkg/kubelet/nodeshutdown/nodeshutdown_manager_linux.go:39`` --
+#       ``nodeShutdownReason = "Terminated"`` (kubernetes/kubernetes#102840, merged 2021-06-16, first
+#       shipped in v1.22.0, renamed the KILL reason)
+#     - v1.36.2 (the version MEASURED in production, see this module's ``UNSCHEDULABLE_PROBE_SECONDS``
+#       neighbourhood for the citation): ``pkg/kubelet/nodeshutdown/nodeshutdown_manager.go`` --
+#       ``nodeShutdownReason = "Terminated"`` (unchanged since v1.22.0)
+#   So ``"Shutdown"`` WAS a real k8s-produced ``status.reason`` at v1.20.0/v1.21.0, superseded by
+#   ``"Terminated"`` from v1.22.0 onward -- ``"Terminated"`` is too generic to match safely here
+#   (deliberately NOT added to this set); the same kill also stamps a
+#   ``DisruptionTarget=True``/``TerminationByKubelet`` condition, which
+#   :func:`_node_lost_by_disruption_condition` catches independently and reason-agnostically as the
+#   v1.22+ replacement signal. This bead (phaze-pe41d) initially REMOVED ``"Shutdown"`` from this set
+#   on the mistaken assumption it was never real anywhere -- an in-tree k8s E2E test's OWN assumption
+#   of ``"Shutdown"`` was corrected by a 2021 fix (kubernetes/kubernetes@86acf3bc, "Fix
+#   nodeShutdownReason for node shutdown e2e"), which was misread as "this string was never real" by
+#   not also checking the two tags it WAS real at. Restored on review: removing a defensive match
+#   string buys nothing and risks a real miss against an older kubelet. Kept even though the version
+#   confirmed deployed in production (v1.36.2) no longer produces it. Vendored source for both sides
+#   of this history: ``tests/vendor/kubernetes-v1.20.0-v1.21.0/nodeshutdown_reason.go`` and
+#   ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go``.
 #
 # NARROW on purpose, and matched ONLY against ``status.reason`` (a node-scoped field), never against a
 # container's terminated reason: an in-container OOMKill under an explicit ``resources.limits.memory``
@@ -207,6 +221,7 @@ NODE_LOSS_POD_STATUS_REASONS: frozenset[str] = frozenset(
     {
         "NodeLost",
         "NodeShutdown",
+        "Shutdown",
         "NodeAffinity",
         "Evicted",
     }

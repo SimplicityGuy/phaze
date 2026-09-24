@@ -1,14 +1,42 @@
 // Vendored (phaze-pe41d), NOT compiled -- reference material only.
 //
+// *** DEPLOYED KUEUE RELEASE: CONFIRMED. *** Operator-authorized read-only kubectl on the real
+// cluster (recorded as a comment on phaze-pe41d and phaze-tkkor): image
+// registry.k8s.io/kueue/kueue:v0.19.0; k8s Server Version v1.36.2+k0s (matches this bead's
+// Kubernetes anchor); API served [v1beta2, v1beta1], preferred v1beta2 (phaze's own
+// [backends.kube].workload_api_version explicitly requests v1beta1, so it gets v1beta1-shaped
+// objects regardless of the server's preference -- the string VALUES on the wire are identical
+// either way, see the v1beta1/v1beta2 note below); feature gates: DisableWaitForPodsReady=true
+// ONLY, so UnadmittedWorkloadsObservability is OFF, confirming the "Pending"/"Inadmissible" legacy
+// reasons below are what production actually emits, not merely the documented default.
+//
+// This snapshot is anchored to v0.19.0 -- the CONFIRMED deployed tag, not the latest stable
+// (v0.19.6, checked earlier in this bead's history and kept as corroborating evidence below).
+//
+// v0.19.0 vs v0.19.6 diff (re-verified directly, phaze-pe41d):
+//   - apis/kueue/v1beta1/workload_types.go: BYTE-IDENTICAL (`diff` exit 0) -- every string this
+//     snapshot pins is unchanged.
+//   - apis/kueue/v1beta2/workload_types.go: ONE constant added (WorkloadDRAResourcesResolved =
+//     "DRAResourcesResolved", unrelated to anything phaze reads) -- no change to any string phaze
+//     pins.
+//   - pkg/scheduler/scheduler.go's `condReason := workload.UnadmittedWorkloadReasonWithFallback(
+//     e.quotaReservedReason, "Pending")` -- IDENTICAL at both tags (the "Pending" fallback literal
+//     is unchanged).
+//   - pkg/features/kube_features.go's UnadmittedWorkloadsObservability entry: `Default: false` at
+//     BOTH tags (the observed behaviour is identical); only its PreRelease stage label differs
+//     (Beta at v0.19.0, Alpha at v0.19.6) -- a documentation/classification change, not a behaviour
+//     change, and irrelevant to phaze since Default stayed false either way.
+//
 // Source:  https://github.com/kubernetes-sigs/kueue
-// Tag:     v0.19.6  (published 2026-09-24T13:28:08Z)
-// Commit:  f0e95cea51b5591e0177fbe0fa06a299f36db548
+// Tag:     v0.19.0
+// Commit:  911a822a49bcfd99c9c62203a009efa4130ad604
 // Path:    apis/kueue/v1beta1/workload_types.go  (condition-type block) and
 //          apis/kueue/v1beta2/workload_types.go  (WorkloadPending -- see note below)
 //
 // Fetched via:
-//   gh api "repos/kubernetes-sigs/kueue/contents/apis/kueue/v1beta1/workload_types.go?ref=v0.19.6" -q '.download_url'
-//   curl -sL https://raw.githubusercontent.com/kubernetes-sigs/kueue/v0.19.6/apis/kueue/v1beta1/workload_types.go
+//   gh api repos/kubernetes-sigs/kueue/git/refs/tags/v0.19.0 -q '.object'                 # -> annotated tag object
+//   gh api repos/kubernetes-sigs/kueue/git/tags/7b3cad14a540cd256dc9c658be5a23fff809ff68 -q '.object.sha'   # -> commit sha above
+//   curl -sL https://raw.githubusercontent.com/kubernetes-sigs/kueue/v0.19.0/apis/kueue/v1beta1/workload_types.go
 //
 // This is the AUTHORITATIVE source phaze's Kueue reason literals are pinned against
 // (tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py,
