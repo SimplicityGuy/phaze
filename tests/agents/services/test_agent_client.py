@@ -30,9 +30,32 @@ _TOKEN = "phaze_agent_test-token-1234567890abcdef"
 
 
 @pytest.fixture
-async def client():  # type: ignore[no-untyped-def]
-    """Fresh PhazeAgentClient; closes underlying AsyncClient on teardown."""
-    c = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0)
+def retry_delays() -> list[float]:
+    """The delays tenacity's ``wait_exponential_jitter`` requests on ``client``'s retries.
+
+    ``wait_exponential_jitter`` still runs and still computes a real delay for every
+    retried attempt (phaze-vh38w) -- only the actual sleeping is skipped, via the
+    ``_retry_sleep`` callable below, so a retry-exhaustion test can assert backoff was
+    genuinely requested instead of merely not waiting for it.
+    """
+    return []
+
+
+@pytest.fixture
+async def client(retry_delays: list[float]):  # type: ignore[no-untyped-def]
+    """Fresh PhazeAgentClient; closes underlying AsyncClient on teardown.
+
+    ``_retry_sleep`` is test-only injection (phaze-vh38w): it records the requested
+    backoff delay and returns immediately instead of really sleeping, so the ~19s this
+    module used to spend in real ``wait_exponential_jitter(initial=0.5, max=4.0)`` waits
+    across its retry-exhaustion tests no longer costs real wall time. Production never
+    passes this, so its own backoff timing is untouched.
+    """
+
+    async def _no_wait(delay: float) -> None:
+        retry_delays.append(delay)
+
+    c = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_wait)
     yield c
     await c.close()
 
@@ -105,7 +128,7 @@ async def test_422_raises_client_error_without_retry(client):  # type: ignore[no
 
 
 @respx.mock
-async def test_500_retries_three_times_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+async def test_500_retries_three_times_then_raises_server_error(client, retry_delays):  # type: ignore[no-untyped-def]
     from phaze.schemas.agent_analysis import AnalysisWritePayload
 
     file_id = uuid.uuid4()
@@ -115,10 +138,13 @@ async def test_500_retries_three_times_then_raises_server_error(client):  # type
     with pytest.raises(AgentApiServerError):
         await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert route.call_count == 3
+    # 3 attempts -> 2 backoff waits actually requested from wait_exponential_jitter, not skipped.
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
-async def test_500_then_200_succeeds_on_retry(client):  # type: ignore[no-untyped-def]
+async def test_500_then_200_succeeds_on_retry(client, retry_delays):  # type: ignore[no-untyped-def]
     from phaze.schemas.agent_analysis import AnalysisWritePayload
 
     file_id = uuid.uuid4()
@@ -130,10 +156,13 @@ async def test_500_then_200_succeeds_on_retry(client):  # type: ignore[no-untype
     )
     await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert route.call_count == 2
+    # One backoff wait between the two attempts, genuinely requested (not skipped).
+    assert len(retry_delays) == 1
+    assert retry_delays[0] >= 0
 
 
 @respx.mock
-async def test_connect_error_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+async def test_connect_error_retries_then_raises_server_error(client, retry_delays):  # type: ignore[no-untyped-def]
     from phaze.schemas.agent_analysis import AnalysisWritePayload
 
     file_id = uuid.uuid4()
@@ -143,10 +172,12 @@ async def test_connect_error_retries_then_raises_server_error(client):  # type: 
     with pytest.raises(AgentApiServerError):
         await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert route.call_count == 3
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
-async def test_connect_timeout_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+async def test_connect_timeout_retries_then_raises_server_error(client, retry_delays):  # type: ignore[no-untyped-def]
     """A ``httpx.ConnectTimeout`` (the API host is up but not accepting the TCP connection in
     time -- the cross-host boot-ordering case) must be retried like any other transient transport
     error and surface as ``AgentApiServerError``, NOT escape raw.
@@ -164,10 +195,12 @@ async def test_connect_timeout_retries_then_raises_server_error(client):  # type
     with pytest.raises(AgentApiServerError):
         await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert route.call_count == 3
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
-async def test_pool_timeout_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+async def test_pool_timeout_retries_then_raises_server_error(client, retry_delays):  # type: ignore[no-untyped-def]
     """A ``httpx.PoolTimeout`` (no free connection in the pool) is likewise a transient transport
     error: retried three times then wrapped as ``AgentApiServerError`` rather than escaping raw."""
     from phaze.schemas.agent_analysis import AnalysisWritePayload
@@ -179,6 +212,8 @@ async def test_pool_timeout_retries_then_raises_server_error(client):  # type: i
     with pytest.raises(AgentApiServerError):
         await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert route.call_count == 3
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
@@ -371,7 +406,7 @@ async def test_request_download_url_401_surfaces_as_auth_error_without_retry(cli
 
 
 @respx.mock
-async def test_request_download_url_5xx_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+async def test_request_download_url_5xx_retries_then_raises_server_error(client, retry_delays):  # type: ignore[no-untyped-def]
     file_id = uuid.uuid4()
     route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
         return_value=httpx.Response(500),
@@ -379,6 +414,8 @@ async def test_request_download_url_5xx_retries_then_raises_server_error(client)
     with pytest.raises(AgentApiServerError):
         await client.request_download_url(file_id)
     assert route.call_count == 3
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock

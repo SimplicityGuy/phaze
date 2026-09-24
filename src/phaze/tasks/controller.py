@@ -275,14 +275,19 @@ async def startup(ctx: dict[str, Any]) -> None:
             await session.commit()
         return tally
 
-    tally = await _run_boot_reconcile_with_retry("ledger backfill on startup", _do_backfill)
+    # delay_seconds is passed explicitly (rather than relying on the parameter's default) so a
+    # test that monkeypatches the _BOOT_RECONCILE_RETRY_DELAY_SECONDS module global (to skip real
+    # sleeps, phaze-vh38w) is actually honored -- a bound default is captured once at function-def
+    # time and is deaf to a later monkeypatch of the name it was copied from. Production behavior
+    # is unchanged: this is the same module-level value the default already held.
+    tally = await _run_boot_reconcile_with_retry("ledger backfill on startup", _do_backfill, delay_seconds=_BOOT_RECONCILE_RETRY_DELAY_SECONDS)
     if tally is not None:
         logger.info("phaze.controller startup ledger backfill", inserted=tally["inserted"], skipped=tally["skipped"])
 
     async def _do_recovery() -> dict[str, Any]:
         return await recover_orphaned_work(ctx)
 
-    result = await _run_boot_reconcile_with_retry("recover_orphaned_work on startup", _do_recovery)
+    result = await _run_boot_reconcile_with_retry("recover_orphaned_work on startup", _do_recovery, delay_seconds=_BOOT_RECONCILE_RETRY_DELAY_SECONDS)
     if result is not None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
 
