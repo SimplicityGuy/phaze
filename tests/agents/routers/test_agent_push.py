@@ -30,6 +30,7 @@ and the Phase-67 registry accessor is exercised end-to-end (REG-04).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -44,7 +45,9 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_push import router as agent_push_router
+from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.scheduling_ledger import upsert_ledger_entry
+from phaze.tasks import push as push_task
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
@@ -77,6 +80,31 @@ _COMPUTE_REGISTRY = f"""
     scratch_dir = "{_SCRATCH_DIR}"
     push_host = "oci-a1.push.example"
 """
+
+
+def _one_compute_registry(scratch_dir: str) -> str:
+    """Same shape as ``_COMPUTE_REGISTRY`` but with a parametrizable ``scratch_dir`` (Seam A6)."""
+    return f"""
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 10
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "{scratch_dir}"
+    push_host = "oci-a1.push.example"
+"""
+
+
+def _fake_push_agent_cfg() -> SimpleNamespace:
+    """A duck-typed AgentSettings stand-in carrying only what ``push._build_rsync_argv`` reads."""
+    return SimpleNamespace(push_connect_timeout_sec=30, push_timeout_sec=600, push_ssh_user="bursty")
 
 
 # MKUE-01 (Pitfall 1): the milestone's target deploy -- local + 2 Kueue + 1 compute. Before Phase 70
@@ -354,6 +382,84 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     assert task_name == "process_file"
     assert payload["expected_sha256"] == sha == "a" * 64
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scratch_dir",
+    [
+        "/srv/scratch",
+        # Unicode: dest_scratch_dir permits non-ASCII bytes -- only whitespace/shell metacharacters
+        # are rejected (schemas/agent_tasks.py::PushFilePayload._dest_scratch_absolute). A literal
+        # space is NOT a representative input for this seam: no real push payload can ever carry
+        # one, so there is no producer/consumer disagreement to reach for that case.
+        "/srv/scratch-café-2026",
+    ],
+)
+async def test_pushed_scratch_path_matches_real_rsync_destination(
+    scratch_dir: str,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """Seam A6 (docs/spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md row A6): push_file's
+    rsync destination and process_file's scratch_path used to be built by two INDEPENDENT f-strings in
+    two different files, never compared -- the seam doc's own verdict is "not crossed, self-declared
+    ... Producer side asserts argv; consumer side asserts a separate literal." A format divergence
+    there does not corrupt bytes (``_verify_scratch_integrity``'s sha256 check still gates analysis),
+    but it DOES read as "the pushed copy is missing" and drives an endless silent push/mismatch
+    re-push loop -- ``tasks/functions.py``'s own comment on that ``FileNotFoundError`` branch names
+    this exact failure mode.
+
+    Both sides now call the single ``push.build_scratch_path`` (phaze-l0ec0). This test proves it by
+    building BOTH real productions from the SAME (scratch_dir, file_id, file_type) and asserting they
+    agree:
+
+    * the REAL consumer path -- drive the actual ``/pushed`` endpoint end-to-end (real DB, real
+      router) and capture the ``scratch_path`` it stamps onto the enqueued ``process_file`` payload;
+    * the REAL producer path -- call ``push._build_rsync_argv`` (the actual rsync argv builder
+      ``push_file`` runs) and strip the ``user@host:`` prefix off its remote destination.
+
+    Mutation check (not committed): reverting either call site to re-derive the path with its own
+    f-string instead of ``build_scratch_path`` turns this test red for the unicode case whenever the
+    two f-strings are written even slightly differently, and turns it red for BOTH cases if the join
+    itself changes (e.g. a trailing slash) on one side only.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_one_compute_registry(scratch_dir))
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+    assert r.status_code == 200, r.text
+
+    compute_queue = task_router.queues["compute-agent-01-analyze"]
+    assert len(compute_queue.captured) == 1
+    task_name, consumer_payload = compute_queue.captured[0]
+    assert task_name == "process_file"
+    consumer_scratch_path = consumer_payload["scratch_path"]
+
+    # The REAL producer side, from the SAME destination inputs the compute backend recorded above
+    # (scratch_dir) and the SAME file (file_id, file_type="flac" -- ``_seed_file`` always seeds flac).
+    producer_payload = PushFilePayload(
+        file_id=file_id,
+        original_path="/media/irrelevant set.flac",
+        file_type="flac",
+        agent_id="fileserver-01",
+        dest_host="oci-a1.push.example",
+        dest_scratch_dir=scratch_dir,
+        dest_ssh_user=None,
+    )
+    argv = push_task._build_rsync_argv(_fake_push_agent_cfg(), producer_payload, key_path="/k", known_hosts_path="/kh")
+    producer_remote_dest = argv[-1]
+    assert producer_remote_dest.startswith("bursty@oci-a1.push.example:")
+    producer_scratch_path = producer_remote_dest.split(":", 1)[1]
+
+    assert producer_scratch_path == consumer_scratch_path == f"{scratch_dir}/{file_id}.flac"
 
 
 @pytest.mark.asyncio

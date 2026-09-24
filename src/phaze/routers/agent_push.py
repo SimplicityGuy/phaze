@@ -80,7 +80,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends import hold_awaiting_cloud, resolve_compute_backend
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
-from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, push_file_saq_timeout_sec
+from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, build_scratch_path, push_file_saq_timeout_sec
 
 
 if TYPE_CHECKING:
@@ -223,7 +223,10 @@ async def report_pushed(
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
     # (MCOMP-03); scratch resolution is per-agent off the recorded backend.
     compute_queue = request.app.state.task_router.queue_for(agent_ref, lane_for_task("process_file"))
-    scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
+    # Seam A6 (phaze-l0ec0): MUST use the SAME builder push_file's rsync destination uses
+    # (tasks/push.py::_build_rsync_argv), so the two sides can never format-diverge into a silent
+    # endless re-push loop -- see build_scratch_path's docstring.
+    scratch_path = build_scratch_path(scratch_dir, file_id, file.file_type)
     try:
         await enqueue_process_file(
             compute_queue,
