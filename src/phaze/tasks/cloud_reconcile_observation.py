@@ -28,11 +28,33 @@ if TYPE_CHECKING:
     from phaze.models.cloud_job import CloudJob
 
 
+# PINNED (phaze-pe41d) against the real Kueue Workload API at v0.19.6 -- the reason vocabulary a
+# proxy (``tests/kube_fakes.py``, "exercising every Kueue admission/terminal transition with ZERO
+# HTTP") previously stood in for with no check against a real, versioned source. ``_TYPE_*`` are
+# ``WorkloadQuotaReserved`` / ``WorkloadAdmitted`` / ``WorkloadEvicted``
+# (``apis/kueue/v1beta1/workload_types.go``, identical string values in v1beta2); ``_REASON_PENDING``
+# / ``_REASON_INADMISSIBLE`` are the LEGACY ``WorkloadPending`` / ``WorkloadInadmissible`` reasons for
+# ``QuotaReserved=False`` -- still what a default install emits, because the more granular reasons
+# (``WaitingForQuota``, ``NoMatchingFlavor``, ``Suspended``, ...) are gated behind Kueue's
+# ``UnadmittedWorkloadsObservability`` feature (Alpha, default OFF at v0.19). See
+# ``tests/vendor/kueue-v0.19.6/workload_types.go``,
+# ``tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py`` and
+# ``tests/analyze/services/backends/test_kueue_k8s_reason_vocabulary.py``. THE DRIFT THIS BEAD WORRIES
+# ABOUT IS NOT HYPOTHETICAL: if that feature gate ever flips to a default-on Beta, every Kueue
+# Workload will start reporting a granular reason phaze does not recognise, and ``classify_workload``
+# below falls through to :attr:`WorkloadDisposition.UNKNOWN` -- now surfaced loudly (see
+# ``_reconcile_workload_state`` in ``reconcile_cloud_jobs.py``) rather than a silent held row.
 _TYPE_QUOTA_RESERVED = "QuotaReserved"
 _TYPE_ADMITTED = "Admitted"
 _TYPE_EVICTED = "Evicted"
 _REASON_PENDING = "Pending"
 _REASON_INADMISSIBLE = "Inadmissible"
+
+# PINNED (phaze-pe41d) as ``batchv1.JobComplete`` / ``batchv1.JobFailed`` in
+# ``staging/src/k8s.io/api/batch/v1/types.go`` at Kubernetes v1.36.2 -- see
+# ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go``.
+_JOB_CONDITION_COMPLETE = "Complete"
+_JOB_CONDITION_FAILED = "Failed"
 
 # The only age bound on submission bookkeeping. It is not a run deadline.
 PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
@@ -121,9 +143,9 @@ def quota_hold_reason(quota_reserved: dict[str, Any] | None) -> Any:
 
 def classify_job(job: Any) -> JobDisposition:
     """Classify a Job, preserving callback-compatible success primacy over failure."""
-    if job_counter(job, "succeeded") >= 1 or job_has_true_condition(job, "Complete"):
+    if job_counter(job, "succeeded") >= 1 or job_has_true_condition(job, _JOB_CONDITION_COMPLETE):
         return JobDisposition.SUCCEEDED
-    if job_counter(job, "failed") >= 1 or job_has_true_condition(job, "Failed"):
+    if job_counter(job, "failed") >= 1 or job_has_true_condition(job, _JOB_CONDITION_FAILED):
         return JobDisposition.FAILED
     return JobDisposition.IN_FLIGHT
 

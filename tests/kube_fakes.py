@@ -9,8 +9,17 @@ dicts and ``.metadata`` as an attribute object, so the fakes mirror that shape w
 
 The named constants (``PENDING`` / ``INADMISSIBLE`` / ``ADMITTED`` / ``EVICTED`` /
 ``QUOTA_RESERVED``) are the exact ``(type, status, reason)`` Workload-condition tuples
-from RESEARCH Status -> Outcome Mapping; importing them keeps the logic tests pinned to
-the verified Kueue condition vocabulary.
+from RESEARCH Status -> Outcome Mapping.
+
+phaze-pe41d: these are a PROXY -- real production code (``classify_workload``) is exercised with zero
+HTTP against a real cluster, so a Kueue/k8s upgrade that renames or adds a reason falls through with
+no failing test here. The condition/reason strings below are checked against a real, tagged upstream
+by ``tests/analyze/services/backends/test_kueue_k8s_reason_vocabulary.py`` (see
+``tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py`` for the pinned vocabulary and
+``tests/vendor/kueue-v0.19.6``/``tests/vendor/kubernetes-v1.36.2`` for the vendored upstream source) --
+NOT, as a previous version of this docstring claimed, "verified against Context7": Context7 is a docs
+MCP tool, not a real, versioned source, and made no verifiable claim about which Kueue/k8s release the
+strings below belonged to.
 """
 
 from __future__ import annotations
@@ -126,9 +135,15 @@ def fake_local_queue(name: str = "phaze-lq", namespace: str = "phaze") -> Simple
 
 
 # Canned Workload condition sets -- the exact (type, status, reason) tuples from
-# RESEARCH Status -> Outcome Mapping (verified against Context7 /kubernetes-sigs/kueue).
+# RESEARCH Status -> Outcome Mapping, re-pinned (phaze-pe41d) against real Kueue v0.19.6 source (see
+# this module's docstring and tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py). The
+# EVICTED reason was "WorkloadInactive" until phaze-pe41d -- never a real Kueue value (grep of the
+# actual Kueue source found zero occurrences outside one KEP's prose) -- now "Deactivated"
+# (WorkloadDeactivated), a real WorkloadEvicted reason. classify_workload() does not branch on this
+# reason at all (only the Evicted condition's type + status matter), so this was cosmetic, not a
+# functional bug.
 PENDING = fake_workload(("QuotaReserved", "False", "Pending"))
 INADMISSIBLE = fake_workload(("QuotaReserved", "False", "Inadmissible"))
 ADMITTED = fake_workload(("QuotaReserved", "True", ""), ("Admitted", "True", ""))
-EVICTED = fake_workload(("Evicted", "True", "WorkloadInactive"))
+EVICTED = fake_workload(("Evicted", "True", "Deactivated"))
 QUOTA_RESERVED = fake_workload(("QuotaReserved", "True", ""))

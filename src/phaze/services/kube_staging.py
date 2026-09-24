@@ -139,6 +139,10 @@ _JOB_UID_LABEL = "kueue.x-k8s.io/job-uid"
 # the un-prefixed legacy one. list_pods_for_job tries them in this order (modern first).
 _JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
 _LEGACY_JOB_NAME_LABEL = "job-name"
+# PINNED (phaze-pe41d) as ``v1.PodScheduled`` / ``v1.PodReasonUnschedulable`` in
+# ``staging/src/k8s.io/api/core/v1/types.go`` at v1.36.2 -- see
+# ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go``.
+_CONDITION_POD_SCHEDULED = "PodScheduled"
 _REASON_UNSCHEDULABLE = "Unschedulable"
 
 # phaze-202e: pod phases that mean "this pod is, or was, genuinely doing the work". Succeeded is
@@ -151,6 +155,12 @@ _ALIVE_POD_PHASES = frozenset({"Running", "Succeeded"})
 # reference (exactly what a missing ``phaze-agent-env`` / ``phaze-agent-token`` produces). Deliberately
 # NARROW: transient-looking reasons (``ContainerCreating``, ``PodInitializing``) are excluded, because a
 # false positive here burns a cloud attempt on healthy work.
+#
+# PINNED (phaze-pe41d) against real Kubernetes v1.36.2 kubelet source -- ``ErrImagePullBackOff`` /
+# ``ErrImagePull`` / ``ErrInvalidImageName`` (``pkg/kubelet/images/types.go``) and
+# ``ErrCreateContainerConfig`` (``pkg/kubelet/kuberuntime/kuberuntime_container.go``); see
+# ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go`` and
+# ``tests/analyze/services/backends/test_kueue_k8s_reason_vocabulary.py``.
 DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
     {
         "ImagePullBackOff",
@@ -160,17 +170,35 @@ DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
     }
 )
 
-# phaze-1q4g: ``status.reason`` values the node-lifecycle controller / kubelet stamp on a pod that is
-# going away BECAUSE OF ITS NODE, not because the workload failed. These are the "the pod died with
-# the node" vocabulary:
+# phaze-1q4g / phaze-pe41d: ``status.reason`` values the node-lifecycle controller / kubelet stamp on
+# a pod that is going away BECAUSE OF ITS NODE, not because the workload failed. These are the "the
+# pod died with the node" vocabulary, PINNED against real Kubernetes v1.36.2 source
+# (tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go; see
+# tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py for the frozensets and
+# test_kueue_k8s_reason_vocabulary.py for the check):
 #
-# * ``NodeLost`` -- the node-lifecycle controller's marker for pods on a node that stopped reporting.
-# * ``NodeShutdown`` / ``Shutdown`` -- graceful node shutdown (kubelet's shutdown manager); the two
-#   spellings differ by k8s version.
-# * ``NodeAffinity`` -- kubelet rejected a pod already bound to it after a restart (the node it was
-#   admitted to is no longer the node it woke up on).
-# * ``Evicted`` -- kubelet node-pressure eviction (memory/disk). On a node whose RAM was exhausted by
-#   the very pod being evicted, this is the *node* reporting duress, not the analyze reporting a fault.
+# * ``NodeLost`` -- ``pkg/util/node/node.go``'s ``NodeUnreachablePodReason``: the node-lifecycle
+#   controller's marker for pods on a node that stopped reporting.
+# * ``NodeShutdown`` -- ``pkg/kubelet/nodeshutdown/nodeshutdown_manager.go``'s
+#   ``NodeShutdownNotAdmittedReason``: a pod that FAILED ADMISSION because its node was already
+#   shutting down (never ran). This is a genuinely different event from the case below, but both
+#   mean "not the workload's fault" and phaze does not need to distinguish them here.
+# * ``NodeAffinity`` -- ``pkg/scheduler/framework/plugins/names.NodeAffinity``, surfaced by kubelet's
+#   ``pkg/kubelet/lifecycle/predicate.go`` as the admission-rejection reason for a pod already bound
+#   to a node that no longer matches its affinity/selector after a restart.
+# * ``Evicted`` -- ``pkg/kubelet/eviction/helpers.go``'s ``Reason``: kubelet node-pressure eviction
+#   (memory/disk). On a node whose RAM was exhausted by the very pod being evicted, this is the
+#   *node* reporting duress, not the analyze reporting a fault.
+#
+# REMOVED (phaze-pe41d): ``"Shutdown"`` was never a real k8s-produced ``status.reason`` value -- it
+# does not appear anywhere in the v1.36.2 source, and a 2021 upstream fix
+# (kubernetes/kubernetes@86acf3bc, "Fix nodeShutdownReason for node shutdown e2e") shows even an
+# in-tree E2E test's assumption of ``"Shutdown"`` was wrong at the time and was corrected to the real
+# value. A pod actually KILLED by graceful node shutdown gets ``status.reason == "Terminated"``
+# (``nodeshutdown_manager.go``'s ``nodeShutdownReason``) -- too generic to match safely here -- paired
+# with a ``DisruptionTarget=True`` / ``TerminationByKubelet`` condition, which
+# :func:`_node_lost_by_disruption_condition` already catches independently (reason-agnostic). So
+# removing the dead ``"Shutdown"`` entry changes matching behaviour for zero real inputs.
 #
 # NARROW on purpose, and matched ONLY against ``status.reason`` (a node-scoped field), never against a
 # container's terminated reason: an in-container OOMKill under an explicit ``resources.limits.memory``
@@ -179,7 +207,6 @@ NODE_LOSS_POD_STATUS_REASONS: frozenset[str] = frozenset(
     {
         "NodeLost",
         "NodeShutdown",
-        "Shutdown",
         "NodeAffinity",
         "Evicted",
     }
@@ -188,7 +215,9 @@ NODE_LOSS_POD_STATUS_REASONS: frozenset[str] = frozenset(
 # phaze-1q4g: the k8s>=1.26 pod condition that says "the control plane has decided to terminate this
 # pod" (node shutdown, taint-manager deletion, PodGC after node deletion, scheduler preemption,
 # Eviction API). Its presence is the modern, reason-agnostic form of the same node-scoped signal the
-# legacy ``status.reason`` strings above carry, so both are read.
+# legacy ``status.reason`` strings above carry, so both are read. PINNED (phaze-pe41d) as
+# ``v1.DisruptionTarget`` in ``staging/src/k8s.io/api/core/v1/types.go`` at v1.36.2 -- see
+# ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go``.
 _DISRUPTION_TARGET_CONDITION = "DisruptionTarget"
 
 # phaze-202e: how long ``PodScheduled=False/Unschedulable`` must PERSIST before it counts as a wedge
@@ -764,7 +793,7 @@ def _unschedulable_since(pod: Any) -> datetime | None:
     """
     status = getattr(pod, "status", None) or {}
     for cond in status.get("conditions", []) or []:
-        if cond.get("type") == "PodScheduled" and cond.get("status") == "False" and cond.get("reason") == _REASON_UNSCHEDULABLE:
+        if cond.get("type") == _CONDITION_POD_SCHEDULED and cond.get("status") == "False" and cond.get("reason") == _REASON_UNSCHEDULABLE:
             return _parse_k8s_time(cond.get("lastTransitionTime"))
     return None
 
