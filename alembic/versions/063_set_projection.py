@@ -37,6 +37,19 @@ _PROFILE_TABLE = "set_profile"
 # order they are dropped -- named once so upgrade and downgrade cannot drift apart.
 _WINDOW_COLUMNS = ("energy", "camelot", "mood_scores")
 
+# phaze-gx8p2: none of the three columns are ever filtered in a WHERE clause --
+# services/set_projection.py and set_projection_writer.py read them only after loading a file's
+# windows by file_id, aggregating in Python. analysis_window is also the high-write table
+# phaze-gx8p2 itself names as not needing this fix: a window row is inserted on every analysis,
+# so autoanalyze has ongoing traffic to fire on, unlike the frozen metadata/cloud_job case 068 fixed.
+ANALYZE_EXEMPT_TABLES = {
+    _WINDOW_TABLE: (
+        "energy/camelot/mood_scores are never filtered in a WHERE clause -- read only after "
+        "loading windows by file_id and aggregated in Python. analysis_window is also a "
+        "high-write table (continuous per-window inserts), so autoanalyze has ongoing traffic."
+    ),
+}
+
 
 def upgrade() -> None:
     """Add the per-window projection columns, then create the per-file profile table."""
