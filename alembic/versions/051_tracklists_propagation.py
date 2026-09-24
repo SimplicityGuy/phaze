@@ -70,6 +70,19 @@ _SET_KEY_INDEX = "ix_tracklists_propagated_from_set_key"
 _CANONICAL = sa.column(_SET_KEY_COLUMN).is_(None)
 _PROPAGATED = sa.column(_SET_KEY_COLUMN).is_not(None)
 
+# phaze-gx8p2: propagated_from_set_key IS filtered (CANONICAL_TRACKLIST_CLAUSE in
+# models/tracklist.py, and the partial index above), but tracklists held ~15 rows read-only
+# measured 2026-09-23 (phaze-3agnm) -- at that cardinality a default-selectivity misestimate
+# cannot produce the per-row nested-loop cost migration 068 exists to prevent. Revisit if
+# tracklists grows into the thousands.
+ANALYZE_EXEMPT_TABLES = {
+    _TABLE: (
+        "propagated_from_set_key is filtered (CANONICAL_TRACKLIST_CLAUSE), but tracklists held "
+        "~15 rows read-only measured 2026-09-23 (phaze-3agnm) -- too small for the misestimate "
+        "this guard exists to prevent. Revisit if tracklists grows into the thousands."
+    ),
+}
+
 
 def upgrade() -> None:
     """Add the propagation columns and narrow the external_id uniqueness to canonical rows."""

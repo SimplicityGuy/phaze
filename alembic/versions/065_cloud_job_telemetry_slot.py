@@ -60,6 +60,16 @@ _COLUMN = "telemetry_slot"
 # stays bare.
 _CHECK = "telemetry_slot_nonnegative"
 
+# phaze-gx8p2: telemetry_slot IS NOT NULL is the exact filter migration 068 (phaze-3agnm) fixed
+# the statistics for, via `ANALYZE public.cloud_job` -- see that migration's docstring, which
+# names this column and its query (services/burst_telemetry_slots.allocate_slot) directly.
+ANALYZE_EXEMPT_TABLES = {
+    _TABLE: (
+        "telemetry_slot IS NOT NULL is the exact filter migration 068 (phaze-3agnm) fixed the "
+        "statistics for, via `ANALYZE public.cloud_job` -- see that migration's docstring."
+    ),
+}
+
 
 def upgrade() -> None:
     """Add the NULLABLE slot column and its non-negativity CHECK; every existing row backfills to NULL."""
