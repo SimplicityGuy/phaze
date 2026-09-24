@@ -335,13 +335,19 @@ async def test_cross_fs_copy_runs_off_loop(tmp_path: Path, monkeypatch: pytest.M
     assert "_atomic_cross_fs_copy" in offloaded
 
 
-def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
-    """The streamed copy reproduces bytes exactly and preserves mtime (copystat)."""
+def test_streamed_copy_preserves_content_mode_and_mtime(tmp_path: Path) -> None:
+    """The streamed copy reproduces bytes exactly and preserves mode and mtime (copystat).
+
+    phaze-x4kvv: the source mode is deliberately NOT the 0o644 the destination is
+    created with, so a dropped ``copystat`` shows up in ``st_mode`` as well as mtime.
+    The cross-device half of this lives in test_execution_cross_device.py.
+    """
     src = tmp_path / "src.bin"
     payload = b"q" * (2 * 1024 * 1024 + 7)  # non-chunk-aligned size
     src.write_bytes(payload)
     import os as _os
 
+    src.chmod(0o640)
     _os.utime(src, (1_600_000_000, 1_600_000_000))
     dst = tmp_path / "nested" / "dst.bin"
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -351,6 +357,7 @@ def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
     with dst.open("rb") as fh:
         assert fh.read() == payload
     assert dst.stat().st_mtime == src.stat().st_mtime
+    assert dst.stat().st_mode == src.stat().st_mode
 
 
 # phaze-s0wu — the no-clobber guard must be ATOMIC, not check-then-act.
@@ -411,7 +418,12 @@ async def test_cross_fs_copy_publishes_to_a_free_destination(tmp_path: Path) -> 
     assert src.exists()  # the caller owns the unlink, not this primitive
 
 
-async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# phaze-x4kvv: Darwin's exFAT/MS-DOS refuse os.link with ENOTSUP, a DIFFERENT value from
+# EOPNOTSUPP there (one value on Linux). Measured on real volumes; see test_execution_cross_device.py.
+@pytest.mark.parametrize("link_errno", [errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM])
+async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_errno: int
+) -> None:
     """FAT/SMB/FUSE mounts cannot link -- the move must still work, via the documented fallback."""
     src = tmp_path / "src" / "<track-03>.mp3"
     src.parent.mkdir(parents=True, exist_ok=True)
@@ -420,7 +432,7 @@ async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(tm
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     def _no_links(_s: object, _d: object) -> None:
-        raise OSError(errno.EOPNOTSUPP, "operation not supported")
+        raise OSError(link_errno, "operation not supported")
 
     monkeypatch.setattr(execmod.os, "link", _no_links)
     execmod._atomic_cross_fs_copy(src, dst)
