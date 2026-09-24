@@ -198,6 +198,81 @@ at exactly the moment they were most likely to be writing one. It now lists ``--
 ``.gitignore`` excludes (gate ``*.log`` files, ``.venv``). In CI the untracked set is empty, so this
 changes nothing there; locally, an untracked in-scope scratch file IS scanned and can fail the run
 -- deliberately, since it would fail the moment it was committed.
+
+A SECOND VOCABULARY SHAPE, VERB-BASED NOT NOUN-BASED (phaze-lzb92, decided 2026-09-24 -- the
+implementer's decision, not the operator's: the bead's acceptance criteria hand this exact choice
+to whoever measures it, so no question was put to the operator). ``src/phaze/tasks/tag_write.py``
+words ADR-0012 (verification fidelity and operator attribution) rule 2's own prescribed citation shape -- "the question as it was put, the
+answer as it was given" -- as *"On 2026-08-22 the operator was asked which fix mechanism to use
+and answered with the option label ... -- that is the whole of what they chose"* (bead
+phaze-2zeu0). That sentence shares not one word with ``_VOCAB_RE``'s noun-phrase vocabulary
+(decision/decided/confirmed/approved/directed/granted/chose/chosen/choice/ruling), so the
+paragraph was invisible to this guard's vocabulary match -- it happens to already carry both a
+date and a bead id, so nothing was wrong in the tree, but a FUTURE paraphrase in this shape with
+neither would pass silently, which is the same "green proves nothing" defect this whole module
+exists to close.
+
+MEASURED BEFORE CHOOSING, per the acceptance criteria, against this guard's own real-tree scope
+(``_scope_files()``, 2026-09-24: 1,517 files, 34,114 extracted paragraphs, this file's own
+fixture text excluded from the count). Widening with SINGLE extra verbs, each independently
+treated as vocabulary and measured separately so the per-verb count is auditable rather than a
+pooled total:
+
+* ``operator (was|were) asked`` alone: 3 matches -- 2 already correctly cited
+  (``docs/telemetry/overhead.md``, and ``tag_write.py`` itself), 1 FALSE POSITIVE
+  (``tests/browser/test_metadata_actions.py``: "proves the operator was asked, never that
+  answering ... stopped anything" -- describes what the TEST proves, not a decision).
+* ``operator answered`` alone: 1 match, and it is NOT a false positive -- it is a REAL, separate
+  citation gap, out of this bead's scope: ``.github/workflows/tests.yml``'s *"Asked whether CI
+  should move to 7.1.5 ..., the operator answered: 'leave CI on 8.1.x ...'"* is its own paragraph
+  (a blank ``#`` line separates it from the already-cited ``OPERATOR DECISION (phaze-b62ri,
+  2026-08-20)`` paragraph just above it) and carries neither a date nor a bead id of its own.
+  Flagged here rather than fixed silently: it is a different file and a different decision than
+  this bead's tag_write.py motivator, so fixing it is left to a follow-up rather than expanding
+  this bead's scope.
+* ``operator said``: 2 matches, both FALSE POSITIVES -- ``scripts/recover_operator_decisions.py``
+  and its test module both discuss, generically, the LABEL-vs-DESCRIPTION conflation ("quoting a
+  description as if the operator said it"), not a specific decision.
+* ``operator selected``: 4 matches, all FALSE POSITIVES -- ``recover_operator_decisions.py``'s
+  module docstring, ``proposal_queries.py``'s one-line docstring ("the exact proposal snapshot an
+  operator selected"), and two test docstrings narrating generic API/scenario semantics ("the
+  operator selected nothing", "the operator selected /data/music" as a test fixture's premise).
+* ``operator picked`` / ``operator responded``: 0 matches each.
+
+Totalled per-paragraph (a paragraph matching more than one verb is not double-counted): 10 newly
+brought into scope, of which 8 are FALSE POSITIVES, 1 is the tag_write.py citation this bead
+exists for (already correctly cited), and 1 is the genuine-but-out-of-scope tests.yml gap above.
+8 false positives against 1 in-scope true positive is a flood by this file's own standard
+(compare the single-digit false-positive counts phaze-71q9y and phaze-h8ug4 measured before
+narrowing THEIR exclusions) -- widening on single verbs, including ``chose``/``said`` from the
+bead's own "asked / answered / chose / said" phrasing, is REJECTED. (``chose`` needs no widening
+at all -- it already matches ``_VOCAB_RE``, e.g. "operator chose"; only ``said`` was actually new
+vocabulary to weigh, and it floods.)
+
+Requiring the COMPOUND Q&A shape instead -- ``operator (was|were) asked`` co-occurring with
+``answered``/``answers`` **in the same paragraph** -- produced exactly ONE match tree-wide:
+``tag_write.py``'s own citation, already correctly dated and beaded. Zero false positives: a
+sentence that only says the operator "was asked" or "was shown" a question and never completes
+it with an actual answer (``docs/telemetry/overhead.md``'s "declined every narrowing option" and
+``recover_operator_decisions.py``'s "was shown" phrasing) does not carry the compound shape and
+is untouched; the tests.yml gap above ALSO stays untouched, because its sentence never says
+"operator was/were asked" (the question's subject is elided: "Asked whether ..., the operator
+answered"). So: **yes, this paraphrase shape is checkable** -- narrowly, as a second, independent
+vocabulary trigger (``_ASKED_RE`` + ``_ANSWERED_RE`` in :func:`_has_unexcluded_vocab_match`)
+alongside ``_VOCAB_RE``, not by adding words to it. The single-verb widening that WOULD flood is
+explicitly rejected, not merely left undone, so a future seat does not re-measure the same
+rejected shape from scratch.
+
+THE KNOWN LIMIT, stated rather than hidden (the "if no" half, for the shapes that stay
+unchecked): "operator selected", "operator said", "operator picked", and "operator responded" are
+NOT checked, on the measurement above -- each either produced no real hits or produced only false
+positives when tried alone, and none was shown to co-occur with a second word the way ``asked``
+co-occurs with ``answered``, so no compound analogous to the Q&A shape was found for them. A
+differently-worded paraphrase sharing none of ``_VOCAB_RE``'s or ``_ASKED_RE``'s words at all
+(e.g. "the operator weighed in with X") is likewise still invisible, exactly as the
+whole-vocabulary approach always leaves a residual for wording nobody has written yet -- see
+``_has_unexcluded_vocab_match``'s own docstring for why this is a deliberate boundary, not an
+oversight.
 """
 
 from __future__ import annotations
@@ -242,6 +317,16 @@ _VOCAB_RE = re.compile(
     r"operator[-\s]+(decision|decided|confirmed|approved|directed|granted|chose|chosen|choice|ruling)",
     re.IGNORECASE,
 )
+
+# A second, independent vocabulary trigger for the VERB-based Q&A shape (phaze-lzb92) --
+# ADR-0012 (verification fidelity and operator attribution) rule 2's own prescribed citation language, "the question as it was put, the answer as
+# it was given", shares no word with `_VOCAB_RE` above. See the module docstring's "A SECOND
+# VOCABULARY SHAPE" section for the measurement that landed on this exact pair rather than a
+# wider single-verb match: the two must BOTH appear in the same paragraph (wired in
+# `_has_unexcluded_vocab_match`) -- "asked" alone (no answer ever given) is not a claim, and
+# widening the verb set beyond "asked"/"answered" measured 7 false positives against 1 real gap.
+_ASKED_RE = re.compile(r"\boperator\s+(?:was|were)\s+asked\b", re.IGNORECASE)
+_ANSWERED_RE = re.compile(r"\b(?:answered|answers)\b", re.IGNORECASE)
 
 # Grammatical shapes that match the vocabulary but are not attribution claims -- see the module
 # docstring's "ALLOWLIST BY SHAPE" section for what each one is and where it was found. The third
@@ -547,8 +632,16 @@ def _sentence_carries_citation_evidence(text: str, start: int, end: int) -> bool
 
 
 def _has_unexcluded_vocab_match(text: str) -> bool:
-    """True if at least one ``_VOCAB_RE`` occurrence in ``text`` is NOT covered by a shape
+    """True if at least one vocabulary occurrence in ``text`` is NOT covered by a shape
     exclusion's own match span.
+
+    Two INDEPENDENT vocabulary sources feed ``vocab_matches``: ``_VOCAB_RE``'s noun-phrase words
+    (decision/chose/approved/...), and -- phaze-lzb92 -- the verb-based Q&A shape, ``_ASKED_RE``
+    occurrences, but ONLY when ``_ANSWERED_RE`` also matches somewhere in the same paragraph. That
+    co-occurrence requirement is the false-positive guard the module docstring's "A SECOND
+    VOCABULARY SHAPE" section measured: "the operator was asked" alone, never followed by an
+    answer anywhere in the paragraph, is not a claim (``docs/telemetry/overhead.md``'s "declined
+    every narrowing option"), so it must not become a vocabulary occurrence on its own.
 
     Checked per OCCURRENCE rather than "does any shape pattern match somewhere in the paragraph":
     a paragraph that mentions an excluded shape ('an operator-chosen sort key ties often') AND,
@@ -556,13 +649,19 @@ def _has_unexcluded_vocab_match(text: str) -> bool:
     fail on the second occurrence -- a shape exclusion recognizes a non-claim, it does not launder
     an unrelated claim sitting next to it. Every ``_SHAPE_EXCLUSIONS`` regex is written so its own
     match span always contains the ``operator ... <word>`` text it is excusing, so span
-    containment is enough to associate an exclusion with the specific occurrence it covers.
+    containment is enough to associate an exclusion with the specific occurrence it covers. None
+    of the four currently recognizes the Q&A shape's ``operator was/were asked`` wording, so an
+    ``_ASKED_RE`` occurrence is never covered by an existing exclusion span today -- but it is
+    still run through the same containment check, not special-cased, so a future shape exclusion
+    written broadly enough to also match "operator was asked" is checked exactly like any other.
 
     A YIELDING exclusion's span is dropped when its own sentence carries citation evidence (see
     :func:`_sentence_carries_citation_evidence`), so the occurrence it would have excused is judged
     like any other.
     """
     vocab_matches = list(_VOCAB_RE.finditer(text))
+    if _ANSWERED_RE.search(text):
+        vocab_matches.extend(_ASKED_RE.finditer(text))
     if not vocab_matches:
         return False
     shape_spans = [
@@ -615,6 +714,18 @@ def test_every_operator_decision_claim_carries_a_date_and_a_bead_id() -> None:
     paragraphs: list[_Paragraph] = []
     for path in _scope_files():
         paragraphs.extend(_paragraphs_for_file(path))
+
+    # phaze-lzb92: a scope regression (an empty or near-empty `_scope_files()`, a pathspec typo,
+    # a walk that silently stops descending) makes `violations` trivially empty and this test
+    # trivially green -- the exact "a green guard proves the guard did not examine you" failure
+    # this whole module exists to close, applied to itself. 34,114 paragraphs were extracted at
+    # the time of this measurement (2026-09-24); 5,000 is a floor with headroom on both sides,
+    # not a pinned count -- see CLAUDE.md's "a count is a property of a RUN, never of a SUITE".
+    assert len(paragraphs) > 5000, (
+        f"only {len(paragraphs)} paragraphs were extracted from the real tree -- this guard would "
+        "pass vacuously rather than having examined the repo; investigate `_scope_files()` and "
+        "`_paragraphs_for_file()` before trusting a green run here"
+    )
 
     violations = [
         _format_violation(p, has_date=bool(_ISO_DATE_RE.search(p.text)), has_bead=bool(_BEAD_ID_RE.search(p.text)))
@@ -774,6 +885,40 @@ class TestScannerMechanics:
         for source in cases:
             paragraphs = _comment_run_paragraphs_python("fixture.py", source)
             assert list(_iter_uncited_claims(iter(paragraphs))) == [], f"wrongly flagged: {source!r}"
+
+    # phaze-lzb92: ``src/phaze/tasks/tag_write.py``'s own motivating shape, verbatim in its
+    # load-bearing phrase -- a real citation using ADR-0012 (verification fidelity and operator attribution) rule 2's own prescribed "question as
+    # put, answer as given" wording, which shares no vocabulary word with the noun-phrase `_VOCAB_RE`.
+    _QANDA_CITATION = (
+        "# On 2026-08-22 the operator was asked which fix mechanism to use and answered with the\n"
+        '# option label "Re-hash on the agent, PATCH it back" (bead phaze-2zeu0) -- that is the\n'
+        "# whole of what they chose.\n"
+    )
+
+    def test_the_qanda_shape_paraphrase_is_now_checked(self) -> None:
+        """Mutation proof, per this bead's acceptance criteria: break the citation, confirm this
+        test goes red; restore it, confirm it goes green. A green run alone proves nothing -- see
+        the module docstring's 'WHY EXCLUDED OCCURRENCES ARE NOT REPORTED' section.
+        """
+        cited = _comment_run_paragraphs_python("fixture.py", self._QANDA_CITATION)
+        assert list(_iter_uncited_claims(iter(cited))) == [], "the fully cited Q&A form must pass"
+
+        for removed in ("2026-08-22", " (bead phaze-2zeu0)"):
+            paraphrased = self._QANDA_CITATION.replace(removed, "")
+            violations = list(_iter_uncited_claims(iter(_comment_run_paragraphs_python("fixture.py", paraphrased))))
+            assert len(violations) == 1, f"removing {removed!r} from the Q&A citation was swallowed"
+
+    def test_operator_was_asked_without_an_answer_is_not_flagged(self) -> None:
+        """The ``docs/telemetry/overhead.md`` shape, measured on the real tree: the operator was
+        asked something, but the paragraph never says an answer was given (it says "declined"
+        instead) -- not a completed Q&A citation, so this must not become a vocabulary occurrence
+        on its own. Proves the co-occurrence requirement, not just the shape's positive case.
+        """
+        paragraphs = _comment_run_paragraphs_python(
+            "fixture.py",
+            "# The operator was asked whether to narrow it and declined every narrowing option.\n",
+        )
+        assert list(_iter_uncited_claims(iter(paragraphs))) == []
 
     def test_a_child_bead_id_does_not_end_a_sentence(self) -> None:
         """``phaze-bk9el.19``'s dot is not a sentence end, so the bead id before it stays in the sentence.
