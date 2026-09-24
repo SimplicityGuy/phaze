@@ -84,8 +84,15 @@ JOB_ENV_FROM_SECRET: frozenset[str] = frozenset({"PHAZE_AGENT_TOKEN"})
 #: is a fixed invariant of the lane (`PHAZE_AGENT_KIND`, above). `env` overrides `envFrom` of the
 #: same name, so a ConfigMap entry for any of these is silent dead weight, not a second source of
 #: truth -- docs/k8s-burst.md §6 says so for `PHAZE_AGENT_KIND` and the contract test enforces it
-#: for all three.
-JOB_ENV_CODE_INJECTED_ALWAYS: frozenset[str] = frozenset({"PHAZE_AGENT_CA_FILE", "PHAZE_JOB_FILE_ID", "PHAZE_AGENT_KIND"})
+#: for every one of them.
+#:
+#: `PHAZE_TELEMETRY_LANE` (phaze-7nl67) is the fourth, and it is unconditional for the same reason
+#: `PHAZE_AGENT_KIND` is: it is a fixed fact about the lane, not about the submit. It moves the pod's
+#: telemetry identity into the burst lane's own space (`phaze-analysis-burst-<slot>`), so a burst pod
+#: and a host-lane child holding the same slot index can never report one `service.instance.id`.
+#: Emitted even when no slot was allocated, so an over-cap pod degrades onto another BURST pod's
+#: identity rather than onto a host child's.
+JOB_ENV_CODE_INJECTED_ALWAYS: frozenset[str] = frozenset({"PHAZE_AGENT_CA_FILE", "PHAZE_JOB_FILE_ID", "PHAZE_AGENT_KIND", telemetry_slots.LANE_ENV})
 
 #: The telemetry-identity pair (phaze-w15ju), code-injected when -- and only when -- the controller
 #: managed to allocate a slot for this submit.
@@ -487,6 +494,9 @@ def build_job_manifest(
                                 {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
                                 {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
                                 {"name": "PHAZE_AGENT_KIND", "value": _ANALYZE_AGENT_KIND},
+                                # phaze-7nl67: the burst lane's own telemetry identity space --
+                                # see JOB_ENV_CODE_INJECTED_ALWAYS.
+                                {"name": telemetry_slots.LANE_ENV, "value": telemetry_slots.BURST_LANE},
                             ],
                             "envFrom": [
                                 {"configMapRef": {"name": kube.env_configmap_name}},

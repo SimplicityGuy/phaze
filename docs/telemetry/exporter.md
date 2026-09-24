@@ -77,7 +77,7 @@ labels:
 | `service.name` | `phaze-api`, `phaze-controller`, `phaze-agent`, `phaze-analysis`, `phaze-watcher` |
 | `service.namespace` | `phaze` |
 | `service.version` | the installed package version |
-| `service.instance.id` | **`PHAZE_TELEMETRY_INSTANCE` (default: the service name), plus a bounded worker-slot index** |
+| `service.instance.id` | **`PHAZE_TELEMETRY_INSTANCE` (default: the service name), plus `-burst` on a burst pod, plus a bounded worker-slot index** |
 | `phaze.role` | `api` / `controller` / `agent` / `analysis` / `watcher` |
 | `deployment.environment.name` | `PHAZE_DEPLOYMENT_ENVIRONMENT`, when set |
 
@@ -100,12 +100,16 @@ above the truth, growing to **221.5%** over twice as many exports
 [ADR-0017 §8](../design/0017-telemetry-export-topology.md)).
 
 So a producer that holds slot *n* reports `phaze-analysis-<n>`, or `host-compute-<n>` when
-the host is also pinned. **What this costs is bounded and stated:**
+the host is also pinned. A burst pod reports `phaze-analysis-burst-<n>` (see below).
+**What this costs is bounded and stated:**
 
 | | series |
 | --- | ---: |
-| analysis-role block × 4 slots | 9,160 |
-| whole-catalogue ceiling | 8,587 → **15,457** |
+| analysis-role block × (4 host-lane + 4 burst-lane slots), one agent host | 18,320 |
+| whole-catalogue ceiling, one agent host | 8,587 → **24,617** |
+
+Each additional agent host that runs analysis adds its own pool: another 2,290 × its
+`worker_process_pool_size`.
 
 The multiplier is the CONCURRENCY, and slots are reused by the next child, so the figure does
 **not** grow with the archive. Two variables control it, and an operator normally touches
@@ -140,12 +144,33 @@ bounds that lane's concurrency. **Do not put either key in the `phaze-agent-env`
 pod shares that object, so a value there would give every pod one identity, which is the merge
 itself. See ADR-0017 (telemetry export topology) §8d.
 
-> **One thing here is still open, and it is the one case where `PHAZE_TELEMETRY_INSTANCE` matters
-> for correctness rather than for readability.** The host and burst lanes share one slot space and,
-> by default, one base — so a host-lane child on slot 1 and a burst pod on slot 1 both report
-> `phaze-analysis-1` and merge, whenever both lanes are in flight at once. Setting
-> `PHAZE_TELEMETRY_INSTANCE` to a host role on the agent host removes it (`host-compute-1` against
-> `phaze-analysis-1`). Tracked as bead `phaze-7nl67`.
+**The two lanes also get separate identity spaces, and an operator sets nothing for that either**
+(`phaze-7nl67`). Both lanes number their slots from 0 and neither can see the other's, so on a shared
+base a host-lane child on slot 1 and a burst pod on slot 1 used to both report `phaze-analysis-1`
+and merge. Every burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the
+lane between the base and the slot: `phaze-analysis-burst-1`. Host-lane and burst-lane identities
+stay apart **whether or not `PHAZE_TELEMETRY_INSTANCE` is set**. Two guards make that hold:
+
+- the lane is a closed set;
+- on the analysis role, a `burst` segment in `PHAZE_TELEMETRY_INSTANCE` is escaped, and
+  `telemetry_instance_claims_a_reserved_lane` is logged. For example, `host-burst` becomes
+  `host-burst_`, so that host's children report `host-burst_-0` … `host-burst_-3`. The base is
+  escaped rather than discarded, so the host keeps its own identity instead of merging onto the
+  service name. Other roles keep the value as written: they export under their own `service.name`,
+  so their identity cannot meet a burst pod's.
+
+> **`PHAZE_TELEMETRY_INSTANCE` is still REQUIRED, and must be distinct per host, when more than one
+> agent host runs analysis.** The lane separates the host lane from the burst lane. It does not
+> separate one agent host from another. Each agent host's slot pool counts from 0, and that covers
+> the fileserver agent and every `kind="compute"` agent ([k8s-burst.md](../k8s-burst.md)). So two
+> hosts left unpinned both report `phaze-analysis-0` … `phaze-analysis-3`, and their counters merge
+> exactly as §8a of [ADR-0017](../design/0017-telemetry-export-topology.md) measured. Give each such
+> host its own role name (`host-prod`, `host-compute`). With a single agent host doing analysis,
+> setting it is optional.
+
+**Do not set `PHAZE_TELEMETRY_LANE` yourself.** The agent worker discards an inherited value with
+`telemetry_lane_inherited_discarded`, and in a pod the code-injected value wins. The cost is the
+table above: the two lanes' slots now add instead of sharing.
 
 Per-process identity is not thrown away — it is carried on **spans**, where it is stored
 per-occurrence and aged out rather than forever and per-series: `process.pid`, `host.name`,

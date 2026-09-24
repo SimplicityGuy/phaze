@@ -12,16 +12,20 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import sys
 import time
 from typing import TYPE_CHECKING
+import uuid
 
 import pytest
 from structlog.testing import capture_logs
 
 from phaze.analysis_child import _TARGET_ENV
+from phaze.config_backends import KubeConfig
+from phaze.services import kube_staging
 from phaze.services.analysis_exec import AnalysisStalledError, AnalysisSubprocessError, run_analysis_subprocess
 from phaze.telemetry import slots
-from tests.analyze._child_stubs import _result
+from tests.analyze._child_stubs import _GATE_MAX_WAIT_SEC, _result
 
 
 if TYPE_CHECKING:
@@ -619,3 +623,86 @@ async def test_a_child_accepts_a_slot_above_the_default_bound(monkeypatch: pytes
     assert result["echo"]["instance_id"] == "phaze-analysis-5", (
         "the child refused a slot above the default bound, so it fell back to the shared identity"
     )
+
+
+# phaze-7nl67: a burst pod replayed as a real process, so both lanes can be driven at once
+_POD_SCRIPT = """
+import asyncio, json
+from phaze.services.analysis_exec import run_analysis_subprocess
+result = asyncio.run(run_analysis_subprocess("/fake/pod.mp3", "/fake/models", stall_timeout=30.0))
+print(json.dumps(result["echo"]))
+"""
+
+
+async def test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_identities(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """phaze-7nl67 ACCEPTANCE 2: a host-lane child and a burst pod, alive AT ONCE, never share an identity.
+
+    **The collision is staged, not left to chance.** The host lane's fresh pool hands its child slot
+    0, and the burst pod is built from a real Job manifest carrying the controller's slot 0 -- the
+    same index, which is the case the bead names. ``PHAZE_TELEMETRY_INSTANCE`` is unset on both
+    sides, the default and the exposed configuration. Before the lane key both children resolved
+    ``phaze-analysis-0`` and their cumulative counters merged at the collector (+84.4% on
+    ``increase()``, ADR-0017 (telemetry export topology) section 8a).
+
+    **Both lanes run across real process boundaries, from the analysis driver down.** The host side
+    is ``run_analysis_subprocess`` in this process, exactly as the agent worker calls it. The burst
+    side is a separate Python process whose environment is this one's plus the manifest's container
+    ``env`` (``env`` overrides ``envFrom``, as kubelet applies it). That process calls
+    ``run_analysis_subprocess`` directly. A real pod gets there through ``job_runner.run``, which
+    also presigns, downloads and calls back, and which this test does NOT drive. That is equivalent
+    for the identity only while ``job_runner`` leaves the telemetry environment alone, which it does
+    today: it reads ``PHAZE_LOG_FRIENDLY`` and writes nothing to ``os.environ``. The pod's own
+    ``slots.assign`` pass-through is exercised either way. Each identity is read from its analysis
+    child's own ``bootstrap._instance_id``.
+
+    **Concurrency is proved, not assumed**: the stub's barrier holds each child until both have
+    registered, and the elapsed time shows the barrier was released by the peer rather than by its
+    own timeout.
+    """
+    _point_child_at(monkeypatch, "telemetry_identity_analyze")
+    identity_dir = tmp_path / "identities"
+    identity_dir.mkdir()
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_DIR", str(identity_dir))
+    monkeypatch.setenv("PHAZE_STUB_IDENTITY_PEERS", "2")
+    for name in ("PHAZE_TELEMETRY_INSTANCE", slots.SLOT_ENV, slots.SLOT_MAX_ENV, slots.LANE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    slots._reset_for_tests()
+    slots.set_default_pool_size(2)
+
+    kube = KubeConfig(
+        api_url="https://kube.example.com",
+        namespace="phaze",
+        local_queue="phaze-lq",
+        job_image="phaze/job-runner:test",
+        cpu_request="1500m",
+        memory_request="3Gi",
+    )
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), kube, telemetry_slot=0, telemetry_slot_max=4)
+    pod_env = dict(os.environ)
+    pod_env.update({entry["name"]: entry["value"] for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]})
+
+    async def _burst_pod() -> dict[str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", _POD_SCRIPT, env=pod_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        assert proc.returncode == 0, stderr.decode()
+        echo: dict[str, str] = json.loads(stdout.decode().strip().splitlines()[-1])
+        return echo
+
+    started = time.monotonic()
+    host_result, pod_echo = await asyncio.gather(
+        run_analysis_subprocess("/fake/host.mp3", "/fake/models", stall_timeout=30.0),
+        _burst_pod(),
+    )
+    elapsed = time.monotonic() - started
+    host_echo = host_result["echo"]
+
+    # The staged collision really was staged: the same slot index on both lanes.
+    assert (host_echo["slot_env"], pod_echo["slot_env"]) == ("0", "0")
+    assert host_echo["instance_id"] != pod_echo["instance_id"], f"both lanes exported under {host_echo['instance_id']!r}"
+    assert (host_echo["instance_id"], pod_echo["instance_id"]) == ("phaze-analysis-0", "phaze-analysis-burst-0")
+
+    assert host_echo["pid"] != pod_echo["pid"]
+    assert len(list(identity_dir.glob("*.json"))) == 2
+    assert elapsed < _GATE_MAX_WAIT_SEC, "the barrier timed out, so the two children were never shown to overlap"

@@ -609,7 +609,8 @@ async def test_two_concurrent_burst_submissions_reach_the_child_with_distinct_id
     # deference both pods would report `phaze-analysis-0` from their own pools of one.
     assert [taken for _identity, taken in replayed] == [None, None]
     identities = [identity for identity, _taken in replayed]
-    assert identities == ["phaze-analysis-0", "phaze-analysis-1"]
+    # phaze-7nl67: in the BURST lane's own identity space, never the host lane's `phaze-analysis-<n>`.
+    assert identities == ["phaze-analysis-burst-0", "phaze-analysis-burst-1"]
     assert len(set(identities)) == 2
 
 
@@ -681,6 +682,8 @@ async def test_an_exhausted_pool_still_submits_the_job_without_a_slot(
     assert slots.SLOT_MAX_ENV not in overflow
     assert set(overflow) == kube_staging.JOB_ENV_CODE_INJECTED_ALWAYS
     # The pod allocates its own slot 0 -- the pre-fix behaviour, reached only past the cap.
-    assert _pod_identity(overflow) == ("phaze-analysis-0", 0)
+    # Still inside the burst lane (phaze-7nl67): the lane key is unconditional, so an over-cap pod
+    # merges with another burst pod, never with a host-lane child.
+    assert _pod_identity(overflow) == ("phaze-analysis-burst-0", 0)
     # The submit itself still happened for every file, slot or no slot.
     assert len(spy.calls) == _KUEUE_CAP + 1

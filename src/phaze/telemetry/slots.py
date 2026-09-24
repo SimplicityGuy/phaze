@@ -39,7 +39,11 @@ this affordable and the per-pod id unaffordable.
 **A slot is NOT a host, and the two labels stack deliberately.** ``PHAZE_TELEMETRY_INSTANCE``
 remains the per-host override, whose value is the operator's to pick and is bounded by the
 number of hosts; the slot is appended to it, so ``host-prod`` with four children is
-``host-prod-0 .. host-prod-3``.
+``host-prod-0 .. host-prod-3``. A burst pod carries a third label between the two, the LANE
+(:data:`LANE_ENV`, phaze-7nl67), because the host pool and the burst allocator both count from 0
+and cannot see each other: ``phaze-analysis-burst-0 ..``. That gives each lane its own identity
+space, so it ADDS to the bound rather than sharing it -- ``docs/design/0017-telemetry-export-topology.md``
+section 8b has the arithmetic.
 
 **THE BOUND IS SENT WITH THE SLOT, not documented alongside it.** The parent's pool size
 is stamped into the child's environment by :func:`assign`, so a raised
@@ -92,6 +96,45 @@ SLOT_ENV = "PHAZE_TELEMETRY_SLOT"
 #: (``phaze-w15ju``), and :func:`assign` passes an inherited slot through untouched.
 SLOT_MAX_ENV = "PHAZE_TELEMETRY_SLOT_MAX"
 
+#: Names the LANE whose slot space this process's slot was drawn from, when that is not the host
+#: lane (phaze-7nl67). The host lane's pool and the burst lane's controller-allocated slots both
+#: count from 0, and neither can see the other's allocations -- the host pool is process-local
+#: memory, the burst allocator reads ``cloud_job`` rows the host lane never writes for a local
+#: dispatch. So a host child and a burst pod on the same index resolved to the same identity and
+#: merged at the collector, whenever ``PHAZE_TELEMETRY_INSTANCE`` was left unset (the default). The
+#: lane is inserted between the base and the slot, which gives each lane its OWN identity space:
+#: ``phaze-analysis-1`` for a host child, ``phaze-analysis-burst-1`` for a burst pod.
+#:
+#: **Code-injected, never operator-set**: ``kube_staging.build_job_manifest`` stamps it into every
+#: Job's ``env``, and the agent worker -- the host lane's seat -- disowns any value it inherits
+#: (:func:`disown_inherited_lane`). Operator decision 2026-09-24, "Code-inject burst lane (Recommended)";
+#: the question, the answer and the rounds before it are in bead ``phaze-7nl67``'s comments and
+#: ``docs/design/0017-telemetry-export-topology.md`` section 8d. Carrying it in a separate key rather
+#: than an injected ``PHAZE_TELEMETRY_INSTANCE`` is the IMPLEMENTER'S decision (dispatcher correction
+#: comment on ``phaze-7nl67``, 2026-09-24), made so the operator's host override keeps working on both
+#: lanes.
+LANE_ENV = "PHAZE_TELEMETRY_LANE"
+
+#: The burst lane's name, and the only value :data:`LANE_ENV` may carry.
+BURST_LANE = "burst"
+
+#: Every lane name :func:`resolve_lane` accepts. A CLOSED set on purpose: the lane multiplies every
+#: series the analysis role emits, exactly like the slot, so an arbitrary value would be an unbounded
+#: identity by another name. The same set is RESERVED against the analysis role's operator base
+#: (:func:`escape_reserved_lanes`), which is what makes the two lanes' identities disjoint rather than
+#: merely different by default.
+LANES: frozenset[str] = frozenset({BURST_LANE})
+
+#: The only role a lane can apply to. Lanes separate CONCURRENT ANALYSIS producers, and the analysis
+#: child is the only process a burst pod exports from. Every other role exports under its own
+#: ``service.name`` (the Prometheus ``job``), and an identity only merges within one job, so a
+#: ``burst`` segment in another role's base can never meet a burst pod's identity.
+LANE_ROLE = "analysis"
+
+#: Appended to a reserved lane segment found in an analysis-role operator base. See
+#: :func:`escape_reserved_lanes`.
+RESERVED_SEGMENT_ESCAPE = "_"
+
 #: Matches ``config_base.Settings.worker_process_pool_size``'s default, which is what
 #: actually bounds concurrent analysis children. Pinned against it by
 #: ``tests/shared/telemetry/test_telemetry_slots.py::test_the_default_bound_matches_the_worker_pool_default``
@@ -140,6 +183,47 @@ def resolve_slot(environ: Mapping[str, str] | None = None) -> int | None:
         log.warning("telemetry_slot_out_of_range slot=%d bound=%d using_shared_identity", slot, bound)
         return None
     return slot
+
+
+def resolve_lane(environ: Mapping[str, str] | None = None) -> str | None:
+    """This process's validated lane, or None for the host lane.
+
+    Fails closed like :func:`resolve_slot`: a value outside :data:`LANES` is refused and logged, and
+    the process carries on in the host lane's identity space. Absent is the normal state of every
+    process but a burst pod's, so it does not log.
+    """
+    raw = (os.environ if environ is None else environ).get(LANE_ENV, "").strip()
+    if not raw:
+        return None
+    if raw not in LANES:
+        log.warning("telemetry_lane_unknown value=%r using_host_lane", raw)
+        return None
+    return raw
+
+
+def base_claims_a_lane(base: str) -> bool:
+    """Whether an operator-supplied base contains a reserved lane name as a ``-`` segment."""
+    return any(segment in LANES for segment in base.split("-"))
+
+
+def escape_reserved_lanes(base: str) -> str:
+    """Rewrite each reserved lane segment of an analysis-role base so it no longer reads as a lane.
+
+    **This is what makes the two identity spaces DISJOINT, not merely different by default.** A host
+    identity is ``<base>[-<slot>]`` and a burst identity is ``<base>-burst[-<slot>]``. The only way
+    a host identity can equal a burst one is for the host's base itself to carry a ``burst`` segment:
+    ``PHAZE_TELEMETRY_INSTANCE=host-burst`` on the agent host would resolve its slot-1 child to the
+    identity of a burst pod whose own base is ``host``. After this rewrite a host identity has no
+    ``burst`` segment at all, and every burst identity has one, so no pair can collide.
+
+    **It ESCAPES rather than discarding the base, and the difference is a merge.** An earlier version
+    fell back to the service name. Two agent hosts that both hit that fallback would then both report
+    ``phaze-analysis-<n>`` and merge, which is the defect this whole module exists to prevent, moved
+    one level up. ``host-burst`` becomes ``host-burst_``: still the operator's own, host-distinct name,
+    and no longer a lane. Two hosts could only collide after the rewrite if the operator had named one
+    literally ``host-burst_``, and giving two hosts one name is already the operator's own collision.
+    """
+    return "-".join(f"{segment}{RESERVED_SEGMENT_ESCAPE}" if segment in LANES else segment for segment in base.split("-"))
 
 
 class SlotPool:
@@ -259,6 +343,24 @@ def disown_inherited_slot(environ: dict[str, str] | None = None) -> int | None:
         return None
     log.warning("telemetry_slot_inherited_discarded slot=%d reason=this_process_allocates_its_own", inherited)
     return inherited
+
+
+def disown_inherited_lane(environ: dict[str, str] | None = None) -> str | None:
+    """Drop a lane this process INHERITED; return the value removed, or None. The host lane's seat calls it.
+
+    The same ownership rule as :func:`disown_inherited_slot`, for the same reason: the agent worker
+    allocates host-lane slots, so a ``PHAZE_TELEMETRY_LANE=burst`` left in its environment would ride
+    ``child_environment``'s copy into every child and move the whole host pool into the BURST lane's
+    identity space -- where host slot 1 and burst slot 1 merge again, which is the defect the lane
+    exists to close (phaze-7nl67). Logged rather than silently ignored, so the operator's value does
+    not vanish without a trace.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.pop(LANE_ENV, "").strip()
+    if not raw:
+        return None
+    log.warning("telemetry_lane_inherited_discarded lane=%r reason=this_process_is_the_host_lane", raw)
+    return raw
 
 
 def assign(environ: dict[str, str], *, pool: SlotPool | None = None) -> tuple[dict[str, str], int | None]:

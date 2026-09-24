@@ -28,7 +28,7 @@ from phaze.telemetry import bootstrap, slots
 
 @pytest.fixture(autouse=True)
 def _clean_slots(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (slots.SLOT_ENV, slots.SLOT_MAX_ENV, bootstrap.INSTANCE_ENV):
+    for name in (slots.SLOT_ENV, slots.SLOT_MAX_ENV, slots.LANE_ENV, bootstrap.INSTANCE_ENV):
         monkeypatch.delenv(name, raising=False)
     slots._reset_for_tests()
 
@@ -381,3 +381,77 @@ def test_the_agent_worker_startup_disowns_before_it_spawns_anything() -> None:
     assert called.index("disown_inherited_slot") > called.index("set_default_pool_size"), (
         "the pool must be sized from the real concurrency knob before the inherited slot is discarded"
     )
+
+
+# phaze-7nl67: the LANE, which gives the burst lane its own identity space
+
+
+def test_the_lane_is_a_closed_set_and_fails_closed(caplog: pytest.LogCaptureFixture) -> None:
+    """Only a known lane is honoured; anything else is refused and logged, like a bad slot.
+
+    The lane multiplies every series the analysis role emits, exactly as the slot does, so an
+    arbitrary value would be an unbounded identity under another name. Absent is the normal state
+    of every process that is not a burst pod, so it is silent.
+    """
+    assert slots.resolve_lane({}) is None
+    assert slots.resolve_lane({slots.LANE_ENV: "  "}) is None
+    assert slots.resolve_lane({slots.LANE_ENV: slots.BURST_LANE}) == "burst"
+    assert slots.resolve_lane({slots.LANE_ENV: " burst "}) == "burst"
+    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
+        assert slots.resolve_lane({slots.LANE_ENV: "pod-7f3a"}) is None
+    assert any("telemetry_lane_unknown" in record.getMessage() for record in caplog.records)
+
+
+def test_a_base_claims_a_lane_only_by_a_whole_segment() -> None:
+    """A reserved lane name counts as a ``-`` segment, not as a substring.
+
+    ``burst`` inside a longer word says nothing about the identity's shape: only a whole segment
+    can make a host identity equal to ``<base>-burst-<slot>``.
+    """
+    assert slots.base_claims_a_lane("burst")
+    assert slots.base_claims_a_lane("phaze-analysis-burst")
+    assert slots.base_claims_a_lane("host-burst-compute")
+    assert not slots.base_claims_a_lane("host-compute")
+    assert not slots.base_claims_a_lane("bursty-host")
+    assert not slots.base_claims_a_lane("phaze-analysis")
+
+
+def test_escaping_rewrites_only_whole_reserved_segments() -> None:
+    """The escape is segment-wise and leaves everything else in the operator's base untouched."""
+    assert slots.escape_reserved_lanes("host-burst") == "host-burst_"
+    assert slots.escape_reserved_lanes("burst") == "burst_"
+    assert slots.escape_reserved_lanes("a-burst-b-burst") == "a-burst_-b-burst_"
+    assert slots.escape_reserved_lanes("bursty-host") == "bursty-host"
+    assert not slots.base_claims_a_lane(slots.escape_reserved_lanes("host-burst-compute"))
+
+
+def test_the_host_lane_disowns_an_inherited_lane(caplog: pytest.LogCaptureFixture) -> None:
+    """``disown_inherited_lane`` keeps a hand-set lane from moving the host pool into the burst space.
+
+    The agent worker is the host lane's seat. A ``PHAZE_TELEMETRY_LANE=burst`` left in its
+    environment would reach every child through ``child_environment``'s copy of ``os.environ``, and
+    host slot 1 would become ``phaze-analysis-burst-1``, which is exactly the identity the burst pod
+    on slot 1 has. The discard is logged so the operator's value does not vanish silently.
+    """
+    environ = {slots.LANE_ENV: "burst", slots.SLOT_MAX_ENV: "6", "PATH": "/usr/bin"}
+    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
+        assert slots.disown_inherited_lane(environ) == "burst"
+
+    assert slots.LANE_ENV not in environ
+    assert environ == {slots.SLOT_MAX_ENV: "6", "PATH": "/usr/bin"}
+    assert any("telemetry_lane_inherited_discarded" in record.getMessage() for record in caplog.records)
+    assert slots.disown_inherited_lane({}) is None
+    assert slots.disown_inherited_lane({slots.LANE_ENV: " "}) is None
+
+
+def test_the_agent_worker_startup_disowns_an_inherited_lane() -> None:
+    """The host lane's lane protection is WIRED in ``startup``, not merely available (phaze-7nl67).
+
+    Read at the source level for the same reason as the slot twin above: booting a real agent worker
+    to observe one call costs a broker and a heartbeat this assertion does not need.
+    """
+    agent_worker = pathlib.Path(slots.__file__).parents[1] / "tasks" / "agent_worker.py"
+    tree = ast.parse(agent_worker.read_text(encoding="utf-8"))
+    startup = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
+    called = [node.func.attr for node in ast.walk(startup) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+    assert "disown_inherited_lane" in called

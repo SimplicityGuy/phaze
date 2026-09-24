@@ -14,6 +14,7 @@ is the failure that could actually stall an analysis.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from opentelemetry import trace
@@ -30,7 +31,15 @@ BLACK_HOLE = "http://192.0.2.1:4318"
 
 @pytest.fixture(autouse=True)
 def _clean_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (_env.ENDPOINT_ENV, _env.TRACES_ENDPOINT_ENV, _env.METRICS_ENDPOINT_ENV, _env.FLUSH_TIMEOUT_ENV, slots.SLOT_ENV, slots.SLOT_MAX_ENV):
+    for name in (
+        _env.ENDPOINT_ENV,
+        _env.TRACES_ENDPOINT_ENV,
+        _env.METRICS_ENDPOINT_ENV,
+        _env.FLUSH_TIMEOUT_ENV,
+        slots.SLOT_ENV,
+        slots.SLOT_MAX_ENV,
+        slots.LANE_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
     bootstrap._reset_for_tests()
     # The API's `set_tracer_provider` is one-way within a process, so a provider installed by
@@ -198,3 +207,87 @@ def test_a_slot_stacks_on_the_operators_host_override(monkeypatch: pytest.Monkey
     monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-compute")
     monkeypatch.setenv(slots.SLOT_ENV, "2")
     assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-compute-2"
+
+
+def test_a_burst_pod_carries_its_lane_between_the_base_and_the_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-7nl67: a burst pod reports ``<base>-burst-<slot>``, never the host lane's ``<base>-<slot>``.
+
+    Both lanes issue slots from 0 and neither sees the other's, so on the shared base a host child
+    and a burst pod holding slot 1 were both ``phaze-analysis-1`` and merged at the collector. The
+    lane composes with the operator's host override rather than replacing it.
+    """
+    monkeypatch.delenv(bootstrap.INSTANCE_ENV, raising=False)
+    monkeypatch.setenv(slots.SLOT_ENV, "1")
+    host = bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"]
+    monkeypatch.setenv(slots.LANE_ENV, slots.BURST_LANE)
+    burst = bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"]
+    assert (host, burst) == ("phaze-analysis-1", "phaze-analysis-burst-1")
+
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-compute")
+    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-compute-burst-1"
+    monkeypatch.delenv(slots.SLOT_ENV)
+    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-compute-burst"
+
+
+def test_an_analysis_base_claiming_the_burst_lane_is_escaped_not_discarded(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A ``burst`` segment in an analysis-role base is escaped, so the host stays host-distinct.
+
+    ``PHAZE_TELEMETRY_INSTANCE=host-burst`` on the agent host would resolve its slot-1 child to
+    ``host-burst-1``, which is the slot-1 identity of a burst pod whose ConfigMap pins the base
+    ``host``. Falling back to the service name would dodge that and create a different merge: two
+    agent hosts that both fell back would both report ``phaze-analysis-1``. So the segment is
+    escaped: ``host-burst_-1`` is still this host's own name, and it no longer reads as a lane.
+    """
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-burst")
+    monkeypatch.setenv(slots.SLOT_ENV, "1")
+    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.bootstrap"):
+        assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "host-burst_-1"
+    assert any("telemetry_instance_claims_a_reserved_lane" in record.getMessage() for record in caplog.records)
+
+    # Two hosts with different burst-ish names stay two identities after the escape, not one fallback.
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "rack-burst")
+    assert bootstrap._resource_attributes("analysis", "phaze-analysis")["service.instance.id"] == "rack-burst_-1"
+
+
+@pytest.mark.parametrize("role", ["api", "controller", "agent", "watcher"])
+def test_a_non_analysis_role_keeps_a_burst_segment_base_verbatim(role: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the analysis role reserves the lane name. Every other role keeps the operator's base as written.
+
+    A lane only separates concurrent ANALYSIS producers, and an identity only merges within one
+    ``service.name`` (the Prometheus ``job``). ``phaze-agent`` with instance ``host-burst`` can never
+    meet a burst pod's ``phaze-analysis`` identity, so rewriting it would change an operator's label
+    for nothing. An earlier version did worse: it fell back to the service name for every role, which
+    merged every host that used such a name onto one ``phaze-<role>`` identity.
+    """
+    monkeypatch.setenv(bootstrap.INSTANCE_ENV, "host-burst")
+    assert bootstrap._resource_attributes(role, f"phaze-{role}")["service.instance.id"] == "host-burst"
+
+
+@pytest.mark.parametrize("instance", ["", "host-compute", "host-prod", "phaze-analysis-burst", "burst", "a-burst-1"])
+def test_no_host_identity_equals_any_burst_identity(instance: str) -> None:
+    """The two lanes' identity spaces are DISJOINT, whatever the operator sets, over every slot in the bound.
+
+    Enumerated rather than argued: every host identity (no lane, each slot, and no slot) against every
+    burst identity (each slot, and no slot), for operator bases on either side that include the
+    adversarial ones. The pod's base comes from its own ConfigMap, so it is varied independently.
+    """
+    bound = 4
+    slot_values = [None, *range(bound)]
+
+    def _identities(base: str, lane: str | None) -> set[str]:
+        out = set()
+        for slot in slot_values:
+            env = {slots.SLOT_MAX_ENV: str(bound)}
+            if base:
+                env[bootstrap.INSTANCE_ENV] = base
+            if lane:
+                env[slots.LANE_ENV] = lane
+            if slot is not None:
+                env[slots.SLOT_ENV] = str(slot)
+            out.add(bootstrap._instance_id("phaze-analysis", env))
+        return out
+
+    host = _identities(instance, None)
+    for pod_base in ("", "host-compute", instance):
+        burst = _identities(pod_base, slots.BURST_LANE)
+        assert host.isdisjoint(burst), f"host {sorted(host)} and burst {sorted(burst)} share an identity"
