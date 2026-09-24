@@ -275,6 +275,29 @@ mechanism reasoned from a symptom's shape is a claim, not knowledge, however wel
 and a filed bead's own "Remedy that works" and "measured the underlying state" language is real
 evidence about the *symptom*, never license to skip verifying the *cause* it is filed under.
 
+### 3.10 "`server_settings={"jit": "off"}` sets `jit` for every connection the engine opens"
+
+Held three times over for bead `phaze-i252o`: in `docs/postgres-jit.md` §6, which offered asyncpg
+`server_settings` as a mechanism; in the bead comment recording the operator's app-wide `jit = off`
+decision ("via asyncpg server_settings"); and in the dispatch instructions for the implementation
+seat, which extended it to SAQ's psycopg pools as `options="-c jit=off"`. Those instructions were
+the operator's own: the question recorded in the 2026-09-24 operator-decision comment on
+`phaze-i252o` opens *"you prescribed asyncpg server_settings + psycopg options"*. Both are connection
+**startup parameters**, and the belief is that a startup parameter is read by Postgres.
+
+| | |
+| --- | --- |
+| **True where** | any client connecting straight to Postgres — which includes every test in this repo, the local test harness on port 5433, and the spike that measured JIT in the first place. It is how asyncpg and libpq document the two parameters, and in that setting both work exactly as described. |
+| **False here** | production reaches Postgres through PgBouncer (production's pooler configuration: `edoburu/pgbouncer:v1.25.2-p0`, `pool_mode = session`, `ignore_startup_parameters = extra_float_digits,options`). PgBouncer terminates the startup packet itself. A parameter it neither tracks nor ignores is **rejected**, failing the connection; a parameter in `ignore_startup_parameters` is **dropped**, and the connection succeeds without it. |
+| **Measured** | 2026-09-24, worktree `wt/bead/issue/phaze-i252o`. That image run locally (`docker run … edoburu/pgbouncer:v1.25.2-p0`, log line `process up: PgBouncer 1.25.2`) with a config carrying the same `pool_mode` and `ignore_startup_parameters` lines, in front of the seat's test database on PostgreSQL 18.6; asyncpg 0.31.0, psycopg 3.3.6. `SHOW jit` after connecting: asyncpg `server_settings={"jit": "off"}` → `off` direct, **`ProtocolViolationError: unsupported startup parameter: jit`** through PgBouncer; psycopg `options="-c jit=off"` → `off` direct, **`on`** through PgBouncer; `SET jit = off` after connecting → `off` both ways, both drivers. |
+| **How it surfaced** | the implementation seat looked for how production connects before choosing a hook. It found `PgBouncer in SESSION mode` in `src/phaze/database.py`'s own docstring, then read the pooler's configuration. The `ignore_startup_parameters` line was there, commented as being *for* asyncpg/psycopg clients, which are the same two drivers. |
+| **What it cost** | caught before any `server_settings` or `options` code was written: about 15 minutes, including the local PgBouncer run. Avoided: the asyncpg form fails every api, control-worker and migration connection on deploy, so a production outage on the next release; the psycopg form ships a silent no-op on every SAQ broker pool. Both forms pass every direct-connection test, so a green suite would have vouched for them. The finding went back to the operator, who then decided to leave JIT on, so no `jit` change shipped. That decision and the full measurement are in `docs/postgres-jit.md` §10. The unmerged implementation had a test that ran each connection factory through a real PgBouncer 1.25.2 configured like production's. Swapping its engine hook for `server_settings` turned the PgBouncer leg red with that exact error, while the direct leg stayed green. |
+
+The neighbouring system this time is not another version or another OS, it is **a hop that is
+absent from every test**: what the client sends at connect time is interpreted by whatever
+terminates the connection. Any connection-level setting (startup parameters, TLS options, auth
+method) is only as verified as the connection path it was tested through.
+
 ______________________________________________________________________
 
 ## 4. The trigger
