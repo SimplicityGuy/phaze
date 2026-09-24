@@ -43,7 +43,9 @@ COPY_CHUNK_BYTES = 16 * 1024 * 1024
 COPY_TMP_SUFFIX = ".phaze-tmp"
 COMMIT_MARKER_SUFFIX = ".phaze-committed"
 
-_LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
+# ENOTSUP and EOPNOTSUPP are one value on Linux but two on Darwin, where a real
+# exFAT or MS-DOS volume refuses os.link with ENOTSUP (phaze-x4kvv).
+_LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
 # Filesystems that cannot fsync a directory fd say so with one of these; any other
 # errno is a real failure and propagates.
 _DIR_FSYNC_UNSUPPORTED_ERRNOS = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
