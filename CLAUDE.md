@@ -541,6 +541,47 @@ which once aborted the run at `coverage xml` so `coverage.json`, the file `branc
 never written at all. `tests/shared/test_coverage_gate.py` pins the report floor to `pyproject.toml`
 so the two must move together.
 
+### A test's name can carry a lesson its assertions do not check
+
+**A test's NAME and docstring can carry a lesson its ASSERTIONS do not check.** This is a
+stricter, nastier member of the family the Beads Workflow Integration section's "Key concepts"
+names as *"a record that reads as a status is not one"* (a stale `review:*` label on a closed
+bead, a stale `repowise` health metric, `bd label remove`'s unconditional success report). A stale
+record there is inert. **A test name is not**: it was written by the person who learned the
+lesson, it reads as a guard to every later seat, **it greps as one**, and it survives refactors
+that gut what it checks — so it actively deters the next person from adding the assertion that
+would have caught the regression.
+
+Measured instance (bead `phaze-gdfml`, commit `a149fdf1`):
+`tests/analyze/services/backends/test_analysis_model_major.py::test_failures_are_reported_without_retaining_the_exception`.
+Its name and docstring carried the D-09-family lesson: an exception retained past its handler
+keeps its traceback, which keeps `_predict_single`'s frame, which keeps the local `classifier`
+variable that frame holds a reference to (`src/phaze/services/analysis.py`). Its four original
+assertions (`failed == {0, 1, 2}`, `isinstance(x, int)` on each, `sorted(reported) == [0, 1, 2]`,
+`_classifier_cache == {}`) never observed whether the exception survived the handler — all four
+held identically whether or not it did. `a149fdf1` closed the gap by routing through the real
+`_get_classifier` path and taking a `weakref` on the classifier it built, asserted collectible
+after the sweep; by hand, mutating `_infer_one_window` to retain the exception outside its handler
+(the exact bug the name warns about) turned that new assertion red, and the mutation was reverted
+before commit — `src/phaze/services/analysis.py` itself is unchanged by `a149fdf1`.
+
+**No mechanical guard was built for the general form.** phaze-gdfml's own candidate —
+`grep -rE 'def test_[a-z_]*(without|never|does_not|is_not|no_)' tests/` — was measured by
+`a149fdf1` at 1246 of 7297 matching test functions repo-wide (~17%), 695 inside `tests/analyze/` +
+`tests/shared/` alone; re-running the same grep against a later tree will get different numbers
+(a count is a property of a run, not of a suite — see "Which commands are gates" above). A bounded
+spot-check of ~7 matches in the seed's own directory found all genuinely discriminating
+(`pytest.raises` or a direct membership/disjoint assertion on the claimed property). The stronger
+reason no guard was built: a keyword-overlap check is wrong in the **false-negative** direction on
+this exact instance — the pre-fix test's own assertion message already contained the claim word
+(`"the kill list must carry indices, never exception objects"`), so a heuristic keying on whether
+the claim word appears anywhere in the assertions would have scored the defective version as
+guarded. This is a test-shaped instance of rule 3 in "Acceptance criteria, attribution, and
+verification fidelity" (`docs/design/0012-verification-fidelity-and-operator-attribution.md`): an
+independent-looking check is not automatically a discriminating one — the word being present is
+not the same as the property being checked. **Do not re-propose this guard without re-deriving
+these numbers against the repo as it then stands.**
+
 ## Workflow: Features and PRs
 
 - **Every feature gets its own git worktree** — no cross-contamination between features.
