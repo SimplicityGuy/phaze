@@ -377,8 +377,16 @@ split-on-trailing-comma = true
 "src/phaze/main.py" = ["T201"]
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
-[tool.uv]
-# nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+[tool.uv]  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+# The nosemgrep above MUST stay on this table-header line, not a separate line below it --
+# semgrep only attaches a nosemgrep comment to a finding when it shares the finding's start
+# line. A separate comment line here (the original, now-broken placement) silently stopped
+# suppressing once a registry-side ruleset change altered the rule's match span, reddening CI
+# on every PR (phaze-bq9cy). Verified empirically: moving the comment inline makes
+# `semgrep scan --config auto --error` exit 0 with the finding shown as suppressed (SARIF
+# `suppressions: [{"kind": "inSource"}]`); reverting to a following-line comment reproduces
+# the red exit 1.
+#
 # NO dependency cooldown. Operator decision 2026-08-03: resolve every package at its latest
 # published version rather than deferring adoption. The original exchange is no longer in the
 # local transcripts, so the operator re-confirmed it on 2026-09-23 and bead phaze-bo0sm's comment
