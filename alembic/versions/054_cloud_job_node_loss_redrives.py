@@ -39,6 +39,18 @@ depends_on = None
 _TABLE = "cloud_job"
 _COLUMN = "node_loss_redrives"
 
+# phaze-gx8p2: node_loss_redrives is never filtered in a WHERE clause (only selected alongside
+# file_id in services/backends/admission.py). cloud_job's whole-table statistics were regathered
+# by migration 068 (phaze-3agnm, `ANALYZE public.cloud_job`), which covers every column of this
+# table, including this one, added before 068 ran.
+ANALYZE_EXEMPT_TABLES = {
+    _TABLE: (
+        "node_loss_redrives is never filtered in a WHERE clause. cloud_job's whole-table "
+        "statistics were regathered by migration 068 (phaze-3agnm, `ANALYZE public.cloud_job`), "
+        "which covers this column too."
+    ),
+}
+
 
 def upgrade() -> None:
     """Add the NOT NULL ``node_loss_redrives`` counter, defaulting existing + future rows to 0."""
