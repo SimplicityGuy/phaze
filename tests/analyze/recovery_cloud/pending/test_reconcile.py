@@ -15,7 +15,7 @@ from phaze.models.file import FileRecord
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from tests._backends_patch import patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter
-from tests.kube_fakes import EVICTED, PENDING, fake_job
+from tests.kube_fakes import EVICTED, PENDING, fake_job, fake_workload
 
 
 if TYPE_CHECKING:
@@ -397,3 +397,37 @@ async def test_fresh_phantom_row_without_workload_is_still_held(session: AsyncSe
     assert dj.calls == []
     assert s3.calls == []
     assert queue.captured == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_workload_disposition_is_loud_not_silent(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unrecognised Workload condition set (phaze-pe41d AC2) is surfaced loudly, not a silent hold.
+
+    ``"WaitingForQuota"`` is a REAL Kueue v0.19.6 ``QuotaReserved=False`` reason
+    (``apis/kueue/v1beta1/workload_types.go``'s ``WorkloadQuotaReservedReasonWaitingForQuota``,
+    returned INSTEAD OF the legacy ``"Pending"`` phaze recognises once Kueue's
+    ``UnadmittedWorkloadsObservability`` feature gate is enabled -- Alpha, default OFF at v0.19, per
+    ``tests/vendor/kueue-v0.19.0/workload_types.go``) -- exactly the reason-vocabulary drift this
+    bead's AC2 requires to stop being a silent held row. Before phaze-pe41d, this fell through
+    ``classify_workload`` to :attr:`WorkloadDisposition.UNKNOWN` and ``_reconcile_workload_state``
+    did nothing but a bare, unlogged ``session.commit()``.
+    """
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name)),
+        get_workload=GetWorkloadSpy(fake_workload(("QuotaReserved", "False", "WaitingForQuota"))),
+    )
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reconcile_cloud_jobs"):
+        tally = await reconcile_cloud_jobs(_make_ctx())
+
+    assert "not recognised" in caplog.text
+    assert name in caplog.text
+    assert tally["unknown_workload_disposition"] == 1
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUBMITTED.value  # held for a later tick, unchanged by this fix
+    assert cj.attempts == 0

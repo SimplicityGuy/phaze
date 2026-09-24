@@ -814,7 +814,24 @@ async def _reconcile_workload_state(row: _RowReconcile, job: Any, workload: Any,
         await _advance_admitted(row, job, name, admitted_true=disposition is WorkloadDisposition.ADMITTED)
         return
 
-    # Unknown in-flight condition set -> leave the row untouched for a later tick.
+    # phaze-pe41d: an unrecognised condition set -- the reason vocabulary this reconciler pins
+    # (tasks/cloud_reconcile_observation.py's ``_REASON_PENDING`` / ``_REASON_INADMISSIBLE``) drifted
+    # or a Kueue upgrade added a state phaze has never seen. The row is still HELD for a later tick
+    # (this reconciler holds when it cannot prove anything, by design -- see D-08's "no wall clock may
+    # kill a run"), but that hold must be LOUD, not the silent commit it used to be: a drift here
+    # strands the in-flight registry with nothing failing. ``conditions`` is the raw
+    # ``(type, status, reason)`` tuple list for the operator log, not re-derived from any of the
+    # named literals above (this branch is reached exactly when none of them matched).
+    cloud_job = row.cloud_job
+    conditions = (getattr(workload, "status", None) or {}).get("conditions", []) or []
+    logger.warning(
+        "reconcile_cloud_jobs: Workload condition set not recognised -- reason vocabulary drift? holding for a later tick",
+        cloud_job_id=str(cloud_job.id),
+        file_id=str(cloud_job.file_id),
+        kueue_workload=name,
+        conditions=conditions,
+    )
+    row.tally["unknown_workload_disposition"] += 1
     await row.session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
 
 
@@ -896,7 +913,19 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
 
     cfg = cast("ControlSettings", get_settings())
-    tally = {"reconciled": 0, "succeeded": 0, "failed": 0, "redriven": 0, "inadmissible": 0, "pending": 0, "running": 0}
+    tally = {
+        "reconciled": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "redriven": 0,
+        "inadmissible": 0,
+        "pending": 0,
+        "running": 0,
+        # phaze-pe41d: aggregated even though the fold below tolerates a missing key (``.get(key, 0)``)
+        # -- listed explicitly so this dict stays the single place naming every tally key, matching
+        # every other key here.
+        "unknown_workload_disposition": 0,
+    }
 
     async with ctx["async_session"]() as session:
         for backend in resolve_backends(cfg):

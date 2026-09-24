@@ -445,7 +445,19 @@ class KueueBackend(_BaseBackend):
         """
         cfg = cast("ControlSettings", get_settings())
         cap = cfg.cloud_submit_max_attempts
-        tally = {"reconciled": 0, "succeeded": 0, "failed": 0, "redriven": 0, "inadmissible": 0, "pending": 0, "running": 0, "staging_reaped": 0}
+        tally = {
+            "reconciled": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "redriven": 0,
+            "inadmissible": 0,
+            "pending": 0,
+            "running": 0,
+            "staging_reaped": 0,
+            # phaze-pe41d: an unrecognised Workload condition set (reason-vocabulary drift) -- see
+            # ``_reconcile_workload_state``'s UNKNOWN branch in reconcile_cloud_jobs.py.
+            "unknown_workload_disposition": 0,
+        }
         reconcile_ctx = ctx if ctx is not None else {}
 
         # phaze-ul2v: FIRST sweep the pre-submit half ({UPLOADING, UPLOADED}) that the Kueue read below

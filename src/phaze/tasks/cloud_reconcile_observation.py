@@ -28,11 +28,43 @@ if TYPE_CHECKING:
     from phaze.models.cloud_job import CloudJob
 
 
+# PINNED (phaze-pe41d) against real Kueue Workload API source at v0.19.0 -- the CONFIRMED deployed
+# release (operator-authorized read-only ``kubectl``, recorded on phaze-pe41d and phaze-tkkor: image
+# ``registry.k8s.io/kueue/kueue:v0.19.0``, feature gates ``DisableWaitForPodsReady=true`` only). Also
+# cross-checked against v0.5.0 (oldest stable tag carrying the v1beta1 package) through the latest
+# stable tag (v0.19.6, checked before the deployed-version measurement came back and re-verified
+# byte-identical to v0.19.0 for every string here) -- the string values below are unchanged across
+# that whole range (see tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py's docstring
+# for the detail). Replaces a proxy (``tests/kube_fakes.py``, "exercising every Kueue
+# admission/terminal transition with ZERO HTTP") that stood in for this vocabulary with no check
+# against any real, versioned source.
+# ``_TYPE_*`` are ``WorkloadQuotaReserved`` / ``WorkloadAdmitted`` / ``WorkloadEvicted``
+# (``apis/kueue/v1beta1/workload_types.go``, identical string values in v1beta2); ``_REASON_PENDING``
+# / ``_REASON_INADMISSIBLE`` are the LEGACY ``WorkloadPending`` / ``WorkloadInadmissible`` reasons for
+# ``QuotaReserved=False`` -- CONFIRMED what production actually emits (the
+# ``UnadmittedWorkloadsObservability`` feature gate that would replace them with granular reasons,
+# e.g. ``WaitingForQuota``/``NoMatchingFlavor``/``Suspended``, is measured OFF on the real cluster
+# today), but that gate is enableable by the operator on this exact deployed release without any
+# upgrade -- this is the one KNOWN drift risk that is not closed by the v0.5.0->v0.19.6 cross-check
+# above, and it is version-independent, not a "confirm the version" problem. See
+# ``tests/vendor/kueue-v0.19.0/workload_types.go``,
+# ``tests/analyze/services/backends/_kueue_k8s_reason_vocabulary.py`` and
+# ``tests/analyze/services/backends/test_kueue_k8s_reason_vocabulary.py``. THE DRIFT THIS BEAD WORRIES
+# ABOUT IS NOT HYPOTHETICAL: if that feature gate is (or becomes) enabled, every Kueue Workload will
+# start reporting a granular reason phaze does not recognise, and ``classify_workload`` below falls
+# through to :attr:`WorkloadDisposition.UNKNOWN` -- now surfaced loudly (see
+# ``_reconcile_workload_state`` in ``reconcile_cloud_jobs.py``) rather than a silent held row.
 _TYPE_QUOTA_RESERVED = "QuotaReserved"
 _TYPE_ADMITTED = "Admitted"
 _TYPE_EVICTED = "Evicted"
 _REASON_PENDING = "Pending"
 _REASON_INADMISSIBLE = "Inadmissible"
+
+# PINNED (phaze-pe41d) as ``batchv1.JobComplete`` / ``batchv1.JobFailed`` in
+# ``staging/src/k8s.io/api/batch/v1/types.go`` at Kubernetes v1.36.2 -- see
+# ``tests/vendor/kubernetes-v1.36.2/reason_vocabulary.go``.
+_JOB_CONDITION_COMPLETE = "Complete"
+_JOB_CONDITION_FAILED = "Failed"
 
 # The only age bound on submission bookkeeping. It is not a run deadline.
 PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
@@ -121,9 +153,9 @@ def quota_hold_reason(quota_reserved: dict[str, Any] | None) -> Any:
 
 def classify_job(job: Any) -> JobDisposition:
     """Classify a Job, preserving callback-compatible success primacy over failure."""
-    if job_counter(job, "succeeded") >= 1 or job_has_true_condition(job, "Complete"):
+    if job_counter(job, "succeeded") >= 1 or job_has_true_condition(job, _JOB_CONDITION_COMPLETE):
         return JobDisposition.SUCCEEDED
-    if job_counter(job, "failed") >= 1 or job_has_true_condition(job, "Failed"):
+    if job_counter(job, "failed") >= 1 or job_has_true_condition(job, _JOB_CONDITION_FAILED):
         return JobDisposition.FAILED
     return JobDisposition.IN_FLIGHT
 

@@ -66,7 +66,7 @@ def test_job_transition_table(job: Any, expected: str) -> None:
         pytest.param(QUOTA_RESERVED, "quota_reserved", id="quota-reserved"),
         pytest.param(fake_workload(), "unknown", id="unknown"),
         pytest.param(
-            fake_workload(("Evicted", "True", "WorkloadInactive"), ("Admitted", "True", ""), ("QuotaReserved", "True", "")),
+            fake_workload(("Evicted", "True", "Deactivated"), ("Admitted", "True", ""), ("QuotaReserved", "True", "")),
             "evicted",
             id="eviction-is-primary",
         ),
@@ -95,8 +95,15 @@ def test_pending_confirmation_transition_table(age_seconds: float, expected: str
 
 
 @pytest.mark.asyncio
-async def test_unknown_workload_condition_commits_and_holds_without_an_effect() -> None:
-    """An unreadable future condition set releases the row lock but selects no transition."""
+async def test_unknown_workload_condition_commits_and_holds_without_an_effect(caplog: pytest.LogCaptureFixture) -> None:
+    """An unrecognised condition set releases the row lock and selects no transition on the row itself.
+
+    phaze-pe41d AC2: the hold is no longer SILENT -- it tallies ``unknown_workload_disposition`` and
+    logs a WARNING (see ``test_unknown_workload_disposition_is_loud_not_silent`` in
+    ``tests/analyze/recovery_cloud/pending/test_reconcile.py`` for the end-to-end version against a
+    real, drift-realistic Kueue reason). This test stays at the unit boundary: the ``cloud_job`` row's
+    own fields are untouched either way.
+    """
 
     class _CommitSpy:
         commits = 0
@@ -105,14 +112,18 @@ async def test_unknown_workload_condition_commits_and_holds_without_an_effect() 
             self.commits += 1
 
     session = _CommitSpy()
-    cloud_job = SimpleNamespace(status="submitted", inadmissible=False, cloud_phase=None)
-    row = reconcile_mod._RowReconcile(ctx={}, session=session, cloud_job=cloud_job, cap=3, tally={}, kube=SimpleNamespace())
+    cloud_job = SimpleNamespace(id="cj-1", file_id="file-1", status="submitted", inadmissible=False, cloud_phase=None)
+    row = reconcile_mod._RowReconcile(
+        ctx={}, session=session, cloud_job=cloud_job, cap=3, tally={"unknown_workload_disposition": 0}, kube=SimpleNamespace()
+    )
 
-    await reconcile_mod._reconcile_workload_state(row, fake_job(), fake_workload(), "job-name")
+    with caplog.at_level("WARNING", logger="phaze.tasks.reconcile_cloud_jobs"):
+        await reconcile_mod._reconcile_workload_state(row, fake_job(), fake_workload(), "job-name")
 
     assert session.commits == 1
-    assert vars(cloud_job) == {"status": "submitted", "inadmissible": False, "cloud_phase": None}
-    assert row.tally == {}
+    assert vars(cloud_job) == {"id": "cj-1", "file_id": "file-1", "status": "submitted", "inadmissible": False, "cloud_phase": None}
+    assert row.tally == {"unknown_workload_disposition": 1}
+    assert "not recognised" in caplog.text
 
 
 def test_facade_exposes_kueue_reconcile_patch_points() -> None:
