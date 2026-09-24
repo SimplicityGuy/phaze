@@ -220,7 +220,7 @@ def test_an_injected_slot_survives_the_pod_all_the_way_to_the_identity() -> None
     slots._reset_for_tests()
     environ, taken = slots.assign(dict(injected))
     assert taken is None
-    assert bootstrap._instance_id("phaze-analysis", environ) == "phaze-analysis-3"
+    assert bootstrap._instance_id("phaze-analysis", environ) == "phaze-analysis-burst-3"
 
 
 # The real consumer: what the pod's own startup does with that env

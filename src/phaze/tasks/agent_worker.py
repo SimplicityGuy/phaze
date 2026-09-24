@@ -401,6 +401,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     # collapsing them onto one identity. Ownership, not precedence: the seat that bounds the
     # concurrency is the seat whose slots count, and it logs the discard rather than ignoring it.
     telemetry_slots.disown_inherited_slot()
+    # phaze-7nl67: likewise the LANE. This is the host lane's seat, so an inherited
+    # `PHAZE_TELEMETRY_LANE=burst` would move every child into the burst lane's identity space,
+    # where host slot 1 and burst slot 1 merge again.
+    telemetry_slots.disown_inherited_lane()
 
     # phaze-xuec1: prove the worker can actually reach its broker BEFORE claiming
     # "startup complete" -- see _wait_for_queue_ready's docstring. Raises RuntimeError

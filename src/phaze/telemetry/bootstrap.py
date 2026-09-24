@@ -66,7 +66,7 @@ _meter_provider: MeterProvider | None = None
 INSTANCE_ENV = "PHAZE_TELEMETRY_INSTANCE"
 
 
-def _instance_id(service_name: str, environ: Mapping[str, str] | None = None) -> str:
+def _instance_id(service_name: str, environ: Mapping[str, str] | None = None, *, role: str = slots.LANE_ROLE) -> str:
     """``service.instance.id``: a host-or-service base, plus this process's WORKER SLOT.
 
     **The base alone was not enough, and the gap was a live defect.** One identity per role
@@ -84,9 +84,28 @@ def _instance_id(service_name: str, environ: Mapping[str, str] | None = None) ->
     pinned the host. The identity set is bounded by the CONCURRENCY and reused by the next
     child, so it does not grow with the archive -- which is the entire difference between
     this and the per-pod id :func:`_resource_attributes` rejects.
+
+    **A burst pod's identity carries its LANE between the base and the slot** --
+    ``phaze-analysis-burst-1`` -- because the host pool and the burst allocator both issue
+    indices from 0 and neither sees the other's (phaze-7nl67). Without it a host child and a
+    burst pod on slot 1 were both ``phaze-analysis-1`` and merged. On the analysis role, an
+    operator base that carries a reserved lane segment has that segment escaped
+    (:func:`slots.escape_reserved_lanes`, ``host-burst`` -> ``host-burst_``), which keeps the host
+    lane's identities out of the burst lane's space while leaving them host-distinct. Every other
+    role keeps its base verbatim: it exports under its own ``service.name``, so its identity cannot
+    meet a burst pod's. ``role`` defaults to the analysis role because that is the role every caller
+    outside :func:`_resource_attributes` asks about.
     """
     env = os.environ if environ is None else environ
-    base = env.get(INSTANCE_ENV, "").strip() or service_name
+    base = env.get(INSTANCE_ENV, "").strip()
+    if base and role == slots.LANE_ROLE and slots.base_claims_a_lane(base):
+        escaped = slots.escape_reserved_lanes(base)
+        log.warning("telemetry_instance_claims_a_reserved_lane value=%r using=%r", base, escaped)
+        base = escaped
+    base = base or service_name
+    lane = slots.resolve_lane(env)
+    if lane is not None:
+        base = f"{base}-{lane}"
     slot = slots.resolve_slot(env)
     return base if slot is None else f"{base}-{slot}"
 
@@ -115,7 +134,7 @@ def _resource_attributes(role: str, service_name: str) -> dict[str, str]:
         "service.name": service_name,
         "service.namespace": "phaze",
         "service.version": _version(),
-        "service.instance.id": _instance_id(service_name),
+        "service.instance.id": _instance_id(service_name, role=role),
         "phaze.role": role,
     }
     environment = os.environ.get("PHAZE_DEPLOYMENT_ENVIRONMENT", "").strip()
