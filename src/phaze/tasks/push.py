@@ -38,6 +38,8 @@ from phaze.schemas.agent_tasks import PushFilePayload
 
 
 if TYPE_CHECKING:
+    import uuid
+
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -117,6 +119,29 @@ def _agent_settings() -> AgentSettings:
     return cfg
 
 
+def build_scratch_path(scratch_dir: str, file_id: uuid.UUID, file_type: str) -> str:
+    """The single source of truth for a pushed file's compute-scratch path (phaze-l0ec0, Seam A6).
+
+    ``push_file``'s rsync destination (this module's ``_build_rsync_argv``, below) and
+    ``process_file``'s ``ProcessFilePayload.scratch_path`` (stamped by
+    ``routers/agent_push.py``'s ``report_pushed`` handler when it enqueues ``process_file``) name
+    the SAME landed file on the SAME compute scratch dir. Before this function they were built by
+    two independent f-strings in two different files -- one on the fileserver agent, one on the
+    control plane -- with nothing to notice a format divergence between them (a trailing slash, a
+    different join, an extension-separator change): `docs/spikes/
+    phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md` row A6, "not crossed, self-declared ...
+    Producer side asserts argv; consumer side asserts a separate literal." A divergence here does
+    not corrupt data (the sha256 verify in ``_verify_scratch_integrity`` still gates analysis) but
+    presents as an endless silent push/mismatch re-push loop, because a wrong-format
+    ``scratch_path`` reads as "the pushed copy is missing" (``tasks/functions.py``'s own comment on
+    that ``FileNotFoundError`` branch names this exact failure mode) rather than "the two sides
+    disagree on how to spell the path."
+
+    Both callers MUST derive the path from this function rather than re-deriving it locally.
+    """
+    return f"{scratch_dir}/{file_id}.{file_type}"
+
+
 def _build_rsync_argv(
     cfg: AgentSettings,
     payload: PushFilePayload,
@@ -127,9 +152,11 @@ def _build_rsync_argv(
     """Build the shell-free rsync argv for one push transfer (pure -- unit-testable, no I/O).
 
     The ``-e "ssh …"`` is a SINGLE argv element that rsync parses internally (it is NOT handed to a
-    shell). The remote destination is ``<scratch_dir>/<file_id>.<file_type>`` -- the server-generated
+    shell). The remote destination's path is ``build_scratch_path(...)`` -- the server-generated
     UUID, never the untrusted original filename (eliminates path-traversal / shell-metachar risk and
-    makes the cleanup/janitor target deterministically computable from file_id).
+    makes the cleanup/janitor target deterministically computable from file_id). ``report_pushed``
+    (``routers/agent_push.py``) MUST compute ``process_file``'s ``scratch_path`` with the SAME
+    function so the two sides can never format-diverge (Seam A6).
 
     D-04 (MCOMP-03): the host + scratch dir + user come from the payload (``dest_host`` /
     ``dest_scratch_dir`` / ``dest_ssh_user``) so N compute agents each receive files at their OWN
@@ -150,7 +177,7 @@ def _build_rsync_argv(
     # the phase's "never a destination-less payload" must-have (Landmine 1).
     if payload.dest_host is None or payload.dest_scratch_dir is None:
         raise ValueError(f"push payload for {payload.file_id} is missing dest_host/dest_scratch_dir (destination-less push)")
-    remote_dest = f"{ssh_user}@{payload.dest_host}:{payload.dest_scratch_dir}/{payload.file_id}.{payload.file_type}"
+    remote_dest = f"{ssh_user}@{payload.dest_host}:{build_scratch_path(payload.dest_scratch_dir, payload.file_id, payload.file_type)}"
     return [
         "rsync",
         "--partial-dir=.rsync-partial",  # resumable partial kept OUT of the final-name space
