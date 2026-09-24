@@ -34,6 +34,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     import uuid
 
     from phaze.schemas.agent_analysis import (
@@ -165,7 +166,8 @@ class PhazeAgentClient:
     model T-26-02-I).
 
     The ``_client`` constructor parameter exists for respx test injection only
-    (leading underscore = private). Production code never passes it.
+    (leading underscore = private). Production code never passes it. ``_retry_sleep``
+    is the same convention, for skipping real backoff waits in tests (see ``__init__``).
     """
 
     def __init__(
@@ -176,6 +178,7 @@ class PhazeAgentClient:
         timeout: float = 30.0,
         verify: ssl.SSLContext | str | bool = True,
         _client: httpx.AsyncClient | None = None,
+        _retry_sleep: Callable[[int | float], Awaitable[None] | None] | None = None,
     ) -> None:
         """Construct the client.
 
@@ -195,6 +198,15 @@ class PhazeAgentClient:
         ``phaze.tasks._shared.agent_bootstrap``) pass
         ``verify=cfg.agent_ca_file`` so the agent's httpx client trusts
         the operator-distributed internal CA and rejects any other.
+
+        The ``_retry_sleep`` constructor parameter exists for test injection only
+        (leading underscore = private, same convention as ``_client``). Production
+        code never passes it, so ``AsyncRetrying`` keeps its own default sleep
+        (tenacity's real ``asyncio.sleep``-backed wait) and the D-11 backoff timing
+        is unchanged. A test that would otherwise burn real wall time on
+        ``wait_exponential_jitter`` (phaze-vh38w) passes a fast/instrumented
+        callable here -- the wait DELAY is still computed and handed to it, so a
+        test can assert on the requested delays rather than merely skipping them.
         """
         self.base_url = base_url
         self._client = _client or httpx.AsyncClient(
@@ -203,6 +215,7 @@ class PhazeAgentClient:
             timeout=timeout,
             verify=_resolve_verify(verify),
         )
+        self._retry_sleep = _retry_sleep
 
     async def close(self) -> None:
         """Close the underlying httpx.AsyncClient (releases connection pool)."""
@@ -240,13 +253,19 @@ class PhazeAgentClient:
         ``quiet_transport_errors`` is set, the transport-error log line drops from
         WARNING to DEBUG; the HTTPStatusError branch is unaffected.
         """
+        retrying_kwargs: dict[str, Any] = {
+            "stop": stop_after_attempt(max_attempts),
+            "wait": wait_exponential_jitter(initial=0.5, max=4.0),
+            "retry": retry_if_exception(_should_retry),
+            "reraise": True,
+        }
+        # Only override tenacity's own default `sleep` (real asyncio.sleep) when a test has
+        # injected one via `_retry_sleep` -- production callers never set it, so this branch
+        # never executes outside tests and AsyncRetrying's real-time backoff is untouched.
+        if self._retry_sleep is not None:
+            retrying_kwargs["sleep"] = self._retry_sleep
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(max_attempts),
-                wait=wait_exponential_jitter(initial=0.5, max=4.0),
-                retry=retry_if_exception(_should_retry),
-                reraise=True,
-            ):
+            async for attempt in AsyncRetrying(**retrying_kwargs):
                 with attempt:
                     response = await self._client.request(method, path, **kwargs)
                     response.raise_for_status()

@@ -47,9 +47,27 @@ def _make_payload(batch_id: uuid.UUID, *, terminal_step: str = "deleted") -> Exe
 
 
 @pytest.fixture
-async def client():  # type: ignore[no-untyped-def]
-    """Fresh PhazeAgentClient; closes underlying AsyncClient on teardown."""
-    c = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0)
+def retry_delays() -> list[float]:
+    """The delays tenacity's ``wait_exponential_jitter`` requests on ``client``'s retries.
+
+    See ``tests/agents/services/test_agent_client.py``'s identical fixture (phaze-vh38w):
+    the delay is still computed, only the real sleep is skipped.
+    """
+    return []
+
+
+@pytest.fixture
+async def client(retry_delays: list[float]):  # type: ignore[no-untyped-def]
+    """Fresh PhazeAgentClient; closes underlying AsyncClient on teardown.
+
+    ``_retry_sleep`` is test-only injection (phaze-vh38w): records the requested backoff
+    delay and returns immediately instead of really sleeping. Production never passes it.
+    """
+
+    async def _no_wait(delay: float) -> None:
+        retry_delays.append(delay)
+
+    c = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_wait)
     yield c
     await c.close()
 
@@ -127,7 +145,7 @@ async def test_post_exec_batch_progress_404_does_not_retry(client):  # type: ign
 
 
 @respx.mock
-async def test_post_exec_batch_progress_5xx_retries_three_times_then_raises(client):  # type: ignore[no-untyped-def]
+async def test_post_exec_batch_progress_5xx_retries_three_times_then_raises(client, retry_delays):  # type: ignore[no-untyped-def]
     """500 -> 3 retries then AgentApiServerError."""
     batch_id = uuid.uuid4()
     payload = _make_payload(batch_id)
@@ -140,10 +158,12 @@ async def test_post_exec_batch_progress_5xx_retries_three_times_then_raises(clie
         await client.post_exec_batch_progress(batch_id, payload)
 
     assert route.call_count == 3, "5xx must be retried 3x (tenacity stop_after_attempt(3))"
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
-async def test_post_exec_batch_progress_500_then_200_succeeds_on_retry(client):  # type: ignore[no-untyped-def]
+async def test_post_exec_batch_progress_500_then_200_succeeds_on_retry(client, retry_delays):  # type: ignore[no-untyped-def]
     """500 then 200 succeeds on retry; route called twice total."""
     batch_id = uuid.uuid4()
     payload = _make_payload(batch_id)
@@ -155,10 +175,12 @@ async def test_post_exec_batch_progress_500_then_200_succeeds_on_retry(client): 
     result = await client.post_exec_batch_progress(batch_id, payload)
     assert result is None
     assert route.call_count == 2
+    assert len(retry_delays) == 1
+    assert retry_delays[0] >= 0
 
 
 @respx.mock
-async def test_post_exec_batch_progress_connect_error_retries(client):  # type: ignore[no-untyped-def]
+async def test_post_exec_batch_progress_connect_error_retries(client, retry_delays):  # type: ignore[no-untyped-def]
     """ConnectError is retried like 5xx; persistent failure -> AgentApiServerError."""
     batch_id = uuid.uuid4()
     payload = _make_payload(batch_id)
@@ -171,3 +193,5 @@ async def test_post_exec_batch_progress_connect_error_retries(client):  # type: 
         await client.post_exec_batch_progress(batch_id, payload)
 
     assert route.call_count == 3
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)

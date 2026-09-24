@@ -320,7 +320,15 @@ async def test_zero_window_analysis_stores_a_terminal_error(job_env, monkeypatch
 @respx.mock
 async def test_zero_window_report_post_failure_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """Delivery-guarded like every other ``_report_analysis_failure`` call site: a failed POST
-    to /failed must not change the exit code or raise past the guard."""
+    to /failed must not change the exit code or raise past the guard.
+
+    The /failed POST 500s on every attempt, so ``client.put_...`` (via ``construct_agent_client``,
+    not test-injected) genuinely retries 3x with tenacity's real ``wait_exponential_jitter``
+    backoff. Nothing here asserts on timing -- only the exit code -- so the real wait is not
+    load-bearing (phaze-vh38w); ``asyncio.sleep`` is faked the same way
+    ``tests/agents/tasks/test_shared_agent_bootstrap.py`` already does for a different retry
+    loop, recording the requested delays so the retry is proven to have actually happened.
+    """
     import phaze.job_runner as jr
 
     file_id = job_env["file_id"]
@@ -330,12 +338,24 @@ async def test_zero_window_report_post_failure_does_not_change_exit_code(job_env
         return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
     )
     respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
-    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
+    failed_route = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
 
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _empty_result()))
 
+    retry_delays: list[float] = []
+
+    async def _no_wait(delay: float) -> None:
+        retry_delays.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _no_wait)
+
     with pytest.raises(SystemExit) as exc:
         await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed_route.call_count == 3, "5xx on /failed must be retried 3x (tenacity stop_after_attempt(3))"
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
     assert exc.value.code == jr.EXIT_ANALYSIS
 
@@ -612,7 +632,12 @@ async def test_corrupt_container_stores_a_terminal_error_and_exits_analysis(job_
 @respx.mock
 async def test_extraction_failure_report_post_failure_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """Delivery-guarded (mirrors ``_report_terminal_failure`` in tasks/functions.py): a failed
-    POST to /failed must not change the exit code or raise past the extraction handler."""
+    POST to /failed must not change the exit code or raise past the extraction handler.
+
+    Same real-retry shape as ``test_zero_window_report_post_failure_does_not_change_exit_code``
+    above: the /failed POST 500s on every attempt, so the client genuinely retries 3x with real
+    backoff, which is not load-bearing here since nothing asserts on timing (phaze-vh38w).
+    """
     import phaze.job_runner as jr
     from phaze.services.video_audio import NoAudioTrackError
 
@@ -623,17 +648,27 @@ async def test_extraction_failure_report_post_failure_does_not_change_exit_code(
         return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
     )
     respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
-    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
+    failed_route = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
 
     async def _raise_no_audio(*_a, **_k):  # type: ignore[no-untyped-def]
         raise NoAudioTrackError("no audio stream found")
 
     monkeypatch.setattr(jr, "extract_audio_track", _raise_no_audio)
 
+    retry_delays: list[float] = []
+
+    async def _no_wait(delay: float) -> None:
+        retry_delays.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _no_wait)
+
     with pytest.raises(SystemExit) as exc:
         await jr.run()
 
     assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed_route.call_count == 3, "5xx on /failed must be retried 3x (tenacity stop_after_attempt(3))"
+    assert len(retry_delays) == 2
+    assert all(d >= 0 for d in retry_delays)
 
 
 @respx.mock
@@ -1248,8 +1283,6 @@ async def test_progress_posts_midflight_via_loop_tasks(job_env, monkeypatch):  #
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
-    # Drain any progress tasks still scheduled via run_coroutine_threadsafe.
-    await asyncio.sleep(0.1)
 
     assert exc.value.code == 0
     assert progress.call_count >= 2, "at least two distinct mid-flight progress POSTs must land"
@@ -1285,7 +1318,6 @@ async def test_progress_failure_does_not_change_exit_code(job_env, monkeypatch):
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
-    await asyncio.sleep(0.1)
 
     # The completion path still wins: exit 0 despite the progress endpoint failing.
     assert exc.value.code == 0
@@ -1321,7 +1353,6 @@ async def test_progress_connect_timeout_does_not_change_exit_code(job_env, monke
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
-    await asyncio.sleep(0.1)
 
     # The completion path still wins: exit 0 despite the progress endpoint's persistent ConnectTimeout.
     assert exc.value.code == 0
@@ -1579,7 +1610,6 @@ async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkey
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
-    await asyncio.sleep(0.1)
 
     assert exc.value.code == 0
     progress = [e for e in logs if e["event"] == "job_runner_progress"]
@@ -1650,7 +1680,6 @@ async def test_progress_line_failure_never_escapes_callback(job_env, monkeypatch
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
-    await asyncio.sleep(0.1)
 
     assert exc.value.code == 0
 
