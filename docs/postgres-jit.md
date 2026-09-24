@@ -1,8 +1,10 @@
 # Postgres JIT — what it costs and buys phaze, measured (phaze-i252o)
 
-**Status:** measurement spike `phaze-i252o`, 2026-09-23. No configuration or code changed. The
-choice between app-wide `jit = off` and per-query `SET LOCAL jit = off` is still open; §6 is the
-implementer's recommendation for it.
+**Status:** measured 2026-09-23 (§§1–9). **Decided 2026-09-24: `jit` stays ON** (§10), by operator
+decision on bead `phaze-i252o`. That decision supersedes the operator's earlier "App-wide jit=off
+(Recommended)" decision, made the same day. No configuration or code changed. §6's recommendation and mechanisms
+are kept as the record of what was proposed. §10.3 shows that both of §6's startup-parameter
+mechanisms fail through production's connection pooler.
 
 **Scope, as the operator set it.** Question as put: *"phaze-i252o (Postgres JIT costs 83 of ~298 ms
 SQL per /s/analyze render) can't be implemented until you choose its scope. Which?"* Answer as given
@@ -139,6 +141,10 @@ concurrently.
    failure mode is silent: a query that grows past 500,000 starts paying ~0.2–0.7 s with no error.
 3. **The downside of app-wide off is bounded by §5:** no statement measured faster with JIT on.
 
+> **Superseded 2026-09-24 (§10).** JIT stays on. Separately, §10.3 measured that neither
+> startup-parameter mechanism below works through production's PgBouncer. Read it before reviving
+> either.
+
 Mechanisms, for the operator to choose between: asyncpg `server_settings={"jit": "off"}` in the
 engine builder (versioned, covers api + worker, does not cover SAQ's own psycopg pool on `saq_jobs`);
 or `command: ["postgres", "-c", "jit=off"]` on the compose `postgres` service (versioned, covers every
@@ -199,6 +205,111 @@ configuration that is harmless at today's corpus size can switch behaviour, with
 size nobody chose, and nothing errors when it does. The same shape applies to any planner decision
 gated on estimated cost (parallel query, hash vs nested loop). Where it is written down: here. It is
 specific enough to the Postgres planner that no repo-wide rule is proposed.
+
+## 10. Decision: `jit` stays on (`phaze-i252o`, 2026-09-24)
+
+### 10.1 The decisions, in order
+
+1. **Operator decision 2026-09-24: app-wide `jit = off`.** Question as put: *"phaze-i252o, Postgres
+   JIT scope?"* Answer as given (selected option label): *"App-wide jit=off (Recommended)"*. Durable
+   record: bead comment on `phaze-i252o`, 2026-09-24. **Superseded by decision 2 below.**
+2. **Operator decision 2026-09-24: leave JIT on.** This came up while the first decision was being
+   implemented, when the mechanism it was dispatched with turned out not to work through
+   production's PgBouncer (§10.3). Question as put: *"phaze-i252o: you prescribed asyncpg
+   server_settings + psycopg options="-c jit=off". The seat tested both against prod's PgBouncer
+   config (edoburu/pgbouncer v1.25.2, pool_mode=session,
+   ignore_startup_parameters=extra_float_digits,options). server_settings={jit:off} gets rejected
+   ("unsupported startup parameter: jit"), which would take down every connection, and tests that
+   connect directly to Postgres would still pass. options=-c jit=off is silently ignored (SHOW jit =
+   on). Running SET jit=off on each new connection gives off for both drivers. Which mechanism?"*
+   The options offered were SET on connect (Recommended), PgBouncer, server side, and Both. Answer as
+   given (free text, verbatim): *"since there is no performance hit to keeping jit on, let's amend
+   the ADR with that. leave it on and move to the next bead"*. Durable record: the operator-decision
+   comment on bead `phaze-i252o`, 2026-09-24. **This decision supersedes decision 1.** There is no
+   numbered ADR for JIT; this document is the decision record the answer refers to.
+
+**Effect.** No configuration or code change: every phaze connection keeps the server's `jit`
+setting, `on` with `jit_above_cost = 100000` as of the `phaze-y0upq` reading. The implementation of
+decision 1 was written, tested and then dropped unmerged. No production before/after measurement is
+owed for this bead.
+
+### 10.2 The rationale, and the measurements beside it
+
+The rationale is the operator's, quoted from the answer above: *"there is no performance hit to
+keeping jit on"*. It is recorded here as the operator's reason, not as a result of §§3–5. Those
+measurements are unchanged and read as follows:
+
+- **Admin pages.** Per `/pipeline/stats` or `/s/analyze` render, the four stage aggregates cost
+  71.2 ms of JIT compilation and +83.9 ms of summed statement wall time (§4). Host-prod's figure was
+  83.0 ms. End to end in-process, `/pipeline/stats` rendered in 181.3–197.3 ms with JIT on against
+  133.5–138.1 ms off, and `/s/analyze` in 248.3–294.5 ms against 217.5–234.9 ms.
+- **Beneficiaries.** No statement ran faster when JIT compiled it (§5).
+- **Planner setting.** These figures are at `random_page_cost = 1.1`, and host-prod's value is
+  unverified (§2, §7).
+- **The cliff.** At plan cost ≥ 500,000, compilation takes ~140–700 ms per statement (§5).
+  - **Row growth (inferred):** about 1.6× row growth puts the stats page's stage aggregates past
+    it, and about 1.2× does the same for the files list. This is inference, not measurement (§5).
+  - **`random_page_cost = 4.0` (measured):** three of the four stage aggregates are already past it
+    (§3). A `/pipeline/stats` render would then pay about +790 ms of summed statement time (§5).
+
+A future bead that revisits this decision should start from §7's read-only host-prod confirmation.
+That read has not been run.
+
+### 10.3 Durable evidence: how a `jit` setting behaves through production's PgBouncer
+
+Recorded for anyone who revisits this decision. Every phaze connection in production (api, workers,
+the in-process migration, and every SAQ broker pool) reaches Postgres through PgBouncer. The
+configuration measured here is image `edoburu/pgbouncer:v1.25.2-p0`, with
+`pool_mode = session` and `ignore_startup_parameters = extra_float_digits,options`. Startup parameters
+are handled by PgBouncer itself, not forwarded to Postgres. That configuration lives in the
+deployment-configuration repository, not in this one. It was read from a local checkout of that
+repository on 2026-09-24. The deployed file was not read, so check these three values against it
+before relying on them.
+
+Measured 2026-09-24 with that image and those two settings, locally, in front of a PostgreSQL 18.6
+test database (asyncpg 0.31.0, psycopg 3.3.6, psycopg-pool 3.3.3, SQLAlchemy 2.0.54). Each cell is
+`SHOW jit` read after connecting:
+
+| mechanism | direct to Postgres | through PgBouncer 1.25.2 |
+| --- | --- | --- |
+| asyncpg `server_settings={"jit": "off"}` | `off` | **connection refused**: `asyncpg.exceptions.ProtocolViolationError: unsupported startup parameter: jit` |
+| psycopg `options="-c jit=off"` | `off` | **`on`**: connects, and the setting is silently dropped |
+| `SET jit = off` on each new connection (asyncpg and psycopg) | `off` | `off` |
+| asyncpg `server_settings` with PgBouncer's `track_extra_parameters = IntervalStyle, jit` | not tested | connects, still **`on`**, in session and transaction pooling |
+
+What that means for anyone who revives `jit = off`:
+
+- **`server_settings` would have taken down every SQLAlchemy connection.** The api, the control
+  worker and migrations would all fail at connect on the first deploy. The agent worker has no
+  SQLAlchemy engine; its only Postgres connection is its SAQ broker pool, covered by the next point.
+- **`options` would have shipped a no-op on every SAQ broker pool,** the agent worker's included. It
+  raises no error and has no effect.
+- **Direct-connection tests cannot tell either failure apart from success.** Every test in the suite
+  connects straight to Postgres, so both broken mechanisms pass it (CLAUDE.md rule 3). A test for
+  this has to connect through a real PgBouncer configured like production's.
+- **`SET jit = off` on connect works only under session pooling.** A `SET` belongs to the server
+  connection it ran on. Session pooling pins one server connection to a client for the client's
+  whole life. Under transaction pooling, a connect-time `SET` lands on one server connection while
+  later transactions run on others, where `jit` is still `on`, and nothing errors. The same
+  measurement showed it: a transaction-pooled PgBouncer handed a later transaction a server
+  connection that never ran the `SET`, and it read `on`. phaze's queue pool also needs session
+  pooling, for SAQ's `LISTEN`/`NOTIFY`.
+- **A server-side setting (`postgres -c jit=off`) affects more than phaze.** It is the one mechanism
+  the pooler does not interfere with, but production's Postgres also serves other applications.
+
+The implementation that was dropped did three things. It applied `SET jit = off` from a SQLAlchemy
+pool `connect` event, run on the raw asyncpg connection so the pool's reset-on-return rollback could
+not undo it. For SAQ's queue pools it used a psycopg_pool `configure` callback. It built alembic's
+engine through the same code path. Its tests ran each connection factory both directly and through
+a PgBouncer container that the test module started itself. Swapping in `server_settings` turned the
+PgBouncer run red and left the direct run green.
+
+**The general form (CLAUDE.md rule 5):** *a connection-level setting is only as verified as the
+connection path it was tested through.* Anything a client sends at connect time (startup
+parameters, TLS options, auth method) is interpreted by whatever terminates the connection, and in
+production that is PgBouncer, not Postgres. It is recorded as a transferred-model instance in
+`docs/design/0016-transferred-model-verification.md` §3.10: true straight to Postgres, false through
+the pooler. It was caught before anything shipped.
 
 ## Appendix A — `prod_jit_explain.sql`
 
