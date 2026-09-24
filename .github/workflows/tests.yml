@@ -305,6 +305,15 @@ jobs:
         run: |
           psql -h localhost -U phaze -d postgres -c 'CREATE DATABASE phaze_migrations_test OWNER phaze;'
 
+      # phaze-1dc8g: re-hash the service role with one SCRAM iteration, as `just test-db` does for
+      # the local harness. asyncpg derives the SCRAM key in a pure-Python loop (~12 ms per connect
+      # at the default 4096), and the NullPool test engine opens a fresh connection per DB test.
+      # Addressed by the service's container id, never a host/port -- see the script's header.
+      - name: 🔑 Cheapen the test role's SCRAM verifier
+        env:
+          PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash scripts/harness-scram-iterations.sh "${PG_SERVICE_CONTAINER}"
+
       - name: 📦 Install dependencies
         run: just setup
 

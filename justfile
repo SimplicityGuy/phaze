@@ -1112,6 +1112,10 @@ test-db:
     # phaze-hk8r: tolerate a lost create race against a concurrent `test-db`/`test-db-for`/
     # `check` invocation -- see scripts/ensure-pg-database.sh's header.
     bash scripts/ensure-pg-database.sh "$container" phaze_migrations_test
+    # phaze-1dc8g: one SCRAM iteration for the harness role, so each of the suite's ~3,500 fresh
+    # NullPool connections skips ~12 ms of asyncpg's pure-Python key derivation. Idempotent, restarts
+    # nothing, and refuses any container that is not this harness -- see the script's header.
+    bash scripts/harness-scram-iterations.sh "$container"
     echo "✅ ${container} ready on localhost:${port} (phaze_test + phaze_migrations_test)"
     echo "✅ ${redis_container} ready on localhost:${redis_port}"
 

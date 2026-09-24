@@ -329,6 +329,15 @@ async def async_engine():  # type: ignore[no-untyped-def]
     ``_db_connection`` checkout reuses it. NullPool opens a FRESH connection per ``connect()`` (in the
     caller's own loop) and closes it on release -- no cross-loop reuse -- which is exactly what the
     per-test ``_db_connection`` fixture needs.
+
+    phaze-1dc8g: that costs ~3,500 fresh connections per full suite, and REUSING them is not the fix.
+    The only way to reuse one is to run every DB test and its fixtures in the session loop instead of
+    a per-test loop, and then a task a test leaks (a router background task, a fire-and-forget
+    enqueue) outlives its test and runs inside the NEXT test's transaction, where today the per-test
+    loop's close cancels it. That trades under a minute for exactly the cross-test leak this fixture set
+    exists to prevent. The per-connect cost was attacked at its actual source instead: ~12 ms of it
+    was asyncpg's pure-Python SCRAM key derivation, removed by hashing the harness role with one
+    iteration (``scripts/harness-scram-iterations.sh``).
     """
     engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with engine.begin() as conn:
