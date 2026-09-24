@@ -71,6 +71,10 @@ ProvisionSeat = Callable[[str], Seat]
 ReleaseSeat = Callable[[str], int]
 SpawnLane = Callable[[LaneLaunch], ProcessHandle]
 RunCommand = Callable[[Sequence[str], Mapping[str, str]], int]
+# phaze-vad6y: a SEPARATE dependency from `RunCommand`, not another argv tuple in the same
+# fault-injection sequence, because this one call needs its STDOUT (the record-start token) and
+# the others only ever need a status code.
+RecordCoverageScopeStart = Callable[[], str | None]
 SignalGroup = Callable[[int, int], None]
 GroupAlive = Callable[[int], bool]
 Sleep = Callable[[float], None]
@@ -84,6 +88,7 @@ class SupervisorDependencies:
     release: ReleaseSeat
     spawn: SpawnLane
     run_command: RunCommand
+    record_coverage_scope_start: RecordCoverageScopeStart
     signal_group: SignalGroup
     group_alive: GroupAlive
     sleep: Sleep = time.sleep
@@ -134,6 +139,30 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
             tuple(command), cwd=repo_root, env=dict(environment), check=False
         ).returncode
 
+    def record_coverage_scope_start() -> str | None:
+        """A SEPARATE call from `run_command` (phaze-vad6y): this one needs the token printed to
+        STDOUT, not just a status code. Best-effort -- any failure (a nonzero exit, `uv` missing,
+        or the script itself not runnable) yields `None`, which `_postprocess` reads as "no stamp
+        is possible this run", never as a reason to abort the two-lane run.
+        """
+        uv_binary = shutil.which("uv")
+        if uv_binary is None:
+            return None
+        try:
+            result = subprocess.run(  # noqa: S603  # nosec B603 -- resolved executable, fixed argv, no shell.
+                (uv_binary, "run", "python", "scripts/stamp_coverage_scope.py", "--record-start"),
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        token = result.stdout.strip()
+        return token or None
+
     def signal_group(process_group: int, signum: int) -> None:
         os.killpg(process_group, signum)
 
@@ -151,6 +180,7 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
         release=release,
         spawn=spawn,
         run_command=run_command,
+        record_coverage_scope_start=record_coverage_scope_start,
         signal_group=signal_group,
         group_alive=group_alive,
     )
@@ -293,16 +323,34 @@ class ParallelTestSupervisor:
             launches.append(LaneLaunch(name=lane.name, command=command, environment=environment))
         return tuple(launches)
 
-    def _postprocess(self, run_root: Path) -> int:
+    def _postprocess(self, run_root: Path, scope_token: str | None) -> int:
         environment = dict(os.environ)
         environment["COVERAGE_FILE"] = str(self._repo_root / ".coverage")
         coverage_files = tuple(str(run_root / lane / ".coverage") for lane in ("lane-a", "lane-b"))
-        commands = (
+        commands = [
             ("uv", "run", "coverage", "combine", *coverage_files),
             ("uv", "run", "coverage", "json", "--fail-under=0"),
-            ("uv", "run", "coverage", "xml", "--fail-under=0"),
-            ("uv", "run", "coverage", "report", "--fail-under=95"),
-            ("uv", "run", "python", "scripts/coverage_floor.py"),
+        ]
+        if scope_token is not None:
+            # phaze-vad6y: stamps the `_phaze_scope` marker `find_reusable_report`
+            # (scripts/branch_coverage_check.py) needs, matching test-cov. This is the path
+            # `just check` runs by DEFAULT (no caller-owned seat exported) and it writes its own
+            # coverage.json here rather than going through `just test-cov` -- skipping it left the
+            # default path permanently unstamped, a gap a reviewing gate run with seat exports set
+            # (the SERIAL FALLBACK, already stamped) could not see.
+            # `--expect-token` closes a race a bare `--record-start`/stamp pair does not: a SECOND
+            # concurrent run (or a stale `--record-start` never consumed) can overwrite the ONE
+            # marker file between this run's own record and its own stamp. The token is minted by
+            # `record_coverage_scope_start` and never touches the shared marker file except as
+            # the value written into it, so a mismatch there means "someone else's run clobbered
+            # my marker" and the stamp correctly refuses rather than trusting the wrong tree state.
+            commands.append(("uv", "run", "python", "scripts/stamp_coverage_scope.py", "--expect-token", scope_token))
+        commands.extend(
+            [
+                ("uv", "run", "coverage", "xml", "--fail-under=0"),
+                ("uv", "run", "coverage", "report", "--fail-under=95"),
+                ("uv", "run", "python", "scripts/coverage_floor.py"),
+            ]
         )
         for command in commands:
             status = self._dependencies.run_command(command, environment)
@@ -317,6 +365,15 @@ class ParallelTestSupervisor:
         statuses: list[int] = []
         runtime_error = False
         released = False
+        # phaze-vad6y: capture HEAD + working-tree cleanliness NOW, before either lane starts
+        # reading files -- it has to happen before seat provisioning / lane spawning, not folded
+        # into `_postprocess`, so the marker describes the tree before pytest can possibly change
+        # what HEAD or dirtiness mean. A `None` token (HEAD unresolvable, or the subprocess itself
+        # failed) means `_postprocess` skips the stamp attempt entirely rather than calling a
+        # stamp step that could only ever refuse -- a failure here must never abort a two-lane
+        # test run over a marker file, and never leaves a stale marker for a LATER, unrelated run
+        # to find (`record_start` in stamp_coverage_scope.py clears any existing marker first).
+        scope_token = self._dependencies.record_coverage_scope_start()
         old_handlers = {signum: signal.signal(signum, self._forward_signal) for signum in (signal.SIGINT, signal.SIGTERM)}
         try:
             try:
@@ -348,7 +405,7 @@ class ParallelTestSupervisor:
         child_failure = next((status for status in statuses if status != 0), 0)
         if child_failure:
             return child_failure if child_failure > 0 else 128 - child_failure
-        return self._postprocess(run_root)
+        return self._postprocess(run_root, scope_token)
 
 
 def _parser() -> argparse.ArgumentParser:

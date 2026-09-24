@@ -247,15 +247,141 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
     assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
 
 
-def test_branch_gate_writes_a_separate_scoped_branch_report() -> None:
-    """Branch-check collects its own selected-test evidence without changing the fast gate."""
+def test_branch_gate_falls_back_to_a_separate_scoped_branch_report_only_when_needed() -> None:
+    """Branch-check collects its own selected-test evidence without changing the fast gate --
+    but only as a FALLBACK when no usable same-tree artifact already exists (phaze-vad6y): the
+    reuse-or-run decision itself now lives in `scripts/branch_coverage_check.py`
+    (`find_reusable_report` / `run_scoped_evidence_pass`), not in this recipe's shell, precisely
+    so it can be unit-tested directly rather than only asserted against `just --dry-run`'s
+    text -- see `tests/shared/test_branch_coverage_check.py` for those tests.
+    """
     step = _dry_run("branch-check")
-    assert "just _test-branch-scoped" in step
+    assert "scripts/branch_coverage_check.py" in step
+    script = (REPO_ROOT / "scripts" / "branch_coverage_check.py").read_text(encoding="utf-8")
+    assert '"_test-branch-scoped"' in script, "the fallback must still shell out to the existing scoped/escalated evidence recipe"
     scoped = _dry_run("_test-branch-scoped")
     assert "COVERAGE_FILE=.coverage.fast uv run pytest" in scoped
     assert "--cov-fail-under=0" in scoped
     assert "scripts/write_fast_coverage.py" in scoped
     assert "--cov-report=json" not in scoped
+
+
+def test_branch_check_recipe_body_never_calls_test_branch_scoped_directly_again() -> None:
+    """Regression guard for the ORIGINAL phaze-vad6y bug: `branch-check`'s own bash used to
+    unconditionally invoke `just _test-branch-scoped`. The reuse-or-run decision now lives in
+    Python precisely so it is testable (see the test above and
+    `tests/shared/test_branch_coverage_check.py`); if a future edit moves that call back into
+    this recipe's executable body, this must fail before it ships. Comment lines are stripped
+    (the recipe legitimately MENTIONS `_test-branch-scoped` in prose) -- only the commands
+    `just` would actually run are checked.
+    """
+    justfile = JUSTFILE_PATH.read_text(encoding="utf-8")
+    body = re.search(r"^branch-check \*flags:\n((?:[ \t]+.*\n?)*)", justfile, re.MULTILINE)
+    assert body is not None, "branch-check recipe not found"
+    commands = "\n".join(line for line in body.group(1).splitlines() if not line.strip().startswith("#"))
+    assert "_test-branch-scoped" not in commands, f"branch-check's own recipe body must never invoke _test-branch-scoped directly again:\n{commands}"
+
+
+def test_every_full_coverage_writer_reachable_from_test_validate_stamps_its_output() -> None:
+    """phaze-vad6y review follow-up (HIGH): `test-validate` has THREE branches, and only two of
+    them were stamped in the first pass. The caller-owned-triplet branch runs `test-cov`
+    (stamped) directly; the disabled-parallel branch runs `test-validate-serial` -> `test-cov`
+    (stamped, transitively); the DEFAULT branch -- no seat exported, `PHAZE_TEST_PARALLEL` unset
+    or `1` -- runs `test-cov-parallel` -> `scripts/parallel_test_runner.py`, which writes
+    `coverage.json` itself via its own `coverage combine` / `coverage json` and does NOT go
+    through `test-cov` at all. That third path went unstamped initially because the reviewing
+    gate run happened to have a seat exported, taking the SERIAL FALLBACK branch and hiding the
+    gap -- `just branch-check` on the default (unexported) path would have kept costing the full
+    ~20-24 minute rerun this bead exists to kill.
+
+    A second review round found this test itself was too weak: it only checked that
+    `--record-start` appears, which stays true even if the REAL stamp call (`--expect-token ...`)
+    were deleted entirely -- `--record-start` alone writes a marker nobody ever reads. This checks
+    the actual stamp invocation, by its distinguishing flag, in each recipe/module that must carry
+    one, and `coverage-combine` is asserted to carry NEITHER (see `stamp_coverage_scope.py`'s own
+    "WHY NOT `coverage-combine`" -- its shards are measured at different times against a tree that
+    has already moved on by the time `combine` runs, so bracketing it would stamp the wrong thing).
+    """
+    test_cov = _dry_run("test-cov")
+    assert "scripts/stamp_coverage_scope.py --record-start" in test_cov
+    assert "scripts/stamp_coverage_scope.py --expect-token" in test_cov
+    # `--dry-run` prints only the RECIPE'S OWN script body, not a sub-invocation's -- so the
+    # serial-fallback path is verified by delegation (it calls the already-stamped `test-cov`),
+    # not by the stamp text appearing a second time.
+    assert "just test-cov" in _dry_run("test-validate-serial")
+
+    combine = _dry_run("coverage-combine")
+    assert "stamp_coverage_scope.py" not in combine, (
+        "coverage-combine must NOT stamp -- its shards predate the combine step, so a bracket here would describe the wrong tree"
+    )
+
+    parallel_runner = (REPO_ROOT / "scripts" / "parallel_test_runner.py").read_text(encoding="utf-8")
+    assert "record_coverage_scope_start" in parallel_runner, "parallel_test_runner.py must record the pre-run tree state before either lane starts"
+    assert "--expect-token" in parallel_runner, "parallel_test_runner.py must thread the record-start token to its own stamp call in _postprocess"
+
+
+# phaze-vad6y review finding 4: the test above enumerates the KNOWN writers; this one looks for
+# writers it does NOT already know about, so a future one cannot slip in silently. A coverage.json
+# gets written in exactly three syntactic shapes in this repo -- pytest-cov's `--cov-report=json`
+# CLI flag, a bare `coverage json` subcommand, and coverage.py's own `Coverage.json_report(...)`
+# API -- and this scans the justfile (recipe by recipe, comments stripped) and every scripts/*.py
+# file (module docstring stripped, since several of them discuss this exact topic in prose) for
+# all three. Anything found that is not in the allowlist below fails the test; anything in the
+# allowlist that is NO LONGER found also fails, so the list cannot silently go stale in the other
+# direction either.
+_FULL_COVERAGE_JSON_WRITERS = frozenset(
+    {("justfile", "test-cov"), ("justfile", "coverage-combine"), ("scripts/parallel_test_runner.py", "_postprocess")}
+)
+# `.fast-coverage.json` (`kind: "selected-tests"`) is a DIFFERENT report from the `coverage.json`
+# (`kind: "full"`) the writers above produce -- `find_reusable_report` treats them as distinct
+# candidates, and `write_fast_coverage.py` already stamps its own output unconditionally (it has
+# no multi-minute run to worry about outliving; `_test-branch-scoped`'s pytest invocation and the
+# stamp both happen back to back, synchronously, in the same recipe). Out of scope for this scan.
+_SCOPED_COVERAGE_JSON_WRITERS = frozenset({"write_fast_coverage.py"})
+# The justfile pattern includes the loose `coverage json` phrase -- safe there because a `grep`
+# audit found it appears ONLY in the one real `uv run coverage json` invocation (coverage-combine)
+# and inside `#`-comments (stripped below). It is NOT safe for scripts/*.py: several of them
+# describe the coverage.json FORMAT in docstrings, argparse `help=` text and print() messages
+# ("a `coverage json` report to merge...", "not a coverage json report") using that exact phrase
+# as prose, not as an invocation -- module-docstring stripping alone does not catch those. So the
+# script-side pattern is narrowed to shapes that can ONLY be real code: a subprocess argv literally
+# containing `"coverage", "json"`, or a direct `Coverage.json_report(...)` API call.
+_JUSTFILE_COVERAGE_JSON_PATTERN = re.compile(r"--cov-report=json|\bcoverage json\b")
+_SCRIPT_COVERAGE_JSON_PATTERN = re.compile(r'"coverage",\s*"json"|\.json_report\(')
+
+
+def _strip_justfile_comments(body: str) -> str:
+    return "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+
+
+def test_no_unlisted_coverage_json_writer_exists() -> None:
+    justfile = JUSTFILE_PATH.read_text(encoding="utf-8")
+    cov_reports_def = re.search(r'^cov_reports\s*:=\s*"([^"]*)"', justfile, re.MULTILINE)
+    assert cov_reports_def is not None, "the shared cov_reports variable moved or was renamed"
+    assert "--cov-report=json" in cov_reports_def.group(1), "cov_reports no longer includes json -- test-cov would stop writing coverage.json"
+
+    found: set[tuple[str, str]] = set()
+    for match in re.finditer(r"^([a-z][a-z0-9_-]*)( [A-Za-z*][^:\n]*)?:\n((?:[ \t]+.*\n?)*)", justfile, re.MULTILINE):
+        name, _params, raw_body = match.groups()
+        body = _strip_justfile_comments(raw_body)
+        # `{{cov_reports}}` is an indirect reference to the same literal flag verified above --
+        # a recipe using the variable is treated exactly as if it wrote `--cov-report=json` itself.
+        if "{{cov_reports}}" in body or _JUSTFILE_COVERAGE_JSON_PATTERN.search(body):
+            found.add(("justfile", name))
+
+    scripts_dir = REPO_ROOT / "scripts"
+    for path in sorted(scripts_dir.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if _SCRIPT_COVERAGE_JSON_PATTERN.search(text):
+            found.add((f"scripts/{path.name}", "_postprocess" if path.name == "parallel_test_runner.py" else path.stem))
+
+    known = _FULL_COVERAGE_JSON_WRITERS | {(f"scripts/{name}", name.removesuffix(".py")) for name in _SCOPED_COVERAGE_JSON_WRITERS}
+    unlisted = found - known
+    missing = known - found
+    assert not unlisted, (
+        f"found coverage.json writer(s) not in the allowlist -- decide whether they need a stamp bracket, then add them deliberately: {sorted(unlisted)}"
+    )
+    assert not missing, f"allowlisted writer(s) no longer found -- the list is stale: {sorted(missing)}"
 
 
 #

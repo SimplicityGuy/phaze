@@ -60,12 +60,17 @@ class Harness:
         self,
         *,
         child_statuses: Sequence[int] = (0, 0),
-        command_statuses: Sequence[int] = (0, 0, 0, 0, 0),
+        # 6 successes: _postprocess's six commands (combine, json, stamp, xml, report, floor).
+        # `record_coverage_scope_start` is a SEPARATE dependency (phaze-vad6y) -- it needs to
+        # return a TOKEN, not just a status, so it does not share this queue.
+        command_statuses: Sequence[int] = (0, 0, 0, 0, 0, 0),
         spawn_failure_at: int | None = None,
+        record_start_token: str | None = "faketoken",  # noqa: S107 -- a fake test fixture value, not a credential
     ) -> None:
         self.child_statuses = list(child_statuses)
         self.command_statuses = list(command_statuses)
         self.spawn_failure_at = spawn_failure_at
+        self.record_start_token = record_start_token
         self.events: list[str] = []
         self.launches: list[LaneLaunch] = []
         self.releases: dict[str, list[int]] = {}
@@ -106,6 +111,10 @@ class Harness:
         self.events.append(f"command:{' '.join(command)}")
         return self.command_statuses.pop(0)
 
+    def record_coverage_scope_start(self) -> str | None:
+        self.events.append("record-start")
+        return self.record_start_token
+
     def signal_group(self, process_group: int, signum: int) -> None:
         self.events.append(f"signal:{process_group}:{signum}")
 
@@ -120,6 +129,7 @@ class Harness:
             release=self.release,
             spawn=self.spawn,
             run_command=self.run_command,
+            record_coverage_scope_start=self.record_coverage_scope_start,
             signal_group=self.signal_group,
             group_alive=self.group_alive,
             sleep=lambda _seconds: None,
@@ -163,16 +173,24 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
     assert "--cov-fail-under=0" in first.command
     assert "--cov-report=" in first.command
 
+    # phaze-vad6y: `record_coverage_scope_start` fires before ANY lane is provisioned or spawned
+    # -- it has to, so the marker describes the tree before pytest can possibly change what HEAD
+    # or dirtiness mean -- so it is legitimately the very first event of the whole run, ahead of
+    # both seats' provisioning. It is a SEPARATE dependency from `run_command` (it needs a token
+    # back, not just a status), so it never shows up as a "command:" event; the release-before-
+    # combine invariant this test guards is about the actual coverage POST-PROCESS commands only.
+    assert harness.events[0] == "record-start"
     release_events = [event for event in harness.events if event.startswith("release:")]
     assert release_events == ["release:runner-owned-lane-a", "release:runner-owned-lane-b"]
     first_command = next(index for index, event in enumerate(harness.events) if event.startswith("command:"))
     assert all(harness.events.index(event) < first_command for event in release_events)
-    assert len([event for event in harness.events if event.startswith("command:")]) == 5
+    assert len([event for event in harness.events if event.startswith("command:")]) == 6
 
     commands = [event.removeprefix("command:") for event in harness.events if event.startswith("command:")]
     assert commands[0].startswith("uv run coverage combine ")
     assert commands[1:] == [
         "uv run coverage json --fail-under=0",
+        "uv run python scripts/stamp_coverage_scope.py --expect-token faketoken",
         "uv run coverage xml --fail-under=0",
         "uv run coverage report --fail-under=95",
         "uv run python scripts/coverage_floor.py",
@@ -220,6 +238,10 @@ def test_lane_failure_skips_coverage_commands_and_propagates_status(tmp_path: Pa
     status, _ = _run(tmp_path, harness)
 
     assert status == 7
+    # phaze-vad6y: `record_coverage_scope_start` fires unconditionally before either lane is even
+    # provisioned (a SEPARATE dependency, not a "command:" event), so it still ran exactly once
+    # even though the run never reaches `_postprocess` -- the post-process COMMANDS never ran.
+    assert harness.events.count("record-start") == 1
     assert not any(event.startswith("command:") for event in harness.events)
     assert sum(event.startswith("release:") for event in harness.events) == 2
 
@@ -245,17 +267,19 @@ def test_spawn_failure_terminates_started_group_and_releases_both_registered_sea
     assert f"signal:1000:{signal.SIGTERM}" in harness.events
     assert harness.processes[0].waited
     assert sum(event.startswith("release:") for event in harness.events) == 2
+    assert harness.events.count("record-start") == 1
     assert not any(event.startswith("command:") for event in harness.events)
 
 
 @pytest.mark.parametrize(
     ("command_statuses", "expected", "commands_run"),
     [
-        ((9,), 9, 1),
-        ((0, 8), 8, 2),
-        ((0, 0, 7), 7, 3),
-        ((0, 0, 0, 6), 6, 4),
-        ((0, 0, 0, 0, 5), 5, 5),
+        ((9,), 9, 1),  # coverage combine fails
+        ((0, 8), 8, 2),  # coverage json fails
+        ((0, 0, 7), 7, 3),  # scripts/stamp_coverage_scope.py fails (phaze-vad6y)
+        ((0, 0, 0, 6), 6, 4),  # coverage xml fails
+        ((0, 0, 0, 0, 5), 5, 5),  # coverage report fails
+        ((0, 0, 0, 0, 0, 4), 4, 6),  # scripts/coverage_floor.py fails
     ],
 )
 def test_combine_report_and_floor_failures_propagate(tmp_path: Path, command_statuses: tuple[int, ...], expected: int, commands_run: int) -> None:
@@ -266,6 +290,29 @@ def test_combine_report_and_floor_failures_propagate(tmp_path: Path, command_sta
     assert status == expected
     assert sum(event.startswith("command:") for event in harness.events) == commands_run
     assert sum(event.startswith("release:") for event in harness.events) == 2
+
+
+def test_a_failing_record_start_does_not_abort_the_run_and_the_stamp_step_is_skipped(tmp_path: Path) -> None:
+    """`record_coverage_scope_start`'s return value is `None` when it fails (phaze-vad6y): a
+    failure recording the pre-run marker must not cost a two-lane test run its result, AND
+    `_postprocess` must not even ATTEMPT the stamp call it could only ever refuse -- there is no
+    token to pass it.
+    """
+    harness = Harness(record_start_token=None)
+
+    status, _ = _run(tmp_path, harness)
+
+    assert status == 0
+    assert harness.events.count("record-start") == 1
+    commands = [event.removeprefix("command:") for event in harness.events if event.startswith("command:")]
+    assert commands == [
+        "uv run coverage combine {}".format(" ".join(str(tmp_path / "run" / lane / ".coverage") for lane in ("lane-a", "lane-b"))),
+        "uv run coverage json --fail-under=0",
+        "uv run coverage xml --fail-under=0",
+        "uv run coverage report --fail-under=95",
+        "uv run python scripts/coverage_floor.py",
+    ]
+    assert not any("stamp_coverage_scope.py" in command for command in commands)
 
 
 @pytest.mark.parametrize(("signum", "expected"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
@@ -281,6 +328,7 @@ def test_interrupt_reaches_both_process_groups_waits_and_releases(tmp_path: Path
     assert f"signal:1001:{signum}" in harness.events
     assert all(process.waited for process in harness.processes)
     assert sum(event.startswith("release:") for event in harness.events) == 2
+    assert harness.events.count("record-start") == 1
     assert not any(event.startswith("command:") for event in harness.events)
 
 
@@ -296,6 +344,7 @@ def test_each_release_retries_even_when_first_seat_never_releases(tmp_path: Path
     assert status == 1
     assert harness.events.count("release:runner-owned-lane-a") == 5
     assert harness.events.count("release:runner-owned-lane-b") == 2
+    assert harness.events.count("record-start") == 1
     assert not any(event.startswith("command:") for event in harness.events)
 
 

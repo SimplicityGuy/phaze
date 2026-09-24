@@ -37,7 +37,7 @@ just check-fast            # THE per-bead gate: lint + typecheck + the tests rep
 just check                 # lint + typecheck + full suite WITH coverage (95% LINE floor)
 just check-all             # THE molecule gate: every pre-commit hook + the full suite + promtool
                            # alert-rule tests (alerts-test)
-just branch-check          # Per-bead BRANCH-coverage gate. Free after any `check`
+just branch-check          # Per-bead BRANCH-coverage gate. Free when a same-tree artifact exists
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
 just test-db-for <name>    # Carve an isolated seat — REQUIRED for concurrent worktrees
 ```
@@ -57,7 +57,7 @@ it before citing any command as evidence in a bead. The operational summary:
 | `just check-fast` | yes | yes | one of three populations, named by its `🎯 selector:` line — a change-selected subset (`run`), the full suite (`escalate`), or `tests/docs_floor.txt` on a prose-only diff (`docs`) | only on `escalate` | **the per-bead gate** — `bh work check` / `submit` / `merge` / `merge-main` |
 | `just check` | yes | yes | full suite | 95% line floor | `postland`, `union`, and the manual escape hatch |
 | `just check-all` | via pre-commit | via pre-commit | full suite | 95% line floor | **the molecule gate** — `bh work finish` |
-| `just branch-check` | — | — | — | per-bead branch coverage | free after any `check` |
+| `just branch-check` | — | — | — | per-bead branch coverage | free when a same-tree `coverage.json`/`.fast-coverage.json` exists; otherwise runs fresh evidence and says so (phaze-vad6y) |
 
 `just check-all` also runs `alerts-test` (`promtool test rules alerts/phaze-alerts.test.yml`) after
 `pre-commit` and `test-validate`, so the table's "every pre-commit hook + the full suite" undersells
@@ -502,11 +502,24 @@ is visible everywhere. The **gate** is deliberately narrow:
 - **Repo-wide, the floors stay on LINES** — 95% total, 90% per module. Branch coverage sits below the
   line figure on most files here, so a repo-wide branch floor would fail on day one and the backfill
   would dwarf the work it was meant to protect. **Do not raise `fail_under` against branches.**
-- **Per bead, `just branch-check`** reads the `coverage.json` any gate run leaves behind, checks only
-  the `src/phaze/**.py` files that bead changed against `--base-ref` (committed, staged *and*
-  unstaged, so it is useful mid-flight), names every file it checked, and prints the **uncovered
-  branch line numbers** rather than a bare percentage. Raising is welcome, holding steady is fine,
-  **lowering fails the bead**. Files the bead did not touch are out of scope.
+- **Per bead, `just branch-check`** reuses a `coverage.json` / `.fast-coverage.json` a prior gate
+  run left behind **only when it was stamped for this exact tree** — a clean working tree at the
+  START of that run, and HEAD unchanged for its whole duration (`scripts/
+  stamp_coverage_scope.py`, `find_reusable_report` in `scripts/branch_coverage_check.py`,
+  phaze-vad6y). Before that bead nothing checked freshness at all: the recipe unconditionally
+  re-ran real tests on every invocation regardless — a cheaper selected subset when the diff
+  mapped cleanly, a full-suite escalation otherwise, and every invocation the 2026-09-22/23
+  dispatch actually hit escalated, costing ~20–24 minutes each time. Absent a fresh artifact it
+  says so and produces one itself — but reuse never trusts a DIRTY tree, and neither does a
+  selected-subset fallback (exit 2, not a pass: the check needs an exact, git-addressable tree to
+  compare against). An escalation to the full suite is the one path that still judges a dirty
+  tree — its coverage.json goes unstamped, so `branch-check` scores it as measured rather than
+  refusing it outright. It checks
+  only the `src/phaze/**.py` files that bead changed against `--base-ref` (committed, staged
+  *and* unstaged, so the FILE SELECTION itself is useful mid-flight even though artifact reuse is
+  not), names every file it checked, and prints the **uncovered branch line numbers** rather than
+  a bare percentage. Raising is welcome, holding steady is fine, **lowering fails the bead**.
+  Files the bead did not touch are out of scope.
 - **It fails closed on a missing baseline.** Only `phaze-bk9el.1` may pass
   `--allow-missing-baseline` — it cannot be blocked by a check consuming the artifact it exists to
   produce. **No other bead should pass that flag**; seeing it is a signal something is wrong. An

@@ -335,3 +335,253 @@ def test_a_branchless_baseline_entry_does_not_read_as_a_regression(tmp_path: Pat
     baseline.write_text(json.dumps({"files": {"src/phaze/constants.py": {"percent_branches_covered": None}}}), encoding="utf-8")
 
     assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/constants.py") == 0
+
+
+# phaze-vad6y: CLAUDE.md documented `just branch-check` as "free after any `check`", but nothing
+# ever checked for a reusable artifact -- it unconditionally re-ran real tests on every
+# invocation regardless (a cheaper selected subset, or a full-suite escalation), and every
+# invocation the 2026-09-22/23 dispatch actually recorded escalated, costing a genuine ~20-24
+# minutes each time. These tests exercise the auto-detection path
+# (no explicit ``--coverage``) directly against ``main()``, monkeypatching only ``_git`` (no real
+# repo needed) and ``run_scoped_evidence_pass`` -- the ONE function standing between this script
+# and a `just _test-branch-scoped` subprocess, and therefore the one call whose absence proves "no
+# test run happened". Breaking `find_reusable_report`'s freshness check (dropping the head
+# comparison, the dirty-tree check, or the branch-data/stamp checks) flips these from green to red.
+
+
+def _write_report_at(path: Path, *, files: dict[str, dict[str, object]], kind: str, head: str) -> None:
+    totals = {
+        "num_statements": 100,
+        "percent_statements_covered": 100.0,
+        "num_branches": 10,
+        "covered_branches": 10,
+        "percent_branches_covered": 100.0,
+    }
+    path.write_text(json.dumps({"files": files, "totals": totals, "_phaze_scope": {"kind": kind, "head": head}}), encoding="utf-8")
+
+
+def test_auto_reuses_a_fresh_full_report_without_running_any_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Criterion 2: a fresh full-suite `coverage.json` answers the question with no test run."""
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "deadbeef" if args == ("rev-parse", "HEAD") else "")
+    _write_report_at(
+        tmp_path / "coverage.json",
+        files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+        kind="full",
+        head="deadbeef",
+    )
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    ran: list[str] = []
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", lambda: ran.append("ran") or 0)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert ran == [], "a fresh same-tree coverage.json must not trigger a test run"
+    assert rc == 0
+    assert "Reusing" in capsys.readouterr().out
+
+
+def test_auto_reuses_a_fresh_scoped_report_without_running_any_tests_when_no_full_report_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior `just branch-check` invocation's own `.fast-coverage.json` is reusable too."""
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "deadbeef" if args == ("rev-parse", "HEAD") else "")
+    _write_report_at(
+        tmp_path / ".fast-coverage.json",
+        files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+        kind="selected-tests",
+        head="deadbeef",
+    )
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    ran: list[str] = []
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", lambda: ran.append("ran") or 0)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert ran == []
+    assert rc == 0
+
+
+def test_auto_runs_fresh_evidence_when_the_full_report_is_stamped_for_a_different_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A report from a different commit is not "this tree" and must not be trusted silently."""
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "current-head" if args == ("rev-parse", "HEAD") else "")
+    _write_report_at(
+        tmp_path / "coverage.json",
+        files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+        kind="full",
+        head="stale-head",
+    )
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    ran: list[str] = []
+
+    def _fake_pass() -> int:
+        ran.append("ran")
+        _write_report_at(
+            tmp_path / ".fast-coverage.json",
+            files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+            kind="selected-tests",
+            head="current-head",
+        )
+        return 0
+
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", _fake_pass)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert ran == ["ran"], "a report stamped for a different commit must trigger a fresh test run"
+    assert rc == 0
+    assert "No usable coverage artifact" in capsys.readouterr().out
+
+
+def test_auto_runs_fresh_evidence_when_the_working_tree_is_dirty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even a head-matching report cannot be REUSED once anything in the tree has changed.
+
+    Dirtiness invalidates the existing report even though the touched file itself did not change
+    here -- "was anything touched since this was measured" is a yes/no question, and there is no
+    way from inside the check to know a stray edit was harmless. `find_reusable_report` therefore
+    never even attempts reuse and a fresh evidence pass runs -- but a persistently dirty tree also
+    trips ``main()``'s pre-existing scoped/full staleness re-check (unchanged by phaze-vad6y, and
+    exercised for the ``selected-tests`` kind since before this bead), so the fresh report is
+    rejected too, exit 2, rather than silently trusted. The point proved here is narrower than
+    "still passes": a dirty tree must never reuse a stale artifact WITHOUT at least trying to
+    measure it fresh first.
+    """
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else " M some/unrelated/file.py\n")
+    _write_report_at(
+        tmp_path / "coverage.json",
+        files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+        kind="full",
+        head="same-head",
+    )
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    ran: list[str] = []
+
+    def _fake_pass() -> int:
+        ran.append("ran")
+        _write_report_at(
+            tmp_path / ".fast-coverage.json",
+            files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+            kind="selected-tests",
+            head="same-head",
+        )
+        return 0
+
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", _fake_pass)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert ran == ["ran"], "a dirty working tree must never reuse the existing report without at least trying to measure it fresh"
+    assert rc == 2
+
+
+def test_auto_runs_fresh_evidence_when_no_report_exists_at_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    ran: list[str] = []
+
+    def _fake_pass() -> int:
+        ran.append("ran")
+        _write_report_at(
+            tmp_path / ".fast-coverage.json",
+            files={"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}},
+            kind="selected-tests",
+            head="same-head",
+        )
+        return 0
+
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", _fake_pass)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert ran == ["ran"]
+    assert rc == 0
+
+
+def test_auto_propagates_the_evidence_pass_failure_without_reading_a_stale_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If `_test-branch-scoped` itself fails (e.g. escalates and the full suite goes red), that
+    failure is the answer -- branch-check must not paper over it by falling through to whatever
+    (possibly stale) report happens to be lying around.
+    """
+    module = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_git", lambda *args: "same-head" if args == ("rev-parse", "HEAD") else "")
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", lambda: 1)
+
+    rc = module.main(["--baseline", str(baseline), "--file", "src/phaze/a.py"])
+
+    assert rc == 1
+
+
+def test_an_explicit_coverage_flag_still_skips_the_reuse_decision_entirely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--coverage` stays authoritative (phaze-6e2hj/phaze-bk9el.21 contract, unchanged by phaze-vad6y):
+    an operator who names a report explicitly gets exactly that report, never a substitute, and
+    `find_reusable_report`/`run_scoped_evidence_pass` are not even consulted.
+    """
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, 4]]}})
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+
+    def _boom() -> tuple[Path | None, list[str]]:
+        raise AssertionError("find_reusable_report must not run when --coverage is explicit")
+
+    monkeypatch.setattr(module, "find_reusable_report", _boom)
+    monkeypatch.setattr(module, "run_scoped_evidence_pass", _boom)
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py") == 0
+
+
+def _load_stamp_module() -> ModuleType:
+    stamp_script = _REPO_ROOT / "scripts" / "stamp_coverage_scope.py"
+    assert stamp_script.is_file(), f"stamp script missing: {stamp_script}"
+    spec = importlib.util.spec_from_file_location("stamp_coverage_scope", stamp_script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_real_stamp_coverage_scope_output_is_accepted_by_find_reusable_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-trip the REAL `stamp_coverage_scope.py` output through `find_reusable_report`
+    (phaze-vad6y review follow-up). The two scripts agree on schema only by convention -- the
+    literal string `"full"`, the key `"head"`, all nested under `"_phaze_scope"` -- and a
+    hand-written fixture in the tests above would not notice if one of them drifted. This test
+    would fail the moment either script's kind string, key name, or nesting changed without the
+    other following.
+    """
+    branch_module = _load()
+    stamp_module = _load_stamp_module()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(stamp_module, "_head", lambda: "deadbeef")
+    monkeypatch.setattr(stamp_module, "_dirty", lambda: False)
+    monkeypatch.setattr(branch_module, "_git", lambda *args: "deadbeef" if args == ("rev-parse", "HEAD") else "")
+
+    report = tmp_path / "coverage.json"
+    report.write_text(
+        json.dumps({"files": {}, "totals": {"num_statements": 10, "percent_statements_covered": 100.0, "num_branches": 4, "covered_branches": 4}}),
+        encoding="utf-8",
+    )
+
+    assert stamp_module.main(["--record-start"]) == 0
+    token = capsys.readouterr().out.strip()
+    assert stamp_module.main(["--expect-token", token]) == 0
+
+    reusable, reasons = branch_module.find_reusable_report()
+
+    assert reusable == Path("coverage.json")
+    assert reasons == []
