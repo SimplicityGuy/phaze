@@ -434,9 +434,9 @@ def test_the_coverage_artifacts_actually_carry_branch_data(tmp_path: Path) -> No
 
     The measurement runs in a SUBPROCESS (phaze-bein3). Starting and stopping a second Coverage
     in-process pauses the suite's own collector, and on coverage.py's sys.monitoring core the resumed
-    collector never re-arms line events for code it had already seen: measured, every later test's
-    new lines in already-imported phaze modules went unrecorded (17 lines across 7 files on the full
-    suite). tests/shared/test_coverage_core_selection.py forbids an in-process start anywhere in tests/.
+    collector never re-arms line events for code it had already seen: measured, humanize.py fell from
+    100% to 51.72% when its own tests ran after this one. tests/shared/test_coverage_core_selection.py
+    forbids an in-process start anywhere in tests/.
     """
     module = tmp_path / "branchy.py"
     module.write_text("def f(x):\n    if x:\n        return 1\n    return 0\n", encoding="utf-8")

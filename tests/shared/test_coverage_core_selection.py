@@ -219,11 +219,16 @@ def test_a_malformed_opt_in_fails_loudly(env_value: str) -> None:
 
 
 def _is_coverage_constructor(node: ast.AST) -> bool:
-    """``coverage.Coverage(...)`` or a bare ``Coverage(...)``."""
+    """A call to anything whose name mentions coverage: ``coverage.Coverage(...)``, or a helper like ``_repo_coverage(...)``.
+
+    Deliberately wide. The second offender this bead found built its Coverage through a helper,
+    which a match on the literal constructor missed.
+    """
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    return (isinstance(func, ast.Attribute) and func.attr == "Coverage") or (isinstance(func, ast.Name) and func.id == "Coverage")
+    name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+    return "coverage" in name.lower()
 
 
 def _in_process_coverage_starts(source: str) -> list[int]:
@@ -251,6 +256,7 @@ def test_the_in_process_start_scan_sees_a_start() -> None:
     assert _in_process_coverage_starts("import coverage\ncov = coverage.Coverage()\ncov.start()\n") == [3]
     assert _in_process_coverage_starts("import coverage\ncoverage.Coverage().start()\n") == [2]
     assert _in_process_coverage_starts("import coverage\nwith coverage.Coverage().collect():\n    pass\n") == [2]
+    assert _in_process_coverage_starts("cov = _repo_coverage(source=['x'])\ncov.start()\n") == [2]
     assert _in_process_coverage_starts("import coverage\nprobe = 'cov = coverage.Coverage()\\ncov.start()'\n") == []
 
 
@@ -259,9 +265,15 @@ def test_no_test_starts_a_second_coverage_in_process() -> None:
 
     Starting one pauses the outer collector; on resume, coverage.py 7.16.1's sys.monitoring core does
     not re-arm line events for code objects it had already registered, so every later test's new
-    lines in already-imported modules go unrecorded. Measured for this bead: one such test in
-    tests/shared cost 17 lines across 7 phaze files on the full suite, and humanize.py alone fell
-    from 100% to 51.72% when its tests ran after it. Run the measurement in a subprocess instead.
+    lines in already-imported modules go unrecorded. CTracer is unaffected, which is why this was
+    invisible until the default core changed. Measured for this bead: two such tests in tests/shared
+    (one building its Coverage through a helper), and humanize.py fell from 100% to 51.72% when its
+    own tests ran after either one. Run the measurement in a subprocess instead.
+
+    THE GENERAL FORM (CLAUDE.md rule 5): a measuring tool started inside the process it is
+    measuring shares that process's global instrumentation state, so it can silently change what
+    the outer measurement records -- and the outer run still prints a normal-looking number. Any
+    probe of coverage, tracing or profiling behaviour belongs in a subprocess.
     """
     offenders = [
         f"{path.relative_to(REPO_ROOT)}:{line}"
