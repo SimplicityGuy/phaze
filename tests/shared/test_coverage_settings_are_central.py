@@ -178,18 +178,26 @@ def test_the_json_and_xml_destinations_are_honored_not_merely_configured(tmp_pat
     A regression to coverage.py's built-in defaults would NOT be caught by comparing the key --
     the defaults happen to be the same two names. It is caught here, because a key coverage.py
     stopped honoring produces a file at the default path while the key still reads correctly.
+
+    The measurement runs in a SUBPROCESS (phaze-bein3): a Coverage started in the suite's own
+    interpreter blinds the suite's collector on coverage.py's sys.monitoring core -- see
+    tests/shared/test_coverage_core_selection.py::test_no_test_starts_a_second_coverage_in_process.
     """
     module = tmp_path / "branchy.py"
     module.write_text("def f(x):\n    if x:\n        return 1\n    return 0\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    cov = _repo_coverage(data_file=str(tmp_path / ".coverage"), source=[str(tmp_path)])
-    cov.start()
-    exec(compile(module.read_text(encoding="utf-8"), str(module), "exec"), {})  # noqa: S102 - throwaway module, fixture input
-    cov.stop()
-
-    cov.json_report()
-    cov.xml_report()
+    probe = (
+        "import coverage\n"
+        f"cov = coverage.Coverage(config_file={str(PYPROJECT_PATH)!r}, data_file={str(tmp_path / '.coverage')!r}, source=[{str(tmp_path)!r}])\n"
+        "cov.start()\n"
+        f"exec(compile(open({str(module)!r}, encoding='utf-8').read(), {str(module)!r}, 'exec'), {{}})\n"
+        "cov.stop()\n"
+        "cov.json_report()\n"
+        "cov.xml_report()\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=tmp_path, check=False, capture_output=True, text=True)  # noqa: S603 - sys.executable plus a literal probe
+    assert result.returncode == 0, result.stdout + result.stderr
 
     expected_json = str(_repo_coverage().get_option("json:output"))
     expected_xml = str(_repo_coverage().get_option("xml:output"))

@@ -431,31 +431,34 @@ def test_the_coverage_artifacts_actually_carry_branch_data(tmp_path: Path) -> No
 
     The repo's own ``pyproject.toml`` supplies the config (so a ``branch = false`` there fails this
     test); only ``source`` is overridden, to the throwaway module below.
+
+    The measurement runs in a SUBPROCESS (phaze-bein3). Starting and stopping a second Coverage
+    in-process pauses the suite's own collector, and on coverage.py's sys.monitoring core the resumed
+    collector never re-arms line events for code it had already seen: measured, humanize.py fell from
+    100% to 51.72% when its own tests ran after this one. tests/shared/test_coverage_core_selection.py
+    forbids an in-process start anywhere in tests/.
     """
     module = tmp_path / "branchy.py"
     module.write_text("def f(x):\n    if x:\n        return 1\n    return 0\n", encoding="utf-8")
-    cov = coverage.Coverage(
-        config_file=str(REPO_ROOT / "pyproject.toml"),
-        data_file=str(tmp_path / ".coverage"),
-        source=[str(tmp_path)],
+    assert coverage.Coverage(config_file=str(REPO_ROOT / "pyproject.toml")).get_option("run:branch") is True, (
+        "pyproject no longer enables branch coverage"
     )
-    assert cov.get_option("run:branch") is True, "pyproject no longer enables branch coverage"
-
-    sys.path.insert(0, str(tmp_path))
-    try:
-        cov.start()
-        import branchy
-
-        branchy.f(1)  # only ONE arm, so a partial branch genuinely exists to be reported
-        cov.stop()
-    finally:
-        sys.path.remove(str(tmp_path))
-        sys.modules.pop("branchy", None)
 
     json_path = tmp_path / "coverage.json"
     xml_path = tmp_path / "coverage.xml"
-    cov.json_report(outfile=str(json_path))
-    cov.xml_report(outfile=str(xml_path))
+    probe = (
+        "import coverage, sys\n"
+        f"cov = coverage.Coverage(config_file={str(REPO_ROOT / 'pyproject.toml')!r}, data_file={str(tmp_path / '.coverage')!r}, source=[{str(tmp_path)!r}])\n"
+        f"sys.path.insert(0, {str(tmp_path)!r})\n"
+        "cov.start()\n"
+        "import branchy\n"
+        "branchy.f(1)  # only ONE arm, so a partial branch genuinely exists to be reported\n"
+        "cov.stop()\n"
+        f"cov.json_report(outfile={str(json_path)!r})\n"
+        f"cov.xml_report(outfile={str(xml_path)!r})\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=tmp_path, check=False, capture_output=True, text=True)  # noqa: S603 - sys.executable plus a literal probe
+    assert result.returncode == 0, result.stdout + result.stderr
 
     totals = json.loads(json_path.read_text(encoding="utf-8"))["totals"]
     assert totals.get("num_branches"), f"coverage.json carries no branch data: {totals}"

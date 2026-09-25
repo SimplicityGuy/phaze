@@ -637,6 +637,10 @@ test-browser: tailwind
 vulture:
     uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
+# PHAZE_COVERAGE_GREENLET=greenlet is REQUIRED alongside --cov-context=test (phaze-bein3): without
+# it coverage.py runs on sys.monitoring, which records only the first test per line. See the
+# coverage run table in pyproject.toml.
+#
 # --cov-context=test is REQUIRED: the binary .coverage shards are the only CI artifacts
 # that can retain pytest's per-test execution contexts. `coverage combine` preserves those
 # contexts, which lets a downloaded combined report build repowise's test-to-code map.
@@ -692,7 +696,7 @@ test-bucket NAME PATHS MODE="serial":
         parallel) xdist_args=(-n auto) ;;
         *) echo "❌ MODE must be serial or parallel" >&2; exit 2 ;;
     esac
-    COVERAGE_FILE=".coverage.${name}" uv run pytest "${path_args[@]}" "${xdist_args[@]}" --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
+    PHAZE_COVERAGE_GREENLET=greenlet COVERAGE_FILE=".coverage.${name}" uv run pytest "${path_args[@]}" "${xdist_args[@]}" --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
 
 # phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
 #

@@ -291,6 +291,9 @@ class ParallelTestSupervisor:
                 {
                     "BH_TEST_REPORT_DIR": str(report_dir),
                     "COVERAGE_FILE": str(lane_root / ".coverage"),
+                    # phaze-bein3: --cov-context=test below needs CTracer+greenlet; the default
+                    # sys.monitoring core records only the first test per line.
+                    "PHAZE_COVERAGE_GREENLET": "greenlet",
                     "PYTHONPYCACHEPREFIX": str(bytecode_dir),
                     "TMPDIR": str(temp_dir),
                 }

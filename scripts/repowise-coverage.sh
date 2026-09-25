@@ -144,6 +144,8 @@ repowise update
 # --cov-context=test is what builds the per-test map behind `get_risk`'s tests_to_run and the
 # impacted-tests skill. Without it those come back empty, and empty there reads as "no tests" when
 # it means "unknown" — the worst possible answer for a reviewer deciding what to re-run.
+# PHAZE_COVERAGE_GREENLET=greenlet keeps this run on CTracer: sys.monitoring, the default core,
+# records only the FIRST test per line under --cov-context (phaze-bein3; pyproject's coverage run table).
 # --cov-fail-under=0 mirrors `just test-bucket`: the 95% floor is enforced by `just coverage-combine`
 # and CI, not here. This recipe's job is to MEASURE and ingest; failing the ingest because coverage
 # dipped would withhold the data exactly when it is most wanted.
@@ -155,7 +157,7 @@ repowise update
 echo ""
 echo "2/5 🧪 pytest --cov --cov-context=test (~21 min)"
 rm -f .coverage coverage.xml
-if ! uv run pytest tests/ --cov --cov-context=test --cov-fail-under=0 --cov-report= -q; then
+if ! PHAZE_COVERAGE_GREENLET=greenlet uv run pytest tests/ --cov --cov-context=test --cov-fail-under=0 --cov-report= -q; then
   echo "❌ the suite failed — NOTHING was ingested, so the previously ingested coverage is intact." >&2
   echo "   Fix the failures and re-run; ingesting a red run would fold wrong data into every score." >&2
   exit 1
