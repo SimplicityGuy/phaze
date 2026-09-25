@@ -27,6 +27,7 @@ here, and a context-bearing run that lands on sysmon anyway is an ERROR, not a w
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,8 @@ OPT_IN_VAR = "PHAZE_COVERAGE_GREENLET"
 # matching nothing; a new launcher it finds must also opt in, whether or not it is listed here.
 KNOWN_CONTEXT_LAUNCHERS = frozenset({"justfile", "scripts/parallel_test_runner.py", "scripts/repowise-coverage.sh"})
 
+_LAUNCHER_SUFFIXES = (".bash", ".py", ".sh", ".yaml", ".yml")
+
 # A shell/just line that runs pytest with per-test contexts, or a Python argv element passing it.
 _SHELL_LAUNCH = re.compile(r"\bpytest\b.*--cov-context[= ]")
 _PY_ARGV_ELEMENT = re.compile(r"""^\s*["']--cov-context(?:=[^"']*)?["'],?\s*$""")
@@ -55,7 +58,7 @@ _PY_OPT_IN = re.compile(rf"""["']{OPT_IN_VAR}["']\s*:\s*["']greenlet["']""")
 
 
 def _tracked_launcher_candidates() -> list[str]:
-    """Every tracked file that could launch pytest: everything except tests and prose."""
+    """Every tracked file that could launch pytest: recipes, scripts and workflows outside tests/."""
     listed = subprocess.run(
         ["git", "ls-files"],  # noqa: S607 - git is a prerequisite of this repo
         cwd=REPO_ROOT,
@@ -63,7 +66,7 @@ def _tracked_launcher_candidates() -> list[str]:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    return [path for path in listed if not path.startswith(("tests/", "docs/", ".planning/")) and not path.endswith(".md")]
+    return [path for path in listed if not path.startswith("tests/") and (path == "justfile" or path.endswith(_LAUNCHER_SUFFIXES))]
 
 
 def _context_launch_sites() -> dict[str, list[str]]:
@@ -213,3 +216,56 @@ def test_a_malformed_opt_in_fails_loudly(env_value: str) -> None:
     probe = f"import coverage\ncoverage.Coverage(config_file={str(PYPROJECT_PATH)!r}, data_file=None).start()\n"
     result = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, env=env, check=False, capture_output=True, text=True)  # noqa: S603
     assert result.returncode != 0, f"{OPT_IN_VAR}={env_value!r} was accepted:\n{result.stdout}{result.stderr}"
+
+
+def _is_coverage_constructor(node: ast.AST) -> bool:
+    """``coverage.Coverage(...)`` or a bare ``Coverage(...)``."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (isinstance(func, ast.Attribute) and func.attr == "Coverage") or (isinstance(func, ast.Name) and func.id == "Coverage")
+
+
+def _in_process_coverage_starts(source: str) -> list[int]:
+    """Line numbers where ``source`` starts a Coverage object in its own interpreter."""
+    tree = ast.parse(source)
+    names = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and _is_coverage_constructor(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"start", "collect"}
+        and ((isinstance(node.func.value, ast.Name) and node.func.value.id in names) or _is_coverage_constructor(node.func.value))
+    ]
+
+
+def test_the_in_process_start_scan_sees_a_start() -> None:
+    """Guards the guard below against matching nothing."""
+    assert _in_process_coverage_starts("import coverage\ncov = coverage.Coverage()\ncov.start()\n") == [3]
+    assert _in_process_coverage_starts("import coverage\ncoverage.Coverage().start()\n") == [2]
+    assert _in_process_coverage_starts("import coverage\nwith coverage.Coverage().collect():\n    pass\n") == [2]
+    assert _in_process_coverage_starts("import coverage\nprobe = 'cov = coverage.Coverage()\\ncov.start()'\n") == []
+
+
+def test_no_test_starts_a_second_coverage_in_process() -> None:
+    """A nested in-process Coverage blinds the suite's own sys.monitoring collector.
+
+    Starting one pauses the outer collector; on resume, coverage.py 7.16.1's sys.monitoring core does
+    not re-arm line events for code objects it had already registered, so every later test's new
+    lines in already-imported modules go unrecorded. Measured for this bead: one such test in
+    tests/shared cost 17 lines across 7 phaze files on the full suite, and humanize.py alone fell
+    from 100% to 51.72% when its tests ran after it. Run the measurement in a subprocess instead.
+    """
+    offenders = [
+        f"{path.relative_to(REPO_ROOT)}:{line}"
+        for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
+        for line in _in_process_coverage_starts(path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"these start a Coverage in the suite's own interpreter; run it in a subprocess: {offenders}"
