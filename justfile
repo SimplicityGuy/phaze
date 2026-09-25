@@ -392,19 +392,50 @@ test-cov-parallel:
 
 # The local default uses the reviewed two-worker runner. It derives two stable seats from the
 # worktree, provisions both through `test-db-for`, and releases them without stopping the shared
-# harness. A caller-exported TEST_DATABASE_URL is an explicit environment contract (including CI),
-# so it remains serial and is never re-pointed at the local harness. PHAZE_TEST_PARALLEL=0 is the
-# operator escape hatch for a host that cannot safely run both workers; that fallback is loud and
-# retains the existing per-worktree auto-provisioning path.
-[doc('Run the full coverage gate: two isolated local workers by default, loud serial fallback for caller-owned or disabled environments')]
+# harness. PHAZE_TEST_PARALLEL=0 is the operator escape hatch for a host that cannot safely run both
+# workers; that fallback is loud and retains the existing per-worktree auto-provisioning path.
+#
+# A caller-exported triplet (phaze-qov36). CLAUDE.md tells every dispatched seat to export the seat
+# `just test-db-for <bead>` printed, and until this bead that sent exactly those seats down the
+# serial path (864 s against 622 s for two lanes, phaze-7kc20). Now the runner CLASSIFIES the
+# triplet first: only one of exactly the shape `test-db-for` prints, on this harness's ports, naming
+# a seat registered in the Redis registry, and with neither CI nor PHAZE_TEST_PARALLEL=0 set, is
+# split -- into `<seat>-lane-a` / `<seat>-lane-b`, each provisioned by the real `test-db-for` and
+# released afterwards. The caller's own seat is not handed to either lane. Everything else is still
+# an explicit environment contract and runs `test-cov` VERBATIM, provisioning nothing: CI (a 5432
+# service container, and CI never runs this recipe anyway), a hand-built DSN, the shared
+# `phaze_test`. The classifier prints the condition that declined it; exit 3 is "declined". Exit 5
+# is a shape-perfect seat the registry contradicts (released, reclaimed, a stale Redis index, or
+# an unreadable registry): its exported Redis DB may already belong to another live seat, so it
+# fails loudly on EVERY path, serial included. The runner then takes the caller seat's own session
+# lock before anything else, so a second gate on the same seat is refused (exit 4) instead of
+# sharing its lanes.
+[doc('Run the full coverage gate: two isolated local workers by default (also derived from a caller-exported test-db-for seat), loud serial fallback otherwise')]
 [group('test')]
 test-validate:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -n "${TEST_DATABASE_URL:-}${MIGRATIONS_TEST_DATABASE_URL:-}${PHAZE_REDIS_URL:-}" ]; then
         bash scripts/ensure-test-seat.sh
-        echo "↩️  SERIAL FALLBACK: the complete Postgres/Redis triplet is caller-owned; preserving that explicit environment." >&2
-        just test-cov
+        rc=0
+        seat="$(uv run python -m scripts.parallel_test_runner --classify-caller-seat \
+            --pg-port "{{test_db_port}}" \
+            --redis-port "{{test_redis_port}}" \
+            --redis-container "{{test_redis_container}}")" || rc=$?
+        case "$rc" in
+          0)
+            echo "🛣️  CALLER SEAT '${seat}': running two lanes on its derived seats '${seat}-lane-a' / '${seat}-lane-b'; the caller's own seat is not used by either lane." >&2
+            uv run python -m scripts.parallel_test_runner --seat-prefix "$seat"
+            ;;
+          3)
+            echo "↩️  SERIAL FALLBACK: the complete Postgres/Redis triplet is caller-owned; preserving that explicit environment." >&2
+            just test-cov
+            ;;
+          *)
+            echo "❌ caller-seat classification failed (exit ${rc}); nothing was run." >&2
+            exit "$rc"
+            ;;
+        esac
     elif [ "${PHAZE_TEST_PARALLEL:-1}" != "1" ]; then
         echo "↩️  SERIAL FALLBACK: PHAZE_TEST_PARALLEL=${PHAZE_TEST_PARALLEL}; two-worker local execution is disabled." >&2
         just test-validate-serial

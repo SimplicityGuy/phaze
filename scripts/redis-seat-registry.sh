@@ -155,6 +155,7 @@
 #                                   (--pg-container C | --no-postgres-check)
 #                                   [--apply] [--include-unstamped]
 #   redis-seat-registry.sh has-seat --redis-container C --seat S
+#   redis-seat-registry.sh seat-index --redis-container C --seat S
 #
 # Exit codes: 0 ok, 1 error, 2 usage, 3 capacity exhausted (allocate), 4 refused because the seat
 # is in use (release), 5 nothing to release -- the named seat holds no Redis logical DB (release).
@@ -164,6 +165,12 @@
 # release" prose as success. Scripted callers can `case $? in 5) ... ;; esac` without parsing
 # English; a human reading the terminal still sees the same prose, on stderr like every other
 # non-zero release outcome.
+#
+# `seat-index` is the read-only probe that says WHICH index (phaze-qov36): it prints the seat's
+# registered logical DB on stdout and exits 0, exits 5 when `S` holds no index (the same code
+# `release` uses for "nothing held"), and exits 1 when Redis cannot be reached -- three distinct
+# answers, because `just test-validate` must tell "your export is stale" from "the harness is down"
+# and from "your export names a DB that is not yours", and `has-seat`'s 0/1 cannot.
 #
 # `has-seat` is a read-only probe (phaze-cohbr): 0 if `S` is an EXACT key in the registry, 1
 # otherwise. Nothing is printed on either outcome -- it exists for a caller to branch on, not to
@@ -200,6 +207,7 @@ usage() {
   echo "  $0 list     --redis-container C [--capacity N] [--pg-container C]" >&2
   echo "  $0 reclaim  --redis-container C --capacity N (--pg-container C | --no-postgres-check) [--apply] [--include-unstamped]" >&2
   echo "  $0 has-seat --redis-container C --seat S" >&2
+  echo "  $0 seat-index --redis-container C --seat S" >&2
   exit 2
 }
 
@@ -839,6 +847,16 @@ cmd_has_seat() {
   [ "$(registry_cli HEXISTS "$REGISTRY_KEY" "$seat")" = "1" ]
 }
 
+cmd_seat_index() {
+  [ -n "$seat" ] || usage
+  local raw
+  raw="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
+  if ! [[ "$raw" =~ ^[0-9]+$ ]]; then
+    exit 5
+  fi
+  printf '%s\n' "$raw"
+}
+
 # Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.
 # Emits one TAB-separated record per seat:
 #
@@ -1106,5 +1124,6 @@ case "$subcommand" in
   list) cmd_list ;;
   reclaim) cmd_reclaim ;;
   has-seat) cmd_has_seat ;;
+  seat-index) cmd_seat_index ;;
   *) usage ;;
 esac

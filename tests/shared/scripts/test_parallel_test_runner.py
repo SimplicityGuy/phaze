@@ -365,6 +365,65 @@ def test_production_spawn_starts_a_new_process_session(tmp_path: Path, monkeypat
     assert captured["start_new_session"] is True
 
 
+def test_production_provision_names_redis_index_exhaustion_and_both_remedies(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """phaze-qov36: a caller-seat gate holds three indices, so exhaustion must be loud and named.
+
+    The stderr fed in is the allocator's REAL refusal line, lifted from redis-seat-registry.sh and
+    rendered, so rewording that message breaks this test rather than silently un-naming the cause.
+    """
+
+    script = Path("scripts/redis-seat-registry.sh").read_text(encoding="utf-8")
+    template = next(line for line in script.splitlines() if "allocatable Redis logical DBs" in line)
+    exhausted = (
+        template.strip()
+        .removeprefix('echo "')
+        .removesuffix('" >&2')
+        .replace("$((cap - 1))", "63")
+        .replace("${redis_container}", "phaze-test-redis")
+        .replace("${seat}", "x")
+    )
+    assert "$" not in exhausted, exhausted
+
+    def fake_run(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=exhausted)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as raised:
+        production_dependencies(tmp_path).provision("seat-lane-b")
+
+    message = str(raised.value)
+    assert "index pool is exhausted" in message
+    assert "just test-db-reclaim --apply" in message
+    assert "PHAZE_TEST_PARALLEL=0" in message
+    assert exhausted in message
+
+
+def test_a_provisioning_failure_is_printed_fails_the_run_and_releases_the_seat_already_taken(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exhaustion on lane-b must fail the gate, never degrade it to a serial run, and give lane-a back."""
+
+    harness = Harness()
+    provision = harness.provision
+
+    def exhaust_on_lane_b(name: str) -> Seat:
+        if name.endswith("lane-b"):
+            raise RuntimeError("lane seat 'x-lane-b' could not get a Redis logical DB: the harness index pool is exhausted.")
+        return provision(name)
+
+    harness.provision = exhaust_on_lane_b
+
+    status, _ = _run(tmp_path, harness)
+
+    assert status == 1
+    assert "index pool is exhausted" in capsys.readouterr().err
+    assert harness.launches == []
+    assert "release:runner-owned-lane-a" in harness.events
+    assert not any(event.startswith("command:") for event in harness.events)
+
+
 def test_canonical_seat_output_requires_exactly_three_exports() -> None:
     valid = (
         'export TEST_DATABASE_URL="postgresql+asyncpg://test/a"\n'
