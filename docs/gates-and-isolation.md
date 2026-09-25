@@ -606,8 +606,68 @@ Two things follow, and they pull in opposite directions:
   The derived name is opaque, which makes a `just test-db-seats` listing harder to read back to a
   bead, and a seat you did not name is a seat you will not think to release.
 
-An exported `TEST_DATABASE_URL` is still honoured **verbatim** and provisions nothing — CI depends
-on that, since it exports its own DSN against a 5432 service container.
+An exported triplet is still honoured **verbatim** and provisions nothing — CI depends on that,
+since it exports its own DSN against a 5432 service container — with **one narrow exception**
+(phaze-qov36). A triplet of exactly the shape `just test-db-for` prints (`phaze_<seat>_test` and
+`phaze_<seat>_migrations_test` on `localhost:5433`, `redis://localhost:6380/<n>`), whose `<n>` is the
+Redis DB the registry holds for that seat, with `CI` unset and `PHAZE_TEST_PARALLEL` unset or `1`, is
+split by `just test-validate` into two lane seats, `<seat>-lane-a` and `<seat>-lane-b`. Both are
+provisioned through the real `test-db-for` and released after the run, including on failure and on
+SIGHUP/SIGINT/SIGTERM (SIGKILL is left to the lease and O1 reclaim, as for every other seat).
+
+**Known gap, not fixed here:** an interrupt that lands while a lane's `just test-db-for` is still
+running can leave that lane's Redis index allocated but not yet known to the runner, so it is not
+released; the lease and O1 reclaim free it like any abandoned seat.
+
+**The caller's own seat is handed to neither lane**: each lane overrides all three variables. The
+steps that DO run under the caller's environment are record-start (`stamp_coverage_scope.py
+--record-start`), `pytest --collect-only`, `just test-db-for` / `just test-db-release` for the two lane
+seats, `coverage combine` / `json` / `xml` / `report`, the `--expect-token` stamp and
+`coverage_floor.py`. None of them opens the caller's schema or its Redis DB. The one connection to the
+caller's database is the runner's **caller-seat lock**: the same session advisory lock pytest takes
+(`tests/db_guard.py`), held for the whole run and reading and writing nothing. Without it, two gates on
+one seat (`bh work check` in one terminal and `just check` in another, or a re-run after a tool-call
+timeout) would provision the SAME `<seat>-lane-a/-b`, split their per-lane locks and release each
+other's seats; with it the second gate is refused before record-start, collection or provisioning
+(exit 4, naming the holder's pid), exactly as a second serial run on the seat always was.
+
+**A shape-perfect triplet the registry contradicts fails loudly (exit 5), on every path.** If the
+seat is no longer registered (released or reclaimed), the exported Redis DB differs from the one the
+registry holds for it, or the registry cannot be read, nothing runs — not even the serial
+`test-cov`, and not under the opt-out either — because that Redis DB may now belong to another live
+seat. The remedy is printed: re-run `just test-db-for <your seat name>` and re-export.
+
+Why: phaze-7kc20 measured the full suite at 864 s serial against 622 s on the two-lane runner, and
+the serial path was exactly the one CLAUDE.md sends every dispatched seat down by telling it to
+export its seat. Operator decision 2026-09-25, recorded on bead phaze-qov36: asked *"Letting the
+parallel runner split a seat's database into lanes would give every gate the 2-lane speed, about 10
+minutes instead of 14. Want me to file that as a bead?"*, answered *"i want to enable 2 lanes ...
+file and dispatch the bead"*.
+
+What stays verbatim, and what pins it (`tests/shared/scripts/test_caller_seat_lanes.py`):
+
+- **CI.** The classifier is handed each workflow job's real `env:` block, with and without `CI=true`,
+  and must decline it without a single registry probe. Separately, no recipe any workflow runs can
+  reach the classifier, the lane runner or a provisioner, transitively through `just` calls and
+  recipe dependencies. CI never runs `test-validate`: it runs `test-bucket` shards, then
+  `coverage-combine`, then `test-browser`.
+- **A hand-built DSN, the shared `phaze_test`, another port, or Redis DB 0**: each is declined, and
+  the gate log names the condition that declined it.
+- **`PHAZE_TEST_PARALLEL` set to anything but `1`**: the explicit opt-out, run through the real CLI.
+- **A released or reclaimed seat, a stale Redis index, an unreadable registry**: exit 5 through the
+  real CLI, against the real registry.
+- **A second gate on the same seat**: refused before the shard file is even read, against a real
+  holder of the caller-seat lock.
+
+**Index budget — the implementer's decision (phaze-qov36), not the operator's.** The operator was
+asked about lane speed; tripling per-gate Redis use was not part of the question. A gate on an
+exported seat holds three Redis logical DBs while it runs (the caller's plus two lanes) out of 63
+allocatable; one with nothing exported holds two. `tests/shared/scripts/test_caller_seat_lanes.py`
+borrows three more (a probe caller and its two lanes) for a few seconds inside every full run, so a
+gating seat peaks at six, and a five-seat dispatch gating at once at 30, plus whatever idle seats
+hold. Exhaustion fails the gate with a message naming the cause and both remedies (`just
+test-db-reclaim --apply`, or `PHAZE_TEST_PARALLEL=0`), pinned against the allocator's real refusal
+text. It never falls back to serial behind the caller's back.
 
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
 default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
@@ -1030,6 +1090,19 @@ That is every arm of `test-fast`'s `case` statement (exit 0 / 3 / 4 / anything e
 `scripts/select_impacted_tests.py`, whose `VERDICT_EXIT` is `{"escalate": 3, "fail": 1, "docs": 4}`)
 as of 2026-09-22. **The recipe is authoritative**: a selector verdict this table does not name is a
 shape it does not describe, not a shape it forgot to call green.
+
+On `escalate`, `just test-validate` names its own path in one line before it runs (phaze-qov36),
+and that line decides what the pytest header(s) must say:
+
+| `test-validate` line | what ran | pytest header(s) |
+|---|---|---|
+| `🛣️  CALLER SEAT '<seat>': running two lanes …` | the exported `test-db-for` seat, split into two lanes | two summaries, one per lane, each naming a lane database derived from the caller's seat (below) — **not** its own database — then one combined coverage line |
+| `⚡ TWO-WORKER COVERAGE` | nothing exported: two self-provisioned lanes derived from `auto-<branch>-<hash>-parallel` | two summaries, then one combined coverage line |
+| `↩️  caller seat not split into lanes: <reason>`, then `↩️  SERIAL FALLBACK` | the exported triplet, verbatim | one summary naming the exported database |
+| `❌ caller seat refused, and nothing was run on it: <reason>` (exit 5) | nothing: the export has the shape of a seat the registry contradicts (released, reclaimed, a stale Redis index, or an unreadable registry) | none — fix the seat (`just test-db-for <name>`, re-export) |
+| `❌ caller seat busy -- refusing before collection` (exit 4) | nothing: another gate or pytest already holds the seat | none — UNMEASURED; wait for the holder the message names |
+
+Lane seat names come from `derive-seat-name.sh`: the prefix plus `-lane-a` / `-lane-b`, hyphens turned into underscores, **truncated to 32 characters**, then an 8-hex hash of the full name. So a lane database reads `phaze_<seat>_lane_a_<hash>_test` only while the seat id is at most 25 characters; past that, `lane` is truncated away and the two lanes differ only by their hash (every `auto-…-parallel` prefix is past it).
 
 **Why the table changed, and why it changed this way (phaze-xveae).** Until 2026-09-22 this table
 had three rows and its green row read `GATE_EXIT=0` + pytest summary + coverage line. Four hundred
