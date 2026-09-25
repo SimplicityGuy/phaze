@@ -198,7 +198,18 @@ show_missing = true
 # Line coverage is structurally unable to detect the regression a refactor is most likely to
 # introduce, which is exactly the change class epic phaze-bk9el consists of.
 branch = true
-concurrency = ["greenlet", "thread"]
+# phaze-bein3. The CORE follows from this list, so read it as a performance switch as well as a
+# correctness one. Unset, PHAZE_COVERAGE_GREENLET leaves ["thread", "thread"] and coverage.py 7.16
+# on Python 3.14 picks its sys.monitoring core; any `greenlet` here forces the settrace CTracer,
+# measured at +55% CPU (spike phaze-6qhh2). sys.monitoring keeps no per-thread frame stack, so it
+# attributes SQLAlchemy's async greenlet bridge correctly without greenlet support -- measured
+# identical executed lines AND arcs to CTracer+greenlet, the reason greenlet was added (c8bbd16f).
+# What sys.monitoring cannot do is `--cov-context=test`: it records only the FIRST test to hit a
+# line, which would silently thin repowise's per-test map. So every launcher passing that flag sets
+# PHAZE_COVERAGE_GREENLET=greenlet, the pytest filterwarnings entry makes a context run that lands
+# on sys.monitoring anyway fail rather than warn, and tests/shared/test_coverage_core_selection.py
+# pins all three halves. A set-but-empty value is rejected by coverage.py as a config error.
+concurrency = ["thread", "${PHAZE_COVERAGE_GREENLET-thread}"]
 omit = ["tests/*"]
 relative_files = true
 source = ["phaze"]
@@ -302,6 +313,10 @@ markers = [
 # dependency -- see the mypy override comment below), so a default `uv sync` does not install it.
 # `-m browser` on the command line overrides this, which is what `just test-browser` passes.
 addopts = "-m 'not browser'"
+# phaze-bein3: `--cov-context=test` on coverage.py's sys.monitoring core records only the first test
+# per line and says so only in a warning. Make it an error, so a context-bearing launcher that forgot
+# PHAZE_COVERAGE_GREENLET=greenlet (see the coverage run table) goes red instead of thinning the map.
+filterwarnings = ["error:Dynamic contexts aren't supported:coverage.exceptions.CoverageWarning"]
 testpaths = ["tests"]
 
 [tool.ruff]
