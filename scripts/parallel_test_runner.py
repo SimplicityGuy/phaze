@@ -31,9 +31,22 @@ from scripts.parallel_test_manifests import (
 if TYPE_CHECKING:
     from types import FrameType
 
+    from psycopg import Connection
+
 
 _SEAT_KEYS = frozenset({"TEST_DATABASE_URL", "MIGRATIONS_TEST_DATABASE_URL", "PHAZE_REDIS_URL"})
 _EXPORT_RE = re.compile(r'^export ([A-Z_]+)="([^"]+)"$')
+# phaze-qov36: the exact shapes `scripts/provision-test-seat.sh` prints for a `just test-db-for`
+# seat. Only a triplet of exactly this shape can be a local harness seat worth splitting into
+# lanes; anything else -- CI's 5432 service container, the shared `phaze_test`, a hand-built DSN --
+# is an explicit environment contract and stays verbatim.
+_LOCAL_SEAT_DSN_RE = re.compile(r"postgresql\+asyncpg://phaze:phaze@localhost:(?P<port>[0-9]+)/phaze_(?P<seat>[a-z][a-z0-9_]*)_test")
+_LOCAL_SEAT_REDIS_RE = re.compile(r"redis://localhost:(?P<port>[0-9]+)/(?P<index>[1-9][0-9]*)")
+_REDIS_EXHAUSTED_MARKER = "allocatable Redis logical DBs"
+CALLER_SEAT_DECLINED = 3
+CALLER_SEAT_FATAL = 5
+CALLER_SEAT_BUSY = 4
+_REGISTRY_NOT_HELD = 5
 _RELEASE_ATTEMPTS = 5
 _RELEASE_DELAY_SECONDS = 1.0
 _QUIESCE_SECONDS = 30.0
@@ -68,6 +81,7 @@ class LaneLaunch:
 
 
 ProvisionSeat = Callable[[str], Seat]
+SeatIndexLookup = Callable[[str], str | None]
 ReleaseSeat = Callable[[str], int]
 SpawnLane = Callable[[LaneLaunch], ProcessHandle]
 RunCommand = Callable[[Sequence[str], Mapping[str, str]], int]
@@ -92,6 +106,124 @@ class SupervisorDependencies:
     signal_group: SignalGroup
     group_alive: GroupAlive
     sleep: Sleep = time.sleep
+
+
+@dataclass(frozen=True)
+class CallerSeatVerdict:
+    """Whether a caller-exported triplet is a `just test-db-for` seat the runner may derive lanes from.
+
+    Three outcomes: ``seat_id`` set (split it into lanes); declined (``seat_id`` None, ``fatal``
+    False -- run `test-cov` verbatim); or ``fatal`` -- the triplet claims to be a harness seat and
+    the registry contradicts it, so running ANYTHING on it, serial included, could land on an index
+    that now belongs to another live seat.
+    """
+
+    seat_id: str | None
+    reason: str
+    fatal: bool = False
+
+
+class RegistryUnavailableError(RuntimeError):
+    """The seat registry could not be read, which is not the same answer as "not registered"."""
+
+
+def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port: str, seat_index: SeatIndexLookup) -> CallerSeatVerdict:
+    """Accept only a triplet minted by `just test-db-for` on this harness; decline everything else.
+
+    phaze-qov36. CI and every shape check come before the registry lookup, so an environment that
+    is plainly not a local seat (CI above all) never reaches Docker. A shape-perfect triplet is then
+    held to what the registry says BEFORE the opt-out is honoured: a released or reclaimed seat, a
+    stale Redis index, or an unreadable registry is fatal on every path, serial included, because
+    the exported index may already belong to another live seat. Every verdict names its reason,
+    because the caller's gate log is the only place a reader can learn why a run went the way it did.
+    """
+
+    if environ.get("CI"):
+        return CallerSeatVerdict(None, "CI is set, and a CI environment is always honoured verbatim")
+    missing = sorted(key for key in _SEAT_KEYS if not environ.get(key))
+    if missing:
+        return CallerSeatVerdict(None, f"the caller's triplet is incomplete ({', '.join(missing)} unset)")
+    main = _LOCAL_SEAT_DSN_RE.fullmatch(environ["TEST_DATABASE_URL"])
+    if main is None or main["port"] != pg_port:
+        return CallerSeatVerdict(None, f"TEST_DATABASE_URL is not a `just test-db-for` seat database on localhost:{pg_port}")
+    seat_id = main["seat"]
+    migrations = f"postgresql+asyncpg://phaze:phaze@localhost:{pg_port}/phaze_{seat_id}_migrations_test"
+    if environ["MIGRATIONS_TEST_DATABASE_URL"] != migrations:
+        return CallerSeatVerdict(None, f"MIGRATIONS_TEST_DATABASE_URL is not the migrations database of seat {seat_id!r}")
+    redis = _LOCAL_SEAT_REDIS_RE.fullmatch(environ["PHAZE_REDIS_URL"])
+    if redis is None or redis["port"] != redis_port:
+        return CallerSeatVerdict(None, f"PHAZE_REDIS_URL is not a seat's logical DB on localhost:{redis_port}")
+    remedy = "Re-run `just test-db-for <your seat name>` and re-export the three lines it prints."
+    try:
+        registered = seat_index(seat_id)
+    except RegistryUnavailableError as exc:
+        return CallerSeatVerdict(None, f"the harness seat registry could not be read ({exc}). Start the harness with `just test-db`", fatal=True)
+    if registered is None:
+        return CallerSeatVerdict(
+            None,
+            f"{seat_id!r} has the exact shape of a `just test-db-for` seat but is not registered -- released or reclaimed, "
+            f"so Redis DB {redis['index']} may now belong to another live seat. {remedy}",
+            fatal=True,
+        )
+    if registered != redis["index"]:
+        return CallerSeatVerdict(
+            None,
+            f"PHAZE_REDIS_URL names Redis DB {redis['index']}, but the registry holds DB {registered} for {seat_id!r}: "
+            f"the export is stale and DB {redis['index']} may belong to another live seat. {remedy}",
+            fatal=True,
+        )
+    parallel = environ.get("PHAZE_TEST_PARALLEL", "1")
+    if parallel != "1":
+        return CallerSeatVerdict(None, f"PHAZE_TEST_PARALLEL={parallel} (anything but 1) forces the serial path")
+    return CallerSeatVerdict(seat_id, f"{seat_id!r} is a registered `just test-db-for` seat on Redis DB {registered}")
+
+
+def registry_seat_index(repo_root: Path, redis_container: str) -> SeatIndexLookup:
+    """The real, read-only `redis-seat-registry.sh seat-index` lookup."""
+
+    bash_binary = shutil.which("bash")
+    if bash_binary is None:
+        raise RuntimeError("the required 'bash' command is not installed")
+
+    def lookup(seat_id: str) -> str | None:
+        result = subprocess.run(  # noqa: S603  # nosec B603 -- fixed in-repo script; seat id matched a strict pattern.
+            (bash_binary, str(repo_root / "scripts/redis-seat-registry.sh"), "seat-index", "--redis-container", redis_container, "--seat", seat_id),
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == _REGISTRY_NOT_HELD:
+            return None
+        index = result.stdout.strip()
+        if result.returncode != 0 or not index.isdigit():
+            raise RegistryUnavailableError(f"exit {result.returncode}: {(result.stderr or result.stdout).strip()}")
+        return index
+
+    return lookup
+
+
+def hold_caller_seat(test_database_url: str) -> Connection[tuple[object, ...]] | None:
+    """Take the caller seat's own session lock for the whole two-lane run, or refuse at once.
+
+    phaze-qov36. The lanes never touch the caller's database, so nothing ELSE would stop a second
+    gate on the same seat (`bh work check` in one terminal and `just check` in another, or a re-run
+    after a tool-call timeout) from provisioning the SAME `<seat>-lane-a/-b`, splitting their locks
+    and releasing each other's seats. This is the very lock pytest takes on that database
+    (`tests/db_guard.py`), so the second gate -- or any pytest on the caller's seat -- is refused
+    before record-start, collection or provisioning, exactly as a serial run on the seat always was.
+    It reads nothing and writes nothing; it only holds a connection.
+    """
+
+    from tests.db_guard import acquire_exclusive_session_lock  # noqa: PLC0415 -- test-harness module, needed only on this path
+
+    return acquire_exclusive_session_lock(test_database_url, explicit=True)
+
+
+def release_caller_seat(connection: Connection[tuple[object, ...]] | None) -> None:
+    from tests.db_guard import release_exclusive_session_lock  # noqa: PLC0415 -- see hold_caller_seat
+
+    release_exclusive_session_lock(connection)
 
 
 def _parse_seat_exports(output: str, seat_name: str) -> Seat:
@@ -121,7 +253,17 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"seat provisioning failed for {seat_name!r}: {(result.stderr or result.stdout).strip()}")
+            detail = (result.stderr or result.stdout).strip()
+            if _REDIS_EXHAUSTED_MARKER in detail:
+                # phaze-qov36: a caller-seat gate holds three indices (its own + two lanes), so
+                # exhaustion is likelier than it was. Fail loudly and name the cause -- never
+                # fall back to serial behind the caller's back.
+                raise RuntimeError(
+                    f"lane seat {seat_name!r} could not get a Redis logical DB: the harness index pool is exhausted. "
+                    "A two-lane gate holds two lane indices on top of any seat the caller exported. Free stale seats with "
+                    "`just test-db-reclaim --apply`, or run serial on your own seat with PHAZE_TEST_PARALLEL=0.\n" + detail
+                )
+            raise RuntimeError(f"seat provisioning failed for {seat_name!r}: {detail}")
         return _parse_seat_exports(result.stdout, seat_name)
 
     def release(seat_name: str) -> int:
@@ -377,7 +519,7 @@ class ParallelTestSupervisor:
         # test run over a marker file, and never leaves a stale marker for a LATER, unrelated run
         # to find (`record_start` in stamp_coverage_scope.py clears any existing marker first).
         scope_token = self._dependencies.record_coverage_scope_start()
-        old_handlers = {signum: signal.signal(signum, self._forward_signal) for signum in (signal.SIGINT, signal.SIGTERM)}
+        old_handlers = {signum: signal.signal(signum, self._forward_signal) for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)}
         try:
             try:
                 for lane in plan.lanes:
@@ -392,7 +534,8 @@ class ParallelTestSupervisor:
                 else:
                     runtime_error = self._received_signal is None
                     self._stop_processes()
-            except (OSError, RuntimeError, subprocess.SubprocessError):
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                sys.stderr.write(f"parallel test runner error: {exc}\n")
                 runtime_error = True
                 self._stop_processes()
             finally:
@@ -415,12 +558,34 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--shards", type=Path, default=DEFAULT_SHARDS_PATH)
+    # phaze-qov36: `just test-validate` classifies a caller-exported triplet first, then hands an
+    # accepted seat's id back as the lane prefix, so lanes are `<seat>-lane-a` / `<seat>-lane-b`.
+    parser.add_argument("--classify-caller-seat", action="store_true")
+    parser.add_argument("--pg-port", default="5433")
+    parser.add_argument("--redis-port", default="6380")
+    parser.add_argument("--redis-container", default="phaze-test-redis")
+    parser.add_argument("--seat-prefix")
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    repo_root = args.repo_root.resolve()
+def _classify_main(args: argparse.Namespace, repo_root: Path) -> int:
+    try:
+        seat_index = registry_seat_index(repo_root, args.redis_container)
+    except RuntimeError as exc:
+        sys.stderr.write(f"parallel test runner error: {exc}\n")
+        return 2
+    verdict = classify_caller_seat(os.environ, pg_port=args.pg_port, redis_port=args.redis_port, seat_index=seat_index)
+    if verdict.fatal:
+        sys.stderr.write(f"❌ caller seat refused, and nothing was run on it: {verdict.reason}\n")
+        return CALLER_SEAT_FATAL
+    if verdict.seat_id is None:
+        sys.stderr.write(f"↩️  caller seat not split into lanes: {verdict.reason}.\n")
+        return CALLER_SEAT_DECLINED
+    sys.stdout.write(f"{verdict.seat_id}\n")
+    return 0
+
+
+def _gate_main(args: argparse.Namespace, repo_root: Path) -> int:
     shards_path = args.shards if args.shards.is_absolute() else repo_root / args.shards
     try:
         shards = load_shard_definitions(shards_path)
@@ -433,7 +598,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     counts = ", ".join(f"{lane.name}={len(lane.node_ids)}" for lane in plan.lanes)
     sys.stdout.write(f"Verified parallel test partition: {counts}; union={len(plan.canonical_node_ids)} nodes in canonical order.\n")
     try:
-        seat_prefix = derive_parallel_seat_prefix(repo_root)
+        seat_prefix = args.seat_prefix or derive_parallel_seat_prefix(repo_root)
         dependencies = production_dependencies(repo_root)
     except RuntimeError as exc:
         sys.stderr.write(f"parallel test runner error: {exc}\n")
@@ -445,6 +610,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     elapsed = time.monotonic() - started
     sys.stdout.write(f"Parallel coverage gate finished with status {status} in {elapsed:.2f} s.\n")
     return status
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    repo_root = args.repo_root.resolve()
+    if args.classify_caller_seat:
+        return _classify_main(args, repo_root)
+    if not args.seat_prefix:
+        return _gate_main(args, repo_root)
+
+    # phaze-qov36: lanes derived from a caller's seat. Hold that seat FIRST -- before record-start,
+    # collection or provisioning -- so a second gate on the same seat is refused before it can
+    # touch anything the first one owns.
+    caller_dsn = os.environ.get("TEST_DATABASE_URL", "")
+    if not caller_dsn:
+        sys.stderr.write("parallel test runner error: --seat-prefix derives lanes from a caller seat, but TEST_DATABASE_URL is not exported\n")
+        return 2
+    try:
+        held = hold_caller_seat(caller_dsn)
+    except RuntimeError as exc:
+        sys.stderr.write(f"❌ caller seat busy -- refusing before collection; nothing was provisioned or run:\n{exc}\n")
+        return CALLER_SEAT_BUSY
+    if held is None:
+        # Only PHAZE_TEST_DB_ALLOW_SHARED=1 gets here. Lanes strip it for themselves, but without the
+        # caller lock two gates on this seat would share lanes, so the bypass is refused, not honoured.
+        sys.stderr.write("❌ PHAZE_TEST_DB_ALLOW_SHARED=1 would skip the caller-seat lock that keeps two gates off the same lanes; unset it.\n")
+        return CALLER_SEAT_BUSY
+    try:
+        return _gate_main(args, repo_root)
+    finally:
+        release_caller_seat(held)
 
 
 if __name__ == "__main__":
