@@ -530,6 +530,25 @@ def running_clause(stage: Stage) -> ColumnElement[bool]:
     return live_job_clause(stage)
 
 
+def not_running_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return ``¬running_clause(stage)`` spelled as a CONJUNCTION of negations (phaze-ejs09).
+
+    Same truth value as ``not_(running_clause(stage))`` (De Morgan; both probes are ``EXISTS``, never
+    NULL), but a different plan. Under ``NOT (live OR busy)`` Postgres cannot pull either ``EXISTS`` up
+    into an anti-join, so it keeps both as per-row SubPlans and costs them as correlated probes. The
+    ``saq_jobs`` probe's estimated cost then scales with that table's index pages over its live rows.
+    The broker churns constantly and holds a handful of live jobs, so the index is bloated. On
+    host-prod (2026-09-25) that put the analyze orphan split at a plan cost of 1,694,212, past
+    ``jit_inline_above_cost``, and JIT compilation cost 163-179 ms for an 11.5 ms statement. The AND form
+    lets the planner anti-join the ``saq_jobs`` probe: 196,048 on the same database, same count.
+
+    Every caller that NEGATES running uses this, never ``not_(running_clause(...))``.
+    """
+    if stage is Stage.ANALYZE:
+        return and_(not_(live_job_clause(stage)), not_(cloud_busy_clause()))
+    return not_(live_job_clause(stage))
+
+
 def _metadata_orphaned_retry_clause() -> ColumnElement[bool]:
     """True iff METADATA's ledger row is a lost OPERATOR RETRY of a terminally-failed file (D-10, phaze-hr627).
 
@@ -591,7 +610,7 @@ def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
     the two enrich stages (``domain_completed_clause`` raises otherwise), and kept OUT of the ``Stage``
     dispatch ladder (D-13).
     """
-    return and_(inflight_clause(stage), not_(running_clause(stage)), not_(_recovery_domain_completed_clause(stage)))
+    return and_(inflight_clause(stage), not_running_clause(stage), not_(_recovery_domain_completed_clause(stage)))
 
 
 def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
@@ -616,7 +635,7 @@ def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
     ``¬running_clause`` core, so a row can never be BOTH and can never be NEITHER while unresolved.
     Consumed by :mod:`phaze.tasks.ledger_reaper`. Kept OUT of the ``Stage`` dispatch ladder (D-13).
     """
-    return and_(inflight_clause(stage), not_(running_clause(stage)), _recovery_domain_completed_clause(stage))
+    return and_(inflight_clause(stage), not_running_clause(stage), _recovery_domain_completed_clause(stage))
 
 
 # phaze-k95r7. The file-keyed AGENT producers that serve the cloud analyze lane. They own a per-file
@@ -668,7 +687,9 @@ def resolved_cloud_ledger_clause(func_name: str) -> ColumnElement[bool]:
     """
     return and_(
         inflight_for_function(func_name),
-        not_(or_(live_job_for_function(func_name), cloud_busy_clause())),
+        # phaze-ejs09: NOT live AND NOT busy, never NOT (live OR busy) -- see not_running_clause.
+        not_(live_job_for_function(func_name)),
+        not_(cloud_busy_clause()),
         cloud_lane_completed_clause(),
     )
 
