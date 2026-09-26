@@ -206,6 +206,41 @@ live ran ``just repowise-coverage-ci <run>`` against the last GREEN ``main`` run
 map out of band, rather than paying the full ~21-minute local ``just repowise-coverage`` per seat.
 That is the fix for the map once it is known stale; this failure mode is what makes the staleness
 show up as a verdict instead of a silent miscount.
+
+**H. A ``changed-test`` INFERENCE CAN NAME A FILE THAT IS NOT A TEST MODULE AT ALL (phaze-1t3e1).**
+``changed-test`` is supposed to be a FACT about the diff -- "you edited this test file, so it runs"
+-- which is why :data:`SOUND_INFERENCE` trusted it unconditionally, with no check on the shape of
+the path it names. Found by dev/ffcite on bead phaze-3k1x3 (2026-09-25): a diff touching
+``.github/workflows/tests.yml`` had that exact path classified ``via: "changed-test"`` by repowise,
+apparently keyed off the filename ``tests.yml`` alone -- the file is YAML, lives nowhere near
+``tests/``, and is not remotely a pytest module. Handed straight to pytest as a bare node id:
+``ERROR: not found: .../.github/workflows/tests.yml (no match in any of [<Dir workflows>])``,
+``collected 0 items``, exit 4 -- the UNMEASURED shape (CLAUDE.md's "Reading a gate result" rule 4),
+not a real test failure, and a different mechanism from failure mode G above even though the
+symptom (exit 4, no pytest summary) looks the same: G is a mapped id whose file MOVED after the map
+was built; this is repowise never having named a real test file in the first place.
+
+**Chosen: ESCALATE, same reasoning as failure mode G, not a silent drop.** Dropping the bad entry
+and running the rest of the selection was on the table -- the file genuinely is not a test, so it
+needs no test coverage of its own -- but a ``changed-test`` label is repowise asserting it looked at
+this exact path and identified it as a test. If it is wrong about the SHAPE of the path (not a
+``.py`` file, not under a configured test root, not matching pytest's own discovery pattern),
+nothing in this script says it was right about anything else the same report claims, and treating an
+untrustworthy signal as "safely ignorable" is the same reasoning
+``test_an_unrecognised_inference_label_escalates_rather_than_being_assumed_safe`` already applies to
+a ``via`` this script has never seen. So :func:`is_collectable_test_path` checks the shape every
+``changed-test`` entry must have, and any failure escalates the WHOLE diff -- never a per-entry drop
+-- naming every offending path, exactly the "any missing id escalates the whole diff" precedent
+failure mode G already set.
+
+**Whether to report this upstream to repowise.** Recorded rather than filed: the minimal repro is
+one file named ``tests.yml`` anywhere outside a Python tree (this bead's own reproduction constructs
+a synthetic ``impacted-tests`` report rather than shelling out to real repowise, per phaze-1t3e1's
+scope); the recommendation is that repowise's own ``changed-test`` inference should require the
+candidate path to look like a Python test module before labelling it a fact rather than a guess, the
+same positive-shape discipline this fix now applies on the consuming side. Filing it is left to
+whoever owns the repowise relationship for this hive -- this script cannot assume the tier's
+behaviour will change upstream, so the defense stays here either way.
 """
 
 from __future__ import annotations
@@ -223,6 +258,12 @@ from typing import Any
 # diff. Only `changed-test` is a fact: it says "you edited this test file", which needs no map.
 SOUND_INFERENCE = frozenset({"changed-test"})
 GUESS_INFERENCE = frozenset({"call-graph", "import-graph", "filename-pattern"})
+
+# Where pytest is configured to look for tests here (pyproject.toml's `testpaths = ["tests"]`).
+# `changed-test` entries outside this are not test files, whatever repowise labelled them (failure
+# mode H) -- kept as a tuple, matched with `str.startswith`, so a second root can join without
+# touching the check itself.
+TEST_ROOTS: tuple[str, ...] = ("tests/",)
 
 # The coverage-context suffix on every mapped test id (see failure mode E).
 CONTEXT_SUFFIXES = ("|run", "|setup", "|teardown")
@@ -323,6 +364,35 @@ def strip_context(test_id: str) -> str:
         if test_id.endswith(suffix):
             return test_id[: -len(suffix)]
     return test_id
+
+
+def is_collectable_test_path(path: str) -> bool:
+    """True only for a path pytest can actually collect as a test module (failure mode H).
+
+    PURE, same style as :func:`is_docs_path`: positive conditions, no negation, because a negation
+    ("not a .yml file") would let through every other non-Python path a ``changed-test`` entry could
+    name. A leading ``::node`` suffix is tolerated and stripped before the shape checks -- the
+    ``changed-test`` tier hands back bare file paths today, but nothing guarantees it always will,
+    and a node suffix does not change what file pytest needs to open.
+
+    * the suffix is exactly ``.py`` -- rules out ``.github/workflows/tests.yml``, the exact shape
+      phaze-1t3e1 measured, and every other non-Python file a name-based misclassification could hand
+      back;
+    * it lives under one of :data:`TEST_ROOTS` -- mirrors pyproject's ``testpaths = ["tests"]``;
+      wherever else this repo keeps ``.py`` (``src/``, ``scripts/``, ``services/``), pytest is not
+      configured to look there and a bare node id for one is a collection error, not a test;
+    * the basename matches pytest's own default ``python_files`` pattern (unset in ``pyproject.toml``,
+      so the default ``test_*.py`` / ``*_test.py`` applies) -- a real ``.py`` file under ``tests/``
+      that pytest itself would not collect by name (``conftest.py``, ``__init__.py``, a fixture
+      module) fails the same way a non-test path does if handed to pytest as a bare argument.
+    """
+    file_part = path.split("::", 1)[0]
+    if not file_part.endswith(".py"):
+        return False
+    if not file_part.startswith(TEST_ROOTS):
+        return False
+    name = file_part.rsplit("/", 1)[-1]
+    return name.startswith("test_") or name.endswith("_test.py")
 
 
 def is_docs_path(path: str) -> bool:
@@ -489,13 +559,29 @@ def classify(report: dict[str, Any]) -> tuple[list[str], set[str]]:
         # A `via` this script has never seen is a repowise upgrade, not a tier to assume is safe.
         raise Refuse("escalate", f"unrecognised inference label(s) {sorted({str(g.get('via')) for g in unlabelled})} — re-read the tiers")
 
+    sound = [g for g in inferred if g.get("via") in SOUND_INFERENCE]
+    uncollectable = [g for g in sound if not is_collectable_test_path(str(g.get("test_file", "")))]
+    if uncollectable:
+        # Failure mode H: `changed-test` is supposed to be a FACT ("you edited this test"), not a
+        # guess -- but repowise labelled it, not this script, and phaze-1t3e1 measured it firing on
+        # `.github/workflows/tests.yml`. Escalate the whole diff rather than dropping the entry: a
+        # label this wrong about the SHAPE of the path is not a signal this script can trust about
+        # anything else in the same report (same reasoning as the unrecognised-`via` refusal above).
+        files = sorted({str(g.get("test_file")) for g in uncollectable})
+        raise Refuse(
+            "escalate",
+            f"{len(uncollectable)} file(s) repowise inferred as changed-test are not collectable pytest modules "
+            f"(not a .py file under {', '.join(TEST_ROOTS)} matching test_*.py/*_test.py): "
+            f"{', '.join(files[:5])}" + (" …" if len(files) > 5 else ""),
+        )
+
     impacted = list(report.get("impacted_tests") or [])
     covered_sources: set[str] = set()
     for entry in impacted:
         covered_sources.update(str(s) for s in entry.get("source_files") or [])
 
     node_ids = [strip_context(str(entry["test_id"])) for entry in impacted]
-    node_ids += [str(g["test_file"]) for g in inferred if g.get("via") in SOUND_INFERENCE]
+    node_ids += [str(g["test_file"]) for g in sound]
 
     # Dedup, order-stable, so the selection is reproducible run to run. Written as a loop rather
     # than the `not (n in seen or seen.add(n))` one-liner, which mypy rejects here (`add` returns

@@ -213,6 +213,136 @@ def test_a_changed_test_file_is_run_rather_than_escalated() -> None:
     assert covered_sources == set()
 
 
+# Failure mode H (phaze-1t3e1): `changed-test` is labelled by repowise, not verified by this
+# script, and it can name a path that is not a pytest module at all. `is_collectable_test_path` is
+# the shape check that stands between that label and pytest; these tests exercise it both directly
+# (the pure classifier) and through `classify()` (the refusal it now raises). Mutation check: with
+# the `uncollectable` guard in `classify()` deleted, `test_a_changed_test_inference_naming_a_non_python_file_reproduces_the_workflow_misclassification`
+# goes from raising `Refuse("escalate", …)` to returning `(["... tests.yml"], set())` -- exactly the
+# node id that made real pytest exit 4 with `collected 0 items` in the phaze-3k1x3 incident this
+# bead was filed from. Verified by hand (guard commented out, same assertion, red) before writing it
+# up here; not left in the suite as a standing mutant.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/shared/test_x.py",
+        "tests/review/routers/test_proposals.py",
+        "tests/x_test.py",
+        "tests/shared/core/thing_test.py",
+        "tests/shared/test_x.py::TestClass::test_method",
+        "tests/shared/test_x.py::test_bare_function",
+    ],
+)
+def test_collectable_test_paths_are_accepted(path: str) -> None:
+    """The population `changed-test` is meant to describe: a real pytest module under `tests/`."""
+    assert SELECTOR.is_collectable_test_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The exact reproduction (phaze-1t3e1, found on phaze-3k1x3): repowise's `changed-test`
+        # tier apparently keyed off the filename `tests.yml` alone, with no check the path is
+        # Python, let alone under a configured test root.
+        ".github/workflows/tests.yml",
+        # Not Python at all, various shapes.
+        "tests/README.md",
+        "tests/fixtures/tests.txt",
+        "tests",
+        "",
+        # Python, but outside the configured test root (pyproject's `testpaths = ["tests"]`) --
+        # pytest is not configured to collect here, whatever the filename looks like.
+        "src/phaze/test_thing.py",
+        "scripts/test_helper.py",
+        "testsuite/test_x.py",
+        # Under `tests/` and genuinely `.py`, but not a module pytest's default `python_files`
+        # (`test_*.py` / `*_test.py`) would collect on its own -- handing these to pytest as a bare
+        # node id fails exactly the same way as the non-Python cases above.
+        "tests/shared/conftest.py",
+        "tests/shared/__init__.py",
+        "tests/shared/helpers.py",
+    ],
+)
+def test_uncollectable_paths_are_rejected(path: str) -> None:
+    """The allow-list is positive, so this is the assertion that it is not vacuously permissive."""
+    assert SELECTOR.is_collectable_test_path(path) is False
+
+
+def test_a_changed_test_inference_naming_a_non_python_file_reproduces_the_workflow_misclassification() -> None:
+    """The bug as measured: repowise inferred `.github/workflows/tests.yml` as `changed-test`.
+
+    Before this bead: `classify()` trusted `via: "changed-test"` unconditionally and returned
+    `.github/workflows/tests.yml` as a "node id", which real pytest then rejected with
+    `ERROR: not found: … (no match in any of [<Dir workflows>])`, exit 4, no summary -- UNMEASURED,
+    not a real test failure. After: the shape check refuses before the id ever reaches pytest.
+    """
+    report = _report(
+        impacted_tests=[],
+        inferred_tests=[
+            {
+                "source_file": ".github/workflows/tests.yml",
+                "test_file": ".github/workflows/tests.yml",
+                "via": "changed-test",
+            }
+        ],
+    )
+    verdict, reason = _refusal(report)
+    assert verdict == "escalate"
+    assert ".github/workflows/tests.yml" in reason
+    assert "changed-test" in reason
+
+
+def test_a_changed_test_inference_outside_the_configured_test_root_escalates() -> None:
+    """A `.py` file is not enough on its own -- it must live where pytest is configured to look."""
+    report = _report(
+        impacted_tests=[],
+        inferred_tests=[{"source_file": "src/phaze/thing.py", "test_file": "src/phaze/thing.py", "via": "changed-test"}],
+    )
+    verdict, reason = _refusal(report)
+    assert verdict == "escalate"
+    assert "src/phaze/thing.py" in reason
+
+
+def test_a_changed_test_inference_naming_a_non_collectable_module_under_tests_escalates() -> None:
+    """Under `tests/` and `.py` is not enough either -- `conftest.py` is real but not a test module.
+
+    Handed to pytest as a bare node id it does not error the way a missing file does, but it also
+    collects nothing pytest would call a test -- the same "escalate rather than trust the label"
+    call this bead makes for every other shape `changed-test` gets wrong.
+    """
+    report = _report(
+        impacted_tests=[],
+        inferred_tests=[{"source_file": "tests/shared/conftest.py", "test_file": "tests/shared/conftest.py", "via": "changed-test"}],
+    )
+    verdict, reason = _refusal(report)
+    assert verdict == "escalate"
+    assert "tests/shared/conftest.py" in reason
+
+
+def test_one_uncollectable_changed_test_entry_escalates_the_whole_diff_not_just_that_entry() -> None:
+    """Same precedent as failure mode G: any bad entry escalates everything, never a per-entry drop.
+
+    A real coverage-backed test and a real `changed-test` file are both present here alongside the
+    bad entry, so a per-entry drop would still produce a non-empty, plausible-looking selection --
+    exactly the silently-narrowed-and-still-green shape this file exists to rule out.
+    """
+    report = _report(
+        inferred_tests=[
+            {"source_file": "tests/shared/test_y.py", "test_file": "tests/shared/test_y.py", "via": "changed-test"},
+            {
+                "source_file": ".github/workflows/tests.yml",
+                "test_file": ".github/workflows/tests.yml",
+                "via": "changed-test",
+            },
+        ]
+    )
+    verdict, reason = _refusal(report)
+    assert verdict == "escalate"
+    assert ".github/workflows/tests.yml" in reason
+
+
 @pytest.mark.parametrize("via", ["call-graph", "import-graph", "filename-pattern"])
 def test_inference_that_claims_coverage_escalates(via: str) -> None:
     """repowise: "All are file-level and all over-claim; none may be read as coverage."."""
@@ -930,6 +1060,8 @@ def test_the_classifier_under_test_is_the_shipped_one() -> None:
     assert callable(SELECTOR.classify)
     assert sorted(SELECTOR.GUESS_INFERENCE) == ["call-graph", "filename-pattern", "import-graph"]
     assert sorted(SELECTOR.SOUND_INFERENCE) == ["changed-test"]
+    assert callable(SELECTOR.is_collectable_test_path)
+    assert SELECTOR.TEST_ROOTS == ("tests/",)
 
 
 def test_the_floor_reader_is_not_silently_empty() -> None:
