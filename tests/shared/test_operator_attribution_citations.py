@@ -229,7 +229,19 @@ pooled total:
   2026-08-20)`` paragraph just above it) and carries neither a date nor a bead id of its own.
   Flagged here rather than fixed silently: it is a different file and a different decision than
   this bead's tag_write.py motivator, so fixing it is left to a follow-up rather than expanding
-  this bead's scope.
+  this bead's scope. RESOLVED by phaze-3k1x3 (2026-09-25): the paragraph now carries the date and
+  a durable-record pointer (``phaze-b62ri`` / ``docs/design/0013-ffmpeg-pin.md`` §7) directly, so
+  it passes ``_iter_uncited_claims`` on its own citation rather than on an allowlist exclusion --
+  this measurement's counts above are left unchanged because they describe the tree's state at
+  the time they were taken, not the current one. phaze-3k1x3 also confirmed the underlying
+  question this bullet's title implies (does the guard scan ``.github/workflows/*.yml`` at all?):
+  yes -- ``.yml``/``.yaml`` are in ``_HASH_COMMENT_SUFFIXES`` below, so this file was always in
+  ``_scope_files()``'s population and read as ``#`` comment paragraphs. What made the gap
+  invisible was never file-scope coverage; it was this section's own "operator answered" alone
+  vocabulary-widening being rejected as a flood (8 false positives to 1 real gap). See
+  ``test_tests_workflow_is_scanned_and_its_cited_claim_fails_without_its_date`` below for the
+  same mutation-tested proof :func:`test_pyproject_is_scanned_and_its_cited_claim_fails_without_its_bead_id`
+  already gives ``pyproject.toml``.
 * ``operator said``: 2 matches, both FALSE POSITIVES -- ``scripts/recover_operator_decisions.py``
   and its test module both discuss, generically, the LABEL-vs-DESCRIPTION conflation ("quoting a
   description as if the operator said it"), not a specific decision.
@@ -997,3 +1009,26 @@ class TestScannerMechanics:
 
         stripped = _Paragraph(cited[0].path, cited[0].lineno, cited[0].text.replace("phaze-dkqor", ""))
         assert len(list(_iter_uncited_claims(iter([stripped])))) == 1, "removing the bead id was not caught"
+
+    def test_tests_workflow_is_scanned_and_its_cited_claim_fails_without_its_date(self) -> None:
+        """phaze-3k1x3: ``.github/workflows/tests.yml`` is in scope too -- ``.yml``/``.yaml`` are
+        already in ``_HASH_COMMENT_SUFFIXES``, so this was never a missing-file-scope gap. The
+        module docstring's "A SECOND VOCABULARY SHAPE" section explains what WAS missing: the
+        file's *"the operator answered: '...'"* paragraph carried neither a date nor a bead id of
+        its own, invisible to this guard only because widening ``_VOCAB_RE`` to catch bare
+        "operator answered" measured 8 false positives to 1 real gap and was rejected -- not
+        because the file was out of scan scope. This test proves the scope claim on the file's
+        OTHER, already-vocabulary-matching paragraph (the "OPERATOR DECISION (phaze-b62ri,
+        2026-08-20)" one two paragraphs above), the same way
+        :func:`test_pyproject_is_scanned_and_its_cited_claim_fails_without_its_bead_id` proves it
+        for ``pyproject.toml``: built on the real file, and mutation-tested by stripping the date.
+        """
+        workflow = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+        assert workflow in _scope_files(), "tests.yml is not in the guard's scan set"
+
+        cited = [p for p in _paragraphs_for_file(workflow) if "phaze-b62ri" in p.text and _VOCAB_RE.search(p.text)]
+        assert len(cited) == 1, "the phaze-b62ri OPERATOR DECISION paragraph moved or was reworded; re-pick a cited tests.yml claim"
+        assert list(_iter_uncited_claims(iter(cited))) == [], "the cited form must pass"
+
+        stripped = _Paragraph(cited[0].path, cited[0].lineno, _ISO_DATE_RE.sub("", cited[0].text, count=1))
+        assert len(list(_iter_uncited_claims(iter([stripped])))) == 1, "removing the date was not caught"

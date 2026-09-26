@@ -20,7 +20,8 @@ env:
   # ships.
   #
   # THIS IS SETTLED, NOT A TODO. Asked whether CI should move to 7.1.5 (the ADR's own
-  # recommendation), the operator answered: "leave CI on 8.1.x and the containers on 7.1.5.
+  # recommendation), the operator answered (2026-08-20, durable record: phaze-b62ri /
+  # docs/design/0013-ffmpeg-pin.md §7): "leave CI on 8.1.x and the containers on 7.1.5.
   # Yes, this is a discrepancy, but for CI ffmpeg is used only for the audio extract path.
   # this is sufficiently isolated that this discrepancy is fine." Verified before recording:
   # test_analysis_probe_duration.py — where the measured 7.1.5-vs-8.1.2 mp3 duration
