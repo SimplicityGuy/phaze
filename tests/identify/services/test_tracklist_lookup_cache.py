@@ -80,7 +80,8 @@ class TestExpiryPolicy:
         [(69, LOW_CONFIDENCE_TTL_DAYS), (50, LOW_CONFIDENCE_TTL_DAYS), (49, NEGATIVE_TTL_DAYS), (0, NEGATIVE_TTL_DAYS)],
     )
     def test_low_confidence_hold_is_tiered_by_best_score(self, best_score: int, days: int) -> None:
-        """phaze-no6sv operator decision: a near miss (50-69) is re-asked after 30 days; below 50 keeps 180."""
+        """Operator decision 2026-09-27, recorded as a comment on bead phaze-no6sv (question and answer quoted at
+        LOW_CONFIDENCE_TTL_DAYS): a near miss (50-69) is re-asked after 30 days; below 50 keeps 180."""
         assert LOW_CONFIDENCE_NEAR_MISS_FLOOR == 50
         assert LOW_CONFIDENCE_TTL_DAYS < NEGATIVE_TTL_DAYS
         assert low_confidence_ttl_days(best_score) == days
