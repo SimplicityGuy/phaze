@@ -41,15 +41,39 @@ which is the natural cadence -- the re-check costs a request only after every ne
 already had its turn."""
 
 LOW_CONFIDENCE_TTL_DAYS: int = 30
-"""How long a search that returned only low-scoring rows is held before being re-asked (phaze-no6sv).
+"""How long a NEAR-MISS low-confidence search is held before being re-asked (phaze-no6sv).
 
-Far shorter than :data:`NEGATIVE_TTL_DAYS` because it is not a claim about the site: a best score
-under the selection threshold usually means the QUERY was polluted, not that the set is absent.
-Not a transient backoff either: re-asking the same text minutes later returns the same rows and
-burns a request for nothing. The main recovery path does not wait for this at all -- a fix to
-query derivation changes the query text, which changes the cache key, which is a fresh ``MISS``.
-A month is the implementer's choice, not a measured figure: roughly one re-ask per set per month
-for the ones whose query does NOT change."""
+A near miss -- rows came back and the best scored in ``[LOW_CONFIDENCE_NEAR_MISS_FLOOR,
+SELECTION_THRESHOLD)`` -- usually means the QUERY was polluted, not that the set is absent, so it
+must not buy the 180-day negative TTL. Not a transient backoff either: re-asking the same text
+minutes later returns the same rows. The main recovery path does not wait for this at all -- a fix
+to query derivation changes the query text, which changes the cache key, which is a fresh ``MISS``.
+
+Operator decision 2026-09-27 (durable record: bead phaze-no6sv comment). Question as put: "How
+long should a low-confidence result wait before being looked up again? (Today every miss waits 180
+days.)" Answer as given (selected option label): "Tiered by best score (Recommended)". The 30 days
+and the band floor of 50 come from that option's description -- the dispatcher's framing, which the
+operator accepted -- not from a measurement."""
+
+LOW_CONFIDENCE_NEAR_MISS_FLOOR: int = 50
+"""Best score at or above which a low-confidence search is a near miss (short hold, above); below it
+the rows are unrelated enough that the set is probably genuinely absent, and the hold is the full
+:data:`NEGATIVE_TTL_DAYS`. Same operator decision and provenance as :data:`LOW_CONFIDENCE_TTL_DAYS`.
+For scale: the captured search for a set that does not exist scored its best row 35, and the best
+wrong-artist row on the right event and date scored 50 (``tracklist_result_scorer.SELECTION_THRESHOLD``'s
+calibration notes)."""
+
+
+def low_confidence_ttl_days(best_score: int | None, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> int:
+    """The hold for a ``LOW_CONFIDENCE`` result, tiered by the best row's score.
+
+    An unknown score (a row written without one) gets the SHORT hold: re-asking costs one request,
+    while guessing "absent" could hide a set for six months.
+    """
+    if best_score is not None and best_score < LOW_CONFIDENCE_NEAR_MISS_FLOOR:
+        return negative_ttl_days
+    return LOW_CONFIDENCE_TTL_DAYS
+
 
 TRANSIENT_BACKOFF_BASE_MINUTES: int = 30
 """First retry delay after a transient failure. Doubles per attempt, capped below.
@@ -109,8 +133,8 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
     """Map a stored row to a decision. THE honesty boundary -- read this before changing it.
 
     ``FOUND`` never expires. ``NOT_FOUND`` -- and only ``NOT_FOUND`` -- suppresses a re-query for
-    the negative TTL. ``LOW_CONFIDENCE`` is held for its own much shorter TTL and is never reported
-    as a negative (phaze-no6sv). Everything else is a transient failure: it earns a short backoff, then goes
+    the negative TTL. ``LOW_CONFIDENCE`` is held for a TTL tiered by its best score (see
+    :func:`low_confidence_ttl_days`) and is never reported as a negative (phaze-no6sv). Everything else is a transient failure: it earns a short backoff, then goes
     straight back into the queue, and after :data:`TRANSIENT_MAX_ATTEMPTS` it is PARKED for an
     operator rather than being reinterpreted as a negative. An unrecognized outcome string (a row
     written by a newer version, or hand-edited) falls through to ``MISS``: re-querying costs one
@@ -166,7 +190,9 @@ def _backoff_delay(attempts: int) -> timedelta:
     return timedelta(minutes=min(minutes, TRANSIENT_BACKOFF_MAX_HOURS * 60))
 
 
-def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> datetime | None:
+def compute_expires_at(
+    outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS, best_score: int | None = None
+) -> datetime | None:
     """When a row written now should stop suppressing a re-query (None = never).
 
     Exposed rather than inlined so a test -- and the design doc's arithmetic -- can assert the
@@ -177,7 +203,7 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
     if outcome is LookupOutcome.NOT_FOUND:
         return now + timedelta(days=negative_ttl_days)
     if outcome is LookupOutcome.LOW_CONFIDENCE:
-        return now + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+        return now + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     return now + _backoff_delay(attempts)
 
 
@@ -310,7 +336,7 @@ async def record_outcome(
     """
     moment = now or datetime.now(UTC)
     insert_attempts = 1
-    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days)
+    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days, best_score=result_confidence)
 
     statement = pg_insert(TracklistLookupCache).values(
         set_key=set_key,
@@ -336,7 +362,7 @@ async def record_outcome(
             "detail": detail,
             "attempts": _next_attempts_on_conflict(outcome),
             "last_attempted_at": moment,
-            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days),
+            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days, best_score=result_confidence),
         },
     ).returning(TracklistLookupCache)
 
@@ -350,7 +376,7 @@ async def record_outcome(
     return entry
 
 
-def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int) -> Any:
+def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int, *, best_score: int | None = None) -> Any:
     """The ``expires_at`` the ON CONFLICT UPDATE should write.
 
     Positives (never) and definitive negatives (a fixed TTL) do not depend on the attempt count and
@@ -373,7 +399,7 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
     if outcome is LookupOutcome.NOT_FOUND:
         return moment + timedelta(days=negative_ttl_days)
     if outcome is LookupOutcome.LOW_CONFIDENCE:
-        return moment + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+        return moment + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     exponent = _next_attempts_on_conflict(outcome) - 1
     backoff_seconds = func.least(
         float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, exponent),

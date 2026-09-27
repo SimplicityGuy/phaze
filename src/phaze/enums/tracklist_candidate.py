@@ -128,11 +128,12 @@ class LookupOutcome(enum.StrEnum):
 
     LOW_CONFIDENCE = "low_confidence"
     """The search ran cleanly and returned rows, but the best of them scored below the selection
-    threshold (phaze-no6sv). That says the QUERY may be bad -- a polluted derived query returns
-    other artists' sets -- not that the site has nothing, so it is neither a definitive negative
-    nor a transient: re-asking the same query at once would return the same rows. It is held for
-    the short :data:`~phaze.services.tracklist_lookup_cache.LOW_CONFIDENCE_TTL_DAYS`, and a fix to
-    query derivation re-queues it immediately anyway, because the cache key hashes the query text."""
+    threshold (phaze-no6sv). That can mean the QUERY was bad -- a polluted derived query returns
+    other artists' sets -- as easily as that the site has nothing, so it is neither a definitive
+    negative nor a transient: re-asking the same query at once would return the same rows. It is
+    held for a TTL tiered by the best score
+    (:func:`~phaze.services.tracklist_lookup_cache.low_confidence_ttl_days`), and a fix to query
+    derivation re-queues it immediately anyway, because the cache key hashes the query text."""
 
     @property
     def is_definitive_negative(self) -> bool:
@@ -190,7 +191,7 @@ class CacheDecision(enum.StrEnum):
     """A transient failure whose backoff has elapsed. Query it again."""
 
     LOW_CONFIDENCE_HOLD = "low_confidence_hold"
-    """The last search returned only low-scoring rows and its short hold has not elapsed. Spend no
+    """The last search returned only low-scoring rows and its hold has not elapsed. Spend no
     request YET -- but this is not a negative: the set has said nothing about being absent."""
 
     LOW_CONFIDENCE_EXPIRED = "low_confidence_expired"

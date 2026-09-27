@@ -357,7 +357,7 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     ================================  ==============================  ==================
     search raised / selectors stale   ``SEARCH_FAILED``               no (transient)
     scorer refused, definitively      ``NOT_FOUND``                   yes (negative TTL)
-    rows came back, all scored low    ``LOW_CONFIDENCE``              no (short hold)
+    rows came back, all scored low    ``LOW_CONFIDENCE``              no (score-tiered hold)
     scorer refused, ambiguously       ``SEARCH_FAILED``               no (transient)
     page rendered, no track list      ``NOT_FOUND``                   yes (negative TTL)
     Turnstile survived the retries    ``BLOCKED``                     no (transient)
@@ -416,7 +416,9 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
             base,
             outcome=selection.rejection or LookupOutcome.SEARCH_FAILED,
             detail=selection.reason,
-            result_confidence=selection.confidence or None,
+            # A LOW_CONFIDENCE hold is tiered on the best row's score, so it must be recorded -- 0
+            # included, which `or None` would erase (phaze-no6sv).
+            result_confidence=selection.best_confidence if selection.rejection is LookupOutcome.LOW_CONFIDENCE else (selection.confidence or None),
             host_requests=1,
         )
 
@@ -595,7 +597,7 @@ async def persist_lookup(
     )
 
     # LOW_CONFIDENCE clears too: the search the operator asked for DID run cleanly, and a flag left
-    # behind would show "queued" for a set the cache is holding for a month (phaze-no6sv).
+    # behind would show "queued" for a set the cache is holding for weeks or months (phaze-no6sv).
     if attempt.is_found or attempt.outcome.is_definitive_negative or attempt.outcome.is_inconclusive:
         await clear_flags(session, [member.file_id for member in candidate.unique_set.members])
     return result

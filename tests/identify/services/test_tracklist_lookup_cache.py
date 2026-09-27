@@ -18,6 +18,7 @@ from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecisio
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 from phaze.services.tracklist_lookup_cache import (
     IN_CLAUSE_CHUNK_SIZE,
+    LOW_CONFIDENCE_NEAR_MISS_FLOOR,
     LOW_CONFIDENCE_TTL_DAYS,
     NEGATIVE_TTL_DAYS,
     TRANSIENT_BACKOFF_BASE_MINUTES,
@@ -28,6 +29,7 @@ from phaze.services.tracklist_lookup_cache import (
     lookup,
     lookup_by_query_text,
     lookup_many,
+    low_confidence_ttl_days,
     purge_expired_negatives,
     record_outcome,
 )
@@ -73,11 +75,20 @@ class TestExpiryPolicy:
     def test_negative_gets_the_ttl(self) -> None:
         assert compute_expires_at(LookupOutcome.NOT_FOUND, 1, NOW) == NOW + timedelta(days=NEGATIVE_TTL_DAYS)
 
-    def test_low_confidence_is_held_for_less_than_the_negative_ttl(self) -> None:
-        """phaze-no6sv: a low best score is not a claim about the site, so it must not buy 180 days."""
-        expires = compute_expires_at(LookupOutcome.LOW_CONFIDENCE, 1, NOW)
-        assert expires == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
-        assert expires < NOW + timedelta(days=NEGATIVE_TTL_DAYS)
+    @pytest.mark.parametrize(
+        ("best_score", "days"),
+        [(69, LOW_CONFIDENCE_TTL_DAYS), (50, LOW_CONFIDENCE_TTL_DAYS), (49, NEGATIVE_TTL_DAYS), (0, NEGATIVE_TTL_DAYS)],
+    )
+    def test_low_confidence_hold_is_tiered_by_best_score(self, best_score: int, days: int) -> None:
+        """phaze-no6sv operator decision: a near miss (50-69) is re-asked after 30 days; below 50 keeps 180."""
+        assert LOW_CONFIDENCE_NEAR_MISS_FLOOR == 50
+        assert LOW_CONFIDENCE_TTL_DAYS < NEGATIVE_TTL_DAYS
+        assert low_confidence_ttl_days(best_score) == days
+        assert compute_expires_at(LookupOutcome.LOW_CONFIDENCE, 1, NOW, best_score=best_score) == NOW + timedelta(days=days)
+
+    def test_low_confidence_with_no_recorded_score_gets_the_short_hold(self) -> None:
+        """Unknown is the safe side: re-asking costs one request, guessing "absent" hides a set for months."""
+        assert compute_expires_at(LookupOutcome.LOW_CONFIDENCE, 1, NOW) == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
 
     def test_transient_backoff_doubles_and_is_capped(self) -> None:
         assert _backoff_delay(1) == timedelta(minutes=TRANSIENT_BACKOFF_BASE_MINUTES)
@@ -206,7 +217,7 @@ class TestRecordAndLookup:
 
     async def test_low_confidence_is_held_then_re_queried_and_never_a_negative(self, session: AsyncSession) -> None:
         """phaze-no6sv: rows came back but none scored high enough -- retryable, not DEFINITIVE."""
-        entry = await record_outcome(session, set_key="k-low", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, now=NOW)
+        entry = await record_outcome(session, set_key="k-low", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, result_confidence=58, now=NOW)
         assert entry.expires_at == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
 
         inside = await lookup(session, "k-low", now=NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS - 1))
@@ -220,9 +231,14 @@ class TestRecordAndLookup:
     async def test_low_confidence_on_the_update_path_gets_its_own_ttl_and_resets_the_streak(self, session: AsyncSession) -> None:
         for _ in range(3):
             await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
-        low = await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, now=NOW)
+        low = await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, result_confidence=58, now=NOW)
         assert low.attempts == 1
         assert low.expires_at == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+
+        far_off = await record_outcome(
+            session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, result_confidence=35, now=NOW
+        )
+        assert far_off.expires_at == NOW + timedelta(days=NEGATIVE_TTL_DAYS), "the UPDATE path tiers on the new score too"
 
         next_failure = await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.SEARCH_FAILED, now=NOW)
         assert next_failure.attempts == 1, "a clean low-confidence search ends the transient streak"

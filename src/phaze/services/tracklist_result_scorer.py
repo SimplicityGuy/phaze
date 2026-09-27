@@ -61,8 +61,8 @@ and the choice between its three relevant members is load-bearing:
   cacheable negative.
 * :attr:`~phaze.enums.tracklist_candidate.LookupOutcome.LOW_CONFIDENCE` -- the search returned
   rows, but even the best scored under :data:`SELECTION_THRESHOLD` (phaze-no6sv). That is the
-  signature of a bad QUERY as much as of an absent set, so it is held briefly rather than cached as
-  a negative. ``NOT_FOUND`` is reserved for zero rows, or for a best row that cleared the bar and
+  signature of a bad QUERY as much as of an absent set, so it is held for a score-tiered TTL rather than
+  cached as a negative. ``NOT_FOUND`` is reserved for zero rows, or for a best row that cleared the bar and
   was disqualified anyway.
 * :attr:`~phaze.enums.tracklist_candidate.LookupOutcome.SEARCH_FAILED` -- we could not TELL. Used
   when two candidates cleared the bar too close together, or when the file's own derived signal
@@ -214,6 +214,15 @@ class ResultSelection:
     def confidence(self) -> int:
         """The selected candidate's confidence, or 0 when nothing was selected."""
         return self.selected.confidence if self.selected is not None else 0
+
+    @property
+    def best_confidence(self) -> int | None:
+        """The highest-scoring row's confidence whether or not it was selected; None with no rows.
+
+        What a ``LOW_CONFIDENCE`` rejection's hold is tiered on (phaze-no6sv) -- ``confidence`` is 0
+        for every rejection and so cannot tell a near miss from unrelated rows.
+        """
+        return self.ranked[0].confidence if self.ranked else None
 
 
 # Signal extraction

@@ -117,7 +117,7 @@ class CandidateQueueStats:
     cached_backoff: int
     cached_exhausted: int
     cached_low_confidence: int
-    """Sets whose last search returned only low-scoring rows, held briefly (phaze-no6sv). Not a
+    """Sets whose last search returned only low-scoring rows, held by best score (phaze-no6sv). Not a
     negative, so never folded into ``cached_negative``."""
     queued: int
 
