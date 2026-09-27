@@ -11,6 +11,9 @@ Command groups:
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
 sha256 hash is persisted) alongside the derived `phaze-agent-<id>` queue name.
+A `--kind fileserver` agent also gets its LIVE sentinel `ScanBatch` seeded here
+(via `phaze.services.live_sentinel.ensure_live_sentinel`) so its watcher's
+`batch_id`-omitted upserts have somewhere to resolve to from the first call.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -56,6 +59,7 @@ from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 from phaze.services.reanalysis_backfill import (
     ReanalysisOutcome,
@@ -140,12 +144,24 @@ async def add_agent(session: AsyncSession, agent_id: str, name: str, scan_roots:
     scan roots. The value is constrained at the CLI (argparse ``choices=``) and
     the DB through the ``ck_agents_kind_enum`` CHECK.
 
+    phaze-tvdu1: a ``"fileserver"`` agent also gets its LIVE sentinel
+    ``ScanBatch`` seeded here, via the shared
+    :func:`phaze.services.live_sentinel.ensure_live_sentinel` -- the same
+    helper the dev seed (``services/agent_bootstrap.py``) and the
+    ``upsert_files`` self-heal path (``routers/agent_files.py``) use. Without
+    it, an agent registered through this CLI had no sentinel until its first
+    watcher upsert self-healed one (or, pre-phaze-tvdu1, 500ed instead). A
+    ``"compute"`` agent never scans files and gets no sentinel.
+
     Does NOT catch :class:`~sqlalchemy.exc.IntegrityError` (e.g. duplicate id);
     that is left to propagate so the caller can map it to a friendly message.
     """
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     agent = Agent(id=agent_id, name=name, token_hash=hash_token(token), scan_roots=scan_roots, kind=kind)
     session.add(agent)
+    if kind == "fileserver":
+        await session.flush()
+        await ensure_live_sentinel(session, agent_id)
     await session.commit()
     return token
 

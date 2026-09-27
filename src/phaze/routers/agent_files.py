@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import Executable, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.config import get_settings
 from phaze.database import get_session
@@ -32,11 +33,15 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.services import s3_staging
+from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.text_repair import repair_mojibake
 
 
 if TYPE_CHECKING:
     from phaze.config import ControlSettings
+
+
+logger = structlog.get_logger(__name__)
 
 
 # Bug 260706-vqz (first live k8s cloud-burst E2E, 2026-07-07, image 2026.7.3): the staged object
@@ -93,15 +98,28 @@ async def upsert_files(
     else:
         # D-18: batch_id omitted -> resolve the calling agent's LIVE sentinel
         # batch from the bearer-token-derived agent_id. The partial unique index
-        # `uq_scan_batches_agent_id_live` guarantees exactly one row exists for
-        # any registered agent (Phase 24 D-11 + D-12), so `.scalar_one()` is
-        # safe -- a missing sentinel is an operator-actionable invariant
-        # violation (500-level), not a 4xx contract failure.
+        # `uq_scan_batches_agent_id_live` only guarantees AT MOST one LIVE row per
+        # agent -- it does NOT guarantee one exists. A sentinel is normally
+        # created at agent-registration time (`phaze agents add` / the dev seed,
+        # both via `services.live_sentinel.ensure_live_sentinel`), but an agent
+        # registered another way (e.g. a raw `INSERT INTO agents`) has none.
+        # phaze-tvdu1: self-heal instead of crashing -- a missing sentinel used
+        # to raise `NoResultFound` here (an uncaught 500 that dropped the whole
+        # chunk); it is now created on demand via the same shared helper so the
+        # only user-visible effect is a one-time WARNING log.
         stmt = select(ScanBatch.id).where(
             ScanBatch.agent_id == agent.id,
             ScanBatch.status == ScanStatus.LIVE.value,
         )
-        resolved_batch_id = (await session.execute(stmt)).scalar_one()
+        existing_batch_id = (await session.execute(stmt)).scalar_one_or_none()
+        if existing_batch_id is not None:
+            resolved_batch_id = existing_batch_id
+        else:
+            logger.warning(
+                "upsert_files: agent has no LIVE sentinel scan batch; self-healing by creating one",
+                agent_id=agent.id,
+            )
+            resolved_batch_id = await ensure_live_sentinel(session, agent.id)
 
     # 1. Build raw record dicts with agent_id stamped from auth dep (NEVER from body)
     raw_records: list[dict[str, Any]] = []

@@ -3,13 +3,14 @@
 import asyncio
 
 import pytest
-from sqlalchemy import NullPool, delete, select
+from sqlalchemy import NullPool, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze import cli
 from phaze.cli import add_agent, derive_queue_name, validate_agent_id, validate_agent_name, validate_scan_roots
 from phaze.models.agent import Agent
+from phaze.models.scan_batch import ScanBatch
 from phaze.routers.agent_auth import hash_token
 from tests.conftest import TEST_DATABASE_URL
 
@@ -30,6 +31,11 @@ def _cleanup_committed_agents(async_engine: object) -> "object":  # type: ignore
     teardown and cannot delete a COMMITTED row. Depends on ``async_engine`` so the schema (and the
     ``agents`` table) is guaranteed to exist; only the committing ``test_main_*`` cells request it, so the
     pure-function/``main``-exit cells that never touch the DB are untouched.
+
+    phaze-tvdu1: ``add_agent`` now also seeds a LIVE sentinel ``ScanBatch`` for ``--kind
+    fileserver`` agents (``cli-ok``, ``cli-dup`` in this module; ``oci-a1``/``oci-tok`` are
+    ``--kind compute`` and get none). ``scan_batches.agent_id`` has ``ondelete="RESTRICT"``, so
+    those rows must be deleted BEFORE the owning agent or the agent delete raises a FK violation.
     """
     yield
 
@@ -37,6 +43,7 @@ def _cleanup_committed_agents(async_engine: object) -> "object":  # type: ignore
         engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
         try:
             async with engine.begin() as conn:
+                await conn.execute(delete(ScanBatch).where(ScanBatch.agent_id != "test-fileserver"))
                 await conn.execute(delete(Agent).where(Agent.id != "test-fileserver"))
         finally:
             await engine.dispose()
@@ -115,6 +122,20 @@ async def test_add_agent_happy_path(session: AsyncSession) -> None:
     assert derive_queue_name("x-y") == "phaze-agent-x-y"
 
 
+async def test_add_agent_seeds_live_sentinel_for_fileserver(session: AsyncSession) -> None:
+    """phaze-tvdu1: `add_agent` seeds the shared LIVE sentinel for a fileserver agent.
+
+    Without this, the agent's watcher self-heals its OWN sentinel on the first upsert instead
+    of 500ing (post-tvdu1), but the sentinel now exists up front -- proving `add_agent` and
+    `ensure_live_sentinel` are the SAME code path the bead requires.
+    """
+    await add_agent(session, "x-y", "X", ["/data/music"])
+
+    live = (await session.execute(select(ScanBatch).where(ScanBatch.agent_id == "x-y", ScanBatch.status == "live"))).scalar_one()
+    assert live.scan_path == "<watcher>"
+    assert live.configured_root == "<watcher>"
+
+
 async def test_add_agent_compute_empty_roots(session: AsyncSession) -> None:
     token = await add_agent(session, "oci-a1", "OCI A1", [], kind="compute")
     assert token.startswith("phaze_agent_")
@@ -122,6 +143,14 @@ async def test_add_agent_compute_empty_roots(session: AsyncSession) -> None:
     row = (await session.execute(select(Agent).where(Agent.id == "oci-a1"))).scalar_one()
     assert row.kind == "compute"
     assert row.scan_roots == []
+
+
+async def test_add_agent_compute_gets_no_live_sentinel(session: AsyncSession) -> None:
+    """A `compute` agent never scans files, so it gets no LIVE sentinel."""
+    await add_agent(session, "oci-a1", "OCI A1", [], kind="compute")
+
+    count = (await session.execute(select(func.count()).select_from(ScanBatch).where(ScanBatch.agent_id == "oci-a1"))).scalar_one()
+    assert count == 0
 
 
 async def test_add_agent_defaults_fileserver(session: AsyncSession) -> None:
