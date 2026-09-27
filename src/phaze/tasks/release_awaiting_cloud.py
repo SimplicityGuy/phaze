@@ -109,9 +109,26 @@ _MIN_CANDIDATE_PAGE = 20
 
 # Hard bound on rows examined per tick, across all pages. Caps three costs that all scale with the walk:
 # rows locked, the per-candidate ``_cloud_budget_for`` lookups, and time spent holding
-# pg_advisory_xact_lock. A lane whose unroutable prefix is longer than this still starves -- but it now
-# says so, loudly and every tick, via the repeated-all-held WARNING below, instead of silently.
+# pg_advisory_xact_lock. On its own this bound re-opened the phaze-9sqa starvation at its own size
+# (phaze-1l03t: 500 attempt-exhausted heads, the first routable row at rank 501, ``staged=0`` every tick).
+# ``_resume_cursor`` below is what lets a prefix of ANY length be walked past across ticks while every
+# single tick stays within this bound.
 _MAX_CANDIDATE_SCAN = 500
+
+# phaze-1l03t: the keyset position a budget-bounded walk stopped at, carried to the NEXT tick. Set ONLY
+# when a tick spent the whole scan budget with free slots still open -- the one ending that means "there
+# may be routable work beyond where this tick could look". Every other ending (slots filled, queue
+# exhausted, fileserver vanished) clears it, so the next tick walks from the FIFO head again: a healthy lane
+# never carries a cursor and issues exactly the query it always did, and a held head row that becomes
+# routable is re-examined no later than the tick after the walk reaches the end (the WRAP). A tick that
+# starts from the cursor and finds nothing after it falls back to the head in the same tick.
+#
+# Routability is still decided only by ``select_backend`` in Python, never by a SQL predicate (see
+# ``get_cloud_staging_candidates``): the cursor changes WHERE a tick starts looking, not what it may route.
+# Process-local by design, like ``_consecutive_all_held_ticks``: a controller restart resets it to the head,
+# which costs at most ``ceil(prefix / _MAX_CANDIDATE_SCAN)`` ticks of re-walking and nothing in correctness.
+# Only a COMMITTED tick advances it; the CR-02 rollback path leaves it where it was.
+_resume_cursor: tuple[datetime, uuid.UUID] | None = None
 
 # How many CONSECUTIVE ticks that hold 100% of what they scanned it takes to escalate from the routine
 # per-tick INFO line to a WARNING. 3 ticks at the */5 cadence is ~15 min of a fully-stalled lane -- long
@@ -237,11 +254,15 @@ class _WalkState:
     * ``hold_reasons`` -- each held candidate binned by the ``select_backend`` filter that rejected it;
       feeds both the completion log line and the repeated-all-held WARNING.
     * ``scanned`` -- every row examined this tick across ALL pages (the ``_MAX_CANDIDATE_SCAN`` budget).
+    * ``resume_after`` -- the last row's ``(created_at, id)`` when the walk stopped on the scan budget with
+      free slots still open (phaze-1l03t); ``None`` for every other ending. Becomes ``_resume_cursor``
+      once the tick commits.
     """
 
     tally: dict[str, int] = field(default_factory=lambda: {"staged": 0, "skipped": 0})
     hold_reasons: Counter[str] = field(default_factory=Counter)
     scanned: int = 0
+    resume_after: tuple[datetime, uuid.UUID] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +317,8 @@ async def _next_candidate_page(
       Nothing further exists to page to.
     * **scan budget spent** -- ``_MAX_CANDIDATE_SCAN`` rows examined. Bounds lock footprint, per-candidate
       attempt lookups, and advisory-lock hold time on a lane whose unroutable prefix is pathological.
+      This is the one stop that records ``walk.state.resume_after`` (phaze-1l03t), so the NEXT tick
+      continues from here instead of re-walking the same held prefix and never getting past it.
     * **empty next page** -- the cursor ran off the end between pages.
 
     The cursor is the last row's ``(created_at, id)``, matching the query's composite ORDER BY exactly;
@@ -303,12 +326,15 @@ async def _next_candidate_page(
     """
     free_slots = _free_slots(walk.snapshot)
     scanned = walk.state.scanned
-    if free_slots <= 0 or len(page) < page_limit or scanned >= _MAX_CANDIDATE_SCAN:
+    if free_slots <= 0 or len(page) < page_limit:
+        return None
+    last_file = page[-1][0]
+    if scanned >= _MAX_CANDIDATE_SCAN:
+        walk.state.resume_after = (last_file.created_at, last_file.id)
         return None
     # Ask for at least _MIN_CANDIDATE_PAGE (amortize the walk over a long unroutable prefix), never more
     # than the scan budget still unspent.
     next_limit = min(max(free_slots, _MIN_CANDIDATE_PAGE), _MAX_CANDIDATE_SCAN - scanned)
-    last_file = page[-1][0]
     next_page = await get_cloud_staging_candidates(walk.session, next_limit, after=(last_file.created_at, last_file.id))
     if not next_page:
         return None
@@ -475,7 +501,29 @@ async def _walk_candidate_pages(walk: _TickContext, first_page: tuple[list[tuple
         page, page_limit = next_page
 
 
-def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str) -> None:
+async def _first_candidate_page(session: AsyncSession, limit: int) -> tuple[list[tuple[FileRecord, datetime]], bool]:
+    """Fetch the tick's first page from the carried ``_resume_cursor``, wrapping to the FIFO head (phaze-1l03t).
+
+    Returns ``(rows, resumed)``. With no carried cursor this is the unchanged head query. With one, the
+    page starts just past it; if nothing lies past it the walk has reached the end of the queue, so the
+    tick WRAPS to the head in the same tick rather than spending a whole tick on an empty fetch. ``resumed``
+    is True only when the returned rows really came from past the cursor.
+    """
+    start_after = _resume_cursor
+    if start_after is not None:
+        rows = await get_cloud_staging_candidates(session, limit, after=start_after)
+        if rows:
+            return rows, True
+    return await get_cloud_staging_candidates(session, limit), False
+
+
+def _carry_resume_cursor(resume_after: tuple[datetime, uuid.UUID] | None) -> None:
+    """Record where the NEXT tick's walk starts: past ``resume_after``, or the FIFO head when ``None``."""
+    global _resume_cursor
+    _resume_cursor = resume_after
+
+
+def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str, *, resumed: bool) -> None:
     """Aggregate the tick's hold reasons into the starvation alarm + the routine completion line.
 
     phaze-9sqa starvation alarm. An "all-held" tick examined candidates and routed NONE of them --
@@ -505,6 +553,8 @@ def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str) -> N
         skipped=state.tally["skipped"],
         candidates_scanned=state.scanned,
         hold_reasons=dict(state.hold_reasons),
+        resumed_from_cursor=resumed,
+        carries_cursor=state.resume_after is not None,
     )
 
 
@@ -521,10 +571,17 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     phaze-9sqa: the FIFO fetch is a PAGED keyset walk, not a single ``LIMIT sum(free slots)`` query. The
     first page is still exactly the free-slot count -- a healthy tick issues the identical query and
     returns the identical tally -- but when a page leaves free slots unfilled the drain pages forward
-    (:func:`_next_candidate_page`) instead of ending the tick, so an unroutable prefix of any length is
-    walked past rather than re-read every 5 min while the queue behind it starves. ``skipped`` therefore
-    counts holds across every page walked, and a tick that holds 100% of what it scanned
-    ``_ALL_HELD_WARN_AFTER_TICKS`` times running escalates to a WARNING naming the hold reasons.
+    (:func:`_next_candidate_page`) instead of ending the tick, so an unroutable prefix is walked past
+    rather than re-read every 5 min while the queue behind it starves. ``skipped`` therefore counts holds
+    across every page walked, and a tick that holds 100% of what it scanned ``_ALL_HELD_WARN_AFTER_TICKS``
+    times running escalates to a WARNING naming the hold reasons.
+
+    phaze-1l03t: one tick's walk is bounded by ``_MAX_CANDIDATE_SCAN``, so a held prefix at least that long
+    used to starve the lane exactly as phaze-9sqa's did. A tick that spends the whole budget with slots
+    still free now carries its keyset position to the next tick (``_resume_cursor``), which starts past it;
+    the walk wraps to the FIFO head once it reaches the end of the queue. A routable file behind a held
+    prefix of P rows is therefore reached within ``ceil(P / _MAX_CANDIDATE_SCAN) + 1`` ticks, and no single
+    tick examines more than ``_MAX_CANDIDATE_SCAN`` rows.
 
     phaze-1i0h6.9: the orchestration is decomposed into named units (:func:`_snapshot_backend_slots`,
     :func:`_route_candidate`, :func:`_stage_candidate_page`, :func:`_walk_candidate_pages`,
@@ -587,8 +644,12 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # sized at exactly ``limit``, so a healthy tick -- one whose oldest rows are routable -- issues the
         # same single query over the same rows and produces the same tally as before; the walk engages
         # ONLY once a page leaves free slots unfilled.
-        candidates = await get_cloud_staging_candidates(session, limit)
+        # phaze-1l03t: the first page starts past the carried cursor when the previous tick spent its scan
+        # budget with slots still free, so a held prefix longer than _MAX_CANDIDATE_SCAN is walked past
+        # over successive ticks instead of being the only thing any tick ever reads.
+        candidates, resumed = await _first_candidate_page(session, limit)
         if not candidates:
+            _carry_resume_cursor(None)
             return {"staged": 0, "skipped": 0}
 
         # GATE 2: a fileserver agent (the push initiator -- owns the media mount + rsync/upload) must be
@@ -612,6 +673,8 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         try:
             await _walk_candidate_pages(_TickContext(session, snapshot, cfg, ctx["task_router"], state), (candidates, limit))
             await session.commit()
+            # phaze-1l03t: advance (or clear) the cross-tick cursor only once the tick is durable.
+            _carry_resume_cursor(state.resume_after)
             # phaze-grzo: fire the s3_upload enqueues KueueBackend.dispatch parked, ONLY now that the
             # cloud_job UPLOADING rows are durably committed -- so the worker-visible job (and its
             # report_uploaded callback) can never precede the row it reads. A parked-but-unfired enqueue
@@ -642,5 +705,5 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # least ``len(candidates)``, so the single-page abort still reports exactly what it always did.
             return {"staged": 0, "skipped": max(state.scanned, len(candidates))}
 
-    _report_tick_outcome(state, limit, fileserver_agent.id)
+    _report_tick_outcome(state, limit, fileserver_agent.id, resumed=resumed)
     return state.tally
