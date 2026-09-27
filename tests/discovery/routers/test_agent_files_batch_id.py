@@ -19,6 +19,7 @@ verbatim so the production handler is exercised under a minimal app.
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -230,3 +231,103 @@ async def test_no_auto_enqueue_with_explicit_batch_id(
 
     # No enqueue regardless of batch binding -- metadata extraction is operator-triggered.
     mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+# phaze-tvdu1: regression tests for the self-healing LIVE-sentinel fix.
+#
+# Unlike `tests/discovery/routers/test_agent_files.py`'s `smoke_app_and_router` fixture, THIS
+# file's `smoke_app_and_router` (above) does NOT pre-seed a LIVE sentinel for `seed_test_agent` --
+# it only seeds the agent itself. That is exactly the "agent registered with no sentinel" shape
+# the bug reproduces: pre-fix, a `batch_id`-omitted POST against a freshly seeded agent raised
+# `sqlalchemy.exc.NoResultFound` at the handler's `.scalar_one()` LIVE-batch lookup, which FastAPI
+# surfaces as an uncaught 500 -- and the watcher drops the file chunk. Post-fix, the handler
+# self-heals via `phaze.services.live_sentinel.ensure_live_sentinel` instead of crashing.
+
+
+@pytest.mark.asyncio
+async def test_batch_id_absent_self_heals_missing_sentinel(
+    smoke_app_and_router: tuple[AsyncClient, AsyncMock],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-tvdu1: an agent with NO LIVE sentinel gets one created on demand, not a 500."""
+    client, _ = smoke_app_and_router
+    agent, _ = seed_test_agent
+    agent_id = agent.id  # captured before `expire_all()` below -- see phaze-30ssq-style note
+
+    # Precondition: this agent truly has no LIVE sentinel yet.
+    pre_existing = (
+        await session.execute(select(sa_func.count()).select_from(ScanBatch).where(ScanBatch.agent_id == agent_id, ScanBatch.status == "live"))
+    ).scalar_one()
+    assert pre_existing == 0, "test precondition: agent must start with no LIVE sentinel"
+
+    chunk = {"files": [_make_record(path="/test/music/self-heal.mp3")]}
+    r = await client.post("/api/internal/agent/files", json=chunk)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["inserted"] == 1
+    assert body["upserted"] == 1
+
+    await session.commit()
+    session.expire_all()
+
+    live_batches = (
+        (await session.execute(select(ScanBatch).where(ScanBatch.agent_id == agent_id, ScanBatch.status == ScanStatus.LIVE.value))).scalars().all()
+    )
+    assert len(live_batches) == 1, f"expected exactly one self-healed LIVE sentinel, got {len(live_batches)}"
+    assert live_batches[0].scan_path == "<watcher>"
+
+    row = (await session.execute(select(FileRecord).where(FileRecord.original_path == "/test/music/self-heal.mp3"))).scalar_one()
+    assert row.batch_id == live_batches[0].id
+
+
+@pytest.mark.asyncio
+async def test_batch_id_absent_self_heal_logs_warning(
+    smoke_app_and_router: tuple[AsyncClient, AsyncMock],
+    seed_test_agent: tuple[Agent, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """phaze-tvdu1: the self-heal path is observable -- a WARNING, never a silent 500."""
+    client, _ = smoke_app_and_router
+    agent, _ = seed_test_agent
+
+    chunk = {"files": [_make_record(path="/test/music/self-heal-warn.mp3")]}
+    with caplog.at_level(logging.WARNING, logger="phaze.routers.agent_files"):
+        r = await client.post("/api/internal/agent/files", json=chunk)
+    assert r.status_code == 200, r.text
+
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "no LIVE sentinel" in text
+    assert agent.id in text
+
+
+@pytest.mark.asyncio
+async def test_batch_id_absent_second_call_reuses_self_healed_sentinel(
+    smoke_app_and_router: tuple[AsyncClient, AsyncMock],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-tvdu1: the second batch_id-omitted call reuses the sentinel the first call created."""
+    client, _ = smoke_app_and_router
+    agent, _ = seed_test_agent
+    agent_id = agent.id  # captured before `expire_all()` below
+
+    r1 = await client.post("/api/internal/agent/files", json={"files": [_make_record(path="/test/music/first.mp3")]})
+    assert r1.status_code == 200, r1.text
+    r2 = await client.post("/api/internal/agent/files", json={"files": [_make_record(path="/test/music/second.mp3")]})
+    assert r2.status_code == 200, r2.text
+
+    await session.commit()
+    session.expire_all()
+
+    live_batches = (
+        (await session.execute(select(ScanBatch).where(ScanBatch.agent_id == agent_id, ScanBatch.status == ScanStatus.LIVE.value))).scalars().all()
+    )
+    assert len(live_batches) == 1, f"expected the second call to reuse the first-created sentinel, got {len(live_batches)}"
+
+    rows = (
+        (await session.execute(select(FileRecord.batch_id).where(FileRecord.original_path.in_(["/test/music/first.mp3", "/test/music/second.mp3"]))))
+        .scalars()
+        .all()
+    )
+    assert set(rows) == {live_batches[0].id}, "both upserts must bind to the SAME self-healed sentinel"
