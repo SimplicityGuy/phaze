@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
 from sqlalchemy import delete, select
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.discogs_matcher import DiscogsographyClient, match_track_to_discogs
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -28,6 +32,7 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
 
     Uses asyncio.Semaphore to bound concurrent requests per discogs_match_concurrency setting.
     """
+    settings = cast("ControlSettings", get_settings())
     logger.info("discogs match started", tracklist_id=tracklist_id)
 
     # phaze-xdu1: the OLD shape opened ONE transaction that DELETEd every candidate link, then held

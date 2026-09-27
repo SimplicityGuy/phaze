@@ -8,7 +8,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models import *  # noqa: F403
 from phaze.models.base import Base
 
@@ -24,7 +24,7 @@ config = context.config
 # the raw URL to set_main_option, per Alembic's own documented workaround, so a real-world
 # credential doesn't crash `set_main_option` with ValueError('invalid interpolation syntax')
 # before any migration runs (phaze-7oya).
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 #

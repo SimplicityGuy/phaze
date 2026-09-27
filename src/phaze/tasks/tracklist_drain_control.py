@@ -43,12 +43,12 @@ THE TWO HALVES
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
-from phaze.config import settings as cfg
+from phaze.config import get_settings
 from phaze.services.tracklist_drain_arm import (
     clear_stale_in_flight,
     disarm_drain,
@@ -61,6 +61,8 @@ from phaze.tasks.tracklist_drain import tracklist_drain_status
 
 if TYPE_CHECKING:
     from saq import Job
+
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -88,6 +90,7 @@ async def continue_armed_tracklist_drain(ctx: dict[str, Any]) -> None:
     do this tick" -- the next tick, a minute later, re-evaluates from the durable row with no
     state lost.
     """
+    cfg = cast("ControlSettings", get_settings())
     moment = datetime.now(UTC)
 
     async with ctx["async_session"]() as session:
@@ -162,6 +165,7 @@ async def record_drain_slice_completion(ctx: dict[str, Any]) -> None:
     imprecision rather than introducing a new one; a missed cooldown/failure update self-corrects
     on the very next slice.
     """
+    cfg = cast("ControlSettings", get_settings())
     job: Job | None = ctx.get("job")
     if job is None or job.function != "drain_tracklists" or job.status not in TERMINAL_STATUSES:
         return

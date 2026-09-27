@@ -60,7 +60,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models.agent import Agent
 from phaze.services.live_sentinel import ensure_live_sentinel
 
@@ -113,6 +113,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     the watcher's ``/whoami`` response includes a usable filesystem root. The
     operator can edit the row later (or invoke the management CLI) to refine.
     """
+    settings = get_settings()
     if not settings.dev_seed_agent:
         return None
 

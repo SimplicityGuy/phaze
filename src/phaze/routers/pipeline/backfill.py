@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -28,6 +28,8 @@ from phaze.telemetry.pipeline import record_transition
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.config import ControlSettings
 
 
 @router.post("/pipeline/backfill-cloud", response_class=HTMLResponse)
@@ -66,6 +68,7 @@ async def trigger_backfill_cloud(
     selects nothing new (the held files now carry an awaiting ``cloud_job`` row), and short / never-failed
     files are never touched.
     """
+    settings = cast("ControlSettings", get_settings())
     # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud on/off guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the

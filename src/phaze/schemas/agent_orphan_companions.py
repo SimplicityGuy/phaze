@@ -8,7 +8,7 @@ import uuid  # noqa: TC003  # Pydantic resolves response annotations at runtime.
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from phaze.config import settings
+from phaze.config import get_settings
 
 
 CompanionExtension = Literal[".cue", ".m3u", ".m3u8", ".nfo", ".pls", ".txt"]
@@ -41,7 +41,7 @@ class OrphanCompanionChunk(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    diagnostics: list[OrphanCompanionRecord] = Field(min_length=1, max_length=settings.agent_file_chunk_max)
+    diagnostics: list[OrphanCompanionRecord] = Field(min_length=1, max_length=get_settings().agent_file_chunk_max)
 
 
 class OrphanCompanionChunkResponse(BaseModel):

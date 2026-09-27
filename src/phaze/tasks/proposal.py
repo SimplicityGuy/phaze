@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
 from sqlalchemy import select
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
@@ -26,6 +26,7 @@ from phaze.services.proposal import (
 
 
 if TYPE_CHECKING:
+    from phaze.config import ControlSettings
     from phaze.schemas.agent_tasks import CompanionReadItem
 
 
@@ -47,6 +48,7 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     Returns:
         Dict with batch index, count of proposals stored, and status.
     """
+    settings = cast("ControlSettings", get_settings())
     # phaze-6fvu: DO NOT hold a DB connection across the rate-limit backoff and the LLM call.
     # check_rate_limit loops `asyncio.sleep(2.0)` while the shared window is over llm_max_rpm, and
     # generate_batch is a full LLM round-trip (routinely 30-120s). A pipeline drain enqueues one job

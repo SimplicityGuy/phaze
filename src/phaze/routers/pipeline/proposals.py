@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.routers.pipeline._common import _background_tasks, logger, router, templates
 from phaze.services import enqueue_router
@@ -17,6 +17,8 @@ from phaze.services.pipeline import get_proposal_busy_count, get_proposal_pendin
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.config import ControlSettings
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
@@ -64,6 +66,7 @@ async def trigger_proposals(
     :func:`get_proposal_pending_batches`'s docstring), so this server-side gate -- not the SAQ
     key dedup -- is what prevents a mid-drain re-trigger from double-proposing the backlog.
     """
+    settings = cast("ControlSettings", get_settings())
     busy = await get_proposal_busy_count(session)
     if busy > 0:
         return {
@@ -102,6 +105,7 @@ async def trigger_proposals_ui(
     phaze-8qheu: gated on :func:`get_proposal_busy_count` -- see ``trigger_proposals`` (the API
     twin) for why the set-hash dedup key alone cannot make a re-trigger safe.
     """
+    settings = cast("ControlSettings", get_settings())
     busy = await get_proposal_busy_count(session)
     if busy > 0:
         return templates.TemplateResponse(
