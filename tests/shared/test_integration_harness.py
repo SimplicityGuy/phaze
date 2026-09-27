@@ -110,6 +110,6 @@ def test_each_run_labels_unique_postgres_and_redis_containers_and_uses_the_real_
 def test_dedicated_redis_db_zero_cannot_be_shared_between_runs() -> None:
     source = HARNESS.read_text(encoding="utf-8")
 
-    assert '-p "$redis_publish" redis:7-alpine' in source
+    assert '-p "$redis_publish" "$redis_image"' in source
     assert 'PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"' in source
     assert "every run owns a separate Redis container" in source

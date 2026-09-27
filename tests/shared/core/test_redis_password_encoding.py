@@ -11,8 +11,8 @@ RFC-3986-parses the result and percent-DECODES the userinfo:
 - a password containing a ``%XX`` sequence parses cleanly but is silently decoded to
   DIFFERENT bytes (e.g. ``p%41ss`` -> ``pAss``), so every AUTH sends the wrong password.
 
-Meanwhile ``redis-server --requirepass "${REDIS_PASSWORD}"`` and its
-``redis-cli -a "${REDIS_PASSWORD}" ping`` healthcheck both consume the SAME raw value with
+Meanwhile ``valkey-server --requirepass "${REDIS_PASSWORD}"`` and its
+``valkey-cli -a "${REDIS_PASSWORD}" ping`` healthcheck both consume the SAME raw value with
 no URL parsing at all, so redis itself stays green while only the app-server's own clients
 break -- the worst possible failure shape.
 

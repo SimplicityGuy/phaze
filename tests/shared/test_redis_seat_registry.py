@@ -118,7 +118,7 @@ def throwaway_redis() -> Iterator[str]:
     worktrees run this module at the same time.
     """
     container = f"phaze-seatreg-test-{uuid4().hex[:10]}"
-    started = _docker("run", "-d", "--name", container, "redis:7-alpine", "redis-server", "--databases", str(_CAPACITY))
+    started = _docker("run", "-d", "--name", container, "valkey/valkey:9-alpine", "redis-server", "--databases", str(_CAPACITY))
     if started.returncode != 0:
         pytest.skip(f"could not start a throwaway Redis: {started.stderr.strip()}")
     try:

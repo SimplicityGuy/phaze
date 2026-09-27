@@ -105,11 +105,11 @@ def test_redis_hardened() -> None:
         f"redis ports must be IP-prefixed (e.g. ${{REDIS_BIND_IP:-127.0.0.1}}:6379:6379); got {ports!r}"
     )
 
-    # --- healthcheck: redis-cli --no-auth-warning -a <password> ping ---
+    # --- healthcheck: valkey-cli --no-auth-warning -a <password> ping (phaze-8o294) ---
     healthcheck = redis.get("healthcheck", {})
     test_cmd = healthcheck.get("test", [])
     assert isinstance(test_cmd, list), f"redis healthcheck.test must be a list; got {test_cmd!r}"
-    assert "redis-cli" in test_cmd, f"redis healthcheck missing redis-cli: {test_cmd!r}"
+    assert "valkey-cli" in test_cmd, f"redis healthcheck missing valkey-cli: {test_cmd!r}"
     assert "--no-auth-warning" in test_cmd, f"redis healthcheck missing --no-auth-warning: {test_cmd!r}"
     assert "-a" in test_cmd, f"redis healthcheck missing -a flag: {test_cmd!r}"
     assert any("REDIS_PASSWORD" in entry for entry in test_cmd if isinstance(entry, str)), (
