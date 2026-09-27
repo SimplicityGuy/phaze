@@ -457,6 +457,119 @@ async def test_get_recent_scans_partial_excludes_live_batches(
 
 
 @pytest.mark.asyncio
+async def test_recent_scans_row_shows_exact_watcher_added_count(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """phaze-3sgw0: a completed scan of N files plus M watcher-ingested files on the agent's
+    (hidden) LIVE batch shows BOTH figures, and N + M is exactly the sidebar's COUNT(files) --
+    the watcher-ingested files are not lost or unexplained, just not on a visible scan row.
+    """
+    ac, _ = smoke
+    completed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=4,
+        processed_files=4,
+    )
+    live = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add_all([completed, live])
+    await session.flush()
+    session.add_all([_make_batch_file(completed.id, f"scanned{i}") for i in range(4)])
+    session.add_all([_make_batch_file(live.id, f"watcher{i}") for i in range(3)])
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert "4 / 4" in response.text
+    assert "+3 via watcher" in response.text
+    # The LIVE sentinel itself never surfaces as its own row.
+    assert "<watcher>" not in response.text
+
+    # The sidebar Discover count is COUNT(all FileRecord) -- exactly the completed batch's
+    # 4 rows plus the 3 watcher-ingested rows sitting on the (hidden) LIVE batch: 7, not 4.
+    total_files = (await session.execute(select(FileRecord))).scalars().all()
+    assert len(total_files) == 4 + 3
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_row_hides_watcher_hint_when_nothing_watcher_ingested(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """No files on the agent's LIVE batch -> the watcher hint is omitted entirely (not '+0')."""
+    ac, _ = smoke
+    completed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=2,
+        processed_files=2,
+    )
+    session.add(completed)
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert "via watcher" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_watcher_added_exact_after_watcher_reingests_scanned_file(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The completed batch's stored '3 / 3' stays frozen even after the watcher moves one of
+    its files onto the LIVE batch -- but the watcher hint reflects the move exactly (on read),
+    per the bead's second acceptance criterion.
+    """
+    ac, _ = smoke
+    completed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=3,
+        processed_files=3,
+    )
+    live = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add_all([completed, live])
+    await session.flush()
+    files = [_make_batch_file(completed.id, f"scanned{i}") for i in range(3)]
+    session.add_all(files)
+    await session.commit()
+
+    # The watcher re-ingests one already-scanned file, reassigning its batch_id (the same
+    # upsert path production uses -- ON CONFLICT DO UPDATE ... batch_id = excluded.batch_id).
+    files[0].batch_id = live.id
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    # Stored counters are frozen at scan-completion time -- still "3 / 3".
+    assert "3 / 3" in response.text
+    # But exactly one file now sits on the LIVE batch.
+    assert "+1 via watcher" in response.text
+
+
+@pytest.mark.asyncio
 async def test_recent_path_not_shadowed_by_batch_id_route(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
