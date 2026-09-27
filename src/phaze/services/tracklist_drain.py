@@ -357,6 +357,7 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     ================================  ==============================  ==================
     search raised / selectors stale   ``SEARCH_FAILED``               no (transient)
     scorer refused, definitively      ``NOT_FOUND``                   yes (negative TTL)
+    rows came back, all scored low    ``LOW_CONFIDENCE``              no (short hold)
     scorer refused, ambiguously       ``SEARCH_FAILED``               no (transient)
     page rendered, no track list      ``NOT_FOUND``                   yes (negative TTL)
     Turnstile survived the retries    ``BLOCKED``                     no (transient)
@@ -593,7 +594,9 @@ async def persist_lookup(
         now=moment,
     )
 
-    if attempt.is_found or attempt.outcome.is_definitive_negative:
+    # LOW_CONFIDENCE clears too: the search the operator asked for DID run cleanly, and a flag left
+    # behind would show "queued" for a set the cache is holding for a month (phaze-no6sv).
+    if attempt.is_found or attempt.outcome.is_definitive_negative or attempt.outcome.is_inconclusive:
         await clear_flags(session, [member.file_id for member in candidate.unique_set.members])
     return result
 
@@ -834,6 +837,7 @@ class DrainReport:
     attempted: int = 0
     found: int = 0
     not_found: int = 0
+    low_confidence: int = 0
     transient: int = 0
     skipped_cached: int = 0
     """Answered by the cache between the queue snapshot and the attempt -- the re-check's yield,
@@ -854,6 +858,7 @@ class DrainReport:
             "attempted": self.attempted,
             "found": self.found,
             "not_found": self.not_found,
+            "low_confidence": self.low_confidence,
             "transient": self.transient,
             "skipped_cached": self.skipped_cached,
             "stopped_early": self.stopped_early,
@@ -991,5 +996,7 @@ def _tally(report: DrainReport, attempt: LookupAttempt, persisted: PersistResult
         report.found += 1
     elif attempt.outcome.is_definitive_negative:
         report.not_found += 1
+    elif attempt.outcome.is_inconclusive:
+        report.low_confidence += 1
     else:
         report.transient += 1

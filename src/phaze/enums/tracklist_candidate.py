@@ -126,6 +126,14 @@ class LookupOutcome(enum.StrEnum):
     """The detail page rendered but produced zero tracks -- almost always our selectors drifting
     against a site redesign, not an empty tracklist."""
 
+    LOW_CONFIDENCE = "low_confidence"
+    """The search ran cleanly and returned rows, but the best of them scored below the selection
+    threshold (phaze-no6sv). That says the QUERY may be bad -- a polluted derived query returns
+    other artists' sets -- not that the site has nothing, so it is neither a definitive negative
+    nor a transient: re-asking the same query at once would return the same rows. It is held for
+    the short :data:`~phaze.services.tracklist_lookup_cache.LOW_CONFIDENCE_TTL_DAYS`, and a fix to
+    query derivation re-queues it immediately anyway, because the cache key hashes the query text."""
+
     @property
     def is_definitive_negative(self) -> bool:
         """True only for :attr:`NOT_FOUND` -- the sole outcome allowed to suppress re-querying."""
@@ -135,6 +143,11 @@ class LookupOutcome(enum.StrEnum):
     def is_transient(self) -> bool:
         """True when the attempt failed for OUR reasons and must be retried, not remembered."""
         return self in TRANSIENT_OUTCOMES
+
+    @property
+    def is_inconclusive(self) -> bool:
+        """True only for :attr:`LOW_CONFIDENCE` -- a clean search whose rows did not settle anything."""
+        return self is LookupOutcome.LOW_CONFIDENCE
 
 
 TRANSIENT_OUTCOMES: frozenset[LookupOutcome] = frozenset(
@@ -176,6 +189,13 @@ class CacheDecision(enum.StrEnum):
     TRANSIENT_RETRY_READY = "transient_retry_ready"
     """A transient failure whose backoff has elapsed. Query it again."""
 
+    LOW_CONFIDENCE_HOLD = "low_confidence_hold"
+    """The last search returned only low-scoring rows and its short hold has not elapsed. Spend no
+    request YET -- but this is not a negative: the set has said nothing about being absent."""
+
+    LOW_CONFIDENCE_EXPIRED = "low_confidence_expired"
+    """A low-confidence result whose hold has elapsed. Query it again."""
+
     TRANSIENT_EXHAUSTED = "transient_exhausted"
     """Repeated transient failures have hit :data:`TRANSIENT_MAX_ATTEMPTS`. Parked for operator
     attention rather than retried forever -- and pointedly NOT recorded as ``not_found``, because
@@ -192,6 +212,7 @@ _QUERYABLE_DECISIONS: frozenset[CacheDecision] = frozenset(
         CacheDecision.MISS,
         CacheDecision.NEGATIVE_EXPIRED,
         CacheDecision.TRANSIENT_RETRY_READY,
+        CacheDecision.LOW_CONFIDENCE_EXPIRED,
     }
 )
 

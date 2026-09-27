@@ -47,7 +47,7 @@ from phaze.services.tracklist_drain import (
     perform_lookup,
     persist_lookup,
 )
-from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup, record_outcome
+from phaze.services.tracklist_lookup_cache import NEGATIVE_TTL_DAYS, CacheVerdict, lookup, record_outcome
 from phaze.services.tracklist_query import derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistScraper, TracklistSearchResult
@@ -250,14 +250,18 @@ class TestPerformLookupHonesty:
     set from the queue for the negative TTL because of a flaky browser.
     """
 
-    async def test_a_genuinely_absent_set_is_a_definitive_negative(self) -> None:
-        """The `no-such-set` capture returns 30 rows anyway -- there is no empty-page signal."""
+    async def test_a_search_whose_rows_all_score_low_is_low_confidence_not_a_negative(self) -> None:
+        """The `no-such-set` capture returns 30 rows anyway -- there is no empty-page signal.
+
+        phaze-no6sv: that same shape is what a POLLUTED query produces, so it is held briefly as
+        LOW_CONFIDENCE rather than cached as the 180-day definitive negative.
+        """
         search = FakeSearch("no-such-set")
         renderer = FakeRenderer()
         attempt = await perform_lookup(candidate_for(NO_MATCH_FILENAME), search=search, renderer=renderer)
 
-        assert attempt.outcome is LookupOutcome.NOT_FOUND
-        assert attempt.outcome.is_definitive_negative
+        assert attempt.outcome is LookupOutcome.LOW_CONFIDENCE
+        assert not attempt.outcome.is_definitive_negative
         assert renderer.urls == [], "nothing may be rendered when no candidate clears the bar"
 
     async def test_an_ambiguous_search_is_transient_not_a_negative(self) -> None:
@@ -358,9 +362,10 @@ class TestPerformLookupHonesty:
             LookupOutcome.RENDER_FAILED,
             LookupOutcome.BLOCKED,
             LookupOutcome.PARSE_FAILED,
+            LookupOutcome.LOW_CONFIDENCE,
         }
         assert producible == set(LookupOutcome)
-        assert producible - {LookupOutcome.FOUND, LookupOutcome.NOT_FOUND} == TRANSIENT_OUTCOMES
+        assert producible - {LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.LOW_CONFIDENCE} == TRANSIENT_OUTCOMES
 
 
 # Priority
@@ -473,10 +478,40 @@ class TestPersistence:
         assert verdict.decision is CacheDecision.BACKOFF, "a block earns a backoff, never the negative TTL"
         assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
 
-    async def test_a_definitive_negative_is_cached_and_suppresses_the_next_pass(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    async def test_a_low_confidence_search_is_held_not_suppressed_as_a_negative(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=NO_MATCH_FILENAME)
         candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
         attempt = await perform_lookup(candidate, search=FakeSearch("no-such-set"), renderer=FakeRenderer())
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.decision is CacheDecision.LOW_CONFIDENCE_HOLD
+        assert verdict.entry is not None
+        assert verdict.entry.expires_at is not None
+        assert verdict.entry.expires_at < NOW + timedelta(days=NEGATIVE_TTL_DAYS)
+
+    async def test_a_low_confidence_search_clears_the_operator_flag(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """The search the operator asked for ran cleanly; a lingering flag would claim it is still queued."""
+        from phaze.services.tracklist_priority import flag_file_for_lookup, load_flagged_file_ids
+
+        file = await make_file(original_filename=NO_MATCH_FILENAME)
+        await flag_file_for_lookup(session, file.id, now=NOW)
+        candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
+        attempt = await perform_lookup(candidate, search=FakeSearch("no-such-set"), renderer=FakeRenderer())
+        assert attempt.outcome is LookupOutcome.LOW_CONFIDENCE
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        assert file.id not in await load_flagged_file_ids(session)
+
+    async def test_a_definitive_negative_is_cached_and_suppresses_the_next_pass(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        file = await make_file(original_filename=NO_MATCH_FILENAME)
+        candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
+        attempt = await perform_lookup(candidate, search=FakeSearch(rows=[]), renderer=FakeRenderer())
+        assert attempt.outcome is LookupOutcome.NOT_FOUND
 
         await persist_lookup(session, candidate, attempt, now=NOW)
         await session.flush()
@@ -876,9 +911,16 @@ class TestTally:
         from phaze.services.tracklist_drain import PersistResult, _tally
 
         report = DrainReport()
-        for outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.BLOCKED, LookupOutcome.PARSE_FAILED):
+        for outcome in (
+            LookupOutcome.FOUND,
+            LookupOutcome.NOT_FOUND,
+            LookupOutcome.BLOCKED,
+            LookupOutcome.PARSE_FAILED,
+            LookupOutcome.LOW_CONFIDENCE,
+        ):
             _tally(report, LookupAttempt(set_key="k", query_text="q", outcome=outcome, host_requests=2), PersistResult())
 
-        assert (report.found, report.not_found, report.transient) == (1, 1, 2)
-        assert report.attempted == report.found + report.not_found + report.transient
-        assert report.host_requests == 8
+        assert (report.found, report.not_found, report.transient, report.low_confidence) == (1, 1, 2, 1)
+        assert report.attempted == report.found + report.not_found + report.transient + report.low_confidence
+        assert report.host_requests == 10
+        assert report.as_dict()["low_confidence"] == 1

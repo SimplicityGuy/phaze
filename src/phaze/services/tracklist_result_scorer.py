@@ -54,11 +54,16 @@ rather than at a cached negative.
 ## Feeding the LookupOutcome vocabulary
 
 Rejections map onto ``enums.tracklist_candidate.LookupOutcome`` rather than a parallel vocabulary,
-and the choice between its two relevant members is load-bearing:
+and the choice between its three relevant members is load-bearing:
 
 * :attr:`~phaze.enums.tracklist_candidate.LookupOutcome.NOT_FOUND` -- the search ran cleanly, we
   read every row, and none of them is this set. A statement about the WORLD, and the only
   cacheable negative.
+* :attr:`~phaze.enums.tracklist_candidate.LookupOutcome.LOW_CONFIDENCE` -- the search returned
+  rows, but even the best scored under :data:`SELECTION_THRESHOLD` (phaze-no6sv). That is the
+  signature of a bad QUERY as much as of an absent set, so it is held briefly rather than cached as
+  a negative. ``NOT_FOUND`` is reserved for zero rows, or for a best row that cleared the bar and
+  was disqualified anyway.
 * :attr:`~phaze.enums.tracklist_candidate.LookupOutcome.SEARCH_FAILED` -- we could not TELL. Used
   when two candidates cleared the bar too close together, or when the file's own derived signal
   was too thin to score anything against. A statement about US, so it stays transient and is never
@@ -398,9 +403,14 @@ def select_result(derived: DerivedQuery, results: Sequence[TracklistSearchResult
     selectable = [candidate for candidate in ranked if candidate.is_selectable]
     if not selectable:
         best = ranked[0]
+        # phaze-no6sv: rows came back, but even the best one scored under the bar. That is what a
+        # polluted query looks like (other artists' sets matching stray id or month tokens), not
+        # evidence the site lacks this set -- so it must not earn the definitive negative TTL. A
+        # best row that DID clear the bar and was disqualified (a confident match to a different
+        # year's edition) is still a statement about the world, and stays NOT_FOUND.
         return ResultSelection(
             selected=None,
-            rejection=LookupOutcome.NOT_FOUND,
+            rejection=LookupOutcome.LOW_CONFIDENCE if best.confidence < SELECTION_THRESHOLD else LookupOutcome.NOT_FOUND,
             reason=(
                 f"no candidate reached the selection threshold "
                 f"(best {best.result.external_id} scored {best.confidence} < {SELECTION_THRESHOLD}"

@@ -18,6 +18,7 @@ from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecisio
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 from phaze.services.tracklist_lookup_cache import (
     IN_CLAUSE_CHUNK_SIZE,
+    LOW_CONFIDENCE_TTL_DAYS,
     NEGATIVE_TTL_DAYS,
     TRANSIENT_BACKOFF_BASE_MINUTES,
     TRANSIENT_BACKOFF_MAX_HOURS,
@@ -46,12 +47,12 @@ class TestOutcomeTaxonomy:
         definitive = [o for o in LookupOutcome if o.is_definitive_negative]
         assert definitive == [LookupOutcome.NOT_FOUND]
 
-    def test_every_non_found_outcome_is_either_definitive_or_transient(self) -> None:
-        """No outcome may fall between the two -- an unclassified one would get silent treatment."""
+    def test_every_non_found_outcome_is_exactly_one_of_definitive_transient_or_inconclusive(self) -> None:
+        """No outcome may fall between the classes -- an unclassified one would get silent treatment."""
         for outcome in LookupOutcome:
             if outcome is LookupOutcome.FOUND:
                 continue
-            assert outcome.is_definitive_negative != outcome.is_transient, outcome
+            assert [outcome.is_definitive_negative, outcome.is_transient, outcome.is_inconclusive].count(True) == 1, outcome
 
     def test_queryable_decisions(self) -> None:
         assert CacheDecision.MISS.should_query
@@ -61,6 +62,8 @@ class TestOutcomeTaxonomy:
         assert not CacheDecision.SUPPRESSED_NEGATIVE.should_query
         assert not CacheDecision.BACKOFF.should_query
         assert not CacheDecision.TRANSIENT_EXHAUSTED.should_query
+        assert not CacheDecision.LOW_CONFIDENCE_HOLD.should_query
+        assert CacheDecision.LOW_CONFIDENCE_EXPIRED.should_query
 
 
 class TestExpiryPolicy:
@@ -69,6 +72,12 @@ class TestExpiryPolicy:
 
     def test_negative_gets_the_ttl(self) -> None:
         assert compute_expires_at(LookupOutcome.NOT_FOUND, 1, NOW) == NOW + timedelta(days=NEGATIVE_TTL_DAYS)
+
+    def test_low_confidence_is_held_for_less_than_the_negative_ttl(self) -> None:
+        """phaze-no6sv: a low best score is not a claim about the site, so it must not buy 180 days."""
+        expires = compute_expires_at(LookupOutcome.LOW_CONFIDENCE, 1, NOW)
+        assert expires == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+        assert expires < NOW + timedelta(days=NEGATIVE_TTL_DAYS)
 
     def test_transient_backoff_doubles_and_is_capped(self) -> None:
         assert _backoff_delay(1) == timedelta(minutes=TRANSIENT_BACKOFF_BASE_MINUTES)
@@ -194,6 +203,29 @@ class TestRecordAndLookup:
         first_of_new_streak = await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.SEARCH_FAILED, now=NOW)
         assert first_of_new_streak.attempts == 1, "the first transient failure of a NEW streak must not inherit the old count"
         assert first_of_new_streak.expires_at == NOW + _backoff_delay(1), "backoff must be the 30-min base, not inflated by the old streak"
+
+    async def test_low_confidence_is_held_then_re_queried_and_never_a_negative(self, session: AsyncSession) -> None:
+        """phaze-no6sv: rows came back but none scored high enough -- retryable, not DEFINITIVE."""
+        entry = await record_outcome(session, set_key="k-low", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, now=NOW)
+        assert entry.expires_at == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+
+        inside = await lookup(session, "k-low", now=NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS - 1))
+        assert inside.decision is CacheDecision.LOW_CONFIDENCE_HOLD
+        assert not inside.should_query
+
+        after = await lookup(session, "k-low", now=NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS + 1))
+        assert after.decision is CacheDecision.LOW_CONFIDENCE_EXPIRED
+        assert after.should_query
+
+    async def test_low_confidence_on_the_update_path_gets_its_own_ttl_and_resets_the_streak(self, session: AsyncSession) -> None:
+        for _ in range(3):
+            await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        low = await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.LOW_CONFIDENCE, now=NOW)
+        assert low.attempts == 1
+        assert low.expires_at == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+
+        next_failure = await record_outcome(session, set_key="k-low-upd", query_text="q", outcome=LookupOutcome.SEARCH_FAILED, now=NOW)
+        assert next_failure.attempts == 1, "a clean low-confidence search ends the transient streak"
 
     async def test_attempts_continues_incrementing_within_one_transient_streak(self, session: AsyncSession) -> None:
         """The reset must be selective -- consecutive transient failures with no definitive

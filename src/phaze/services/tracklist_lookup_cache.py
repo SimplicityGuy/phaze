@@ -40,6 +40,17 @@ the untouched tail. Six months is roughly "once per corpus pass" at the projecte
 which is the natural cadence -- the re-check costs a request only after every never-asked set has
 already had its turn."""
 
+LOW_CONFIDENCE_TTL_DAYS: int = 30
+"""How long a search that returned only low-scoring rows is held before being re-asked (phaze-no6sv).
+
+Far shorter than :data:`NEGATIVE_TTL_DAYS` because it is not a claim about the site: a best score
+under the selection threshold usually means the QUERY was polluted, not that the set is absent.
+Not a transient backoff either: re-asking the same text minutes later returns the same rows and
+burns a request for nothing. The main recovery path does not wait for this at all -- a fix to
+query derivation changes the query text, which changes the cache key, which is a fresh ``MISS``.
+A month is the implementer's choice, not a measured figure: roughly one re-ask per set per month
+for the ones whose query does NOT change."""
+
 TRANSIENT_BACKOFF_BASE_MINUTES: int = 30
 """First retry delay after a transient failure. Doubles per attempt, capped below.
 
@@ -98,7 +109,8 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
     """Map a stored row to a decision. THE honesty boundary -- read this before changing it.
 
     ``FOUND`` never expires. ``NOT_FOUND`` -- and only ``NOT_FOUND`` -- suppresses a re-query for
-    the negative TTL. Everything else is a transient failure: it earns a short backoff, then goes
+    the negative TTL. ``LOW_CONFIDENCE`` is held for its own much shorter TTL and is never reported
+    as a negative (phaze-no6sv). Everything else is a transient failure: it earns a short backoff, then goes
     straight back into the queue, and after :data:`TRANSIENT_MAX_ATTEMPTS` it is PARKED for an
     operator rather than being reinterpreted as a negative. An unrecognized outcome string (a row
     written by a newer version, or hand-edited) falls through to ``MISS``: re-querying costs one
@@ -112,6 +124,11 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
         if entry.expires_at is not None and _aware(entry.expires_at) <= now:
             return CacheDecision.NEGATIVE_EXPIRED
         return CacheDecision.SUPPRESSED_NEGATIVE
+
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        if entry.expires_at is not None and _aware(entry.expires_at) <= now:
+            return CacheDecision.LOW_CONFIDENCE_EXPIRED
+        return CacheDecision.LOW_CONFIDENCE_HOLD
 
     if outcome is not None and outcome.is_transient:
         if entry.attempts >= TRANSIENT_MAX_ATTEMPTS:
@@ -159,6 +176,8 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return now + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return now + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
     return now + _backoff_delay(attempts)
 
 
@@ -220,11 +239,15 @@ async def lookup_by_query_text(session: AsyncSession, query_text: str, *, now: d
     return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
 
 
-_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset({LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value})
-"""The stored ``outcome`` values that end a transient streak: everything NOT in
-``TRANSIENT_OUTCOMES``. Spelled as a literal set (mirroring that frozenset) because it needs to
-appear inside a SQL ``case()``/``in_()`` expression, which the enum's own ``is_transient`` -- a
-Python-only computed property -- cannot generate."""
+_NON_TRANSIENT_OUTCOMES: frozenset[LookupOutcome] = frozenset({LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.LOW_CONFIDENCE})
+"""Outcomes of a search that ran cleanly: each ends a transient streak (see
+:func:`_next_attempts_on_conflict`). ``LOW_CONFIDENCE`` belongs here -- the site answered, just not
+usefully -- so a later transient failure starts a fresh streak rather than inheriting an old one."""
+
+_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset(outcome.value for outcome in _NON_TRANSIENT_OUTCOMES)
+"""The stored ``outcome`` strings of :data:`_NON_TRANSIENT_OUTCOMES`. Spelled as plain values
+because they need to appear inside a SQL ``case()``/``in_()`` expression, which the enum's own
+``is_transient`` -- a Python-only computed property -- cannot generate."""
 
 
 def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
@@ -250,7 +273,7 @@ def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
     a Python-read value -- see :func:`record_outcome`'s docstring for why that matters under
     concurrent writers).
     """
-    if outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND):
+    if outcome in _NON_TRANSIENT_OUTCOMES:
         return 1
     return case(
         (TracklistLookupCache.outcome.in_(_NON_TRANSIENT_OUTCOME_VALUES), 1),
@@ -349,6 +372,8 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return moment + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return moment + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
     exponent = _next_attempts_on_conflict(outcome) - 1
     backoff_seconds = func.least(
         float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, exponent),
