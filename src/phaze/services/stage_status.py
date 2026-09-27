@@ -68,7 +68,9 @@ the boolean every reader depends on, which couples the hot poll to broker livene
 false ``not_started`` on a broker loss. These clauses instead sit OUTSIDE the ``Stage`` dispatch
 ladder (like :func:`dedup_resolved_clause` / :func:`awaiting_candidate_clause`, so the DERIV-04
 equivalence test never picks them up), are consumed ONLY by reporting readers that are already
-SAVEPOINT-isolated and degrade to zero, and are read by NO eligibility or recovery path. On an
+SAVEPOINT-isolated and degrade to zero -- plus ONE capacity reader,
+:meth:`~phaze.services.backends.local.LocalBackend.in_flight_count` (phaze-1kowg), which degrades to
+its ledger-only count instead -- and are read by NO eligibility or recovery path. On an
 unreadable ``saq_jobs`` the orphan split degrades to 0 and every count reverts to exactly today's
 ledger-only behavior. A broker truncate therefore still leaves those files reading ORPHANED --
 never ``not_started`` -- which is the guarantee D-01's durability rationale actually protects.
@@ -481,7 +483,9 @@ def live_job_clause(stage: Stage) -> ColumnElement[bool]:
 
     READ-ONLY, and deliberately kept OUT of the ``Stage`` dispatch ladder -- it must never reach
     :func:`stage_status_case` or :func:`eligible_clause` (D-01a: the rejected alternative). Callers are
-    reporting readers that already own a SAVEPOINT and a zero degrade.
+    reporting readers that already own a SAVEPOINT and a zero degrade, plus the local lane's capacity
+    read (``LocalBackend.in_flight_count``, phaze-1kowg), which owns a SAVEPOINT and degrades to its
+    ledger-only count -- the conservative direction for admission.
     """
     func_name = STAGE_TO_FUNCTION.get(stage.value)
     if func_name is None:
