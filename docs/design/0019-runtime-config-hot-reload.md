@@ -24,8 +24,8 @@ multi-hour analyses. homelab additionally force-recreates `phaze-api`/`phaze-wor
 take effect for NEW work, without a restart and without dropping in-flight jobs. A key that cannot
 be changed live is reported as restart-only rather than silently ignored.
 
-This ADR records the architecture and the operator decisions behind it. It does not itself
-implement anything — the child beads listed in §16 do that.
+This ADR records the architecture, decided piece by piece below with its own citations, and does
+not itself implement anything — the child beads listed in §16 do that.
 
 ## 2. Decision, in one paragraph
 
@@ -183,7 +183,7 @@ repo. This is stated here as a **new authorization-boundary decision**, distinct
 *catalog* mutation — a filename, destination, or tag change to a discovered media file — and says
 nothing about administrative reconfiguration of the running system itself. The two boundaries
 protect different things (catalog content vs. process configuration) and this decision does not
-narrow, extend, or reinterpret ADR-0008 in either direction.
+narrow, extend, or reinterpret ADR-0008 (changes review approval boundary) in either direction.
 
 **Compensating control:** every reload attempt is audit-logged regardless of trigger (§6) —
 source, actor where the trigger is the admin API, every changed key's old and new value, and the
