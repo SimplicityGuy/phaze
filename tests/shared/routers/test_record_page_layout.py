@@ -453,6 +453,31 @@ async def test_the_metadata_card_renders_every_non_null_tag_field_on_both_presen
         "Duration": "2:05",
     }
 
+    # phaze-tuy9m follow-up (operator report 2026-09-27, verbatim: "where can i see the metadata?
+    # it should be presented in this view"): the tag values must be in the VISIBLE markup, not
+    # hidden behind a closed <details> a click is needed to open.
+    card = soup.select_one("[data-metadata-card]")
+    assert card is not None
+    assert card.name != "details", "the card itself must not be a collapsible fold"
+    assert card.find_parent("details") is None, "no ancestor fold hides the card from initial render"
+
+
+@pytest.mark.asyncio
+async def test_the_metadata_card_is_not_folded_even_with_no_tag_data(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """The visibility requirement holds regardless of state -- missing/failed/empty all render open."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.name == "section"
+    assert card.find_parent("details") is None
+    assert "No metadata extracted yet." in card.get_text(" ", strip=True)
+
 
 @pytest.mark.asyncio
 async def test_raw_tags_render_in_a_collapsed_details_section(  # type: ignore[no-untyped-def]
@@ -460,7 +485,8 @@ async def test_raw_tags_render_in_a_collapsed_details_section(  # type: ignore[n
     session: AsyncSession,
     seed_file_with_windows,
 ) -> None:
-    """Acceptance: raw tags are folded, not dumped open beside the formatted fields."""
+    """Acceptance: raw tags are folded, not dumped open beside the formatted fields -- even though
+    the card AROUND them (phaze-tuy9m follow-up) renders open, this inner blob stays a fold."""
     file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
     session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist="Artist", raw_tags={"TPE1": "Artist"}))
     await session.commit()
@@ -469,7 +495,7 @@ async def test_raw_tags_render_in_a_collapsed_details_section(  # type: ignore[n
     raw = page.select_one("[data-metadata-raw-tags]")
 
     assert raw is not None
-    assert raw.name == "details", "raw tags fold like history and metadata & identity"
+    assert raw.name == "details", "raw tags fold on their own, unlike the card around them"
     assert raw.get("open") is None, "collapsed by default"
     pre = raw.select_one("pre")
     assert pre is not None
