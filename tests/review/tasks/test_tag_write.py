@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import struct
 from typing import TYPE_CHECKING, Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -24,6 +25,7 @@ import pytest
 
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.tasks.tag_write import write_file_tags
+from tests._media_path_fakes import byte_exact_exists
 
 
 if TYPE_CHECKING:
@@ -99,6 +101,42 @@ class TestWriteFileTagsTask:
         assert called_log_id == log_id
         assert payload.status == TagWriteStatus.COMPLETED
         assert payload.error_message is None
+
+    @pytest.mark.asyncio
+    async def test_resolves_nfd_on_disk_file_via_stored_nfc_current_path(self, tmp_path: Path) -> None:
+        """phaze-9pg11: ``file_path`` (``FileRecord.current_path``) is stored NFC-normalized (the
+        identity/dedup key), but the real directory entry can be NFD-decomposed. The write must
+        land on the ACTUAL on-disk file, not the never-matching stored path.
+
+        ``phaze.services.media_path_resolve.Path.exists`` is reimplemented as a byte-exact (Linux
+        ext4-style) comparison via ``tests._media_path_fakes.byte_exact_exists``: macOS's own
+        filesystems (HFS+/APFS) are Unicode-normalization-INSENSITIVE at the syscall level, so a
+        dev host running this suite would otherwise treat the NFC-reported path as already
+        existing WITHOUT the resolver doing anything -- exactly the false-negative Linux (this
+        repo's byte-exact target platform) never gets to enjoy. `byte_exact_exists` pins the test
+        to that real invariant (including for the resolver's own longest-existing-ancestor walk,
+        which needs `tmp_path` itself to still read as "existing") and still exercises the real
+        listdir-and-match fallback logic.
+        """
+        nfd_name = unicodedata.normalize("NFD", "Hör.mp3")
+        nfc_name = unicodedata.normalize("NFC", "Hör.mp3")
+        assert nfd_name != nfc_name, "fixture must actually exercise two distinct byte forms"
+
+        on_disk = _make_mp3(tmp_path / nfd_name)
+        stored_nfc_path = str(tmp_path / nfc_name)
+
+        ctx, api = _ctx()
+        with (
+            _patch_scan_roots([str(tmp_path)]),
+            patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists),
+        ):
+            result = await write_file_tags(ctx, **_kwargs(stored_nfc_path, {"artist": "New Artist"}))
+
+        assert result["status"] == TagWriteStatus.COMPLETED
+        assert MP3(str(on_disk)).tags["TPE1"].text == ["New Artist"]
+        api.patch_tag_write.assert_awaited_once()
+        _called_log_id, payload = api.patch_tag_write.await_args.args
+        assert payload.status == TagWriteStatus.COMPLETED
 
     @pytest.mark.asyncio
     async def test_reports_the_before_tags_snapshot(self, mp3_file: Path) -> None:

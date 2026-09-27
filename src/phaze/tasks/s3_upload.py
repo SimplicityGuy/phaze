@@ -12,7 +12,8 @@ integrity gate.
 This module MUST NOT import the app ORM/async DB engine NOR the S3 client SDK -- the import
 boundary is enforced by tests/shared/core/test_task_split.py (D-25 + KSTAGE-02 boundary). It carries ONLY
 stdlib (asyncio/pathlib), phaze.config (AgentSettings narrowing), phaze.schemas.agent_s3, httpx,
-and references PhazeAgentClient via ctx["api_client"] at runtime.
+phaze.services.media_path_resolve (stdlib-only NFC/NFD fallback, phaze-9pg11), and
+references PhazeAgentClient via ctx["api_client"] at runtime.
 
 Transport invariants (mirrors push.py D-06/D-07 timeout layering):
 - parts are streamed one at a time (read one ``part_size_bytes`` chunk, PUT it, release it) so peak
@@ -36,6 +37,7 @@ import httpx
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_s3 import UploadedPart, UploadFileS3Payload
+from phaze.services.media_path_resolve import resolve_media_path
 
 
 if TYPE_CHECKING:
@@ -121,7 +123,10 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
     Reads one ``part_size_bytes`` chunk at a time so peak memory stays bounded to a single part.
     A missing source is a TERMINAL RuntimeError; a non-2xx part PUT is a retryable RuntimeError.
     """
-    src = Path(payload.original_path)
+    # phaze-9pg11: `original_path` is stored NFC-normalized (the identity/dedup key); resolve it
+    # against the real on-disk entry before opening -- an NFD-named file's stored path otherwise
+    # never matches its own directory entry (permanent "missing source" TERMINAL error below).
+    src = Path(await asyncio.to_thread(resolve_media_path, payload.original_path))
     try:
         # phaze-2yjf: open() off-loop too, not just the reads. open() against the media mount
         # (typically NFS/SMB) issues lookup/open RPCs (plus any attribute revalidation) and can
