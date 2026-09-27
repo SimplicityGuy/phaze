@@ -53,11 +53,10 @@ def _set_backends(monkeypatch: pytest.MonkeyPatch, backends: list[Any]) -> Contr
 
     ``phaze.services.reanalysis_backfill`` reads settings via ``get_settings()`` (matching
     ``services/backends.py``'s own established idiom, ``cast("ControlSettings", get_settings())``),
-    NOT via the ``phaze.config.settings`` module-level singleton ``routers/pipeline.py`` uses --
-    the two are DIFFERENT objects (``get_settings`` is a separate ``@lru_cache``d constructor, and
-    ``tests/conftest.py`` clears that cache before every test so each test gets its own fresh
-    instance). Patching the module singleton (the ``tests/shared/routers/test_pipeline.py``
-    precedent for the router-level duration tests) would silently no-op here.
+    the same idiom every production module now uses since phaze-mvq8z.2 removed the separate
+    module-level ``phaze.config.settings`` singleton that used to diverge from it.
+    ``tests/conftest.py`` clears the ``get_settings`` cache before every test, so each test gets
+    its own fresh instance to patch.
     """
     settings = cast("ControlSettings", get_settings())
     monkeypatch.setattr(settings, "backends", backends)

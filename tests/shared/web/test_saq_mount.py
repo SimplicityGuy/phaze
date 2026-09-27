@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from saq.queue.postgres import PostgresQueue
 import saq.web.starlette as saq_starlette
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.web.saq_mount import build_saq_app
 from tests._queue_fakes import FakeQueue
 
@@ -77,7 +77,7 @@ def test_api_queues_reuses_passed_instances_no_pool() -> None:
 
 def test_enable_saq_ui_flag_defaults_true() -> None:
     """Wave 2 gates the mount on this default-on flag."""
-    assert settings.enable_saq_ui is True
+    assert get_settings().enable_saq_ui is True
 
 
 def test_saq_web_single_call_contract() -> None:

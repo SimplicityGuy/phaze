@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from phaze.config import get_settings
 from tests.shared.routers.pipeline._shared import (
     _KUEUE_BACKEND,
     _LOCAL_BACKEND,
@@ -34,7 +35,6 @@ from tests.shared.routers.pipeline._shared import (
     pytest,
     seed_active_agent,
     select,
-    settings,
     text,
     timedelta,
     update,
@@ -64,7 +64,7 @@ async def test_backfill_candidate_query_requires_prior_ledger_row(session: Async
 
     (ledgered_long,) = await _persist_failed_with_duration(session, [_LONG])  # has process_file ledger row
     (never_scheduled_long,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
-    threshold = settings.cloud_route_threshold_sec
+    threshold = get_settings().cloud_route_threshold_sec
 
     count = await count_backfill_candidates(session, threshold)
     candidates = await get_backfill_candidates(session, threshold)
@@ -81,7 +81,7 @@ async def test_backfill_candidate_query_excludes_short_even_with_ledger(session:
     from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
 
     await _persist_failed_with_duration(session, [_SHORT])  # short, WITH ledger row
-    threshold = settings.cloud_route_threshold_sec
+    threshold = get_settings().cloud_route_threshold_sec
 
     assert await count_backfill_candidates(session, threshold) == 0
     assert await get_backfill_candidates(session, threshold) == []
@@ -300,9 +300,7 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. The explicit
     early-return guard prevents any state mutation when the registry holds no cloud backend.
     """
-    from phaze.config import settings
-
-    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_LOCAL_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -371,7 +369,7 @@ async def test_backfill_kueue_clears_marker_and_deletes_ledger_row(
     domain-completed and un-drainable; 83-06 clears ``failed_at`` and deletes the orphaned ledger row on
     the kueue branch too, so the held file is a clean drainable candidate the awaiting cloud_job registers.
     """
-    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_KUEUE_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # k8s has no compute agent -> held
     wire_fakes(client)
@@ -494,7 +492,7 @@ async def test_backfill_cas_delete_removes_every_candidates_ledger_row(client: A
 @pytest.mark.asyncio
 async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """local fork: the cloud-off gate short-circuits -- no file is touched (marker + ledger row untouched)."""
-    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_LOCAL_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
@@ -550,7 +548,7 @@ async def test_backfill_kueue_held_file_is_drainable(client: AsyncClient, sessio
     held file was still domain-completed and excluded by ``awaiting_candidate_clause``. OPTION A clears
     ``failed_at`` on BOTH cloud branches, so the kueue-held file also becomes a clean drainable candidate.
     """
-    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_KUEUE_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
