@@ -78,7 +78,7 @@ The repo ships three deployment compose files plus a dev overlay:
 | `api` | build `Dockerfile` | `uv run python -m phaze.entrypoint` | `${API_PORT:-8000}:8000` | FastAPI + admin UI behind TLS. Mounts `${CA_PATH:-./certs}:/certs:rw` for the cert bootstrap. |
 | `worker` | build `Dockerfile` | `uv run saq phaze.tasks.controller.settings` | — | Control-role SAQ worker (`PHAZE_ROLE=control`). Fileless; no volume mounts. |
 | `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7). `shm_size: "256m"` (phaze-knwk) — Docker's 64 MB `/dev/shm` default starves Postgres's parallel dynamic-shared-memory allocations, which surfaces as failed parallel queries and index builds rather than as an obvious out-of-memory; `justfile:21` mirrors the same value for the test container. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
-| `redis` | `redis:8-alpine` | `redis-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
+| `redis` | `valkey/valkey:9-alpine` | `valkey-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
 
 `api` and `worker` are built from the same `Dockerfile` and differ only by their `command`: `api` runs the cert-bootstrap entrypoint then uvicorn; `worker` runs the controller SAQ worker with `PHAZE_ROLE=control`.
 
@@ -98,6 +98,29 @@ was previously hardcoded in **10** places — four of them `echo` strings, so a 
 happily *print* the old tag while *running* the new one. That was consolidated to these three
 sites plus the guard test, not to a single source of truth, because Compose and GitHub Actions
 cannot read a `justfile` variable.
+
+#### The `redis` service runs Valkey
+
+The `redis` service runs `valkey/valkey:9-alpine` (bead `phaze-8o294`) — the same image as the
+local test harness (`test_redis_image` in the `justfile`), both CI service containers, and the
+real-server test fixtures; `tests/agents/deployment/test_redis_image_pin.py` fails the build if any
+of them drift. The service keeps its name, port and `REDIS_PASSWORD`, and the app keeps redis-py, so
+nothing that connects to it changes.
+
+**Cutting an existing deployment over from `redis:8-alpine`.** The service holds only TTL'd cache,
+counter and progress state, so there is no data to migrate — **except** in-flight execution-batch
+state (`exec:*`, `execdispatch:active`). Replacing the container mid-batch drops the dispatch
+sentinel and the batch's progress hash, so cut over only with **no execution batch running**:
+
+```bash
+# Before: `(nil)` (or empty output without a TTY) means no dispatch holds the sentinel.
+docker compose exec redis redis-cli --no-auth-warning -a "$REDIS_PASSWORD" GET execdispatch:active
+docker compose pull redis && docker compose up -d redis
+# After: the healthcheck only proves the server is up -- valkey-cli, like redis-cli, exits 0 on a
+# NOAUTH reply -- so check authentication from the app's side too.
+docker compose ps redis
+docker compose logs --since 5m api worker | grep -c NOAUTH   # expect 0
+```
 
 ### File-server services (`docker-compose.agent.yml`)
 
@@ -547,7 +570,7 @@ Production-critical variables:
 |----------|------|----------------|
 | `POSTGRES_PASSWORD` | app-server | `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7); there is no weak silent default. Use a strong unique value and keep `DATABASE_URL` / `PHAZE_QUEUE_URL` in sync with it. |
 | `POSTGRES_BIND_IP` | app-server | Interface the published `:5432` binds to. Must be the app-server's private LAN IP so agents can open their `PHAZE_QUEUE_URL` psycopg3 pool to the broker — at the `127.0.0.1` default they cannot reach it. Never `0.0.0.0`, never a public IP. Mirrors `REDIS_BIND_IP`. |
-| `REDIS_PASSWORD` | app-server | `redis-server --requirepass`; compose parse fails if unset. Use a unique high-entropy value (>= 32 chars). |
+| `REDIS_PASSWORD` | app-server | `valkey-server --requirepass`; compose parse fails if unset. Use a unique high-entropy value (>= 32 chars). |
 | `REDIS_BIND_IP` | app-server | Must be the app-server's private LAN IP so agents on other hosts can reach Redis. Never `0.0.0.0`, never a public IP. |
 | `PHAZE_QUEUE_URL` | app-server + file-server | The SAQ Postgres broker DSN (**raw libpq** `postgresql://…`, NOT `+asyncpg`). On agents it points at the app-server Postgres LAN IP:5432 — open that firewall edge (relaxes D-25). Carries DB credentials; use the `_FILE` secret form. Keep the per-queue pool budget under Postgres `max_connections`. |
 | `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |

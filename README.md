@@ -88,7 +88,7 @@ Phaze separates decisions from file custody.
 flowchart LR
     UI[FastAPI + HTMX console] --> PG[(PostgreSQL 18)]
     CW[Controller SAQ worker] --> PG
-    UI --> R[(Redis 8)]
+    UI --> R[(Valkey 9)]
     CW --> R
 
     subgraph FS[File-server agent]
