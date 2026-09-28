@@ -18,13 +18,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from phaze.config import get_settings
 import phaze.database as db
 
 
 @pytest.mark.asyncio
 async def test_run_migrations_invokes_alembic_upgrade_head(monkeypatch: pytest.MonkeyPatch) -> None:
     """``run_migrations`` must call alembic's upgrade(...'head') exactly once."""
-    monkeypatch.setattr(db.settings, "auto_migrate", True)
+    monkeypatch.setattr(get_settings(), "auto_migrate", True)
 
     upgrade_calls: list[tuple[object, str]] = []
 
@@ -48,7 +49,7 @@ async def test_run_migrations_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> 
     here is that calling our wrapper twice does not raise and produces two
     independent upgrade invocations.
     """
-    monkeypatch.setattr(db.settings, "auto_migrate", True)
+    monkeypatch.setattr(get_settings(), "auto_migrate", True)
 
     upgrade_calls: list[tuple[object, str]] = []
 
@@ -76,8 +77,8 @@ async def test_run_migrations_escapes_percent_in_database_url(monkeypatch: pytes
     itself raises ``ValueError('invalid interpolation syntax')`` before ``command.upgrade`` is
     ever reached.
     """
-    monkeypatch.setattr(db.settings, "auto_migrate", True)
-    monkeypatch.setattr(db.settings, "database_url", "postgresql+asyncpg://phaze:s3cret%40home@db:5432/phaze")
+    monkeypatch.setattr(get_settings(), "auto_migrate", True)
+    monkeypatch.setattr(get_settings(), "database_url", "postgresql+asyncpg://phaze:s3cret%40home@db:5432/phaze")
 
     upgrade_calls: list[tuple[object, str]] = []
 
@@ -99,7 +100,7 @@ async def test_run_migrations_escapes_percent_in_database_url(monkeypatch: pytes
 @pytest.mark.asyncio
 async def test_run_migrations_skips_when_auto_migrate_false(monkeypatch: pytest.MonkeyPatch) -> None:
     """``settings.auto_migrate=false`` must short-circuit before invoking alembic."""
-    monkeypatch.setattr(db.settings, "auto_migrate", False)
+    monkeypatch.setattr(get_settings(), "auto_migrate", False)
 
     fake_upgrade = MagicMock()
     monkeypatch.setattr(db.command, "upgrade", fake_upgrade)
