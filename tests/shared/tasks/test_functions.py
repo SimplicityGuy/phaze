@@ -1130,16 +1130,32 @@ async def test_process_file_cancelled_no_job_in_ctx_cleans_scratch_copy(mock_poo
     assert not scratch_file.exists()
 
 
+@patch("phaze.tasks.functions.current_runtime_config")
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_threads_the_stall_threshold_and_no_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
-    """The success path passes ``stall_timeout`` from AgentSettings -- and no wall clock, no caps.
+async def test_process_file_threads_the_stall_threshold_and_thread_env_and_no_caps(
+    mock_pool: AsyncMock, mock_current_runtime_config: MagicMock, _patch_agent_settings: MagicMock
+) -> None:
+    """The success path passes ``stall_timeout`` AND the TF/OMP thread counts from the SAME
+    ONE read of the RELOADABLE runtime-config snapshot -- not the static ``AgentSettings``,
+    and not a second independent read per value -- and no wall clock, no caps.
+
+    phaze-mvq8z.7: ``analysis_stall_timeout_sec`` moved from ``cfg`` (start-time settings) to
+    ``current_runtime_config()`` (docs/design/0019-runtime-config-hot-reload.md §5/§7's
+    live-reloadable snapshot) so a hot reload applies to the NEXT job without a restart --
+    see ``phaze.services.analysis_exec``/``phaze.tasks.agent_worker`` for the sibling
+    appliers (the resizable semaphore and telemetry slot pool) this same bead wires up.
+    ``analysis_intra_op_threads``/``analysis_omp_threads`` are threaded the same way, as
+    plain ``intra_op_threads=``/``omp_threads=`` kwargs -- ``analysis_exec.py`` itself never
+    reads the config layer (its own docstring, phaze-mvq8z.7): a driver that reached into a
+    config store whose first build can block on host topology detection made an unrelated
+    real-subprocess timing test measurably flakier, caught by a repeated isolated-run
+    comparison against the unmodified container branch (dispatch evidence, 2026-09-28).
 
     The negative half is the load-bearing one (phaze-w55w1): a ``timeout=`` kwarg reaching the
     driver would silently restore the elapsed-time kill this bead removed, and it would not fail
     any other test in this file.
     """
-    stub = _patch_agent_settings.return_value
-    stub.analysis_stall_timeout_sec = 1234
+    mock_current_runtime_config.return_value = MagicMock(analysis_stall_timeout_sec=1234, analysis_intra_op_threads=5, analysis_omp_threads=6)
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -1150,6 +1166,8 @@ async def test_process_file_threads_the_stall_threshold_and_no_caps(mock_pool: A
     mock_pool.assert_awaited_once()
     call = mock_pool.await_args
     assert call.kwargs["stall_timeout"] == 1234
+    assert call.kwargs["intra_op_threads"] == 5
+    assert call.kwargs["omp_threads"] == 6
     for gone in ("timeout", "fine_cap", "coarse_cap"):
         assert gone not in call.kwargs
 

@@ -24,12 +24,14 @@ from phaze.analysis_child import _TARGET_ENV
 from phaze.config_backends import KubeConfig
 from phaze.services import kube_staging
 from phaze.services.analysis_exec import AnalysisStalledError, AnalysisSubprocessError, run_analysis_subprocess
+from phaze.services.resizable_limiter import ResizableLimiter
 from phaze.telemetry import slots
 from tests.analyze._child_stubs import _GATE_MAX_WAIT_SEC, _result
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
+    from typing import Any
 
 
 _STUBS = "tests.analyze._child_stubs"
@@ -706,3 +708,154 @@ async def test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_i
     assert host_echo["pid"] != pod_echo["pid"]
     assert len(list(identity_dir.glob("*.json"))) == 2
     assert elapsed < _GATE_MAX_WAIT_SEC, "the barrier timed out, so the two children were never shown to overlap"
+
+
+# phaze-mvq8z.7: live-resizable analysis semaphore, thread env for NEW children, stall timeout
+# from the runtime-config snapshot (docs/design/0019-runtime-config-hot-reload.md §5/§7). The limiter's own FIFO/grow/shrink unit
+# tests live in tests/shared/services/test_resizable_limiter.py; the tests below are the
+# REAL-subprocess half CLAUDE.md's verification-fidelity rule 3 asks for -- a mocked driver
+# cannot prove what the actual exec'd child's own os.environ ends up holding, or that a real
+# process is never killed by a shrink.
+
+
+async def test_caller_supplied_thread_env_reaches_a_freshly_spawned_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per docs/design/0019-runtime-config-hot-reload.md §5/§7: TF/OMP thread env for a NEW
+    analysis child comes from the CALLER-supplied ``intra_op_threads``/``omp_threads`` (the
+    caller's own read of the reloadable runtime-config snapshot -- see
+    ``tests/shared/tasks/test_functions.py`` for that half), read from the REAL child's own
+    environment -- not asserted against the parent's dict before ``create_subprocess_exec``
+    copies it. The driver itself takes plain ints, never touching the config layer (see
+    ``run_analysis_subprocess``'s own docstring, phaze-mvq8z.7)."""
+    _point_child_at(monkeypatch, "thread_env_analyze")
+
+    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", intra_op_threads=6, omp_threads=3)
+
+    assert result["echo"]["intra_op_threads_env"] == "6"
+    assert result["echo"]["omp_threads_env"] == "3"
+
+
+async def test_thread_env_omitted_leaves_the_childs_inherited_environment_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``intra_op_threads``/``omp_threads`` both default to ``None``: today's pre-phaze-mvq8z.7
+    behaviour (whatever this process's own env already carries) for a caller that does not
+    pass them -- ``job_runner.py``'s burst lane, and this test itself."""
+    _point_child_at(monkeypatch, "thread_env_analyze")
+    monkeypatch.setenv("TF_NUM_INTRAOP_THREADS", "2")
+    monkeypatch.setenv("OMP_NUM_THREADS", "5")
+
+    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models")
+
+    assert result["echo"]["intra_op_threads_env"] == "2"
+    assert result["echo"]["omp_threads_env"] == "5"
+
+
+async def test_a_thread_env_change_reaches_only_children_spawned_after_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Per docs/design/0019-runtime-config-hot-reload.md §7, verbatim: "apply new TF/OMP
+    thread-count env only to analysis children started AFTER the swap (an already-running
+    child keeps its inherited env)". Both halves proven at once against REAL subprocesses:
+    the in-flight child is held open, past the simulated config change, by the gate -- so
+    its own env is captured at spawn, before either the change or the gate's release, and a
+    second child spawned strictly after the change gets the new one. The "reload" itself is
+    simulated by simply passing DIFFERENT ``intra_op_threads``/``omp_threads`` to the second
+    call -- exactly what the real caller (functions.py) would do after re-reading a changed
+    snapshot.
+    """
+    _point_child_at(monkeypatch, "thread_env_analyze")
+    gate = tmp_path / "thread-env-gate"
+    monkeypatch.setenv("PHAZE_STUB_GATE_FILE", str(gate))
+
+    beats: list[int] = []
+    in_flight_task = asyncio.ensure_future(
+        run_analysis_subprocess(
+            "/fake/in-flight.mp3",
+            "/fake/models",
+            heartbeat_cb=lambda _stage, done, _total: beats.append(done),
+            stall_timeout=30.0,
+            intra_op_threads=4,
+            omp_threads=4,
+        )
+    )
+    deadline = time.monotonic() + _GATE_MAX_WAIT_SEC
+    while not beats and time.monotonic() < deadline:  # park at the gate before touching the config
+        await asyncio.sleep(0.01)
+    assert beats, "the in-flight child never reached its gate -- the change would race a spawn, not an in-flight child"
+
+    # Drop the gate env var before spawning the second child -- it must run straight through,
+    # not park behind the SAME gate file: `child_environment()` copies os.environ at EACH
+    # call's own spawn time, so the in-flight child (already spawned, already gated) is
+    # unaffected by either this or the changed thread counts below.
+    monkeypatch.delenv("PHAZE_STUB_GATE_FILE", raising=False)
+
+    new_result = await run_analysis_subprocess("/fake/new.mp3", "/fake/models", intra_op_threads=8, omp_threads=2)
+    assert new_result["echo"]["intra_op_threads_env"] == "8", "a child spawned AFTER the change must see the new env"
+    assert new_result["echo"]["omp_threads_env"] == "2"
+
+    gate.touch()  # release the in-flight child now that the change has already landed
+    in_flight_result = await asyncio.wait_for(in_flight_task, timeout=_GATE_MAX_WAIT_SEC)
+    assert in_flight_result["echo"]["intra_op_threads_env"] == "4", "an in-flight child must keep the env it was spawned with"
+    assert in_flight_result["echo"]["omp_threads_env"] == "4"
+
+
+async def test_a_shrink_mid_flight_never_kills_the_children_already_borrowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """phaze-mvq8z.7 acceptance: shrinking the pool never kills or cancels an in-flight
+    analysis, and admits no new work until the borrowed count drops back under the new
+    ceiling -- against REAL subprocesses, not a mocked driver (CLAUDE.md verification-fidelity
+    rule 3: "the proof is limiter unit tests plus a real-subprocess test with in-flight
+    children across a shrink", the bead's own blast-radius statement).
+    """
+    _point_child_at(monkeypatch, "crawling_analyze")
+    gate = tmp_path / "shrink-gate"
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.01")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "3")
+    monkeypatch.setenv("PHAZE_STUB_GATE_AFTER", "1")
+    monkeypatch.setenv("PHAZE_STUB_GATE_FILE", str(gate))
+
+    limiter = ResizableLimiter(2)
+    beats: dict[str, int] = {"a": 0, "b": 0}
+
+    def _make_heartbeat(tag: str) -> Callable[[str, int, int], None]:
+        def _cb(_stage: str, done: int, _total: int) -> None:
+            beats[tag] = done
+
+        return _cb
+
+    async def _run(tag: str) -> dict[str, Any]:
+        async with limiter:
+            return await run_analysis_subprocess(f"/fake/{tag}.mp3", "/fake/models", heartbeat_cb=_make_heartbeat(tag), stall_timeout=30.0)
+
+    task_a = asyncio.ensure_future(_run("a"))
+    task_b = asyncio.ensure_future(_run("b"))
+
+    deadline = time.monotonic() + _GATE_MAX_WAIT_SEC
+    while (beats["a"] < 1 or beats["b"] < 1) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert beats["a"] >= 1 and beats["b"] >= 1, "both children never reached the gate -- not shown to be in flight together"
+    assert limiter.borrowed_tokens == 2
+
+    limiter.resize(1)  # shrink below what is already borrowed by the two in-flight children
+    assert limiter.available_tokens == 0
+
+    third_admitted = False
+
+    async def _third() -> None:
+        nonlocal third_admitted
+        async with limiter:
+            third_admitted = True
+
+    task_c = asyncio.ensure_future(_third())
+    deadline = time.monotonic() + _GATE_MAX_WAIT_SEC
+    while limiter.waiting < 1 and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+    assert limiter.waiting == 1, "the third acquire never queued behind the shrunk ceiling"
+    assert not third_admitted, "shrink must not admit new work until below the new ceiling"
+
+    # Release both gated children -- NOT killed, NOT cancelled: they finish the stub's normal
+    # run and return its canned result, exactly as an untouched analysis would.
+    gate.touch()
+
+    result_a, result_b = await asyncio.gather(task_a, task_b)
+    assert result_a["fine_windows_analyzed"] == 3
+    assert result_b["fine_windows_analyzed"] == 3
+
+    await asyncio.wait_for(task_c, timeout=_GATE_MAX_WAIT_SEC)
+    assert third_admitted, "once borrowed dropped under the new ceiling the waiter must be admitted"
+    assert limiter.borrowed_tokens == 0
