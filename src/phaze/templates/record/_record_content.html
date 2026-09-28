@@ -108,7 +108,13 @@
                             {% include "pipeline/partials/_stage_pill.html" %}
                         {% endwith %}
                         </span>
-                        {% if is_enrich %}
+                        {# phaze-iyqhg: offered only where a skip can change anything -- a failed or
+                           not-started stage, or an ORPHANED one (the ledger reads in_flight but nothing
+                           is running it; the same orphaned_clause fact the line below explains). On a
+                           done stage the marker is a no-op the precedence ladder hides; on a skipped
+                           one it is already there; on a genuinely running one it would race the work. #}
+                        {% set _bucket = stage_buckets[stage_value] %}
+                        {% if is_enrich and (_bucket in ('failed', 'not_started') or (_bucket == 'in_flight' and (orphan_details | default({})).get(stage_value) is not none)) %}
                             {% with stage_value=stage_value, stage_label=stage_label, file_id=file.id %}
                                 {% include "pipeline/partials/_force_skip_dialog.html" %}
                             {% endwith %}

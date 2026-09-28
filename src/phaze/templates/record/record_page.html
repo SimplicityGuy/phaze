@@ -136,6 +136,12 @@
             window.addEventListener("hashchange", () => openFoldFor(window.location.hash));
         })();
     </script>
+    {# phaze-iyqhg: the record content's own write controls (the enrich "Skip stage…" dialog) ack
+       with an out-of-band toast into #toast-container and render their submit guarded. The drawer
+       inherits both from shell.html; this standalone page must carry its own, or the OOB toast has
+       no target and the guarded submit is never released. #}
+    <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+    {% include "shell/partials/hx_guard_release.html" %}
     {% endif %}
 </body>
 </html>

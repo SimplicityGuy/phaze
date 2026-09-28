@@ -4,7 +4,7 @@ The bead's acceptance is discharged here, criterion by criterion, against the RE
 rather than against the templates' source: the full page renders a sidebar carrying the eight
 facts and the harmonic-journey wheel, the drawer renders the set panel and the tracklist index
 and NO sidebar, and every control the record already had -- the five stage trace triggers, the
-force-skip dialogs on the three ENRICH stages only, the Changes Review link carrying
+force-skip dialogs on the ENRICH stages only (and, since phaze-iyqhg, only on an unfinished one), the Changes Review link carrying
 ``status=needs_review``, and the history list -- survives the re-layout in both presentations.
 
 That last clause is the blast-radius statement's proof obligation. The re-layout moved every
@@ -185,8 +185,10 @@ async def test_both_presentations_keep_every_control_the_relayout_moved(  # type
 
     # Force-skip on the ENRICH stages only. The dialog names its stage in its own POST url, so
     # the presence of that url is what distinguishes "has a skip control" from "does not".
-    for stage in _ENRICH_STAGES:
-        assert f"/skip/{stage}" in body, f"the {stage} force-skip control is missing"
+    # phaze-iyqhg: and only where a skip can change anything. This seed's analysis is COMPLETED
+    # (done) and its metadata never ran (not started), so exactly one enrich stage offers it.
+    assert "/skip/metadata" in body, "the not-started metadata stage lost its Skip stage… control"
+    assert "/skip/analyze" not in body, "a DONE analyze stage must offer no skip (a no-op marker)"
     for stage in _DOWNSTREAM_STAGES:
         assert f"/skip/{stage}" not in body, f"{stage} must carry no skip affordance (D-10)"
 
