@@ -26,6 +26,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _files_retry_oob, logger, router, templates
+from phaze.runtime_config import current as current_runtime_config
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import hold_awaiting_cloud
@@ -396,7 +397,7 @@ async def trigger_analysis(
         request.app.state,
         session,
         files_with_duration,
-        settings.cloud_route_threshold_sec,
+        current_runtime_config().cloud_route_threshold_sec,
         effective_cloud_enabled,
         settings.models_path,
     )
@@ -459,7 +460,7 @@ async def trigger_analysis_ui(
         request.app.state,
         session,
         files_with_duration,
-        settings.cloud_route_threshold_sec,
+        current_runtime_config().cloud_route_threshold_sec,
         effective_cloud_enabled,
         settings.models_path,
     )
