@@ -171,27 +171,47 @@ async def test_child_stderr_is_framed_into_log_events(monkeypatch: pytest.Monkey
     assert any("stray print from the analysis child" in line for line in framed)
 
 
-async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: pytest.MonkeyPatch, beat_clock: _BeatClock) -> None:
     """A child that stops reporting progress is SIGKILLed at the stall threshold (phaze-w55w1).
 
     ``hang_analyze`` emits one beat then wedges for 300 s. The raised
     :class:`AnalysisStalledError` subclasses ``TimeoutError``, which is what both lanes already
     catch to record a terminal, non-retried failure — so the disposition of a wedged child is
     unchanged and only the evidence improves.
+
+    **On the beat clock (phaze-0vlnp), and frozen until the child's one beat.** This used to arm a
+    real 1.5 s threshold from the moment of spawn and bound the whole run at a real 10 s. A loaded
+    machine can keep the child importing for longer than 1.5 s before its first line -- the watchdog
+    then fires with no stage reported and ``last_stage == "fine"`` goes red -- and can take longer
+    than 10 s end to end, which is the same cliff phaze-avw21 removed from the progressing test.
+    Here the watchdog's clock stands still until the beat has been handed over, then advances half
+    the threshold per watchdog read, so the kill is caused by silence AFTER the beat and nothing
+    else. A watchdog that never kills still fails: ``hang_analyze`` then returns a result after its
+    300 s and ``pytest.raises`` sees no error.
     """
+    stall_timeout = 1.5
     _point_child_at(monkeypatch, "hang_analyze")
-    started = time.monotonic()
+    beats: list[str] = []
+
+    def _advance_only_after_the_beat() -> None:
+        if beats:
+            beat_clock.now += stall_timeout / 2
+
+    beat_clock.on_read = _advance_only_after_the_beat
 
     with pytest.raises(AnalysisStalledError, match="stalled: no progress") as excinfo:
-        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", stall_timeout=1.5)
+        await run_analysis_subprocess(
+            "/fake/audio.mp3", "/fake/models", heartbeat_cb=lambda stage, _done, _total: beats.append(stage), stall_timeout=stall_timeout
+        )
 
     # The stored message must name the threshold AND the last stage the child reached -- that is
     # the whole point of storing a real error rather than "timeout".
-    assert excinfo.value.stall_timeout == 1.5
+    assert excinfo.value.stall_timeout == stall_timeout
     assert excinfo.value.last_stage == "fine"
     assert isinstance(excinfo.value, TimeoutError), "lane handlers catch TimeoutError; the subclass must stay one"
-    # Bounded promptly by the stall threshold + kill, not by the stub's 300s hang.
-    assert time.monotonic() - started < 10.0
+    assert beats == ["fine"], "the child's one beat reached the driver before the kill"
+    # The kill came from the watchdog observing the threshold of silence on its own clock.
+    assert beat_clock.now >= stall_timeout
 
 
 async def test_slow_but_progressing_child_survives_far_past_the_stall_threshold(

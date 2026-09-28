@@ -24,6 +24,7 @@ import pytest
 
 from phaze import analysis_child
 from phaze.analysis_child import _TARGET_ENV, _parse_args, run
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 from tests.analyze.services.pipeline.test_analysis import _MOCK_DURATION_SEC, _build_mock_essentia, _mock_labels_file
 
 
@@ -140,7 +141,7 @@ def test_real_subprocess_fd_reroute_keeps_protocol_clean() -> None:
         [sys.executable, "-m", "phaze.analysis_child", "/fake/audio.mp3", "--models-dir", "/fake/models"],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
         cwd=_REPO_ROOT,
         env=env,

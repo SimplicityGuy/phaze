@@ -29,6 +29,8 @@ import textwrap
 
 import pytest
 
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
+
 
 def test_agent_worker_does_not_import_phaze_database() -> None:
     """Banned modules: phaze.database, phaze.tasks.session, sqlalchemy.ext.asyncio.
@@ -102,7 +104,7 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"agent_worker import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -141,7 +143,7 @@ def _registered_names_under_lane(lane: str | None) -> set[str]:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"agent_worker import failed under lane={lane!r}:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -218,7 +220,7 @@ def test_push_task_stays_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"push task import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -258,7 +260,7 @@ def test_upload_task_stays_postgres_free_and_sdk_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"s3_upload import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -296,7 +298,7 @@ def test_submit_cloud_job_is_control_only_not_in_agent_worker() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"submit_cloud_job leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -344,7 +346,7 @@ def test_reconcile_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"reconcile_cloud_jobs leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -388,7 +390,7 @@ def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"expected RuntimeError at import; got rc={result.returncode}\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -441,7 +443,7 @@ def test_agent_watcher_does_not_import_phaze_database() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"agent_watcher import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -478,7 +480,7 @@ def test_cert_bootstrap_stays_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"cert_bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -519,7 +521,7 @@ def test_shared_bootstrap_stays_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"shared bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -564,7 +566,7 @@ def test_model_bootstrap_stays_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"model_bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -607,7 +609,7 @@ def test_job_runner_does_not_import_phaze_database() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"job_runner import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -663,7 +665,7 @@ def test_job_runner_does_not_run_heartbeat_loop() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"job_runner must not import/call the heartbeat loop:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -698,7 +700,7 @@ def test_analysis_child_stays_essentia_and_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"analysis_child import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -732,7 +734,7 @@ def test_analysis_exec_driver_stays_essentia_and_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"analysis_exec import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -777,7 +779,7 @@ def test_stage_control_stays_postgres_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"stage_control import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -818,7 +820,7 @@ def test_reap_orphaned_backend_cloud_jobs_is_control_only_not_in_agent_worker() 
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"reap_orphaned_backend_cloud_jobs leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
