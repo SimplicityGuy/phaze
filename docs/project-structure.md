@@ -23,8 +23,8 @@ a module makes the inventory fail until this page is reconciled.
 | `cli/` | 1 | Operator commands, including agent management and projection backfill |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, and tracklist vocabulary |
 | `models/` | 28 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
-| `routers/` | 54 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 21 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `routers/` | 55 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 22 | Pydantic wire contracts; agent payloads remain ORM-free |
 | `services/` | 126 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 44 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
