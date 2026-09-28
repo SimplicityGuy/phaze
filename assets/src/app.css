@@ -369,6 +369,16 @@ body { font-family: 'Inter', sans-serif; }
     border-radius: 9999px;
     vertical-align: baseline;
 }
+/* phaze-37ovq: the per-row key colour dot in the harmonic journey's runs table -- the SAME
+   Camelot hue the wheel's own node draws that run at, arriving as an inline hue from the row. */
+.harmonic-run-dot {
+    display: inline-block;
+    height: 0.5rem;
+    width: 0.5rem;
+    flex: none;
+    border-radius: 9999px;
+    vertical-align: baseline;
+}
 .tracklist-energy-bar {
     display: inline-block;
     height: 0.375rem;

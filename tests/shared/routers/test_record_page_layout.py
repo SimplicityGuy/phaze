@@ -29,6 +29,7 @@ from phaze.models.analysis import AnalysisWindow
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
+from phaze.services.analysis_timeline import format_elapsed_time
 from phaze.services.record_facts import ABSENT
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import flicker_filtered_key_runs, key_name_for_camelot
@@ -284,12 +285,13 @@ async def test_the_wheel_plots_the_flicker_filtered_runs_with_dashed_amber_jumps
     session: AsyncSession,
     seed_file_with_windows,
 ) -> None:
-    """Acceptance 2: node count = filtered key runs; jump edges dashed and amber; caption names them.
+    """Acceptance 2: node count = filtered key runs; jump edges dashed and amber; the runs table
+    names every run's time, key, duration and move.
 
     The node count is asserted against ``flicker_filtered_key_runs`` rather than against a
     hand-counted literal on purpose: that function is also what
     ``set_projection.harmonic_discipline`` counts, so this pins the wheel to the SAME filtered
-    sequence the percentage in its own caption is computed from.
+    sequence the summary above the table is computed from.
     """
     file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
     windows = await _seed_keyed_windows(session, file)
@@ -335,13 +337,134 @@ async def test_the_wheel_plots_the_flicker_filtered_runs_with_dashed_amber_jumps
     assert banner is not None
     assert any("amber-500" in name for name in banner.get("class", [])), "the jump stroke names the banner's own amber"
 
-    # The caption names the adjacent share and every jump by code pair and elapsed time.
-    caption = wheel.select_one("[data-harmonic-caption]")
-    assert caption is not None
-    caption_text = caption.get_text(" ", strip=True)
-    assert f"{len(expected_runs)} key runs" in caption_text
-    assert "wheel-adjacent" in caption_text
-    assert "10B → 5A at 5:30" in caption_text, "each jump is named by code pair and by when it lands"
+    # The one-line summary states the run count and how many of the wheel's own edges were
+    # adjacent -- the SAME two numbers, never a re-derivation -- and doubles as the SVG's own
+    # accessible label (acceptance: "keep a meaningful aria-label").
+    summary = wheel.select_one("[data-harmonic-summary]")
+    assert summary is not None
+    summary_text = summary.get_text(" ", strip=True)
+    assert summary_text == f"{len(expected_runs)} runs · {len(adjacent)} of {len(edges)} moves wheel-adjacent"
+    svg = wheel.select_one("[data-harmonic-wheel]")
+    assert svg is not None
+    assert summary_text in str(svg["aria-label"])
+
+    # The table has one row per surviving key run, in the SAME order and numbering the wheel's
+    # own nodes carry: a row's `data-node-index` must always name the node it draws beside, so
+    # hovering it can never ring the wrong dot.
+    rows = wheel.select("[data-journey-row]")
+    assert len(rows) == len(expected_runs)
+    assert [row["data-node-index"] for row in rows] == [node["data-node-index"] for node in nodes]
+
+    # Time range and duration, read straight off the filtered runs -- never a re-derivation from
+    # the raw windows, which would get the blip-merged "9A" run's span wrong.
+    assert [row.select("td")[0].get_text(strip=True) for row in rows] == [
+        f"{format_elapsed_time(run.start_sec)}\u2013{format_elapsed_time(run.end_sec)}" for run in expected_runs
+    ]
+    assert [row.select("td")[2].get_text(strip=True) for row in rows] == [format_elapsed_time(run.dwell_sec) for run in expected_runs]
+
+    # The key column names the run by Camelot code and canonical key name, with a colour dot in
+    # the SAME hue as the node it sits beside -- never a re-derived colour.
+    assert [row.select("td")[1].get_text(" ", strip=True) for row in rows] == [
+        f"{run.code} · {key_name_for_camelot(run.code)}" for run in expected_runs
+    ]
+    dots = [row.select_one(".harmonic-run-dot") for row in rows]
+    assert all(dot is not None for dot in dots)
+    assert [dot["style"] for dot in dots] == [f"background-color: {node['fill']};" for node in nodes]
+
+    # The move column reads "—" for the first run, else the same "adjacent"/"jump" word the
+    # wheel's own edges are classified with -- the first run's first-of-set, the rest walking
+    # the four edges asserted above in order.
+    move_cells = [row.select_one("[data-move-kind]") for row in rows]
+    assert [str(cell["data-move-kind"]) for cell in move_cells] == ["", "adjacent", "jump", "jump", "jump"]
+    assert [cell.get_text(strip=True) for cell in move_cells] == ["—", "adjacent", "jump", "jump", "jump"]
+
+
+@pytest.mark.asyncio
+async def test_the_summarys_two_numbers_stay_consistent_when_the_stored_share_differs_from_the_live_edges(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: the summary's "N of M" agrees with ITSELF even when the STORED
+    ``SetProfile.harmonic_discipline`` disagrees with a fresh recount of the wheel's own edges.
+
+    The synthetic journey's live share is 25% (1 of its 4 edges classified adjacent -- see the
+    previous test); seeding a stored discipline of 90% instead makes the two figures disagree on
+    purpose. The requirement (``harmonic_journey.py:build_harmonic_journey``'s own docstring, and
+    the bead's own acceptance) is that the total move count ("M") still comes from the wheel's
+    own LIVE edges -- it is what is drawn -- while the adjacent count ("N") is derived from that
+    SAME stored share, never from a naive recount of those edges that would print an "N" the
+    share does not agree with.
+    """
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    windows = await _seed_keyed_windows(session, file)
+    expected_runs = flicker_filtered_key_runs(windows)
+    session.add(SetProfile(file_id=file.id, harmonic_discipline=0.9))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    wheel = page.select_one("[data-harmonic-journey]")
+    assert wheel is not None
+
+    edges = wheel.select("[data-journey-edge]")
+    live_adjacent = [edge for edge in edges if edge["data-edge-kind"] == "adjacent"]
+    assert len(edges) == len(expected_runs) - 1
+    assert len(live_adjacent) == 1, "the live edges still classify only one move as adjacent"
+
+    summary = wheel.select_one("[data-harmonic-summary]")
+    assert summary is not None
+    summary_text = summary.get_text(" ", strip=True)
+    # round(0.9 * 4) == 4 -- the STORED share, not the live recount of 1, is what "N" agrees
+    # with; "M" is still the wheel's own 4 live edges either way.
+    assert summary_text == f"{len(expected_runs)} runs · 4 of {len(edges)} moves wheel-adjacent"
+    svg = wheel.select_one("[data-harmonic-wheel]")
+    assert svg is not None
+    assert summary_text in str(svg["aria-label"]), "the aria-label carries the SAME summary, never a second figure"
+
+
+@pytest.mark.asyncio
+async def test_runs_past_the_visible_cap_ship_hidden_behind_a_show_all_control(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """A long set's rows all ship in the response body -- nothing is a second fetch -- with the
+    rows past the cap starting hidden and a "Show all" control naming the true total."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    # 20 fine windows as 10 runs of 2 windows each, alternating between two adjacent codes so
+    # consecutive blocks never merge into one run: 10 key runs, comfortably past any cap of 8.
+    codes = [code for index in range(10) for code in (("8A", "8A") if index % 2 == 0 else ("9A", "9A"))]
+    windows = [
+        AnalysisWindow(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            tier="fine",
+            window_index=index,
+            start_sec=index * _WINDOW_SEC,
+            end_sec=(index + 1) * _WINDOW_SEC,
+            musical_key=key_name_for_camelot(code),
+        )
+        for index, code in enumerate(codes)
+    ]
+    session.add_all(windows)
+    await session.commit()
+    expected_runs = flicker_filtered_key_runs(windows)
+    assert len(expected_runs) == 10, "the fixture must actually exceed the cap for this test to mean anything"
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    wheel = page.select_one("[data-harmonic-journey]")
+    assert wheel is not None
+
+    rows = wheel.select("[data-journey-row]")
+    assert len(rows) == len(expected_runs), "every row ships in the response body -- nothing is a second fetch"
+    visible = [row for row in rows if "display:none" not in row.get("style", "").replace(" ", "")]
+    hidden = [row for row in rows if row not in visible]
+    assert 0 < len(visible) < len(rows), "some rows start visible and some start hidden behind the cap"
+    assert len(hidden) == len(rows) - len(visible)
+
+    control = wheel.select_one("[data-harmonic-show-all]")
+    assert control is not None
+    assert str(len(expected_runs)) in control.get_text(" ", strip=True), "the control names the TRUE total, not just the hidden count"
 
 
 @pytest.mark.asyncio
