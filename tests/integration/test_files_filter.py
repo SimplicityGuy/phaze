@@ -401,3 +401,182 @@ async def test_orphaned_lens_on_a_non_enrich_stage_returns_the_empty_set(client:
     resp = await client.get("/pipeline/files?stage=propose&bucket=orphaned", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     assert "strayrow-" not in resp.text
+
+
+# phaze-7sdwt: operator report 2026-09-27 -- "any stage" (no ``stage`` in the query) + a specific
+# ``bucket`` silently returned everything unfiltered. Implemented as "some stage has that status"
+# (operator decision, AskUserQuestion, 2026-09-27). These pin the fix through BOTH live routes
+# (``/pipeline/files`` -- the fragment swap target -- and ``/s/files`` -- the canonical page/history-
+# restore route, same ``get_files_page`` call per ``_files_stage_context``) and the reverse no-op case.
+
+
+@pytest.mark.asyncio
+async def test_any_stage_failed_filter_returns_files_failed_in_any_stage_via_pipeline_files(client: AsyncClient, session: AsyncSession) -> None:
+    """``?bucket=failed`` with NO ``stage`` (any stage) returns every file failed in ANY stage, via /pipeline/files.
+
+    Seeded: a metadata-failed file, an analyze-failed file (distinct failure axes), a metadata-done
+    file, and a bare (not-started) file. Only the two failed files may appear -- "any stage = failed"
+    is an OR across stages, not the pre-fix silent no-op that returned all four.
+    """
+    from phaze.models.analysis import AnalysisResult
+
+    meta_failed = _make_file("anymetafailed")
+    analyze_failed = _make_file("anyanalyzefailed")
+    done = _make_file("anydonemeta")
+    plain = _make_file("anyplainfile")
+    session.add_all([meta_failed, analyze_failed, done, plain])
+    await session.commit()
+    session.add(FileMetadata(file_id=meta_failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    session.add(AnalysisResult(file_id=analyze_failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    session.add(FileMetadata(file_id=done.id, artist="Real", title="Track"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?bucket=failed", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "anymetafailed-" in body
+    assert "anyanalyzefailed-" in body
+    assert "anydonemeta-" not in body
+    assert "anyplainfile-" not in body
+
+
+@pytest.mark.asyncio
+async def test_any_stage_failed_filter_returns_files_failed_in_any_stage_via_shell_files(client: AsyncClient, session: AsyncSession) -> None:
+    """The identical ``bucket=failed``, no-``stage`` lens through ``/s/files`` (the canonical shell route).
+
+    ``_files_stage_context`` (routers/shell/stage_context.py) calls the SAME ``get_files_page`` as
+    ``/pipeline/files``, so this pins the fix at the other live caller the bead names.
+    """
+    from phaze.models.analysis import AnalysisResult
+
+    meta_failed = _make_file("shellanymetafailed")
+    analyze_failed = _make_file("shellanyanalyzefailed")
+    plain = _make_file("shellanyplainfile")
+    session.add_all([meta_failed, analyze_failed, plain])
+    await session.commit()
+    session.add(FileMetadata(file_id=meta_failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    session.add(AnalysisResult(file_id=analyze_failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    await session.commit()
+
+    resp = await client.get("/s/files?bucket=failed", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "shellanymetafailed-" in body
+    assert "shellanyanalyzefailed-" in body
+    assert "shellanyplainfile-" not in body
+
+
+@pytest.mark.asyncio
+async def test_any_stage_done_filter_returns_files_done_in_any_stage(client: AsyncClient, session: AsyncSession) -> None:
+    """``?bucket=done`` with no ``stage`` returns a file done in ANY stage -- the ``done`` bucket, OR'd."""
+    done_meta = _make_file("anydonebucketmeta")
+    failed_meta = _make_file("anydonebucketfailed")
+    plain = _make_file("anydonebucketplain")
+    session.add_all([done_meta, failed_meta, plain])
+    await session.commit()
+    session.add(FileMetadata(file_id=done_meta.id, artist="Real", title="Track"))
+    session.add(FileMetadata(file_id=failed_meta.id, failed_at=datetime.now(UTC), error_message="boom"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?bucket=done", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "anydonebucketmeta-" in body
+    assert "anydonebucketfailed-" not in body
+    assert "anydonebucketplain-" not in body
+
+
+@pytest.mark.asyncio
+async def test_any_stage_orphaned_lens_is_limited_to_metadata_and_analyze(client: AsyncClient, session: AsyncSession) -> None:
+    """``?bucket=orphaned`` with no ``stage`` ORs exactly METADATA + ANALYZE -- never all five stages.
+
+    Seeded: a METADATA orphan (a lost ``extract_file_metadata`` ledger row, no live broker key, no
+    metadata row at all -- not domain-complete), an ANALYZE orphan (mirrors
+    ``test_orphaned_lens_lists_exactly_the_recovery_candidates``), a genuinely-running analyze file,
+    and a bare file. Both orphans must appear and nothing else -- proving the OR spans the two enrich
+    stages (not a single-stage regression) while staying scoped off propose/review/apply, which have
+    no defined orphaned concept.
+    """
+    from sqlalchemy import text
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    await session.execute(text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"))
+    meta_orphan = _make_file("anyorphanmeta")
+    analyze_orphan = _make_file("anyorphananalyze")
+    running = _make_file("anyorphanrunning")
+    plain = _make_file("anyorphanplain")
+    session.add_all([meta_orphan, analyze_orphan, running, plain])
+    await session.commit()
+    session.add(
+        SchedulingLedger(
+            key=f"extract_file_metadata:{meta_orphan.id}", function="extract_file_metadata", routing="agent", payload={"file_id": str(meta_orphan.id)}
+        )
+    )
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{analyze_orphan.id}", function="process_file", routing="agent", payload={"file_id": str(analyze_orphan.id)}
+        )
+    )
+    session.add(SchedulingLedger(key=f"process_file:{running.id}", function="process_file", routing="agent", payload={"file_id": str(running.id)}))
+    await session.commit()
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:k, 'queued')"), {"k": f"process_file:{running.id}"})
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?bucket=orphaned", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "anyorphanmeta-" in body
+    assert "anyorphananalyze-" in body
+    assert "anyorphanrunning-" not in body
+    assert "anyorphanplain-" not in body
+
+
+@pytest.mark.asyncio
+async def test_stage_only_any_status_is_still_a_no_op_returning_everything(client: AsyncClient, session: AsyncSession) -> None:
+    """The REVERSE case: ``?stage=metadata`` with no ``bucket`` ("any status") stays a no-op.
+
+    A stage chosen with "any status" has no status to compare against, so it must keep returning the
+    whole unfiltered page -- exactly the pre-fix behavior for THIS axis (only the ``bucket``-alone axis
+    changed). A done, a failed and a plain file all still appear.
+    """
+    done = _make_file("noopdonemeta")
+    failed = _make_file("noopfailedmeta")
+    plain = _make_file("noopplainfile")
+    session.add_all([done, failed, plain])
+    await session.commit()
+    session.add(FileMetadata(file_id=done.id, artist="Real", title="Track"))
+    session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?stage=metadata", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "noopdonemeta-" in body
+    assert "noopfailedmeta-" in body
+    assert "noopplainfile-" in body
+
+
+@pytest.mark.asyncio
+async def test_stage_only_any_status_does_not_show_clear_filter_or_filtered_empty_state(client: AsyncClient, session: AsyncSession) -> None:
+    """Acceptance criterion: a stage with "any status" must not claim to be filtered.
+
+    On an EMPTY corpus, ``?stage=metadata`` (no ``bucket``) renders the UNFILTERED "No files yet"
+    empty state, NOT the filtered "No files match this filter" copy -- and the "Clear filter" control
+    must not render, since ``get_files_page``'s no-op left nothing to clear. This is the case the
+    pre-fix bug also affected in the OTHER direction (a bucket alone looked filtered but wasn't); this
+    pins that a lone ``stage`` never LOOKS filtered either, matching the no-op it actually is.
+    """
+    resp = await client.get("/pipeline/files?stage=metadata", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "No files yet" in body
+    assert "No files match this filter" not in body
+    assert "Clear filter" not in body
