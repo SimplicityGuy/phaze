@@ -123,6 +123,37 @@ class TestArmedEnqueuing:
         assert state.in_flight is True
         assert state.slice_enqueued_at is not None
 
+    async def test_a_run_triggered_slice_is_not_stacked_on_by_the_next_cron_tick(
+        self, session: AsyncSession, make_file, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """ "Run tracklist lookups" (routers.pipeline.tracklists.run_tracklist_drain_ui) arms via
+        arm_if_not_running, which -- since phaze-5sj7k's review fix -- marks that first slice
+        in_flight atomically with the arm, in the SAME transaction, before the router's own
+        enqueue call. Reproduces the review-found defect directly: before the fix, the row left
+        by arm_if_not_running read armed=True, in_flight=False, so this exact next tick enqueued
+        a SECOND, concurrent slice on top of the one "Run" itself is about to enqueue -- doubling
+        the spend of the host's own request budget the in_flight gate exists to bound."""
+        from phaze.models.metadata import FileMetadata
+        from phaze.services.tracklist_drain_arm import arm_if_not_running
+
+        file = await make_file(original_filename="Artist - Live @ Some Event 2024-04-12.mp3")
+        session.add(FileMetadata(file_id=file.id, duration=3600.0))
+        just_armed = await arm_if_not_running(session, now=NOW)
+        await session.flush()
+        await session.commit()
+        assert just_armed is True
+
+        state = await get_arm_state(session)
+        assert state.in_flight is True  # the Run click's own slice, not the cron's
+
+        # Pin "now" to just after the Run click -- the ordinary in-progress case, not the stale
+        # self-heal one (covered separately in TestStaleInFlightSelfHeal).
+        monkeypatch.setattr(control_module, "datetime", _FixedDatetime(NOW + timedelta(seconds=30)))
+
+        queue = FakeQueue()
+        await continue_armed_tracklist_drain(ctx_for(session, queue=queue))
+        assert queue.enqueued == []  # no second, concurrent slice on top of the Run click's own
+
     async def test_a_slice_already_in_flight_is_not_stacked_on(self, session: AsyncSession, make_file, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
         from phaze.models.metadata import FileMetadata
 
@@ -256,9 +287,12 @@ class TestRecordSliceCompletion:
         state = await get_arm_state(session)
         assert state.in_flight is True  # still waiting for a terminal outcome
 
-    async def test_a_manual_slice_not_in_flight_is_left_untouched(self, session: AsyncSession) -> None:
-        """A manual "Run tracklist lookups" click never set in_flight -- its completion must not
-        perturb the cooldown clock or the failure streak."""
+    async def test_an_armed_row_with_no_slice_at_all_is_left_untouched(self, session: AsyncSession) -> None:
+        """A row armed via ``arm_drain`` ALONE (no slice ever enqueued against it -- the
+        low-level primitive ``arm_drain`` is kept for tests only; the real "Run tracklist
+        lookups" click goes through ``arm_if_not_running``, which always marks a slice in_flight
+        atomically with the arm) has nothing in_flight, so an unrelated job's completion must not
+        perturb its cooldown clock or failure streak."""
         await arm_drain(session, now=NOW)
         await session.commit()
         job = Job(function="drain_tracklists", kwargs={})
@@ -272,6 +306,26 @@ class TestRecordSliceCompletion:
         await arm_drain(session, now=NOW)
         await mark_slice_enqueued(session, now=NOW)
         await session.commit()
+
+        job = Job(function="drain_tracklists", kwargs={})
+        job.status = Status.COMPLETE
+        await record_drain_slice_completion(ctx_for(session) | {"job": job})
+
+        state = await get_arm_state(session)
+        assert state.in_flight is False
+        assert state.consecutive_failures == 0
+        assert state.next_eligible_at is not None
+
+    async def test_a_run_triggered_slices_completion_sets_the_cooldown(self, session: AsyncSession) -> None:
+        """The slice "Run tracklist lookups" itself enqueues is in_flight from the moment
+        arm_if_not_running commits (phaze-5sj7k review fix), so its OWN completion must be
+        recognised here and set the ordinary cooldown + failure accounting -- not be silently
+        skipped as "not part of an armed pass" the way the pre-fix version was."""
+        from phaze.services.tracklist_drain_arm import arm_if_not_running
+
+        just_armed = await arm_if_not_running(session, now=NOW)
+        await session.commit()
+        assert just_armed is True
 
         job = Job(function="drain_tracklists", kwargs={})
         job.status = Status.COMPLETE

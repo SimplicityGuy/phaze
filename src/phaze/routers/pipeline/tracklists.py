@@ -36,7 +36,7 @@ from phaze.services import enqueue_router
 from phaze.services.pipeline import get_match_pending_tracklists
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
-from phaze.services.tracklist_drain_arm import arm_if_not_running, disarm_drain, get_arm_state
+from phaze.services.tracklist_drain_arm import arm_if_not_running, clear_stale_in_flight, disarm_drain, get_arm_state
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import tracklist_drain_status
@@ -410,12 +410,14 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     decision. What changed is what the click MEANS: the operator does not think in terms of
     "one batch now, a separate Arm for the rest" -- clicking Run is expected to make the lookups
     "run, or be scheduled to run, over time until done" (the operator's own words). So this
-    endpoint now arms the drain FIRST (:func:`~phaze.services.tracklist_drain_arm.arm_if_not_running`),
-    then enqueues the first slice itself rather than waiting for
-    ``continue_armed_tracklist_drain``'s next tick -- the rest of the pass is paced by that same
-    cron exactly as before. A click while already armed is a no-op on the arm state and enqueues
-    NOTHING (``arm_if_not_running`` returns ``False``): the already-running pass owns pacing the
-    rest, and a second concurrent slice would just double up on the same host budget.
+    endpoint now arms the drain FIRST (:func:`~phaze.services.tracklist_drain_arm.arm_if_not_running`,
+    which ALSO marks that first slice ``in_flight`` atomically with the arm -- see its own
+    docstring for the review-fixed double-enqueue hole this closes), then enqueues the first
+    slice itself rather than waiting for ``continue_armed_tracklist_drain``'s next tick -- the
+    rest of the pass is paced by that same cron exactly as before. A click while already armed is
+    a no-op on the arm state and enqueues NOTHING (``arm_if_not_running`` returns ``False``): the
+    already-running pass owns pacing the rest, and a second concurrent slice would just double up
+    on the same host budget.
 
     ``limit`` is left at the default (:data:`~phaze.services.tracklist_drain.DEFAULT_LOOKUP_LIMIT`
     lookups); any operator-flagged files are picked up automatically by ``build_drain_queue``
@@ -424,8 +426,20 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     just_armed = await arm_if_not_running(session)
     await session.commit()
     if just_armed:
-        routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
-        await routed.queue.enqueue("drain_tracklists")
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+            await routed.queue.enqueue("drain_tracklists")
+        except Exception:
+            # The commit above already marked this row in_flight=true for a slice that this
+            # enqueue call just failed to create -- nothing will ever call
+            # record_drain_slice_completion for it, so left alone the row would read "Running"
+            # until clear_stale_in_flight's own staleness window (worker_job_timeout *
+            # (max_retries + 1) + a buffer -- several minutes) elapses. Clear it now instead, with
+            # the ordinary cooldown applied, so the very next cron tick retries the pass rather
+            # than leaving the card lying about progress in the meantime.
+            await clear_stale_in_flight(session, cooldown_seconds=settings.tracklist_drain_cooldown_sec)
+            await session.commit()
+            raise
     response = templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_run_drain_response.html",

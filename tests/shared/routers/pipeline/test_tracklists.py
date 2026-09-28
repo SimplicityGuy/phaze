@@ -411,6 +411,11 @@ async def test_run_tracklist_drain_arms_and_enqueues_one_job_on_the_controller_q
 
     state = await get_arm_state(session)
     assert state.armed is True
+    # phaze-5sj7k review fix: the Run-enqueued slice must be marked in_flight, atomically with
+    # the arm -- otherwise the cron's very next tick sees armed-and-not-in_flight and stacks a
+    # second, concurrent slice on top of this one (see arm_if_not_running's own docstring).
+    assert state.in_flight is True
+    assert state.slice_enqueued_at is not None
 
 
 @pytest.mark.asyncio
@@ -431,6 +436,35 @@ async def test_run_tracklist_drain_while_already_running_does_not_enqueue_a_dupl
 
     state = await get_arm_state(session)
     assert state.armed is True
+
+
+@pytest.mark.asyncio
+async def test_run_tracklist_drain_clears_in_flight_if_the_enqueue_itself_fails(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """arm_if_not_running's own commit lands before the router attempts to enqueue. If THAT
+    enqueue then fails, the row must not be left claiming in_flight=true for a slice that was
+    never actually queued -- clear_stale_in_flight is applied immediately (with the ordinary
+    cooldown) rather than waiting out its own several-minute staleness window (phaze-5sj7k review
+    fix)."""
+    import phaze.routers.pipeline.tracklists as tracklists_module
+    from phaze.services.tracklist_drain_arm import get_arm_state
+
+    await _seed_live_set_file(session)
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(tracklists_module.enqueue_router, "resolve_queue_for_task", _boom)
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        await client.post("/pipeline/run-tracklist-drain")
+
+    state = await get_arm_state(session)
+    assert state.armed is True  # the arm itself is not rolled back, only the slice gate
+    assert state.in_flight is False
+    assert state.slice_enqueued_at is None
+    assert state.next_eligible_at is not None
 
 
 # phaze-6nrrf: the continuous-drain ARM/DISARM operator control (workspace buttons replaced by
