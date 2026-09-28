@@ -417,6 +417,31 @@ body { font-family: 'Inter', sans-serif; }
 }
 .analysis-timeline-tooltip[data-side="start"] { transform: none; }
 .analysis-timeline-tooltip[data-side="end"] { transform: translateX(-100%); }
+.analysis-timeline-bpm-marker {
+    position: absolute;
+    z-index: 4;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-left: -0.25rem;
+    margin-top: -0.25rem;
+    border-radius: 9999px;
+    background: var(--phaze-text-link);
+    pointer-events: none;
+}
+.analysis-timeline-bpm-marker-label {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translate(-50%, -0.25rem);
+    white-space: nowrap;
+    border-radius: 0.25rem;
+    background: white;
+    padding: 0 0.25rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--phaze-text-link);
+}
+.dark .analysis-timeline-bpm-marker-label { background: var(--color-phaze-bg); }
 
 /* phaze-x1qr3.10: the six marks one elapsed time drives outside the cursor and the readout.
    Every one of them is a HIGHLIGHT over something already drawn -- none of them adds a value,

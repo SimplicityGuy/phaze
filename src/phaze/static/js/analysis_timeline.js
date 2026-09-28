@@ -85,16 +85,20 @@
     }
 
     // Phrases. One vocabulary for the readout, the tooltip and `aria-valuetext`, so a screen
-    // reader hears the same four facts -- time, track, key, mood -- the tooltip shows.
+    // reader hears the same six facts -- time, BPM, track, energy, key, mood -- the tooltip shows.
 
     function range(window) {
         return `${elapsed(window.start)}–${elapsed(window.end)}`;
     }
 
+    function formatBpm(bpm) {
+        return Number(bpm).toFixed(Number.isInteger(bpm) ? 0 : 1);
+    }
+
     function fineDescription(window) {
         if (!window) return "Fine: no measured window";
         const values = [];
-        if (window.bpm !== null) values.push(`BPM ${Number(window.bpm).toFixed(Number.isInteger(window.bpm) ? 0 : 1)}`);
+        if (window.bpm !== null) values.push(`BPM ${formatBpm(window.bpm)}`);
         if (window.key) values.push(`key ${window.key}`);
         return `Fine ${range(window)}: ${values.length ? values.join(", ") : "no BPM or key value"}`;
     }
@@ -110,6 +114,17 @@
     function trackPhrase(segment) {
         if (!segment) return "no track";
         return segment.title ? `track ${segment.position} ${segment.title}` : `track ${segment.position}`;
+    }
+
+    /** The fine window's BPM as the tooltip/readout headline states it, or an explicit absence.
+     *
+     * An absent BPM (no fine window measured here, or the measured one carries no BPM) reads
+     * "BPM —" -- the same em dash the gutter's own scale shows when it has no bounds -- rather
+     * than being silently dropped from the headline or reading "BPM undefined".
+     */
+    function bpmPhrase(fine) {
+        if (!fine || fine.bpm === null || fine.bpm === undefined) return "BPM —";
+        return `BPM ${formatBpm(fine.bpm)}`;
     }
 
     function keyPhrase(fine) {
@@ -180,6 +195,14 @@
         const scope = root.closest(SCOPE_SELECTOR);
         const trackSpan = root.querySelector("[data-timeline-track-span]");
         const keyRibbons = [...root.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon')];
+        const bpmPlot = root.querySelector("[data-timeline-bpm-plot]");
+        const bpmMarker = root.querySelector("[data-timeline-bpm-marker]");
+        const bpmMarkerLabel = bpmMarker ? bpmMarker.querySelector("[data-timeline-bpm-marker-label]") : null;
+        // Undefined on a file with no valid BPM anywhere -- `bpm_spark`/`bpm_segments` render no
+        // scale in that case either (`analysis_timeline.html`'s own `data-bpm-lo`/`data-bpm-hi`
+        // guard), so `null` here and an absent marker are the same claim made twice.
+        const bpmLo = bpmPlot && bpmPlot.dataset.bpmLo !== undefined ? Number(bpmPlot.dataset.bpmLo) : null;
+        const bpmHi = bpmPlot && bpmPlot.dataset.bpmHi !== undefined ? Number(bpmPlot.dataset.bpmHi) : null;
         const tracklist = scope ? scope.querySelector("[data-tracklist-index]") : null;
         const wheelRing = scope ? scope.querySelector("[data-journey-cursor-ring]") : null;
         // The ring is only rendered on a wheel that has a journey, so a wheel with no nodes to
@@ -237,6 +260,27 @@
             if (canLeft && canRight) hint.textContent = "Scroll timeline ↔";
             else if (canLeft) hint.textContent = "← Scroll timeline";
             else hint.textContent = "Scroll timeline →";
+        }
+
+        /** The dot and label at the cursor's fine BPM, or hidden where there is nothing to plot.
+         *
+         * `percent` is the SAME horizontal fraction the cursor and tooltip already use, so the
+         * dot sits on the cursor line rather than drifting to its own x. The vertical fraction
+         * mirrors `bpm_spark`/`bpm_segments` exactly -- `(hi - bpm) / (hi - lo)`, higher BPM
+         * higher on the chart -- so the dot lands on the plotted line, not merely near it.
+         */
+        function markBpmMarker(fine, percent) {
+            if (!bpmMarker) return;
+            const bpm = fine && fine.bpm !== null && fine.bpm !== undefined ? Number(fine.bpm) : null;
+            if (bpm === null || bpmLo === null || bpmHi === null || bpmHi === bpmLo) {
+                bpmMarker.hidden = true;
+                return;
+            }
+            const fraction = clamp((bpmHi - bpm) / (bpmHi - bpmLo), 0, 1);
+            bpmMarker.hidden = false;
+            bpmMarker.style.left = `${percent}%`;
+            bpmMarker.style.top = `${fraction * 100}%`;
+            if (bpmMarkerLabel) bpmMarkerLabel.textContent = `BPM ${formatBpm(bpm)}`;
         }
 
         function markTrackSpan(segment) {
@@ -314,6 +358,7 @@
             const run = keyRunAt(keyRuns, currentTime, duration);
             const headline = [
                 `At ${elapsed(currentTime)}`,
+                bpmPhrase(fine),
                 trackPhrase(segment),
                 energyPhrase(coarse),
                 keyPhrase(fine),
@@ -338,6 +383,7 @@
             markTracklistRow(segment);
             markWheel(run);
             markGlyph(coarse);
+            markBpmMarker(fine, percent);
             if (ensureVisible) {
                 const target = (currentTime / duration) * inspector.clientWidth;
                 const margin = Math.min(80, viewport.clientWidth / 4);
