@@ -448,6 +448,13 @@ tr[data-track-row][tabindex]:focus-visible {
     outline: 2px solid var(--phaze-text-link);
     outline-offset: -2px;
 }
+/* phaze-n0h86: a focused wheel node. Focus also inspects that node's run, so the cursor ring
+   lands on it too -- the outline is what keeps "focused" tellable from "current" when the ring
+   later moves on to a node the pointer drove. */
+circle[data-journey-node][tabindex]:focus-visible {
+    outline: 2px solid var(--phaze-text-link);
+    outline-offset: 2px;
+}
 .set-glyph-cursor {
     position: absolute;
     z-index: 1;

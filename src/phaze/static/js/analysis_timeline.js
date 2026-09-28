@@ -182,6 +182,9 @@
         const keyRibbons = [...root.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon')];
         const tracklist = scope ? scope.querySelector("[data-tracklist-index]") : null;
         const wheelRing = scope ? scope.querySelector("[data-journey-cursor-ring]") : null;
+        // The ring is only rendered on a wheel that has a journey, so a wheel with no nodes to
+        // hover has no ring and is never listened to either.
+        const wheel = wheelRing ? wheelRing.closest("[data-harmonic-wheel]") : null;
         const glyph = scope ? scope.querySelector("[data-set-glyph]") : null;
         const glyphCursor = scope ? scope.querySelector("[data-set-glyph-cursor]") : null;
 
@@ -269,18 +272,18 @@
 
         function markWheel(run) {
             if (!wheelRing) return;
-            const wheel = wheelRing.closest("svg");
             const node = run && wheel ? wheel.querySelector(`[data-journey-node][data-node-index="${run.index}"]`) : null;
-            if (!node) {
-                wheelRing.hidden = true;
-                return;
-            }
+            // The ATTRIBUTE, never `wheelRing.hidden`. The ring is an SVG <circle>, and
+            // SVGElement has no `hidden` IDL property: assigning one only sets a JS expando, the
+            // server-rendered `hidden` attribute stays, and `[hidden] { display: none }` keeps
+            // the ring invisible while every read of `.hidden` reports it shown (phaze-n0h86).
+            wheelRing.toggleAttribute("hidden", !node);
+            if (!node) return;
             // The ring reads the NODE's own geometry rather than recomputing a wheel position, so
             // it cannot drift off the dot it is ringing however the wheel's radii change.
             wheelRing.setAttribute("cx", node.getAttribute("cx"));
             wheelRing.setAttribute("cy", node.getAttribute("cy"));
             wheelRing.setAttribute("r", String(Number(node.getAttribute("r")) + 4));
-            wheelRing.hidden = false;
         }
 
         function markGlyph(coarse) {
@@ -427,6 +430,18 @@
             return (start + (Number.isFinite(end) ? clamp(end, start, duration) : duration)) / 2;
         }
 
+        /** The midpoint of the key run a wheel node was drawn from, or null for an unknown node.
+         *
+         * Looked up by `index`, the same numbering `markWheel` rings by, so hovering a node lands
+         * the cursor inside the run that rings that very node -- never a sibling visit to the same
+         * Camelot position, which is a different node with a different index.
+         */
+        function nodeTime(node) {
+            const index = Number(node.dataset.nodeIndex);
+            const run = keyRuns.find((candidate) => candidate.index === index);
+            return run ? (clamp(run.start, 0, duration) + clamp(run.end, run.start, duration)) / 2 : null;
+        }
+
         inspector.addEventListener("pointermove", (event) => inspectFromPointer(pointerTime(event)));
         inspector.addEventListener("pointerdown", (event) => inspect(pointerTime(event), false, false));
         inspector.addEventListener("pointerleave", rest);
@@ -470,6 +485,26 @@
             tracklist.addEventListener("mouseleave", rest);
             tracklist.addEventListener("focusout", (event) => {
                 if (!tracklist.contains(event.relatedTarget)) rest();
+            });
+        }
+
+        // phaze-n0h86: the wheel drives the timeline back. Same shape as the tracklist -- delegated
+        // on the <svg>, hover and focus inspect the node's run, leaving rests -- so a node is one
+        // more route to the one elapsed time rather than a second cursor. The drawer renders no
+        // wheel, so `wheel` is null there and nothing is attached.
+        if (wheel) {
+            const nodeOf = (event) => (event.target instanceof Element ? event.target.closest("[data-journey-node][data-node-index]") : null);
+            const enter = (event) => {
+                const node = nodeOf(event);
+                if (!node) return;
+                const time = nodeTime(node);
+                if (time !== null) inspect(time, event.type === "focusin", false);
+            };
+            wheel.addEventListener("mouseover", enter);
+            wheel.addEventListener("focusin", enter);
+            wheel.addEventListener("mouseleave", rest);
+            wheel.addEventListener("focusout", (event) => {
+                if (!wheel.contains(event.relatedTarget)) rest();
             });
         }
 

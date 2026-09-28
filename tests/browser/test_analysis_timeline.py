@@ -293,7 +293,12 @@ async def _marks(page: Any) -> dict[str, Any]:
             const glyphCursor = document.querySelector('[data-set-glyph-cursor]');
             const currentRibbons = [...document.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon.is-current')];
             const currentRows = [...document.querySelectorAll('[data-track-row].is-current')];
-            const ringedNode = ring && !ring.hidden
+            // The ring is an SVG <circle>, which has no `hidden` IDL property: `ring.hidden` reads
+            // back whatever expando the script last assigned and says nothing about what is drawn.
+            // Read the ATTRIBUTE and the computed display instead -- the pair is what the reader
+            // sees (phaze-n0h86: the ring shipped invisible while `ring.hidden` read false).
+            const ringHidden = !ring || ring.hasAttribute('hidden') || getComputedStyle(ring).display === 'none';
+            const ringedNode = !ringHidden
                 ? [...document.querySelectorAll('[data-journey-node]')].find(
                       (node) => node.getAttribute('cx') === ring.getAttribute('cx') && node.getAttribute('cy') === ring.getAttribute('cy'))
                 : null;
@@ -304,7 +309,7 @@ async def _marks(page: Any) -> dict[str, Any]:
                 ribbonCount: currentRibbons.length,
                 ribbonStart: currentRibbons.length ? currentRibbons[0].dataset.ribbonStart : null,
                 rowPositions: currentRows.map((row) => row.dataset.trackPosition),
-                ringHidden: ring.hidden,
+                ringHidden,
                 ringNodeIndex: ringedNode ? ringedNode.dataset.nodeIndex : null,
                 glyphHidden: glyphCursor.hidden,
                 glyphLeft: glyphCursor.style.left,
@@ -416,6 +421,73 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     left = await _marks(page)
     assert "peak" in left["tooltip"].lower()
     assert left == resting
+
+
+async def test_hovering_or_focusing_a_wheel_node_drives_the_timeline_to_that_key_run(page: Any, seed: Seeder) -> None:
+    """phaze-n0h86: the wheel is an input route too, by pointer and by keyboard.
+
+    The seeded fine tier is 12 windows of A minor (8A) then 12 of C major (8B), 30 s each, so the
+    two key runs are [0, 360) and [360, 720) and their midpoints -- where a node lands the cursor --
+    are 180 s and 540 s. Stated here from the fixture, not read back from the page's payload, so
+    the page cannot agree with this test merely by agreeing with itself.
+
+    Each state is checked on BOTH sides of the link: the timeline's value and readout moved to the
+    node's run, and the ring (visibility read from the attribute and computed style, see
+    ``_marks``) sits on the node that was hovered. Keyboard reach is proved with a real Tab press
+    from one node to the next, not a scripted ``focus()`` alone, because a node that is focusable
+    only by script is not reachable by anyone using a keyboard.
+    """
+    _file, _timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    resting = await _marks(page)
+    node_zero = page.locator('[data-journey-node][data-node-index="0"]')
+    node_one = page.locator('[data-journey-node][data-node-index="1"]')
+
+    # --- Pointer: each node scrubs the timeline to its own run --------------------------------
+    await node_zero.hover()
+    from_zero = await _marks(page)
+    assert from_zero["valueNow"] == "180"
+    assert "8A" in from_zero["valueText"]
+    assert from_zero["rowPositions"] == ["1"]
+    assert from_zero["ringHidden"] is False
+    assert from_zero["ringNodeIndex"] == "0"
+
+    await node_one.hover()
+    from_one = await _marks(page)
+    assert from_one["valueNow"] == "540"
+    assert "8B" in from_one["valueText"]
+    assert from_one["rowPositions"] == ["2"]
+    assert from_one["ringNodeIndex"] == "1"
+
+    # Leaving the wheel returns the whole page to the peak, exactly as leaving the lanes does.
+    await page.mouse.move(4, 4)
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+    assert await _marks(page) == resting
+
+    # --- Keyboard: nodes are tab stops, and Tab between them drives the timeline --------------
+    await node_zero.focus()
+    assert (await _marks(page))["valueNow"] == "180"
+    await page.keyboard.press("Tab")
+    assert await node_one.evaluate("el => el === document.activeElement")
+    from_tab = await _marks(page)
+    assert from_tab["valueNow"] == "540"
+    assert from_tab["ringNodeIndex"] == "1"
+
+    # Tabbing OUT of the wheel rests the page, like tabbing out of the tracklist.
+    await page.keyboard.press("Tab")
+    assert not await page.evaluate("() => document.querySelector('[data-harmonic-wheel]').contains(document.activeElement)")
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+
+    # The ring is decoration: hidden from the accessibility tree, and no live region was added
+    # anywhere for the wheel to announce through.
+    ring = page.locator("[data-journey-cursor-ring]")
+    assert await ring.get_attribute("aria-hidden") == "true"
+    assert await page.locator("[data-harmonic-journey] [aria-live]").count() == 0
 
 
 async def test_a_time_in_a_coarse_gap_marks_no_glyph_cell_rather_than_the_nearest_one(page: Any, seed: Seeder) -> None:

@@ -291,6 +291,38 @@ def test_every_dom_hook_the_inspection_drives_is_rendered_by_a_template() -> Non
     assert "data-set-glyph-cursor" in primitives and "data-set-glyph-cursor" in script
 
 
+def test_the_wheel_ring_is_shown_and_hidden_by_its_attribute_never_by_the_svg_less_hidden_property() -> None:
+    """phaze-n0h86: ``wheelRing.hidden = false`` set a JS expando on an SVG <circle> and nothing else.
+
+    SVGElement has no ``hidden`` IDL property, so the server-rendered ``hidden`` attribute stayed
+    and the ring was never drawn. The browser suite catches the symptom; this pins the cause in the
+    default suite, where a regression is seen on every bead rather than only on the browser job.
+    """
+    script = _SCRIPT.read_text(encoding="utf-8")
+
+    assert not re.search(r"wheelRing\s*\.\s*hidden\s*=", script)
+    assert 'wheelRing.toggleAttribute("hidden"' in script
+
+
+def test_the_wheel_nodes_are_focusable_hooks_the_timeline_listens_on() -> None:
+    """The reverse route (wheel -> timeline) depends on three names agreeing across three files.
+
+    The script listens on ``[data-harmonic-wheel]`` and resolves ``data-node-index``; the page's
+    wheel renders the first and the shared marks macro renders the second with a tab stop, but only
+    on the ``interactive`` branch -- the poster has no script, and a tab stop there would be inert.
+    """
+    script = _SCRIPT.read_text(encoding="utf-8")
+    wheel = _WHEEL_TEMPLATE.read_text(encoding="utf-8")
+    marks = (_TEMPLATES / "ui" / "set_marks.html").read_text(encoding="utf-8")
+
+    assert "data-harmonic-wheel" in wheel and "[data-harmonic-wheel]" in script
+    assert "[data-journey-node][data-node-index]" in script
+    node = re.search(r"<circle \{% if interactive %\}data-journey-node.*?\{% endif %\}", marks)
+    assert node is not None, "the node's page-only hooks must sit inside the `interactive` branch"
+    assert 'data-node-index="{{ node.index }}"' in node.group(0)
+    assert 'tabindex="0"' in node.group(0)
+
+
 def test_the_satellite_targets_are_looked_up_within_a_scope_never_across_the_document() -> None:
     """Both record presentations mark a scope, and the script never falls back to the document.
 
