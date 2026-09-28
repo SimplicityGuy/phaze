@@ -434,11 +434,12 @@ settings = {
         # asserts it) -- the ethics bound is unchanged, nothing may start crawling on container
         # boot. `continue_armed_tracklist_drain` below is a DIFFERENT function: it is a narrow
         # continuation gate that only re-enqueues a slice when the durable
-        # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by an
-        # operator action -- the "Run tracklist lookups" click (phaze-5sj7k,
-        # services.tracklist_drain_arm.arm_if_not_running) or the standalone Arm endpoint kept for
-        # API compatibility (services.tracklist_drain_arm.arm_drain) -- never by this cron, never
-        # by boot/deploy. Every-minute cadence matches this file's other reapers; a full slice's
+        # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by the
+        # operator's "Run tracklist lookups" click (phaze-5sj7k,
+        # services.tracklist_drain_arm.arm_if_not_running) -- never by this cron, never by
+        # boot/deploy. (The standalone Arm endpoint that used to set this directly is GONE, once
+        # no served template linked to it any more -- test_no_orphaned_ui_route.) Every-minute
+        # cadence matches this file's other reapers; a full slice's
         # own host-budget pacing (~1 req/8s) is far coarser than one minute, so this cadence only
         # bounds how quickly the NEXT slice starts after the previous one's cooldown elapses, never
         # how fast requests fire.

@@ -434,24 +434,11 @@ async def test_run_tracklist_drain_while_already_running_does_not_enqueue_a_dupl
 
 
 # phaze-6nrrf: the continuous-drain ARM/DISARM operator control (workspace buttons replaced by
-# "Run tracklist lookups" + "Stop" in phaze-5sj7k; both backend endpoints are kept).
-
-
-@pytest.mark.asyncio
-async def test_arm_persists_armed_state_and_enqueues_nothing_itself(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/arm-tracklist-drain flips the durable flag but does NOT enqueue a slice --
-    that is the continue_armed_tracklist_drain CronJob's job, on its own next tick."""
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/arm-tracklist-drain")
-    assert response.status_code == 200, response.text
-    assert "Running" in response.text
-    assert capture == []
-
-    from phaze.services.tracklist_drain_arm import get_arm_state
-
-    state = await get_arm_state(session)
-    assert state.armed is True
+# "Run tracklist lookups" + "Stop" in phaze-5sj7k; POST /pipeline/arm-tracklist-drain is REMOVED
+# -- test_no_orphaned_ui_route flagged it once no served template linked to it any more, since
+# "Run tracklist lookups" now arms the drain itself. The sibling Disarm endpoint is kept: the
+# workspace's "Stop" button still posts to it. Tests below that need an armed row without a live
+# SAQ enqueue call `arm_drain` directly instead of going through the removed endpoint.
 
 
 @pytest.mark.asyncio
@@ -493,10 +480,11 @@ async def test_drain_status_fragment_renders_idle_by_default(client: AsyncClient
 
 @pytest.mark.asyncio
 async def test_drain_status_fragment_renders_running_after_arming(client: AsyncClient, session: AsyncSession) -> None:
-    await _seed_live_set_file(session)
+    from phaze.services.tracklist_drain_arm import arm_drain
 
-    arm_response = await client.post("/pipeline/arm-tracklist-drain")
-    assert "Running" in arm_response.text
+    await _seed_live_set_file(session)
+    await arm_drain(session)
+    await session.commit()
 
     status_response = await client.get("/pipeline/tracklist-drain-status")
     assert status_response.status_code == 200

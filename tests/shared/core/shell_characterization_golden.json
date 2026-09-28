@@ -82,7 +82,6 @@
     "POST /execution/start",
     "POST /pipeline/analysis-failed/retry",
     "POST /pipeline/analyze",
-    "POST /pipeline/arm-tracklist-drain",
     "POST /pipeline/backfill-cloud",
     "POST /pipeline/disarm-tracklist-drain",
     "POST /pipeline/extract-metadata",

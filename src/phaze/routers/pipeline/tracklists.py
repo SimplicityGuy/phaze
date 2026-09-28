@@ -36,7 +36,7 @@ from phaze.services import enqueue_router
 from phaze.services.pipeline import get_match_pending_tracklists
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
-from phaze.services.tracklist_drain_arm import arm_drain, arm_if_not_running, disarm_drain, get_arm_state
+from phaze.services.tracklist_drain_arm import arm_if_not_running, disarm_drain, get_arm_state
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import tracklist_drain_status
@@ -351,11 +351,12 @@ async def unprioritize_tracklist_lookup_ui(
 
 
 async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLResponse:
-    """Shared render for the drain-status fragment -- read by the GET view and by both the
-    arm/disarm POST endpoints below (phaze-6nrrf), so all three always agree on exactly what
-    "the current state" means: funnel data from :func:`tracklist_drain_status` (no host
-    requests) plus the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
-    row (no queue at all -- a plain read).
+    """Shared render for the drain-status fragment -- read by the GET view and by the disarm POST
+    endpoint below (phaze-6nrrf; the run/arm endpoints render their own responses, see their own
+    docstrings), so all consumers always agree on exactly what "the current state" means: funnel
+    data from :func:`tracklist_drain_status` (no host requests) plus the durable
+    :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState` row (no queue at all --
+    a plain read).
     """
 
     @contextlib.asynccontextmanager
@@ -381,7 +382,8 @@ async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLR
 @router.get("/pipeline/tracklist-drain-status", response_class=HTMLResponse)
 async def tracklist_drain_status_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """HTMX fragment: queue depth, throughput vs the daily ceiling, an honest ETA, and the
-    ARM/DISARM state (phaze-6nrrf).
+    running/idle/stopped-after-failures state (phaze-6nrrf; text replaced from an ARM/DISARM
+    badge in phaze-5sj7k).
 
     Calls :func:`phaze.tasks.tracklist_drain.tracklist_drain_status` DIRECTLY (per its own
     docstring: it spends no host requests, so routing it through a queue and a poll would buy
@@ -408,12 +410,12 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     decision. What changed is what the click MEANS: the operator does not think in terms of
     "one batch now, a separate Arm for the rest" -- clicking Run is expected to make the lookups
     "run, or be scheduled to run, over time until done" (the operator's own words). So this
-    endpoint now does what ``arm-tracklist-drain`` used to do FIRST (:func:`~phaze.services.
-    tracklist_drain_arm.arm_if_not_running`), then enqueues the first slice itself rather than
-    waiting for ``continue_armed_tracklist_drain``'s next tick -- the rest of the pass is paced by
-    that same cron exactly as before. A click while already armed is a no-op on the arm state and
-    enqueues NOTHING (``arm_if_not_running`` returns ``False``): the already-running pass owns
-    pacing the rest, and a second concurrent slice would just double up on the same host budget.
+    endpoint now arms the drain FIRST (:func:`~phaze.services.tracklist_drain_arm.arm_if_not_running`),
+    then enqueues the first slice itself rather than waiting for
+    ``continue_armed_tracklist_drain``'s next tick -- the rest of the pass is paced by that same
+    cron exactly as before. A click while already armed is a no-op on the arm state and enqueues
+    NOTHING (``arm_if_not_running`` returns ``False``): the already-running pass owns pacing the
+    rest, and a second concurrent slice would just double up on the same host budget.
 
     ``limit`` is left at the default (:data:`~phaze.services.tracklist_drain.DEFAULT_LOOKUP_LIMIT`
     lookups); any operator-flagged files are picked up automatically by ``build_drain_queue``
@@ -438,30 +440,6 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     # panel -- one bounded re-fetch per click, never an interval.
     response.headers["HX-Trigger"] = "drain-refresh"
     return response
-
-
-@router.post("/pipeline/arm-tracklist-drain", response_class=HTMLResponse)
-async def arm_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """HTMX endpoint: arm the continuous drain without enqueueing a slice (phaze-6nrrf).
-
-    Persists ``armed=true`` on the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
-    row and returns immediately -- it does NOT enqueue a slice itself. The
-    ``continue_armed_tracklist_drain`` CronJob (``tasks/tracklist_drain_control.py``, every-minute
-    cadence like this controller's other reapers) picks the armed flag up on its next tick and
-    enqueues the first slice.
-
-    phaze-5sj7k: the tracklist workspace's own "Arm" button is GONE -- "Run tracklist lookups"
-    (``run_tracklist_drain_ui`` above) is now the operator's one consent click, and it arms AND
-    enqueues the first slice itself rather than waiting a tick. This endpoint is kept, unused by
-    the UI, as a narrower primitive (``arm_if_not_running`` without the immediate enqueue) rather
-    than removed outright -- removing a route is a URL-contract change
-    (``tests/shared/routers/test_pipeline_package_facade.py``'s frozen route list) this bead's
-    acceptance criteria never asked for, and several tests below still arm state directly through
-    it rather than through a live SAQ enqueue.
-    """
-    await arm_drain(session)
-    await session.commit()
-    return await _render_drain_status(request, session)
 
 
 @router.post("/pipeline/disarm-tracklist-drain", response_class=HTMLResponse)

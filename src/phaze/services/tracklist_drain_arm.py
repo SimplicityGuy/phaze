@@ -88,9 +88,12 @@ async def arm_drain(session: AsyncSession, *, now: datetime | None = None) -> Tr
     immediately re-arms) must not let a second slice enqueue on top of the first -- the cron's
     ``in_flight`` gate stays authoritative regardless of which arm cycle started it.
 
-    Still used directly by ``POST /pipeline/arm-tracklist-drain`` (kept for API compatibility --
-    see that endpoint's docstring) and by tests that need an armed row without going through the
-    "Run tracklist lookups" click. The click itself now goes through :func:`arm_if_not_running`.
+    The standalone ``POST /pipeline/arm-tracklist-drain`` endpoint that used to call this
+    directly is GONE (phaze-5sj7k: no served template linked to it once "Run tracklist lookups"
+    started arming the drain itself, which flags as an orphaned route -- see
+    ``test_no_orphaned_ui_route``). This function is kept for tests that need an armed row
+    without going through a live SAQ enqueue; the operator's own click now goes through
+    :func:`arm_if_not_running`.
     """
     moment = now or datetime.now(UTC)
     row = await _load_or_create(session, lock=True)

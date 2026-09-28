@@ -36,7 +36,10 @@ FROZEN_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # phaze-lwz8n: the Analyze waiting list, loaded on demand (never by the 5s poll).
         ("GET", "/pipeline/analyze-queue/waiting"),
         ("POST", "/pipeline/analysis-failed/retry"),
-        ("POST", "/pipeline/arm-tracklist-drain"),
+        # phaze-5sj7k: POST /pipeline/arm-tracklist-drain is REMOVED, not a drift -- "Run
+        # tracklist lookups" now arms the drain itself (arm_if_not_running), so the standalone
+        # Arm endpoint had no caller in any served template (test_no_orphaned_ui_route). The
+        # sibling Disarm endpoint is kept: the workspace's "Stop" button still posts to it.
         ("POST", "/pipeline/backfill-cloud"),
         ("POST", "/pipeline/disarm-tracklist-drain"),
         ("POST", "/pipeline/extract-metadata"),

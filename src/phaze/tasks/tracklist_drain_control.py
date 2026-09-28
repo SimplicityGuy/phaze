@@ -10,8 +10,11 @@ CronJob that only ever CONTINUES a pass the operator has already, explicitly con
 durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState` row -- armed by the
 tracklist workspace's "Run tracklist lookups" click (phaze-5sj7k,
 ``services.tracklist_drain_arm.arm_if_not_running``, called from
-``routers.pipeline.run_tracklist_drain_ui``) or, for API compatibility, the standalone
-``routers.pipeline.arm_tracklist_drain_ui`` the workspace no longer links to.
+``routers.pipeline.run_tracklist_drain_ui``). The standalone ``arm-tracklist-drain`` endpoint
+that used to arm this row directly is GONE -- once "Run tracklist lookups" started arming the
+drain itself, no served template linked to the standalone endpoint any more, which
+``test_no_orphaned_ui_route`` flags; ``services.tracklist_drain_arm.arm_drain`` (the function it
+called) is kept for tests only.
 
 This is the same shape ``tasks.controller`` warns against elsewhere -- see its ``cron_jobs`` list
 comment: "DO NOT re-add a general auto-advance cron here" -- but it is not that pattern. Every
