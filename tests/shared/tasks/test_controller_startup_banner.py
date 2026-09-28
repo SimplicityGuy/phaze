@@ -251,3 +251,35 @@ async def test_controller_shutdown_stops_the_runtime_config_listener() -> None:
     await controller.shutdown(ctx)
 
     listener.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_stops_the_backends_watcher_before_disposing_the_task_engine() -> None:
+    """shutdown() must also stop ctx['runtime_config_backends_watcher'] (phaze-mvq8z.8's second
+    watcher, over backends.toml's own directory) -- guarded the same ``is not None`` way as every
+    other ctx resource above, so an empty ctx (``test_controller_shutdown_tolerates_missing_ctx_keys``)
+    keeps no-op-ing. It stops BEFORE task_engine.dispose() (the backends reloader's session
+    factory is bound to that engine), proven here by an engine.dispose that raises if called
+    before the watcher's stop() is awaited.
+    """
+    from phaze.tasks import controller
+
+    order: list[str] = []
+    watcher = MagicMock()
+
+    async def _stop() -> None:
+        order.append("watcher.stop")
+
+    watcher.stop = _stop
+
+    engine = MagicMock()
+
+    async def _dispose() -> None:
+        order.append("engine.dispose")
+
+    engine.dispose = _dispose
+
+    ctx: dict[str, Any] = {"runtime_config_backends_watcher": watcher, "task_engine": engine}
+    await controller.shutdown(ctx)
+
+    assert order == ["watcher.stop", "engine.dispose"]

@@ -50,6 +50,15 @@ applied successfully, and is called only when the store's snapshot differs from 
 this module cannot make itself -- ``phaze-mvq8z.8``'s "a backend with in-flight ``cloud_job``
 rows cannot be removed" is the motivating one. Sync or async; raising rejects the reload.
 
+**Registry reload hooks** (:meth:`RuntimeConfigStore.register_registry_reload_hook`) are for a
+subsystem whose reloadable state lives OUTSIDE this snapshot entirely and therefore never moves
+its digest -- ``backends``/``buckets`` (``phaze-mvq8z.8``): TOML-only, deliberately excluded from
+:class:`RuntimeConfig` (see :data:`_BACKENDS_TOML_KEYS`), so a backends.toml-only edit changes no
+value an applier/validator would ever see. A registry hook runs on EVERY :meth:`reload` attempt,
+regardless of whether the candidate's digest differs from the last one, and owns its own change
+detection and error handling -- ``reload()`` awaits each hook but does not let one affect the
+:class:`ReloadResult` or another hook; see :mod:`phaze.runtime_config_backends`.
+
 Registering against the process-wide store::
 
     store = get_runtime_config_store()
@@ -94,6 +103,9 @@ Applier = Callable[["RuntimeConfig", "RuntimeConfig"], Awaitable[None] | None]
 Validator = Callable[["RuntimeConfig"], Awaitable[None] | None]
 #: The DB-override layer: key -> value for every override currently set.
 OverrideProvider = Callable[[], Awaitable[Mapping[str, Any]]]
+#: A hook for state that lives outside RuntimeConfig (backends.toml, phaze-mvq8z.8) and must
+#: still be driven by the same triggers. Always async; runs on every reload() attempt.
+RegistryReloadHook = Callable[["ReloadSource"], Awaitable[None]]
 
 
 class RuntimeConfig(BaseModel):
@@ -245,6 +257,7 @@ class RuntimeConfigStore:
         self._state = ConfigSnapshot(self._base_config, MappingProxyType(dict(base_sources)), self._base_config.digest())
         self._appliers: dict[str, _Registration] = {}
         self._validators: dict[str, Validator] = {}
+        self._registry_hooks: dict[str, RegistryReloadHook] = {}
         self._lock = asyncio.Lock()
         self._last_result: ReloadResult | None = None
 
@@ -299,6 +312,19 @@ class RuntimeConfigStore:
         candidate = await asyncio.to_thread(self._build, overrides)
         return candidate.config
 
+    def register_registry_reload_hook(self, name: str, hook: RegistryReloadHook) -> None:
+        """Run ``hook(source)`` on every :meth:`reload` attempt, unconditionally.
+
+        For state that lives OUTSIDE :class:`RuntimeConfig` and so never moves its digest --
+        ``backends.toml`` (``phaze-mvq8z.8``) is the motivating case; see the module docstring's
+        "Registry reload hooks" section. The hook manages its own change detection and its own
+        error handling: a hook that raises is caught and logged here, never allowed to affect
+        this reload's :class:`ReloadResult` or stop a later hook from running.
+        """
+        if name in self._registry_hooks:
+            raise ValueError(f"registry reload hook {name!r} is already registered")
+        self._registry_hooks[name] = hook
+
     # The pipeline
 
     async def reload(self, source: ReloadSource) -> ReloadResult:
@@ -333,7 +359,16 @@ class RuntimeConfigStore:
                 result = ReloadResult(source=source, outcome=outcome, changes=changes, applier_errors=applier_errors)
             self._last_result = result
             _emit(result, self._state.digest)
+            await self._run_registry_hooks(source)
             return result
+
+    async def _run_registry_hooks(self, source: ReloadSource) -> None:
+        """Every registry hook, unconditionally, isolated from each other and from ``result`` above."""
+        for name, hook in self._registry_hooks.items():
+            try:
+                await hook(source)
+            except Exception:
+                logger.exception("phaze.runtime_config registry reload hook failed", hook=name)
 
     def _build(self, overrides: Mapping[str, Any]) -> ConfigSnapshot:
         """Resolve every layer into a validated candidate. Blocking: runs off the event loop."""

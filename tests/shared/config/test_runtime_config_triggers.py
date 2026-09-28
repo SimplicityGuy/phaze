@@ -17,20 +17,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import signal
 import threading
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from phaze.config import ControlSettings
 from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
-from phaze.runtime_config_triggers import RuntimeConfigWatcher, build_watcher, install_sighup_handler
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from phaze.runtime_config_triggers import RuntimeConfigWatcher, build_backends_watcher, build_watcher, install_sighup_handler
 
 
 _POLL_INTERVAL = 0.05
@@ -314,3 +310,83 @@ def test_install_sighup_handler_off_the_main_thread_is_a_graceful_no_op() -> Non
     thread.start()
     thread.join(timeout=5)
     assert outcome["installed"] is False
+
+
+# --- backends.toml's own watcher (phaze-mvq8z.8): a SECOND RuntimeConfigWatcher instance. ---
+
+
+def test_build_backends_watcher_uses_the_real_backends_config_path_not_a_caller_local_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same regression ``test_build_watcher_uses_get_settings_directly...`` guards for the
+    runtime.toml watcher: must resolve via ``ControlSettings.model_config`` / its own
+    ``get_settings`` import, never a caller-local mocked binding."""
+    store = MagicMock()
+    monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: MagicMock())  # the trap this regresses
+    monkeypatch.delenv("PHAZE_BACKENDS_CONFIG_FILE", raising=False)
+    watcher = build_backends_watcher(store)
+    assert watcher._directory == Path("/etc/phaze")  # the real default backends.toml's parent
+    assert watcher._target_name == "backends.toml"
+
+
+def test_build_backends_watcher_follows_a_configured_backends_config_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The default paths differ -- ``/etc/phaze/backends.toml`` vs. ``/etc/phaze/runtime/runtime.toml``
+    -- so a deployment pointing PHAZE_BACKENDS_CONFIG_FILE elsewhere must watch THAT directory."""
+    monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(tmp_path / "elsewhere" / "backends.toml"))
+    watcher = build_backends_watcher(MagicMock())
+    assert watcher._directory == tmp_path / "elsewhere"
+    assert watcher._target_name == "backends.toml"
+
+
+@pytest.mark.asyncio
+async def test_a_backends_toml_edit_triggers_one_debounced_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end proof (bead acceptance): a backends-only file edit reloads the registry.
+
+    ``store.reload("file")`` itself doesn't touch backends.toml at all (it lives outside
+    RuntimeConfig by design -- see ``phaze.runtime_config_backends``'s module docstring); what
+    this test proves is narrower and just as necessary: the SECOND watcher this bead adds
+    actually calls ``store.reload("file")`` when ``backends.toml`` -- not ``runtime.toml`` --
+    changes, using the real watchdog debounce/hash pipeline, not a bare unit-level ``.reload()``
+    call.
+    """
+    backends_path = tmp_path / "backends.toml"
+    monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(backends_path))
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "true")
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS", str(_POLL_INTERVAL))
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS", str(_SETTLE_SECONDS))
+    backends_path.write_text('[[backends]]\nkind = "local"\nid = "local"\nrank = 99\ncap = 1\n', encoding="utf-8")
+
+    store = _store(tmp_path)
+    spy = _spy_reload(store, monkeypatch)
+    watcher = build_backends_watcher(store)
+    watcher.start()
+    try:
+        backends_path.write_text(
+            '[[backends]]\nkind = "local"\nid = "local"\nrank = 99\ncap = 2\n',
+            encoding="utf-8",
+        )
+        await _wait_for_call_count(spy, 1)
+        spy.assert_awaited_once_with("file")
+    finally:
+        await watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_edit_to_runtime_toml_does_not_touch_the_backends_watcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two watchers are scoped to their own filename -- editing runtime.toml in the SAME
+    directory backends.toml happens to live in must not fire the backends watcher (and, by the
+    existing directory-watch test above, vice versa)."""
+    monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(tmp_path / "backends.toml"))
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "true")
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS", str(_POLL_INTERVAL))
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS", str(_SETTLE_SECONDS))
+    (tmp_path / "backends.toml").write_text('[[backends]]\nkind = "local"\nid = "local"\nrank = 99\ncap = 1\n', encoding="utf-8")
+
+    store = _store(tmp_path)
+    spy = _spy_reload(store, monkeypatch)
+    watcher = build_backends_watcher(store)
+    watcher.start()
+    try:
+        (tmp_path / RUNTIME_TOML_NAME).write_text("worker_max_jobs = 3\n", encoding="utf-8")
+        await asyncio.sleep(_POLL_INTERVAL * 3 + _SETTLE_SECONDS * 2)
+        assert spy.await_count == 0
+    finally:
+        await watcher.stop()

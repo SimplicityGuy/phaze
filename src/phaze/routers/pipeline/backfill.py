@@ -20,6 +20,7 @@ from phaze.routers.pipeline.analysis import (
     _route_discovered_by_duration,
     _scheduling_ledger_cas_delete_stmt,
 )
+from phaze.runtime_config import current as current_runtime_config
 from phaze.services.analysis_enqueue import process_file_job_key
 from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates, get_live_job_keys
 from phaze.services.route_control import get_route_control
@@ -85,7 +86,7 @@ async def trigger_backfill_cloud(
             context={"request": request, "count": 0, "disabled": True},
         )
 
-    threshold = settings.cloud_route_threshold_sec
+    threshold = current_runtime_config().cloud_route_threshold_sec
     count = await count_backfill_candidates(session, threshold)
     if count == 0:
         return templates.TemplateResponse(
