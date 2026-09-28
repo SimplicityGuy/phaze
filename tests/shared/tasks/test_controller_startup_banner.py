@@ -212,3 +212,22 @@ async def test_controller_shutdown_closes_the_dedicated_cache_redis_and_task_rou
 
     cache_redis.aclose.assert_awaited_once()
     task_router.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_stops_the_runtime_config_watcher() -> None:
+    """shutdown() must also stop ctx['runtime_config_watcher'] (phaze-mvq8z.5's SIGHUP +
+    directory-watch trigger, stopped last per its own comment) when startup populated it --
+    guarded the same ``is not None`` way as every other ctx resource above, so an empty ctx
+    (``test_controller_shutdown_tolerates_missing_ctx_keys``) keeps no-op-ing."""
+    from unittest.mock import AsyncMock
+
+    from phaze.tasks import controller
+
+    watcher = MagicMock()
+    watcher.stop = AsyncMock()
+
+    ctx: dict[str, Any] = {"runtime_config_watcher": watcher}
+    await controller.shutdown(ctx)
+
+    watcher.stop.assert_awaited_once()
