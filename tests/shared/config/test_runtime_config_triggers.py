@@ -247,6 +247,16 @@ def test_build_watcher_uses_get_settings_directly_not_a_caller_local_binding(mon
     assert watcher._directory.name == "runtime"  # the real default, /etc/phaze/runtime
 
 
+def test_the_default_is_polling_not_native() -> None:
+    """Dispatcher decision (phaze-mvq8z dispatch, reviewing this bead before submit): default to
+    PollingObserver, not native -- phaze-mvq8z.3 measured native silently seeing ZERO host edits
+    through a Colima/virtiofs bind mount (no error, just no reload), and neither Docker Desktop nor
+    a native Linux host mount (the production target) is verified either way. A silently-inert
+    trigger is strictly worse than polling one small directory every second."""
+    assert ControlSettings().runtime_config_watch_polling is True
+    assert build_watcher(MagicMock())._polling is True  # asserting the resolved value, not just the settings field
+
+
 # --- SIGHUP: in-process wiring tests. The real-subprocess delivery test lives in its own file. ---
 
 

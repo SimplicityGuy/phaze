@@ -306,23 +306,29 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     )
     # phaze-mvq8z.5 (the trigger bead) measured, inside a real container, that the native
     # watchdog Observer sees ZERO host-side edits through a Colima/virtiofs bind mount -- for
-    # EITHER edit pattern (in-place rewrite or the atomic-rename safe-write convention) -- while
-    # PollingObserver catches both within about one poll interval. Native stays the default
-    # because it is confirmed working (and lower-overhead) on a direct host mount, which is the
-    # production (Linux home server) target; operators on a VM-backed Docker runtime for the api
-    # / control-worker / agent-worker containers (macOS Docker Desktop / Colima / rancher-desktop)
-    # set this true. Mirrors AgentSettings.watcher_polling_mode's existing knob for the unrelated
-    # media-file watcher, which cannot be reused here: this directory is watched by three
-    # DIFFERENT roles (api, control worker, agent worker), not just the agent-only watcher process.
+    # EITHER edit pattern (in-place rewrite or the atomic-rename safe-write convention) -- and
+    # produces no error of any kind when it happens: the process boots clean, the watch appears
+    # to be running, and a config edit simply never reloads. PollingObserver catches both edit
+    # patterns within about one poll interval. Docker Desktop and the Linux home server (the
+    # production target) are UNVERIFIED for native -- Linux-native-host-mount inotify is a much
+    # more standard claim than the macOS VM-boundary case, but per CLAUDE.md's transferred-model
+    # rule an untested claim is not knowledge. Dispatcher decision (phaze-mvq8z dispatch,
+    # reviewing this bead before submit): default to POLLING, not native -- a silently-inert
+    # trigger is a strictly worse failure than the modest, bounded cost of polling one small
+    # directory every second, and an operator who has verified native inotify on their own
+    # deployment can opt back out. Mirrors AgentSettings.watcher_polling_mode's existing knob for
+    # the unrelated media-file watcher, which cannot be reused here: this directory is watched by
+    # three DIFFERENT roles (api, control worker, agent worker), not just the agent-only watcher.
     runtime_config_watch_polling: bool = Field(
-        default=False,
+        default=True,
         validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "runtime_config_watch_polling"),
         description=(
             "Use watchdog's PollingObserver instead of the native inotify/FSEvents backend to watch "
-            "runtime_config_dir. Required on VM-backed Docker runtimes (Colima/Docker Desktop on "
-            "macOS) where host-side edits never reach the container via the native backend "
-            "(phaze-mvq8z.3 measurement). Native is the default -- confirmed working on a direct "
-            "host bind mount (the production target)."
+            "runtime_config_dir. Defaults to true: phaze-mvq8z.3 measured the native backend "
+            "silently seeing ZERO host edits through a Colima/virtiofs bind mount (no error, just "
+            "no reload), and Docker Desktop / a native Linux host mount are unverified either way -- "
+            "a silent miss is worse than polling's modest, bounded cost. Set false only once native "
+            "delivery is verified for the target deployment."
         ),
     )
     runtime_config_watch_poll_interval_seconds: float = Field(

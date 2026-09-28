@@ -13,7 +13,8 @@ hook -- see each module for the exact call site):
    collide), and is a plain reload trigger -- it never itself stops the worker.
 
 2. :class:`RuntimeConfigWatcher` -- a watchdog directory watch on ``runtime_config_dir`` (never a
-   single file: see ``BaseSettings.runtime_config_dir``'s docstring and ADR-0019 §12 for why a
+   single file: see ``BaseSettings.runtime_config_dir``'s docstring and
+   ``docs/design/0019-runtime-config-hot-reload.md`` §12 for why a
    single-file bind mount or a k8s subPath ConfigMap mount never observes an edit at all). Debounces
    a burst of filesystem events into one settle window, then content-hash compares before calling
    ``reload("file")`` -- so a rewrite that lands the SAME bytes (a no-op deploy, an editor's
@@ -208,9 +209,9 @@ class RuntimeConfigWatcher:
         digest = _content_digest(self._target_path)
         if digest == self._last_digest:
             # Same content (or still/again absent): a no-op rewrite or an editor touch. Do not
-            # even attempt reload("file") -- ADR-0019 §5 and the bead description both call for
-            # the content-hash compare to happen HERE, in the trigger, not just inside reload's
-            # own digest-based applier skip.
+            # even attempt reload("file") -- ADR-0019 (runtime config hot-reload) §5 and the bead
+            # description both call for the content-hash compare to happen HERE, in the trigger,
+            # not just inside reload's own digest-based applier skip.
             return
         self._last_digest = digest
         result = await self._store.reload("file")
