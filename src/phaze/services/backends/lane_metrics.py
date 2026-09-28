@@ -11,7 +11,7 @@ fabricated 0: see :func:`_safe_count_or_none` for why this file deliberately doe
 ``pipeline.common._safe_count``'s 0-degrade.
 
 Consumed by :mod:`~phaze.services.backends.lane_snapshot`, which composes them into the per-lane
-dicts; builds on :mod:`~phaze.services.backends.lane_detail` for the local lane's agent binding.
+dicts; builds on :mod:`~phaze.services.backends.lane_detail` for the local lane's queue split.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.services.backends.lane_detail import resolve_lane_queue_agent
+from phaze.services.backends.lane_detail import read_local_analyze_queue
 from phaze.services.pipeline import MUSIC_VIDEO_TYPES, _cloud_window_clauses, _safe_bucket_counts
 
 
@@ -75,36 +75,30 @@ async def _safe_count_or_none(session: AsyncSession, stmt: Any, *, node: str) ->
 
 
 async def _local_lane_queued_working(session: AsyncSession, app_state: Any) -> tuple[int | None, int | None]:
-    """Return the LOCAL lane's ``(queued, working)`` from SAQ's OWN ``analyze`` lane, kept SEPARATE (phaze-5c6i2).
+    """Return the LOCAL lane's ``(waiting, running)`` from SAQ's OWN ``analyze`` lane, kept SEPARATE (phaze-5c6i2).
 
     :func:`phaze.services.pipeline.get_agent_lane_depths` sums ``count("queued") + count("active")``
-    into one number per lane; this reads the SAME two SAQ counts on the SAME ``analyze`` lane -- bound
-    to the live fileserver agent via :func:`resolve_lane_queue_agent` (the IDENTICAL binding
-    :func:`get_lane_queue_depths` uses for the lane-detail pane, so the two panels can never disagree
-    about WHICH agent's queue "the local lane" reads) -- but keeps the two counts distinct instead of
-    collapsing them. Neither figure is derived from
-    :func:`phaze.services.stage_status.inflight_clause` (which cannot distinguish "enqueued" from
-    "started" -- the exact defect this bead exists to fix; acceptance rule 3).
+    into one number per lane; this reads the SAME ``analyze`` lane -- bound to the live fileserver agent
+    via :func:`resolve_lane_queue_agent` (the IDENTICAL binding :func:`get_lane_queue_depths` uses for
+    the lane-detail pane, so the two panels can never disagree about WHICH agent's queue "the local
+    lane" reads) -- but keeps the two figures distinct instead of collapsing them. Neither figure is
+    derived from :func:`phaze.services.stage_status.inflight_clause` (which cannot distinguish
+    "enqueued" from "started" -- the exact defect this bead exists to fix; acceptance rule 3).
+
+    phaze-lwz8n: ``running`` is the rows the worker actually STARTED, not SAQ's raw ``count("active")``,
+    which also counts rows claimed into the worker buffer and never run (16 "active" against 1 running
+    on the live lane). Those claimed rows join ``waiting`` instead -- see
+    :func:`~phaze.services.backends.lane_detail.read_local_analyze_queue`, which owns the split.
 
     Degrades to ``(None, None)`` -- never ``(0, 0)`` -- when there is no live fileserver agent to read
     (mirrors :data:`NO_FILESERVER_AGENT_NOTE`'s condition), when ``app_state`` itself is absent (callers
     that only need availability/admission, e.g. :func:`derive_cloud_hold_reason`, pass none), or on any
     broker hiccup: a missing agent or a dead broker is not evidence of an empty queue.
     """
-    if app_state is None:
+    queue = await read_local_analyze_queue(session, app_state)
+    if queue is None:
         return None, None
-    identity = await resolve_lane_queue_agent(session, "local", "local")
-    if identity.agent_id is None:
-        return None, None
-    try:
-        queue = app_state.task_router.queue_for(identity.agent_id, "analyze")
-        await queue.connect()
-        queued = await queue.count("queued")
-        working = await queue.count("active")
-    except Exception:
-        logger.warning("local_lane_queued_working_degraded", agent_id=identity.agent_id, exc_info=True)
-        return None, None
-    return queued, working
+    return queue.waiting, queue.running
 
 
 async def _cloud_lane_queued_working(session: AsyncSession, backend_id: str) -> tuple[int | None, int | None]:

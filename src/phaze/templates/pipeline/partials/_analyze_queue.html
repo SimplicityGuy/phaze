@@ -1,0 +1,75 @@
+{# phaze-lwz8n: the Analyze queue view -- what is RUNNING now and how much is WAITING.
+
+   The operator's request, verbatim: "maybe a view of a queue, showing what's running and what's left?"
+   and "there's no visibility into the analysis currently running. we need this."
+
+   Rendered TWO ways off ONE partial (the _analyze_lanes.html idiom):
+     * analyze_workspace.html includes it with NO `oob` -> the initial render.
+     * stats_bar.html includes it with `oob = True` -> it hx-swap-oob's as a unit on the 5s poll.
+   Every other workspace sinks the id hidden (_workspace_poll_seeds.html), so the OOB swap always lands.
+
+   Context:
+     * running_analyses -- list[RunningAnalysis] (services.backends.lane_detail), or None when the
+                           list could not be read (rendered as "unavailable", never as "nothing running").
+     * analyze_running_total -- the Running figure: every lane's observed ``active`` summed, or None when
+                           any lane's execution is unobservable (dashboard_stats._analyze_running_total).
+     * total_queued_analyze -- the Waiting figure (queued on a lane, including claimed-but-unrun, plus
+                           not yet routed), the same number the metric strip's Queued tile shows.
+
+   The workspace header ("N running · M waiting") binds $store.pipeline.analyzeRunning / analyzeWaiting.
+   The poll re-pushes those through the dag-seed-* seeds (stats_bar.html); the hidden seed below covers
+   only the initial render, so the header is right before the first tick. #}
+{% import "ui/primitives.html" as ui %}
+{% set _running_total = analyze_running_total if analyze_running_total is defined else none %}
+{% set _waiting_total = total_queued_analyze if total_queued_analyze is defined else none %}
+{% set _rows = running_analyses if running_analyses is defined else none %}
+<section id="analyze-queue" aria-labelledby="analyze-queue-heading" {% if oob %}hx-swap-oob="true"{% endif %}
+         class="rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+    {% if not oob %}<p class="hidden" aria-hidden="true" x-init="$store.pipeline.analyzeRunning = {{ _running_total if _running_total is not none else 'null' }}; $store.pipeline.analyzeWaiting = {{ _waiting_total if _waiting_total is not none else 'null' }}"></p>{% endif %}
+    <div class="flex flex-col gap-1 px-4 pt-3 sm:flex-row sm:items-end sm:justify-between">
+        <h2 id="analyze-queue-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Running now</h2>
+        <p class="text-xs text-muted "><span class="font-mono tabular-nums">{{ _running_total if _running_total is not none else "—" }}</span> running · <span class="font-mono tabular-nums">{{ _waiting_total if _waiting_total is not none else "—" }}</span> waiting</p>
+    </div>
+    {% if _rows is none %}
+        <p role="status" class="px-4 py-3 text-sm text-muted ">Running analyses could not be read this cycle. It refreshes on the next update.</p>
+    {% elif not _rows %}
+        <p role="status" class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total }} file(s) are waiting for a slot.{% endif %}</p>
+    {% else %}
+    {% call ui.data_table("Analyses running now", id="analyze-running-table") %}
+        <thead class="text-[10px] uppercase tracking-wider text-muted">
+            <tr>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">File</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">Lane</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">Started</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">Progress</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">Heartbeat</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for run in _rows %}
+            {% set _pct = run.percent %}
+            <tr{% if run.heartbeat_lost %} class="bg-red-50 dark:bg-red-950"{% endif %}>
+                <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" title="{{ run.label }}">{{ run.label }}</td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs">{% if run.lane_kind == "local" %}🖥️{% elif run.lane_kind == "kueue" %}⎈{% else %}▪{% endif %} {{ run.lane }}</td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(run.started_at) if run.started_at else "—" }}</td>
+                <td class="min-w-40 px-4 py-2">
+                    {% if run.windows_total %}
+                    <div class="flex items-center gap-2">
+                        <div class="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="Windows analyzed for {{ run.label }}" aria-valuemin="0" aria-valuemax="{{ run.windows_total }}" aria-valuenow="{{ run.windows_done }}">
+                            <div class="h-full rounded-full bg-blue-500" style="width: {{ _pct }}%"></div>
+                        </div>
+                        <span class="whitespace-nowrap font-mono text-xs tabular-nums">{{ run.windows_done }}/{{ run.windows_total }} windows</span>
+                    </div>
+                    {% else %}
+                    <span class="text-xs text-muted ">sizing…</span>
+                    {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs {% if run.heartbeat_lost %}text-danger {% else %}text-muted {% endif %}">
+                    {% if run.heartbeat_lost %}{{ ui.status_badge("Heartbeat", "LOST", "danger", "✕") }} {% endif %}{{ humanize_relative_time(run.heartbeat_at) if run.heartbeat_at else "—" }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    {% endcall %}
+    {% endif %}
+</section>

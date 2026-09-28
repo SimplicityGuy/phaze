@@ -53,6 +53,7 @@ from phaze.services.backends import (
 )
 from phaze.services.pipeline import cloud as pipeline_cloud_mod
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from tests._saq_jobs_seed import drop_saq_jobs, seed_saq_jobs
 
 
 if TYPE_CHECKING:
@@ -94,19 +95,24 @@ def _mixed_registry_settings() -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_local_lane_queued_working_stays_separate_not_summed(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The local lane's queued/working come from SAQ's OWN count("queued")/count("active"), kept apart."""
+async def test_local_lane_queued_working_stays_separate_not_summed(session: AsyncSession) -> None:
+    """The local lane's waiting/running come from its OWN SAQ analyze queue, kept apart.
+
+    phaze-lwz8n: ``running`` is the rows the worker STARTED (``attempts`` present), not SAQ's raw
+    ``count("active")`` -- claimed-but-unrun rows are waiting, not running (16 "active" against 1
+    running on the live lane is what made the old figure a lie).
+    """
     agent = await seed_active_agent(session, "nox", kind="fileserver")
     router = FakeTaskRouter()
-    router.queue_for(agent.id, "analyze").set_counts(queued=7, active=3)
+    queue_name = router.queue_for(agent.id, "analyze").name
+    await seed_saq_jobs(session, queue_name, queued=7, running=3, claimed=2)
     app_state = SimpleNamespace(task_router=router)
 
     queued, working = await _local_lane_queued_working(session, app_state)
 
     # Two DISTINCT figures -- never re-summed into one number (that summation is exactly the
-    # get_agent_lane_depths defect this bead fixes).
-    assert (queued, working) == (7, 3)
-    assert queued + working != queued  # sanity: not silently collapsed to one of the two
+    # get_agent_lane_depths defect phaze-5c6i2 fixed). The two claimed rows wait; they do not run.
+    assert (queued, working) == (9, 3)
 
 
 @pytest.mark.asyncio
@@ -124,11 +130,12 @@ async def test_local_lane_queued_working_degrades_to_none_without_live_agent(ses
 
 @pytest.mark.asyncio
 async def test_local_lane_queued_working_degrades_to_none_on_broker_error(session: AsyncSession) -> None:
-    """A broker hiccup (queue.count raises) -> (None, None), never a fabricated 0."""
+    """An unreadable broker (no ``saq_jobs`` table here) -> (None, None), never a fabricated 0."""
     agent = await seed_active_agent(session, "nox", kind="fileserver")
     router = FakeTaskRouter()
-    router.queue_for(agent.id, "analyze").fail_count()
+    router.queue_for(agent.id, "analyze")
     app_state = SimpleNamespace(task_router=router)
+    await drop_saq_jobs(session)  # a sibling module may have left one behind
 
     assert await _local_lane_queued_working(session, app_state) == (None, None)
 

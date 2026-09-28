@@ -406,8 +406,11 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "processed_24h",
         "processed_lifetime",
     }
+    # phaze-lwz8n: the LOCAL lane additionally carries its honest queue-health split; cloud lanes do not.
+    local_health_keys = {"claimed_unrun", "stranded", "claimed_overdue", "heartbeat_lost", "stuck"}
     for lane in lanes:
-        assert set(lane) == expected_keys  # secret-free: no config / SecretStr / token key
+        expected = expected_keys | local_health_keys if lane["kind"] == "local" else expected_keys
+        assert set(lane) == expected  # secret-free: no config / SecretStr / token key
 
     by_id = {lane["id"]: lane for lane in lanes}
     # phaze-5c6i2: a1 is compute-kind under the mocked registry above, so its SUBMITTED row is
@@ -457,6 +460,12 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "active": None,
         "processed_24h": 0,
         "processed_lifetime": 0,
+        # phaze-lwz8n: no task_router -> the local queue split is unknown, never a fabricated 0.
+        "claimed_unrun": None,
+        "stranded": None,
+        "claimed_overdue": None,
+        "heartbeat_lost": None,
+        "stuck": None,
     }
 
 

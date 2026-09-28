@@ -33,6 +33,8 @@ FROZEN_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/pipeline/"),
         ("POST", "/pipeline/analyze"),
         ("GET", "/pipeline/analyze-files"),
+        # phaze-lwz8n: the Analyze waiting list, loaded on demand (never by the 5s poll).
+        ("GET", "/pipeline/analyze-queue/waiting"),
         ("POST", "/pipeline/analysis-failed/retry"),
         ("POST", "/pipeline/arm-tracklist-drain"),
         ("POST", "/pipeline/backfill-cloud"),
