@@ -36,7 +36,7 @@ from phaze.services import enqueue_router
 from phaze.services.pipeline import get_match_pending_tracklists
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
-from phaze.services.tracklist_drain_arm import arm_drain, disarm_drain, get_arm_state
+from phaze.services.tracklist_drain_arm import arm_if_not_running, clear_stale_in_flight, disarm_drain, get_arm_state
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import tracklist_drain_status
@@ -351,11 +351,12 @@ async def unprioritize_tracklist_lookup_ui(
 
 
 async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLResponse:
-    """Shared render for the drain-status fragment -- read by the GET view and by both the
-    arm/disarm POST endpoints below (phaze-6nrrf), so all three always agree on exactly what
-    "the current state" means: funnel data from :func:`tracklist_drain_status` (no host
-    requests) plus the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
-    row (no queue at all -- a plain read).
+    """Shared render for the drain-status fragment -- read by the GET view and by the disarm POST
+    endpoint below (phaze-6nrrf; the run/arm endpoints render their own responses, see their own
+    docstrings), so all consumers always agree on exactly what "the current state" means: funnel
+    data from :func:`tracklist_drain_status` (no host requests) plus the durable
+    :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState` row (no queue at all --
+    a plain read).
     """
 
     @contextlib.asynccontextmanager
@@ -381,7 +382,8 @@ async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLR
 @router.get("/pipeline/tracklist-drain-status", response_class=HTMLResponse)
 async def tracklist_drain_status_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """HTMX fragment: queue depth, throughput vs the daily ceiling, an honest ETA, and the
-    ARM/DISARM state (phaze-6nrrf).
+    running/idle/stopped-after-failures state (phaze-6nrrf; text replaced from an ARM/DISARM
+    badge in phaze-5sj7k).
 
     Calls :func:`phaze.tasks.tracklist_drain.tracklist_drain_status` DIRECTLY (per its own
     docstring: it spends no host requests, so routing it through a queue and a poll would buy
@@ -398,17 +400,46 @@ async def tracklist_drain_status_ui(request: Request, session: AsyncSession = De
 
 @router.post("/pipeline/run-tracklist-drain", response_class=HTMLResponse)
 async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """HTMX endpoint: enqueue one bounded ``drain_tracklists`` slice (phaze-fq9h.8).
+    """HTMX endpoint: "Run tracklist lookups" -- arm the drain and enqueue its first bounded
+    ``drain_tracklists`` slice (phaze-5sj7k, replacing the old single-slice-only trigger from
+    phaze-fq9h.8).
 
     The drain is deliberately operator-initiated, never a cron (see ``tasks.tracklist_drain``'s
     module docstring's ethics bound: it deploys from a residential IP, runs a headful browser,
-    and spends a shared public host's published budget) -- this endpoint is that trigger.
+    and spends a shared public host's published budget) -- this click is still that one consent
+    decision. What changed is what the click MEANS: the operator does not think in terms of
+    "one batch now, a separate Arm for the rest" -- clicking Run is expected to make the lookups
+    "run, or be scheduled to run, over time until done" (the operator's own words). So this
+    endpoint now arms the drain FIRST (:func:`~phaze.services.tracklist_drain_arm.arm_if_not_running`,
+    which ALSO marks that first slice ``in_flight`` atomically with the arm -- see its own
+    docstring for the review-fixed double-enqueue hole this closes), then enqueues the first
+    slice itself rather than waiting for ``continue_armed_tracklist_drain``'s next tick -- the
+    rest of the pass is paced by that same cron exactly as before. A click while already armed is
+    a no-op on the arm state and enqueues NOTHING (``arm_if_not_running`` returns ``False``): the
+    already-running pass owns pacing the rest, and a second concurrent slice would just double up
+    on the same host budget.
+
     ``limit`` is left at the default (:data:`~phaze.services.tracklist_drain.DEFAULT_LOOKUP_LIMIT`
     lookups); any operator-flagged files are picked up automatically by ``build_drain_queue``
     from the persisted store without needing to be passed here.
     """
-    routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
-    await routed.queue.enqueue("drain_tracklists")
+    just_armed = await arm_if_not_running(session)
+    await session.commit()
+    if just_armed:
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+            await routed.queue.enqueue("drain_tracklists")
+        except Exception:
+            # The commit above already marked this row in_flight=true for a slice that this
+            # enqueue call just failed to create -- nothing will ever call
+            # record_drain_slice_completion for it, so left alone the row would read "Running"
+            # until clear_stale_in_flight's own staleness window (worker_job_timeout *
+            # (max_retries + 1) + a buffer -- several minutes) elapses. Clear it now instead, with
+            # the ordinary cooldown applied, so the very next cron tick retries the pass rather
+            # than leaving the card lying about progress in the meantime.
+            await clear_stale_in_flight(session, cooldown_seconds=settings.tracklist_drain_cooldown_sec)
+            await session.commit()
+            raise
     response = templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_run_drain_response.html",
@@ -425,31 +456,10 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     return response
 
 
-@router.post("/pipeline/arm-tracklist-drain", response_class=HTMLResponse)
-async def arm_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """HTMX endpoint: the operator's ONE consent decision to continuously drain (phaze-6nrrf).
-
-    Persists ``armed=true`` on the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
-    row and returns immediately -- it does NOT enqueue a slice itself. The
-    ``continue_armed_tracklist_drain`` CronJob (``tasks/tracklist_drain_control.py``, every-minute
-    cadence like this controller's other reapers) picks the armed flag up on its next tick and
-    enqueues the first slice; letting the cron own every enqueue decision (rather than this
-    endpoint racing it for one) keeps ``in_flight`` a single source of truth with no double-enqueue
-    window to reason about. The single-slice ``Run tracklist lookups`` button above remains for an
-    immediate one-off boost that does not wait for the next tick.
-
-    The single-consent framing matters: this is the ONLY code path that ever sets ``armed=true`` --
-    a restart, a redeploy, or the continuous-drain cron itself never do (see that module's and the
-    model's own docstrings for the full ethics-bound rationale).
-    """
-    await arm_drain(session)
-    await session.commit()
-    return await _render_drain_status(request, session)
-
-
 @router.post("/pipeline/disarm-tracklist-drain", response_class=HTMLResponse)
 async def disarm_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """HTMX endpoint: the operator's explicit "stop the continuous drain" control (phaze-6nrrf).
+    """HTMX endpoint: the operator's explicit "stop the continuous drain" control -- the
+    workspace's small "Stop" button (phaze-6nrrf; button relabelled from "Disarm" in phaze-5sj7k).
 
     Persists ``armed=false`` immediately. A slice already ``in_flight`` (enqueued by the cron
     before this click) is left completely alone -- this endpoint touches only the arm row, never

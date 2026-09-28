@@ -392,8 +392,13 @@ async def test_tracklist_drain_status_fragment_renders_the_honest_ceiling_and_et
 
 
 @pytest.mark.asyncio
-async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/run-tracklist-drain enqueues exactly one drain_tracklists job (no bulk loop)."""
+async def test_run_tracklist_drain_arms_and_enqueues_one_job_on_the_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/run-tracklist-drain, on an unarmed drain with a non-empty queue, arms it
+    AND enqueues exactly one drain_tracklists job -- the operator's "click Run, it runs until
+    done" expectation (phaze-5sj7k), not a bulk loop."""
+    from phaze.services.tracklist_drain_arm import get_arm_state
+
+    await _seed_live_set_file(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/run-tracklist-drain")
@@ -404,25 +409,70 @@ async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(clie
     assert capture[0][0] == "controller"
     assert capture[0][1] == "drain_tracklists"
 
-
-# phaze-6nrrf: the continuous-drain ARM/DISARM operator control.
+    state = await get_arm_state(session)
+    assert state.armed is True
+    # phaze-5sj7k review fix: the Run-enqueued slice must be marked in_flight, atomically with
+    # the arm -- otherwise the cron's very next tick sees armed-and-not-in_flight and stacks a
+    # second, concurrent slice on top of this one (see arm_if_not_running's own docstring).
+    assert state.in_flight is True
+    assert state.slice_enqueued_at is not None
 
 
 @pytest.mark.asyncio
-async def test_arm_persists_armed_state_and_enqueues_nothing_itself(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/arm-tracklist-drain flips the durable flag but does NOT enqueue a slice --
-    that is the continue_armed_tracklist_drain CronJob's job, on its own next tick."""
+async def test_run_tracklist_drain_while_already_running_does_not_enqueue_a_duplicate_slice(client: AsyncClient, session: AsyncSession) -> None:
+    """A second "Run tracklist lookups" click while a pass is already armed must not enqueue a
+    concurrent slice on top of the one the continuous-drain cron is already pacing (phaze-5sj7k)."""
+    from phaze.services.tracklist_drain_arm import arm_drain, get_arm_state
+
+    await _seed_live_set_file(session)
+    await arm_drain(session)
+    await session.commit()
+
     capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/arm-tracklist-drain")
+    response = await client.post("/pipeline/run-tracklist-drain")
     assert response.status_code == 200, response.text
-    assert "Armed" in response.text
-    assert capture == []
 
-    from phaze.services.tracklist_drain_arm import get_arm_state
+    assert capture == []
 
     state = await get_arm_state(session)
     assert state.armed is True
+
+
+@pytest.mark.asyncio
+async def test_run_tracklist_drain_clears_in_flight_if_the_enqueue_itself_fails(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """arm_if_not_running's own commit lands before the router attempts to enqueue. If THAT
+    enqueue then fails, the row must not be left claiming in_flight=true for a slice that was
+    never actually queued -- clear_stale_in_flight is applied immediately (with the ordinary
+    cooldown) rather than waiting out its own several-minute staleness window (phaze-5sj7k review
+    fix)."""
+    import phaze.routers.pipeline.tracklists as tracklists_module
+    from phaze.services.tracklist_drain_arm import get_arm_state
+
+    await _seed_live_set_file(session)
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(tracklists_module.enqueue_router, "resolve_queue_for_task", _boom)
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        await client.post("/pipeline/run-tracklist-drain")
+
+    state = await get_arm_state(session)
+    assert state.armed is True  # the arm itself is not rolled back, only the slice gate
+    assert state.in_flight is False
+    assert state.slice_enqueued_at is None
+    assert state.next_eligible_at is not None
+
+
+# phaze-6nrrf: the continuous-drain ARM/DISARM operator control (workspace buttons replaced by
+# "Run tracklist lookups" + "Stop" in phaze-5sj7k; POST /pipeline/arm-tracklist-drain is REMOVED
+# -- test_no_orphaned_ui_route flagged it once no served template linked to it any more, since
+# "Run tracklist lookups" now arms the drain itself. The sibling Disarm endpoint is kept: the
+# workspace's "Stop" button still posts to it. Tests below that need an armed row without a live
+# SAQ enqueue call `arm_drain` directly instead of going through the removed endpoint.
 
 
 @pytest.mark.asyncio
@@ -434,7 +484,7 @@ async def test_disarm_persists_disarmed_state_with_operator_reason(client: Async
 
     response = await client.post("/pipeline/disarm-tracklist-drain")
     assert response.status_code == 200, response.text
-    assert "Disarmed" in response.text
+    assert "Idle" in response.text
 
     state = await get_arm_state(session)
     assert state.armed is False
@@ -445,28 +495,58 @@ async def test_disarm_persists_disarmed_state_with_operator_reason(client: Async
 async def test_disarm_when_already_disarmed_is_a_no_op_not_an_error(client: AsyncClient) -> None:
     response = await client.post("/pipeline/disarm-tracklist-drain")
     assert response.status_code == 200, response.text
-    assert "Disarmed" in response.text
+    assert "Idle" in response.text
 
 
 @pytest.mark.asyncio
-async def test_drain_status_fragment_renders_disarmed_by_default(client: AsyncClient, session: AsyncSession) -> None:
-    """A fresh workspace load must show Disarmed -- the DEFAULT OFF safety invariant, visible to
+async def test_drain_status_fragment_renders_idle_by_default(client: AsyncClient, session: AsyncSession) -> None:
+    """A fresh workspace load must show Idle -- the DEFAULT OFF safety invariant, visible to
     the operator, not just true in the database."""
     await _seed_live_set_file(session)
 
     response = await client.get("/pipeline/tracklist-drain-status")
     assert response.status_code == 200
-    assert "Disarmed" in response.text
-    assert "Armed" not in response.text  # "Disarmed" does not contain the substring "Armed"
+    assert "Idle" in response.text
+    assert "Running" not in response.text
+    assert "Arm" not in response.text
+    assert "Disarm" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_drain_status_fragment_renders_armed_after_arming(client: AsyncClient, session: AsyncSession) -> None:
-    await _seed_live_set_file(session)
+async def test_drain_status_fragment_renders_running_after_arming(client: AsyncClient, session: AsyncSession) -> None:
+    from phaze.services.tracklist_drain_arm import arm_drain
 
-    arm_response = await client.post("/pipeline/arm-tracklist-drain")
-    assert "Armed" in arm_response.text
+    await _seed_live_set_file(session)
+    await arm_drain(session)
+    await session.commit()
 
     status_response = await client.get("/pipeline/tracklist-drain-status")
     assert status_response.status_code == 200
-    assert "Armed since" in status_response.text
+    assert "Running: 1 remaining" in status_response.text
+    # phaze-5sj7k: the "Armed since ... 600s cooldown ..." paragraph is gone outright from the
+    # main card (the diagnostics' own, more detailed cooldown-pacing explanation is unrelated and
+    # kept -- it lives in the relocated #tracklist-queue-diagnostics section, not on the card).
+    assert "Armed since" not in status_response.text
+
+
+@pytest.mark.asyncio
+async def test_drain_status_fragment_renders_stopped_after_repeated_failures(client: AsyncClient, session: AsyncSession) -> None:
+    """After the auto-disarm rule fires (3 consecutive cron-enqueued slice failures), the card
+    must say so in plain language rather than falling back to a bare "Idle" (phaze-5sj7k)."""
+    from phaze.services.tracklist_drain_arm import arm_drain, get_arm_state, mark_slice_enqueued, mark_slice_finished
+
+    await arm_drain(session)
+    for _ in range(3):
+        await mark_slice_enqueued(session)
+        await mark_slice_finished(session, success=False, cooldown_seconds=600, max_consecutive_failures=3)
+    await session.commit()
+
+    state = await get_arm_state(session)
+    assert state.armed is False
+    assert state.disarmed_reason == "failures"
+
+    response = await client.get("/pipeline/tracklist-drain-status")
+    assert response.status_code == 200
+    assert "Stopped after repeated failures" in response.text
+    assert "Idle" not in response.text
+    assert "Running" not in response.text
