@@ -309,3 +309,40 @@ async def test_lane_detail_shows_the_lanes_running_list(client: AsyncClient, ses
     body = (await client.get("/pipeline/lanes/local")).text
     assert "1 running · 3 waiting" in body
     assert "Running now" in body and "set-30.mp3" in body
+
+
+# ------------------------------------------------------------------ pure helpers (branch coverage)
+
+
+def test_running_row_progress_is_unknown_before_the_file_is_sized() -> None:
+    """No window totals yet -> done/total/percent are unknown (rendered "sizing…"), never 0/0."""
+    from phaze.services.backends import RunningAnalysis
+
+    run = RunningAnalysis(
+        file_id=None,
+        label="job process_file:x",
+        lane="local",
+        lane_kind="local",
+        started_at=None,
+        heartbeat_at=None,
+        heartbeat_lost=False,
+        fine_done=None,
+        fine_total=None,
+        coarse_done=None,
+        coarse_total=None,
+    )
+    assert (run.windows_done, run.windows_total, run.percent) == (None, None, None)
+
+
+def test_broker_field_and_key_parsing_rejects_what_it_cannot_name() -> None:
+    """An absent SAQ timestamp is unknown; a key that is not ``process_file:<uuid>`` names no file."""
+    from phaze.services.backends.lane_detail import _completion_label, _file_id_from_key, _ms_to_datetime
+
+    assert _ms_to_datetime(0) is None
+    assert _ms_to_datetime(None) is None
+    assert _ms_to_datetime(1_000) == datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC)
+    assert _file_id_from_key("extract_file_metadata:abc") is None
+    assert _file_id_from_key("process_file:not-a-uuid") is None
+    file_id = uuid.uuid4()
+    assert _file_id_from_key(f"process_file:{file_id}") == file_id
+    assert _completion_label("", file_id) == f"file {file_id.hex[:8]} (id, not a hash)"
