@@ -106,6 +106,17 @@ class Wedge(NamedTuple):
     node_loss: bool
 
 
+class TerminalFailure(NamedTuple):
+    """Why a no-callback terminal ended: the pod's terminated exit code and reason, or a marker (phaze-1xngw).
+
+    ``exit_code`` is ``None`` whenever no container terminated; ``reason`` is then an explicit marker
+    or the pod-state summary, never empty.
+    """
+
+    exit_code: int | None
+    reason: str
+
+
 def row_age_seconds(cloud_job: CloudJob) -> float:
     """Return seconds since the row's last transition, accepting naive or aware timestamps."""
     now = datetime.now(UTC)
@@ -206,6 +217,45 @@ def terminal_node_loss_reason(pods: list[Any]) -> str | None:
     if kube_staging.classify_job_pods(pods) is not kube_staging.PodLiveness.NODE_LOST:
         return None
     return f"node_lost ({kube_staging.describe_job_pods(pods)})"
+
+
+def terminal_failure(pods: list[Any]) -> TerminalFailure | None:
+    """Return the analyze container's terminated ``exitCode`` and ``reason`` from a Job's pods (phaze-1xngw).
+
+    ``None`` when there is no pod at all, so the caller records its own explicit marker. When pods
+    exist but no container has terminated (a fatal waiting reason, a pod lost with its node) the exit
+    code is ``None`` and the reason is the pod-state summary. With several terminated containers the
+    most recent ``finishedAt`` wins; an unreadable one sorts first.
+    """
+    if not pods:
+        return None
+    latest: tuple[str, TerminalFailure] | None = None
+    for pod in pods:
+        status = getattr(pod, "status", None) or {}
+        for container in status.get("containerStatuses", []) or []:
+            terminated = (container.get("state") or {}).get("terminated")
+            if not terminated:
+                continue
+            exit_code = terminated.get("exitCode")
+            failure = TerminalFailure(exit_code if isinstance(exit_code, int) else None, str(terminated.get("reason") or "terminated"))
+            finished = str(terminated.get("finishedAt") or "")
+            if latest is None or finished >= latest[0]:
+                latest = (finished, failure)
+    if latest is not None:
+        return latest[1]
+    return TerminalFailure(None, kube_staging.describe_job_pods(pods))
+
+
+async def observe_terminal_failure(name: str, kube: KubeConfig) -> TerminalFailure | None:
+    """Read terminal Job pods best-effort and return their terminated exit status, or None when none is readable.
+
+    Like :func:`observe_terminal_node_loss_reason` this runs on a terminal the caller has already
+    decided on, so a kube failure degrades to ``None`` (recorded as a marker) rather than aborting it.
+    """
+    pods: list[Any] = []
+    with contextlib.suppress(Exception):
+        pods = await kube_staging.list_pods_for_job(name, kube)
+    return terminal_failure(pods)
 
 
 async def observe_terminal_node_loss_reason(name: str, kube: KubeConfig) -> str | None:

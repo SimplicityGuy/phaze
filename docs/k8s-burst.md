@@ -267,6 +267,18 @@ dropped/expired watch never loses or duplicates a result" true.
   `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
   Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
   "one Job ⇒ one pod" actually true.
+- **Why the pod failed is recorded on the row (phaze-1xngw)** — reconcile deletes the Job on every
+  re-drive and spill, so the pod's exit status used to be gone within about a minute; spike
+  `phaze-79mu7` could read the burst's exit `10` (`EXIT_DOWNLOAD`) only from the node's containerd
+  journal. Before that delete, reconcile now reads the analyze container's `state.terminated` and
+  writes `cloud_job.last_exit_code` / `last_failure_reason` (the pod's `exitCode` / `reason`) and
+  `last_failed_at`. With no terminated container the exit code is NULL and the reason says why:
+  `job_vanished` (the Job 404'd before reconcile read it), `pending_confirmation_expired` (no Job was
+  stamped within the pending-submit bound), `pod_not_found` (the Job read Failed/Evicted but listed no
+  pod), or the pod-state summary (a wedged or node-lost pod). The `re-driving submit_cloud_job` and
+  `submit cap reached` log lines carry the same `exit_code` and `reason`. The columns live on the
+  sidecar row, so the D-14 reaper below removes them with it once the spilled file's local analysis
+  finishes.
 - **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
   `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
