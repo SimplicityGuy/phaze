@@ -852,6 +852,41 @@ async def test_orphan_companion_download_streams_the_filtered_metadata(
 
 
 @pytest.mark.asyncio
+async def test_download_orphan_companions_unknown_batch_renders_alert_not_dropped_404(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET .../orphan-companions/download for an unknown batch renders the alert fragment (200),
+    mirroring the sibling ``orphan_companion_detail`` handler's vanished-row guard just above,
+    rather than a bare 404 htmx's default responseHandling would silently drop.
+    """
+    from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
+
+    ac, _ = smoke
+    unknown_id = uuid.uuid4()
+
+    response = await ac.get(f"/pipeline/scans/{unknown_id}/orphan-companions/download")
+
+    assert response.status_code == RENDERABLE_ALERT_STATUS
+    assert 'role="alert"' in response.text
+    assert "already gone" in response.text.lower()
+
+
+def test_orphan_companion_view_state_query_omits_absent_filters() -> None:
+    """``.query()``/``.filters_query()`` with root AND extension both unset -- the bare-page case
+    every unfiltered pagination link degrades to. Every HTTP-level test exercises a FILTERED view
+    (root and/or extension set); this is the direct unit-level complement covering the other side
+    of each ``is not None`` guard.
+    """
+    from phaze.routers.pipeline_scans import OrphanCompanionViewState
+
+    view = OrphanCompanionViewState(root=None, extension=None, page=2)
+
+    assert view.query() == "page=2"
+    assert view.query(page=3) == "page=3"
+    assert view.filters_query() == ""
+
+
+@pytest.mark.asyncio
 async def test_orphan_companion_csv_iterator_requests_bounded_streaming(session: AsyncSession) -> None:
     """The exhaustive download yields rows incrementally with a bounded server cursor."""
     from phaze.routers.pipeline_scans import _stream_orphan_companion_csv
