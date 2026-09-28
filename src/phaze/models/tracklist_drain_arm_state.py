@@ -17,8 +17,9 @@ itself without a second source of truth (no in-memory cache, no cursor file -- t
 THE SAFETY INVARIANT THIS ROW CARRIES
 --------------------------------------
 ``armed`` starts (and, after a fresh migration, MUST start) ``false``. Nothing in this codebase
-ever sets it ``true`` except the operator's explicit "Arm" click
-(``services.tracklist_drain_arm.arm_drain``). A controller restart while armed reads this row and
+ever sets it ``true`` except an operator's own click: "Run tracklist lookups"
+(``services.tracklist_drain_arm.arm_if_not_running``, phaze-5sj7k) or the standalone Arm endpoint
+kept for API compatibility (``services.tracklist_drain_arm.arm_drain``). A controller restart while armed reads this row and
 RESUMES the already-armed pass (the durable flag IS the operator's consent for that); a controller
 booting with no prior consent stays disarmed, exactly like ``drain_tracklists`` itself has never
 had a CronJob. See the epic's ethics bound (``tasks.tracklist_drain`` module docstring) for why

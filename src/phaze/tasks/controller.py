@@ -3,7 +3,9 @@
 Control role: runs the application server's SAQ worker pool. Fileless tasks only, e.g.:
 - generate_proposals (LLM-driven rename suggestions)
 - match_tracklist_to_discogs (Discogsography HTTP API)
-- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated, NO cron)
+- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated via
+  "Run tracklist lookups", which also arms continued pacing; the underlying job has NO cron of its
+  own -- see ``continue_armed_tracklist_drain`` below)
 - refresh_tracklists (operator-initiated re-arm of the drain for specific pages -- NO cron)
 - reap_stalled_scans, recover_orphaned_work, stage_cloud_window, submit_cloud_job,
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
@@ -432,11 +434,14 @@ settings = {
         # asserts it) -- the ethics bound is unchanged, nothing may start crawling on container
         # boot. `continue_armed_tracklist_drain` below is a DIFFERENT function: it is a narrow
         # continuation gate that only re-enqueues a slice when the durable
-        # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by the
-        # operator's explicit Arm click (never by this cron, never by boot/deploy). Every-minute
-        # cadence matches this file's other reapers; a full slice's own host-budget pacing (~1
-        # req/8s) is far coarser than one minute, so this cadence only bounds how quickly the NEXT
-        # slice starts after the previous one's cooldown elapses, never how fast requests fire.
+        # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by an
+        # operator action -- the "Run tracklist lookups" click (phaze-5sj7k,
+        # services.tracklist_drain_arm.arm_if_not_running) or the standalone Arm endpoint kept for
+        # API compatibility (services.tracklist_drain_arm.arm_drain) -- never by this cron, never
+        # by boot/deploy. Every-minute cadence matches this file's other reapers; a full slice's
+        # own host-budget pacing (~1 req/8s) is far coarser than one minute, so this cadence only
+        # bounds how quickly the NEXT slice starts after the previous one's cooldown elapses, never
+        # how fast requests fire.
         CronJob(continue_armed_tracklist_drain, cron="* * * * *"),  # type: ignore[type-var]
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form.

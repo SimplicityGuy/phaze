@@ -7,17 +7,20 @@ WHAT THIS MODULE ADDS, AND WHAT IT DELIBERATELY DOES NOT
 bound (residential IP, headful browser, a shared host's published crawl-delay budget) means
 nothing may start crawling on container boot. What this module adds is a SEPARATE, narrowly-scoped
 CronJob that only ever CONTINUES a pass the operator has already, explicitly consented to via the
-durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState` row (armed via the
-tracklist workspace's Arm button, ``routers.pipeline.arm_tracklist_drain_ui``).
+durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState` row -- armed by the
+tracklist workspace's "Run tracklist lookups" click (phaze-5sj7k,
+``services.tracklist_drain_arm.arm_if_not_running``, called from
+``routers.pipeline.run_tracklist_drain_ui``) or, for API compatibility, the standalone
+``routers.pipeline.arm_tracklist_drain_ui`` the workspace no longer links to.
 
 This is the same shape ``tasks.controller`` warns against elsewhere -- see its ``cron_jobs`` list
 comment: "DO NOT re-add a general auto-advance cron here" -- but it is not that pattern. Every
 other forbidden auto-advance cron would pick up NEW work on its own; this one is structurally
 incapable of that. It:
 
-* never sets ``armed`` (only ``services.tracklist_drain_arm.arm_drain``, called from the operator's
-  click, does that) -- a cold boot or a redeploy always reads whatever the row already durably
-  says, DEFAULT ``false`` from migration 059;
+* never sets ``armed`` (only ``services.tracklist_drain_arm.arm_if_not_running`` / ``arm_drain``,
+  both called from an operator's own click, do that) -- a cold boot or a redeploy always reads
+  whatever the row already durably says, DEFAULT ``false`` from migration 059;
 * auto-DISARMS itself the moment there is nothing left to do (queue empty) or the drain looks
   broken (3 consecutive slice failures) -- it narrows the armed window, it never widens it;
 * is a no-op on every tick while disarmed, which is the steady state for every deploy that has
@@ -35,9 +38,11 @@ THE TWO HALVES
    alongside ``deterministic_key.increment_completed`` in ``tasks.controller.settings``) that
    clears ``in_flight`` and applies the cooldown + failure-streak rule when a CRON-ENQUEUED slice
    reaches a terminal SAQ status. Gated on ``in_flight`` being true, NOT on ``job.function``
-   alone: a manual "Run tracklist lookups" / Prioritize / Refresh slice also runs
-   ``drain_tracklists`` but is not part of an armed pass, so it must not perturb the cooldown
-   clock or the failure streak (see that function's own docstring).
+   alone: a manual "Run tracklist lookups" click (phaze-5sj7k: this now ALSO arms the row, via
+   ``arm_if_not_running``) / Prioritize / Refresh slice also runs ``drain_tracklists`` directly,
+   without going through ``mark_slice_enqueued`` -- so its own job never set ``in_flight``, even
+   though the pass it may have just started IS armed. This hook must not perturb the cooldown
+   clock or the failure streak for that job's own completion (see that function's own docstring).
 """
 
 from __future__ import annotations
@@ -145,8 +150,9 @@ async def record_drain_slice_completion(ctx: dict[str, Any]) -> None:
     ``drain_tracklists`` completion reaches this hook (it is registered unconditionally,
     alongside ``deterministic_key.increment_completed``), but a manual "Run tracklist lookups" /
     Prioritize / Refresh slice never went through ``mark_slice_enqueued`` and so never set
-    ``in_flight`` -- it is not part of an armed pass, and must not perturb the cooldown clock or
-    the failure streak that pass is tracking.
+    ``in_flight`` on its OWN job -- even though, since phaze-5sj7k, that same "Run" click may have
+    just armed the pass. This hook must not perturb the cooldown clock or the failure streak that
+    the CRON-ENQUEUED slices of that pass are tracking, based on a job it did not enqueue.
 
     Only fires on a TERMINAL status (mirrors ``increment_completed``): ``Status.QUEUED`` means
     SAQ's own retry path re-queued the job for another attempt, and this hook must wait for that
@@ -155,7 +161,7 @@ async def record_drain_slice_completion(ctx: dict[str, Any]) -> None:
 
     ACCEPTED RACE: ``in_flight`` is a boolean, not a specific job identity, so if an operator's
     manual slice happens to be running CONCURRENTLY with a cron-enqueued one, whichever finishes
-    first clears it -- the other's completion is then read as "not part of an armed pass" and
+    first clears it -- the other's completion is then read as "not the cron-enqueued slice" and
     skipped. ``drain_tracklists`` is deliberately UNKEYED for the same underlying reason
     (``tasks._shared.deterministic_key``'s allow-list: consecutive slices are distinct work, and
     an overlapping pair costs at most one duplicated request), so this mirrors an already-accepted
