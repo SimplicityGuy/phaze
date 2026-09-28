@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sqlalchemy import text
+
 from tests.analyze.services.backends.protocol._shared import (
     CloudJob,
     CloudJobStatus,
@@ -22,6 +24,40 @@ from tests.analyze.services.backends.protocol._shared import (
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.models.file import FileRecord
+
+
+# ``saq_jobs`` is SAQ-owned (``Base.metadata.create_all`` does not know it), and a sibling suite may have
+# left one behind with a different shape, so a bare ``CREATE TABLE IF NOT EXISTS`` would be
+# order-dependent. DROP + CREATE pins the schema these tests control -- the idiom from
+# tests/analyze/tasks/test_ledger_reaper.py; the per-test transaction rolls it back. Only ``key`` /
+# ``status`` are read by ``live_job_clause``, so the minimal shape is faithful.
+_CREATE_SAQ_JOBS = (
+    text("DROP TABLE IF EXISTS saq_jobs"),
+    text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"),
+)
+
+
+async def _saq_table(session: AsyncSession) -> None:
+    for stmt in _CREATE_SAQ_JOBS:
+        await session.execute(stmt)
+    await session.commit()
+
+
+async def _seed_process_file_ledger(session: AsyncSession, file: FileRecord) -> str:
+    """Write the ``process_file:<file_id>`` ledger row ``before_enqueue`` would; return its key."""
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    key = f"process_file:{file.id}"
+    session.add(SchedulingLedger(key=key, function="process_file", routing="agent", payload={"file_id": str(file.id)}))
+    await session.commit()
+    return key
+
+
+async def _seed_saq(session: AsyncSession, key: str, status: str) -> None:
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, :status)"), {"key": key, "status": status})
+    await session.commit()
 
 
 @pytest.mark.asyncio
@@ -50,16 +86,15 @@ async def test_local_in_flight_count_is_ledger_derived_not_hardcoded_zero(sessio
     non-music/video file with a ledger row that must NOT be counted (mirrors the ``music_video_total``
     scoping every other stage-progress read applies) -> in_flight_count reports exactly 2.
     """
-    from phaze.models.scheduling_ledger import SchedulingLedger
-
+    await _saq_table(session)
     running = [_make_file() for _ in range(2)]
     non_music_video = _make_file(file_type="txt")
     for file in [*running, non_music_video]:
         session.add(file)
     await session.commit()
+    # phaze-1kowg: each seeded ledger row carries a live broker job, so every one is genuinely RUNNING.
     for file in [*running, non_music_video]:
-        session.add(SchedulingLedger(key=f"process_file:{file.id}", function="process_file", routing="agent", payload={"file_id": str(file.id)}))
-    await session.commit()
+        await _seed_saq(session, await _seed_process_file_ledger(session, file), "active")
 
     assert await _local().in_flight_count(session) == 2
 
@@ -76,23 +111,106 @@ async def test_local_in_flight_count_excludes_files_with_an_in_flight_cloud_job(
     ledger-in-flight file WITHOUT a cloud_job row (genuinely local -> counted) alongside one
     ledger-in-flight file WITH an in-flight cloud_job row (cloud-routed -> excluded).
     """
-    from phaze.models.scheduling_ledger import SchedulingLedger
-
+    await _saq_table(session)
     local_only = _make_file()
     cloud_routed = _make_file()
     session.add(local_only)
     session.add(cloud_routed)
     await session.commit()
     session.add(CloudJob(id=uuid.uuid4(), file_id=cloud_routed.id, backend_id="kueue-x64", status=CloudJobStatus.RUNNING.value))
-    session.add(
-        SchedulingLedger(key=f"process_file:{local_only.id}", function="process_file", routing="agent", payload={"file_id": str(local_only.id)})
-    )
-    session.add(
-        SchedulingLedger(key=f"process_file:{cloud_routed.id}", function="process_file", routing="agent", payload={"file_id": str(cloud_routed.id)})
-    )
     await session.commit()
+    for file in (local_only, cloud_routed):
+        await _seed_saq(session, await _seed_process_file_ledger(session, file), "active")
 
     assert await _local().in_flight_count(session) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_ignores_a_ledger_row_with_no_saq_job(session: AsyncSession) -> None:
+    """phaze-1kowg: a ``process_file`` ledger row with NO broker job behind it does not occupy the lane.
+
+    The production shape (spike phaze-tch4d): 2374 ``process_file`` ledger rows enqueued 2026-07-16..08-08,
+    zero ``process_file`` rows in ``saq_jobs``, ``cap=1`` -- the bare-ledger count read the lane full
+    forever. Seed that shape in miniature: several ORPHANED rows (no ``saq_jobs`` row at all) plus rows
+    whose broker job reached a NON-live status (``complete`` / ``failed`` / ``aborting`` / ``aborted``).
+    None is running on the fileserver agent, so the count is 0 -- while the ledger rows themselves are
+    untouched (owed work stays owed; re-driving it is recovery's job, phaze-5y73k).
+    """
+    from sqlalchemy import func, select
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    await _saq_table(session)
+    orphans = [_make_file() for _ in range(3)]
+    dead = {status: _make_file() for status in ("complete", "failed", "aborting", "aborted")}
+    session.add_all([*orphans, *dead.values()])
+    await session.commit()
+    for file in orphans:
+        await _seed_process_file_ledger(session, file)
+    for status, file in dead.items():
+        await _seed_saq(session, await _seed_process_file_ledger(session, file), status)
+
+    assert await _local().in_flight_count(session) == 0
+    assert (await session.execute(select(func.count()).select_from(SchedulingLedger))).scalar_one() == len(orphans) + len(dead)
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_counts_queued_and_active_jobs_but_not_phantoms(session: AsyncSession) -> None:
+    """phaze-1kowg: a ledger row WITH a ``queued`` or ``active`` broker job still counts; its phantom neighbours do not.
+
+    ``queued`` counts as well as ``active``: a queued job holds its place on the agent's analyze queue (and a
+    parked/paused job keeps ``status='queued'``), so it genuinely occupies the lane. Mixed with phantoms in
+    ONE database so the assertion discriminates -- the pre-fix bare-ledger count reads 5 here, not 2.
+    """
+    await _saq_table(session)
+    queued, active = _make_file(), _make_file()
+    phantoms = [_make_file() for _ in range(3)]
+    session.add_all([queued, active, *phantoms])
+    await session.commit()
+    await _seed_saq(session, await _seed_process_file_ledger(session, queued), "queued")
+    await _seed_saq(session, await _seed_process_file_ledger(session, active), "active")
+    for file in phantoms:
+        await _seed_process_file_ledger(session, file)
+
+    assert await _local().in_flight_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_does_not_count_a_live_job_with_no_ledger_row(session: AsyncSession) -> None:
+    """The count is the RUNNING refinement OF in-flight, never wider than the ledger: a bare broker row alone is not counted."""
+    await _saq_table(session)
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    await _seed_saq(session, f"process_file:{file.id}", "active")
+
+    assert await _local().in_flight_count(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_degrades_to_the_ledger_only_count_when_saq_jobs_is_unreadable(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """phaze-1kowg DEGRADE: no ``saq_jobs`` table -> the pre-fix ledger-only count, logged, never a raise.
+
+    The conservative direction for a CAPACITY read: over-count so the lane holds, rather than read an
+    unreadable broker as "nothing running" and over-admit. The SAVEPOINT keeps the failed probe from
+    poisoning the caller's transaction -- the follow-up read in the SAME session must still work.
+    """
+    from sqlalchemy import func, select
+
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    await session.commit()
+    files = [_make_file() for _ in range(2)]
+    session.add_all(files)
+    await session.commit()
+    for file in files:
+        await _seed_process_file_ledger(session, file)
+
+    assert await _local().in_flight_count(session) == 2
+    assert "local_in_flight_degraded" in caplog.text
+    # The caller's transaction survived the failed probe.
+    assert (await session.execute(select(func.count()).select_from(text("files")))).scalar_one() >= 2
 
 
 @pytest.mark.asyncio

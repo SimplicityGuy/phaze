@@ -15,10 +15,11 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends.base import IN_FLIGHT, _BaseBackend
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.pipeline import MUSIC_VIDEO_TYPES
-from phaze.services.stage_status import inflight_clause
+from phaze.services.stage_status import inflight_clause, live_job_clause
 
 
 if TYPE_CHECKING:
+    from sqlalchemy import Select
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
@@ -28,12 +29,31 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _local_in_flight_stmt(*, require_live_job: bool) -> Select[tuple[int]]:
+    """Build :meth:`LocalBackend.in_flight_count`'s COUNT -- with the ``saq_jobs`` liveness conjunct, or without it.
+
+    ``require_live_job=False`` is the pre-phaze-1kowg ledger-only count, kept ONLY as the degrade path for
+    an unreadable ``saq_jobs``. The live conjunct is a positive ``EXISTS`` in a conjunction, so the planner
+    can semi-join it rather than cost a per-row SubPlan (the plan-shape lesson in
+    :func:`phaze.services.stage_status.not_running_clause`).
+    """
+    stmt = (
+        select(func.count(FileRecord.id))
+        .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+        .where(inflight_clause(Stage.ANALYZE))
+        .where(~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_([status.value for status in IN_FLIGHT]))))
+    )
+    if require_live_job:
+        stmt = stmt.where(live_job_clause(Stage.ANALYZE))
+    return stmt
+
+
 class LocalBackend(_BaseBackend):
     """On-prem/all-local backend -- analysis runs on the fileserver agent via ``process_file`` (no cloud_job).
 
     ``is_available`` is unconditionally True (local dispatch needs no remote cloud agent);
-    ``in_flight_count`` is the REAL ledger-derived running count (phaze-xd8k, see below); ``reconcile``
-    is a no-op (local completion is synchronous, no cron read). ``dispatch`` re-homes the ``process_file``
+    ``in_flight_count`` is the REAL running count -- ledger row AND live ``saq_jobs`` job (phaze-xd8k,
+    phaze-1kowg, see below); ``reconcile`` is a no-op (local completion is synchronous, no cron read). ``dispatch`` re-homes the ``process_file``
     local enqueue path (backend scheduler uses it; unit-tested here, NOT wired into the single-path drain).
     """
 
@@ -42,7 +62,7 @@ class LocalBackend(_BaseBackend):
         return True
 
     async def in_flight_count(self, session: AsyncSession) -> int:
-        """Return the REAL local-lane running count (phaze-xd8k), not a hardcoded 0.
+        """Return the REAL local-lane running count (phaze-xd8k): files whose ``process_file`` is RUNNING here.
 
         A local burst writes NO ``cloud_job`` row, so :class:`_BaseBackend`'s ``cloud_job``-derived
         COUNT is structurally always 0 for this lane -- that hardcode was the observability bug: the
@@ -52,31 +72,53 @@ class LocalBackend(_BaseBackend):
         job regardless of which agent it was routed to, while this lane rendered a literal 0 even when
         thousands of files were actively analyzing locally.
 
-        The fix: count music/video files that are ``inflight_clause(ANALYZE)`` (a live
-        ``process_file:<file_id>`` scheduling-ledger row) AND carry NO in-flight ``cloud_job`` row
-        (D-10's ``{UPLOADING, UPLOADED, SUBMITTED, RUNNING}`` set). A cloud-routed file's ``process_file``
-        is enqueued on ITS agent under the SAME deterministic ledger key
-        (:func:`phaze.services.analysis_enqueue.process_file_job_key`), so the ledger key alone cannot
-        distinguish "local" from "cloud" -- the ``~exists(cloud_job in-flight)`` exclusion is what carves
-        out the local-only slice: a compute/kueue file either has no ``cloud_job`` row yet (still
-        pre-stage) or still carries its in-flight ``cloud_job`` row while its ``process_file`` runs
-        remotely (kueue's Job IS its ``process_file`` execution; compute's row stays SUBMITTED until the
-        ``/pushed`` callback flips it, well past when ITS ledger row would appear). The one known gap
-        (documented, not fixed here -- out of phaze-xd8k's scope): a COMPUTE file's ``cloud_job`` row is
-        terminalized SUCCEEDED by ``report_pushed`` in the SAME transaction that enqueues its remote
-        ``process_file`` (``routers/agent_push.py``), so for the brief window a compute agent is actually
-        running analysis, this lane's real-count query cannot distinguish it from a genuinely local file
-        and would over-count local by that amount. Harmless where no ``compute`` backend is configured
-        (this bug's confirmed scenario: local + kueue only) and bounded by compute lane concurrency caps
-        elsewhere.
+        The count: music/video files that are ``inflight_clause(ANALYZE)`` (a ``process_file:<file_id>``
+        scheduling-ledger row) AND ``live_job_clause(ANALYZE)`` (a ``queued``/``active`` ``saq_jobs`` row
+        on that same key) AND carry NO in-flight ``cloud_job`` row (D-10's ``{UPLOADING, UPLOADED,
+        SUBMITTED, RUNNING}`` set). This is the D-01a RUNNING refinement of in-flight, not the bare ledger.
+
+        WHY THE BROKER PROBE (phaze-1kowg). A ledger row is "was scheduled", not "is running": an ORPHANED
+        row (scheduled, running nowhere, not domain-complete -- see
+        :func:`phaze.services.stage_status.orphaned_clause`) stands until ``recover_orphaned_work`` re-drives
+        it, and the ledger is RIGHT to hold it. Counting those as occupied slots is wrong for a CAPACITY
+        read: production measured 2374 such rows (enqueued 2026-07-16..08-08, zero ``process_file`` jobs in
+        the broker) against ``cap=1``, so ``remaining`` was 0 forever and every cloud-attempt-exhausted
+        file -- routable ONLY to local -- could never move (spike phaze-tch4d). An orphaned row does not
+        occupy the fileserver agent, so it must not occupy the lane. The ledger rows themselves are left
+        alone: reaping them would discard owed work (``phaze.tasks.ledger_reaper``'s first guard);
+        re-driving them is recovery's job, scoped by phaze-5y73k.
+
+        Consumers: the drain's once-per-tick capacity snapshot (``remaining = cap - in_flight``) and the
+        lane grid's ``in_flight`` (:mod:`phaze.services.backends.lane_snapshot`, read by the Analyze page).
+        Both want "occupying the lane now". A still-``queued`` job counts -- it holds its place on the
+        agent's analyze queue, and a parked (paused) job keeps ``status='queued'`` too.
+
+        DEGRADE. The broker probe runs in a SAVEPOINT; if ``saq_jobs`` is unreadable the count falls back
+        to the ledger-only count this method returned before phaze-1kowg -- the CONSERVATIVE direction
+        (over-count, so the lane holds rather than over-admits), mirroring D-01a's "revert to exactly
+        today's ledger-only behavior" rule for every other broker-corroborated reader.
+
+        Known gaps, both bounded and documented rather than fixed here:
+
+        - The ledger row is written by ``before_enqueue`` in its own transaction BEFORE SAQ inserts the
+          ``saq_jobs`` row, so for that instant a just-enqueued job is not yet counted. The drain holds its
+          advisory lock across dispatch + commit, so no other tick can observe the gap.
+        - (phaze-xd8k) The ledger key cannot distinguish "local" from "cloud": a cloud-routed file's
+          ``process_file`` runs under the SAME deterministic key
+          (:func:`phaze.services.analysis_enqueue.process_file_job_key`). The ``~exists(cloud_job
+          in-flight)`` exclusion carves out the local-only slice, but a COMPUTE file's ``cloud_job`` row
+          is terminalized SUCCEEDED by ``report_pushed`` in the SAME transaction that enqueues its remote
+          ``process_file`` (``routers/agent_push.py``), so while a compute agent is actually running
+          analysis this count cannot tell it from a genuinely local file and over-counts local by that
+          amount. Harmless where no ``compute`` backend is configured (local + kueue) and bounded by
+          compute lane concurrency caps elsewhere.
         """
-        stmt = (
-            select(func.count(FileRecord.id))
-            .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
-            .where(inflight_clause(Stage.ANALYZE))
-            .where(~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_([status.value for status in IN_FLIGHT]))))
-        )
-        return int((await session.execute(stmt)).scalar() or 0)
+        try:
+            async with session.begin_nested():
+                return int((await session.execute(_local_in_flight_stmt(require_live_job=True))).scalar() or 0)
+        except Exception:
+            logger.warning("local_in_flight_degraded: saq_jobs liveness probe failed -> ledger-only count", exc_info=True)
+        return int((await session.execute(_local_in_flight_stmt(require_live_job=False))).scalar() or 0)
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Flip ``file`` to LOCAL_ANALYZING then enqueue ``process_file`` on the fileserver queue -- one txn, no commit.
