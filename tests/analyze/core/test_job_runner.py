@@ -1816,3 +1816,126 @@ async def test_plain_audio_download_is_analyzed_directly_and_still_cleaned_up(jo
     assert exc.value.code == 0
     assert analyzed == downloads, "the skip branch must hand the analyzer the downloaded file itself"
     assert not Path(downloads[0]).exists(), "the downloaded temp file must never outlive the pod"
+
+
+# phaze-j0ixx -- a presign that never reaches the control plane exits 14, not 10.
+#
+# Spike phaze-79mu7: both 09-26/27 incidents were presign requests that never reached the API (the app
+# host down; the burst node's cluster DNS returning SERVFAIL), charged to every file as exit 10. The two
+# connect-phase cases below are REAL failures, not mocked exceptions: a ``.invalid`` host (RFC 2606, can
+# never resolve) and a closed loopback port. The contrast cases are responses from a control plane that
+# WAS reached, which must stay 10 because they can depend on the file.
+
+
+def _no_backoff(monkeypatch):  # type: ignore[no-untyped-def]
+    """Keep the client's real 3-attempt retry but skip its exponential sleeps (the ``_retry_sleep`` test seam)."""
+    import phaze.job_runner as jr
+
+    real = jr.construct_agent_client
+
+    async def _instant(_seconds):  # type: ignore[no-untyped-def]
+        return None
+
+    def _construct(cfg):  # type: ignore[no-untyped-def]
+        client = real(cfg)
+        client._retry_sleep = _instant
+        return client
+
+    monkeypatch.setattr(jr, "construct_agent_client", _construct)
+
+
+def _point_control_plane_at(monkeypatch, url: str) -> None:  # type: ignore[no-untyped-def]
+    from phaze.config import get_settings
+
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", url)
+    get_settings.cache_clear()
+
+
+def _closed_loopback_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.mark.parametrize("target", ["unresolvable", "refused"])
+async def test_presign_that_cannot_reach_the_control_plane_exits_14(job_env, monkeypatch, target):  # type: ignore[no-untyped-def]
+    """DNS failure and a refused connection are the environment's fault on every file alike -> EXIT_CONTROL_PLANE_UNREACHABLE."""
+    import phaze.job_runner as jr
+
+    url = "http://control-plane.invalid" if target == "unresolvable" else f"http://127.0.0.1:{_closed_loopback_port()}"
+    _point_control_plane_at(monkeypatch, url)
+    _no_backoff(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_CONTROL_PLANE_UNREACHABLE == 14
+
+
+@respx.mock
+async def test_presign_connect_timeout_exits_14_after_the_clients_retries(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A connect timeout is also a request that never arrived; the client's bounded retry still runs first (D-02)."""
+    import phaze.job_runner as jr
+
+    _no_backoff(monkeypatch)
+    presign = respx.post(f"{job_env['base_url']}/api/internal/agent/files/{job_env['file_id']}/presign-download").mock(
+        side_effect=httpx.ConnectTimeout("timed out")
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_CONTROL_PLANE_UNREACHABLE
+    assert presign.call_count == 3
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "outcome",
+    [httpx.Response(503, json={"detail": "db down"}), httpx.Response(409, json={"detail": "not ready"}), httpx.ReadTimeout("slow handler")],
+    ids=["reached-5xx", "reached-409", "reached-read-timeout"],
+)
+async def test_presign_that_reached_the_control_plane_stays_exit_10(job_env, monkeypatch, outcome):  # type: ignore[no-untyped-def]
+    """Any answer, or a stall after the request arrived, may be about THIS file -- it stays charged as EXIT_DOWNLOAD."""
+    import phaze.job_runner as jr
+
+    _no_backoff(monkeypatch)
+    route = respx.post(f"{job_env['base_url']}/api/internal/agent/files/{job_env['file_id']}/presign-download")
+    if isinstance(outcome, Exception):
+        route.mock(side_effect=outcome)
+    else:
+        route.mock(return_value=outcome)
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_DOWNLOAD
+
+
+@respx.mock
+async def test_object_get_that_cannot_connect_stays_exit_10(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """The split is about the CONTROL PLANE: a connect failure on the object GET is still EXIT_DOWNLOAD."""
+    import phaze.job_runner as jr
+
+    respx.post(f"{job_env['base_url']}/api/internal/agent/files/{job_env['file_id']}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(side_effect=httpx.ConnectError("object store unreachable"))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_DOWNLOAD
+
+
+def test_unwrapped_connect_error_classifies_as_unreachable() -> None:
+    """A bare httpx connect error (no client wrapper) is classified like a wrapped one; a wrapped 5xx is not."""
+    import phaze.job_runner as jr
+    from phaze.services.agent_client import AgentApiServerError
+
+    assert jr._control_plane_unreachable(httpx.ConnectError("x"))
+    wrapped_5xx = AgentApiServerError("POST /x -> 503 after retries")
+    wrapped_5xx.__cause__ = httpx.HTTPStatusError("503", request=httpx.Request("POST", "http://x"), response=httpx.Response(503))
+    assert not jr._control_plane_unreachable(wrapped_5xx)

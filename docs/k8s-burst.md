@@ -279,6 +279,25 @@ dropped/expired watch never loses or duplicates a result" true.
   `submit cap reached` log lines carry the same `exit_code` and `reason`. The columns live on the
   sidecar row, so the D-14 reaper below removes them with it once the spilled file's local analysis
   finishes.
+- **An unreachable control plane charges nothing, and holds the backend (phaze-j0ixx)** — exit `10`
+  used to cover both a presign request that never reached the control plane and a failed object GET,
+  and reconcile charged both to `attempts`; two infrastructure faults on 2026-09-26/27 spent 302
+  healthy files' whole budget that way (spike `phaze-79mu7`). The pod now exits `14`
+  (`EXIT_CONTROL_PLANE_UNREACHABLE`) when its presign request could not open a connection at all
+  (DNS failure, refused, TLS/connect error, connect timeout); a request that reached the control plane
+  and was refused, and every object GET failure, stay `10`. Reconcile charges neither `attempts` nor
+  `node_loss_redrives` for a `14`, and feeds it to the backend's breaker (`backend_breaker` table,
+  `services/backend_breaker.py`). The breaker **trips** when 3 distinct files exit `14` on that backend
+  within 15 minutes, or one file does so twice. While it is open the drain gives the backend no slots
+  (it reads as *full*, not *offline*, so local spill stays staleness-gated), reconcile spills that
+  backend's `14` rows back to `'awaiting'` with `attempts` unchanged, and the Analyze lane card shows
+  **HELD** with the reason. Every 15 minutes the drain grants the backend **one** probe slot; the
+  breaker **closes** the first time the presign endpoint mints a URL for a pod on that backend. No
+  running pod is killed. Operator decision 2026-09-27 (`AskUserQuestion`): *"phaze-j0ixx: when cloud
+  pods fail because the control plane is unreachable (the 09-26 outage and the vox DNS loss), files
+  currently use up their 3 attempts. How should phaze respond instead?"* — answer as given: *"Both:
+  exit code + breaker (Recommended)"*; durable record: the bead `phaze-j0ixx` comment. The thresholds
+  and the probe are the implementer's choice, reasoned in `services/backend_breaker.py`.
 - **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
   `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
