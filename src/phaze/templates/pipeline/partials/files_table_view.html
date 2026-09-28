@@ -88,8 +88,12 @@
     {% if active_bucket == 'failed' and active_stage %}
     {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
     {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
-    {% elif active_stage or active_bucket %}
-    {# Any other active filter that matched nothing -- point the operator at Clear filter above. #}
+    {% elif active_bucket %}
+    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
+       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
+       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
+       contract), so an unfiltered corpus that happens to be empty must fall through to the
+       unfiltered "No files yet" copy below, not this one. #}
     {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
     {% else %}
     {# Unfiltered empty state (Copywriting Contract). #}
