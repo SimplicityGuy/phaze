@@ -867,3 +867,252 @@ async def test_ordinary_deferral_leaves_no_node_loss_marker(session: AsyncSessio
     assert cj.attempts == 1  # the ordinary budget, not the node-loss one
     assert cj.node_loss_redrives == 0
     assert cj.node_loss_pending is None
+
+
+# phaze-1xngw -- the pod's exit status survives the Job delete.
+#
+# Reconcile deletes the Job on every re-drive and spill, so the terminated ``exitCode`` / ``reason`` it
+# reads first is the only copy (spike phaze-79mu7 had to recover exit 10 from the node's journal). The
+# exits exercised are the job_runner contract (``phaze.job_runner``): 10 = EXIT_DOWNLOAD, 12 =
+# EXIT_ANALYSIS, 13 = EXIT_CALLBACK.
+
+_POD_NAMESPACE = "phaze"
+_PODS_PATH = f"/api/v1/namespaces/{_POD_NAMESPACE}/pods"
+
+
+def _terminated_pod_manifest(job_name: str, exit_code: int, *, reason: str = "Error", finished_at: str = "2026-09-27T02:05:13Z") -> dict[str, Any]:
+    """A v1 Pod exactly as the API server returns a ``restartPolicy: Never`` pod whose container exited non-zero.
+
+    The field set is the kubelet's for a Failed pod (phase, conditions, container ``state.terminated``
+    with ``exitCode`` / ``reason`` / ``startedAt`` / ``finishedAt`` / ``containerID``) -- not a subset
+    chosen to match what the implementation happens to read. Synthetic identifiers only.
+    """
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": f"{job_name}-x7k2p",
+            "namespace": _POD_NAMESPACE,
+            "labels": {"batch.kubernetes.io/job-name": job_name, "job-name": job_name, "batch.kubernetes.io/controller-uid": "uid-1"},
+            "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": job_name, "uid": "uid-1", "controller": True}],
+        },
+        "spec": {"restartPolicy": "Never", "containers": [{"name": "analyze", "image": "phaze/job-runner:test"}]},
+        "status": {
+            "phase": "Failed",
+            "conditions": [
+                {"type": "PodReadyToStartContainers", "status": "False", "lastTransitionTime": finished_at},
+                {"type": "Initialized", "status": "True", "lastTransitionTime": "2026-09-27T02:05:06Z"},
+                {"type": "Ready", "status": "False", "reason": "PodFailed", "lastTransitionTime": finished_at},
+                {"type": "ContainersReady", "status": "False", "reason": "PodFailed", "lastTransitionTime": finished_at},
+                {"type": "PodScheduled", "status": "True", "lastTransitionTime": "2026-09-27T02:05:06Z"},
+            ],
+            "hostIP": "10.0.0.5",
+            "podIP": "10.244.0.12",
+            "startTime": "2026-09-27T02:05:06Z",
+            "containerStatuses": [
+                {
+                    "name": "analyze",
+                    "ready": False,
+                    "started": False,
+                    "restartCount": 0,
+                    "image": "phaze/job-runner:test",
+                    "imageID": "phaze/job-runner@sha256:" + "0" * 64,
+                    "containerID": "containerd://" + "a" * 64,
+                    "state": {
+                        "terminated": {
+                            "exitCode": exit_code,
+                            "reason": reason,
+                            "startedAt": "2026-09-27T02:05:07Z",
+                            "finishedAt": finished_at,
+                            "containerID": "containerd://" + "a" * 64,
+                        }
+                    },
+                    "lastState": {},
+                }
+            ],
+            "qosClass": "Burstable",
+        },
+    }
+
+
+def _kr8s_pod(job_name: str, exit_code: int, **kwargs: Any) -> Any:
+    """The same manifest as a real ``kr8s.asyncio.objects.Pod`` -- ``.status`` is kr8s's own Box, not a SimpleNamespace."""
+    from kr8s.asyncio.objects import Pod
+
+    return Pod(_terminated_pod_manifest(job_name, exit_code, **kwargs))
+
+
+def _patch_real_kube(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_patch_cap`` with a REAL ``KubeConfig`` on the seam host, so ``list_pods_for_job`` runs through kr8s."""
+    from phaze.config_backends import KubeConfig
+    from tests.conftest import KUBE_TEST_API_URL
+
+    _patch_cap(monkeypatch, cap=3)
+    from phaze.tasks import reconcile_cloud_jobs as reconcile_mod
+
+    settings = reconcile_mod.get_settings()  # the stub _patch_cap just installed
+    settings.backends[0].kube = KubeConfig(api_url=KUBE_TEST_API_URL, namespace=_POD_NAMESPACE, local_queue="phaze-lq")
+
+
+def _logged(logs: list[dict[str, Any]], event_prefix: str) -> dict[str, Any]:
+    [entry] = [e for e in logs if str(e.get("event", "")).startswith(event_prefix)]
+    return entry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_code", [10, 12, 13], ids=["EXIT_DOWNLOAD", "EXIT_ANALYSIS", "EXIT_CALLBACK"])
+async def test_redrive_records_the_real_pod_exit_status(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, kube_respx: Any, exit_code: int
+) -> None:
+    """Rule 3: the pod status reaches reconcile through the REAL ``list_pods_for_job`` -> kr8s ``Pod`` path.
+
+    Only the kube HTTP transport is stubbed (respx serves a PodList as the API server would); the pod
+    objects reconcile reads are the ones kr8s builds from it. A failed Job under cap re-drives, and the
+    row keeps the analyze container's exit code and reason after the Job is deleted.
+    """
+    from httpx import Response
+    import structlog
+
+    _patch_real_kube(monkeypatch)
+    fid, name = await _seed(session, attempts=0)
+    pod_list = {"apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": [_terminated_pod_manifest(name, exit_code)]}
+    pods_route = kube_respx.get(_PODS_PATH).mock(return_value=Response(200, json=pod_list))
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(failed=1, name=name), None))
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
+
+    with structlog.testing.capture_logs() as logs:
+        tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert pods_route.called  # the pods came over the (stubbed) wire, through kr8s -- not from a spy
+    assert tally["redriven"] == 1
+    assert cj.attempts == 1
+    assert cj.last_exit_code == exit_code
+    assert cj.last_failure_reason == "Error"
+    assert cj.last_failed_at is not None
+    entry = _logged(logs, "reconcile_cloud_jobs: re-driving submit_cloud_job")
+    assert (entry["exit_code"], entry["reason"]) == (exit_code, "Error")
+
+
+@pytest.mark.asyncio
+async def test_at_cap_spill_records_the_exit_status_and_logs_it(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The spill that exhausts the budget keeps the exit status on the 'awaiting' row and in the cap log line."""
+    import structlog
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=3)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)), list_pods=ListPodsSpy(_kr8s_pod(name, 12, reason="OOMKilled")))
+
+    with structlog.testing.capture_logs() as logs:
+        await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.AWAITING.value
+    assert (cj.last_exit_code, cj.last_failure_reason) == (12, "OOMKilled")
+    assert cj.last_failed_at is not None
+    entry = _logged(logs, "reconcile_cloud_jobs: submit cap reached")
+    assert (entry["exit_code"], entry["reason"]) == (12, "OOMKilled")
+
+
+@pytest.mark.asyncio
+async def test_vanished_job_records_the_job_vanished_marker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Job means no pod to read: the row says so explicitly instead of leaving the exit code silently empty."""
+    import structlog
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, _name = await _seed(session, attempts=0)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    with structlog.testing.capture_logs() as logs:
+        await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.last_exit_code is None
+    assert cj.last_failure_reason == "job_vanished"
+    assert cj.last_failed_at is not None
+    entry = _logged(logs, "reconcile_cloud_jobs: re-driving submit_cloud_job")
+    assert (entry["exit_code"], entry["reason"]) == (None, "job_vanished")
+
+
+@pytest.mark.asyncio
+async def test_expired_pending_confirmation_records_its_marker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A row that never got a Job stamped within the bound records ``pending_confirmation_expired``."""
+    from datetime import timedelta
+
+    from phaze.tasks.reconcile_cloud_jobs import PENDING_SUBMIT_CONFIRMATION_SECONDS
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, _name = await _seed(session, attempts=0)
+    stale = datetime.now(UTC) - timedelta(seconds=PENDING_SUBMIT_CONFIRMATION_SECONDS + 60)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(kueue_workload=None, updated_at=stale))
+    await session.commit()
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert (cj.last_exit_code, cj.last_failure_reason) == (None, "pending_confirmation_expired")
+
+
+@pytest.mark.asyncio
+async def test_failed_job_with_no_listable_pod_records_pod_not_found(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Job that reads Failed but lists no pod records ``pod_not_found`` -- the pod-less case of a real Job."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name), None), list_pods=ListPodsSpy())
+
+    await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert (cj.last_exit_code, cj.last_failure_reason) == (None, "pod_not_found")
+
+
+@pytest.mark.asyncio
+async def test_exit_status_survives_the_still_terminating_deferral(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The deferral reads the pod, the Job vanishes before the next tick: the recorded exit code must not become ``job_vanished``.
+
+    Same two-tick shape as the phaze-mwbz3 node-loss regression test. Tick 1 stashes the exit status
+    with ``last_failed_at`` NULL (pending, no budget spent); tick 2's vanished-Job branch has no pod to
+    read and re-drives with the stashed status, stamping ``last_failed_at``.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session)
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), fake_job(failed=1, name=name)),
+        list_pods=ListPodsSpy(_kr8s_pod(name, 13)),
+    )
+    await reconcile_cloud_jobs(_make_ctx())
+    deferred = await _read_cloud_job(session, fid)
+    assert deferred.attempts == 0
+    assert (deferred.last_exit_code, deferred.last_failure_reason, deferred.last_failed_at) == (13, "Error", None)
+
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None), list_pods=ListPodsSpy())
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert tally["redriven"] == 1
+    assert cj.attempts == 1
+    assert (cj.last_exit_code, cj.last_failure_reason) == (13, "Error")
+    assert cj.last_failed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_later_vanish_after_a_real_redrive_is_not_mistaken_for_a_deferral(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stamped ``last_failed_at`` is history, not a pending stash: the next pod-less terminal records its own marker."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name), None), list_pods=ListPodsSpy(_kr8s_pod(name, 10)))
+    await reconcile_cloud_jobs(_make_ctx())
+    assert (await _read_cloud_job(session, fid)).last_exit_code == 10
+
+    # The resubmit ran (re-stamping the Job name), then that Job vanished.
+    await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(kueue_workload=name))
+    await session.commit()
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+    await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 2
+    assert (cj.last_exit_code, cj.last_failure_reason) == (None, "job_vanished")

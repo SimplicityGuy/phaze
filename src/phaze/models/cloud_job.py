@@ -15,10 +15,11 @@ new members need no enum migration, only the CHECK-constraint membership list. `
 ``updated_at`` come from :class:`TimestampMixin` -- do not redeclare them here.
 """
 
+from datetime import datetime
 import enum
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -156,6 +157,18 @@ class CloudJob(TimestampMixin, Base):
     # status) and it is the post-mortem record of which identity a finished Job's counters landed on.
     # A re-submit re-allocates rather than trusting a stale value -- see ``allocate_slot``.
     telemetry_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # phaze-1xngw: the most recent no-callback terminal the reconcile cron observed, written on every
+    # re-drive and at-ceiling spill (``reconcile_cloud_jobs``). The cron deletes the Job on both paths,
+    # so without these the pod's exit status is gone within a minute (spike phaze-79mu7 could read it
+    # only from the node's containerd journal). ``last_exit_code`` is the analyze container's
+    # ``state.terminated.exitCode`` (``job_runner.EXIT_*``) and ``last_failure_reason`` its
+    # ``terminated.reason``; when no terminated container exists the exit code is NULL and the reason
+    # is an explicit marker (``job_vanished`` / ``pending_confirmation_expired`` / ``pod_not_found``)
+    # or the pod-state summary. Never cleared: a re-submit keeps the previous failure visible while
+    # the next attempt runs, and the spilled 'awaiting' row keeps the one that exhausted its budget.
+    last_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         # Bare name "status_enum"; the ck_%(table_name)s_%(constraint_name)s convention re-prefixes it.
