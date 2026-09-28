@@ -42,6 +42,7 @@ from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
+from phaze.services.record_metadata import build_metadata_card
 from phaze.services.set_similarity import SimilarSet, find_similar_sets
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
@@ -265,7 +266,14 @@ async def build_file_record_context(
         coverage_text=type_cast("str | None", coverage_chip["text"] if isinstance(coverage_chip, dict) else None),
         analysis=analysis,
         camelot_modal=set_profile.camelot_modal if set_profile is not None else None,
+        metadata_duration=metadata_row.duration if metadata_row is not None else None,
     )
+
+    # phaze-tuy9m: the extracted-metadata card -- the SAME metadata_row already loaded above for
+    # the stage pill's failure reason and the tracklist's duration fallback, now also handed to the
+    # template so the tags mutagen wrote (artist/title/album/year/genre/track/bitrate/duration/raw)
+    # actually appear somewhere an operator can see them.
+    metadata_card = build_metadata_card(metadata_row)
 
     # phaze-x1qr3.8: the harmonic journey wheel, built from the FINE windows' stored `camelot`
     # column through the same flicker filter `harmonic_discipline` counts with. A file with no
@@ -304,6 +312,7 @@ async def build_file_record_context(
         "similar_sets": similar_sets,
         **timeline_context,
         "record_facts": record_facts,
+        "metadata_card": metadata_card,
         "harmonic_journey": harmonic_journey,
         "pending_rows": pending_rows,
         "identity": identity,

@@ -77,6 +77,33 @@ def test_duration_is_the_analyzed_extent_formatted_as_hours_minutes_seconds() ->
     assert _facts(total_sec=0.0)["Duration"] == ABSENT
 
 
+def test_duration_falls_back_to_metadata_duration_when_there_are_no_analysis_windows(  # phaze-tuy9m
+) -> None:
+    """No windows at all (``total_sec == 0``) is exactly the shape a fresh, un-analyzed file has --
+    the tag-reported length is the only duration there is to show, and it must say so."""
+    facts = _facts(total_sec=0.0, metadata_duration=125.0)
+
+    assert facts["Duration"] == "2:05 (from tags)"
+
+
+def test_duration_prefers_the_analyzed_extent_over_metadata_duration_when_windows_exist(  # phaze-tuy9m
+) -> None:
+    """A file with windows must never show the tag value instead of what was actually analyzed --
+    the fallback is for ``total_sec == 0`` only, never a substitute the rest of the time."""
+    facts = _facts(total_sec=90.0, metadata_duration=999.0)
+
+    assert facts["Duration"] == "1:30"
+
+
+def test_a_zero_or_missing_metadata_duration_does_not_fall_back_to_a_fake_reading(  # phaze-tuy9m
+) -> None:
+    """``metadata_duration`` absent, ``None``, or a non-positive stored value all degrade to the
+    ordinary absent marker -- a fallback must never manufacture a duration from nothing."""
+    assert _facts(total_sec=0.0)["Duration"] == ABSENT
+    assert _facts(total_sec=0.0, metadata_duration=None)["Duration"] == ABSENT
+    assert _facts(total_sec=0.0, metadata_duration=0.0)["Duration"] == ABSENT
+
+
 def test_the_digest_row_abbreviates_for_display_and_keeps_the_whole_value_as_its_title() -> None:
     """Truncation is display only -- the row still carries the full digest for copy/compare."""
     digest = "0123456789abcdef" * 4

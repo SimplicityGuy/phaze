@@ -18,6 +18,7 @@ Consumes the DB fixtures, so ``conftest.py`` auto-marks this module ``integratio
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
@@ -25,6 +26,7 @@ from bs4 import BeautifulSoup
 import pytest
 
 from phaze.models.analysis import AnalysisWindow
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.services.record_facts import ABSENT
@@ -392,3 +394,189 @@ async def test_more_like_this_renders_real_neighbours_with_glyphs_links_and_scor
     scoring_line = row.select_one("[data-similar-set-line]").get_text(strip=True)  # type: ignore[union-attr]
     assert scoring_line.startswith("arc 0.00"), "identical arcs and mean_vector: the duplicate-rip shape"
     assert scoring_line.endswith("8A")
+
+
+# phaze-tuy9m: the extracted-metadata card. `_record_content.html` is the shared partial both
+# routes render, so a field-presence test against ONE route and a drawer/page parity test (already
+# held by `tests/shared/test_record_full_page.py`'s text-equality assertion) together cover both
+# presentations without duplicating every assertion twice.
+
+
+def _metadata_field_values(soup: BeautifulSoup) -> dict[str, str]:
+    card = soup.select_one("[data-metadata-card]")
+    assert card is not None, "the extracted-metadata card is missing"
+    return {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in card.select("[data-metadata-field]")
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("presentation", ["page", "drawer"])
+async def test_the_metadata_card_renders_every_non_null_tag_field_on_both_presentations(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+    presentation: str,
+) -> None:
+    """Acceptance 1: a populated ``FileMetadata`` row renders every non-null field, on both routes."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(
+        FileMetadata(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            artist="Artist",
+            title="Title",
+            album="Album",
+            year=2024,
+            genre="Techno",
+            track_number=3,
+            bitrate=320,
+            duration=125.0,
+        )
+    )
+    await session.commit()
+
+    url = f"/files/{file.id}" if presentation == "page" else f"/record/{file.id}"
+    response = await client.get(url, headers={"HX-Request": "true"} if presentation == "drawer" else None)
+    assert response.status_code == 200
+    soup = _soup(response.text)
+
+    assert _metadata_field_values(soup) == {
+        "Artist": "Artist",
+        "Title": "Title",
+        "Album": "Album",
+        "Year": "2024",
+        "Genre": "Techno",
+        "Track #": "3",
+        "Bitrate": "320 kbps",
+        "Duration": "2:05",
+    }
+
+    # phaze-tuy9m follow-up (operator report 2026-09-27, verbatim: "where can i see the metadata?
+    # it should be presented in this view"): the tag values must be in the VISIBLE markup, not
+    # hidden behind a closed <details> a click is needed to open.
+    card = soup.select_one("[data-metadata-card]")
+    assert card is not None
+    assert card.name != "details", "the card itself must not be a collapsible fold"
+    assert card.find_parent("details") is None, "no ancestor fold hides the card from initial render"
+
+
+@pytest.mark.asyncio
+async def test_the_metadata_card_is_not_folded_even_with_no_tag_data(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """The visibility requirement holds regardless of state -- missing/failed/empty all render open."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.name == "section"
+    assert card.find_parent("details") is None
+    assert "No metadata extracted yet." in card.get_text(" ", strip=True)
+
+
+@pytest.mark.asyncio
+async def test_raw_tags_render_in_a_collapsed_details_section(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: raw tags are folded, not dumped open beside the formatted fields -- even though
+    the card AROUND them (phaze-tuy9m follow-up) renders open, this inner blob stays a fold."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist="Artist", raw_tags={"TPE1": "Artist"}))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    raw = page.select_one("[data-metadata-raw-tags]")
+
+    assert raw is not None
+    assert raw.name == "details", "raw tags fold on their own, unlike the card around them"
+    assert raw.get("open") is None, "collapsed by default"
+    pre = raw.select_one("pre")
+    assert pre is not None
+    assert '"TPE1": "Artist"' in pre.text
+
+
+@pytest.mark.asyncio
+async def test_missing_metadata_shows_an_explicit_state(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: no ``FileMetadata`` row at all is a named state, not a blank card."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.select("[data-metadata-field]") == []
+    assert "No metadata extracted yet." in card.get_text(" ", strip=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_metadata_shows_the_stored_error_message(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: a failed extraction shows WHY, the same stored reason the stage pill reads."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, failed_at=datetime.now(UTC), error_message="no ID3 frames found"))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.select("[data-metadata-field]") == []
+    card_text = card.get_text(" ", strip=True)
+    assert "no ID3 frames found" in card_text
+    assert "failed" in card_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_duration_falls_back_to_metadata_duration_when_there_are_no_analysis_windows(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    make_file,
+) -> None:
+    """Acceptance: a file with tag metadata but no analysis windows shows THAT duration in Facts,
+    visibly marked as read from tags rather than analyzed."""
+    file = await make_file(original_filename="<set-03>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=125.0))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    values = {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in page.select("[data-record-sidebar] [data-record-fact]")
+    }
+
+    assert values["Duration"] == "2:05 (from tags)"
+
+
+@pytest.mark.asyncio
+async def test_duration_still_shows_the_analyzed_extent_when_windows_exist_even_with_metadata(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: windows win. The Facts duration must never fall back to the tag value once
+    there is a real analyzed extent to show, even when the two disagree."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=99999.0))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    values = {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in page.select("[data-record-sidebar] [data-record-fact]")
+    }
+
+    assert values["Duration"] == "2:00", "the analyzed extent of the seeded windows, not the tag duration"
+    assert "from tags" not in values["Duration"]
