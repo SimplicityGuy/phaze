@@ -304,6 +304,44 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_DIR", "runtime_config_dir"),
         description="Directory holding runtime.toml, the watched hot-reload layer for reloadable keys (ADR-0019 (runtime config hot-reload)).",
     )
+    # phaze-mvq8z.5 (the trigger bead) measured, inside a real container, that the native
+    # watchdog Observer sees ZERO host-side edits through a Colima/virtiofs bind mount -- for
+    # EITHER edit pattern (in-place rewrite or the atomic-rename safe-write convention) -- while
+    # PollingObserver catches both within about one poll interval. Native stays the default
+    # because it is confirmed working (and lower-overhead) on a direct host mount, which is the
+    # production (Linux home server) target; operators on a VM-backed Docker runtime for the api
+    # / control-worker / agent-worker containers (macOS Docker Desktop / Colima / rancher-desktop)
+    # set this true. Mirrors AgentSettings.watcher_polling_mode's existing knob for the unrelated
+    # media-file watcher, which cannot be reused here: this directory is watched by three
+    # DIFFERENT roles (api, control worker, agent worker), not just the agent-only watcher process.
+    runtime_config_watch_polling: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "runtime_config_watch_polling"),
+        description=(
+            "Use watchdog's PollingObserver instead of the native inotify/FSEvents backend to watch "
+            "runtime_config_dir. Required on VM-backed Docker runtimes (Colima/Docker Desktop on "
+            "macOS) where host-side edits never reach the container via the native backend "
+            "(phaze-mvq8z.3 measurement). Native is the default -- confirmed working on a direct "
+            "host bind mount (the production target)."
+        ),
+    )
+    runtime_config_watch_poll_interval_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS", "runtime_config_watch_poll_interval_seconds"),
+        description="PollingObserver's poll interval when runtime_config_watch_polling is set; directly bounds detection latency (measured ~1s).",
+    )
+    runtime_config_watch_debounce_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS", "runtime_config_watch_debounce_seconds"),
+        description=(
+            "Quiet period after the last filesystem event on runtime.toml before its content is "
+            "re-hashed and, if changed, reload('file') runs. Coalesces the delete+create pair a "
+            "rename-into-place edit produces (both the native and the polling backend report a "
+            "rename this way, never a single moved event -- phaze-mvq8z.3) into one reload."
+        ),
+    )
 
 
 # This class is implemented in a cohesive internal module but remains publicly identified by
