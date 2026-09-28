@@ -240,9 +240,11 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     assert body.index("1 · Lookup") < body.index("2 · Match") < body.index("Matched-set coverage")
     assert 'aria-label="Tracklist preparation workflow"' in body
     assert body.count("Prerequisite") == 2 and body.count("Next action") == 2 and body.count("Current state") == 2
-    assert "classified as a live set from duration first, then repaired filename and track-number evidence" in body
-    assert "embedded tags, a .cue companion, or a pending/approved lookup" in body
-    assert "lookup queries derived from the repaired filename" in body
+    # phaze-5sj7k: the Lookup step's Prerequisite/Current state/Next action prose is trimmed to
+    # one short line each (was two dense sentences per dt).
+    assert "Live sets not already answered by tags, a .cue file, or a pending lookup." in body
+    assert "files have a tracklist." in body
+    assert "Run lookups below -- they keep going until the queue is empty." in body
     assert "artist and event metadata" not in body
     assert "pending only while no Discogs link exists for any track on any version" in body
     assert "one link of any status removes it from pending" in body
@@ -262,6 +264,10 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     assert "scrapeBusy" not in body
     # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
     assert "run-chain" not in body
+    # phaze-5sj7k: "Operator queue diagnostics" moves OFF the Lookup card -- a placeholder near
+    # the bottom of the page, after Matched-set coverage, filled via hx-swap-oob from the same
+    # GET /pipeline/tracklist-drain-status response that fills the Lookup card itself.
+    assert body.index("Matched-set coverage") < body.index('id="tracklist-queue-diagnostics"')
     assert "RUN CHAIN" not in body
 
 
@@ -276,8 +282,17 @@ async def test_tracklist_queue_diagnostics_are_defined_and_progressively_disclos
     for term in ("Drain:", "Parked:", "Collapse ratio:", "Crawl delay and throughput ceiling:"):
         assert term in body
     assert 'hx-post="/pipeline/run-tracklist-drain"' in body
-    assert 'hx-post="/pipeline/arm-tracklist-drain"' in body
     assert "1001Tracklists" in body
+    # phaze-5sj7k: the workspace's ARM/DISARM buttons and badge are gone -- "Run tracklist
+    # lookups" now arms the drain itself, and the diagnostics carry no Arm/Disarm control of
+    # their own (they moved off the Lookup card via hx-swap-oob, but this endpoint's response is
+    # still the one that carries them).
+    assert 'hx-post="/pipeline/arm-tracklist-drain"' not in body
+    assert "Arm" not in body
+    assert "Disarm" not in body
+    # The diagnostics carry their own hx-swap-oob target so they render at the bottom of the
+    # page rather than on the Lookup card.
+    assert 'id="tracklist-queue-diagnostics" hx-swap-oob="true"' in body
 
 
 @pytest.mark.asyncio

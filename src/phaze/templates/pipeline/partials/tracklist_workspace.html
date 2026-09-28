@@ -18,9 +18,12 @@
    * Their bulk triggers fanned one job out per file / per tracklist against a host that publishes
      a whole-system budget of ~1 request / 8 s, with no cache, no queue and no resumption.
 
-   Body (a) is now the drain panel itself (_tracklist_drain_status.html, phaze-fq9h.8) -- queue
-   depth, the whole-host ceiling, an honest ETA, and the single "Run a drain slice" trigger. It is
-   the lookup stage; no second status surface is invented here.
+   Body (a) is now the drain panel itself (_tracklist_drain_status.html, phaze-fq9h.8) -- a plain
+   running/idle/stopped state and the "Run tracklist lookups" / "Stop" controls (phaze-5sj7k). It
+   is the lookup stage; no second status surface is invented here. Its queue diagnostics render
+   further down this same fragment, in the `#tracklist-queue-diagnostics` placeholder near
+   Matched-set coverage below -- moved off this card, still fed by the same GET response via
+   `hx-swap-oob` (see that template's own comment).
 
    Body (b) -- the MATCH step card, which is unchanged and still real: Discogs matching is a
    genuinely separate stage over already-stored tracklists, with its own pending set and its own
@@ -36,7 +39,7 @@
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
-        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Find a source tracklist first, then match its tracks to analyzed files. Complete the steps in order; queue administration remains available under Lookup details.</p>
+        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Find a source tracklist first, then match its tracks to analyzed files. Complete the steps in order; queue diagnostics are available further down the page.</p>
     </div>
     {# (a) 1 · LOOKUP -- the drain. An EMPTY host div hx-gets the fragment on load, mirroring the
        per-set table's own load-on-mount pattern below. "The fragment carries its own trigger"
@@ -65,15 +68,15 @@
             <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Prerequisite</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Audio or video classified as a live set from duration first, then repaired filename and track-number evidence. Files already answered by embedded tags, a .cue companion, or a pending/approved lookup are excluded.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Live sets not already answered by tags, a .cue file, or a pending lookup.</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} files have a tracklist. Eligibility is derived, so no stored denominator exists.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} files have a tracklist.</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run one bounded batch using lookup queries derived from the repaired filename, or arm continuous host-budgeted slices.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run lookups below -- they keep going until the queue is empty.</dd>
                 </div>
             </dl>
             <div id="tracklist-drain-status-view"
@@ -144,4 +147,11 @@
             <p class="px-6 py-12 text-center text-sm text-muted ">Loading sets…</p>
         </div>
     </div>
+
+    {# phaze-5sj7k: the Lookup card's "Operator queue diagnostics" collapsible moved here, off the
+       main card. This div starts empty and is filled by an hx-swap-oob element carried in the
+       SAME GET /pipeline/tracklist-drain-status response that fills #tracklist-drain-status-view
+       above (_tracklist_drain_status.html) -- one source of truth, no second fetch, no second
+       poll. #}
+    <div id="tracklist-queue-diagnostics"></div>
 {% endcall %}
