@@ -18,6 +18,7 @@ from sqlalchemy import event
 
 from phaze.models.file import FileRecord
 from phaze.models.set_profile import SetProfile
+from phaze.services.pipeline import _FILES_PAGE_STAGES
 
 
 if TYPE_CHECKING:
@@ -80,8 +81,8 @@ async def test_file_without_a_profile_renders_no_glyph_and_the_same_column_count
 
     assert "noglyphfiles-" in row
     assert "data-set-glyph" not in row
-    # 9 columns: File, Type, 5 stage cells, Current state, Details -- unchanged by this bead.
-    assert len(re.findall(r"<td\b", row)) == 9
+    # File, Type, one cell per stage column, Current state, Details -- unchanged by this bead.
+    assert len(re.findall(r"<td\b", row)) == 4 + len(_FILES_PAGE_STAGES)
 
 
 @pytest.mark.asyncio
@@ -100,7 +101,7 @@ async def test_file_with_a_profile_renders_the_glyph_at_the_same_column_count(cl
     assert "data-set-glyph" in row and "data-set-glyph-empty" not in row
     assert row.count("<rect") == len(_glyph_cells())
     # Same column count as the profile-less row -- the glyph rides in the File cell, not a new column.
-    assert len(re.findall(r"<td\b", row)) == 9
+    assert len(re.findall(r"<td\b", row)) == 4 + len(_FILES_PAGE_STAGES)
 
 
 @pytest.mark.asyncio
