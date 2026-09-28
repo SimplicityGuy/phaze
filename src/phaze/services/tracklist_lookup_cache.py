@@ -40,6 +40,41 @@ the untouched tail. Six months is roughly "once per corpus pass" at the projecte
 which is the natural cadence -- the re-check costs a request only after every never-asked set has
 already had its turn."""
 
+LOW_CONFIDENCE_TTL_DAYS: int = 30
+"""How long a NEAR-MISS low-confidence search is held before being re-asked (phaze-no6sv).
+
+A near miss -- rows came back and the best scored in ``[LOW_CONFIDENCE_NEAR_MISS_FLOOR,
+SELECTION_THRESHOLD)`` -- usually means the QUERY was polluted, not that the set is absent, so it
+must not buy the 180-day negative TTL. Not a transient backoff either: re-asking the same text
+minutes later returns the same rows. The main recovery path does not wait for this at all -- a fix
+to query derivation changes the query text, which changes the cache key, which is a fresh ``MISS``.
+
+Operator decision 2026-09-27 (durable record: bead phaze-no6sv comment). Question as put: "How
+long should a low-confidence result wait before being looked up again? (Today every miss waits 180
+days.)" Answer as given (selected option label): "Tiered by best score (Recommended)". The 30 days
+and the band floor of 50 come from that option's description -- the dispatcher's framing, which the
+operator accepted -- not from a measurement."""
+
+LOW_CONFIDENCE_NEAR_MISS_FLOOR: int = 50
+"""Best score at or above which a low-confidence search is a near miss (short hold, above); below it
+the rows are unrelated enough that the set is probably genuinely absent, and the hold is the full
+:data:`NEGATIVE_TTL_DAYS`. Same operator decision and provenance as :data:`LOW_CONFIDENCE_TTL_DAYS`.
+For scale: the captured search for a set that does not exist scored its best row 35, and the best
+wrong-artist row on the right event and date scored 50 (``tracklist_result_scorer.SELECTION_THRESHOLD``'s
+calibration notes)."""
+
+
+def low_confidence_ttl_days(best_score: int | None, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> int:
+    """The hold for a ``LOW_CONFIDENCE`` result, tiered by the best row's score.
+
+    An unknown score (a row written without one) gets the SHORT hold: re-asking costs one request,
+    while guessing "absent" could hide a set for six months.
+    """
+    if best_score is not None and best_score < LOW_CONFIDENCE_NEAR_MISS_FLOOR:
+        return negative_ttl_days
+    return LOW_CONFIDENCE_TTL_DAYS
+
+
 TRANSIENT_BACKOFF_BASE_MINUTES: int = 30
 """First retry delay after a transient failure. Doubles per attempt, capped below.
 
@@ -98,7 +133,8 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
     """Map a stored row to a decision. THE honesty boundary -- read this before changing it.
 
     ``FOUND`` never expires. ``NOT_FOUND`` -- and only ``NOT_FOUND`` -- suppresses a re-query for
-    the negative TTL. Everything else is a transient failure: it earns a short backoff, then goes
+    the negative TTL. ``LOW_CONFIDENCE`` is held for a TTL tiered by its best score (see
+    :func:`low_confidence_ttl_days`) and is never reported as a negative (phaze-no6sv). Everything else is a transient failure: it earns a short backoff, then goes
     straight back into the queue, and after :data:`TRANSIENT_MAX_ATTEMPTS` it is PARKED for an
     operator rather than being reinterpreted as a negative. An unrecognized outcome string (a row
     written by a newer version, or hand-edited) falls through to ``MISS``: re-querying costs one
@@ -112,6 +148,11 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
         if entry.expires_at is not None and _aware(entry.expires_at) <= now:
             return CacheDecision.NEGATIVE_EXPIRED
         return CacheDecision.SUPPRESSED_NEGATIVE
+
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        if entry.expires_at is not None and _aware(entry.expires_at) <= now:
+            return CacheDecision.LOW_CONFIDENCE_EXPIRED
+        return CacheDecision.LOW_CONFIDENCE_HOLD
 
     if outcome is not None and outcome.is_transient:
         if entry.attempts >= TRANSIENT_MAX_ATTEMPTS:
@@ -149,7 +190,9 @@ def _backoff_delay(attempts: int) -> timedelta:
     return timedelta(minutes=min(minutes, TRANSIENT_BACKOFF_MAX_HOURS * 60))
 
 
-def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> datetime | None:
+def compute_expires_at(
+    outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS, best_score: int | None = None
+) -> datetime | None:
     """When a row written now should stop suppressing a re-query (None = never).
 
     Exposed rather than inlined so a test -- and the design doc's arithmetic -- can assert the
@@ -159,6 +202,8 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return now + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return now + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     return now + _backoff_delay(attempts)
 
 
@@ -220,11 +265,15 @@ async def lookup_by_query_text(session: AsyncSession, query_text: str, *, now: d
     return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
 
 
-_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset({LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value})
-"""The stored ``outcome`` values that end a transient streak: everything NOT in
-``TRANSIENT_OUTCOMES``. Spelled as a literal set (mirroring that frozenset) because it needs to
-appear inside a SQL ``case()``/``in_()`` expression, which the enum's own ``is_transient`` -- a
-Python-only computed property -- cannot generate."""
+_NON_TRANSIENT_OUTCOMES: frozenset[LookupOutcome] = frozenset({LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.LOW_CONFIDENCE})
+"""Outcomes of a search that ran cleanly: each ends a transient streak (see
+:func:`_next_attempts_on_conflict`). ``LOW_CONFIDENCE`` belongs here -- the site answered, just not
+usefully -- so a later transient failure starts a fresh streak rather than inheriting an old one."""
+
+_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset(outcome.value for outcome in _NON_TRANSIENT_OUTCOMES)
+"""The stored ``outcome`` strings of :data:`_NON_TRANSIENT_OUTCOMES`. Spelled as plain values
+because they need to appear inside a SQL ``case()``/``in_()`` expression, which the enum's own
+``is_transient`` -- a Python-only computed property -- cannot generate."""
 
 
 def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
@@ -250,7 +299,7 @@ def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
     a Python-read value -- see :func:`record_outcome`'s docstring for why that matters under
     concurrent writers).
     """
-    if outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND):
+    if outcome in _NON_TRANSIENT_OUTCOMES:
         return 1
     return case(
         (TracklistLookupCache.outcome.in_(_NON_TRANSIENT_OUTCOME_VALUES), 1),
@@ -287,7 +336,7 @@ async def record_outcome(
     """
     moment = now or datetime.now(UTC)
     insert_attempts = 1
-    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days)
+    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days, best_score=result_confidence)
 
     statement = pg_insert(TracklistLookupCache).values(
         set_key=set_key,
@@ -313,7 +362,7 @@ async def record_outcome(
             "detail": detail,
             "attempts": _next_attempts_on_conflict(outcome),
             "last_attempted_at": moment,
-            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days),
+            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days, best_score=result_confidence),
         },
     ).returning(TracklistLookupCache)
 
@@ -327,7 +376,7 @@ async def record_outcome(
     return entry
 
 
-def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int) -> Any:
+def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int, *, best_score: int | None = None) -> Any:
     """The ``expires_at`` the ON CONFLICT UPDATE should write.
 
     Positives (never) and definitive negatives (a fixed TTL) do not depend on the attempt count and
@@ -349,6 +398,8 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return moment + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return moment + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     exponent = _next_attempts_on_conflict(outcome) - 1
     backoff_seconds = func.least(
         float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, exponent),

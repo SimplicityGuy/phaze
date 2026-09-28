@@ -106,7 +106,8 @@
                 {{ '{:,}'.format(status.cached_positive) }} found ·
                 {{ '{:,}'.format(status.cached_negative) }} confirmed absent ·
                 {{ '{:,}'.format(status.cached_backoff) }} retrying ·
-                {{ '{:,}'.format(status.cached_exhausted) }} parked after retry exhaustion
+                {{ '{:,}'.format(status.cached_exhausted) }} parked after retry exhaustion ·
+                {{ '{:,}'.format(status.cached_low_confidence) }} held after a low-confidence search
             </dd>
         </div>
         <div>

@@ -38,6 +38,7 @@
     'blocked': ('Blocked by a Turnstile challenge', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
     'search_failed': ('Search failed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
     'render_failed': ('Detail page did not render', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
+    'low_confidence': ('Only low-confidence matches on 1001Tracklists', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Not a negative -- the search returned rows, but none scored high enough to trust. That usually means the search text was off, not that the site lacks this set; it is re-checked after a hold (30 days for a near miss, 180 when every row was far off), and at once if the search text changes.'),
     'parse_failed': ('Page rendered, nothing parsed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
 } %}
 {% if review is none %}
@@ -206,6 +207,8 @@
         {% if review.cache_entry.detail %}
         <p class="mt-1 truncate text-xs text-muted " title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
         {% endif %}
+        {# phaze-no6sv: the exact text sent to the site, so a polluted query is visible at a glance. #}
+        <p class="mt-1 text-xs text-muted " data-searched-query>Searched for: <span class="font-mono text-gray-900 dark:text-gray-200">{{ review.cache_entry.query_text }}</span></p>
         {# phaze-z8xq7: the cache verdict, said plainly, whenever it currently suppresses a
            re-query -- so an operator never sees a Prioritize/Priority-queued control promise a
            lookup the drain's own cache decision will not honor. #}
@@ -217,6 +220,10 @@
             {% elif review.cache_decision.value == 'backoff' %}
         <p class="mt-2 text-xs font-medium text-warn ">
             In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- Look up again becomes available at that time.
+        </p>
+            {% elif review.cache_decision.value == 'low_confidence_hold' %}
+        <p class="mt-2 text-xs font-medium text-warn ">
+            Held until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a low-confidence search -- Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'transient_exhausted' %}
         <p class="mt-2 text-xs font-medium text-danger ">

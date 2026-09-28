@@ -161,6 +161,7 @@ async def tracklist_drain_status(ctx: dict[str, Any], *, agent_id: str | None = 
         "cached_negative": stats.cached_negative,
         "cached_backoff": stats.cached_backoff,
         "cached_exhausted": stats.cached_exhausted,
+        "cached_low_confidence": stats.cached_low_confidence,
         "next_set_keys": [candidate.set_key for candidate in queue.entries[:10]],
         "flagged_queued": sum(1 for candidate in queue.entries if candidate.flagged),
         "flagged_total": flagged_total,

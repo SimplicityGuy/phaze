@@ -20,11 +20,14 @@ the exact failure mode this bead's acceptance criteria calls out.
 3. Strip bracketed/parenthesized noise: source tags (``[WEB]``), and radio-show/broadcast
    markers (``(BBC Radio 1 Essential Mix)``) are dropped entirely; anything else bracketed is
    unwrapped (kept, minus the brackets) rather than discarded, since it may be real event text.
-4. Strip a leading track-number prefix (``"01 - "``, ``"Track 02. "``, ...).
+4. Strip a leading track-number prefix (``"01 - "``, ``"Track 02. "``, ...), then a download-site
+   numeric id glued to the end of the stem (``"...-1470354508"``, phaze-no6sv). Standalone ids
+   elsewhere are dropped per field in step 7.
 5. Pop a trailing release-group tag and any trailing source/quality tags, working ONLY from the
    end of the string. This is tail-only (never a blind whole-string split) specifically so it
    cannot fragment a date that itself contains hyphens/dots elsewhere in the filename.
-6. Extract a date (ISO ``YYYY-MM-DD``, ambiguous ``DD-MM-YYYY``/``MM-DD-YYYY``, or a bare year)
+6. Extract a date (ISO ``YYYY-MM-DD``, ambiguous ``DD-MM-YYYY``/``MM-DD-YYYY``, a month-name date
+   like ``March 2023``, or a bare year)
    from whatever remains, now that step 5 has already removed the trailing noise that would
    otherwise sit right next to it.
 7. Split what is left into artist / event, preferring the existing "Live @" convention
@@ -164,6 +167,48 @@ _AMBIGUOUS_DATE_RE = re.compile(r"(?P<a>0[1-9]|[12]\d|3[01])[-._](?P<b>0[1-9]|1[
 # grab half of an 8-digit date or a bitrate-adjacent number).
 _BARE_YEAR_RE = re.compile(r"(?<!\d)(19[7-9]\d|20[0-3]\d)(?!\d)")
 
+# Month names, full and abbreviated (phaze-no6sv). Only ever consulted when the name sits directly
+# next to a year -- see _MONTH_YEAR_RE -- because a bare "May" or "Mar" is far more often a name or
+# an ordinary word than a date.
+_MONTHS: dict[str, int] = {
+    name: number
+    for number, names in enumerate(
+        (
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may",),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sept", "sep"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ),
+        start=1,
+    )
+    for name in names
+}
+_MONTH_ALTERNATION = "|".join(sorted(_MONTHS, key=len, reverse=True))
+
+# "March 2023" / "Mar.2023" / "2023 March", plus a leading day ("25 April 2014") when one is
+# there, which makes it a full date -- a month name cannot be read in the wrong order. The month and year must be joined by whitespace or ONE
+# tight punctuation character, never by a spaced " - " field separator: "<artist> May - 2019 ..."
+# is an artist whose name ends in a month word followed by a new field, not a month-name date.
+_MONTH_YEAR_RE = re.compile(
+    rf"(?:(?<![\d.])(?P<d>0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+)?(?<![A-Za-z])(?P<mon>{_MONTH_ALTERNATION})\.?(?:\s+|[._,-])(?P<y>19[7-9]\d|20[0-3]\d)(?!\d)"
+    rf"|(?<!\d)(?P<y2>19[7-9]\d|20[0-3]\d)(?:\s+|[._-])(?P<mon2>{_MONTH_ALTERNATION})(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+# A download-site id glued to the end of the stem ("...March 2023-1470354508"), and the same shape
+# as a standalone token anywhere in a field (phaze-no6sv). Six digits is the floor: every real
+# number this corpus puts in a name -- a venue's "303", a bitrate, a 4-digit year -- is shorter.
+_NUMERIC_ID_MIN_DIGITS = 6
+_TRAILING_NUMERIC_ID_RE = re.compile(rf"[\s._-]+(?P<id>\d{{{_NUMERIC_ID_MIN_DIGITS},}})\s*$")
+
 # The "Live @ Event" convention tracklist_matcher.parse_live_set_filename already recognizes --
 # recognized here too, but WITHOUT that heuristic's rigid "must end in a full YYYY.MM.DD date and
 # nothing else" requirement, so it still fires once scene noise around it has been stripped.
@@ -203,6 +248,10 @@ class DerivedQuery:
     scene_group: str | None
     source_tags: tuple[str, ...]
     radio_show: bool
+    month: int | None = None
+    """The month, when the filename pins one down without a full date -- a month-name date like
+    ``March 2023`` (phaze-no6sv) -- or as ``date.month`` when there is a full date. ``None`` when the
+    day/month order is ambiguous, for the same reason ``date`` is."""
 
 
 # The phaze-5fta integration seam
@@ -267,6 +316,34 @@ def _strip_brackets(text: str) -> tuple[str, list[str], bool]:
 
 def _strip_track_number(text: str) -> str:
     return _TRACK_NUMBER_RE.sub("", text)
+
+
+def _is_compact_date(token: str) -> bool:
+    """True when an all-digit token reads as a valid ``YYYYMMDD`` date in the year range above."""
+    if len(token) != 8 or not _BARE_YEAR_RE.fullmatch(token[:4]):
+        return False
+    return _safe_date(int(token[:4]), int(token[4:6]), int(token[6:])) is not None
+
+
+def _is_numeric_id(token: str) -> bool:
+    """True for a long all-digit token that is a download-site id rather than name text.
+
+    A compact ``YYYYMMDD`` date has the same shape and is deliberately NOT an id: it is left where
+    it was, exactly as before phaze-no6sv, rather than being thrown away as noise.
+    """
+    return token.isdigit() and len(token) >= _NUMERIC_ID_MIN_DIGITS and not _is_compact_date(token)
+
+
+def _strip_trailing_numeric_id(text: str) -> str:
+    """Drop a download-site id glued to the end of the stem, before the scene-tail pops run.
+
+    First, so a scene group sitting in front of the id (``...-GRVMSTR-1470354508``) is the tail the
+    group pop sees.
+    """
+    match = _TRAILING_NUMERIC_ID_RE.search(text)
+    if match is None or not _is_numeric_id(match.group("id")):
+        return text
+    return text[: match.start()]
 
 
 def _source_token(token: str) -> str | None:
@@ -385,13 +462,14 @@ class _DateExtraction:
     date: _date | None
     year: int | None
     ambiguous: bool
+    month: int | None = None
 
 
 def _extract_date(text: str, *, scene_group: str | None) -> _DateExtraction:
     match = _ISO_DATE_RE.search(text)
     if match is not None:
         year, month, day = int(match.group("y")), int(match.group("m")), int(match.group("d"))
-        return _DateExtraction(_remove_span(text, match), _safe_date(year, month, day), year, ambiguous=False)
+        return _DateExtraction(_remove_span(text, match), _safe_date(year, month, day), year, ambiguous=False, month=month)
 
     match = _AMBIGUOUS_DATE_RE.search(text)
     if match is not None:
@@ -400,9 +478,19 @@ def _extract_date(text: str, *, scene_group: str | None) -> _DateExtraction:
         if first > 12:
             # Only valid as DD-MM-YYYY -- the second component is constrained to <=12 by the
             # regex itself, so a first component >12 can never be a month.
-            return _DateExtraction(remaining, _safe_date(year, second, first), year, ambiguous=False)
+            return _DateExtraction(remaining, _safe_date(year, second, first), year, ambiguous=False, month=second)
         resolved = resolve_ambiguous_date_order(scene_group=scene_group, year=year, first=first, second=second)
-        return _DateExtraction(remaining, resolved, year, ambiguous=resolved is None)
+        return _DateExtraction(remaining, resolved, year, ambiguous=resolved is None, month=resolved.month if resolved else None)
+
+    # Before the bare year, which would otherwise take the year and strand the month name in the
+    # event text (phaze-no6sv).
+    match = _MONTH_YEAR_RE.search(text)
+    if match is not None:
+        month = _MONTHS[(match.group("mon") or match.group("mon2")).lower()]
+        year = int(match.group("y") or match.group("y2"))
+        day_text = match.group("d")
+        full_date = _safe_date(year, month, int(day_text)) if day_text else None
+        return _DateExtraction(_remove_span(text, match), full_date, year, ambiguous=False, month=month)
 
     match = _BARE_YEAR_RE.search(text)
     if match is not None:
@@ -427,7 +515,7 @@ def _clean_field(field: str) -> str:
     """
     field = field.replace("_", " ")
     field = _WHITESPACE_RE.sub(" ", field).strip(" .-_")
-    tokens = [t for t in field.split(" ") if t.upper() not in _NOISE_TOKENS and not _STRUCTURAL_SYMBOLS.issuperset(t)]
+    tokens = [t for t in field.split(" ") if t.upper() not in _NOISE_TOKENS and not _STRUCTURAL_SYMBOLS.issuperset(t) and not _is_numeric_id(t)]
     return " ".join(tokens).strip()
 
 
@@ -466,6 +554,7 @@ def derive_query(filename: str) -> DerivedQuery:
     text = _strip_extension(text)
     text, bracket_sources, radio_show = _strip_brackets(text)
     text = _strip_track_number(text)
+    text = _strip_trailing_numeric_id(text)
     text, tail_sources, scene_group = _pop_trailing_group_and_sources(text)
     date_extraction = _extract_date(text, scene_group=scene_group)
     artist, event = _finalize_fields(date_extraction.text)
@@ -497,4 +586,5 @@ def derive_query(filename: str) -> DerivedQuery:
         scene_group=scene_group,
         source_tags=source_tags,
         radio_show=radio_show,
+        month=date_extraction.month,
     )

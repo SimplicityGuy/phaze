@@ -242,8 +242,10 @@ class TestBelowThresholdVerdict:
         selection = select_result(derive_query("Zzyzx_Quorum-Live_At_Nonesuch_Festival-2019-08-11-WEB-MP3-XYZ.mp3"), results)
         assert selection.selected is None
         assert selection.confidence == 0
-        assert selection.rejection is LookupOutcome.NOT_FOUND
-        assert selection.rejection.is_definitive_negative
+        # phaze-no6sv: rows came back and the best scored under the bar -- held as LOW_CONFIDENCE,
+        # never the definitive negative, because a polluted query produces exactly this shape.
+        assert selection.rejection is LookupOutcome.LOW_CONFIDENCE
+        assert not selection.rejection.is_definitive_negative
         assert max(s.confidence for s in selection.ranked) < SELECTION_THRESHOLD
 
     def test_artist_less_video_rows_are_disqualified_outright(self) -> None:
@@ -520,9 +522,50 @@ class TestScoringMechanics:
         )
         selection = select_result(derive_query(ANCHOR_FILENAME), [row])
         assert selection.selected is None
-        assert selection.rejection is LookupOutcome.NOT_FOUND
+        assert selection.rejection is LookupOutcome.LOW_CONFIDENCE
         assert "wy01" in selection.reason
         assert Disqualifier.YEAR_MISMATCH.value in selection.reason
+
+
+class TestLowConfidenceVerdict:
+    """phaze-no6sv: a low best score says the QUERY may be bad, not that the site lacks the set."""
+
+    def test_rows_whose_best_score_is_below_threshold_are_low_confidence_not_definitive(self) -> None:
+        row = TracklistSearchResult(
+            external_id="oa01",
+            title="Other Artist @ Unrelated Club",
+            url="https://www.1001tracklists.com/tracklist/oa01/x.html",
+            artist="Other Artist",
+            event="Unrelated Club",
+            date="2023-03-11",
+        )
+        selection = select_result(derive_query("Kalt Signal - Hard Techno live mix at 303 studio Frankfurt March 2023-1470354508.m4a"), [row])
+        assert selection.ranked[0].confidence < SELECTION_THRESHOLD
+        assert selection.selected is None
+        assert selection.rejection is LookupOutcome.LOW_CONFIDENCE
+        assert not selection.rejection.is_definitive_negative
+        assert not selection.rejection.is_transient
+        assert selection.rejection.is_inconclusive
+
+    def test_zero_rows_is_still_a_definitive_negative(self) -> None:
+        selection = select_result(derive_query("Kalt Signal - Warehouse Session - 2023-03-11.mp3"), [])
+        assert selection.rejection is LookupOutcome.NOT_FOUND
+        assert selection.rejection.is_definitive_negative
+
+    def test_a_confident_but_disqualified_best_row_stays_a_definitive_negative(self) -> None:
+        """A wrong-year edition that scores above the bar is a statement about the site, not the query."""
+        row = TracklistSearchResult(
+            external_id="wy02",
+            title="Sven Vath @ Time Warp, Germany",
+            url="https://www.1001tracklists.com/tracklist/wy02/x.html",
+            artist="Sven Vath",
+            event="Time Warp, Germany",
+            date="2002-04-06",
+        )
+        selection = select_result(derive_query("Sven Vath - Time Warp Germany 2024.mp3"), [row])
+        assert selection.ranked[0].confidence >= SELECTION_THRESHOLD
+        assert Disqualifier.YEAR_MISMATCH in selection.ranked[0].disqualifiers
+        assert selection.rejection is LookupOutcome.NOT_FOUND
 
     def test_single_selectable_candidate_needs_no_margin(self) -> None:
         selection = select_result(

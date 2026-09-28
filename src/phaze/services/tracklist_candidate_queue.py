@@ -116,6 +116,9 @@ class CandidateQueueStats:
     cached_negative: int
     cached_backoff: int
     cached_exhausted: int
+    cached_low_confidence: int
+    """Sets whose last search returned only low-scoring rows, held by best score (phaze-no6sv). Not a
+    negative, so never folded into ``cached_negative``."""
     queued: int
 
     @property
@@ -327,7 +330,14 @@ def build_queue_from_signals(
     queued: list[QueuedCandidate] = []
     cached: list[QueuedCandidate] = []
     counts = dict.fromkeys(
-        (CacheDecision.HIT_POSITIVE, CacheDecision.SUPPRESSED_NEGATIVE, CacheDecision.BACKOFF, CacheDecision.TRANSIENT_EXHAUSTED), 0
+        (
+            CacheDecision.HIT_POSITIVE,
+            CacheDecision.SUPPRESSED_NEGATIVE,
+            CacheDecision.BACKOFF,
+            CacheDecision.TRANSIENT_EXHAUSTED,
+            CacheDecision.LOW_CONFIDENCE_HOLD,
+        ),
+        0,
     )
     for unique_set in wanted:
         verdict = verdicts.get(unique_set.key) or CacheVerdict(set_key=unique_set.key, decision=CacheDecision.MISS)
@@ -357,6 +367,7 @@ def build_queue_from_signals(
         cached_negative=counts[CacheDecision.SUPPRESSED_NEGATIVE],
         cached_backoff=counts[CacheDecision.BACKOFF],
         cached_exhausted=counts[CacheDecision.TRANSIENT_EXHAUSTED],
+        cached_low_confidence=counts[CacheDecision.LOW_CONFIDENCE_HOLD],
         queued=len(queued),
     )
     return CandidateQueue(entries=tuple(queued), stats=stats, cached=tuple(cached))
@@ -410,6 +421,7 @@ def format_corpus_report(stats: CandidateQueueStats) -> str:
         f"(positive {stats.cached_positive:,} / negative {stats.cached_negative:,})",
         f"  deferred (backoff/parked)       {stats.cached_backoff + stats.cached_exhausted:>9,}  "
         f"(backoff {stats.cached_backoff:,} / parked {stats.cached_exhausted:,})",
+        f"  held after a low-confidence hit {stats.cached_low_confidence:>9,}",
         f"  QUEUED                          {stats.queued:>9,}",
         "",
         f"  ceiling {DAILY_LOOKUP_CEILING:,} lookups/day "
