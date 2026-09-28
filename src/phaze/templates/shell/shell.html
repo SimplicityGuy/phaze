@@ -130,6 +130,9 @@
                 metadataStatusDone: 0, metadataStatusFailed: 0, metadataStatusTotal: 0, metadataStatusKnown: 0,
                 metadataEligible: 0, metadataEligibleKnown: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
+                // phaze-lwz8n: the Analyze header's running / waiting figures, seeded by #analyze-queue
+                // on each poll. null is an explicit unknown (rendered as an em-dash), never a fabricated 0.
+                analyzeRunning: null, analyzeWaiting: null,
                 tracklistDone: 0,
                 matchDone: 0, matchTotal: 0,
                 proposalsDone: 0, proposalsTotal: 0,

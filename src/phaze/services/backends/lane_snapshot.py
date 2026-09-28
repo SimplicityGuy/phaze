@@ -30,6 +30,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.services.backends.compute_agent import ComputeAgentBackend
 from phaze.services.backends.kueue import KueueBackend
+from phaze.services.backends.lane_detail import read_local_analyze_queue
 from phaze.services.backends.lane_metrics import (
     _cloud_lane_active,
     _cloud_lane_queued_working,
@@ -220,7 +221,15 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
     :func:`_local_lane_queued_working` (local) or :func:`_cloud_lane_queued_working` (compute/kueue, the
     phaze-zyoag seam), ``processed_24h``/``processed_lifetime`` from :func:`_lane_processed_counts`. Each
     of the four is ``int | None`` -- ``None`` means degraded/unknown (never a fabricated 0, acceptance
-    rule 8) and the template renders an em-dash for it. Any top-level exception degrades the WHOLE
+    rule 8) and the template renders an em-dash for it.
+
+    phaze-lwz8n: the LOCAL lane reads its figures from
+    :func:`~phaze.services.backends.lane_detail.read_local_analyze_queue` instead -- ``queued`` is
+    waiting (queued plus claimed-but-unrun), ``working``/``active`` is what the worker actually started
+    -- and additionally carries ``claimed_unrun`` / ``stranded`` / ``claimed_overdue`` /
+    ``heartbeat_lost`` / ``stuck``. ``stuck`` is the only local-lane alarm; its ``in_flight`` and ``cap``
+    are no longer compared at all (the cap is derived from the control host, not the agent that runs
+    the work). Cloud lanes carry none of these keys. Any top-level exception degrades the WHOLE
     snapshot to ``[]`` with a guarded rollback so it can NEVER raise into the hot 5s ``/pipeline/stats``
     poll (SP-1, T-71-03) -- unchanged from before this bead.
     """
@@ -237,9 +246,21 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
         lanes: list[dict[str, Any]] = []
         for backend in backends:
             kind = _kind_of(backend)
+            local_health: dict[str, int | None] = {}
             if kind == "local":
-                queued, working = await _local_lane_queued_working(session, app_state)
-                active = working
+                # phaze-lwz8n: one honest read of the lane's own SAQ queue -- running is what the worker
+                # STARTED, waiting is queued plus claimed-but-unrun, and ``stuck`` is the only local
+                # alarm (stranded rows, claims unstarted past the stall bound, lost heartbeats).
+                local_queue = await read_local_analyze_queue(session, app_state)
+                queued = local_queue.waiting if local_queue is not None else None
+                working = active = local_queue.running if local_queue is not None else None
+                local_health = {
+                    "claimed_unrun": local_queue.claimed_unrun if local_queue is not None else None,
+                    "stranded": local_queue.stranded if local_queue is not None else None,
+                    "claimed_overdue": local_queue.claimed_overdue if local_queue is not None else None,
+                    "heartbeat_lost": local_queue.heartbeat_lost if local_queue is not None else None,
+                    "stuck": local_queue.stuck if local_queue is not None else None,
+                }
                 processed_24h, processed_lifetime = await _lane_processed_counts(session, backend_id=None)
             else:
                 queued, working = await _cloud_lane_queued_working(session, backend.id)
@@ -258,6 +279,7 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
                     "active": active,
                     "processed_24h": processed_24h,
                     "processed_lifetime": processed_lifetime,
+                    **local_health,
                     **admission.get(backend.id, _ZERO_ADMISSION),
                 }
             )

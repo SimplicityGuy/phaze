@@ -1,0 +1,47 @@
+{# phaze-lwz8n: one page of the local lane's waiting list, served by GET /pipeline/analyze-queue/waiting and
+   swapped into #analyze-waiting-view (analyze_workspace.html). Never re-emitted by the 5s poll, so the
+   operator's page position survives every tick.
+
+   Context: `waiting` -- services.backends.lane_detail.WaitingPage. `note` set means the queue could not
+   be read; it is rendered as such, never as an empty queue. Claimed rows come first: the agent took them
+   but never started them. One claimed past the stall bound is the phaze-tch4d signature and is red. #}
+{% import "ui/primitives.html" as ui %}
+<div>
+    {% if waiting.note %}
+        <p role="status" class="px-4 py-4 text-sm text-muted ">{{ waiting.note }}</p>
+    {% elif not waiting.rows %}
+        <p role="status" class="px-4 py-4 text-sm text-muted ">{% if waiting.page > 1 %}No more waiting files.{% else %}Nothing is waiting on the local lane.{% endif %}</p>
+    {% else %}
+    {% call ui.data_table("Analyses waiting to start", id="analyze-waiting-table") %}
+        <thead class="text-[10px] uppercase tracking-wider text-muted">
+            <tr>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">File</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">State</th>
+                <th scope="col" class="px-4 py-2 font-jura font-medium">Enqueued</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for row in waiting.rows %}
+            <tr{% if row.overdue %} class="bg-red-50 dark:bg-red-950"{% endif %}>
+                <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" title="{{ row.label }}">{{ row.label }}</td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs">
+                    {% if row.overdue %}{{ ui.status_badge("Waiting state", "CLAIMED, NOT STARTED", "danger", "✕") }} <span class="text-danger ">claimed {{ humanize_relative_time(row.claimed_at) }}</span>
+                    {% elif row.claimed %}{{ ui.status_badge("Waiting state", "CLAIMED", "neutral", "…") }} <span class="text-muted ">{{ humanize_relative_time(row.claimed_at) }}</span>
+                    {% else %}<span class="text-muted ">queued</span>{% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(row.enqueued_at) if row.enqueued_at else "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    {% endcall %}
+    {% endif %}
+    {% if waiting.page > 1 or waiting.has_next %}
+    <nav aria-label="Waiting list pagination" class="flex items-center justify-between px-4 py-3">
+        <p class="text-sm text-muted ">Page {{ waiting.page }}</p>
+        <div class="flex gap-1">
+            {{ ui.data_table_button("Previous", "/pipeline/analyze-queue/waiting?page=" ~ (waiting.page - 1), "#analyze-waiting-view", disabled=waiting.page <= 1) }}
+            {{ ui.data_table_button("Next", "/pipeline/analyze-queue/waiting?page=" ~ (waiting.page + 1), "#analyze-waiting-view", disabled=not waiting.has_next) }}
+        </div>
+    </nav>
+    {% endif %}
+</div>

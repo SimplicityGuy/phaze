@@ -22,6 +22,7 @@ from fastapi import APIRouter
 from fastapi.templating import Jinja2Templates
 import structlog
 
+from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 from phaze.web.template_globals import register_set_glyph_globals
 
@@ -47,6 +48,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # phaze-315t: fingerprinted, cache-forever static asset URLs (app.css link + favicon set), used by
 # any template rendered through this env that pulls in `base.html`/`shell.html` chrome.
 templates.env.globals["static_url"] = static_asset_url
+# phaze-lwz8n: the Analyze "Running now" section renders started / heartbeat ages through this env on
+# the 5s poll, and through the shell env (which registers the same global) on the initial render.
+templates.env.globals["humanize_relative_time"] = relative_time
 register_set_glyph_globals(templates.env)
 router = APIRouter(tags=["pipeline"])
 

@@ -23,6 +23,7 @@ from phaze.services.backends import (
     get_analysis_live_count,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
+    get_running_analyses,
 )
 from phaze.services.pipeline import (
     _read_in_own_session,
@@ -52,6 +53,8 @@ from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.services.backends import RunningAnalysis
 
 # D-02/D-03: DB progress is authoritative; maintained completion counters are only a degraded-read
 # backstop. They are durable, never-reset INCRs, so phaze-89tw permits a fallback only for genuine
@@ -274,6 +277,18 @@ async def _build_dag_context(
     return {"dag": dag}
 
 
+def _analyze_running_total(lanes: list[dict[str, Any]]) -> int | None:
+    """Return analyses executing now across every lane, or ``None`` when any lane's execution is unobservable.
+
+    phaze-lwz8n: the Analyze header's "N running" and the Running-now section's count. The same roll-up
+    ``_analyze_active_total.html`` renders (local lane: rows the worker started; Kueue: pods RUNNING), so
+    the header, the tile and the section cannot disagree. An empty/degraded snapshot is unknown, not 0.
+    """
+    if not lanes or any(lane.get("active") is None for lane in lanes):
+        return None
+    return sum(int(lane["active"]) for lane in lanes)
+
+
 def _shared_stats_context(
     *,
     stats: dict[str, int],
@@ -287,6 +302,7 @@ def _shared_stats_context(
     localqueue_unreachable: bool,
     cloud_phase_counts: dict[str, int],
     lanes: list[dict[str, Any]],
+    running_analyses: list[RunningAnalysis] | None,
     analyze_queue_totals: dict[str, int | None],
     activity: dict[str, int],
     dag_ctx: dict[str, Any],
@@ -336,6 +352,8 @@ def _shared_stats_context(
         "running_count": cloud_phase_counts["running"],
         "finished_count": cloud_phase_counts["finished"],
         "lanes": lanes,
+        "running_analyses": running_analyses,
+        "analyze_running_total": _analyze_running_total(lanes),
         "total_queued_analyze": analyze_queue_totals["total_queued"],
         "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
         **activity,
@@ -465,6 +483,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # at the service layer, so NO router try/except -- mirrors the lanes wiring immediately above.
     analyze_queue_totals = await get_analyze_queue_totals(session, lanes, analyze_buckets=stage_progress["analyze"])
 
+    # phaze-lwz8n: the Running-now rows (local SAQ rows the worker started + Kueue pods RUNNING), keyed off
+    # the SAME lane snapshot. Seeded IDENTICALLY in pipeline_stats_partial() below (the OOB swap contract).
+    # Degrade-safe at the service layer (-> None, rendered as "unavailable"), so NO router try/except.
+    running_analyses = await get_running_analyses(session, app_state, lanes)
+
     # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
     # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
     # The old mechanism was written ONCE by the controller's startup probe with no TTL, so it never
@@ -498,6 +521,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
             # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored
             # identically in pipeline_stats_partial via the shared helper).
             lanes=lanes,
+            running_analyses=running_analyses,
             # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
             # remainder (seeded above, mirrored identically in pipeline_stats_partial).
             analyze_queue_totals=analyze_queue_totals,
@@ -651,6 +675,10 @@ async def pipeline_stats_partial(
     # swap (the OOB swap contract: both render paths must agree). Depends on the JUST-resolved `lanes`
     # value, so it runs sequentially here rather than inside the gather above.
     analyze_queue_totals = await get_analyze_queue_totals(session, lanes, analyze_buckets=stage_progress["analyze"])
+    # phaze-lwz8n: the same Running-now rows build_dashboard_context seeds on first load, re-pushed on every
+    # tick via the OOB #analyze-queue section. Depends on the just-resolved `lanes`, so it runs here. Cost:
+    # two indexed (status, queue) reads bounded by RUNNING_LIMIT plus one id-keyed join for the labels.
+    running_analyses = await get_running_analyses(session, request.app.state, lanes)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
@@ -688,6 +716,7 @@ async def pipeline_stats_partial(
                 localqueue_unreachable=localqueue_unreachable,
                 cloud_phase_counts=cloud_phase_counts,
                 lanes=lanes,
+                running_analyses=running_analyses,
                 analyze_queue_totals=analyze_queue_totals,
                 activity=activity,
                 dag_ctx=dag_ctx,

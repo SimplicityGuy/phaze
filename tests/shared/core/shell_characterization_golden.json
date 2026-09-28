@@ -20,6 +20,7 @@
     "GET /health",
     "GET /pipeline/",
     "GET /pipeline/analyze-files",
+    "GET /pipeline/analyze-queue/waiting",
     "GET /pipeline/files",
     "GET /pipeline/files/{file_id}/trace/{stage}",
     "GET /pipeline/lanes/{backend_id}",

@@ -1,2 +1,2 @@
 {% import "ui/primitives.html" as ui %}
-{{ ui.metric("Queued", total_queued_analyze if total_queued_analyze is not none else "—", (unrouted_queued_analyze if unrouted_queued_analyze is not none else "—") ~ " awaiting lane assignment", "neutral", "analyze-queue-total-card", oob | default(false)) }}
+{{ ui.metric("Waiting", total_queued_analyze if total_queued_analyze is not none else "—", (unrouted_queued_analyze if unrouted_queued_analyze is not none else "—") ~ " awaiting lane assignment", "neutral", "analyze-queue-total-card", oob | default(false)) }}

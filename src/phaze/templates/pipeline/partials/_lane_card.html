@@ -15,8 +15,16 @@
 {% set _in_flight = lane.in_flight if lane.in_flight is defined and lane.in_flight is not none else none %}
 {% set _processed_24h = lane.processed_24h if lane.processed_24h is defined and lane.processed_24h is not none else none %}
 {% set _processed_lifetime = lane.processed_lifetime if lane.processed_lifetime is defined and lane.processed_lifetime is not none else none %}
-{% set _capacity_over = _in_flight is not none and lane.cap and _in_flight > lane.cap %}
-{% set _capacity_full = _in_flight is not none and lane.cap and _in_flight == lane.cap %}
+{# phaze-lwz8n: the in-flight-vs-cap alarm applies to CLOUD lanes only. A cloud lane's in_flight is its
+   cloud_job window, which the drain admits against cap, so exceeding it is a real anomaly. The LOCAL
+   lane's in_flight is queued + running on the agent, and its cap is derived from the control host's
+   cores while the agent runs its own concurrency -- comparing the two painted a healthy 695-file backlog
+   red. The local lane's only alarm is `stuck`: stranded rows, claims never started, lost heartbeats. #}
+{% set _local = _kind == "local" %}
+{% set _capacity_over = not _local and _in_flight is not none and lane.cap and _in_flight > lane.cap %}
+{% set _capacity_full = not _local and _in_flight is not none and lane.cap and _in_flight == lane.cap %}
+{% set _claimed = lane.claimed_unrun if lane.claimed_unrun is defined and lane.claimed_unrun is not none else none %}
+{% set _stuck = lane.stuck if _local and lane.stuck is defined and lane.stuck is not none else 0 %}
 {% set selected_lane = selected_lane | default(none) %}
 <div id="lane-trigger-{{ lane.id }}" role="button" tabindex="0"
      aria-label="Open lane {{ lane.kind }} {{ lane.id }} detail" {% if selected_lane == lane.id %}aria-current="true"{% endif %}
@@ -26,24 +34,38 @@
      class="grid cursor-pointer gap-3 border-t border-gray-200 bg-white px-4 py-3 first:border-t-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel sm:grid-cols-12 sm:items-center{% if selected_lane == lane.id %} ring-2 ring-blue-500 ring-inset{% endif %}{% if not lane.available %} opacity-60{% endif %}">
     <div class="min-w-0 sm:col-span-3">
         <p class="truncate text-sm font-semibold {{ lane_color }}">{{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}</p>
+        {% if _local %}
+        <p class="mt-0.5 text-[11px] text-muted ">Runs at the agent's own concurrency</p>
+        {% else %}
         <p class="mt-0.5 text-[11px] text-muted ">Configured capacity {{ lane.cap }}</p>
+        {% endif %}
     </div>
     <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
+        {% if _local %}
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Claimed</dt><dd class="font-mono text-sm tabular-nums {% if _stuck %}text-danger {% endif %}" title="Taken by the agent but not started yet">{{ _claimed if _claimed is not none else "—" }}</dd></div>
+        {% else %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-danger {% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
+        {% endif %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Status</dt><dd class="mt-0.5">
-            {% if _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
+            {% if _stuck %}{{ ui.status_badge("Lane status", "STUCK", "danger", "✕") }}
+            {% elif _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
             {% elif _capacity_full %}{{ ui.status_badge("Lane status", "AT CAPACITY", "attention", "!") }}
             {% elif _active %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
+            {% elif _local and _queued %}{{ ui.status_badge("Lane status", "WAITING", "neutral", "…") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
         </dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
     </dl>
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-info sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
-    {% if _capacity_over %}
+    {% if _stuck %}
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
+    {% elif _capacity_over %}
     <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% elif _capacity_full and lane.available %}
     <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-warn dark:bg-amber-950  sm:col-span-12">At scheduler cap {{ lane.cap }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
@@ -53,6 +75,8 @@
         <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-muted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
             <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
+            {% if _local %}<span>Scheduler in-flight {{ _in_flight if _in_flight is not none else "—" }} (queued + running; not compared with cap)</span>{% endif %}
+            {% if _local and lane.claimed_overdue is defined and lane.claimed_overdue is not none %}<span>Claimed past the stall bound {{ lane.claimed_overdue }} · stranded {{ lane.stranded }} · heartbeat lost {{ lane.heartbeat_lost }}</span>{% endif %}
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}
             <span>processed {{ _processed_24h if _processed_24h is not none else "—" }} (24h) / {{ _processed_lifetime if _processed_lifetime is not none else "—" }} all time</span>
             {% if _kind == "compute" %}<span>Execution activity unavailable · staged window {{ _queued if _queued is not none else "—" }}</span>{% endif %}
