@@ -60,6 +60,11 @@
        fallback, in case Alpine has not yet run) rather than being omitted, so nothing here is a
        second render or a round trip. #}
     <div data-harmonic-runs-wrap class="mt-2" x-data="{ expanded: false }">
+        {# The sidebar is narrow and a key/time/duration/move row can still run wider than it at
+           a phone width; the table scrolls ITSELF rather than the page
+           (`tests/shared/core/test_cross_workspace_responsive_a11y.py`), same idiom as the
+           tracklist review table (`_tracklist_review_body.html`). #}
+        <div class="relative overflow-x-auto">
         <table data-harmonic-runs class="w-full border-collapse text-left text-xs">
             <caption class="sr-only">Key runs: one row per surviving run, with its time range, key, duration and how it was entered.</caption>
             <thead>
@@ -97,6 +102,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
         {% if harmonic_journey.rows | length > _VISIBLE_RUN_CAP %}
         <button type="button" data-harmonic-show-all x-show="!expanded" x-on:click="expanded = true"
                 class="mt-2 text-xs font-medium text-cyan-700 hover:underline dark:text-cyan-400">
