@@ -36,6 +36,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
 | `tracklist_lookup_cache` | Persisted per-unique-set record of the last 1001Tracklists lookup outcome, so a drain restart never re-asks an already-answered question (phaze-fq9h.3) |
 | `tracklist_priority_flags` | Persisted operator "answer this file's tracklist lookup next" flag consumed by the drain (phaze-fq9h.8) |
+| `tracklist_file_lookups` | Per-file record of the 1001Tracklists drain's outcome for each file (`queued` / `matched` / `not_found` / `low_confidence` / `retry_pending` / `not_eligible`), with its last attempt and next eligible time and the cache `set_key` it was grouped under; the source of `Stage.TRACKLIST`'s in-flight, failed and skipped buckets (phaze-o71bf) |
 | `tracklist_drain_arm_state` | Single durable ARM/DISARM row for the continuous 1001Tracklists drain: `armed`, `in_flight`, `consecutive_failures`, and the `next_eligible_at` cooldown the scheduler reads (migration `059`) |
 | `dedup_review_plan` | Opaque, immutable keeper choice plus the complete reviewed membership snapshot (`group_hash`, `canonical_file_id`, `member_ids`), committed at most once via `committed_at` (migration `061`) |
 
@@ -245,10 +246,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-069)
+### Post-baseline chain (040-070)
 
-`alembic/versions/` holds **31** files: the `039` baseline plus a linear chain to the current
-head, **`069`**.
+`alembic/versions/` holds **32** files: the `039` baseline plus a linear chain to the current
+head, **`070`**.
 
 | Rev | Change |
 |-----|--------|
@@ -281,7 +282,8 @@ head, **`069`**.
 | `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) |
 | `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) |
 | `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op (phaze-3agnm) |
-| `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted (phaze-1xngw) — **head** |
+| `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted (phaze-1xngw) |
+| `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

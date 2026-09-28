@@ -23,10 +23,12 @@
    Pure filter control: no self-poll (no hx-trigger="every ..."). The only hx-trigger is `change`,
    a user-initiated navigation, exactly like the rail.
 #}
-{# The five matrix stages; Tracklists remain outside this cross-pipeline inventory. #}
+{# The Files table's stage columns (phaze-o71bf added Tracklist, whose buckets come from the per-file
+   lookup record: in flight = queued, failed = retry pending, skipped = answered with no tracklist). #}
 {% set _filter_stages = [
     ('metadata', 'Metadata'),
     ('analyze', 'Analyze'),
+    ('tracklist', 'Tracklist'),
     ('propose', 'Propose'),
     ('review', 'Review'),
     ('apply', 'Execute'),

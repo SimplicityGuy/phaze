@@ -129,10 +129,10 @@ async def test_every_rendered_header_label_is_whitelisted_and_vice_versa(client:
 
 @pytest.mark.asyncio
 async def test_stage_header_labels_match_the_stage_matrix_cells(client: AsyncClient, session: AsyncSession) -> None:
-    """The six stage headers name the SAME six stages the pill cells render, in the same order.
+    """The stage headers name the SAME stages the pill cells render, in the same order.
 
-    The 7-stage -> 6-pill remap is a documented landmine (``Appr`` reads ``review``, ``Exec`` reads
-    ``apply``, ``tracklist`` is never shown). A header whose sort key pointed at a different stage
+    The remap is a documented landmine (``Review`` reads ``review``, ``Execute`` reads ``apply``;
+    phaze-o71bf added ``Tracklist`` after ``Analyze``). A header whose sort key pointed at a different stage
     than the cell beneath it would reorder the table by a column the operator cannot see, and would
     look correct in every screenshot.
     """
@@ -144,7 +144,7 @@ async def test_stage_header_labels_match_the_stage_matrix_cells(client: AsyncCli
 
     stage_columns = [column for column in FILES_SORT.columns if column.key not in {"file", "type"}]
     assert [column.key for column in stage_columns] == [stage.value for stage in _FILES_PAGE_STAGES]
-    assert [column.label for column in stage_columns] == ["Metadata", "Analyze", "Propose", "Review", "Execute"]
+    assert [column.label for column in stage_columns] == ["Metadata", "Analyze", "Tracklist", "Propose", "Review", "Execute"]
     # And the header row actually rendered them in that order (each label immediately precedes its
     # own decorative caret span, which is how a label is anchored rather than matched loosely).
     positions = [head.index(f"{column.label}<span") for column in stage_columns]
@@ -389,3 +389,45 @@ async def test_stage_sort_survives_the_pager_and_keeps_the_filter(client: AsyncC
 
     assert "sort=apply" in pager
     assert "order=desc" in pager
+
+
+@pytest.mark.asyncio
+async def test_tracklist_column_sorts_by_the_documented_operational_order(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-o71bf: the Tracklist column sorts on its derived bucket's display rank like every stage column.
+
+    TRACKLIST reaches all five buckets from its per-file lookup record, so the same five-file shuffle
+    the metadata test uses discriminates here too: a tracklist row (done), queued (in flight), no
+    record (not started), a transient (failed), not found (skipped).
+    """
+    from phaze.models.tracklist import Tracklist
+    from phaze.models.tracklist_lookup_cache import TracklistFileLookup
+
+    by_bucket = {
+        Status.DONE: "/music/tl-05.mp3",
+        Status.IN_FLIGHT: "/music/tl-04.mp3",
+        Status.NOT_STARTED: "/music/tl-03.mp3",
+        Status.FAILED: "/music/tl-02.mp3",
+        Status.SKIPPED: "/music/tl-01.mp3",
+    }
+    outcome_for = {Status.IN_FLIGHT: "queued", Status.FAILED: "retry_pending", Status.SKIPPED: "not_found"}
+    for bucket, path in by_bucket.items():
+        record = _make_file(path)
+        session.add(record)
+        await session.flush()
+        if bucket is Status.DONE:
+            session.add(Tracklist(external_id=uuid.uuid4().hex[:12], source_url="https://example.invalid/tl", file_id=record.id))
+        elif bucket in outcome_for:
+            session.add(TracklistFileLookup(file_id=record.id, outcome=outcome_for[bucket]))
+    await session.commit()
+
+    expected = [by_bucket[status] for status in STAGE_STATUS_DISPLAY_ORDER]
+
+    def order_of(body: str) -> list[str]:
+        rows = body[body.index("<tbody") :]
+        return sorted(by_bucket.values(), key=rows.index)
+
+    asc = (await client.get("/pipeline/files?sort=tracklist&order=asc", headers={"HX-Request": "true"})).text
+    desc = (await client.get("/pipeline/files?sort=tracklist&order=desc", headers={"HX-Request": "true"})).text
+
+    assert order_of(asc) == expected
+    assert order_of(desc) == list(reversed(expected))

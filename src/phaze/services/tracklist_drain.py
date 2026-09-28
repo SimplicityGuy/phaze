@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sqlalchemy import func, select
 import structlog
 
-from phaze.enums.tracklist_candidate import CacheDecision, DuplicateConfidence, LookupOutcome
+from phaze.enums.tracklist_candidate import CacheDecision, DuplicateConfidence, LookupOutcome, TracklistFileOutcome
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.text_repair import repair_mojibake
@@ -38,7 +38,18 @@ from phaze.services.tracklist_candidate_queue import (
     load_candidate_signals,
 )
 from phaze.services.tracklist_candidates import UniqueSet, group_unique_sets
-from phaze.services.tracklist_lookup_cache import IN_CLAUSE_CHUNK_SIZE, chunked, lookup, lookup_many, record_outcome
+from phaze.services.tracklist_lookup_cache import (
+    IN_CLAUSE_CHUNK_SIZE,
+    CacheVerdict,
+    FileOutcome,
+    chunked,
+    file_outcome,
+    lookup,
+    lookup_many,
+    record_file_outcomes,
+    record_outcome,
+    verdict_for,
+)
 from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
 from phaze.services.tracklist_priority import clear_flags, load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
@@ -175,6 +186,43 @@ class DrainQueue:
     cached: tuple[QueuedCandidate, ...]
     """Sets the cache answered. Kept so the admin UI (phaze-fq9h.8) can explain a set that vanished
     from the queue rather than leaving it merely missing."""
+    seen_file_ids: tuple[uuid.UUID, ...] = ()
+    """Every media file the funnel loaded (narrowed to the targets on an exact-set request). The
+    population :meth:`file_outcomes` describes -- phaze-o71bf."""
+    tracklisted_file_ids: frozenset[uuid.UUID] = frozenset()
+    """The subset of ``seen_file_ids`` already carrying a scraped tracklist and not forced back in."""
+
+    def file_outcomes(self) -> list[FileOutcome]:
+        """The per-file record this queue implies for every file it saw (phaze-o71bf). Pure.
+
+        Built on demand rather than at queue-build time because only :func:`drain_once` writes it;
+        the read-only status path builds the same queue and must not pay for a corpus-sized list.
+        Every seen file lands in exactly one outcome, later rules overriding earlier ones:
+
+        1. default ``not_eligible`` -- classified out (track / undecided), or covered by a CUE
+           companion or embedded tags, so the drain will never spend a request on it;
+        2. ``matched`` -- it already carries a scraped tracklist;
+        3. a member of a set the cache answered -- that answer, via :func:`file_outcome`;
+        4. a member of a set in the work list -- ``queued``, even past this slice's budget: it is
+           scheduled, and the next slice resumes from it.
+        """
+        wanted = set(self.seen_file_ids)
+        out: dict[uuid.UUID, FileOutcome] = {}
+        for file_id in self.seen_file_ids:
+            outcome = TracklistFileOutcome.MATCHED if file_id in self.tracklisted_file_ids else TracklistFileOutcome.NOT_ELIGIBLE
+            out[file_id] = FileOutcome(file_id=file_id, outcome=outcome)
+        for entry in self.cached:
+            for member in entry.unique_set.members:
+                if member.file_id in wanted:
+                    out[member.file_id] = file_outcome(member.file_id, entry.verdict)
+        for candidate in self.entries:
+            last = candidate.queued.verdict.entry.last_attempted_at if candidate.queued.verdict.entry is not None else None
+            for member in candidate.unique_set.members:
+                if member.file_id in wanted:
+                    out[member.file_id] = FileOutcome(
+                        file_id=member.file_id, outcome=TracklistFileOutcome.QUEUED, set_key=candidate.set_key, last_attempt_at=last
+                    )
+        return list(out.values())
 
 
 async def build_drain_queue(
@@ -268,9 +316,18 @@ async def build_drain_queue(
         candidates = [candidate for candidate in candidates if any(member.file_id in targets for member in candidate.unique_set.members)]
     candidates.sort(key=lambda candidate: candidate.priority)
     cached = queue.cached
+    seen = [signal.file_id for signal in signals]
     if targets:
         cached = tuple(entry for entry in cached if any(member.file_id in targets for member in entry.unique_set.members))
-    return DrainQueue(entries=tuple(candidates), stats=queue.stats, cached=cached)
+        seen = [file_id for file_id in seen if file_id in targets]
+    tracklisted = frozenset(signal.file_id for signal in signals if signal.has_scraped_tracklist and signal.file_id not in flagged)
+    return DrainQueue(
+        entries=tuple(candidates),
+        stats=queue.stats,
+        cached=cached,
+        seen_file_ids=tuple(seen),
+        tracklisted_file_ids=tracklisted.intersection(seen),
+    )
 
 
 def _compute_moment(now: datetime | None) -> datetime:
@@ -584,7 +641,7 @@ async def persist_lookup(
     if attempt.is_found and attempt.external_id:
         result = await _store_and_propagate(session, candidate, attempt, propagation_min=propagation_min)
 
-    await record_outcome(
+    entry = await record_outcome(
         session,
         set_key=attempt.set_key,
         query_text=attempt.query_text,
@@ -595,12 +652,20 @@ async def persist_lookup(
         detail=attempt.detail,
         now=moment,
     )
+    # phaze-o71bf: every member of the set gets the per-file record, from the verdict of the cache
+    # row just written -- the same mapping the queue build uses, so the two paths cannot disagree.
+    await _record_members(session, candidate, verdict_for(entry, moment), now=moment)
 
     # LOW_CONFIDENCE clears too: the search the operator asked for DID run cleanly, and a flag left
     # behind would show "queued" for a set the cache is holding for weeks or months (phaze-no6sv).
     if attempt.is_found or attempt.outcome.is_definitive_negative or attempt.outcome.is_inconclusive:
         await clear_flags(session, [member.file_id for member in candidate.unique_set.members])
     return result
+
+
+async def _record_members(session: AsyncSession, candidate: DrainCandidate, verdict: CacheVerdict, *, now: datetime) -> None:
+    """Write ``verdict`` onto every member of ``candidate``'s set in ``tracklist_file_lookups``."""
+    await record_file_outcomes(session, [file_outcome(member.file_id, verdict) for member in candidate.unique_set.members], now=now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -937,6 +1002,9 @@ async def drain_once(
             target_file_ids=target_file_ids,
             now=moment,
         )
+        # phaze-o71bf: record where every file the funnel saw now stands, before any request is spent.
+        await record_file_outcomes(session, queue.file_outcomes(), now=moment)
+        await session.commit()
 
     report = DrainReport(queued=len(queue.entries))
     logger.info(
@@ -959,6 +1027,10 @@ async def drain_once(
         # overlapping restart cost zero requests instead of one per already-answered set.
         async with session_factory() as session:
             verdict = await lookup(session, candidate.set_key)
+            if not verdict.should_query:
+                # Answered since the snapshot, so the queue build's ``queued`` is already stale.
+                await _record_members(session, candidate, verdict, now=moment)
+                await session.commit()
         if not verdict.should_query:
             report.skipped_cached += 1
             continue

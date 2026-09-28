@@ -580,3 +580,95 @@ async def test_stage_only_any_status_does_not_show_clear_filter_or_filtered_empt
     assert "No files yet" in body
     assert "No files match this filter" not in body
     assert "Clear filter" not in body
+
+
+# phaze-o71bf: the Tracklist column, its filter, and its place in the "any stage" OR.
+
+
+def _desktop_row(body: str, marker: str) -> str:
+    """Return the desktop ``<tr>`` whose file path carries ``marker`` -- so a pill is checked in ITS row."""
+    for chunk in body.split('<tr id="files-row-')[1:]:
+        row = chunk.split("</tr>", 1)[0]
+        if f"{marker}-" in row:
+            return row
+    raise AssertionError(f"no desktop row for {marker}")
+
+
+async def _seed_tracklist_states(session: AsyncSession) -> dict[str, FileRecord]:
+    """One file per Tracklist pill: a tracklist row, and one lookup record per outcome, plus a never-seen file."""
+    from phaze.models.tracklist import Tracklist
+    from phaze.models.tracklist_lookup_cache import TracklistFileLookup
+
+    files = {name: _make_file(f"tl{name}") for name in ("matched", "queued", "notfound", "lowconf", "retry", "parked", "noteligible", "unseen")}
+    session.add_all(files.values())
+    await session.commit()
+    session.add(Tracklist(external_id=uuid.uuid4().hex[:12], source_url="https://example.invalid/tl", file_id=files["matched"].id))
+    retry_on = datetime(2027, 3, 4, tzinfo=UTC)
+    session.add_all(
+        [
+            TracklistFileLookup(file_id=files["matched"].id, outcome="matched"),
+            TracklistFileLookup(file_id=files["queued"].id, outcome="queued"),
+            TracklistFileLookup(file_id=files["notfound"].id, outcome="not_found", next_eligible_at=retry_on),
+            TracklistFileLookup(file_id=files["lowconf"].id, outcome="low_confidence", next_eligible_at=retry_on),
+            TracklistFileLookup(file_id=files["retry"].id, outcome="retry_pending", next_eligible_at=retry_on),
+            TracklistFileLookup(file_id=files["parked"].id, outcome="retry_pending", next_eligible_at=None),
+            TracklistFileLookup(file_id=files["noteligible"].id, outcome="not_eligible"),
+        ]
+    )
+    await session.commit()
+    return files
+
+
+@pytest.mark.asyncio
+async def test_tracklist_column_renders_the_lookup_outcome_per_row(client: AsyncClient, session: AsyncSession) -> None:
+    """Each row's Tracklist pill states its own record: matched / queued / not found with the retry date / ..."""
+    await _seed_tracklist_states(session)
+
+    body = (await client.get("/pipeline/files?page_size=50", headers={"HX-Request": "true"})).text
+
+    assert ">Tracklist<" in body, "the column header renders"
+    expected = {
+        "tlmatched": "matched",
+        "tlqueued": "queued",
+        "tlnotfound": "not found · retry 2027-03-04",
+        "tllowconf": "low confidence · retry 2027-03-04",
+        "tlretry": "retry pending · 2027-03-04",
+        "tlparked": "retry pending · parked",
+        "tlnoteligible": "not eligible",
+        "tlunseen": "not started",
+    }
+    for marker, words in expected.items():
+        row = _desktop_row(body, marker)
+        assert f'aria-label="Tracklist: {words}"' in row, f"{marker} should read {words!r}"
+
+
+@pytest.mark.asyncio
+async def test_tracklist_stage_filter_returns_only_that_bucket(client: AsyncClient, session: AsyncSession) -> None:
+    """``?stage=tracklist&bucket=skipped`` lists the not-found, low-confidence and not-eligible files only."""
+    await _seed_tracklist_states(session)
+
+    body = (await client.get("/pipeline/files?stage=tracklist&bucket=skipped&page_size=50", headers={"HX-Request": "true"})).text
+
+    for marker in ("tlnotfound-", "tllowconf-", "tlnoteligible-"):
+        assert marker in body
+    for marker in ("tlmatched-", "tlqueued-", "tlretry-", "tlparked-", "tlunseen-"):
+        assert marker not in body
+    assert '<option value="tracklist" selected>Tracklist</option>' in body, "the filter bar offers and keeps the stage"
+
+
+@pytest.mark.asyncio
+async def test_any_stage_failed_includes_a_file_failed_only_in_tracklist(client: AsyncClient, session: AsyncSession) -> None:
+    """TRACKLIST joins the phaze-7sdwt "some stage has that status" OR, like every other Files column.
+
+    The retry-pending files fail in no other stage, so only the Tracklist disjunct can admit them;
+    ``stage=metadata`` with the same bucket must not.
+    """
+    await _seed_tracklist_states(session)
+
+    any_stage = (await client.get("/pipeline/files?bucket=failed&page_size=50", headers={"HX-Request": "true"})).text
+    metadata_only = (await client.get("/pipeline/files?stage=metadata&bucket=failed&page_size=50", headers={"HX-Request": "true"})).text
+
+    assert "tlretry-" in any_stage
+    assert "tlparked-" in any_stage
+    assert "tlqueued-" not in any_stage
+    assert "tlretry-" not in metadata_only
