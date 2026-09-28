@@ -97,6 +97,10 @@ _EXPECTED_TABLES = frozenset(
         "pipeline_stage_control",
         "proposals",
         "route_control",
+        # phaze-mvq8z.6 (migration 069): the DB-override layer for hot-reloadable config
+        # (docs/design/0019-runtime-config-hot-reload.md) -- one row per RELOADABLE key currently
+        # overridden through the admin API/UI.
+        "runtime_config_override",
         "scan_batches",
         "scheduling_ledger",
         # phaze-x1qr3.1 (migration 063): the per-file half of the set projection -- one summary row
@@ -284,7 +288,11 @@ def test_baseline_is_the_only_migration() -> None:
     a read-time AnalysisWindow.camelot property instead (operator decision 2026-09-16);
     067 (phaze-z66hq) restores file-level ranked style scores in JSONB and a separate
     duration-modal category label from stored coarse windows; 068 (phaze-3agnm) ANALYZEs
-    metadata and cloud_job so filter columns added by ALTER carry planner statistics.
+    metadata and cloud_job so filter columns added by ALTER carry planner statistics;
+    069 (phaze-mvq8z.6) creates runtime_config_override -- the DB-override layer for
+    hot-reloadable config (docs/design/0019-runtime-config-hot-reload.md), one row per
+    RELOADABLE key currently overridden through the admin API/UI; pure additive DDL, no
+    seed rows, downgrade drops the table outright.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -319,6 +327,7 @@ def test_baseline_is_the_only_migration() -> None:
         "066_drop_analysis_window_camelot.py",
         "067_backfill_dominant_style.py",
         "068_analyze_stat_less_filter_columns.py",
+        "069_runtime_config_override.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -347,10 +356,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (068: ANALYZE stat-less filter columns)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (069: runtime_config_override)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "068"
+    assert version == "069"
 
 
 @pytest.mark.asyncio
@@ -676,7 +685,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "068"
+        assert version == "069"
     finally:
         if engine is not None:
             await engine.dispose()

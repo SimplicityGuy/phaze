@@ -258,6 +258,14 @@ ignore_missing_imports = true
 module = ["aiobotocore.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
+# asyncpg ships no py.typed marker. phaze.runtime_config_notify (phaze-mvq8z.6) is the first src/
+# caller to import it directly (every prior use lived in tests/, which mypy excludes wholesale) --
+# a dedicated LISTEN/NOTIFY connection for the DB-override reload channel, kept separate from the
+# SQLAlchemy engine because LISTEN/NOTIFY has no ORM-level API.
+[[tool.mypy.overrides]]
+module = ["asyncpg"]
+ignore_missing_imports = true
+
 # PyYAML ships no py.typed / stubs bundled; kube_staging parses inline kubeconfig content via yaml.safe_load.
 [[tool.mypy.overrides]]
 module = ["yaml"]

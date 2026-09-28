@@ -231,3 +231,23 @@ async def test_controller_shutdown_stops_the_runtime_config_watcher() -> None:
     await controller.shutdown(ctx)
 
     watcher.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_stops_the_runtime_config_listener() -> None:
+    """shutdown() must also stop ctx['runtime_config_listener'] (phaze-mvq8z.6's LISTEN
+    connection + fallback poll) when startup populated it -- the SAME ``is not None`` guard shape
+    as the pairs above, so ``test_controller_shutdown_tolerates_missing_ctx_keys``'s empty ctx
+    already covers this key's absence.
+    """
+    from unittest.mock import AsyncMock
+
+    from phaze.tasks import controller
+
+    listener = MagicMock()
+    listener.stop = AsyncMock()
+
+    ctx: dict[str, Any] = {"runtime_config_listener": listener}
+    await controller.shutdown(ctx)
+
+    listener.stop.assert_awaited_once()

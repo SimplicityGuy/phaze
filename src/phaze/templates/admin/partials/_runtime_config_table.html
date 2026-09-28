@@ -1,0 +1,111 @@
+{# Runtime config admin table (phaze-mvq8z.6, ADR-0019 (runtime config hot-reload) §3/§10/§15).
+
+   Lists every RELOADABLE key with its live effective value + source layer (override > file > env >
+   default, phaze.runtime_config.Layer) and an inline set/clear control per row, followed by a
+   read-only list of RESTART_ONLY_KEYS labeled "requires restart" (§5) -- these never get a form,
+   because a live change to one is rejected by the core regardless of what an operator could submit
+   here; showing them read-only (rather than omitting them) documents the reloadable/restart-only
+   split rather than leaving an operator to guess which keys this page simply does not mention.
+
+   No auth of its own (ADR-0019 (runtime config hot-reload) §10 -- matches the LAN posture of route_control / admin_agents /
+   every other operator-facing admin surface in this repo); the compensating control is the
+   structured audit line every reload (or rejection) emits server-side, not anything rendered here.
+
+   Every row's form hx-posts to POST /admin/runtime-config/{key} and the Clear control hx-deletes
+   the same path; BOTH swap the WHOLE table (#runtime-config-table, outerHTML) rather than just
+   their own row -- a single write can in principle change what another row's SOURCE reads as (the
+   override provider is read fresh on every reload), so one swap target keeps every row honest
+   about what the store just resolved, rather than risking two independently-swapped rows
+   disagreeing with each other.
+#}
+<section id="runtime-config-table" class="space-y-4">
+    <div class="flex justify-end">
+        {# The Set/Clear controls above already re-render this section from their own response, so
+           this is the only caller of GET /admin/runtime-config/_table -- an explicit manual refresh
+           for an operator who wants to see a change another operator (or a missed-NOTIFY fallback
+           poll) just made elsewhere, without waiting or reloading the whole page. #}
+        <button type="button" hx-get="/admin/runtime-config/_table" hx-target="#runtime-config-table" hx-swap="outerHTML"
+                class="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Refresh
+        </button>
+    </div>
+    <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+        <table class="min-w-full text-sm">
+            <caption class="sr-only">Reloadable runtime configuration keys: effective value, source layer, and set/clear controls</caption>
+            <thead class="bg-gray-50 dark:bg-phaze-panel text-left text-xs uppercase tracking-wider text-muted">
+                <tr>
+                    <th scope="col" class="px-4 py-2">Key</th>
+                    <th scope="col" class="px-4 py-2">Effective value</th>
+                    <th scope="col" class="px-4 py-2">Source</th>
+                    <th scope="col" class="px-4 py-2">Set</th>
+                    <th scope="col" class="px-4 py-2"><span class="sr-only">Clear</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+                {% for row in reloadable_keys %}
+                <tr>
+                    <th scope="row" class="px-4 py-2 text-left font-mono text-xs font-normal text-gray-700 dark:text-gray-300">{{ row.key }}</th>
+                    <td class="px-4 py-2 font-mono">{{ row.value }}</td>
+                    <td class="px-4 py-2">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                            {% if row.source == 'override' %}bg-blue-100 text-info dark:bg-blue-950
+                            {% elif row.source == 'file' %}bg-emerald-100 text-ok dark:bg-emerald-950
+                            {% else %}bg-gray-100 text-muted dark:bg-white/5{% endif %}">
+                            {{ row.source }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-2">
+                        <form hx-post="/admin/runtime-config/{{ row.key }}" hx-target="#runtime-config-table" hx-swap="outerHTML"
+                              class="flex items-center gap-2" aria-label="Set an override for {{ row.key }}">
+                            <label class="sr-only" for="rtc-value-{{ row.key }}">New value for {{ row.key }}</label>
+                            {% if row.key == 'log_level' %}
+                            <select id="rtc-value-{{ row.key }}" name="value"
+                                    class="rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                                {% for level in log_levels %}
+                                <option value="{{ level }}" {% if row.value == level %}selected{% endif %}>{{ level }}</option>
+                                {% endfor %}
+                            </select>
+                            {% else %}
+                            <input id="rtc-value-{{ row.key }}" name="value" type="number" inputmode="numeric" required
+                                   value="{{ row.value }}"
+                                   class="w-24 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            {% endif %}
+                            {# phaze-tckiy shape: this form carries no method/action, so a click before htmx has
+                               processed it falls through to a native GET -- which would drop the override value
+                               into the address bar and never call the endpoint. disabled + data-hx-guard,
+                               released by shell.html's global htmx:load listener once htmx has wired hx-post. #}
+                            <button type="submit" disabled data-hx-guard
+                                    class="px-2.5 py-1 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">
+                                Set
+                            </button>
+                        </form>
+                    </td>
+                    <td class="px-4 py-2">
+                        {% if row.source == 'override' %}
+                        <button type="button"
+                                hx-delete="/admin/runtime-config/{{ row.key }}" hx-target="#runtime-config-table" hx-swap="outerHTML"
+                                hx-confirm="Clear the override for {{ row.key }}? It will fall back to the next configured layer."
+                                aria-label="Clear the override for {{ row.key }}"
+                                class="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            Clear
+                        </button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="rounded-lg border border-gray-200 dark:border-phaze-border">
+        <h3 class="px-4 py-2 text-xs uppercase tracking-wider text-muted border-b border-gray-200 dark:border-phaze-border">Restart-only keys</h3>
+        <ul class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for key in restart_only_keys %}
+            <li class="px-4 py-2 flex items-center justify-between text-sm">
+                <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ key }}</span>
+                <span class="text-xs text-muted" role="status">requires restart</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>

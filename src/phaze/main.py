@@ -16,6 +16,7 @@ from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers import (
     admin_agents,
+    admin_runtime_config,
     agent_analysis,
     agent_exec_batches,
     agent_execution,
@@ -49,6 +50,7 @@ from phaze.routers import (
     tracklists,
 )
 from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
 from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
@@ -92,6 +94,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # startup entirely rather than degrading silently, exactly like AgentSettings/ControlSettings
     # already do for every other setting. Doing this before telemetry/migrations means that
     # failure is reported through the just-configured logging pipeline.
+    #
+    # phaze-mvq8z.6 deliberately does NOT install the DB-override provider here: the override
+    # table only exists once `run_migrations()` below has run, and this reload happens BEFORE
+    # that -- before the database is even confirmed reachable (the `SELECT 1` check further
+    # down). Reading the override table this early would work (the reader is degrade-safe), but
+    # would print a scary "relation does not exist" warning on every fresh-DB first boot for no
+    # benefit, since there is nothing yet to override. This first reload validates the env/file
+    # layers only; a SECOND reload once the DB-override layer is wired in (below) folds in
+    # anything an operator already set, so it takes effect immediately rather than waiting for
+    # this process's first NOTIFY/poll tick or a SIGHUP.
     runtime_config_store = get_runtime_config_store()
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
@@ -111,6 +123,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     async with async_session() as bootstrap_session:
         await ensure_dev_agent(bootstrap_session)
+
+    # phaze-mvq8z.6: wire the DB-override layer into the process-wide runtime-config store (the
+    # migration above has now run, so the table exists), then start this process's LISTEN
+    # connection + fallback poll so an admin-API/UI write (this process's own or another's)
+    # reaches the store without a restart (ADR-0019 (runtime config hot-reload) §3/§14). The
+    # provider is installed BEFORE this reload, and this is a SECOND "startup" reload -- see the
+    # comment above the first one for why it is not simply merged into it.
+    install_runtime_config_overrides(runtime_config_store, async_session)
+    _app.state.runtime_config_listener = await start_runtime_config_listener(store=runtime_config_store, database_url=settings.database_url)
+    await runtime_config_store.reload("startup")
 
     # The named controller queue has a real worker. Factory hooks apply project defaults,
     # deterministic keys, and durable ledger writes to both manual and recovery paths.
@@ -149,6 +171,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     yield
     # Shutdown in reverse construction order.
+    # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
+    # through goes away.
+    await _app.state.runtime_config_listener.stop()
     # Stop the refresher before disposing its engine.
     _app.state.orphan_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -237,6 +262,10 @@ _ROUTERS: tuple[APIRouter, ...] = (
     # router is read-only and does NOT use get_authenticated_agent (consistent
     # with other admin-UI routers on the private LAN).
     admin_agents.router,
+    # phaze-mvq8z.6: DB-override admin API for hot-reloadable config (GET/POST/DELETE
+    # /admin/runtime-config/*). Also reachable at /s/runtime-config (shell.router above,
+    # UTILITY_PANES["runtime-config"]) -- both share build_runtime_config_pane_context.
+    admin_runtime_config.router,
 )
 
 
