@@ -568,6 +568,49 @@ async def test_hovering_or_focusing_a_wheel_node_drives_the_timeline_to_that_key
     assert await page.locator("[data-harmonic-journey] [aria-live]").count() == 0
 
 
+async def test_hovering_a_runs_table_row_drives_the_timeline_and_rings_the_same_wheel_node(page: Any, seed: Seeder) -> None:
+    """phaze-37ovq: the runs table is one more route to the same one elapsed time.
+
+    Same fixture and same two runs (`_open_inspectable_record`) as the wheel-node test above, but
+    driven through `[data-journey-row]` instead of `[data-journey-node]` -- both carry the
+    IDENTICAL `data-node-index`, so hovering a row must scrub the timeline to the same run AND
+    ring the same wheel node hovering its node would, through the shared `nodeTime` lookup.
+
+    Pointer only, deliberately: a row carries no `tabindex` (see the template's own comment) --
+    the wheel's nodes are already the keyboard route to every run, and giving rows a second,
+    redundant set of tab stops right after them would break phaze-n0h86's own "tabbing out of the
+    wheel rests the page" contract, asserted in the test just above this one.
+    """
+    _file, _timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    resting = await _marks(page)
+    row_zero = page.locator('[data-journey-row][data-node-index="0"]')
+    row_one = page.locator('[data-journey-row][data-node-index="1"]')
+
+    assert await row_zero.get_attribute("tabindex") is None
+    assert await row_one.get_attribute("tabindex") is None
+
+    await row_zero.hover()
+    from_zero = await _marks(page)
+    assert from_zero["valueNow"] == "180"
+    assert "8A" in from_zero["valueText"]
+    assert from_zero["ringHidden"] is False
+    assert from_zero["ringNodeIndex"] == "0"
+
+    await row_one.hover()
+    from_one = await _marks(page)
+    assert from_one["valueNow"] == "540"
+    assert "8B" in from_one["valueText"]
+    assert from_one["ringNodeIndex"] == "1"
+
+    # Leaving the table returns the whole page to the peak, exactly as leaving the wheel does.
+    await page.mouse.move(4, 4)
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+    assert await _marks(page) == resting
+
+
 async def test_a_time_in_a_coarse_gap_marks_no_glyph_cell_rather_than_the_nearest_one(page: Any, seed: Seeder) -> None:
     """A file whose coarse coverage stops early leaves the glyph unmarked past its last cell.
 

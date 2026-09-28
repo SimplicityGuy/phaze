@@ -476,11 +476,13 @@
             return (start + (Number.isFinite(end) ? clamp(end, start, duration) : duration)) / 2;
         }
 
-        /** The midpoint of the key run a wheel node was drawn from, or null for an unknown node.
+        /** The midpoint of the key run an element carries `data-node-index` for, or null if
+         * unknown -- a wheel node's `<circle>` and, since phaze-37ovq, its runs-table `<tr>`.
          *
-         * Looked up by `index`, the same numbering `markWheel` rings by, so hovering a node lands
-         * the cursor inside the run that rings that very node -- never a sibling visit to the same
-         * Camelot position, which is a different node with a different index.
+         * Looked up by `index`, the same numbering `markWheel` rings by, so hovering EITHER
+         * element for a run lands the cursor inside that run and rings its wheel node -- never a
+         * sibling visit to the same Camelot position, which is a different node with a different
+         * index.
          */
         function nodeTime(node) {
             const index = Number(node.dataset.nodeIndex);
@@ -552,6 +554,30 @@
             wheel.addEventListener("focusout", (event) => {
                 if (!wheel.contains(event.relatedTarget)) rest();
             });
+        }
+
+        // phaze-37ovq: the harmonic journey's runs table drives the timeline too -- same shape as
+        // the wheel it sits beside, and deliberately reusing `nodeTime` rather than a parallel
+        // lookup: a table row carries the identical `data-node-index` a wheel node does, so
+        // hovering a row lands the cursor in the same run hovering its node would, through the
+        // one shared function. `wheel` (not `scope`) gates this listener too, matching the wheel's
+        // own null-on-the-drawer behaviour -- the runs table only ever renders beside a wheel.
+        //
+        // Pointer (`mouseover`/`mouseleave`) ONLY, deliberately no `focusin`/`focusout`: rows
+        // carry no `tabindex` (see the template), because the wheel's own nodes are already the
+        // keyboard route to every run and its own accessible name, and a second set of tab stops
+        // immediately after them would break phaze-n0h86's "tabbing out of the wheel rests the
+        // page" contract.
+        const runsTable = wheel ? scope.querySelector("[data-harmonic-runs]") : null;
+        if (runsTable) {
+            const rowOf = (event) => (event.target instanceof Element ? event.target.closest("[data-journey-row][data-node-index]") : null);
+            runsTable.addEventListener("mouseover", (event) => {
+                const row = rowOf(event);
+                if (!row) return;
+                const time = nodeTime(row);
+                if (time !== null) inspect(time, false, false);
+            });
+            runsTable.addEventListener("mouseleave", rest);
         }
 
         viewport.addEventListener("scroll", updateOverflow, { passive: true });
