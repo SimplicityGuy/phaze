@@ -781,3 +781,58 @@ def test_stage_control_stays_postgres_free() -> None:
         check=False,
     )
     assert result.returncode == 0, f"stage_control import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_reap_orphaned_backend_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
+    """phaze-pnt12: the backend-registry-orphan reaper is CONTROL-only, never on the agent.
+
+    Unlike most reapers in this package it is NOT a CronJob: it is a gated BOOT-ONLY reconcile
+    (``phaze.tasks.controller.startup``), mirroring ``recover_orphaned_work`` exactly -- a
+    ``cloud_job`` row can only become backend-orphaned via a ``[[backends]]`` config edit, which only
+    takes effect on the NEXT restart, so boot is the only moment the condition can newly arise (see the
+    task module's own docstring). It still needs ``ctx["async_session"]`` (control-only DB access), so
+    it is registered in ``phaze.tasks.controller.settings["functions"]`` ONLY, absent from
+    ``cron_jobs`` and from ``enqueue_router.CONTROLLER_TASKS`` -- the same shape
+    ``recover_orphaned_work`` has.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks.agent_worker as aw
+
+        fn_names = {getattr(fn, "__name__", "") for fn in aw.settings["functions"]}
+        cron_names = {getattr(cj.function, "__name__", "") for cj in aw.settings.get("cron_jobs", [])}
+        if "reap_orphaned_backend_cloud_jobs" in fn_names or "reap_orphaned_backend_cloud_jobs" in cron_names:
+            sys.stderr.write("reap_orphaned_backend_cloud_jobs must NOT be registered on the agent worker\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"reap_orphaned_backend_cloud_jobs leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+    # Complementary control-side assertions (in-process under the control-default test env): it IS a
+    # registered controller function, is NOT a CronJob (boot-gated instead), and is NOT in the
+    # routable CONTROLLER_TASKS set -- exactly recover_orphaned_work's shape.
+    from phaze.services.enqueue_router import CONTROLLER_TASKS
+    from phaze.tasks import controller
+
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    cron_names = {getattr(cj.function, "__name__", "") for cj in controller.settings["cron_jobs"]}
+    assert "reap_orphaned_backend_cloud_jobs" in fn_names
+    assert "reap_orphaned_backend_cloud_jobs" not in cron_names, (
+        "reap_orphaned_backend_cloud_jobs must not be a CronJob (boot-only, mirrors recover_orphaned_work)"
+    )
+    assert "reap_orphaned_backend_cloud_jobs" not in CONTROLLER_TASKS, "reap_orphaned_backend_cloud_jobs is boot-only -- never operator-routable"

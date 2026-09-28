@@ -230,3 +230,67 @@ async def test_startup_recovery_retries_transient_dbapi_errors_then_succeeds(mon
     await controller.startup(ctx)
 
     assert recover_mock.await_count == 3, "must retry past the transient DBAPIError failures and stop once it succeeds"
+
+
+def test_functions_list_includes_reap_orphaned_backend_cloud_jobs() -> None:
+    """reap_orphaned_backend_cloud_jobs must be registered as a controller task function (phaze-pnt12)."""
+    from phaze.tasks import controller
+    from phaze.tasks.reap_orphaned_backend_cloud_jobs import reap_orphaned_backend_cloud_jobs
+
+    assert reap_orphaned_backend_cloud_jobs in controller.settings["functions"], (
+        "reap_orphaned_backend_cloud_jobs not registered in settings['functions']"
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_calls_reap_orphaned_backend_cloud_jobs_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-pnt12: startup() awaits the gated reap_orphaned_backend_cloud_jobs(ctx) exactly once.
+
+    Mirrors ``test_startup_stashes_router_and_calls_recovery_once`` exactly: a config-edit-driven
+    orphan can only newly appear on THIS restart, so boot is the reconcile's one gated trigger --
+    same shape as ``recover_orphaned_work``, same retry wrapper.
+    """
+    _patch_startup_constructors(monkeypatch)
+
+    router_stub = _make_router_stub()
+    monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
+
+    recover_mock = AsyncMock(return_value={"detected_loss": False, "forced": False, "stages": {}})
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
+
+    orphan_mock = AsyncMock(return_value={"requeued": 0, "surfaced": 0})
+    monkeypatch.setattr("phaze.tasks.controller.reap_orphaned_backend_cloud_jobs", orphan_mock)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    orphan_mock.assert_awaited_once_with(ctx)
+
+
+@pytest.mark.asyncio
+async def test_startup_survives_raising_orphan_reap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reap_orphaned_backend_cloud_jobs failure must NEVER abort controller boot (boot resilience).
+
+    Mirrors ``test_startup_survives_raising_recovery`` exactly.
+    """
+    _patch_startup_constructors(monkeypatch)
+
+    router_stub = _make_router_stub()
+    monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
+
+    recover_mock = AsyncMock(return_value={"detected_loss": False, "forced": False, "stages": {}})
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
+
+    orphan_mock = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr("phaze.tasks.controller.reap_orphaned_backend_cloud_jobs", orphan_mock)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    # Must NOT raise -- the broad try/except swallows the failure.
+    await controller.startup(ctx)
+
+    orphan_mock.assert_awaited_once_with(ctx)
+    assert ctx["task_router"] is router_stub
