@@ -101,6 +101,7 @@ def build_record_facts(
     coverage_text: str | None,
     analysis: AnalysisResult | None,
     camelot_modal: str | None,
+    metadata_duration: float | None = None,
 ) -> list[RecordFact]:
     """The eight facts, in the sidebar's own order, every one always present.
 
@@ -109,6 +110,13 @@ def build_record_facts(
     picture beside it does not cover. ``coverage_text`` is
     :func:`phaze.services.analysis_timeline.coverage_chip`'s own sentence, reused verbatim
     rather than recomposed, so "N coarse - M fine - no gaps" reads identically in both places.
+
+    ``metadata_duration`` is the file's ``FileMetadata.duration`` (the tag-reported length),
+    consulted ONLY when ``total_sec`` is zero -- a file with no analysis windows at all. It never
+    overrides a real analyzed extent, which is what keeps the "must not overstate" intent above
+    true: a file with windows always shows what was actually analyzed, never the tag value. The
+    fallback is visibly marked "from tags" in the value itself (not merely a tooltip), so it can
+    never be mistaken for an analysed extent at a glance.
 
     ``analysis`` is the file's (at most one) ``AnalysisResult`` row -- ``None`` for a file never
     analyzed to completion. Median BPM and Mood · style read ``analysis.bpm`` / ``.mood`` /
@@ -120,9 +128,18 @@ def build_record_facts(
     tempo = analysis.bpm if analysis is not None else None
     mood = analysis.mood if analysis is not None else None
     style = analysis.dominant_style if analysis is not None else None
+    if total_sec > 0:
+        duration_value = format_elapsed_time(total_sec)
+        duration_title = ""
+    elif metadata_duration is not None and metadata_duration > 0:
+        duration_value = f"{format_elapsed_time(metadata_duration)} (from tags)"
+        duration_title = "No analysis windows yet -- this is the tag-reported length, not an analyzed extent."
+    else:
+        duration_value = ABSENT
+        duration_title = ""
     return [
         RecordFact(label="Format", value=file_type or ABSENT),
-        RecordFact(label="Duration", value=format_elapsed_time(total_sec) if total_sec > 0 else ABSENT),
+        RecordFact(label="Duration", value=duration_value, title=duration_title),
         RecordFact(
             label="sha256",
             value=f"{digest[:SHA_PREFIX_LEN]}…" if digest else ABSENT,
