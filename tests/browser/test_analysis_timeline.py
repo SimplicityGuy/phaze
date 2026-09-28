@@ -423,6 +423,84 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     assert left == resting
 
 
+async def test_hovering_the_bpm_chart_shows_the_fine_window_bpm_and_a_marker_at_the_cursor(page: Any, seed: Seeder) -> None:
+    """phaze-f8ptt: the tooltip headline states the BPM in words, and a dot on the chart shows it.
+
+    ``analysis_windows`` seeds fine BPM as ``126.0 + (index % 5)`` over 24 30 s windows, so the
+    distinct values are exactly {126, 127, 128, 129, 130} and ``rounded_bpm_bounds`` rounds that
+    outward to [120, 130] -- both read from the fixture's own construction, not restated as
+    literals that merely happen to match today. Window 0 ([0, 30)) carries BPM 126.0, so parking
+    the cursor at time 0 makes both the tooltip text and the marker's vertical position exact:
+    fraction-from-top = (130 - 126) / (130 - 120) = 0.4, i.e. 40%.
+    """
+    _file, timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+    tooltip = timeline.locator("[data-timeline-tooltip]")
+    cursor = timeline.locator("[data-timeline-cursor]")
+    marker = timeline.locator("[data-timeline-bpm-marker]")
+
+    await inspector.focus()
+    await page.keyboard.press("Home")
+
+    tooltip_text = await tooltip.inner_text()
+    assert tooltip_text.startswith("At 0:00 · BPM 126")
+
+    assert await marker.is_visible()
+    assert _percent(await marker.evaluate("el => el.style.left")) == pytest.approx(_percent(await cursor.evaluate("el => el.style.left")), abs=0.01)
+    assert _percent(await marker.evaluate("el => el.style.top")) == pytest.approx(40.0, abs=0.5)
+    label_text = await marker.locator("[data-timeline-bpm-marker-label]").inner_text()
+    assert label_text == "BPM 126"
+
+    # Hovering a different window moves the tooltip, cursor, and dot together -- the fixture's
+    # window 2 ([60, 90)) carries BPM 128.0, and the dot's fraction moves with it.
+    bounds = await inspector.bounding_box()
+    assert bounds is not None
+    await page.mouse.move(bounds["x"] + bounds["width"] * (75.0 / _INSPECTION_DURATION_SEC), bounds["y"] + 20)
+    moved_text = await tooltip.inner_text()
+    assert "BPM 128" in moved_text
+    assert _percent(await marker.evaluate("el => el.style.top")) == pytest.approx(20.0, abs=0.5)
+
+
+async def test_a_window_with_no_measured_bpm_reads_an_explicit_absence_not_undefined(page: Any, seed: Seeder) -> None:
+    """phaze-f8ptt: an unmeasured BPM is stated plainly, and the chart marker simply does not light.
+
+    Every fine window's ``bpm`` is cleared after seeding, which also empties the server's own
+    ``bpm_lo``/``bpm_hi`` scale (``bpm_spark`` returns ``None, None`` with no valid BPM anywhere) --
+    so this exercises both halves of the absence at once: the tooltip headline's explicit "BPM —"
+    and the marker having no scale to place a dot on.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    windows = await seed.analysis_windows(file, fine_count=24, coarse_count=6)
+    async with seed.session.begin_nested():
+        for window in windows:
+            if window.tier == "fine":
+                window.bpm = None
+    await seed.session.commit()
+
+    await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
+    timeline = page.locator("[data-analysis-timeline]")
+    await timeline.wait_for(state="visible")
+    await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
+    inspector = timeline.locator("[data-timeline-inspector]")
+    tooltip = timeline.locator("[data-timeline-tooltip]")
+    marker = timeline.locator("[data-timeline-bpm-marker]")
+
+    await inspector.focus()
+    await page.keyboard.press("Home")
+
+    tooltip_text = await tooltip.inner_text()
+    assert "BPM —" in tooltip_text
+    assert "undefined" not in tooltip_text.lower()
+    assert await marker.is_hidden()
+
+    # No BPM value anywhere means no scale either -- the server renders no `data-bpm-lo`/
+    # `data-bpm-hi`, which is the other half of the same absence.
+    bpm_plot = timeline.locator("[data-timeline-bpm-plot]")
+    assert await bpm_plot.get_attribute("data-bpm-lo") is None
+    assert await bpm_plot.get_attribute("data-bpm-hi") is None
+
+
 async def test_hovering_or_focusing_a_wheel_node_drives_the_timeline_to_that_key_run(page: Any, seed: Seeder) -> None:
     """phaze-n0h86: the wheel is an input route too, by pointer and by keyboard.
 

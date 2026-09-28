@@ -80,7 +80,8 @@
                            a default position would assert a track the operator never pointed at.
                            Decorative (the readout is the accessible reading), hence aria-hidden. #}
                         <div data-timeline-track-span class="analysis-timeline-track-span" hidden aria-hidden="true"></div>
-                        <div class="analysis-timeline-bpm-plot">
+                        <div class="analysis-timeline-bpm-plot" data-timeline-bpm-plot
+                             {% if bpm_lo is not none and bpm_hi is not none %}data-bpm-lo="{{ bpm_lo }}" data-bpm-hi="{{ bpm_hi }}"{% endif %}>
                             {% if bpm_segments %}
                             <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
                                  width="{{ timeline_w | round | int }}" height="80" class="block h-20 w-full text-info"
@@ -99,6 +100,16 @@
                             <p class="flex h-20 items-center px-2 text-xs text-muted">No BPM data.</p>
                             {% endif %}
                             <div data-timeline-cursor class="analysis-timeline-cursor" hidden></div>
+                            {# --- phaze-f8ptt BPM VALUE MARKER -----------------------------------
+                               Where the cursor meets the BPM line: a dot at the fine window's own
+                               plotted position plus a label, so the value the tooltip states in
+                               words also has a point on the chart. Positioned in the same
+                               [0, bpm_lo, bpm_hi] space `bpm_spark`/`bpm_segments` plot in, read
+                               from `data-bpm-lo`/`data-bpm-hi` above -- both absent, and this never
+                               lights, exactly when the plot itself has no scale to place a dot on. #}
+                            <div data-timeline-bpm-marker class="analysis-timeline-bpm-marker" hidden aria-hidden="true">
+                                <span data-timeline-bpm-marker-label class="analysis-timeline-bpm-marker-label"></span>
+                            </div>
                             <div data-timeline-tooltip class="analysis-timeline-tooltip" hidden aria-hidden="true"></div>
                         </div>
 
