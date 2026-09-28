@@ -46,6 +46,8 @@ import structlog
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.database import build_async_engine
 from phaze.logging_config import configure_logging
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
@@ -200,6 +202,20 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Off unless an OTLP endpoint is configured; never raises.
     configure_telemetry("controller")
 
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging/telemetry allow -- matching the api lifespan's placement (src/phaze/main.py).
+    # RuntimeConfigStore's constructor VALIDATES the process's start-time reloadable settings
+    # (e.g. WORKER_MAX_JOBS) and raises ValueError on an invalid one. Implementer decision
+    # (phaze-mvq8z.5): let it propagate and refuse controller startup, the same fail-fast contract
+    # `cfg = get_settings()` above already has for every other setting -- unlike the boot-reconcile
+    # calls further down, which are deliberately resilient (D-05), an invalid reloadable setting is
+    # an operator misconfiguration that should stop the process, not run degraded.
+    runtime_config_store = get_runtime_config_store()
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
+    ctx["runtime_config_watcher"].start()
+
     # Bug A (June 2026): litellm reads provider creds from os.environ, never from
     # ControlSettings. The LLM keys arrive via the <VAR>_FILE secret convention as
     # SecretStr fields, so bridge them into ANTHROPIC_API_KEY / OPENAI_API_KEY here --
@@ -325,6 +341,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     task_router = ctx.get("task_router")
     if task_router is not None:
         await task_router.close()
+
+    # phaze-mvq8z.5: reverse of construction -- it was built right after telemetry, before
+    # everything else in startup, so it's stopped last among this process's own resources,
+    # mirroring main.py's lifespan. `.get` guards a startup that failed before reaching it.
+    runtime_config_watcher = ctx.get("runtime_config_watcher")
+    if runtime_config_watcher is not None:
+        await runtime_config_watcher.stop()
 
     # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
     shutdown_telemetry()
