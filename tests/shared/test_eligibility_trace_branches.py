@@ -87,11 +87,19 @@ def test_upstream_verdict_all_upstream_done() -> None:
     assert verdict == (True, "all upstream done")
 
 
-def test_upstream_verdict_names_the_skipped_upstream_as_still_gating() -> None:
-    """OQ-1 SCOPE-MINIMAL: a SKIPPED upstream stays gating, named honestly (not reported as met)."""
+def test_upstream_verdict_counts_a_skipped_upstream_as_met_and_names_it() -> None:
+    """phaze-iyqhg: a SKIPPED upstream satisfies the conjunct (D-08's downstream half) -- and is NAMED
+    as skipped, so the trace never reads a skip as completion even while reporting the conjunct met."""
     statuses = {Stage.METADATA: Status.SKIPPED, Stage.ANALYZE: Status.DONE}
     verdict = skip_mod._eligibility_upstream_verdict(Stage.PROPOSE, (Stage.METADATA, Stage.ANALYZE), statuses, has_approved=False)
-    assert verdict == (False, "metadata skipped — downstream stays gated (Phase 90)")
+    assert verdict == (True, "all upstream done or skipped (metadata skipped)")
+
+
+def test_upstream_verdict_names_an_unfinished_upstream_before_a_skipped_one() -> None:
+    """A skipped upstream never masks a genuinely unmet one: the blocker is the unmet stage."""
+    statuses = {Stage.METADATA: Status.SKIPPED, Stage.ANALYZE: Status.FAILED}
+    verdict = skip_mod._eligibility_upstream_verdict(Stage.PROPOSE, (Stage.METADATA, Stage.ANALYZE), statuses, has_approved=False)
+    assert verdict == (False, "analyze not done")
 
 
 def test_upstream_verdict_names_the_unfinished_upstream() -> None:

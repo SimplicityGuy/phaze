@@ -232,7 +232,8 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
       exists). ``has_approved_proposal`` is the approval flag the caller supplies (the SQL twin filters
       ``proposals.status = 'approved'``).
     - ``TRACKLIST`` / ``PROPOSE`` / ``REVIEW``: every upstream in ``ELIGIBILITY_DAG[stage]`` must be
-      ``DONE`` AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts). ``TRACKLIST``'s
+      SATISFIED (:func:`upstream_satisfied` -- ``DONE``, or ``SKIPPED`` for a force-skipped enrich
+      upstream) AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts). ``TRACKLIST``'s
       conjunct list is EMPTY (phaze-0jpe), so it reduces to "not already ``DONE``".
     """
     if stage in (Stage.METADATA, Stage.ANALYZE):
@@ -244,5 +245,23 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
         return status not in (Status.DONE, Status.IN_FLIGHT, Status.SKIPPED) and (status != Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
     if stage is Stage.APPLY:
         return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
-    upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])
-    return upstream_done and status_map.get(stage, Status.NOT_STARTED) != Status.DONE
+    upstream_met = all(upstream_satisfied(status_map.get(u, Status.NOT_STARTED)) for u in ELIGIBILITY_DAG[stage])
+    return upstream_met and status_map.get(stage, Status.NOT_STARTED) != Status.DONE
+
+
+def upstream_satisfied(status: Status | str) -> bool:
+    """Pure predicate: does an upstream stage in ``status`` let its downstream proceed?
+
+    ``DONE`` or ``SKIPPED``. D-08 always defined a force-skip as "stage-satisfied for eligibility +
+    downstream unblocking" (87-CONTEXT.md); Phase 87 shipped only the eligibility/recovery half and
+    deferred the downstream half (87-RESEARCH.md OQ-1, "SCOPE-MINIMAL"). phaze-iyqhg lands it.
+    Operator decision 2026-09-27, question as put: 'Given that, what should the stage control on the
+    file page be?'; answer as given (selected label): '"Skip stage…", honest + working (Recommended)';
+    durable record: the phaze-iyqhg bead description. A skip still never READS as done -- the bucket
+    stays ``skipped`` -- it only stops gating what comes after it.
+
+    The SQL twin is :func:`phaze.services.stage_status.satisfied_clause`, drift-locked by
+    ``tests/integration/test_stage_status_equivalence.py``. Compared by VALUE (WR-03), so a raw-``str``
+    status from a SQL/JSON round-trip agrees with its enum spelling.
+    """
+    return Status(status) in (Status.DONE, Status.SKIPPED)

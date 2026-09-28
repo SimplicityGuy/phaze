@@ -97,6 +97,22 @@ def test_propose_requires_metadata_and_analyze_done() -> None:
     assert eligible(both_done_proposed, Stage.PROPOSE) is False
 
 
+def test_a_skipped_enrich_upstream_satisfies_propose() -> None:
+    """phaze-iyqhg (D-08's downstream half): a force-skipped upstream lets propose proceed.
+
+    Only a SKIP does -- a failed or in-flight upstream still gates, and a raw-``str`` status (a SQL or
+    JSON round-trip) agrees with its enum spelling (WR-03).
+    """
+    assert eligible({Stage.METADATA: Status.DONE, Stage.ANALYZE: Status.SKIPPED}, Stage.PROPOSE) is True
+    assert eligible({Stage.METADATA: Status.SKIPPED, Stage.ANALYZE: Status.DONE}, Stage.PROPOSE) is True
+    assert eligible({Stage.METADATA: Status.SKIPPED, Stage.ANALYZE: Status.SKIPPED}, Stage.PROPOSE) is True
+    assert eligible({Stage.METADATA: "done", Stage.ANALYZE: "skipped"}, Stage.PROPOSE) is True
+    assert eligible({Stage.METADATA: Status.DONE, Stage.ANALYZE: Status.FAILED}, Stage.PROPOSE) is False
+    assert eligible({Stage.METADATA: Status.DONE, Stage.ANALYZE: Status.IN_FLIGHT}, Stage.PROPOSE) is False
+    skipped_but_proposed = {Stage.METADATA: Status.DONE, Stage.ANALYZE: Status.SKIPPED, Stage.PROPOSE: Status.DONE}
+    assert eligible(skipped_but_proposed, Stage.PROPOSE) is False
+
+
 def test_review_requires_proposal_exists() -> None:
     assert eligible({Stage.PROPOSE: Status.NOT_STARTED}, Stage.REVIEW) is False
     assert eligible({Stage.PROPOSE: Status.DONE}, Stage.REVIEW) is True

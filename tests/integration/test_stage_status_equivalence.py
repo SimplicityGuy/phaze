@@ -37,10 +37,10 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status
+from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status, upstream_satisfied
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -613,6 +613,107 @@ async def test_eligible_sql_equals_python(
     py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
     py_eligible = eligible({stage: py_status}, stage)
     assert sql_eligible == py_eligible == expected
+
+
+# phaze-iyqhg: the downstream half of D-08. ``upstream_satisfied`` (Python) and ``satisfied_clause``
+# (SQL) answer "does this enrich stage let its downstream proceed?" -- DONE or force-SKIPPED. Every
+# enrich seed above, so a satisfied predicate that drifted on ANY bucket (a partial row, a failure-only
+# row, an in-flight precedence cell) goes red here rather than in production.
+SATISFIED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
+    (Stage.METADATA, seed_metadata_none, False),
+    (Stage.METADATA, seed_metadata_done, True),
+    (Stage.METADATA, seed_metadata_failed_only, False),  # a failure is NOT a skip (phaze-rhs6m holds)
+    (Stage.METADATA, seed_metadata_skipped, True),
+    (Stage.ANALYZE, seed_analysis_none, False),
+    (Stage.ANALYZE, seed_analysis_partial, False),  # DERIV-03: a partial row is not data
+    (Stage.ANALYZE, seed_analysis_completed, True),
+    (Stage.ANALYZE, seed_analysis_failed, False),
+    (Stage.ANALYZE, seed_analysis_skipped_over_failed, True),  # the cell this bead exists for
+]
+
+
+@pytest.mark.parametrize("stage,seed_fn,expected", SATISFIED_CASES)
+async def test_satisfied_sql_equals_python(
+    db_session: AsyncSession,
+    stage: Stage,
+    seed_fn: Callable[[AsyncSession], Awaitable[uuid.UUID]],
+    expected: bool,
+) -> None:
+    """SQL ``satisfied_clause`` == Python ``upstream_satisfied`` == expected, per enrich cell."""
+    from phaze.services.stage_status import satisfied_clause  # lazy, like every stage_status import here
+
+    file_id = await seed_fn(db_session)
+    sql_satisfied = bool((await db_session.execute(select(satisfied_clause(stage)).where(FileRecord.id == file_id))).scalar_one())
+    py_satisfied = upstream_satisfied(resolve_status(stage, await load_scalars(db_session, stage, file_id)))
+    assert sql_satisfied == py_satisfied == expected
+
+
+# PROPOSE eligibility drift-lock (phaze-iyqhg). The SQL side of ``eligible(..., Stage.PROPOSE)`` is not
+# an ``eligible_clause`` builder (that is enrich-only) but the proposal convergence gate itself,
+# ``services/pipeline/proposals._proposal_pending_clauses`` -- the predicate the GENERATE trigger and the
+# drain actually batch on. Before this bead nothing locked the two together, which is how "skipped does
+# not satisfy propose" survived in both while the dialog promised the opposite. Each cell composes a
+# metadata state with an analyze state (plus the two conditions only the gate spells out: an existing
+# proposal, and an enrich ledger row) and asserts gate == ``eligible`` == expected.
+async def _seed_propose_cell(
+    session: AsyncSession,
+    *,
+    metadata: str,
+    analyze: str,
+    proposed: bool = False,
+    analyze_inflight: bool = False,
+) -> uuid.UUID:
+    fid = await _new_file(session)
+    now = datetime.now(UTC)
+    if metadata == "done":
+        session.add(FileMetadata(file_id=fid, failed_at=None))
+    elif metadata == "failed":
+        session.add(FileMetadata(file_id=fid, failed_at=now))
+    elif metadata == "skipped":
+        session.add(FileMetadata(file_id=fid, failed_at=now))  # the realistic skip: a failure, then the marker
+        session.add(StageSkip(file_id=fid, stage="metadata", reason="unreadable tags"))
+    if analyze == "done":
+        session.add(AnalysisResult(file_id=fid, analysis_completed_at=now))
+    elif analyze == "partial":
+        session.add(AnalysisResult(file_id=fid, analysis_completed_at=None))
+    elif analyze == "failed":
+        session.add(AnalysisResult(file_id=fid, failed_at=now))
+    elif analyze == "skipped":
+        session.add(AnalysisResult(file_id=fid, failed_at=now))
+        session.add(StageSkip(file_id=fid, stage="analyze", reason="corrupt source"))
+    if proposed:
+        session.add(RenameProposal(file_id=fid, proposed_filename="better.mp3", status="pending"))
+    await session.flush()
+    if analyze_inflight:
+        await _seed_ledger(session, Stage.ANALYZE, fid)
+    return fid
+
+
+PROPOSE_ELIGIBLE_CASES: list[tuple[str, dict[str, Any], bool]] = [
+    ("both-done", {"metadata": "done", "analyze": "done"}, True),
+    ("analyze-skipped", {"metadata": "done", "analyze": "skipped"}, True),  # the operator's case
+    ("metadata-skipped", {"metadata": "skipped", "analyze": "done"}, True),
+    ("both-skipped", {"metadata": "skipped", "analyze": "skipped"}, True),
+    ("analyze-failed-not-skipped", {"metadata": "done", "analyze": "failed"}, False),
+    ("analyze-partial", {"metadata": "done", "analyze": "partial"}, False),
+    ("analyze-not-started", {"metadata": "done", "analyze": "none"}, False),
+    ("metadata-failed-not-skipped", {"metadata": "failed", "analyze": "done"}, False),
+    ("metadata-not-started", {"metadata": "none", "analyze": "done"}, False),
+    ("analyze-skipped-but-inflight", {"metadata": "done", "analyze": "skipped", "analyze_inflight": True}, False),
+    ("analyze-skipped-already-proposed", {"metadata": "done", "analyze": "skipped", "proposed": True}, False),
+]
+
+
+@pytest.mark.parametrize("cell,shape,expected", PROPOSE_ELIGIBLE_CASES, ids=[c[0] for c in PROPOSE_ELIGIBLE_CASES])
+async def test_propose_gate_equals_python_eligible(db_session: AsyncSession, cell: str, shape: dict[str, Any], expected: bool) -> None:
+    """The proposal convergence gate (SQL) == ``eligible(status_map, PROPOSE)`` (Python) == expected."""
+    from phaze.services.pipeline.proposals import _proposal_pending_clauses
+
+    file_id = await _seed_propose_cell(db_session, **shape)
+    sql_eligible = bool((await db_session.execute(select(and_(*_proposal_pending_clauses())).where(FileRecord.id == file_id))).scalar_one())
+    status_map = {s: resolve_status(s, await load_scalars(db_session, s, file_id)) for s in (Stage.METADATA, Stage.ANALYZE, Stage.PROPOSE)}
+    py_eligible = eligible(status_map, Stage.PROPOSE)
+    assert sql_eligible == py_eligible == expected, f"{cell}: gate={sql_eligible} eligible()={py_eligible} statuses={status_map}"
 
 
 async def _eval_inflight(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:

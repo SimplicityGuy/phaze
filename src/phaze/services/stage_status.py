@@ -234,6 +234,20 @@ def skipped_clause(stage: Stage) -> ColumnElement[bool]:
     return exists(select(StageSkip.id).where(StageSkip.file_id == FileRecord.id, StageSkip.stage == stage.value))
 
 
+def satisfied_clause(stage: Stage) -> ColumnElement[bool]:
+    """SQL twin of :func:`phaze.enums.stage.upstream_satisfied` for an ENRICH ``stage``: done OR skipped.
+
+    phaze-iyqhg: the downstream-unblocking half of D-08 that Phase 87 deferred (87-RESEARCH.md OQ-1). A
+    force-skipped enrich stage satisfies its downstream conjunct the way a completed one does, while
+    still reading ``skipped`` everywhere a bucket is shown -- :func:`done_clause` is deliberately NOT
+    widened (that would counterfeit completion, the 87-RESEARCH anti-pattern "folding skip into
+    done_clause"). Composes the two LOCKED builders verbatim. Enrich-only, because
+    :func:`skipped_clause` is; the only downstream-of-downstream edge (``review`` <- ``propose``) has
+    no skip marker, so ``done_clause`` alone already is its satisfied predicate.
+    """
+    return or_(done_clause(stage), skipped_clause(stage))
+
+
 def failed_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the correlated ``failed`` predicate for ``stage`` (a ``ColumnElement[bool]``).
 
