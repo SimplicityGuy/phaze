@@ -7,6 +7,7 @@ Command groups:
     phaze backfill reenqueue-incomplete-analyses
     phaze backfill recover-stranded-analyses [--enqueue]
     phaze backfill set-projection
+    phaze backfill reset-cloud-attempts --backend <id> --window-start <ts> --window-end <ts> --attempts-floor <n> [--apply]
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -44,6 +45,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 import re
 import secrets
@@ -51,6 +53,7 @@ import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from phaze.config import get_settings
@@ -59,6 +62,7 @@ from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.services.cloud_attempts_reset import ResetScope, apply_reset, preview_reset
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 from phaze.services.reanalysis_backfill import (
@@ -274,7 +278,62 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Count incomplete fine-tier analyses with lost queue keys; --enqueue replays only those keys (phaze-hia9z).",
     )
     stranded.add_argument("--enqueue", action="store_true", help="Replay the selected keys; without this flag the command reads and counts only.")
+    # phaze-ww6yk: reset the cloud attempts an infrastructure fault spent. Every scope parameter is a
+    # required flag, so the command names one incident and cannot drift onto rows it was not asked about.
+    reset = backfill_sub.add_parser(
+        "reset-cloud-attempts",
+        help="Reset cloud attempts spent by an infrastructure fault, for one backend and time window (phaze-ww6yk). Dry run unless --apply.",
+        description=(
+            "Selects cloud_job rows with status='awaiting', attempts >= --attempts-floor, backend_id = --backend and "
+            "updated_at inside [--window-start, --window-end]. It excludes rows whose analysis is done, in flight or "
+            "applied, and rows that touched the node-loss budget. It then resets attempts to 0, restarts the "
+            "lane-entry clock, and unfolds that chain from the durable cloud_budget ledger so no cooldown bars "
+            "cloud. Without --apply it runs in a READ ONLY transaction and prints the count, the breakdown and one "
+            "audit line per row. See phaze.services.cloud_attempts_reset for the recorded decisions."
+        ),
+    )
+    reset.add_argument(
+        "--backend", dest="backend_id", required=True, help="cloud_job.backend_id of the backend whose rows to reset (the burst backend)."
+    )
+    reset.add_argument(
+        "--window-start",
+        dest="window_start",
+        required=True,
+        type=_aware_datetime,
+        help="Inclusive updated_at lower bound, ISO 8601 with offset (e.g. 2026-09-26T16:11:00Z).",
+    )
+    reset.add_argument(
+        "--window-end",
+        dest="window_end",
+        required=True,
+        type=_aware_datetime,
+        help="Inclusive updated_at upper bound, ISO 8601 with offset (e.g. 2026-09-27T03:29:00Z).",
+    )
+    reset.add_argument(
+        "--attempts-floor",
+        dest="attempts_floor",
+        required=True,
+        type=int,
+        help="Select rows with attempts >= this (the cloud_submit_max_attempts cap for exhausted rows).",
+    )
+    mode = reset.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
+    mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
+    reset.set_defaults(apply=False)
     return parser
+
+
+def _aware_datetime(value: str) -> datetime:
+    """argparse ``type=`` for the window bounds: ISO 8601 WITH an offset. A naive time is refused, not assumed UTC."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        msg = f"not an ISO 8601 timestamp: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed.tzinfo is None:
+        msg = f"timestamp {value!r} has no UTC offset; add one (e.g. 'Z' or '+00:00')"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -326,6 +385,13 @@ def _main_backfill(args: argparse.Namespace) -> int:
         return asyncio.run(_run_backfill_set_projection())
     if args.backfill_command == "recover-stranded-analyses":
         return asyncio.run(_run_recover_stranded_analyses(enqueue=args.enqueue))
+    if args.backfill_command == "reset-cloud-attempts":
+        try:
+            scope = ResetScope(args.backend_id, args.window_start, args.window_end, args.attempts_floor)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return asyncio.run(_run_reset_cloud_attempts(scope, apply=args.apply))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -366,6 +432,42 @@ async def _run_recover_stranded_analyses(*, enqueue: bool) -> int:
     tally = result["stages"]["process_file"]
     print("summary: " + " ".join(f"{name}={tally[name]}" for name in ("reenqueued", "skipped", "errored", "unreplayable")))
     return 0 if tally["reenqueued"] == len(keys) else 1
+
+
+async def _run_reset_cloud_attempts(scope: ResetScope, *, apply: bool) -> int:
+    """Run ``phaze backfill reset-cloud-attempts`` (phaze-ww6yk). Returns a process exit code.
+
+    The dry run opens its transaction ``READ ONLY``, so Postgres itself refuses a write, and rolls back.
+    ``--apply`` prints the same breakdown and audit lines, then commits only when the UPDATE's rowcount
+    equals the number of rows classified for reset under the lock. On a mismatch it rolls back and exits 1.
+    """
+    async with async_session() as session:
+        if apply:
+            report = await apply_reset(session, scope)
+        else:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            report = await preview_reset(session, scope)
+        for line in report.breakdown_lines():
+            print(line)
+        for line in report.audit_lines():
+            print(line)
+        expected = len(report.to_reset)
+        if not apply:
+            await session.rollback()
+            print(f"DRY RUN: nothing written; {expected} row(s) would be reset. Re-run with --apply to write.")
+            return 0
+        if report.rows_reset != expected:
+            await session.rollback()
+            print(
+                f"error: reset matched {report.rows_reset} row(s) but {expected} were classified for reset; rolled back, nothing written",
+                file=sys.stderr,
+            )
+            return 1
+        await session.commit()
+    print(
+        f"APPLIED: {report.rows_reset} row(s) reset; cloud_budget rows deleted={report.ledger_rows_deleted} decremented={report.ledger_rows_decremented}"
+    )
+    return 0
 
 
 async def _run_reenqueue_incomplete_analyses() -> int:
