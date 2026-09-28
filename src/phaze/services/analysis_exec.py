@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from phaze import telemetry
+from phaze.services.analysis_sizing import INTRA_OP_ENV, OMP_ENV
 from phaze.telemetry import slots, tracing as otel
 
 
@@ -204,6 +205,8 @@ async def run_analysis_subprocess(
     progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     stall_timeout: float | None = None,
+    intra_op_threads: int | None = None,
+    omp_threads: int | None = None,
 ) -> dict[str, Any]:
     """Run one exhaustive analysis in the child CLI; return the ``analyze_file`` dict.
 
@@ -219,6 +222,18 @@ async def run_analysis_subprocess(
     runs to completion no matter how long it takes. ``stall_timeout=None`` disables the
     watchdog entirely — no bound at all, which is what the pre-phaze-w55w1 burst lane had
     and is kept only for callers that genuinely supervise the child by other means.
+
+    ``intra_op_threads`` / ``omp_threads`` (phaze-mvq8z.7, per
+    docs/design/0019-runtime-config-hot-reload.md §5/§7) stamp ``TF_NUM_INTRAOP_THREADS`` /
+    ``OMP_NUM_THREADS`` into THIS child's environment when given, sourced by the CALLER from
+    the reloadable runtime-config snapshot -- exactly the same shape as ``stall_timeout``,
+    and for the same reason: this driver stays a thin, config-source-agnostic spawner (its
+    own docstring: "must not import Essentia or the database", and by the same logic must
+    not reach into a config layer whose first read can block on host topology detection).
+    ``None`` (the default) leaves ``environ`` exactly as ``child_environment()`` built it --
+    this process's own inherited env, today's pre-phaze-mvq8z.7 behaviour, which every
+    caller that does not care about live-reloadable thread counts (e.g. ``job_runner.py``'s
+    burst lane) keeps unchanged.
     """
     argv = _build_argv(
         file_path,
@@ -243,6 +258,16 @@ async def run_analysis_subprocess(
         # reinstate exactly that merge -- so the release is in the `finally` below, after
         # the child has exited.
         environ, slot = slots.assign(telemetry.child_environment())
+        # phaze-mvq8z.7: stamp the CALLER-supplied thread counts into THIS child's env, taken
+        # at spawn time -- a live `analysis_intra_op_threads` / `analysis_omp_threads` reload
+        # (docs/design/0019-runtime-config-hot-reload.md §5/§7) therefore reaches only
+        # children started after the change; `environ` is a fresh dict per call
+        # (child_environment() copies), so a child already running keeps whatever it was
+        # exec'd with, unaffected. Neither given (the default) leaves `environ` untouched.
+        if intra_op_threads is not None:
+            environ[INTRA_OP_ENV] = str(intra_op_threads)
+        if omp_threads is not None:
+            environ[OMP_ENV] = str(omp_threads)
         try:
             return await _run_analysis_subprocess_traced(
                 argv,

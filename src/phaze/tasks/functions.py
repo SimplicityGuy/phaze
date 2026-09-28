@@ -34,6 +34,7 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.runtime_config import current as current_runtime_config
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
@@ -217,13 +218,25 @@ async def _run_analysis_with_progress(
         last_touch = now
         _spawn(_touch_job_heartbeat(job))
 
+    # phaze-mvq8z.7: ONE read of the RELOADABLE snapshot for this job -- not `cfg` (the
+    # static, start-time settings) -- so a live `analysis_stall_timeout_sec` /
+    # `analysis_intra_op_threads` / `analysis_omp_threads` reload
+    # (docs/design/0019-runtime-config-hot-reload.md §5/§7) applies to the NEXT job without a
+    # restart. A job already inside `run_analysis_subprocess`'s stall watchdog keeps the
+    # threshold and thread env it was called with; only a job that has not yet started sees
+    # a new value. Read here, once, and passed down as plain params -- `analysis_exec.py`
+    # stays config-source-agnostic (its own module docstring) and never itself triggers the
+    # runtime-config store's first-build cost (host topology detection) on this hot path.
+    runtime_cfg = current_runtime_config()
     try:
         return await run_analysis_subprocess(
             read_path,
             models_path,
             progress_cb=_progress,
             heartbeat_cb=_heartbeat,
-            stall_timeout=cfg.analysis_stall_timeout_sec,
+            stall_timeout=runtime_cfg.analysis_stall_timeout_sec,
+            intra_op_threads=runtime_cfg.analysis_intra_op_threads,
+            omp_threads=runtime_cfg.analysis_omp_threads,
         )
     finally:
         # Bounded, kill-safe teardown on every exit path (success, timeout kill, crash,

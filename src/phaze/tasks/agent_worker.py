@@ -53,6 +53,7 @@ from phaze.logging_config import configure_logging
 from phaze.runtime_config import get_runtime_config_store
 from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING, LANE_TASKS, LANES
+from phaze.services.resizable_limiter import ResizableLimiter
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
     construct_agent_client,
@@ -405,8 +406,20 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     # Bound concurrent essentia analysis children. The exec'd
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
-    # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
-    ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
+    # this limiter preserves the pool's worker_process_pool_size concurrency bound.
+    #
+    # phaze-mvq8z.7: sized from the runtime-config snapshot (already reloaded above), not the
+    # static `cfg`, and LIVE-resizable: registering "analysis_semaphore" wires a live reload
+    # of `worker_process_pool_size` (docs/design/0019-runtime-config-hot-reload.md §5/§7) straight into it. Grow wakes waiters
+    # immediately; shrink only lowers the ceiling and drains by attrition -- an in-flight
+    # analysis is never cancelled. See phaze.services.resizable_limiter's module docstring.
+    runtime_cfg = runtime_config_store.current()
+    analysis_limiter = ResizableLimiter(runtime_cfg.worker_process_pool_size)
+    ctx["analysis_semaphore"] = analysis_limiter
+    runtime_config_store.register_applier(
+        "analysis_semaphore",
+        lambda _old, new: analysis_limiter.resize(new.worker_process_pool_size),
+    )
 
     # ONE knob, read TWICE, on purpose. Every child this semaphore admits exports its own
     # cumulative counters, so the number of concurrent children is also the number of
@@ -416,7 +429,16 @@ async def startup(ctx: dict[str, Any]) -> None:
     # itself is what stops the bound from becoming a second, drifting copy of the
     # concurrency limit: raise the pool and the identities follow. See
     # phaze.telemetry.slots and docs/design/0017-telemetry-export-topology.md section 8.
-    telemetry_slots.set_default_pool_size(cfg.worker_process_pool_size)
+    #
+    # phaze-mvq8z.7: also a registered applier -- a live pool-size reload calls
+    # `set_default_pool_size` again, which itself declines the resize (logged) rather than
+    # reissuing a slot that is currently held, so a shrink or grow while children are
+    # in-flight is safe by construction (phaze.telemetry.slots.set_default_pool_size).
+    telemetry_slots.set_default_pool_size(runtime_cfg.worker_process_pool_size)
+    runtime_config_store.register_applier(
+        "telemetry_slot_pool",
+        lambda _old, new: telemetry_slots.set_default_pool_size(new.worker_process_pool_size),
+    )
 
     # phaze-w15ju: this process ALLOCATES its children's slots, so it disowns any slot it was
     # handed. `slots.assign` now passes an inherited slot through untouched -- which is correct for
