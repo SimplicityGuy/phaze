@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -11,6 +12,7 @@ import pytest
 
 from phaze.services.metadata import ExtractedTags
 from phaze.tasks.metadata_extraction import extract_file_metadata
+from tests._media_path_fakes import byte_exact_exists
 
 
 def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
@@ -291,3 +293,44 @@ async def test_extract_tags_runs_off_loop(mock_extract: MagicMock) -> None:
 # ingestion auto-enqueue path was removed entirely in Phase 89 (LEGACY-01) along with
 # ``services/ingestion.py``; the surviving agent-upsert inverse regression guard (an INSERT
 # does NOT auto-enqueue) lives in tests/shared/core/test_no_auto_metadata_enqueue.py.
+
+
+async def test_nfd_on_disk_file_is_readable_via_stored_nfc_path(tmp_path) -> None:
+    """phaze-9pg11 end-to-end: the payload carries the STORED (NFC) ``original_path`` -- exactly
+    what ``routers/agent_files.py::upsert_files`` persists -- but the real directory entry is
+    NFD-decomposed. Uses the REAL ``extract_tags`` (no mock): before the fix this raised
+    ``FileNotFoundError`` forever; the shared resolver must make the open succeed.
+
+    ``phaze.services.media_path_resolve.Path.exists`` is reimplemented as a byte-exact (Linux
+    ext4-style) comparison via ``tests._media_path_fakes.byte_exact_exists``: macOS's own
+    filesystems (HFS+/APFS) are Unicode-normalization-INSENSITIVE at the syscall level, so a dev
+    host running this suite would otherwise open the NFC-reported path successfully WITHOUT the
+    resolver ever doing anything -- exactly the false-negative this repo's target platform (Linux,
+    byte-exact filenames) never gets to enjoy. `byte_exact_exists` pins the test to that real
+    invariant (including for the resolver's own longest-existing-ancestor walk, which needs
+    `tmp_path` itself to still read as "existing") instead of a host-dependent one, and still
+    exercises the real listdir-and-match fallback logic.
+    """
+    nfd_name = unicodedata.normalize("NFD", "Hör Berlin.m4a")
+    nfc_name = unicodedata.normalize("NFC", "Hör Berlin.m4a")
+    assert nfd_name != nfc_name, "fixture must actually exercise two distinct byte forms"
+
+    on_disk = tmp_path / nfd_name
+    on_disk.write_bytes(b"not really an m4a, just needs to exist and open cleanly")
+    stored_nfc_path = str(tmp_path / nfc_name)
+
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists):
+        result = await extract_file_metadata(
+            ctx,
+            file_id=str(uuid.uuid4()),
+            original_path=stored_nfc_path,
+            file_type="m4a",
+            agent_id="test-agent",
+        )
+
+    assert result["status"] == "extracted"
+    api.put_metadata.assert_awaited_once()

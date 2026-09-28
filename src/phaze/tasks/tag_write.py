@@ -43,6 +43,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -53,12 +54,11 @@ from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotPayload, TagWri
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
 from phaze.services.containment import resolve_and_check_containment
 from phaze.services.hashing import compute_sha256
+from phaze.services.media_path_resolve import resolve_media_path
 from phaze.services.tag_write_disk import _extract_before_tags, write_and_verify_sync
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -146,7 +146,11 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         result = TagWriteResultPayload(status=TagWriteStatus.FAILED, before_tags={}, error_message=str(exc)[:_ERROR_MESSAGE_MAX])
         await api.patch_tag_write(payload.log_id, result)
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
-    file_path = str(resolved_path)
+    # phaze-9pg11: `file_path` (FileRecord.current_path) is stored NFC-normalized (the identity/
+    # dedup key); resolve it against the real on-disk entry -- an NFD-named file's stored path
+    # otherwise never matches its own directory entry. Applied AFTER containment so the fallback
+    # can only ever pick another entry in the SAME already-contained directory.
+    file_path = resolve_media_path(str(resolved_path))
 
     # phaze-anrw4: capture + durably report the pre-write snapshot in its own thread offload and
     # HTTP round trip, BEFORE the mutating write below -- see the module docstring. Best-effort:
@@ -172,7 +176,7 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # media mount risks a false DEAD classification and duplicate-work re-enqueue.
     # phaze-2zeu0: `_write_verify_and_rehash` appends the post-write sha256 to that same offload --
     # see its docstring for why the hash is taken on every terminal path rather than only COMPLETED.
-    status, discrepancies, error_message, before_tags, sha256_hash = await asyncio.to_thread(_write_verify_and_rehash, resolved_path, payload.tags)
+    status, discrepancies, error_message, before_tags, sha256_hash = await asyncio.to_thread(_write_verify_and_rehash, Path(file_path), payload.tags)
 
     result = TagWriteResultPayload(
         status=status,

@@ -8,7 +8,8 @@ receives (CLOUDPIPE-02 directional invariant).
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy. Enforced by
 tests/shared/core/test_task_split.py (D-25 import boundary). It carries ONLY stdlib (asyncio/subprocess/
-pathlib/tempfile), phaze.config (AgentSettings narrowing), phaze.schemas (PushFilePayload), and
+pathlib/tempfile), phaze.config (AgentSettings narrowing), phaze.schemas (PushFilePayload),
+phaze.services.media_path_resolve (stdlib-only NFC/NFD fallback, phaze-9pg11), and
 references PhazeAgentClient via ctx["api_client"] at runtime.
 
 Transport invariants (RESEARCH §"rsync-over-SSH from asyncio", D-06/D-07):
@@ -35,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_tasks import PushFilePayload
+from phaze.services.media_path_resolve import resolve_media_path
 
 
 if TYPE_CHECKING:
@@ -148,6 +150,7 @@ def _build_rsync_argv(
     *,
     key_path: str,
     known_hosts_path: str,
+    source_path: str | None = None,
 ) -> list[str]:
     """Build the shell-free rsync argv for one push transfer (pure -- unit-testable, no I/O).
 
@@ -164,6 +167,11 @@ def _build_rsync_argv(
     (``cfg.push_ssh_host`` + ``cfg.cloud_scratch_dir``) is retired here -- it is no longer read.
     ``dest_ssh_user=None`` falls back to ``cfg.push_ssh_user`` (preserves ≤1-compute behavior
     byte-identical).
+
+    ``source_path`` (phaze-9pg11): the rsync SOURCE operand. Defaults to ``payload.original_path``
+    (byte-identical to every pre-existing caller/test), but the real ``push_file`` call site passes
+    the ``resolve_media_path``-resolved on-disk path instead, so a stored NFC path that no longer
+    matches an NFD directory entry does not rsync a nonexistent source.
     """
     ssh_cmd = (
         f"ssh -i {key_path} -o StrictHostKeyChecking=yes "
@@ -185,7 +193,7 @@ def _build_rsync_argv(
         "-e",
         ssh_cmd,
         "--",  # argv terminator: no operand below can smuggle an rsync flag (#sec argv-injection)
-        payload.original_path,  # media-mount source (read by the fileserver)
+        source_path if source_path is not None else payload.original_path,  # media-mount source (read by the fileserver)
         remote_dest,
     ]
 
@@ -269,7 +277,13 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             known_hosts_path.write_text(cfg.push_known_hosts.get_secret_value())  # type: ignore[union-attr]
             known_hosts_path.chmod(0o600)
 
-            argv = _build_rsync_argv(cfg, payload, key_path=str(key_path), known_hosts_path=str(known_hosts_path))
+            # phaze-9pg11: `original_path` is stored NFC-normalized (the identity/dedup key);
+            # resolve it against the real on-disk entry ONCE here and reuse the result for both
+            # the size stat below and the rsync source operand -- an NFD-named file's stored path
+            # otherwise never matches its own directory entry (permanent rsync source-not-found).
+            source_path = await asyncio.to_thread(resolve_media_path, payload.original_path)
+
+            argv = _build_rsync_argv(cfg, payload, key_path=str(key_path), known_hosts_path=str(known_hosts_path), source_path=source_path)
 
             # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
             # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
@@ -287,7 +301,7 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             # timeout fires) bypasses the proc.kill()/proc.wait() reap entirely, leaking a running rsync
             # child out from under the finally that shreds its SSH secrets.
             try:
-                file_size = (await asyncio.to_thread(Path(payload.original_path).stat)).st_size
+                file_size = (await asyncio.to_thread(Path(source_path).stat)).st_size
             except OSError:
                 file_size = 0
             outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
