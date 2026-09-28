@@ -434,10 +434,81 @@ def test_duplicate_hook_names_are_refused(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.register_applier("a", lambda _old, _new: None)
     store.register_validator("v", lambda _config: None)
+    store.register_registry_reload_hook("r", lambda _source: asyncio.sleep(0))
     with pytest.raises(ValueError, match="already registered"):
         store.register_applier("a", lambda _old, _new: None)
     with pytest.raises(ValueError, match="already registered"):
         store.register_validator("v", lambda _config: None)
+    with pytest.raises(ValueError, match="already registered"):
+        store.register_registry_reload_hook("r", lambda _source: asyncio.sleep(0))
+
+
+def test_a_registry_reload_hook_runs_on_every_reload_even_when_nothing_in_runtimeconfig_changed(tmp_path: Path) -> None:
+    """The gap phaze-mvq8z.8 closes: backends.toml lives OUTSIDE RuntimeConfig, so a hook meant
+    to notice it must run unconditionally -- never gated behind RuntimeConfig's own digest, the
+    way ``register_applier``/``register_validator`` are (see ``test_a_source_only_change_swaps_
+    the_snapshot_but_calls_no_applier`` for the applier side of that same gate)."""
+    seen: list[str] = []
+
+    async def probe(source: str) -> None:
+        seen.append(source)
+
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        store.register_registry_reload_hook("probe", probe)
+
+        assert (await store.reload("sighup")).outcome == "unchanged"
+        assert (await store.reload("file")).outcome == "unchanged"
+        assert (await store.reload("api")).outcome == "unchanged"
+        assert seen == ["sighup", "file", "api"]
+
+    asyncio.run(scenario())
+
+
+def test_a_raising_registry_reload_hook_is_isolated_and_does_not_affect_the_result_or_other_hooks(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    async def broken(_source: str) -> None:
+        raise RuntimeError("backends.toml is unreadable")
+
+    async def steady(source: str) -> None:
+        seen.append(source)
+
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        store.register_registry_reload_hook("broken", broken)
+        store.register_registry_reload_hook("steady", steady)
+
+        result = await store.reload("sighup")
+        # The hook failure is invisible to the RuntimeConfig-level result -- it manages its own
+        # error handling and reporting (phaze.runtime_config_backends logs its own line).
+        assert result.outcome == "unchanged"
+        assert seen == ["sighup"]
+
+    asyncio.run(scenario())
+
+
+def test_registry_reload_hooks_run_serialized_with_the_rest_of_reload(tmp_path: Path) -> None:
+    """Hooks run inside the SAME lock as the rest of reload() -- two concurrent triggers still
+    invoke a hook once each, never interleaved, mirroring test_concurrent_reloads_are_serialized."""
+    calls: list[str] = []
+
+    async def hook(source: str) -> None:
+        calls.append(f"start:{source}")
+        await asyncio.sleep(0.01)
+        calls.append(f"end:{source}")
+
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        store.register_registry_reload_hook("probe", hook)
+        await asyncio.gather(store.reload("sighup"), store.reload("file"))
+        # Each hook invocation completes (start, end) before the next one starts.
+        assert calls in (
+            ["start:sighup", "end:sighup", "start:file", "end:file"],
+            ["start:file", "end:file", "start:sighup", "end:sighup"],
+        )
+
+    asyncio.run(scenario())
 
 
 def test_a_validator_can_veto_a_change_and_is_not_consulted_when_nothing_changed(tmp_path: Path) -> None:
