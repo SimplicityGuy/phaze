@@ -295,6 +295,16 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         description="True=JSON, False=console, None=auto (JSON when stdout is not a TTY).",
     )
 
+    # The hot-reload file layer (phaze.runtime_config) reads runtime.toml from this DIRECTORY.
+    # Mount the directory, never the file: a single-file bind mount pins the inode, so an
+    # atomic-rename edit never reaches the container, and a k8s subPath ConfigMap never updates
+    # (docs/design/0019-runtime-config-hot-reload.md §12). The path itself is restart-only.
+    runtime_config_dir: str = Field(
+        default="/etc/phaze/runtime",
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_DIR", "runtime_config_dir"),
+        description="Directory holding runtime.toml, the watched hot-reload layer for reloadable keys (ADR-0019 (runtime config hot-reload)).",
+    )
+
 
 # This class is implemented in a cohesive internal module but remains publicly identified by
 # the facade for pickling, framework introspection, and existing type/error representations.
