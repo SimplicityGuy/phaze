@@ -27,7 +27,7 @@ import contextlib
 import statistics
 import time
 
-import asyncpg  # type: ignore[import-untyped]
+import asyncpg
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import exists, func, select
 from sqlalchemy.dialects import postgresql

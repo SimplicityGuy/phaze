@@ -31,6 +31,7 @@ from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.admin_agents import build_agents_pane_context
+from phaze.routers.admin_runtime_config import build_runtime_config_pane_context
 from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT, build_dashboard_context
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
@@ -539,4 +540,7 @@ _STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession, str], Awaita
     "apply": lambda _request, session, _stage: _apply_stage_context(session),
     "audit": lambda request, session, _stage: _audit_stage_context(request, session),
     "agents": _agents_stage_context,
+    # phaze-mvq8z.6: shares build_runtime_config_pane_context with GET /admin/runtime-config/_table
+    # so the pane and the standalone fragment endpoint cannot independently drift (mirrors "agents").
+    "runtime-config": lambda _request, session, _stage: build_runtime_config_pane_context(session),
 }

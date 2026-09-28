@@ -1,11 +1,13 @@
 {
   "APP_ROUTE_TABLE": [
+    "DELETE /admin/runtime-config/{key}",
     "DELETE /pipeline/scans/{batch_id}",
     "GET /",
     "GET /admin/agents",
     "GET /admin/agents/_table",
     "GET /admin/agents/compute-lanes/{backend_id}",
     "GET /admin/agents/{agent_id}/_activity",
+    "GET /admin/runtime-config/_table",
     "GET /api/internal/agent/whoami",
     "GET /api/v1/duplicates",
     "GET /audit/",
@@ -52,6 +54,7 @@
     "PATCH /proposals/{proposal_id}/edit",
     "PATCH /proposals/{proposal_id}/reject",
     "PATCH /proposals/{proposal_id}/undo",
+    "POST /admin/runtime-config/{key}",
     "POST /api/internal/agent/analysis/{file_id}/failed",
     "POST /api/internal/agent/analysis/{file_id}/progress",
     "POST /api/internal/agent/exec-batches/{batch_id}/progress",
@@ -295,6 +298,19 @@
       ],
       "title": "Changes Review | Phaze"
     },
+    "GET /s/runtime-config": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Runtime config | Phaze"
+    },
     "GET /s/summary": {
       "headers": {
         "cache-control": "no-store",
@@ -399,6 +415,10 @@
     [
       "agents",
       "Agents and compute lanes"
+    ],
+    [
+      "runtime-config",
+      "Runtime config"
     ]
   ],
   "FRAGMENT_RENDERS": {
@@ -570,6 +590,18 @@
         "shell/_stage_fragment.html"
       ]
     },
+    "GET /s/runtime-config": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
     "GET /s/summary": {
       "headers": {
         "cache-control": "no-store",
@@ -729,6 +761,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -812,6 +849,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -938,6 +980,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1025,6 +1072,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1108,6 +1160,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1224,6 +1281,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1307,6 +1369,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1399,6 +1466,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1515,6 +1587,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1603,6 +1680,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1749,6 +1831,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1856,6 +1943,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1954,6 +2046,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2110,6 +2207,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2141,6 +2243,153 @@
         "form",
         "changes-bulk-form",
         "{\"hx-patch\": \"/proposals/bulk?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/runtime-config": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/runtime-config/_table\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/analysis_intra_op_threads\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/analysis_omp_threads\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/analysis_stall_timeout_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_route_threshold_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/lane_analyze_concurrency\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/lane_io_concurrency\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/lane_meta_concurrency\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/log_level\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/worker_max_jobs\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/worker_process_pool_size\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
         "input",
@@ -2262,6 +2511,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2374,6 +2628,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2482,6 +2741,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2911,6 +3175,36 @@
         "shell/_stage_fragment.html"
       ]
     },
+    "runtime-config|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "runtime-config|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "runtime-config|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "runtime-config|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "runtime-config|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
     "summary|": {
       "status": 200,
       "templates": [
@@ -3064,6 +3358,10 @@
       "<lambda>"
     ],
     [
+      "runtime-config",
+      "<lambda>"
+    ],
+    [
       "summary",
       "<lambda>"
     ],
@@ -3145,6 +3443,10 @@
     [
       "agents",
       "admin/agents.html"
+    ],
+    [
+      "runtime-config",
+      "admin/runtime_config.html"
     ]
   ]
 }

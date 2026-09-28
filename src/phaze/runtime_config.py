@@ -281,6 +281,24 @@ class RuntimeConfigStore:
     def set_override_provider(self, provider: OverrideProvider | None) -> None:
         self._override_provider = provider
 
+    async def preview(self, overrides: Mapping[str, Any]) -> RuntimeConfig:
+        """Validate a candidate override set OFF the loop, WITHOUT swapping (phaze-mvq8z.6).
+
+        ``overrides`` is the FULL override-layer map the caller intends to persist -- e.g. the
+        current DB overrides with one key added, changed, or removed -- merged over the ``file``
+        / ``env`` / ``default`` layers exactly the way :meth:`reload` merges the override layer,
+        so the verdict here is the SAME one a real ``reload("api")`` would reach for that exact
+        override set. Raises :class:`ReloadRejectedError` on an invalid candidate (unknown key,
+        restart-only key, wrong type, or oversubscribed sizing); never swaps the live snapshot.
+
+        The admin API (phaze-mvq8z.6) calls this BEFORE writing to the DB override table, so an
+        invalid override is rejected with nothing stored -- writing first and rolling back on
+        failure would leave a window where a bad value was live, or require a second write to
+        undo it.
+        """
+        candidate = await asyncio.to_thread(self._build, overrides)
+        return candidate.config
+
     # The pipeline
 
     async def reload(self, source: ReloadSource) -> ReloadResult:

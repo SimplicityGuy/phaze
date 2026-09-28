@@ -47,6 +47,7 @@ from phaze.config import export_llm_api_keys, get_settings
 from phaze.database import build_async_engine
 from phaze.logging_config import configure_logging
 from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
 from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
@@ -210,6 +211,15 @@ async def startup(ctx: dict[str, Any]) -> None:
     # `cfg = get_settings()` above already has for every other setting -- unlike the boot-reconcile
     # calls further down, which are deliberately resilient (D-05), an invalid reloadable setting is
     # an operator misconfiguration that should stop the process, not run degraded.
+    #
+    # phaze-mvq8z.6 deliberately does NOT install the DB-override provider here (mirrors
+    # src/phaze/main.py's identical note): this process does not run migrations itself and boots
+    # racily against the api's own migration run (phaze-sekvl, above), so the override table may
+    # not exist yet -- reading it this early would work (the reader is degrade-safe) but would log
+    # a spurious "relation does not exist" warning on every fresh-deploy boot race. This first
+    # reload validates the env/file layers only; the DB-override layer is wired in and folded into
+    # a SECOND reload once the boot-reconcile retries below have given the schema a realistic
+    # chance to be there.
     runtime_config_store = get_runtime_config_store()
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
@@ -311,10 +321,25 @@ async def startup(ctx: dict[str, Any]) -> None:
     await _probe_kueue_local_queues(control_cfg)
     await _push_bucket_lifecycle_ttls(control_cfg)
 
+    # phaze-mvq8z.6: wire the DB-override layer into this process's runtime-config store, then
+    # start ITS OWN LISTEN connection + fallback poll (ADR-0019 (runtime config hot-reload)
+    # §3/§14) -- a separate process from the api's, so it needs its own wiring, not a shared one.
+    # The provider is installed BEFORE this reload, and this is a SECOND "startup" reload -- see
+    # the comment above the first one for why it is not simply merged into it.
+    install_runtime_config_overrides(runtime_config_store, ctx["async_session"])
+    ctx["runtime_config_listener"] = await start_runtime_config_listener(store=runtime_config_store, database_url=cfg.database_url)
+    await runtime_config_store.reload("startup")
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (SAQ shutdown hook)."""
     logger.info("phaze.controller shutdown")
+
+    # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
+    # through goes away.
+    runtime_config_listener = ctx.get("runtime_config_listener")
+    if runtime_config_listener is not None:
+        await runtime_config_listener.stop()
 
     task_engine = ctx.get("task_engine")
     if task_engine is not None:

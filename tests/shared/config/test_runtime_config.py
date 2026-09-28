@@ -24,6 +24,7 @@ from phaze.runtime_config import (
     RELOADABLE_KEYS,
     RESTART_ONLY_KEYS,
     RUNTIME_TOML_NAME,
+    ReloadRejectedError,
     RuntimeConfig,
     RuntimeConfigStore,
     current,
@@ -557,3 +558,79 @@ def test_the_process_store_reads_runtime_toml_from_the_configured_directory(tmp_
         assert current().lane_io_concurrency == 11
     finally:
         get_settings.cache_clear()
+
+
+# preview() (phaze-mvq8z.6): validates a candidate override set off the loop WITHOUT swapping --
+# the admin API calls this BEFORE writing to the DB override table, so an invalid override is
+# rejected with nothing stored.
+
+
+def test_preview_accepts_a_valid_candidate_without_swapping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        before = store.current()
+
+        candidate = await store.preview({"worker_max_jobs": 9})
+
+        assert candidate.worker_max_jobs == 9
+        # No swap: the live snapshot is untouched, and its digest is unchanged.
+        assert store.current() is before
+        assert store.current().worker_max_jobs != 9
+
+    asyncio.run(scenario())
+
+
+def test_preview_rejects_an_unknown_key(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        with pytest.raises(ReloadRejectedError, match="unknown key"):
+            await store.preview({"not_a_real_key": 1})
+
+    asyncio.run(scenario())
+
+
+def test_preview_rejects_a_restart_only_key(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        [restart_only_key] = list(RESTART_ONLY_KEYS)[:1]
+        with pytest.raises(ReloadRejectedError, match="requires restart"):
+            await store.preview({restart_only_key: "anything"})
+
+    asyncio.run(scenario())
+
+
+def test_preview_rejects_wrong_type_under_strict_validation(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        with pytest.raises(ReloadRejectedError):
+            await store.preview({"worker_max_jobs": "4"})  # a string, not an int -- strict=True
+
+    asyncio.run(scenario())
+
+
+def test_preview_rejects_sizing_that_oversubscribes_cores(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path, cores=2)
+        with pytest.raises(ReloadRejectedError, match="oversubscribes"):
+            # 100 concurrent children x 10 threads each on a 2-core box.
+            await store.preview({"lane_analyze_concurrency": 100, "worker_max_jobs": 100, "worker_process_pool_size": 100})
+
+    asyncio.run(scenario())
+
+
+def test_preview_agrees_with_a_real_reload_for_the_same_candidate(tmp_path: Path) -> None:
+    """preview()'s verdict matches what reload("api") actually does for the identical override set."""
+
+    async def scenario() -> None:
+        overrides = _Overrides()
+        store = _store(tmp_path, overrides=overrides)
+
+        previewed = await store.preview({"worker_max_jobs": 11})
+
+        overrides.values = {"worker_max_jobs": 11}
+        result = await store.reload("api")
+
+        assert result.outcome == "applied"
+        assert store.current().worker_max_jobs == previewed.worker_max_jobs == 11
+
+    asyncio.run(scenario())
