@@ -123,7 +123,11 @@ dependencies = [
     "redis>=8.1.0,<9.0",
 
     # Phase 36: postgres extra pulls psycopg[pool]>=3.3.4 for the PostgresQueue broker.
-    "saq[postgres]>=0.26.4",
+    # phaze-mvq8z.10: capped to the 0.26 minor line. phaze.tasks._shared.live_worker hooks SAQ's
+    # PRIVATE worker/queue internals (docs/design/0019-runtime-config-hot-reload.md §8), which a
+    # release may change without calling it breaking; tests/shared/tasks/test_saq_worker_contract.py
+    # fails on any version it was not verified against, so a bump is a compatibility review.
+    "saq[postgres]>=0.26.4,<0.27.0",
     "sqlalchemy>=2.0.54",
     "sse-starlette>=3.4.11",
     "structlog>=26.1.0",

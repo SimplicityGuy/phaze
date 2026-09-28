@@ -54,6 +54,7 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
+from phaze.tasks._shared.live_worker import install_live_concurrency
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.active_reaper import reap_stranded_active_jobs
@@ -225,6 +226,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
     ctx["runtime_config_watcher"].start()
+    # phaze-mvq8z.10: the control worker's SAQ concurrency (`worker_max_jobs`) becomes live -- a
+    # reload grows or shrinks its job loops (docs/design/0019-runtime-config-hot-reload.md §8).
+    install_live_concurrency(ctx, runtime_config_store, lambda config: config.worker_max_jobs)
 
     # Bug A (June 2026): litellm reads provider creds from os.environ, never from
     # ControlSettings. The LLM keys arrive via the <VAR>_FILE secret convention as
