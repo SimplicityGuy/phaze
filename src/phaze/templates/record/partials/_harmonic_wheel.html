@@ -25,7 +25,10 @@
     <svg data-harmonic-wheel
          viewBox="0 0 {{ harmonic_journey.canvas }} {{ harmonic_journey.canvas }}"
          class="mx-auto mt-3 block h-auto w-full max-w-64"
-         role="img"
+         {# phaze-n0h86: a `group`, not an `img`, once there are nodes -- `img` makes its children
+            presentational, and the nodes are focusable controls that drive the timeline. With no
+            journey there is nothing to focus, and the wheel stays one labelled image. #}
+         role="{{ 'group' if harmonic_journey.has_journey else 'img' }}"
          aria-label="{% if harmonic_journey.has_journey %}Camelot wheel. {{ harmonic_journey.caption }}{% else %}Camelot wheel with no key path: this file has no analyzed key data.{% endif %}">
         {{ marks.harmonic_wheel_marks(harmonic_journey, marks.SCREEN, interactive=true) }}
         {% if harmonic_journey.has_journey %}
