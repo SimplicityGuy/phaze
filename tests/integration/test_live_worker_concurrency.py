@@ -22,16 +22,19 @@ to see whether another job starts. The acceptance items, one test each:
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import contextlib
+import itertools
 import os
 import signal
+import time
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
 import pytest_asyncio
-from saq import Worker
-from saq.queue.postgres import PostgresQueue
+from saq import Status, Worker
+from saq.queue.postgres import DEQUEUE, PostgresQueue
 
 from phaze.config import ControlSettings
 from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
@@ -318,3 +321,93 @@ async def test_sigterm_after_a_resize_with_no_grace_requeues_running_jobs(pg_que
     assert await _statuses(pg_queue) == {"queued": 3}
     assert worker.live_loops == 0
     assert worker.tasks == set()
+
+
+async def test_no_job_is_lost_or_run_twice_across_repeated_resizes(pg_queue: PostgresQueue) -> None:
+    """The idle trim cancels dequeue waiters; a bad cancel strands a claimed row or double-runs one.
+
+    Three rounds. In each, a batch drains while EVERY finished job resizes the worker to the next
+    target in a cycle that grows and shrinks (so resizes land mid-drain, with loops busy, idle and
+    freshly claimed), then -- with the queue empty and every loop parked in dequeue -- the worker is
+    grown, shrunk to one and grown again. Every job must run exactly once and reach ``complete``;
+    no row may be left ``active`` or ``queued``.
+    """
+    runs: Counter[str] = Counter()
+    settled: list[str] = []
+    targets = itertools.cycle((1, 5, 2, 7, 1, 3, 6, 2))
+    worker: LiveConcurrencyWorker
+
+    async def quick(_ctx: dict[str, Any], *, name: str) -> str:
+        runs[name] += 1
+        for _ in range(3):  # yield, so other loops' claims and resizes interleave with this one
+            await asyncio.sleep(0)
+        return name
+
+    async def after_process(ctx: dict[str, Any]) -> None:
+        settled.append(ctx["job"].kwargs["name"])
+        worker.set_concurrency(next(targets))
+
+    worker = LiveConcurrencyWorker(pg_queue, functions=[("quick", quick)], concurrency=4, after_process=after_process, timers=_FAST_UPKEEP)
+    names: list[str] = []
+    task = asyncio.create_task(worker.start())
+    try:
+        for round_ in range(3):
+            batch = [f"r{round_}-{i:02d}" for i in range(15)]
+            names += batch
+            for name in batch:
+                await pg_queue.enqueue("quick", key=f"{pg_queue.name}:{name}", name=name, timeout=0)
+            await wait_until(lambda batch=batch: set(batch) <= set(settled), timeout=SETTLE, description=f"round {round_} drains")
+
+            # The queue is empty: every loop is an idle dequeue waiter.
+            worker.set_concurrency(6)
+            await wait_until(lambda: len(worker._dequeuing) == 6, timeout=SETTLE, description="six idle loops")
+            worker.set_concurrency(1)
+            await wait_until(lambda: worker.live_loops == 1 and len(worker._dequeuing) == 1, timeout=SETTLE, description="trimmed to one")
+            worker.set_concurrency(3)
+            await wait_until(lambda: len(worker._dequeuing) == 3, timeout=SETTLE, description="three idle loops")
+    finally:
+        worker.event.set()
+        await asyncio.wait_for(task, 2 * SETTLE)
+
+    assert runs == Counter(dict.fromkeys(names, 1))
+    assert sorted(settled) == sorted(names)
+    assert await _statuses(pg_queue) == {"complete": len(names)}
+
+
+async def test_the_trim_never_cancels_the_waiter_a_buffered_claim_belongs_to(pg_queue: PostgresQueue) -> None:
+    """The ``_job_queue.empty()`` guard: a row claimed into the buffer must reach a loop, not be stranded.
+
+    ``PostgresQueue._dequeue`` marks rows ``active`` in the database, puts them in the in-memory
+    buffer and then NOTIFYs ``DEQUEUE`` so the listening waiter takes them. That is reproduced here
+    by hand, at the one instant it matters: a shrink's trim is already scheduled when the claimed
+    row lands. The two busy loops cover the new target, so nothing would relaunch a cancelled
+    waiter -- a trim that cancelled it anyway would leave the row ``active`` with no loop coming for
+    it, which is the phaze-o0n6 stranded row. With the guard, the waiter takes it; production's
+    zero-grace shutdown then retries all three, and nothing is left ``active``.
+    """
+    jobs = _GatedJobs()
+    worker = _worker(pg_queue, jobs, concurrency=3, timers=_FAST_UPKEEP)
+    task = asyncio.create_task(worker.start())
+    try:
+        await _enqueue(pg_queue, "a", "b")
+        await wait_until(lambda: len(jobs.running) == 2 and len(worker._dequeuing) == 1, timeout=SETTLE, description="two busy, one idle")
+
+        # A row claimed the way _dequeue claims it: ineligible to be claimed again (future
+        # `scheduled`), marked active in the database, then handed to the buffer.
+        await pg_queue.enqueue("gated", key=f"{pg_queue.name}:c", name="c", timeout=0, scheduled=int(time.time()) + 3600)
+        claimed = await pg_queue.job(f"{pg_queue.name}:c")
+        assert claimed is not None
+        await claimed.update(status=Status.ACTIVE)
+
+        worker.set_concurrency(1)  # schedules the trim ...
+        pg_queue._job_queue.put_nowait(claimed)  # ... and the claim lands before it runs
+        await pg_queue._notify(DEQUEUE)
+
+        await wait_until(lambda: "c" in jobs.running, timeout=SETTLE, description="the buffered claim reaches a loop")
+        assert await _statuses(pg_queue) == {"active": 3}
+    finally:
+        worker.event.set()
+        await asyncio.wait_for(task, 2 * SETTLE)
+        jobs.release_all()
+
+    assert await _statuses(pg_queue) == {"queued": 3}

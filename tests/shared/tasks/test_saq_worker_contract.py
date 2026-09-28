@@ -20,6 +20,7 @@ integration tests, and only then add the version to ``VERIFIED_SAQ_VERSIONS``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import re
 from typing import Any
@@ -28,6 +29,8 @@ import saq
 from saq import Worker
 from saq.queue.postgres import PostgresQueue
 import saq.worker
+
+from phaze.tasks._shared.live_worker import LiveConcurrencyWorker
 
 
 #: SAQ versions the subclass was verified against, on a real broker. pyproject.toml pins the minor
@@ -97,9 +100,30 @@ def test_the_saq_cli_constructs_a_plain_worker_with_no_class_hook() -> None:
     assert "worker = Worker(**settings_obj)" in _source(saq.worker.start)
 
 
+async def test_no_loop_exists_while_a_startup_hook_runs() -> None:
+    """Observed, not just read: the adopting startup hook sees the worker with no job loop yet.
+
+    If SAQ ever spawned loops before its startup hooks, those loops would run under the plain
+    class, uncounted by the live target, and ``adopt`` would refuse the worker outright.
+    """
+    seen: list[list[str]] = []
+
+    class _Stop(Exception):
+        pass
+
+    async def startup(ctx: dict[str, Any]) -> None:
+        seen.append([task.get_name() for task in ctx["worker"].tasks])
+        raise _Stop
+
+    worker: Worker[Any] = Worker(_queue(), functions=[], startup=startup)
+    with contextlib.suppress(_Stop):
+        await worker.start()
+    assert seen == [[]]
+
+
 def test_a_plain_worker_can_change_class_in_place() -> None:
-    """``LiveConcurrencyWorker.adopt`` assigns ``__class__``; SAQ must keep Worker slot-free for that."""
-    assert "__slots__" not in vars(Worker)
+    """``LiveConcurrencyWorker.adopt`` assigns ``__class__``; nothing in the Worker MRO may use slots."""
+    assert not any("__slots__" in vars(cls) for cls in Worker.__mro__ if cls is not object)
     worker: Worker[Any] = Worker(_queue(), functions=[])
 
     class _Sub(Worker[Any]):
@@ -107,6 +131,22 @@ def test_a_plain_worker_can_change_class_in_place() -> None:
 
     worker.__class__ = _Sub
     assert isinstance(worker, _Sub)
+
+
+def test_an_adopted_worker_carries_exactly_the_state_a_constructed_one_does() -> None:
+    """Adoption skips the subclass ``__init__``; it must not skip any state that ``__init__`` sets.
+
+    If ``LiveConcurrencyWorker.__init__`` ever grows state beyond ``_init_live_concurrency`` -- or
+    SAQ's own ``__init__`` starts depending on the class it runs under -- the two instance
+    dictionaries diverge and this fails.
+    """
+    constructed = LiveConcurrencyWorker(_queue(), functions=[])
+    adopted = LiveConcurrencyWorker.adopt(Worker(_queue(), functions=[]))
+    assert type(adopted) is type(constructed)
+    assert set(vars(adopted)) == set(vars(constructed))
+    assert {name: type(value) for name, value in vars(adopted).items() if name not in ("id",)} == {
+        name: type(value) for name, value in vars(constructed).items() if name not in ("id",)
+    }
 
 
 def test_process_dequeues_through_self_queue() -> None:

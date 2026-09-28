@@ -26,14 +26,21 @@ again. :class:`LiveConcurrencyWorker` treats ``concurrency`` as a live TARGET in
   upkeep to claim it (``PostgresQueue.schedule`` -> ``_dequeue``, ``saq/queue/postgres.py:353-355``)
   -- measured: with that upkeep pushed out, a job enqueued after cancelling only the listener was
   never picked up. The retire rule then relaunches exactly as many loops as the target needs, and
-  a relaunched loop takes over the listen.
+  a relaunched loop takes over the listen. Implementer decision (phaze-mvq8z.10), accepted by the
+  molecule's dispatcher: without it every surplus loop takes one more job as soon as work arrives,
+  an over-target burst. It is the riskiest mechanism here -- a cancel inside a claim would strand
+  a row ``active`` -- so ``tests/integration/test_live_worker_concurrency.py`` holds it to "every
+  job reaches a terminal status exactly once" across repeated resizes, and pins the empty-buffer
+  guard with a test that goes red when the guard is removed.
 
 How the subclass gets in: SAQ's CLI (``saq <module>.settings``, which every compose file and the
 arm64 image run) constructs a plain ``saq.Worker(**settings)`` and has no worker-class hook
 (``saq/worker.py:541``). :func:`install_live_concurrency` therefore ADOPTS that instance from the
 SAQ startup hook -- ``ctx["worker"]`` is the worker itself (``saq/worker.py:132``), and startup runs
 before the loops are spawned (``saq/worker.py:194-201``) -- rather than changing every entry point
-and every operator's ``PHAZE_CLOUD_AGENT_CMD`` override. Implementer decision (phaze-mvq8z.10).
+and every operator's ``PHAZE_CLOUD_AGENT_CMD`` override. Implementer decision (phaze-mvq8z.10),
+accepted by the molecule's dispatcher; it logs once at startup, so a worker that was NOT adopted
+(and so cannot be resized) shows in the logs rather than failing silent.
 
 Every SAQ internal named here is private and unversioned. SAQ is pinned to its minor line in
 ``pyproject.toml`` and ``tests/shared/tasks/test_saq_worker_contract.py`` fails on any installed
@@ -242,10 +249,16 @@ def install_live_concurrency(
     if not isinstance(worker, Worker):
         logger.warning("phaze.saq_worker no SAQ worker in ctx; concurrency is fixed for this process")
         return None
+    constructed_with = worker.concurrency
     live = LiveConcurrencyWorker.adopt(worker)
     live.set_concurrency(resolve(store.current()))
     store.register_applier(APPLIER_NAME, lambda _old, new: live.set_concurrency(resolve(new)))
-    logger.info("phaze.saq_worker live concurrency installed", concurrency=live.concurrency)
+    logger.info(
+        "phaze.saq_worker adopted; concurrency is live",
+        queue=repr(live.queue),
+        target=live.concurrency,
+        constructed_with=constructed_with,
+    )
     return live
 
 
