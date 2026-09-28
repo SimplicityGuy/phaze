@@ -49,6 +49,7 @@
     "queue_url": "postgresql://phaze:phaze@app.characterization.invalid:5432/phaze",
     "redis_password": null,
     "redis_url": "redis://redis:6379/0",
+    "runtime_config_dir": "/etc/phaze/runtime",
     "scan_chunk_size": 500,
     "scan_path": "/data/music",
     "scan_roots": [
@@ -264,6 +265,10 @@
       "PHAZE_REDIS_URL",
       "REDIS_URL",
       "redis_url"
+    ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
     ],
     "scan_chunk_size": [
       "PHAZE_SCAN_CHUNK_SIZE",
@@ -511,6 +516,10 @@
       "REDIS_URL",
       "redis_url"
     ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
+    ],
     "scan_path": [
       "scan_path"
     ],
@@ -653,6 +662,7 @@
     "queue_url": "postgresql://phaze:phaze@postgres:5432/phaze",
     "redis_password": null,
     "redis_url": "redis://redis:6379/0",
+    "runtime_config_dir": "/etc/phaze/runtime",
     "s3_client_timeout_sec": 30,
     "s3_lifecycle_ttl_days": 2,
     "s3_multipart_part_size_bytes": 67108864,
@@ -888,6 +898,10 @@
       "PHAZE_REDIS_URL",
       "REDIS_URL",
       "redis_url"
+    ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
     ],
     "s3_client_timeout_sec": [
       "PHAZE_S3_CLIENT_TIMEOUT_SEC",
@@ -1239,6 +1253,8 @@
     "PHAZE_REDIS_URL",
     "PHAZE_REDIS_URL_FILE",
     "PHAZE_ROLE",
+    "PHAZE_RUNTIME_CONFIG_DIR",
+    "PHAZE_RUNTIME_CONFIG_DIR_FILE",
     "PHAZE_S3_CLIENT_TIMEOUT_SEC",
     "PHAZE_S3_CLIENT_TIMEOUT_SEC_FILE",
     "PHAZE_S3_LIFECYCLE_TTL_DAYS",
@@ -1297,6 +1313,8 @@
     "REDIS_PASSWORD_FILE",
     "REDIS_URL",
     "REDIS_URL_FILE",
+    "RUNTIME_CONFIG_DIR",
+    "RUNTIME_CONFIG_DIR_FILE",
     "S3_CLIENT_TIMEOUT_SEC",
     "S3_CLIENT_TIMEOUT_SEC_FILE",
     "S3_LIFECYCLE_TTL_DAYS",

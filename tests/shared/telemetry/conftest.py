@@ -242,6 +242,21 @@ class TelemetrySink:
                         found.extend(metric.data.data_points)
         return found
 
+    def collect(self) -> dict[str, list[Any]]:
+        """Every data point, by metric name, from ONE collection.
+
+        Use this when a test reads a synchronous GAUGE alongside anything else: the SDK's
+        last-value aggregation reports a gauge only if it was set since the PREVIOUS collection,
+        so a second ``points()`` call returns nothing for a gauge the first call already read.
+        """
+        data = self._reader.get_metrics_data()
+        found: dict[str, list[Any]] = {}
+        for resource_metric in getattr(data, "resource_metrics", ()) or ():
+            for scope_metric in resource_metric.scope_metrics:
+                for metric in scope_metric.metrics:
+                    found.setdefault(metric.name, []).extend(metric.data.data_points)
+        return found
+
     def metric_names(self) -> set[str]:
         data = self._reader.get_metrics_data()
         return {

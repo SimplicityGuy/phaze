@@ -374,6 +374,27 @@ BACKLOG_QUEUE = LabelSpec(
 )
 
 
+RELOAD_SOURCE = LabelSpec(
+    name="source",
+    cardinality=5,
+    description=(
+        "What triggered a runtime-config reload (docs/design/0019-runtime-config-hot-reload.md §4): the initial "
+        "fold at process start, a SIGHUP, the watched runtime.toml directory, an admin-API override write, or the "
+        "agent's heartbeat-cadence poll."
+    ),
+    values=("startup", "sighup", "file", "api", "poll"),
+)
+RELOAD_OUTCOME = LabelSpec(
+    name="outcome",
+    cardinality=4,
+    description=(
+        "How a runtime-config reload ended: swapped with every applier current, a no-op because nothing changed, "
+        "rejected with the last-good snapshot kept, or swapped with at least one applier failing."
+    ),
+    values=("applied", "unchanged", "rejected", "partial"),
+)
+
+
 CATALOGUE: tuple[MetricSpec, ...] = (
     # Analysis
     # 94.69% of wall clock on the 4,761.835 s file phaze-zaf2l measured; the share is
@@ -602,6 +623,31 @@ CATALOGUE: tuple[MetricSpec, ...] = (
             "fault condition in the first place."
         ),
         labels=(BACKLOG_QUEUE,),
+    ),
+    # Runtime config (phaze-mvq8z.4). Named after Prometheus's own
+    # `prometheus_config_last_reload_successful` / `..._success_timestamp_seconds` pair, which is
+    # the convention an operator already alerts on.
+    MetricSpec(
+        name="phaze.config.reloads",
+        kind="counter",
+        unit="{reloads}",
+        description="Runtime-config reload attempts, by trigger and outcome. Every attempt counts, including a no-op.",
+        labels=(RELOAD_SOURCE, RELOAD_OUTCOME),
+    ),
+    MetricSpec(
+        name="phaze.config.last_reload.successful",
+        kind="gauge",
+        unit="{boolean}",
+        description=(
+            "1 when this process's most recent runtime-config reload succeeded (applied or unchanged), 0 when it was "
+            "rejected or an applier failed. Absent until the first reload -- the process is then on its env/default snapshot."
+        ),
+    ),
+    MetricSpec(
+        name="phaze.config.last_reload.success_timestamp",
+        kind="gauge",
+        unit="s",
+        description="Unix time of this process's most recent SUCCESSFUL runtime-config reload. Not advanced by a rejected one.",
     ),
 )
 
