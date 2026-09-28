@@ -30,6 +30,9 @@ def test_all_tables_defined() -> None:
         # taking the file's retry budget with it -- which let one file start an unbounded number of
         # fresh cloud attempt chains.
         "cloud_budget",
+        # phaze-j0ixx (migration 071): the per-backend control-plane-unreachable breaker, keyed by the
+        # registry backend id -- tripped by reconcile, read by the drain, closed by the presign endpoint.
+        "backend_breaker",
         "route_control",  # Phase 71 (71-02, BEUI-02): force-local control row (migration 031)
         "dedup_resolution",  # Phase 77 (77-02, D-07): dedup marker sidecar (migration 032)
         "dedup_review_plan",  # Opaque reviewed decision required before a dedup resolution commit.

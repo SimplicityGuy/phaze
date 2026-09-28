@@ -31,6 +31,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `pipeline_stage_control` | Durable per-stage pause/priority operator intent (one row per agent pipeline stage) |
 | `scheduling_ledger`   | Durable "this stage was scheduled for this item" record (recovery source of truth)  |
 | `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
+| `backend_breaker`     | Per-backend control-plane-unreachable circuit breaker (`backend_id` PK; `tripped_at` NULL = closed). Tripped by reconcile, read by the drain to hold the backend, closed by the presign endpoint (phaze-j0ixx) |
 | `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
 | `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
@@ -246,10 +247,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-070)
+### Post-baseline chain (040-071)
 
-`alembic/versions/` holds **32** files: the `039` baseline plus a linear chain to the current
-head, **`070`**.
+`alembic/versions/` holds **33** files: the `039` baseline plus a linear chain to the current
+head, **`071`**.
 
 | Rev | Change |
 |-----|--------|
@@ -283,7 +284,8 @@ head, **`070`**.
 | `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) |
 | `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op (phaze-3agnm) |
 | `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted (phaze-1xngw) |
-| `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) — **head** |
+| `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) |
+| `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

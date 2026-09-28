@@ -405,6 +405,11 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "active",
         "processed_24h",
         "processed_lifetime",
+        # phaze-j0ixx: the backend's control-plane-unreachable breaker, on every lane.
+        "breaker_held",
+        "breaker_reason",
+        "breaker_tripped_at",
+        "breaker_next_probe_at",
     }
     # phaze-lwz8n: the LOCAL lane additionally carries its honest queue-health split; cloud lanes do not.
     local_health_keys = {"claimed_unrun", "stranded", "claimed_overdue", "heartbeat_lost", "stuck"}
@@ -429,6 +434,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "active": None,
         "processed_24h": 0,
         "processed_lifetime": 0,
+        "breaker_held": False,
+        "breaker_reason": None,
+        "breaker_tripped_at": None,
+        "breaker_next_probe_at": None,
     }
     # k8s is kueue-kind, so its SUBMITTED row is post-submit ("analyzing") -> working=1, queued=0.
     assert by_id["k8s"] == {
@@ -445,6 +454,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "active": 0,
         "processed_24h": 0,
         "processed_lifetime": 0,
+        "breaker_held": False,
+        "breaker_reason": None,
+        "breaker_tripped_at": None,
+        "breaker_next_probe_at": None,
     }
     assert by_id["local"] == {
         "id": "local",
@@ -460,6 +473,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "active": None,
         "processed_24h": 0,
         "processed_lifetime": 0,
+        "breaker_held": False,
+        "breaker_reason": None,
+        "breaker_tripped_at": None,
+        "breaker_next_probe_at": None,
         # phaze-lwz8n: no task_router -> the local queue split is unknown, never a fabricated 0.
         "claimed_unrun": None,
         "stranded": None,

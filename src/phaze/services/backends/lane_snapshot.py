@@ -28,6 +28,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
+from phaze.services.backend_breaker import PROBE_INTERVAL_SECONDS, OpenBreaker, load_open_breakers
 from phaze.services.backends.compute_agent import ComputeAgentBackend
 from phaze.services.backends.kueue import KueueBackend
 from phaze.services.backends.lane_detail import read_local_analyze_queue
@@ -229,7 +230,11 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
     -- and additionally carries ``claimed_unrun`` / ``stranded`` / ``claimed_overdue`` /
     ``heartbeat_lost`` / ``stuck``. ``stuck`` is the only local-lane alarm; its ``in_flight`` and ``cap``
     are no longer compared at all (the cap is derived from the control host, not the agent that runs
-    the work). Cloud lanes carry none of these keys. Any top-level exception degrades the WHOLE
+    the work). Cloud lanes carry none of these keys.
+
+    phaze-j0ixx: every lane also carries ``breaker_held`` / ``breaker_reason`` / ``breaker_tripped_at`` /
+    ``breaker_next_probe_at`` -- the backend's control-plane-unreachable breaker, which the lane card
+    renders as a HELD alarm. Any top-level exception degrades the WHOLE
     snapshot to ``[]`` with a guarded rollback so it can NEVER raise into the hot 5s ``/pipeline/stats``
     poll (SP-1, T-71-03) -- unchanged from before this bead.
     """
@@ -243,6 +248,8 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
         # ``available=False`` (via ``_probe_one``) instead of poisoning the subsequent
         # ``in_flight_count`` reads and collapsing the WHOLE grid to the ``[]`` degrade panel.
         await session.rollback()
+        # phaze-j0ixx: one read of the open control-plane-unreachable breakers (degrade-safe: {} on error).
+        breakers = await load_open_breakers(session)
         lanes: list[dict[str, Any]] = []
         for backend in backends:
             kind = _kind_of(backend)
@@ -281,6 +288,7 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
                     "processed_lifetime": processed_lifetime,
                     **local_health,
                     **admission.get(backend.id, _ZERO_ADMISSION),
+                    **_breaker_fields(breakers.get(backend.id)),
                 }
             )
         lanes.sort(key=lambda lane: (lane["rank"], lane["id"]))
@@ -291,6 +299,23 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
         await _rollback_and_log(session, "backend_lane_snapshot_rollback_failed")
         return []
     return lanes
+
+
+def _breaker_fields(breaker: OpenBreaker | None) -> dict[str, Any]:
+    """The lane card's view of the backend's control-plane-unreachable breaker (phaze-j0ixx).
+
+    ``breaker_held`` is the alarm; the reason and the two timestamps are what the card tells the operator
+    about it. Present on every lane (False / None when closed) so the template never has to test for the
+    keys' existence.
+    """
+    if breaker is None:
+        return {"breaker_held": False, "breaker_reason": None, "breaker_tripped_at": None, "breaker_next_probe_at": None}
+    return {
+        "breaker_held": True,
+        "breaker_reason": breaker.trip_reason,
+        "breaker_tripped_at": breaker.tripped_at,
+        "breaker_next_probe_at": breaker.next_probe_at,
+    }
 
 
 def derive_localqueue_unreachable(lanes: list[dict[str, Any]]) -> bool:
@@ -359,6 +384,14 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
         available_lanes = [lane for lane in lanes if lane["kind"] != "local" and lane["available"]]
         if not available_lanes:
             return "held — no cloud backend reachable"
+        # phaze-j0ixx: the drain gives a breaker-held lane no slots (bar a probe), so its free slots are
+        # not capacity the next tick would use -- the same reason local is excluded above.
+        breakers = await load_open_breakers(session)
+        open_lanes = [lane for lane in available_lanes if lane["id"] not in breakers]
+        if not open_lanes:
+            held = ", ".join(sorted(lane["id"] for lane in available_lanes))
+            return f"held — control plane unreachable from {held} pods (breaker open, probing every {PROBE_INTERVAL_SECONDS // 60} min)"
+        available_lanes = open_lanes
 
         total_cap = sum(lane["cap"] for lane in available_lanes)
         total_in_flight = sum(lane["in_flight"] for lane in available_lanes)

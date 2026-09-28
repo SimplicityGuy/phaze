@@ -8,7 +8,9 @@ Flow: presign -> download -> sha256-verify -> extract audio -> windowed analyze 
 
 Exit-code contract (D-01):
     0   success
-    10  presign request OR download failure (fail-fast, no retry — D-02)
+    10  presign REJECTED by a reachable control plane (4xx, 5xx, malformed response) OR the
+        object GET / download failed (fail-fast, no retry — D-02). Charged against the file's
+        cloud ``attempts`` like any other failure.
     11  sha256(downloaded) != expected_sha256 (corrupt/partial transfer)
     12  windowed analysis raised / OOM (fail-fast — D-02), OR video-audio extraction
         failed (phaze-3ea41: no audio stream / corrupt container / missing ffmpeg —
@@ -18,6 +20,12 @@ Exit-code contract (D-01):
         recovered by the control plane's pod-state wedge detection, not by killing
         the run.
     13  callback PUT failed after the shared bounded retry (D-02)
+    14  control plane UNREACHABLE: the presign request could not open a connection at all
+        (DNS failure, connection refused, TLS/connect error or connect timeout, after the
+        client's bounded retry). An environment fault, not the file's: reconcile never charges
+        ``attempts`` for it and feeds the per-backend breaker instead (phaze-j0ixx; spike
+        phaze-79mu7, where 302 healthy files spent their budget as exit 10 during two
+        infrastructure blips). A request that DID reach the control plane stays 10.
     20  startup/precondition failure: wrong PHAZE_ROLE, missing PHAZE_JOB_FILE_ID,
         or a malformed file_id UUID. This is a PERMANENT misconfiguration, not a
         transient download failure — kept distinct from 10 so a controller never
@@ -62,6 +70,7 @@ from phaze.schemas.agent_analysis import (
     PresignDownloadMetadata,
     StyleScore,
 )
+from phaze.services.agent_client import AgentApiServerError
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
@@ -80,6 +89,10 @@ EXIT_DOWNLOAD = 10
 EXIT_INTEGRITY = 11
 EXIT_ANALYSIS = 12
 EXIT_CALLBACK = 13
+# phaze-j0ixx: the presign request never reached the control plane. Kept distinct from EXIT_DOWNLOAD
+# (10) so reconcile can hold the row without charging the file -- ``services/backend_breaker.py`` restates
+# this value as ``UNREACHABLE_EXIT_CODE`` and a test pins the two equal.
+EXIT_CONTROL_PLANE_UNREACHABLE = 14
 # Startup/precondition failures (wrong role, missing/malformed file_id) are a
 # PERMANENT misconfiguration, not a transient download failure. Kept distinct
 # from EXIT_DOWNLOAD (10) so a Kueue/Job controller does not treat them as
@@ -444,20 +457,42 @@ def _resolve_file_id_step() -> tuple[uuid.UUID, str]:
     return file_id, str(file_id)
 
 
-async def _presign_step(client: Any, file_id: uuid.UUID, fid: str) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
-    """(1) presign — fail-fast, no extra retry loop (D-02). Exits ``EXIT_DOWNLOAD`` (10) on failure.
+def _control_plane_unreachable(exc: BaseException) -> bool:
+    """Whether a presign failure means the request never reached the control plane (phaze-j0ixx).
 
-    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    ``PhazeAgentClient._request`` wraps every transport failure, after its bounded retry, in
+    ``AgentApiServerError`` chained ``from`` the httpx exception, so the cause is what says where the
+    request died. Only the CONNECT phase counts: ``httpx.ConnectError`` (DNS resolution failure,
+    connection refused, a TLS handshake failure) and ``httpx.ConnectTimeout``. A read timeout or a
+    dropped response means the request reached the server, whose handler may have stalled on THIS file,
+    and any HTTP status means the control plane answered -- both stay ``EXIT_DOWNLOAD``, because only a
+    failure that cannot depend on which file the pod was given may skip the file's budget. A bare httpx
+    connect error (no client wrapper) is classified the same way.
+    """
+    cause = exc.__cause__ if isinstance(exc, AgentApiServerError) else exc
+    return isinstance(cause, httpx.ConnectError | httpx.ConnectTimeout)
+
+
+async def _presign_step(client: Any, file_id: uuid.UUID, fid: str) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
+    """(1) presign — fail-fast, no extra retry loop (D-02).
+
+    Exits ``EXIT_CONTROL_PLANE_UNREACHABLE`` (14) when the request never reached the control plane
+    (:func:`_control_plane_unreachable`), else ``EXIT_DOWNLOAD`` (10). Extracted from :func:`run`
+    (phaze-bk9el.12).
     """
     t_presign = time.monotonic()
     try:
         # phaze-sfbx.1 widened this to a 4-tuple; phaze-sfbx.3 now CONSUMES the
         # display-identity block for the console banner below.
         url, expected_sha256, audio_ext, presign_metadata = await client.request_download_url(file_id)
-    except Exception:
+    except Exception as exc:
         # broad by design: any presign failure (network, auth, malformed control-plane
-        # response) maps to the same EXIT_DOWNLOAD fail-fast contract (D-01/D-02) -- the
-        # client's own AgentApiError hierarchy is only a SUBSET of what can go wrong here.
+        # response) is fail-fast (D-01/D-02) -- the client's own AgentApiError hierarchy is only a
+        # SUBSET of what can go wrong here. phaze-j0ixx splits off the one class that is never the
+        # file's fault: a request that could not reach the control plane at all.
+        if _control_plane_unreachable(exc):
+            log.exception("job_runner_control_plane_unreachable", file_id=fid, step="presign", exit_code=EXIT_CONTROL_PLANE_UNREACHABLE)
+            sys.exit(EXIT_CONTROL_PLANE_UNREACHABLE)
         log.exception("job_runner_presign_failed", file_id=fid, step="presign")
         sys.exit(EXIT_DOWNLOAD)
     log.info("job_runner_step_ok", file_id=fid, step="presign", elapsed_ms=_elapsed_ms(t_presign))

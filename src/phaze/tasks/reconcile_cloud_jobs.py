@@ -116,7 +116,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
-from phaze.services import kube_staging, s3_staging
+from phaze.services import backend_breaker, kube_staging, s3_staging
 from phaze.tasks.cloud_reconcile_observation import (
     NO_POD_PROBE_SECONDS as _NO_POD_PROBE_SECONDS,
     PENDING_SUBMIT_CONFIRMATION_SECONDS as _PENDING_SUBMIT_CONFIRMATION_SECONDS,
@@ -165,6 +165,11 @@ PENDING_SUBMIT_CONFIRMATION_SECONDS = _PENDING_SUBMIT_CONFIRMATION_SECONDS
 FAILURE_JOB_VANISHED = "job_vanished"  # the Job 404'd before reconcile read it (TTL GC, external delete)
 FAILURE_PENDING_CONFIRMATION_EXPIRED = "pending_confirmation_expired"  # no Job was ever stamped within the bound
 FAILURE_POD_NOT_FOUND = "pod_not_found"  # the Job read Failed/Evicted but listed no pod
+
+# phaze-j0ixx: the ``budget`` label of a re-drive that charges NEITHER counter -- a pod that exited
+# ``EXIT_CONTROL_PLANE_UNREACHABLE`` failed because the control plane could not be reached, not because of
+# its file. What bounds it instead is the backend breaker (``services/backend_breaker.py``).
+BUDGET_UNCHARGED = "uncharged_control_plane_unreachable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,6 +402,27 @@ async def _spill_to_awaiting_at_ceiling(
     Reached when ``next_attempt > ceiling`` on EITHER budget; see that function's docstring for why the
     two ceilings deliberately share this one terminal, and why it is not a hard analyze failure.
     """
+    await _spill_to_awaiting(cfg, row, name, attempts=row.cap, failure=failure)
+    row.tally["failed"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
+        file_id=str(row.cloud_job.file_id),
+        attempt=next_attempt,
+        cap=ceiling,
+        budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
+        node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
+        exit_code=failure.exit_code,  # phaze-1xngw: the pod's terminated exit status, or None + a marker reason.
+        reason=failure.reason,
+    )
+
+
+async def _spill_to_awaiting(cfg: ControlSettings, row: _RowReconcile, name: str | None, *, attempts: int, failure: TerminalFailure) -> None:
+    """Spill an in-flight row back to 'awaiting' with ``attempts`` stamped, delete its staged object and Job.
+
+    The shared body of the at-ceiling spill (``attempts=cap``, the budget-spent marker that routes the file
+    to local) and the phaze-j0ixx breaker hold (``attempts`` UNCHANGED, so the file stays cloud-eligible and
+    nothing is charged). Logging and the tally belong to the caller, which knows which of the two it is.
+    """
     file_id = row.cloud_job.file_id
     # SCHED-03/D-04/phaze-1q4g: either retry ceiling spends the cloud budget and spills to ``awaiting``
     # without double-incrementing attempts or writing ANALYSIS_FAILED. This makes the next drain choose
@@ -413,9 +439,10 @@ async def _spill_to_awaiting_at_ceiling(
     # awaiting writer in spill mode (reconcile is its FOURTH caller, alongside agent_s3/agent_push). The
     # rowcount-guarded CAS OWNS the status write (UPDATE cloud_job ... WHERE status IN (SUBMITTED,RUNNING)),
     # so we do NOT pre-mutate cloud_job.status here -- an autoflush of a dirty status would make the CAS
-    # miss its own row (RESEARCH Landmine 3). ``attempts=cap`` is the budget-spent MARKER (a set, NOT an
-    # increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file
-    # to local; ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
+    # miss its own row (RESEARCH Landmine 3). On the at-ceiling path ``attempts=cap`` is the budget-spent
+    # MARKER (a set, NOT an increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap``
+    # and routes the file to local; on the phaze-j0ixx breaker hold it is the row's own unchanged value, so
+    # the file stays cloud-eligible. ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
     # agent_s3/agent_push siblings (which KEEP the gated FileRecord dual-write, 83 D-00c), reconcile writes
     # NO FileRecord.state at all (D-04): the spilled kueue file stays at its prior PUSHED state, which
     # satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD state=AWAITING_CLOUD +
@@ -431,30 +458,19 @@ async def _spill_to_awaiting_at_ceiling(
         await hold_awaiting_cloud(
             row.session,
             file,
-            attempts=row.cap,
+            attempts=attempts,
             expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value),
             clear_cloud_phase=True,
         )
     row.cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
     row.cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
     row.cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
-    # phaze-1xngw: the exit status that exhausted the budget -- written AFTER the CAS above so no dirty
+    # phaze-1xngw: the exit status that ended this chain or tripped the hold -- written AFTER the CAS above so no dirty
     # attribute can autoflush ahead of it, and before the commit that precedes the Job delete.
     _record_failure(row.cloud_job, failure, failed_at=datetime.now(UTC))
     await row.session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, row.kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
-    row.tally["failed"] += 1
-    logger.warning(
-        "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
-        file_id=str(file_id),
-        attempt=next_attempt,
-        cap=ceiling,
-        budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
-        node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
-        exit_code=failure.exit_code,  # phaze-1xngw: the pod's terminated exit status, or None + a marker reason.
-        reason=failure.reason,
-    )
 
 
 async def _redrive_under_ceiling(
@@ -513,7 +529,10 @@ async def _redrive_under_ceiling(
     # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
     # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
     # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
-    if effective_node_loss_reason is not None:
+    # phaze-j0ixx: an unreachable-control-plane re-drive charges neither; the breaker bounds it.
+    if budget == BUDGET_UNCHARGED:
+        pass
+    elif effective_node_loss_reason is not None:
         cloud_job.node_loss_redrives = next_attempt
     else:
         cloud_job.attempts = next_attempt
@@ -627,6 +646,12 @@ async def _handle_no_callback_terminal(
     cloud_job = row.cloud_job
     failure = _effective_failure(cloud_job, failure)
     cfg = cast("ControlSettings", get_settings())
+    # phaze-j0ixx: the pod said, by its own exit code, that it never reached the control plane. That is
+    # the environment's fault on every file alike, so it spends no budget -- checked before the
+    # node-loss choice below, since a pod that exited on its own was not taken by its node.
+    if failure.exit_code == backend_breaker.UNREACHABLE_EXIT_CODE:
+        await _hold_control_plane_unreachable(cfg, row, name, failure=failure)
+        return
     # phaze-mwbz3: the still-terminating deferral below commits with NO other DB mutation, so a FRESH
     # node-loss verdict computed for THIS call (``node_loss_reason`` not None) must be persisted across
     # it -- otherwise it dies with this stack frame and, once the Job finally vanishes, the NEXT tick
@@ -666,6 +691,63 @@ async def _handle_no_callback_terminal(
         budget=budget,
         effective_node_loss_reason=effective_node_loss_reason,
         failure=failure,
+    )
+
+
+async def _hold_control_plane_unreachable(cfg: ControlSettings, row: _RowReconcile, name: str | None, *, failure: TerminalFailure) -> None:
+    """The ``EXIT_CONTROL_PLANE_UNREACHABLE`` terminal: charge nothing, feed the backend breaker (phaze-j0ixx).
+
+    Spike phaze-79mu7: two infrastructure faults made every burst pod fail its presign request, and
+    charging each of those against ``attempts`` spent 302 healthy files' whole cloud budget. Neither
+    ``attempts`` nor ``node_loss_redrives`` moves here, in either branch.
+
+    * **Breaker closed** (the rule in ``services/backend_breaker.py`` did not trip on this exit): re-drive
+      in place through the ordinary delete / confirm-gone / pending-confirmation machinery, keeping the
+      staged object, with :data:`BUDGET_UNCHARGED`. A fault that clears within a minute costs one pod.
+    * **Breaker open** (this exit tripped it, or it already was): spill the row back to ``'awaiting'``
+      with ``attempts`` UNCHANGED -- releasing its slot and staying cloud-eligible -- instead of
+      re-driving into a fault the drain has stopped dispatching into. The staged object is deleted like
+      every spill's (the re-dispatch after the breaker closes re-stages it).
+
+    "Not charged" must still be bounded (the phaze-1q4g lesson): the breaker's repeat clause trips on a
+    row's SECOND unreachable exit within the window, so a lone file costs at most two pods before it is
+    held, and while held the drain grants at most one probe slot per interval.
+
+    A row with no ``backend_id`` cannot feed a breaker, so it takes the held branch -- a spill that
+    charges nothing and cannot loop. KueueBackend.reconcile only selects rows stamped with its own id, so
+    this is defence in depth, not a live path.
+    """
+    cloud_job = row.cloud_job
+    now = datetime.now(UTC)
+    backend_id = cloud_job.backend_id
+    verdict = (
+        await backend_breaker.record_unreachable_exit(
+            row.session,
+            backend_id,
+            cloud_job.file_id,
+            now,
+            previous_exit_code=cloud_job.last_exit_code,
+            previous_failed_at=cloud_job.last_failed_at,
+        )
+        if backend_id is not None
+        else backend_breaker.UnreachableVerdict(held=True, tripped_now=False, reason="cloud_job has no backend_id")
+    )
+    if not verdict.held:
+        await _redrive_under_ceiling(
+            row, name, next_attempt=cloud_job.attempts, budget=BUDGET_UNCHARGED, effective_node_loss_reason=None, failure=failure
+        )
+        return
+    await _spill_to_awaiting(cfg, row, name, attempts=cloud_job.attempts, failure=failure)
+    row.tally["unreachable_held"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: control plane unreachable from the pod -> backend held, cloud_job re-stamped 'awaiting' uncharged",
+        file_id=str(cloud_job.file_id),
+        backend_id=backend_id,
+        attempts=cloud_job.attempts,
+        breaker_tripped_now=verdict.tripped_now,
+        breaker_reason=verdict.reason,
+        exit_code=failure.exit_code,
+        reason=failure.reason,
     )
 
 
@@ -1003,6 +1085,8 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
         # -- listed explicitly so this dict stays the single place naming every tally key, matching
         # every other key here.
         "unknown_workload_disposition": 0,
+        # phaze-j0ixx: unreachable-control-plane rows spilled uncharged because their backend is held.
+        "unreachable_held": 0,
     }
 
     async with ctx["async_session"]() as session:
