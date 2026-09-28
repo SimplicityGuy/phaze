@@ -25,6 +25,9 @@
 {% set _capacity_full = not _local and _in_flight is not none and lane.cap and _in_flight == lane.cap %}
 {% set _claimed = lane.claimed_unrun if lane.claimed_unrun is defined and lane.claimed_unrun is not none else none %}
 {% set _stuck = lane.stuck if _local and lane.stuck is defined and lane.stuck is not none else 0 %}
+{# phaze-j0ixx: the backend's control-plane-unreachable breaker. Held means the drain dispatches nothing
+   to this lane (bar one probe per interval) because its pods cannot reach the control plane. #}
+{% set _breaker_held = lane.breaker_held if lane.breaker_held is defined else false %}
 {% set selected_lane = selected_lane | default(none) %}
 <div id="lane-trigger-{{ lane.id }}" role="button" tabindex="0"
      aria-label="Open lane {{ lane.kind }} {{ lane.id }} detail" {% if selected_lane == lane.id %}aria-current="true"{% endif %}
@@ -52,6 +55,7 @@
         {% endif %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Status</dt><dd class="mt-0.5">
             {% if _stuck %}{{ ui.status_badge("Lane status", "STUCK", "danger", "✕") }}
+            {% elif _breaker_held %}{{ ui.status_badge("Lane status", "HELD", "danger", "✕") }}
             {% elif _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
@@ -65,6 +69,8 @@
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-info sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
     {% if _stuck %}
     <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
+    {% elif _breaker_held %}
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">Dispatch held: this lane's pods cannot reach the control plane ({{ lane.breaker_reason or "breaker open" }}). No attempts are being charged. One probe file is sent{% if lane.breaker_next_probe_at %} from {{ lane.breaker_next_probe_at.strftime("%H:%M UTC") }}{% endif %}; the lane resumes on its own the first time a pod reaches the control plane. Check the burst cluster's DNS and network path to the control plane.</p>
     {% elif _capacity_over %}
     <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% elif _capacity_full and lane.available %}

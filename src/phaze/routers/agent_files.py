@@ -12,6 +12,7 @@ request schema has no agent_id field, so accidental body forgery returns
 422 `extra_forbidden`.
 """
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, cast
 import unicodedata
 import uuid
@@ -32,7 +33,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
-from phaze.services import s3_staging
+from phaze.services import backend_breaker, s3_staging
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.text_repair import repair_mojibake
 
@@ -200,6 +201,22 @@ async def upsert_files(
     )
 
 
+async def _close_breaker_on_presign(session: AsyncSession, backend_id: str) -> None:
+    """Close ``backend_id``'s control-plane-unreachable breaker, if open (phaze-j0ixx). Never raises.
+
+    Best-effort by design: the presign has already been minted and the pod is waiting for it, so a
+    failure here must not turn a working request into a 500. The breaker stays open and the drain's next
+    probe gets another chance to close it.
+    """
+    try:
+        closed = await backend_breaker.close_breaker(session, backend_id, datetime.now(UTC), evidence="presign succeeded")
+        if closed:
+            await session.commit()
+    except Exception:
+        logger.warning("presign_download: could not close the backend breaker", backend_id=backend_id, exc_info=True)
+        await session.rollback()
+
+
 @router.post("/{file_id}/presign-download", status_code=status.HTTP_200_OK, response_model=PresignDownloadResponse)
 async def presign_download(
     file_id: uuid.UUID,
@@ -288,9 +305,15 @@ async def presign_download(
     # duration -> 0 windows -> a silent empty-but-"successful" analysis (cloud-analyze-
     # empty-no-ext). `file_type` is the dotless extension (e.g. "mp3"), the same value
     # agent_push/push use to name their scratch copies.
-    return PresignDownloadResponse(
+    response = PresignDownloadResponse(
         download_url=download_url,
         expected_sha256=file.sha256_hash,
         audio_ext=file.file_type,
         metadata=display_metadata,
     )
+    # phaze-j0ixx: a pod on this backend has just reached the control plane -- the one thing an open
+    # control-plane-unreachable breaker is waiting to see -- so close it here, on proof rather than a timer.
+    # Last, after every ORM attribute the response needs has been read, because the close commits.
+    if cloud_job_row.backend_id is not None:
+        await _close_breaker_on_presign(session, cloud_job_row.backend_id)
+    return response

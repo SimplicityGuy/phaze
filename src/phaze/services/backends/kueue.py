@@ -457,6 +457,9 @@ class KueueBackend(_BaseBackend):
             # phaze-pe41d: an unrecognised Workload condition set (reason-vocabulary drift) -- see
             # ``_reconcile_workload_state``'s UNKNOWN branch in reconcile_cloud_jobs.py.
             "unknown_workload_disposition": 0,
+            # phaze-j0ixx: rows whose pod could not reach the control plane, spilled uncharged while the
+            # backend's breaker holds it -- see ``_hold_control_plane_unreachable`` in reconcile_cloud_jobs.py.
+            "unreachable_held": 0,
         }
         reconcile_ctx = ctx if ctx is not None else {}
 
