@@ -18,6 +18,7 @@ from phaze.routers import (
     admin_agents,
     admin_runtime_config,
     agent_analysis,
+    agent_config,
     agent_exec_batches,
     agent_execution,
     agent_files,
@@ -234,6 +235,10 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_execution.router,
     agent_heartbeat.router,
     agent_identity.router,
+    # phaze-mvq8z.9: agent-authenticated GET for the DB-override layer (RELOADABLE_KEYS only) --
+    # the remote-agent half of ADR-0019 (runtime config hot-reload) §14's propagation story. Polled by
+    # tasks/heartbeat.py on the heartbeat cadence.
+    agent_config.router,
     agent_analysis.router,
     agent_push.router,
     agent_s3.router,

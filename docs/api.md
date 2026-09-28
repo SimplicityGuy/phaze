@@ -329,7 +329,8 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | Method | Path                                                  | Description                                                                 |
 |--------|-------------------------------------------------------|----------------------------------------------------------------------------|
 | GET    | `/api/internal/agent/whoami`                          | Agent identity probe (returns the calling agent's identity)                 |
-| POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content)  |
+| POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content). `HeartbeatRequest` may carry an optional `effective_config` (the agent's own resolved reloadable-config snapshot, phaze-mvq8z.9) |
+| GET    | `/api/internal/agent/config`                          | The DB-override layer for reloadable keys only (not per-agent); polled on the heartbeat cadence and reloaded locally only when the digest changes (phaze-mvq8z.9, ADR-0019 (runtime config hot-reload) §14) |
 | POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per Phase 35 D-06) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
 | POST   | `/api/internal/agent/metadata/{file_id}/failed`       | Terminal-ack for a retries-exhausted `extract_file_metadata` run (clears the ledger row) |

@@ -9,6 +9,15 @@ Reads from the SAQ ctx (populated by phaze.tasks.agent_worker.startup):
     - ctx["api_client"]: PhazeAgentClient
     - ctx["agent_identity"]: AgentIdentity
     - ctx["worker"]: SAQ Worker (gives .queue for Queue.info())
+    - ctx["runtime_config_store"]: RuntimeConfigStore (phaze-mvq8z.9; absence degrades to
+      "skip the config poll and omit effective_config" -- see ``_poll_runtime_config``)
+
+phaze-mvq8z.9 -- ADR-0019 (runtime config hot-reload) §14: a remote agent has no Postgres reachability of its own, so it
+cannot install the DB-override layer directly the way the api process and control worker do. Each
+tick, ``send_heartbeat`` polls ``GET /api/internal/agent/config`` (``_poll_runtime_config``) and
+reloads the agent's LOCAL ``RuntimeConfigStore`` only when the returned digest changed, then rides
+that store's resolved snapshot on the SAME beat as ``HeartbeatRequest.effective_config`` (ADR §15)
+so an operator can see, per agent, what is ACTUALLY in force -- not merely what was last intended.
 
 Phase 46 — why a background task, not a SAQ CronJob:
     The previous ``heartbeat_tick`` ran as a SAQ ``CronJob`` and so competed for
@@ -47,7 +56,8 @@ from phaze.constants import (
     AGENT_BROKER_UNHEALTHY_BEATS,
     AGENT_HEARTBEAT_INTERVAL_SECONDS,
 )
-from phaze.schemas.agent_heartbeat import HeartbeatRequest
+from phaze.runtime_config import RESTART_ONLY_KEYS
+from phaze.schemas.agent_heartbeat import EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
 from phaze.services.agent_client import AgentApiError
 
 
@@ -138,6 +148,65 @@ async def _probe_broker_for_queued_jobs(ctx: dict[str, Any]) -> int:
     return queue_depth
 
 
+async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
+    """Fetch the DB-override layer and reload the agent's LOCAL store only on a real change.
+
+    phaze-mvq8z.9, ADR-0019 (runtime config hot-reload) §14. ``ctx["runtime_config_store"]`` is populated by
+    ``phaze.tasks.agent_worker.startup`` (phaze-mvq8z.5/.9) -- its absence (an older agent_worker
+    build, or a test ctx that never ran startup) degrades this to a no-op, the same shape every
+    other optional-ctx-key read in this module already takes (``ctx["worker"]`` absent ->
+    queue_depth defaults to 0, see :func:`_probe_broker_for_queued_jobs`).
+
+    Every failure past that point -- a network blip, an auth error, a malformed response, or (in a
+    test with an unconfigured mock client) an attribute that is not really a mapping -- degrades to
+    "local config unchanged this tick" and is logged at WARNING. It NEVER prevents, and is never
+    gated on, the heartbeat POST that keeps the agent alive: this function runs BEFORE that POST is
+    built (so a just-applied override is reflected in the SAME beat's ``effective_config``), but a
+    failure here does not stop the POST from being sent.
+    """
+    store = ctx.get("runtime_config_store")
+    if store is None:
+        return
+    try:
+        response = await client.get_config()
+        overrides = dict(response.overrides)
+        digest = str(response.digest)
+    except Exception:
+        logger.warning("heartbeat: runtime-config poll failed; local config unchanged", exc_info=True)
+        return
+    if digest == ctx.get("_runtime_config_digest"):
+        return
+    ctx["_runtime_config_overrides"] = overrides
+    ctx["_runtime_config_digest"] = digest
+
+    async def _override_provider() -> dict[str, Any]:
+        # Reads ctx fresh on every call (not the `overrides` closed over above) so a LATER
+        # trigger on the same store -- SIGHUP, a file-watch tick -- also sees whatever this
+        # function last fetched, not a snapshot frozen at registration time.
+        return dict(ctx.get("_runtime_config_overrides") or {})
+
+    store.set_override_provider(_override_provider)
+    await store.reload("poll")
+
+
+def _build_effective_config(store: Any) -> EffectiveConfig:
+    """Render ``store``'s current snapshot + last reload attempt as the wire shape (phaze-mvq8z.9).
+
+    ``store`` is untyped (``Any``) rather than ``RuntimeConfigStore`` to match how every other
+    ctx-sourced value in this module is read (``api_client``, ``agent_identity``, ``worker``) --
+    a plain duck-typed object handed in via ctx, not a type this module imports for its own sake.
+    """
+    snapshot = store.snapshot()
+    last = store.last_result
+    last_reload = EffectiveConfigLastReload(source=last.source, outcome=last.outcome, error=last.error, at=last.at) if last is not None else None
+    return EffectiveConfig(
+        values=snapshot.config,
+        sources=dict(snapshot.sources),
+        restart_only_keys=sorted(RESTART_ONLY_KEYS),
+        last_reload=last_reload,
+    )
+
+
 async def send_heartbeat(ctx: dict[str, Any]) -> None:
     """POST one agent heartbeat from the current worker state.
 
@@ -191,6 +260,11 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
             _terminate_worker_process()
         return
 
+    # phaze-mvq8z.9: poll the DB-override layer BEFORE building the payload, so an override the
+    # operator just set is both applied AND reported on this SAME beat.
+    await _poll_runtime_config(ctx, client)
+    runtime_config_store = ctx.get("runtime_config_store")
+
     payload = HeartbeatRequest(
         agent_version=importlib.metadata.version("phaze"),
         worker_pid=os.getpid(),
@@ -198,6 +272,10 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         # phaze-30fo: tag the beat with THIS worker's lane so the control plane can keep a
         # per-lane breakdown and sum an honest all-lane depth. None in all-mode (no split).
         lane=ctx.get("agent_lane"),
+        # phaze-mvq8z.9: None when ctx carries no store (an older agent_worker build, or a
+        # test ctx built by hand) -- HeartbeatRequest.effective_config is Optional for exactly
+        # this reason (see its docstring).
+        effective_config=_build_effective_config(runtime_config_store) if runtime_config_store is not None else None,
     )
     try:
         await client.heartbeat(payload)

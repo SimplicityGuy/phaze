@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         AnalysisWriteResponse,
         PresignDownloadMetadata,
     )
+    from phaze.schemas.agent_config import AgentConfigResponse
 
     # D-06 execution-batch schema.
     from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
@@ -699,3 +700,10 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return None
+
+    async def get_config(self) -> AgentConfigResponse:
+        """GET /api/internal/agent/config -- the DB-override layer for reloadable keys (phaze-mvq8z.9)."""
+        from phaze.schemas.agent_config import AgentConfigResponse  # noqa: PLC0415
+
+        response = await self._request("GET", "/api/internal/agent/config")
+        return AgentConfigResponse.model_validate(response.json())

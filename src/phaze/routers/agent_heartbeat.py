@@ -110,15 +110,22 @@ async def post_heartbeat(
     agent image, or all-mode where there is no lane split) is persisted verbatim exactly
     as it always was, so a rolling deploy degrades cleanly in both directions.
     """
+    # phaze-mvq8z.9: `effective_config` is Optional the SAME way `lane` is (rolling-deploy
+    # safety) -- an agent built before this bead posts without it, and excluding a `None` value
+    # here keeps THAT beat's stored shape byte-identical to before this bead, with no stray
+    # `effective_config: null` key.
+    omit_effective_config: set[str] = set() if body.effective_config is not None else {"effective_config"}
     if body.lane is None:
-        # `exclude={"lane"}` keeps the stored shape byte-identical to the pre-phaze-30fo
+        # `exclude={"lane", ...}` keeps the stored shape byte-identical to the pre-phaze-30fo
         # payload rather than adding a `lane: null` key. An unlaned agent's last_status
         # should look exactly as it always did.
         await session.execute(
-            update(Agent).where(Agent.id == agent.id).values(last_seen_at=func.now(), last_status=body.model_dump(exclude={"lane"})),
+            update(Agent)
+            .where(Agent.id == agent.id)
+            .values(last_seen_at=func.now(), last_status=body.model_dump(exclude={"lane"} | omit_effective_config)),
         )
     else:
-        payload = body.model_dump()
+        payload = body.model_dump(exclude=omit_effective_config)
         # Top-level fields describe the most recent beat; `queue_depth` is excluded here
         # because the SQL replaces it with the cross-lane SUM.
         base = {k: v for k, v in payload.items() if k != "queue_depth"}

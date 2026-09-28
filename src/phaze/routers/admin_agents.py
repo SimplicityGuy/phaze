@@ -667,6 +667,46 @@ async def table_partial(
     )
 
 
+def _effective_config_view(last_status: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Shape ``agent.last_status['effective_config']`` (phaze-mvq8z.9 wire shape, ADR-0019 (runtime config hot-reload) §15)
+    for the activity panel: a list of ``{key, value, source}`` rows (mirrors
+    ``build_runtime_config_pane_context``'s ``reloadable`` shape, admin_runtime_config.py), the
+    sorted restart-only key names, and the agent's own last reload attempt with its timestamp
+    converted to a ``datetime`` for ``humanize_relative_time``.
+
+    Degrade-safe (D-00b, matching every other read in this handler): a missing sub-document (an
+    agent that has never beaten with this field -- an older agent image, or one that has not
+    ticked since upgrading) or a shape this reader does not recognize renders as ``None``, so the
+    template shows a friendly "not yet reported" line rather than raising mid-poll.
+    """
+    if not last_status:
+        return None
+    raw = last_status.get("effective_config")
+    if not isinstance(raw, dict):
+        return None
+    values = raw.get("values")
+    sources = raw.get("sources")
+    if not isinstance(values, dict) or not isinstance(sources, dict):
+        return None
+    rows = [{"key": key, "value": value, "source": sources.get(key, "default")} for key, value in sorted(values.items())]
+    last_reload_raw = raw.get("last_reload")
+    last_reload: dict[str, Any] | None = None
+    if isinstance(last_reload_raw, dict):
+        at = last_reload_raw.get("at")
+        last_reload = {
+            "source": last_reload_raw.get("source"),
+            "outcome": last_reload_raw.get("outcome"),
+            "error": last_reload_raw.get("error"),
+            "at": datetime.fromtimestamp(at, tz=UTC) if isinstance(at, int | float) else None,
+        }
+    restart_only = raw.get("restart_only_keys")
+    return {
+        "rows": rows,
+        "restart_only_keys": sorted(restart_only) if isinstance(restart_only, list) else [],
+        "last_reload": last_reload,
+    }
+
+
 @router.get("/{agent_id}/_activity", response_class=HTMLResponse)
 async def agent_activity(
     request: Request,
@@ -722,6 +762,7 @@ async def agent_activity(
     buckets = {stage.value: await _agent_stage_buckets(session, agent_id, stage) for stage in _ACTIVITY_STAGES}
     queue_depths = await get_agent_lane_depths(request.app.state, agent_id)
     recent_scans = await get_agent_recent_scans(session, agent_id)
+    effective_config = _effective_config_view(agent.last_status)
     return templates.TemplateResponse(
         request=request,
         name="admin/partials/_agent_activity.html",
@@ -732,6 +773,7 @@ async def agent_activity(
             "buckets": buckets,
             "queue_depths": queue_depths,
             "recent_scans": recent_scans,
+            "effective_config": effective_config,
             "refreshed_at_iso": now.isoformat(),
         },
     )

@@ -323,6 +323,13 @@ async def startup(ctx: dict[str, Any]) -> None:
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
     ctx["runtime_config_watcher"].start()
+    # phaze-mvq8z.9: hand the store to the heartbeat loop via ctx, the SAME way `worker`/
+    # `api_client`/`agent_identity` are already handed to it -- `phaze.tasks.heartbeat` reads
+    # only ctx, never builds its own settings-derived singleton (its IMPORT-BOUNDARY INVARIANT
+    # keeps it free of anything that could pull in phaze.database). The DB-override layer has no
+    # provider wired here (agent workers have no Postgres reachability, ADR-0019 (runtime config hot-reload) §14) --
+    # the heartbeat loop installs one itself, fed by GET /api/internal/agent/config.
+    ctx["runtime_config_store"] = runtime_config_store
 
     # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
     # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
