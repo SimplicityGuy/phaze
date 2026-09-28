@@ -90,7 +90,7 @@ pytestmark = pytest.mark.skipif(not _docker_usable(), reason="needs a working do
 def throwaway_redis() -> Iterator[str]:
     """A private Redis for this module alone -- never the shared ``phaze-test-redis``."""
     container = f"phaze-gc-test-redis-{uuid4().hex[:10]}"
-    started = _docker("run", "-d", "--name", container, "redis:7-alpine", "redis-server", "--databases", "16")
+    started = _docker("run", "-d", "--name", container, "valkey/valkey:9-alpine", "redis-server", "--databases", "16")
     if started.returncode != 0:
         pytest.skip(f"could not start a throwaway Redis: {started.stderr.strip()}")
     try:

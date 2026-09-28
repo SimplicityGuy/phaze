@@ -562,8 +562,10 @@ def _parser() -> argparse.ArgumentParser:
     # accepted seat's id back as the lane prefix, so lanes are `<seat>-lane-a` / `<seat>-lane-b`.
     parser.add_argument("--classify-caller-seat", action="store_true")
     parser.add_argument("--pg-port", default="5433")
-    parser.add_argument("--redis-port", default="6380")
-    parser.add_argument("--redis-container", default="phaze-test-redis")
+    # phaze-8o294: the same env overrides the justfile's test_redis_port/test_redis_container read, so
+    # a direct CLI call agrees with `just test-validate` on which harness Redis it is classifying against.
+    parser.add_argument("--redis-port", default=os.environ.get("PHAZE_TEST_REDIS_PORT", "6380"))
+    parser.add_argument("--redis-container", default=os.environ.get("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-redis"))
     parser.add_argument("--seat-prefix")
     return parser
 

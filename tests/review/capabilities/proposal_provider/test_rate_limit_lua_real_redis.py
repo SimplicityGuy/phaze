@@ -26,12 +26,12 @@ here too, per CLAUDE.md's "verify with the artifact's real consumer" rule.
 
 REDIS VERSION
 --------------
-Run against the harness's ``redis:7-alpine`` (measured ``redis_version:7.4.11`` at test-authoring
-time via ``docker exec phaze-test-redis redis-cli INFO server``). Production runs ``redis:8-alpine``
-(``docker-compose.yml``, CLAUDE.md's "Known gap"). Every command this script uses --
-``INCR``/``DECR``/``TTL``/``EXPIRE``/``EVAL`` -- has unchanged reply semantics between Redis 7 and
-8 (Redis 8 only ADDS commands -- hash-field TTL, vector sets -- over the 7.x line; it does not
-change the semantics of these five); flagged here rather than silently assumed.
+Written against the harness's former ``redis:7-alpine`` (``redis_version:7.4.11``) while production
+ran ``redis:8-alpine``. Since phaze-8o294 the harness, CI and production all run the same
+``valkey/valkey:9-alpine`` (measured ``valkey_version:9.1.2`` via ``redis-cli INFO server``), so the
+skew this section used to flag is closed rather than argued: this script was run through redis-py on
+redis 7.4.11, redis 8.10.2 and Valkey 9.1.2 with identical replies and key state (bead
+``phaze-8o294``'s comments carry the differential).
 
 CONCURRENCY
 ------------
