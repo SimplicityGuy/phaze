@@ -51,8 +51,8 @@ if TYPE_CHECKING:
 _JOURNEY_KEYS = ("8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A")
 _WINDOW_SEC = 30.0
 
-# The eight sidebar rows, in the order build_record_facts emits them.
-_EXPECTED_FACT_LABELS = ["Format", "Duration", "sha256", "Lane", "Windows", "Median BPM", "Modal key", "Mood · style"]
+# The nine sidebar rows, in the order build_record_facts emits them.
+_EXPECTED_FACT_LABELS = ["Format", "Duration", "sha256", "Lane", "Windows", "Median BPM", "Modal key", "Mood", "Style"]
 
 # The three ENRICH stages carry a force-skip control; the three downstream stages must not
 # (approval-bypass hazard, D-10).
@@ -89,12 +89,12 @@ def _soup(body: str) -> BeautifulSoup:
 
 
 @pytest.mark.asyncio
-async def test_the_full_page_renders_the_sidebar_with_the_eight_facts_and_the_wheel(  # type: ignore[no-untyped-def]
+async def test_the_full_page_renders_the_sidebar_with_the_nine_facts_and_the_wheel(  # type: ignore[no-untyped-def]
     client: AsyncClient,
     session: AsyncSession,
     seed_file_with_windows,
 ) -> None:
-    """Acceptance 1a: the page's right sidebar carries the eight facts and the harmonic wheel."""
+    """Acceptance 1a: the page's right sidebar carries the nine facts and the harmonic wheel."""
     file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
     await _seed_keyed_windows(session, file)
 
@@ -116,8 +116,81 @@ async def test_the_full_page_renders_the_sidebar_with_the_eight_facts_and_the_wh
     assert values["Lane"] == "🖥️ local"
     assert values["Duration"] == "6:30", "the analyzed extent of the seeded windows, as h:mm:ss"
     assert values["sha256"].startswith(file.sha256_hash[:12])
-    assert values["Mood · style"] == "energetic · techno"
+    assert values["Style"] == "techno", "dominant_style is still read verbatim off AnalysisResult"
+    # `seed_file_with_windows` seeds no `SetProfile` and no coarse `mood_scores` -- only the
+    # legacy `AnalysisWindow.mood` free-text column -- so the Mood row has nothing to chip from
+    # and shows the honest absent state rather than the old (now-unread) `AnalysisResult.mood`.
+    assert values["Mood"] == ABSENT
     assert values["Median BPM"] != ABSENT
+
+
+@pytest.mark.asyncio
+async def test_the_mood_row_renders_coloured_chips_from_the_set_profiles_mean_vector(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: a file with a set_profile shows 3 mood chips with labels, colours and
+    percentages, no ellipsis truncation, and the full ranked list on hover."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    # MOOD_ORDER-positional: mood_acoustic, mood_electronic, mood_aggressive, mood_relaxed,
+    # mood_happy, mood_sad, mood_party, danceability, gender, tonality, voice_instrumental --
+    # the operator report's own numbers (electronic=0.88, party=0.72, aggressive=0.40) plus a
+    # realistic reading for the rest, never a placeholder string.
+    mean_vector = [0.12, 0.88, 0.40, 0.15, 0.30, 0.05, 0.72, 0.65, 0.50, 0.60, 0.20]
+    session.add(SetProfile(file_id=file.id, mean_vector=mean_vector, camelot_modal="8A"))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    mood_row = next(row for row in page.select("[data-record-sidebar] [data-record-fact]") if row.select_one("dt").get_text(strip=True) == "Mood")  # type: ignore[union-attr]
+
+    chips = mood_row.select("[data-mood-chip]")
+    assert [chip.get_text(" ", strip=True) for chip in chips] == ["Electronic 34%", "Party 27%", "Aggressive 15%"]
+    assert "…" not in mood_row.get_text(), "no ellipsis truncation of the mood chips"
+
+    # The chip row renders no CSS `truncate` -- unlike every plain-text fact row -- so a chip's
+    # text can never be clipped the way the old single-string value was.
+    dd = mood_row.select_one("dd")
+    assert dd is not None
+    assert "truncate" not in dd.get("class", [])
+
+    # Each chip carries its own hue swatch, from the one shared mood-colour table.
+    swatches = [chip.select_one("span") for chip in chips]
+    assert all(swatch is not None and "background-color: hsl(" in swatch.get("style", "") for swatch in swatches)  # type: ignore[union-attr]
+
+    # The full 7-mood ranked list is available on hover, not just the top 3 chips shown.
+    title = dd.get("title", "")
+    assert title.count("%") == 7
+    assert title.startswith("Electronic 34% · Party 27% · Aggressive 15%")
+
+
+@pytest.mark.asyncio
+async def test_the_mood_row_falls_back_to_coarse_window_mood_scores_without_a_set_profile(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """A file with no `set_profile` row but coarse windows carrying real `mood_scores` still
+    gets chips, averaged from the windows rather than shown as absent."""
+    file, _result, windows = await seed_file_with_windows(original_filename="<set-01>.mp3", coarse_count=1)
+    coarse_window = next(window for window in windows if window.tier == "coarse")
+    coarse_window.mood_scores = {
+        "mood_acoustic": 0.1,
+        "mood_electronic": 0.9,
+        "mood_aggressive": 0.2,
+        "mood_relaxed": 0.05,
+        "mood_happy": 0.05,
+        "mood_sad": 0.02,
+        "mood_party": 0.3,
+    }
+    session.add(coarse_window)
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    mood_row = next(row for row in page.select("[data-record-sidebar] [data-record-fact]") if row.select_one("dt").get_text(strip=True) == "Mood")  # type: ignore[union-attr]
+
+    chips = mood_row.select("[data-mood-chip]")
+    assert next(chip.get_text(" ", strip=True) for chip in chips) == "Electronic 56%"
 
 
 @pytest.mark.asyncio

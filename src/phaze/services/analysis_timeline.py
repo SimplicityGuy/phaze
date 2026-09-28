@@ -522,6 +522,26 @@ def energy_peak(coarse_windows: Sequence[AnalysisWindow], total_sec: float, widt
     }
 
 
+def normalize_mood_shares(raw_values: Sequence[object]) -> tuple[float, ...] | None:
+    """The 7 raw mood values (any order, so long as the caller supplies them in ``MOOD_NAMES``
+    order) as fractions summing to 1.0, or ``None`` when nothing is positive.
+
+    Shared by :func:`mood_stack` (one coarse window's ``mood_scores``) and
+    ``services.record_facts``' set-wide mood chips (``SetProfile.mean_vector`` and the
+    per-window fallback average, phaze-4ye5i) -- one normalisation, so a mood's displayed
+    share can never mean two different things depending which surface computed it. A
+    non-numeric, non-finite or non-positive entry floors to ``0.0`` rather than being
+    dropped, so a window or vector carrying SOME of the seven still normalises over what it
+    has instead of being discarded outright -- dropping it would turn partial data into a
+    hole, which overstates the gap.
+    """
+    values = [float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0 else 0.0 for v in raw_values]
+    total = sum(values)
+    if total <= 0:
+        return None
+    return tuple(value / total for value in values)
+
+
 def mood_stack(window: AnalysisWindow) -> tuple[float, ...] | None:
     """The 7 mood scores of one coarse window as fractions summing to 1.0, or ``None``.
 
@@ -533,14 +553,7 @@ def mood_stack(window: AnalysisWindow) -> tuple[float, ...] | None:
     scores = window.mood_scores
     if not isinstance(scores, dict):
         return None
-    values: list[float] = []
-    for name in MOOD_NAMES:
-        raw = scores.get(name)
-        values.append(float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw) and raw > 0 else 0.0)
-    total = sum(values)
-    if total <= 0:
-        return None
-    return tuple(value / total for value in values)
+    return normalize_mood_shares([scores.get(name) for name in MOOD_NAMES])
 
 
 def mood_river_columns(coarse_windows: Sequence[AnalysisWindow], total_sec: float, width: float, height: float) -> list[list[dict[str, object]]]:
