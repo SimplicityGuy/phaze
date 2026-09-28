@@ -15,6 +15,7 @@ import structlog
 from phaze.enums.stage import Stage, Status
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import ORPHANED_BUCKET
 from phaze.services.stage_status import (
@@ -46,12 +47,20 @@ logger = structlog.get_logger(__name__)
 # stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
 # the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
 
-# The five pills the UI shows, in matrix order. The 6-stage -> 5-pill remap LANDMINE lives HERE and in
-# _stage_matrix.html: tracklist is omitted; Appr = REVIEW, Exec = APPLY. `.value` keys the row dict so
-# the template reads buckets.review for the Appr pill and buckets.apply for the Exec pill.
+# The stage columns the Files table shows, in column order. `.value` keys the row dict so the template
+# reads buckets.review for the "Review" column and buckets.apply for "Execute". phaze-o71bf added
+# TRACKLIST (it was omitted while its status could only say "has a row or not"); the five-pill
+# _stage_matrix.html and _files_current_status.html still name their own five stages explicitly, so
+# the extra key here changes neither.
+#
+# TRACKLIST is therefore also a disjunct of the "any stage = <status>" OR below (phaze-7sdwt) -- an
+# implementer's decision, not an operator one: the OR means "some stage column on this page shows that
+# status", and a Tracklist column that could show "failed" while "any stage = failed" hid the row would
+# make the filter disagree with the table it filters.
 _FILES_PAGE_STAGES: tuple[Stage, ...] = (
     Stage.METADATA,
     Stage.ANALYZE,
+    Stage.TRACKLIST,
     Stage.PROPOSE,
     Stage.REVIEW,
     Stage.APPLY,
@@ -76,10 +85,16 @@ def _orphan_row_clause(stage: Stage) -> ColumnElement[bool]:
 
 @dataclass
 class FilesPageRow:
-    """One rendered file row: the ORM record + its five DERIVED per-stage buckets (keyed by Stage value)."""
+    """One rendered file row: the ORM record + its DERIVED per-stage buckets (keyed by Stage value).
+
+    ``tracklist_lookup`` is the file's ``tracklist_file_lookups`` row (phaze-o71bf), or ``None`` when
+    no drain slice has seen it -- the detail (outcome, retry date) the Tracklist pill needs beyond
+    the bucket.
+    """
 
     file: FileRecord
     buckets: dict[str, str]
+    tracklist_lookup: TracklistFileLookup | None = None
 
 
 @dataclass
@@ -196,18 +211,32 @@ async def get_files_page(
         async with session.begin_nested():
             stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket, sort=sort)
             result = (await session.execute(stmt)).all()
+            page_rows, has_next = split_sentinel(result, page_size)
+            lookups = await _tracklist_lookups(session, [row[0].id for row in page_rows])
     except Exception:
         logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)
         return FilesPage(rows=[], page=page, page_size=page_size, has_next=False)
-    page_rows, has_next = split_sentinel(result, page_size)
     rows = [
         FilesPageRow(
             file=row[0],
             buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
+            tracklist_lookup=lookups.get(row[0].id),
         )
         for row in page_rows
     ]
     return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)
+
+
+async def _tracklist_lookups(session: AsyncSession, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, TracklistFileLookup]:
+    """Load the page rows' ``tracklist_file_lookups`` in ONE primary-key ``IN`` read (phaze-o71bf).
+
+    Bounded by the page size, never per row: the correlated CASE above already derived each row's
+    bucket, and this only fetches the detail the pill prints (the outcome word and retry date).
+    """
+    if not file_ids:
+        return {}
+    result = await session.execute(select(TracklistFileLookup).where(TracklistFileLookup.file_id.in_(file_ids)))
+    return {lookup.file_id: lookup for lookup in result.scalars()}
 
 
 async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> dict[str, str]:

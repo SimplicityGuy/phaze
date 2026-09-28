@@ -28,6 +28,13 @@ each one means for re-querying.
 a NEGATIVE TTL for ``NOT_FOUND`` (long -- the site does gain tracklists, so it must eventually be
 re-checked) and a short exponential BACKOFF for the transient outcomes. ``FOUND`` rows have
 ``expires_at IS NULL``: a past event's tracklist does not change.
+
+THE PER-FILE COMPANION (phaze-o71bf)
+-------------------------------------
+``set_key`` is a runtime hash of a derived query plus a duration bucket, so nothing could join a
+FILE to the row above: which files a lookup was for, and what it returned for them, was
+unrecoverable from the database. :class:`TracklistFileLookup` is that edge, written by the drain
+per file. It lives in this module because it is meaningless without the set cache it projects.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 -- SQLAlchemy resolves Mapped[] annotations at runtime
 import uuid
 
-from sqlalchemy import DateTime, Index, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -93,3 +100,44 @@ class TracklistLookupCache(TimestampMixin, Base):
     # set_key. This second index serves maintenance and reporting sweeps for expired negatives and
     # ready-to-retry transients, avoiding a sequential scan over one row per unique set.
     __table_args__ = (Index("ix_tracklist_lookup_cache_outcome_expires_at", "outcome", "expires_at"),)
+
+
+class TracklistFileLookup(TimestampMixin, Base):
+    """One row per file the drain has seen: its current lookup outcome, and when it may be asked again.
+
+    Written by :mod:`phaze.services.tracklist_drain` at two moments -- when a queue is built (every
+    file the funnel saw, from the cache's verdict on its set) and when a result is persisted (every
+    member of the set just looked up) -- and read by ``services/stage_status`` as the
+    ``Stage.TRACKLIST`` in-flight / failed / skipped source. A file with no row has never been seen by
+    a drain slice and reads ``not_started``.
+
+    ``file_id`` is the primary key: this is current state, not an attempt log (the set's attempt
+    history is the cache row's ``attempts`` / ``first_attempted_at``). ``ondelete="CASCADE"`` so a
+    deleted file's record cannot outlive it. ``outcome`` is a free ``String(20)`` with no CHECK, for
+    the same reason as :attr:`TracklistLookupCache.outcome`; an unrecognized value matches none of the
+    stage clauses and reads ``not_started`` in both resolver twins.
+    """
+
+    __tablename__ = "tracklist_file_lookups"
+
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE", name="fk_tracklist_file_lookups_file_id_files"),
+        primary_key=True,
+    )
+
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    """A :class:`~phaze.enums.tracklist_candidate.TracklistFileOutcome` value."""
+
+    set_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """The ``tracklist_lookup_cache.set_key`` the file was grouped under -- the cache reference.
+
+    Deliberately not a foreign key: a queued file's set has usually never been asked, so no cache row
+    exists yet, and ``not_eligible`` files belong to no queued set at all (NULL)."""
+
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """When the file's set was last looked up. NULL = never."""
+
+    next_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """When the drain may look the set up again: the cache row's ``expires_at``. NULL = no retry is
+    scheduled (matched, queued now, not eligible, or parked after the transient attempt cap)."""

@@ -86,6 +86,12 @@ from sqlalchemy import ColumnElement, String, and_, case, cast, column as sa_col
 import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, FAILURE_IS_TERMINAL, Stage, Status
+from phaze.enums.tracklist_candidate import (
+    TRACKLIST_FAILED_OUTCOMES,
+    TRACKLIST_INFLIGHT_OUTCOMES,
+    TRACKLIST_SKIPPED_OUTCOMES,
+    TracklistFileOutcome,
+)
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
@@ -96,6 +102,7 @@ from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -260,7 +267,8 @@ def failed_clause(stage: Stage) -> ColumnElement[bool]:
     if stage is Stage.METADATA:
         return exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None)))
     if stage is Stage.TRACKLIST:
-        return false()  # no failure marker on tracklists
+        # phaze-o71bf: a transient lookup failure recorded for this file (the ladder puts done above it).
+        return tracklist_lookup_clause(TRACKLIST_FAILED_OUTCOMES)
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         return exists(select(RenameProposal.id).where(RenameProposal.file_id == FileRecord.id, RenameProposal.status == "failed"))
     if stage is Stage.APPLY:
@@ -270,6 +278,23 @@ def failed_clause(stage: Stage) -> ColumnElement[bool]:
             .where(RenameProposal.file_id == FileRecord.id, ExecutionLog.status == "failed")
         )
     raise ValueError(f"unknown stage: {stage!r}")  # pragma: no cover - exhaustive dispatch above
+
+
+def tracklist_lookup_clause(outcomes: frozenset[TracklistFileOutcome]) -> ColumnElement[bool]:
+    """Return "this file's ``tracklist_file_lookups`` outcome is one of ``outcomes``" (phaze-o71bf).
+
+    The one probe behind TRACKLIST's in-flight / failed / skipped clauses, each passing its outcome
+    set from :mod:`phaze.enums.tracklist_candidate` -- the same sets the Python twin
+    (``enums/stage._tracklist_status``) reads, so the two resolvers share one mapping. A correlated
+    ``exists`` on the table's primary key, so each probe is one index lookup per row. The outcome
+    values are sorted into bound parameters, never interpolated (T-87-05).
+    """
+    return exists(
+        select(TracklistFileLookup.file_id).where(
+            TracklistFileLookup.file_id == FileRecord.id,
+            TracklistFileLookup.outcome.in_(sorted(outcome.value for outcome in outcomes)),
+        )
+    )
 
 
 def ledger_key_for_function(func_name: str) -> ColumnElement[str]:
@@ -307,7 +332,13 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     ``in_flight(propose)`` -- deliberately out of scope (RESEARCH Pitfall 5 / OQ1). The downstream
     presence stages likewise have no file-keyed enqueue, so they return a constant ``false()``,
     matching the Python twin (which defaults ``inflight`` to ``False`` for those stages).
+
+    TRACKLIST is the exception (phaze-o71bf): the drain has no ledger key, but it records every file
+    it queues in ``tracklist_file_lookups``, and that ``queued`` row is its durable "was scheduled"
+    fact -- the same role a ledger row plays for the enrich stages.
     """
+    if stage is Stage.TRACKLIST:
+        return tracklist_lookup_clause(TRACKLIST_INFLIGHT_OUTCOMES)
     func_name = STAGE_TO_FUNCTION.get(stage.value)
     if func_name is None:
         return false()
@@ -719,9 +750,10 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     equivalence test. Drop it into a ``SELECT`` correlated to :class:`~phaze.models.file.FileRecord`.
 
     The two ENRICH stages (metadata/analyze) get a 5-way ladder with the
-    ``skipped_clause`` branch inserted ``done ≻ skipped ≻ failed`` (D-08 force-skip marker). The four
-    downstream stages have NO force-skip affordance (``skipped_clause`` raises on them, D-10), so they
-    keep the original 4-way ladder. ``skipped ≻ failed`` is load-bearing: the force-skip writer is
+    ``skipped_clause`` branch inserted ``done ≻ skipped ≻ failed`` (D-08 force-skip marker). The
+    downstream stages have NO force-skip affordance (``skipped_clause`` raises on them, D-10); TRACKLIST
+    gets its skipped branch in the same slot from its lookup record instead (phaze-o71bf), and the
+    other three keep the original 4-way ladder. ``skipped ≻ failed`` is load-bearing: the force-skip writer is
     additive (never clears ``failed_at``), so ``failed_clause`` may still be True -- CASE order makes
     ``skipped`` win (Pitfall 2), matching the Python twin's branch order.
 
@@ -739,6 +771,10 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     ]
     if stage in ELIGIBLE_AFTER_FAILURE:  # enrich stages only -- skipped_clause raises on downstream (D-10)
         branches.append((skipped_clause(stage), Status.SKIPPED.value))
+    elif stage is Stage.TRACKLIST:
+        # phaze-o71bf: not the force-skip marker (that stays enrich-only) -- the lookup answered, and the
+        # answer gives this file no tracklist. Same slot in the ladder: done ≻ skipped ≻ failed.
+        branches.append((tracklist_lookup_clause(TRACKLIST_SKIPPED_OUTCOMES), Status.SKIPPED.value))
     branches.append((failed_clause(stage), Status.FAILED.value))
     return case(*branches, else_=Status.NOT_STARTED.value)
 

@@ -17,15 +17,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, select
+from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
-from phaze.models.tracklist_lookup_cache import TracklistLookupCache
+from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome, TracklistFileOutcome, tracklist_file_outcome
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup, TracklistLookupCache
+from phaze.services.bulk_insert import chunk_rows
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
+    import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -127,6 +129,15 @@ class CacheVerdict:
         if self.decision is CacheDecision.HIT_POSITIVE and self.entry is not None:
             return self.entry.external_id
         return None
+
+
+def verdict_for(entry: TracklistLookupCache, now: datetime) -> CacheVerdict:
+    """The verdict a stored row gives right now -- what :func:`lookup_many` would return for its key.
+
+    For a caller that already holds the row (the drain's persist step, straight after
+    :func:`record_outcome`) and must not spend a second round trip re-reading it.
+    """
+    return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, _aware(now)), entry=entry)
 
 
 def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
@@ -426,3 +437,83 @@ async def purge_expired_negatives(session: AsyncSession, *, now: datetime | None
         )
     )
     return cast("CursorResult[Any]", result).rowcount or 0
+
+
+# Per-file outcomes (phaze-o71bf)
+
+
+@dataclass(frozen=True, slots=True)
+class FileOutcome:
+    """What ``tracklist_file_lookups`` should say about one file -- decided before anything is written."""
+
+    file_id: uuid.UUID
+    outcome: TracklistFileOutcome
+    set_key: str | None = None
+    last_attempt_at: datetime | None = None
+    next_eligible_at: datetime | None = None
+
+
+def file_outcome(file_id: uuid.UUID, verdict: CacheVerdict) -> FileOutcome:
+    """Project a set's cache verdict onto one of its member files.
+
+    ``next_eligible_at`` is the cache row's ``expires_at`` only while that timestamp really is the
+    next time the drain will ask: a held negative, a held low-confidence result, or a transient in
+    backoff. A queued set is eligible NOW, a match never expires, and a parked transient
+    (``TRANSIENT_EXHAUSTED``) waits for an operator rather than a clock -- all three store NULL.
+    """
+    entry = verdict.entry
+    outcome = tracklist_file_outcome(verdict.decision)
+    retry_scheduled = verdict.decision in (CacheDecision.SUPPRESSED_NEGATIVE, CacheDecision.LOW_CONFIDENCE_HOLD, CacheDecision.BACKOFF)
+    return FileOutcome(
+        file_id=file_id,
+        outcome=outcome,
+        set_key=verdict.set_key,
+        last_attempt_at=entry.last_attempted_at if entry is not None else None,
+        next_eligible_at=entry.expires_at if entry is not None and retry_scheduled else None,
+    )
+
+
+async def record_file_outcomes(session: AsyncSession, outcomes: Iterable[FileOutcome], *, now: datetime | None = None) -> int:
+    """Upsert one ``tracklist_file_lookups`` row per file; return how many rows actually changed.
+
+    The queue build calls this with EVERY media file the funnel saw, once per drain slice, so the
+    upsert only touches a row whose content differs (``ON CONFLICT ... DO UPDATE ... WHERE ... IS
+    DISTINCT FROM``): an unchanged file costs an index probe, not a dead tuple. Duplicate file ids are
+    collapsed last-wins first, since one INSERT may not update the same row twice. Chunked under the
+    bind-parameter cap by :func:`phaze.services.bulk_insert.chunk_rows`. The caller commits.
+    """
+    moment = now or datetime.now(UTC)
+    by_file = {item.file_id: item for item in outcomes}
+    rows = [
+        {
+            "file_id": item.file_id,
+            "outcome": item.outcome.value,
+            "set_key": item.set_key,
+            "last_attempt_at": item.last_attempt_at,
+            "next_eligible_at": item.next_eligible_at,
+        }
+        for item in by_file.values()
+    ]
+    changed = 0
+    for chunk in chunk_rows(rows):
+        statement = pg_insert(TracklistFileLookup).values(chunk)
+        excluded = statement.excluded
+        upsert = statement.on_conflict_do_update(
+            index_elements=[TracklistFileLookup.file_id],
+            set_={
+                "outcome": excluded.outcome,
+                "set_key": excluded.set_key,
+                "last_attempt_at": excluded.last_attempt_at,
+                "next_eligible_at": excluded.next_eligible_at,
+                "updated_at": moment,
+            },
+            where=or_(
+                TracklistFileLookup.outcome.is_distinct_from(excluded.outcome),
+                TracklistFileLookup.set_key.is_distinct_from(excluded.set_key),
+                TracklistFileLookup.last_attempt_at.is_distinct_from(excluded.last_attempt_at),
+                TracklistFileLookup.next_eligible_at.is_distinct_from(excluded.next_eligible_at),
+            ),
+        )
+        result = await session.execute(upsert)
+        changed += cast("CursorResult[Any]", result).rowcount or 0
+    return changed

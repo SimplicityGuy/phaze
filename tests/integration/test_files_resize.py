@@ -35,6 +35,7 @@ import pytest
 
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline import FILES_SORT
+from phaze.services.pipeline import _FILES_PAGE_STAGES
 
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-_RESIZABLE_COLUMNS = ["File", "Type", "Metadata", "Analyze", "Propose", "Review", "Execute"]
+_RESIZABLE_COLUMNS = ["File", "Type", "Metadata", "Analyze", "Tracklist", "Propose", "Review", "Execute"]
 _ALL_COLUMNS = [*_RESIZABLE_COLUMNS, "Current state", "Details"]
 
 
@@ -78,7 +79,7 @@ async def test_every_header_carries_exactly_one_resize_handle(client: AsyncClien
 
     handles = re.findall(r'data-col-resize-handle="([^"]+)"', head)
     assert handles == [column.label for column in FILES_SORT.columns]
-    assert len(handles) == len(set(handles)) == 7
+    assert len(handles) == len(set(handles)) == len(_RESIZABLE_COLUMNS)
 
 
 @pytest.mark.asyncio
@@ -151,5 +152,6 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     row = body[body.index("<tbody") :]
 
-    # Five stage cells, each still carrying the no-wrap contract cvn6.2 introduced.
-    assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == 5
+    # One stage cell per Files stage column (phaze-o71bf added Tracklist), each still carrying the
+    # no-wrap contract cvn6.2 introduced.
+    assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == len(_FILES_PAGE_STAGES)

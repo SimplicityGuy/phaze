@@ -225,3 +225,80 @@ the admin UI (phaze-fq9h.8) can surface as "needs a human look". Five is chosen 
 spike's measured Turnstile flakiness (~6/8 success): five independent attempts at that rate leave
 a ~0.03% chance of a set being parked purely by bad luck, while capping the budget any single
 pathological set can burn at five requests."""
+
+
+class TracklistFileOutcome(enum.StrEnum):
+    """Where ONE file stands with the 1001TL drain -- the per-file twin of :class:`LookupOutcome` (phaze-o71bf).
+
+    :class:`LookupOutcome` and :class:`CacheDecision` describe a UNIQUE SET, keyed by a runtime hash
+    of its derived query, so nothing in the database could say which files a lookup was for or what it
+    returned. The drain now writes this per file (``tracklist_file_lookups``) when it builds its queue
+    and when it persists a result, and ``Stage.TRACKLIST``'s status is derived from it.
+
+    Operator decision 2026-09-27 (durable record: bead phaze-o71bf comment). Question as put: "How
+    deep should per-file tracklist tracking (issues 4 and 7) go?" Answer as given (selected option
+    label): "Real per-file outcome (Recommended)". The member list below is the implementer's
+    mapping of that decision, not a further operator answer: ``low_confidence`` is kept apart from
+    ``not_found`` because phaze-no6sv made it a separate, score-tiered hold rather than a negative.
+    """
+
+    QUEUED = "queued"
+    """In the drain's current work list -- scheduled, not yet answered. The ``in_flight`` bucket."""
+
+    MATCHED = "matched"
+    """The file's set resolved to a tracklist. ``done`` when the file carries a ``tracklists`` row;
+    when it does not (a duplicate link below the propagation gate), it reads ``skipped``."""
+
+    NOT_FOUND = "not_found"
+    """1001TL has nothing for the set; held until ``next_eligible_at`` (the negative TTL)."""
+
+    LOW_CONFIDENCE = "low_confidence"
+    """The search returned only low-scoring rows; held until ``next_eligible_at`` (phaze-no6sv)."""
+
+    RETRY_PENDING = "retry_pending"
+    """A transient failure (blocked, render/search/parse failure). Retried at ``next_eligible_at``;
+    ``NULL`` there means the attempt cap parked it for an operator."""
+
+    NOT_ELIGIBLE = "not_eligible"
+    """The drain will not look this file up: classified a track (or undecided), or its tracks are
+    already known from a CUE companion or embedded tags."""
+
+
+TRACKLIST_INFLIGHT_OUTCOMES: frozenset[TracklistFileOutcome] = frozenset({TracklistFileOutcome.QUEUED})
+"""Outcomes that put ``Stage.TRACKLIST`` in the ``in_flight`` bucket."""
+
+TRACKLIST_FAILED_OUTCOMES: frozenset[TracklistFileOutcome] = frozenset({TracklistFileOutcome.RETRY_PENDING})
+"""Outcomes that put ``Stage.TRACKLIST`` in the ``failed`` bucket. Only transients: a clean "no" is not a failure."""
+
+TRACKLIST_SKIPPED_OUTCOMES: frozenset[TracklistFileOutcome] = frozenset(
+    {
+        TracklistFileOutcome.MATCHED,
+        TracklistFileOutcome.NOT_FOUND,
+        TracklistFileOutcome.LOW_CONFIDENCE,
+        TracklistFileOutcome.NOT_ELIGIBLE,
+    }
+)
+"""Outcomes that put ``Stage.TRACKLIST`` in the ``skipped`` bucket when no ``tracklists`` row exists.
+
+The lookup reached an answer that gives this file no tracklist, and the drain will not ask again
+before ``next_eligible_at`` (if ever). ``MATCHED`` is here only for the row-less case; a file WITH a
+row reads ``done`` first, because the ladder puts ``done`` above ``skipped``."""
+
+
+def tracklist_file_outcome(decision: CacheDecision) -> TracklistFileOutcome:
+    """Map a set's cache verdict onto what it means for each of the set's files.
+
+    The single mapping both drain write paths use -- the queue build (from the cache) and the
+    persist (from the verdict of the row it just wrote) -- so the two can never describe the same
+    cache row differently.
+    """
+    if decision.should_query:
+        return TracklistFileOutcome.QUEUED
+    if decision is CacheDecision.HIT_POSITIVE:
+        return TracklistFileOutcome.MATCHED
+    if decision is CacheDecision.SUPPRESSED_NEGATIVE:
+        return TracklistFileOutcome.NOT_FOUND
+    if decision is CacheDecision.LOW_CONFIDENCE_HOLD:
+        return TracklistFileOutcome.LOW_CONFIDENCE
+    # BACKOFF and TRANSIENT_EXHAUSTED: we still do not know whether the set is on 1001TL.
+    return TracklistFileOutcome.RETRY_PENDING
