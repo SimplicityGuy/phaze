@@ -1168,3 +1168,29 @@ class TestRecordFileOutcomes:
         assert await record_file_outcomes(session, [row], now=NOW) == 0
         assert await record_file_outcomes(session, [replace(row, outcome=TracklistFileOutcome.QUEUED)], now=NOW) == 1
         assert await record_file_outcomes(session, [], now=NOW) == 0
+
+
+class TestQueueFileOutcomesUnderATarget:
+    async def test_an_exact_set_request_records_only_the_target_file(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A ``target_file_ids`` slice describes the target alone, never its set's other members.
+
+        The other member is a byte-identical duplicate, so it shares the target's set in both the work
+        list and, once answered, the cache -- the two places ``file_outcomes`` must narrow.
+        """
+        shared = new_sha()
+        target = await make_file(original_filename=PENDING_FILENAME, sha256=shared)
+        other = await make_file(original_filename=PENDING_FILENAME, sha256=shared)
+        for file in (target, other):
+            session.add(FileMetadata(file_id=file.id, duration=3600.0))
+        await session.flush()
+
+        queued = await build_drain_queue(session, target_file_ids=[target.id], now=NOW)
+        (entry,) = queued.entries
+        assert {m.file_id for m in entry.unique_set.members} == {target.id, other.id}
+        assert [(o.file_id, o.outcome) for o in queued.file_outcomes()] == [(target.id, TracklistFileOutcome.QUEUED)]
+
+        await record_outcome(session, set_key=entry.set_key, query_text=entry.derived.query, outcome=LookupOutcome.NOT_FOUND, now=NOW)
+        await session.flush()
+        answered = await build_drain_queue(session, target_file_ids=[target.id], now=NOW)
+        assert answered.entries == ()
+        assert [(o.file_id, o.outcome) for o in answered.file_outcomes()] == [(target.id, TracklistFileOutcome.NOT_FOUND)]
