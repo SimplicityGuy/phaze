@@ -158,17 +158,31 @@ async def test_an_edit_to_a_different_file_in_the_directory_is_ignored(tmp_path:
 
 @pytest.mark.asyncio
 async def test_a_burst_of_touches_within_the_settle_window_coalesces_to_one_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Several rapid edits inside one settle window still produce exactly one reload, of the
-    LAST content written."""
+    """Several rapid touches inside one settle window still produce exactly one reload, of the
+    LAST content written.
+
+    Drives the debounce timer directly via ``watcher._on_touch()`` -- what the watchdog event
+    handler calls through ``call_soon_threadsafe``, the exact code path under test -- rather than
+    through a real observer thread polling real filesystem events. The earlier version wrote to
+    disk and waited a fixed multiple of ``_POLL_INTERVAL`` between writes, relying on the real
+    PollingObserver's background thread noticing each write inside that window; under host load
+    (this gate runs alongside other full suites sharing the machine) that OS thread's own poll
+    cadence could slip past the settle window, so a touch some measured evidence expected to
+    coalesce instead landed as its own separate reload -- a real flake, not a bug in the trigger.
+    No real observer is started here, so there is no cross-thread OS scheduling for load to
+    perturb; the only remaining wall-clock dependency is the settle wait below, which -- as in
+    every other test in this file -- only needs to be reached EVENTUALLY, not on a tight
+    inter-event schedule.
+    """
+    target = tmp_path / RUNTIME_TOML_NAME
     store = _store(tmp_path)
     spy = _spy_reload(store, monkeypatch)
     watcher = RuntimeConfigWatcher(store, tmp_path, polling=True, poll_interval=_POLL_INTERVAL, settle_seconds=_SETTLE_SECONDS)
-    watcher.start()
+    # Deliberately no watcher.start(): see the docstring above.
     try:
-        target = tmp_path / RUNTIME_TOML_NAME
         for level in ("DEBUG", "WARNING", "ERROR"):
             target.write_text(f'log_level = "{level}"\n', encoding="utf-8")
-            await asyncio.sleep(_POLL_INTERVAL * 2)  # inside the settle window: each touch resets it
+            watcher._on_touch()  # what on_created/on_modified/on_deleted schedule via call_soon_threadsafe
 
         await _wait_for_call_count(spy, 1)
         await asyncio.sleep(_SETTLE_SECONDS * 2)
