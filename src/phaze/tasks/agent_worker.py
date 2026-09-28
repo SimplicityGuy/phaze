@@ -50,6 +50,8 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING, LANE_TASKS, LANES
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
@@ -307,6 +309,21 @@ async def startup(ctx: dict[str, Any]) -> None:
     # its environment and configures its own -- see phaze/telemetry/context.py.
     configure_telemetry("agent")
 
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging/telemetry allow -- matching the api lifespan's and control worker's
+    # placement (src/phaze/main.py, src/phaze/tasks/controller.py). RuntimeConfigStore's
+    # constructor VALIDATES the process's start-time reloadable settings (e.g. WORKER_MAX_JOBS)
+    # and raises ValueError on an invalid one. Implementer decision (phaze-mvq8z.5): let it
+    # propagate and refuse agent-worker startup, the same fail-fast contract the
+    # `isinstance(cfg, AgentSettings)` check just above already applies to a role mismatch --
+    # an invalid reloadable setting is an operator misconfiguration that should stop the
+    # process, not run degraded.
+    runtime_config_store = get_runtime_config_store()
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
+    ctx["runtime_config_watcher"].start()
+
     # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
     # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
     # per-lane knob (concurrency = min(lane knob, worker_max_jobs)); logging it here (AFTER
@@ -452,6 +469,14 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     queue_cache_redis = getattr(queue, "cache_redis", None)
     if queue_cache_redis is not None:
         await queue_cache_redis.aclose()
+
+    # phaze-mvq8z.5: reverse of construction -- it was built right after telemetry, before
+    # everything else in startup, so it's stopped last among this process's own resources,
+    # mirroring main.py's lifespan and the control worker's shutdown. `.get` guards a startup
+    # that failed before reaching it.
+    runtime_config_watcher = ctx.get("runtime_config_watcher")
+    if runtime_config_watcher is not None:
+        await runtime_config_watcher.stop()
 
     # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
     shutdown_telemetry()

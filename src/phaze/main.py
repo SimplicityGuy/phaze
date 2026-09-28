@@ -48,6 +48,8 @@ from phaze.routers import (
     tags,
     tracklists,
 )
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
@@ -81,6 +83,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     # Configure logging before migrations so startup failures use the normal pipeline.
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
+
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging allows. RuntimeConfigStore's constructor VALIDATES the process's start-time
+    # reloadable settings (e.g. WORKER_MAX_JOBS) and raises ValueError on an invalid one -- the
+    # same fail-fast contract as a pydantic settings ValidationError elsewhere in this function,
+    # and an implementer decision (phaze-mvq8z.5): an invalid reloadable setting refuses api
+    # startup entirely rather than degrading silently, exactly like AgentSettings/ControlSettings
+    # already do for every other setting. Doing this before telemetry/migrations means that
+    # failure is reported through the just-configured logging pipeline.
+    runtime_config_store = get_runtime_config_store()
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    _app.state.runtime_config_watcher = build_watcher(runtime_config_store)
+    _app.state.runtime_config_watcher.start()
 
     # Telemetry is opt-in and failure-isolated; configure it before migrations for startup traces.
     configure_telemetry("api")
@@ -146,6 +162,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
     await engine.dispose()
+    # Reverse of construction: the runtime-config watcher/SIGHUP trigger was built right after
+    # logging, before everything else -- stop it last among the app's own resources (it may be
+    # mid-debounce-sleep; stop() bounds the observer-thread join to 10s).
+    await _app.state.runtime_config_watcher.stop()
     # LAST, after every resource that could still emit. Bounded by
     # PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS (default 3,000 ms) and never raises, so a collector
     # that is down cannot hold a container restart open.

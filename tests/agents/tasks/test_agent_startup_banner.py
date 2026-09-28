@@ -192,6 +192,23 @@ async def test_shutdown_closes_the_api_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shutdown_stops_the_runtime_config_watcher() -> None:
+    """shutdown() must also stop ctx['runtime_config_watcher'] (phaze-mvq8z.5's SIGHUP +
+    directory-watch trigger, stopped last per its own comment) when startup populated it --
+    guarded the same ``is not None`` way as api_client above, so an empty ctx
+    (``test_shutdown_tolerates_missing_ctx_keys``) keeps no-op-ing."""
+    import phaze.tasks.agent_worker as aw
+
+    watcher = MagicMock()
+    watcher.stop = AsyncMock()
+
+    ctx: dict[str, Any] = {"runtime_config_watcher": watcher}
+    await aw.shutdown(ctx)
+
+    watcher.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_tolerates_missing_ctx_keys() -> None:
     """shutdown() must no-op when ctx is empty (none of the keys were set during startup)."""
     import phaze.tasks.agent_worker as aw
