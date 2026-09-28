@@ -37,8 +37,8 @@ class RedisPasswordSettingsMixin(PydanticBaseSettings):
     )
 
     # phaze-1g89i: the RAW (un-encoded) Redis AUTH password. Mirrors the SAME env var that
-    # docker-compose.yml's `redis-server --requirepass "${REDIS_PASSWORD}"` and its
-    # `redis-cli -a "${REDIS_PASSWORD}"` healthcheck consume verbatim -- both accept ANY byte
+    # docker-compose.yml's `valkey-server --requirepass "${REDIS_PASSWORD}"` and its
+    # `valkey-cli -a "${REDIS_PASSWORD}"` healthcheck consume verbatim -- both accept ANY byte
     # sequence, no URL parsing involved. `redis.asyncio.Redis.from_url(redis_url)`, by
     # contrast, RFC-3986-parses the DSN and percent-DECODES the userinfo: a password
     # containing `/`, `#`, or `?` used to break compose's raw string interpolation into

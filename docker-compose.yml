@@ -173,13 +173,17 @@ services:
 
   redis:
     restart: unless-stopped  # phaze-ewpa: cache must come back with the stack after a reboot/blip
-    image: redis:8-alpine
+    # phaze-8o294: Valkey, the same image the test harness and CI run (justfile `test_redis_image`;
+    # tests/agents/deployment/test_redis_image_pin.py keeps the pins in step). The service keeps the
+    # name `redis` and port 6379 -- redis_url defaults, REDIS_BIND_IP and the agent compose files
+    # all point at them -- and clients stay on redis-py, which speaks Valkey's wire protocol.
+    image: valkey/valkey:9-alpine
     # Phase 29 D-05 / AUTH-03: --requirepass with REDIS_PASSWORD interpolation
     # (`${VAR:?msg}` fails fast at compose-parse time if unset). The agent-side
     # half of AUTH-03 lives in AgentSettings._enforce_redis_password_in_production
     # (Plan 02): production agents reject passwordless redis_url.
     command:
-      - "redis-server"
+      - "valkey-server"
       - "--requirepass"
       - "${REDIS_PASSWORD:?REDIS_PASSWORD required}"
     ports:
@@ -188,9 +192,11 @@ services:
       # it. WITHOUT an explicit IP prefix, docker binds to 0.0.0.0.
       - "${REDIS_BIND_IP:-127.0.0.1}:6379:6379"
     healthcheck:
-      # --no-auth-warning suppresses redis-cli's stderr warning about passing
-      # the password on the command line. The ping itself still requires auth.
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      # --no-auth-warning suppresses valkey-cli's stderr warning about passing
+      # the password on the command line. This proves the server is up, NOT that
+      # the password works: valkey-cli (like redis-cli before it) exits 0 on a
+      # NOAUTH/WRONGPASS reply, measured 2026-09-27 (phaze-8o294).
+      test: ["CMD", "valkey-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
