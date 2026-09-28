@@ -47,8 +47,9 @@ from phaze.config import export_llm_api_keys, get_settings
 from phaze.database import build_async_engine
 from phaze.logging_config import configure_logging
 from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_backends import build_backends_registry_reloader
 from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
-from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
+from phaze.runtime_config_triggers import build_backends_watcher, build_watcher, install_sighup_handler
 from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
@@ -221,6 +222,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     # a SECOND reload once the boot-reconcile retries below have given the schema a realistic
     # chance to be there.
     runtime_config_store = get_runtime_config_store()
+    # phaze-mvq8z.8: re-apply configure_logging (already idempotent) on every reload that
+    # changes log_level, in every process type. Registered BEFORE reload("startup"), matching
+    # main.py's lifespan, so that first reload's file/override-layer log_level (folded in below,
+    # after the settings-only value the bare configure_logging() call above used) takes effect.
+    runtime_config_store.register_applier("log_level", lambda _old, new: configure_logging(level=new.log_level))
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
@@ -252,6 +258,14 @@ async def startup(ctx: dict[str, Any]) -> None:
     instrument_engine(task_engine)
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
+
+    # phaze-mvq8z.8: the backends.toml registry hook + its own directory watch, now that
+    # ctx["async_session"] (cloud_job, for the in-flight-removal veto) exists. Registered here
+    # rather than beside the runtime-config store above because it needs task_engine's
+    # sessionmaker, which doesn't exist yet at that point in startup.
+    build_backends_registry_reloader(runtime_config_store, cast("ControlSettings", cfg), ctx["async_session"])
+    ctx["runtime_config_backends_watcher"] = build_backends_watcher(runtime_config_store)
+    ctx["runtime_config_backends_watcher"].start()
 
     # Phase 19: Discogsography client for Discogs release matching
     ctx["discogs_client"] = DiscogsographyClient(base_url=cfg.discogsography_url)
@@ -336,10 +350,18 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     logger.info("phaze.controller shutdown")
 
     # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
-    # through goes away.
+    # through goes away. Reverse of construction: built LAST in startup (after the backends
+    # watcher below), so it stops FIRST here.
     runtime_config_listener = ctx.get("runtime_config_listener")
     if runtime_config_listener is not None:
         await runtime_config_listener.stop()
+
+    # phaze-mvq8z.8: reverse of construction -- it was built right after ctx["async_session"],
+    # which is bound to task_engine, so it stops before that engine is disposed below (and after
+    # the listener above, built later in startup).
+    runtime_config_backends_watcher = ctx.get("runtime_config_backends_watcher")
+    if runtime_config_backends_watcher is not None:
+        await runtime_config_backends_watcher.stop()
 
     task_engine = ctx.get("task_engine")
     if task_engine is not None:

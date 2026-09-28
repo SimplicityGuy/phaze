@@ -45,6 +45,7 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from phaze.config import get_settings
+from phaze.config_control import ControlSettings, backends_config_path
 from phaze.runtime_config import RUNTIME_TOML_NAME
 
 
@@ -251,6 +252,39 @@ def build_watcher(store: RuntimeConfigStore) -> RuntimeConfigWatcher:
     return RuntimeConfigWatcher(
         store,
         Path(settings.runtime_config_dir),
+        polling=settings.runtime_config_watch_polling,
+        poll_interval=settings.runtime_config_watch_poll_interval_seconds,
+        settle_seconds=settings.runtime_config_watch_debounce_seconds,
+    )
+
+
+def build_backends_watcher(store: RuntimeConfigStore) -> RuntimeConfigWatcher:
+    """A SECOND watcher, over ``backends.toml``'s own directory (``phaze-mvq8z.8``).
+
+    ``PHAZE_BACKENDS_CONFIG_FILE`` (default ``/etc/phaze/backends.toml``) is configured
+    independently of ``runtime_config_dir`` and is not guaranteed to live inside it -- the
+    default paths are two different directories entirely (``/etc/phaze/backends.toml`` vs.
+    ``/etc/phaze/runtime/runtime.toml``), and homelab's actual deployment mounts them as two
+    separate volumes. Reusing :class:`RuntimeConfigWatcher` with a DIFFERENT ``directory`` /
+    ``target_name`` (rather than teaching the first watcher to watch two filenames across two
+    directories) keeps each watcher's debounce/hash-compare state -- and its "the directory
+    mount, never a single file" requirement, ADR-0019 (runtime config hot-reload) §12 -- scoped
+    to the one file it owns. Control-plane processes only (``api``, the control worker): an
+    agent process holds no backend registry to reload (``AgentSettings`` has no ``backends``
+    field), so ``src/phaze/tasks/agent_worker.py`` does not call this.
+
+    Reuses ``runtime_config_watch_polling``/``..._poll_interval_seconds``/``..._debounce_seconds``
+    rather than adding a second set of knobs for a second directory -- an implementer decision:
+    ADR-0019 (runtime config hot-reload) does not call for backends.toml to have its own watch
+    cadence, and this file's own D-09/D-08 evidence (native watchdog silently missing every
+    Colima/virtiofs host edit) applies identically to whichever directory is being watched.
+    """
+    settings = get_settings()
+    path = backends_config_path(ControlSettings.model_config)
+    return RuntimeConfigWatcher(
+        store,
+        path.parent,
+        target_name=path.name,
         polling=settings.runtime_config_watch_polling,
         poll_interval=settings.runtime_config_watch_poll_interval_seconds,
         settle_seconds=settings.runtime_config_watch_debounce_seconds,

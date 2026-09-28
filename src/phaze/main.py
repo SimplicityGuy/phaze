@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import contextlib
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, FastAPI
 import redis.asyncio as redis_async
@@ -50,8 +51,9 @@ from phaze.routers import (
     tracklists,
 )
 from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_backends import build_backends_registry_reloader
 from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
-from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
+from phaze.runtime_config_triggers import build_backends_watcher, build_watcher, install_sighup_handler
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
@@ -61,6 +63,10 @@ from phaze.telemetry.db import instrument_engine
 from phaze.telemetry.http import TelemetryMiddleware
 from phaze.web.saq_mount import build_saq_app
 from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -105,6 +111,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # anything an operator already set, so it takes effect immediately rather than waiting for
     # this process's first NOTIFY/poll tick or a SIGHUP.
     runtime_config_store = get_runtime_config_store()
+    # phaze-mvq8z.8: re-apply configure_logging (already idempotent) on every reload that
+    # changes log_level, in every process type. Registered BEFORE reload("startup") so that
+    # first reload's file/override-layer log_level (folded in below, after the settings-only
+    # value the bare configure_logging() call above used) is what actually takes effect.
+    runtime_config_store.register_applier("log_level", lambda _old, new: configure_logging(level=new.log_level))
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     _app.state.runtime_config_watcher = build_watcher(runtime_config_store)
@@ -120,6 +131,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Refuse startup on an unreachable database instead of deferring failure to requests.
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
+
+    # phaze-mvq8z.8: the backends.toml registry hook + its own directory watch, now that the
+    # database (cloud_job, for the in-flight-removal veto) is confirmed reachable. Registered
+    # AFTER the SELECT 1 check above, unlike log_level, because a SIGHUP racing startup must
+    # never query cloud_job before migrations have run.
+    build_backends_registry_reloader(runtime_config_store, cast("ControlSettings", settings), async_session)
+    _app.state.runtime_config_backends_watcher = build_backends_watcher(runtime_config_store)
+    _app.state.runtime_config_backends_watcher.start()
 
     async with async_session() as bootstrap_session:
         await ensure_dev_agent(bootstrap_session)
@@ -186,6 +205,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     if controller_cache_redis is not None:
         await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
+    # Reverse of construction: the backends.toml watcher was built right after the DB
+    # reachability check, so it stops before the engine it depends on is disposed.
+    await _app.state.runtime_config_backends_watcher.stop()
     await engine.dispose()
     # Reverse of construction: the runtime-config watcher/SIGHUP trigger was built right after
     # logging, before everything else -- stop it last among the app's own resources (it may be
