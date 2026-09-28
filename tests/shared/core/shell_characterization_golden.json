@@ -8,6 +8,7 @@
     "GET /admin/agents/compute-lanes/{backend_id}",
     "GET /admin/agents/{agent_id}/_activity",
     "GET /admin/runtime-config/_table",
+    "GET /api/internal/agent/config",
     "GET /api/internal/agent/whoami",
     "GET /api/v1/duplicates",
     "GET /audit/",

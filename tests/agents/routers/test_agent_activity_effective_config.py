@@ -20,6 +20,7 @@ import pytest_asyncio
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers import admin_agents
+from phaze.routers.admin_agents import _effective_config_view
 
 
 if TYPE_CHECKING:
@@ -117,3 +118,51 @@ async def test_effective_config_degrades_to_a_friendly_line_when_absent(smoke_wi
 
     assert "Effective runtime config" in body
     assert "Not yet reported" in body
+
+
+# Unit-level coverage of every degrade branch in `_effective_config_view` -- the HTTP-level fixtures
+# above exercise only the two end-to-end shapes (fully present / entirely absent); these pin the
+# reader's behavior on every malformed-in-between shape directly, without a DB round trip.
+
+
+def test_effective_config_view_none_for_no_last_status() -> None:
+    assert _effective_config_view(None) is None
+    assert _effective_config_view({}) is None
+
+
+def test_effective_config_view_none_for_non_dict_effective_config() -> None:
+    assert _effective_config_view({"effective_config": "not-a-dict"}) is None
+
+
+def test_effective_config_view_none_for_missing_values_or_sources() -> None:
+    assert _effective_config_view({"effective_config": {"sources": {}}}) is None
+    assert _effective_config_view({"effective_config": {"values": {}}}) is None
+    assert _effective_config_view({"effective_config": {"values": "nope", "sources": {}}}) is None
+
+
+def test_effective_config_view_defaults_source_to_default_when_unlisted() -> None:
+    view = _effective_config_view({"effective_config": {"values": {"log_level": "INFO"}, "sources": {}}})
+    assert view is not None
+    assert view["rows"] == [{"key": "log_level", "value": "INFO", "source": "default"}]
+    assert view["restart_only_keys"] == []
+    assert view["last_reload"] is None
+
+
+def test_effective_config_view_ignores_a_non_dict_last_reload() -> None:
+    view = _effective_config_view({"effective_config": {"values": {}, "sources": {}, "last_reload": "not-a-dict"}})
+    assert view is not None
+    assert view["last_reload"] is None
+
+
+def test_effective_config_view_treats_a_non_numeric_at_as_absent() -> None:
+    view = _effective_config_view(
+        {"effective_config": {"values": {}, "sources": {}, "last_reload": {"source": "poll", "outcome": "applied", "error": None, "at": "n/a"}}}
+    )
+    assert view is not None
+    assert view["last_reload"] == {"source": "poll", "outcome": "applied", "error": None, "at": None}
+
+
+def test_effective_config_view_ignores_a_non_list_restart_only_keys() -> None:
+    view = _effective_config_view({"effective_config": {"values": {}, "sources": {}, "restart_only_keys": "not-a-list"}})
+    assert view is not None
+    assert view["restart_only_keys"] == []
