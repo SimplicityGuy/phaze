@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects import postgresql
 
-from phaze.config import get_settings, settings
+from phaze.config import get_settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -93,9 +93,7 @@ def _cloud_compute_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     held in AWAITING_CLOUD, backfill resets+routes), so pin the singleton's ``backends`` to one
     compute backend. The cloud-off / k8s tests override it inside their own bodies.
     """
-    from phaze.config import settings
-
-    monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_COMPUTE_BACKEND])
 
 
 def _make_file() -> FileRecord:
@@ -671,7 +669,6 @@ __all__ = [
     "pytest",
     "seed_active_agent",
     "select",
-    "settings",
     "text",
     "timedelta",
     "update",

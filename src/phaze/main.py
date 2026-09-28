@@ -10,7 +10,7 @@ import redis.asyncio as redis_async
 from sqlalchemy import select, text
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import async_session, engine, run_migrations
 from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
@@ -77,6 +77,8 @@ async def _orphan_refresh_loop() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Construct application resources in dependency order and close them in reverse."""
+    settings = get_settings()
+
     # Configure logging before migrations so startup failures use the normal pipeline.
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
 

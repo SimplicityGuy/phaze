@@ -35,7 +35,7 @@ import os
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.main import create_app
 from tests.db_guard import integration_dsns
 
@@ -53,14 +53,17 @@ _CACHE_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 async def test_lifespan_launches_and_cleanly_cancels_orphan_task(monkeypatch: pytest.MonkeyPatch) -> None:
     """The lifespan launches a background orphan-refresh task and cancels+awaits it cleanly on shutdown."""
     # Neutralise the incidental startup collaborators (see module docstring) so the test exercises the
-    # orphan-task wiring, not the alembic/SAQ-UI/broker-default machinery.
+    # orphan-task wiring, not the alembic/SAQ-UI/broker-default machinery. ``phaze.main.lifespan`` reads
+    # ``get_settings()`` fresh on each call (phaze-mvq8z.2), so patching the same cached instance here
+    # reaches it.
+    settings = get_settings()
     monkeypatch.setattr(settings, "auto_migrate", False)
     monkeypatch.setattr(settings, "enable_saq_ui", False)
     monkeypatch.setattr(settings, "queue_url", _BROKER_DSN)
     monkeypatch.setattr(settings, "redis_url", _CACHE_REDIS_URL)
 
     # 92-05 (DI-92-04-02): the module-level ``engine`` / ``async_session`` bind to
-    # ``settings.database_url`` -- the docker ``postgres:5432`` default -- AT IMPORT, which does not
+    # ``get_settings().database_url`` -- the docker ``postgres:5432`` default -- AT IMPORT, which does not
     # resolve locally (``socket.gaierror`` at the lifespan's ``engine.begin(); SELECT 1`` probe, line
     # 121). Setting ``TEST_DATABASE_URL`` only steers the test FIXTURES, never this already-built engine,
     # so the test crashed before ever reaching the orphan-task assertions. Rebind both to the reachable

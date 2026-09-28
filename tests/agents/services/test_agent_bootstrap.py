@@ -25,7 +25,7 @@ from pydantic import SecretStr
 import pytest
 from sqlalchemy import func, select
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models.agent import LEGACY_AGENT_ID, Agent
 from phaze.models.scan_batch import ScanBatch
 from phaze.services.agent_bootstrap import ensure_dev_agent
@@ -48,6 +48,7 @@ async def test_ensure_dev_agent_seeds_when_table_empty(
         await session.delete(seeded)
         await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -86,6 +87,7 @@ async def test_ensure_dev_agent_noop_when_usable_agent_exists(
     session.add(Agent(id="some-real-agent", name="some-real-agent", token_hash="fakehash" * 8, scan_roots=["/data/music"]))
     await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -127,6 +129,7 @@ async def test_ensure_dev_agent_seeds_past_revoked_legacy_marker(
     )
     await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -175,6 +178,7 @@ async def test_ensure_dev_agent_revoked_same_id_row_stays_revoked(
     )
     await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -226,6 +230,7 @@ async def test_ensure_dev_agent_refuses_to_reinstall_pinned_token_on_revoked_row
     )
     await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", SecretStr(pinned_token))
 
@@ -283,6 +288,7 @@ async def test_ensure_dev_agent_skips_duplicate_live_sentinel(
     await session.commit()
     existing_batch_id = existing_batch.id
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -326,6 +332,7 @@ async def test_ensure_dev_agent_reseeds_past_null_token_hash_same_id_row(
     )
     await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
@@ -355,6 +362,7 @@ async def test_ensure_dev_agent_uses_env_token_when_set(
         await session.commit()
 
     fixed_token = "phaze_agent_test-fixed-token-12345"
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", SecretStr(fixed_token))
 
@@ -385,6 +393,7 @@ async def test_ensure_dev_agent_uses_phaze_agent_scan_roots_env_when_set(
         await session.commit()
 
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music,/data/concerts")
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
     monkeypatch.setattr(settings, "scan_path", "/wrong/host/path")  # must be ignored
@@ -410,6 +419,7 @@ async def test_ensure_dev_agent_disabled_in_prod(
         await session.delete(seeded)
         await session.commit()
 
+    settings = get_settings()
     monkeypatch.setattr(settings, "dev_seed_agent", False)
 
     result = await ensure_dev_agent(session)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 # The suppression below is deliberate (runtime import, NOT type-only): this module carries
 # `from __future__ import annotations`, so ruff offers to move `uuid` into the TYPE_CHECKING block.
@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import defer
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.config import ControlSettings
     from phaze.services.track_segments import TrackSegment
     from phaze.services.tracklist_priority import FileTracklistReview
 
@@ -357,6 +358,7 @@ async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLR
     requests) plus the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
     row (no queue at all -- a plain read).
     """
+    settings = cast("ControlSettings", get_settings())
 
     @contextlib.asynccontextmanager
     async def _session_factory() -> AsyncIterator[AsyncSession]:

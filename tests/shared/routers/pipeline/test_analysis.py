@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from phaze.config import get_settings
 from tests.shared.routers.pipeline._shared import (
     _DEAD_DEEPEN_ARTIFACTS,
     _JOB_HEARTBEAT_SEC,
@@ -38,7 +39,6 @@ from tests.shared.routers.pipeline._shared import (
     pytest,
     seed_active_agent,
     select,
-    settings,
     uuid,
     wire_fakes,
 )
@@ -76,7 +76,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     worker's ``ProcessFilePayload.model_validate(kwargs)`` (``extra="forbid"``) then
     raised four "Field required" errors and dead-lettered every job, stranding all
     files in DISCOVERED. This asserts all five required fields are present, carry the
-    FileRecord / selected-agent / settings.models_path values, and that the exact
+    FileRecord / selected-agent / get_settings().models_path values, and that the exact
     kwargs the worker receives validate cleanly against ``ProcessFilePayload``.
     """
     file_rec = _make_file()
@@ -115,7 +115,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     assert kwargs["original_path"] == expected_path
     assert kwargs["file_type"] == expected_type
     assert kwargs["agent_id"] == "test-fileserver"
-    assert kwargs["models_path"] == settings.models_path
+    assert kwargs["models_path"] == get_settings().models_path
 
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
     validated = ProcessFilePayload.model_validate(kwargs)
@@ -142,7 +142,7 @@ async def test_enqueue_analysis_jobs_logs_a_blocked_collision(caplog: pytest.Log
     queue.job = AsyncMock(return_value=SimpleNamespace(status="aborting", stuck=False))
 
     with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
-        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", settings.models_path)
+        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", get_settings().models_path)
 
     assert queue.captured == []  # nothing enqueued -- collision, not a fresh job
     assert "deterministic key held by a dead job" in caplog.text
@@ -164,7 +164,7 @@ async def test_enqueue_analysis_jobs_does_not_log_a_live_collision(caplog: pytes
     queue.job = AsyncMock(return_value=SimpleNamespace(status="queued", stuck=False))
 
     with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
-        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", settings.models_path)
+        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", get_settings().models_path)
 
     assert queue.captured == []
     assert "deterministic key held by a dead job" not in caplog.text
@@ -191,7 +191,7 @@ async def test_enqueue_analysis_jobs_contains_a_raising_collision_probe(caplog: 
     queue.job = AsyncMock(side_effect=ConnectionError("transient broker pool error"))
 
     with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
-        failed_ids = await pipeline_mod._enqueue_analysis_jobs(queue, [blocked_file, later_file], "test-fileserver", settings.models_path)
+        failed_ids = await pipeline_mod._enqueue_analysis_jobs(queue, [blocked_file, later_file], "test-fileserver", get_settings().models_path)
 
     # The probe's own failure never lands in failed_ids -- it is diagnostic-only.
     assert failed_ids == []

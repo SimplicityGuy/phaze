@@ -367,6 +367,15 @@ def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None
 
     Runs in a subprocess because the module-level Queue construction is one-shot
     and would otherwise be cached for the whole pytest session via sys.modules.
+
+    PHAZE_QUEUE_URL must be set here too (phaze-mvq8z.2): every OTHER AgentSettings-required
+    var needs a value so PHAZE_AGENT_QUEUE is the ONE thing left missing. Before phaze-mvq8z.2,
+    ``phaze.schemas.agent_files`` read the always-``ControlSettings``-typed module singleton at
+    import time, which never validated agent-role requirements and so tolerated a missing
+    PHAZE_QUEUE_URL by accident; it now reads ``get_settings()``, which correctly builds
+    ``AgentSettings`` under ``PHAZE_ROLE=agent`` and enforces this requirement at the SAME
+    import (``agent_worker`` -> ``tasks.scan`` -> ``schemas.agent_files``), before
+    ``agent_worker``'s own PHAZE_AGENT_QUEUE guard ever runs.
     """
     script = textwrap.dedent("""
         import os
@@ -376,6 +385,7 @@ def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None
         os.environ["PHAZE_AGENT_TOKEN"] = "phaze_agent_test-token-1234567890abcdef"
         os.environ["PHAZE_AGENT_SCAN_ROOTS"] = "/tmp"
         os.environ["PHAZE_REDIS_URL"] = "redis://localhost:6379/0"
+        os.environ["PHAZE_QUEUE_URL"] = "postgresql://phaze:phaze@localhost:5432/phaze"
         os.environ.pop("PHAZE_AGENT_QUEUE", None)
         try:
             import phaze.tasks.agent_worker  # noqa: F401

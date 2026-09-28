@@ -55,6 +55,16 @@ _ROUTABLE_BEHIND = 5
 _BASE_TIME = datetime(2026, 7, 27, 3, 0, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_resume_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test at the FIFO head and restore the module's cross-tick cursor afterwards (phaze-1l03t).
+
+    ``_resume_cursor`` is process-local module state that a budget-bounded tick sets; monkeypatching it
+    here (rather than assigning) is what guarantees a cursor left by one test never leaks into the next.
+    """
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", None)
+
+
 class _CloudStub:
     """A duck-typed cloud ``Backend`` (NOT a ``LocalBackend``, so the real policy treats it as cloud).
 
@@ -379,3 +389,198 @@ def test_all_held_streak_counts_consecutively_and_resets_on_progress() -> None:
         assert _note_all_held_tick(True) == 1
     finally:
         release_awaiting_cloud._consecutive_all_held_ticks = 0
+
+
+# ---------------------------------------------------------------------------------------------------------
+# phaze-1l03t: a held prefix AT LEAST AS LONG AS THE SCAN BUDGET.
+#
+# phaze-9sqa's walk only ever looked ``_MAX_CANDIDATE_SCAN`` rows deep, so a held prefix of that length or
+# more reproduced the very starvation the walk was built to fix. The production cell (2026-09-27): 2,580
+# candidates, FIFO ranks 1-500 all ``cloud_attempts_exhausted``, the first routable row at rank 501,
+# ``_MAX_CANDIDATE_SCAN = 500``, a cloud backend with 4 free slots -- and ``staged=0 skipped=500`` every
+# tick. The shape is reproduced below at a patched budget so the prefix stays small enough to seed.
+# ---------------------------------------------------------------------------------------------------------
+
+_SMALL_BUDGET = 6
+
+
+async def _seed_lane(session: AsyncSession, *, held: int, routable: int) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+    """``held`` attempt-capped OLDEST files, then ``routable`` fresh ones behind them."""
+    held_files = [_make_file(_BASE_TIME + timedelta(seconds=i)) for i in range(held)]
+    held_ids = await _seed(session, held_files, attempts=_Cfg.cloud_submit_max_attempts)
+    behind = [_make_file(_BASE_TIME + timedelta(hours=1, seconds=i)) for i in range(routable)]
+    behind_ids = await _seed(session, behind, attempts=0)
+    return held_ids, behind_ids
+
+
+def _small_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(release_awaiting_cloud, "_MAX_CANDIDATE_SCAN", _SMALL_BUDGET)
+    monkeypatch.setattr(release_awaiting_cloud, "_MIN_CANDIDATE_PAGE", _FREE_CLOUD_SLOTS)
+
+
+@pytest.mark.asyncio
+async def test_a_held_prefix_exactly_the_scan_budget_long_no_longer_starves_the_lane(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production shape: held prefix == budget, first routable row at rank budget+1, free cloud slots.
+
+    Pre-fix every tick returned ``{"staged": 0, "skipped": budget}`` and the second tick was identical to
+    the first, forever. Now the first tick spends its budget on the prefix and carries its position; the
+    second starts past the prefix and stages the routable files, oldest first.
+    """
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    _small_budget(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held_ids, behind_ids = await _seed_lane(session, held=_SMALL_BUDGET, routable=_ROUTABLE_BEHIND)
+
+    first = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    assert first == {"staged": 0, "skipped": _SMALL_BUDGET}
+    assert release_awaiting_cloud._resume_cursor is not None
+
+    second = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    assert second["staged"] == _FREE_CLOUD_SLOTS
+    assert cloud.dispatched == behind_ids[:_FREE_CLOUD_SLOTS]
+    statuses = await _statuses(session, held_ids + behind_ids)
+    assert {statuses[i] for i in held_ids} == {CloudJobStatus.AWAITING.value}
+
+
+@pytest.mark.parametrize("held", [_SMALL_BUDGET + 1, 2 * _SMALL_BUDGET, 4 * _SMALL_BUDGET + 3])
+@pytest.mark.asyncio
+async def test_a_held_prefix_longer_than_the_budget_is_crossed_within_bounded_ticks_in_fifo_order(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    held: int,
+) -> None:
+    """Any prefix length P is crossed in at most ``ceil(P / budget) + 1`` ticks; no tick exceeds the budget.
+
+    Also pins FIFO among the routable files: across however many ticks it takes, they are dispatched in
+    exactly their ``created_at`` order, and every one of them is dispatched before any tick re-reads the head.
+    """
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    _small_budget(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held_ids, behind_ids = await _seed_lane(session, held=held, routable=_ROUTABLE_BEHIND)
+
+    tick_bound = -(-held // _SMALL_BUDGET) + 1
+    ticks_to_first_stage = None
+    for tick in range(1, tick_bound + 1):
+        result = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+        # Per-tick scan cost stays bounded: every row examined is either staged or skipped.
+        assert result["staged"] + result["skipped"] <= _SMALL_BUDGET
+        if result["staged"]:
+            ticks_to_first_stage = tick
+            break
+
+    assert ticks_to_first_stage is not None, f"no routable file staged within {tick_bound} ticks"
+    # Keep ticking until every routable file is out; order must be strict FIFO.
+    for _ in range(10):
+        if len(cloud.dispatched) == len(behind_ids):
+            break
+        await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    assert cloud.dispatched == behind_ids
+    statuses = await _statuses(session, held_ids + behind_ids)
+    assert {statuses[i] for i in behind_ids} == {CloudJobStatus.SUBMITTED.value}
+    assert {statuses[i] for i in held_ids} == {CloudJobStatus.AWAITING.value}
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_lane_never_carries_a_cursor(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slots filled from the head -> no cursor: a non-starving lane keeps its exact FIFO-from-head behaviour."""
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    _small_budget(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    _, behind_ids = await _seed_lane(session, held=0, routable=_ROUTABLE_BEHIND)
+
+    assert (await stage_cloud_window(_make_ctx(DedupFakeTaskRouter())))["staged"] == _FREE_CLOUD_SLOTS
+    assert release_awaiting_cloud._resume_cursor is None
+    assert cloud.dispatched == behind_ids[:_FREE_CLOUD_SLOTS]
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_fills_its_slots_from_the_cursor_returns_the_next_tick_to_the_head(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After staging from the carried position the cursor clears, so the next tick re-reads the FIFO head.
+
+    That is what keeps a held head row that has since BECOME routable (a local slot freed, say) from
+    waiting behind a whole lap of the queue.
+    """
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    _small_budget(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await _seed_lane(session, held=_SMALL_BUDGET, routable=_FREE_CLOUD_SLOTS)
+
+    await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    assert release_awaiting_cloud._resume_cursor is not None
+    second = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    assert second["staged"] == _FREE_CLOUD_SLOTS
+    assert release_awaiting_cloud._resume_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_past_the_end_of_the_queue_wraps_to_the_head_in_the_same_tick(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing after the carried position -> the tick walks from the head instead of wasting itself."""
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    _, behind_ids = await _seed_lane(session, held=0, routable=_FREE_CLOUD_SLOTS)
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", (_BASE_TIME + timedelta(days=365), uuid.uuid4()))
+
+    result = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+
+    assert result["staged"] == _FREE_CLOUD_SLOTS
+    assert cloud.dispatched == behind_ids
+    assert release_awaiting_cloud._resume_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_an_empty_queue_clears_the_cursor(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No candidates at all, from the cursor or the head -> clean no-op, and the next tick starts at the head."""
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", (_BASE_TIME, uuid.uuid4()))
+
+    assert await stage_cloud_window(_make_ctx(DedupFakeTaskRouter())) == {"staged": 0, "skipped": 0}
+    assert release_awaiting_cloud._resume_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_tick_does_not_move_the_cursor(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CR-02 abort path discards the tick, so the carried position stays exactly where it was."""
+    cloud = _CloudStub()
+    _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
+    _small_budget(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await _seed_lane(session, held=2 * _SMALL_BUDGET, routable=1)
+
+    await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+    carried = release_awaiting_cloud._resume_cursor
+    assert carried is not None
+
+    async def _boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("synthetic mid-walk failure")
+
+    monkeypatch.setattr(release_awaiting_cloud, "_walk_candidate_pages", _boom)
+    result = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
+
+    assert result["staged"] == 0
+    assert release_awaiting_cloud._resume_cursor == carried

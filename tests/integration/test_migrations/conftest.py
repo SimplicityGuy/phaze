@@ -18,8 +18,8 @@ fileserver seed (038's D-01 abort guard) and the ``pre_retire_engine`` fixture
 died with the chain.
 
 Note: ``alembic/env.py`` overrides ``sqlalchemy.url`` with
-``settings.database_url`` on every run, so this conftest also patches the
-in-memory ``settings.database_url`` for the duration of upgrade/downgrade
+``get_settings().database_url`` on every run, so this conftest also patches the
+in-memory settings object's ``database_url`` for the duration of upgrade/downgrade
 calls. ``_patched_settings_database_url`` is the small helper that does that.
 """
 
@@ -35,7 +35,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
-from phaze.config import settings
+from phaze.config import get_settings
 from tests.db_guard import require_test_database
 
 
@@ -61,13 +61,14 @@ ALEMBIC_INI_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
 
 @contextmanager
 def _patched_settings_database_url(database_url: str) -> Iterator[None]:
-    """Patch ``settings.database_url`` to ``database_url`` for the contextmanager body.
+    """Patch the process-wide settings object's ``database_url`` for the contextmanager body.
 
-    ``alembic/env.py`` calls ``config.set_main_option('sqlalchemy.url', settings.database_url)``
+    ``alembic/env.py`` calls ``config.set_main_option('sqlalchemy.url', get_settings().database_url)``
     at import time, which overwrites anything ``_build_alembic_config`` sets on the cfg.
-    Patching the singleton's attribute is the smallest-blast-radius way to make alembic
-    point at the migrations test DB without modifying production env.py.
+    Patching the ``get_settings()``-cached instance's attribute is the smallest-blast-radius way
+    to make alembic point at the migrations test DB without modifying production env.py.
     """
+    settings = get_settings()
     original = settings.database_url
     settings.database_url = database_url
     try:
@@ -94,7 +95,7 @@ def upgrade_to(cfg: Config, revision: str) -> None:
     """Upgrade to ``revision`` using the test database URL on cfg.
 
     Thin wrapper around ``alembic.command.upgrade`` that also patches
-    ``settings.database_url`` so ``alembic/env.py`` does not overwrite the cfg URL.
+    ``get_settings().database_url`` so ``alembic/env.py`` does not overwrite the cfg URL.
     """
     database_url = cfg.get_main_option("sqlalchemy.url") or MIGRATIONS_TEST_DATABASE_URL
     with _patched_settings_database_url(database_url):
@@ -105,7 +106,7 @@ def downgrade_to(cfg: Config, revision: str) -> None:
     """Downgrade to ``revision`` using the test database URL on cfg.
 
     Thin wrapper around ``alembic.command.downgrade`` that also patches
-    ``settings.database_url`` so ``alembic/env.py`` does not overwrite the cfg URL.
+    ``get_settings().database_url`` so ``alembic/env.py`` does not overwrite the cfg URL.
     """
     database_url = cfg.get_main_option("sqlalchemy.url") or MIGRATIONS_TEST_DATABASE_URL
     with _patched_settings_database_url(database_url):

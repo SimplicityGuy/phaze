@@ -275,9 +275,9 @@ def warm_service_metrics(otlp_endpoint: str, instance: str) -> None:
     if not configure_telemetry("api"):
         raise SystemExit("telemetry did not configure; is OTEL_EXPORTER_OTLP_ENDPOINT reachable-looking?")
 
-    from phaze.config import settings  # noqa: PLC0415
+    from phaze.config import get_settings  # noqa: PLC0415
 
-    emit(f"# WARNING: this MIGRATES AND SEEDS {str(settings.database_url).rsplit('/', 1)[-1]!r}; its rows outlive this process")
+    emit(f"# WARNING: this MIGRATES AND SEEDS {str(get_settings().database_url).rsplit('/', 1)[-1]!r}; its rows outlive this process")
 
     from fastapi.testclient import TestClient  # noqa: PLC0415
 

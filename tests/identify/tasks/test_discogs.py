@@ -48,17 +48,17 @@ def _make_tracklist(tracklist_id: uuid.UUID | None = None, latest_version_id: uu
 
 @patch("phaze.tasks.discogs.DiscogsographyClient")
 @patch("phaze.tasks.discogs.match_track_to_discogs")
-@patch("phaze.tasks.discogs.settings")
+@patch("phaze.tasks.discogs.get_settings")
 async def test_match_tracklist_processes_eligible_tracks(
-    mock_settings: MagicMock,
+    mock_get_settings: MagicMock,
     mock_match_fn: MagicMock,
     mock_client_cls: MagicMock,
 ) -> None:
     """match_tracklist_to_discogs processes all eligible tracks and stores DiscogsLink candidates."""
     from phaze.tasks.discogs import match_tracklist_to_discogs
 
-    mock_settings.discogsography_url = "http://test:8000"
-    mock_settings.discogs_match_concurrency = 5
+    mock_get_settings.return_value.discogsography_url = "http://test:8000"
+    mock_get_settings.return_value.discogs_match_concurrency = 5
 
     ctx = _make_ctx()
     session = ctx["_mock_session"]
@@ -99,17 +99,17 @@ async def test_match_tracklist_processes_eligible_tracks(
 
 @patch("phaze.tasks.discogs.DiscogsographyClient")
 @patch("phaze.tasks.discogs.match_track_to_discogs")
-@patch("phaze.tasks.discogs.settings")
+@patch("phaze.tasks.discogs.get_settings")
 async def test_rematch_deletes_candidates_preserves_accepted(
-    mock_settings: MagicMock,
+    mock_get_settings: MagicMock,
     mock_match_fn: MagicMock,
     mock_client_cls: MagicMock,
 ) -> None:
     """Re-matching deletes existing 'candidate' links but preserves 'accepted' links (pitfall 3)."""
     from phaze.tasks.discogs import match_tracklist_to_discogs
 
-    mock_settings.discogsography_url = "http://test:8000"
-    mock_settings.discogs_match_concurrency = 5
+    mock_get_settings.return_value.discogsography_url = "http://test:8000"
+    mock_get_settings.return_value.discogs_match_concurrency = 5
 
     ctx = _make_ctx()
     session = ctx["_mock_session"]
@@ -148,9 +148,9 @@ async def test_rematch_deletes_candidates_preserves_accepted(
 
 @patch("phaze.tasks.discogs.DiscogsographyClient")
 @patch("phaze.tasks.discogs.match_track_to_discogs")
-@patch("phaze.tasks.discogs.settings")
+@patch("phaze.tasks.discogs.get_settings")
 async def test_match_tracklist_closes_client_on_exception(
-    mock_settings: MagicMock,
+    mock_get_settings: MagicMock,
     mock_match_fn: MagicMock,
     mock_client_cls: MagicMock,
 ) -> None:
@@ -164,8 +164,8 @@ async def test_match_tracklist_closes_client_on_exception(
     """
     from phaze.tasks.discogs import match_tracklist_to_discogs
 
-    mock_settings.discogsography_url = "http://test:8000"
-    mock_settings.discogs_match_concurrency = 5
+    mock_get_settings.return_value.discogsography_url = "http://test:8000"
+    mock_get_settings.return_value.discogs_match_concurrency = 5
 
     ctx = _make_ctx()
     session = ctx["_mock_session"]
@@ -204,9 +204,9 @@ async def test_match_tracklist_closes_client_on_exception(
 
 @patch("phaze.tasks.discogs.DiscogsographyClient")
 @patch("phaze.tasks.discogs.match_track_to_discogs")
-@patch("phaze.tasks.discogs.settings")
+@patch("phaze.tasks.discogs.get_settings")
 async def test_match_tracklist_holds_no_session_across_network_gather(
-    mock_settings: MagicMock,
+    mock_get_settings: MagicMock,
     mock_match_fn: MagicMock,
     mock_client_cls: MagicMock,
 ) -> None:
@@ -220,8 +220,8 @@ async def test_match_tracklist_holds_no_session_across_network_gather(
     """
     from phaze.tasks.discogs import match_tracklist_to_discogs
 
-    mock_settings.discogsography_url = "http://test:8000"
-    mock_settings.discogs_match_concurrency = 5
+    mock_get_settings.return_value.discogsography_url = "http://test:8000"
+    mock_get_settings.return_value.discogs_match_concurrency = 5
 
     tracklist = _make_tracklist()
     tracks = [_make_track("deadmau5", "Strobe"), _make_track("Skrillex", "Bangarang")]

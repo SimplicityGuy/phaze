@@ -73,12 +73,13 @@ def _ctx_for(session: AsyncSession, service: _CapturingProposalService) -> dict[
 @pytest.fixture
 def enable_fallback(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     """Flip ``convention_date_fallback_enabled`` on for one test, with thresholds supplied."""
-    from phaze.tasks import proposal as proposal_task
+    from phaze.config import get_settings
 
     def _enable(*, min_supporting: int = 50, min_purity: float = 0.99) -> None:
-        monkeypatch.setattr(proposal_task.settings, "convention_date_fallback_enabled", True)
-        monkeypatch.setattr(proposal_task.settings, "convention_date_min_supporting", min_supporting)
-        monkeypatch.setattr(proposal_task.settings, "convention_date_min_purity", min_purity)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "convention_date_fallback_enabled", True)
+        monkeypatch.setattr(settings, "convention_date_min_supporting", min_supporting)
+        monkeypatch.setattr(settings, "convention_date_min_purity", min_purity)
 
     return _enable
 
@@ -92,10 +93,10 @@ def disable_fallback(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untype
     test that reads the default is really asserting the default, and silently inverts its own
     meaning the next time that decision changes -- which is exactly what happened to these tests.
     """
-    from phaze.tasks import proposal as proposal_task
+    from phaze.config import get_settings
 
     def _disable() -> None:
-        monkeypatch.setattr(proposal_task.settings, "convention_date_fallback_enabled", False)
+        monkeypatch.setattr(get_settings(), "convention_date_fallback_enabled", False)
 
     return _disable
 
@@ -206,13 +207,13 @@ class TestFlagOn:
         self, session: AsyncSession, make_file: Any, enable_fallback: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``store_proposals`` upserts the one PENDING row -- the new provenance must land with it."""
-        from phaze.tasks import proposal as proposal_task
+        from phaze.config import get_settings
 
         await _seed_convention(session)
         record = await make_file(original_filename=AMBIGUOUS)
         # First pass with the capability off, so the stored row starts WITHOUT provenance and the
         # assertion below is about the upsert rather than about the flag's default.
-        monkeypatch.setattr(proposal_task.settings, "convention_date_fallback_enabled", False)
+        monkeypatch.setattr(get_settings(), "convention_date_fallback_enabled", False)
         await _run(session, [record.id])
         assert CONTEXT_KEY not in await _context_used(session, record.id)
 

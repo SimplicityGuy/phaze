@@ -55,15 +55,14 @@ import hashlib
 import os
 import secrets
 from typing import TYPE_CHECKING
-import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.models.agent import Agent
-from phaze.models.scan_batch import ScanBatch
+from phaze.services.live_sentinel import ensure_live_sentinel
 
 
 if TYPE_CHECKING:
@@ -114,6 +113,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     the watcher's ``/whoami`` response includes a usable filesystem root. The
     operator can edit the row later (or invoke the management CLI) to refine.
     """
+    settings = get_settings()
     if not settings.dev_seed_agent:
         return None
 
@@ -206,30 +206,19 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     # POST /api/internal/agent/files can resolve `batch_id=None` via the partial
     # uq_scan_batches_agent_id_live index. The dev-seeded agent needs the same
     # sentinel — otherwise the watcher's chunk-of-1 upserts get NoResultFound
-    # at the controller's `scalar_one()` LIVE-batch lookup.
+    # at the controller's LIVE-batch lookup.
     #
     # phaze-viwd: this insert is CONDITIONAL. Revoking the dev-agent does NOT
     # touch its scan_batches rows, so a previously-seeded LIVE sentinel can
     # still be sitting there when we reach this point. A second unconditional
     # INSERT would violate `uq_scan_batches_agent_id_live` (a partial unique
-    # index on `agent_id` WHERE `status = 'live'`). `index_where` mirrors that
-    # exact predicate so the ON CONFLICT inference matches the index and the
-    # insert is skipped only when a live batch already exists -- never against
-    # a completed/failed one, which must remain free to coexist.
-    scan_batch_stmt = pg_insert(ScanBatch).values(
-        id=uuid.uuid4(),
-        agent_id=_DEV_AGENT_ID,
-        scan_path="<watcher>",
-        configured_root="<watcher>",
-        status="live",
-        total_files=0,
-        processed_files=0,
-    )
-    scan_batch_stmt = scan_batch_stmt.on_conflict_do_nothing(
-        index_elements=["agent_id"],
-        index_where=(ScanBatch.status == "live"),
-    )
-    await session.execute(scan_batch_stmt)
+    # index on `agent_id` WHERE `status = 'live'`).
+    #
+    # phaze-tvdu1: this is now the shared `ensure_live_sentinel` helper (also
+    # used by `phaze.cli.add_agent` and the `upsert_files` self-heal path) so
+    # there is exactly one conflict-safe-insert-plus-reselect implementation
+    # instead of three copies drifting apart.
+    await ensure_live_sentinel(session, _DEV_AGENT_ID)
 
     await session.commit()
 

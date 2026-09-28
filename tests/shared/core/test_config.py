@@ -17,8 +17,6 @@ checker (Repowise) can find by name, and (b) close the ACTUAL gaps that survey l
 * ``_apply_redis_password``'s "redis_url doesn't even parse" no-op branch was untested;
 * ``_strip_sqlalchemy_driver``'s ``postgresql+psycopg://`` arm (only the ``+asyncpg`` arm was
   exercised elsewhere) and its "non-matching value passes through for pydantic to reject" arm;
-* ``_build_default_settings``'s ``PHAZE_ROLE=agent`` arm (distinct from -- and never exercised
-  by -- ``get_settings()``'s own role dispatch, which IS covered in ``test_config_role_split.py``);
 * most notably, ``_validate_registry``'s TOP-LEVEL duplicate-``[[buckets]]``-id guard (WR-03):
   every existing registry test for duplicate ids covers either a duplicate WITHIN one backend's
   own ``buckets`` list (phaze-ru9oe) or a duplicate compute ``agent_ref`` (D-04) or a duplicate
@@ -29,7 +27,10 @@ Before this file, ``pytest --cov=phaze.config`` across the scattered suite alrea
 97.44% (312 stmts, 8 missed: lines 49, 136, 144, 234, 269, 693, 736, 1619) -- config.py was
 under-tested by naming convention, not by raw line coverage. Every test below targets one of
 those 8 missed lines, or one of the acceptance criteria's explicit call-outs (registry
-duplicate/malformed entries, hostile env values, settings-object invariants).
+duplicate/malformed entries, hostile env values, settings-object invariants). (phaze-mvq8z.2
+later removed the module-level ``settings`` singleton and ``_build_default_settings``, so the
+line numbers above no longer describe the current file exactly -- kept as the historical baseline
+this file was written against.)
 
 No DB, no Redis required -- pure pydantic-settings / module-level construction tests.
 """
@@ -47,9 +48,7 @@ from phaze.config import (
     ControlSettings,
     Role,
     Settings,
-    _build_default_settings,
     get_settings,
-    settings,
 )
 
 # phaze-bk9el.18 moved these two module-private helpers, unchanged, to `phaze.config_secrets`
@@ -251,23 +250,11 @@ def test_malformed_registry_with_unknown_backend_kind_fails_fast(backends_toml_e
         ControlSettings()
 
 
-# `_build_default_settings`: constructs the module-level `settings` singleton.
-# Distinct from -- and NOT exercised by -- `get_settings()`'s own role dispatch
-# (covered in test_config_role_split.py): `_build_default_settings` is called
-# once at import time to build the ControlSettings-typed singleton regardless
-# of role, and its `PHAZE_ROLE=agent` arm returns the identical `ControlSettings()`
-# as its `control` arm (both branches are intentionally the same value; the
-# comment above it explains why -- see config.py).
-def test_build_default_settings_returns_control_settings_when_role_is_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PHAZE_ROLE", "agent")
-    result = _build_default_settings()
-    assert isinstance(result, ControlSettings)
-
-
-def test_build_default_settings_returns_control_settings_when_role_is_control(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PHAZE_ROLE", "control")
-    result = _build_default_settings()
-    assert isinstance(result, ControlSettings)
+# phaze-mvq8z.2 removed `_build_default_settings()` and the `settings` module singleton it built
+# (a SEPARATE ControlSettings instance from `get_settings()`'s own cached one -- a runtime reload
+# swapping only one of the two would silently diverge from the other). The tests that exercised
+# `_build_default_settings`'s role dispatch and the singleton's typing went with it; the guard
+# against a reintroduction lives in `tests/shared/test_config_settings_singleton_guard.py`.
 
 
 # Settings-object invariants: the module-level back-compat surface every one
@@ -275,13 +262,6 @@ def test_build_default_settings_returns_control_settings_when_role_is_control(mo
 def test_settings_alias_resolves_to_control_settings() -> None:
     """The pre-Phase-26 `Settings` name is a back-compat alias for `ControlSettings`."""
     assert Settings is ControlSettings
-
-
-def test_module_level_settings_singleton_is_control_settings_typed() -> None:
-    """`from phaze.config import settings` (37+ call sites) is always ControlSettings-typed,
-    even under `PHAZE_ROLE=agent` -- the agent worker must use `get_settings()` explicitly.
-    """
-    assert isinstance(settings, ControlSettings)
 
 
 def test_role_enum_values_are_control_and_agent() -> None:

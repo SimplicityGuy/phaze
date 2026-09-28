@@ -41,8 +41,8 @@ async def test_dashboard_context_binds_lanes(client: AsyncClient, session: Async
     seeds the SAME ``lanes`` key identically for the 5s OOB re-push (asserted at the render level in
     the Analyze-workspace suite + the ``grep -c get_backend_lane_snapshot == 2`` code gate).
 
-    The snapshot is monkeypatched directly (it resolves the registry via ``get_settings()``, a distinct
-    singleton from the module-level ``settings``) so the seed is asserted independent of registry wiring.
+    The snapshot is monkeypatched directly (it resolves the registry via ``get_settings()``) so the
+    seed is asserted independent of registry wiring.
     """
     # phaze-oau1o: `routers/pipeline.py` is now a package; `get_backend_lane_snapshot` is read from the
     # `dashboard_stats` submodule's namespace, so patching the facade would silently no-op.
