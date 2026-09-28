@@ -60,6 +60,7 @@ from phaze.tasks.execution_filesystem import (
     LocalFilesystemPrimitives,
     MoveStep,
 )
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 if TYPE_CHECKING:
@@ -67,7 +68,6 @@ if TYPE_CHECKING:
 
 
 _MTIME = 1_600_000_000  # whole and even: exact on HFS+, exFAT, MS-DOS and tmpfs
-_HDIUTIL_TIMEOUT_SEC = 60
 
 
 @contextlib.contextmanager
@@ -86,7 +86,7 @@ def _darwin_disk_image(base: Path, fs: str, size_mb: int) -> Iterator[Path]:
     try:
         for argv in (argv_create, argv_attach):
             result = subprocess.run(  # noqa: S603 - resolved executable; argv is a test literal
-                argv, capture_output=True, text=True, timeout=_HDIUTIL_TIMEOUT_SEC, check=False
+                argv, capture_output=True, text=True, timeout=CHILD_PROCESS_HANG_GUARD_SEC, check=False
             )
             if result.returncode != 0:
                 pytest.skip(f"no second device: `hdiutil {argv[1]}` for a {fs} image failed: {result.stderr.strip()}")
@@ -95,7 +95,7 @@ def _darwin_disk_image(base: Path, fs: str, size_mb: int) -> Iterator[Path]:
     finally:
         if attached:
             subprocess.run(  # noqa: S603 - resolved executable; argv is a test literal
-                [hdiutil, "detach", "-quiet", "-force", str(mountpoint)], capture_output=True, timeout=_HDIUTIL_TIMEOUT_SEC, check=False
+                [hdiutil, "detach", "-quiet", "-force", str(mountpoint)], capture_output=True, timeout=CHILD_PROCESS_HANG_GUARD_SEC, check=False
             )
         image.unlink(missing_ok=True)
 

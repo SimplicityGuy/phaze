@@ -40,6 +40,8 @@ import sys
 
 import pytest
 
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _FIXTURE_TARGET = str(Path(__file__).resolve().parent / "_fixture_trivial_db_free.py")
@@ -64,6 +66,12 @@ def _run_subprocess_suite(*, env_overrides: dict[str, str], env_removals: tuple[
     DB-free tests while still going through the REAL ``tests/conftest.py`` machinery --
     ``pytest_sessionstart`` fires for any target, including this one, unconditional on which tests
     were selected.
+
+    The blackhole case is bounded by the child's OWN explicit wait -- ``tests.db_guard``'s
+    ``connect_timeout`` -- so the refusal arrives after interpreter start-up plus that timeout, however
+    loaded the machine is. The outer ``timeout`` is only the shared hang guard: the old ``timeout=60``
+    expired under five concurrent full-suite gates against a child that measures 9-11 s alone
+    (phaze-uzywu), and its measured wall times under load are recorded on bead phaze-0vlnp.
     """
     env = dict(os.environ)
     for var in env_removals:
@@ -76,7 +84,7 @@ def _run_subprocess_suite(*, env_overrides: dict[str, str], env_removals: tuple[
         capture_output=True,
         text=True,
         check=False,
-        timeout=60,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
 
 

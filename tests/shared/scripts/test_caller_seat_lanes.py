@@ -46,6 +46,7 @@ from scripts.parallel_test_runner import (
     production_dependencies,
     registry_seat_index,
 )
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 if TYPE_CHECKING:
@@ -356,7 +357,7 @@ def _runner_cli(*args: str, environ: Mapping[str, str]) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=False,
-        timeout=120,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
 
 

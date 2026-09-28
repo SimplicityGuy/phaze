@@ -20,6 +20,7 @@ import textwrap
 import pytest
 
 from phaze.enums.stage import Stage, Status, domain_completed, eligible, resolve_status
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 _TS = "2026-07-08T00:00:00+00:00"  # any non-None sentinel timestamp scalar
@@ -175,7 +176,7 @@ def test_stage_module_stays_db_free() -> None:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
         check=False,
     )
     assert result.returncode == 0, f"phaze.enums.stage import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
