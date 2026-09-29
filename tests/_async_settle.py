@@ -13,7 +13,7 @@ The shape it replaces::
         while not predicate():
             if loop.time() > deadline:
                 return          # <- silently gives up and lets the caller carry on
-            await asyncio.sleep(0)
+            await asyncio.sleep(interval)
 
 THREE byte-identical copies of that lived under ``tests/shared/tasks/`` --
 ``test_heartbeat_hang.py``, ``test_heartbeat_broker_unavailable.py`` and ``test_heartbeat_loop.py``.
@@ -47,11 +47,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-async def wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0, description: str | None = None) -> None:
+async def wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0, description: str | None = None, interval: float = 0.0) -> None:
     """Poll ``predicate`` until it is true, or raise ``AssertionError`` once ``timeout`` elapses.
 
     ``description`` names the awaited condition in the failure, because every caller passes a
     lambda and ``repr`` of one says nothing useful.
+
+    ``interval`` is the pause between looks. The default bare yield is right when a task on this
+    loop drives the predicate; a predicate fed by ANOTHER process (a real worker writing a file or
+    a database row) is not advanced by yielding, so spinning on it only burns a core the other
+    process needs (phaze-mvq8z.11). It is a poll cadence, never a margin: the verdict is still the
+    predicate's.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -63,4 +69,4 @@ async def wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0, des
                 "run against a state that never settled, and report the miss as though the behaviour under test had "
                 "failed (phaze-5lq8a)."
             )
-        await asyncio.sleep(0)
+        await asyncio.sleep(interval)

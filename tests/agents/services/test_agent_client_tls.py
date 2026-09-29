@@ -143,8 +143,9 @@ async def tls_server(tmp_path: Path) -> AsyncIterator[tuple[int, Path, Path]]:
     # ordering is not a property anything asserts, so a new test file, a rename, or a subset
     # changes it. Containing the leak at its source is what makes the order irrelevant.
     #
-    # This is the only `uvicorn.Config`/`Server` construction in the tree (`grep -rn` over
-    # `tests/` and `src/phaze/`), so restoring here restores everywhere.
+    # Every `uvicorn.Config`/`Server` construction in the tree restores these levels the same
+    # way -- this one and `tests/integration/test_live_retune_e2e.py`'s `control_plane` -- so a
+    # new one must too (`grep -rn uvicorn.Config tests/ src/phaze/`).
     server_task = asyncio.create_task(server.serve())
 
     await _wait_for_tcp("127.0.0.1", port, timeout=5.0)
