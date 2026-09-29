@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Final
 import asyncpg
 import structlog
 
+from phaze.runtime_config import partition_overrides
 from phaze.services.runtime_config_overrides import RUNTIME_CONFIG_NOTIFY_CHANNEL, get_runtime_config_overrides
 
 
@@ -62,11 +63,23 @@ def install_runtime_config_overrides(store: RuntimeConfigStore, session_factory:
     ``session_factory`` (an ``async_sessionmaker`` or equivalent zero-arg callable returning an
     ``AsyncSession`` context manager) is invoked fresh on EVERY reload -- never a session held open
     across reloads -- mirroring ``get_route_control``'s per-call session discipline.
+
+    Only :data:`~phaze.runtime_config.RELOADABLE_KEYS` reach the store (phaze-mvq8z.22): a stale row
+    -- a key a later build renamed or made restart-only -- would otherwise reject every reload in
+    this process, forever. Its NAME is logged once each time the stale set changes (the fallback poll
+    reloads every 30s), never its value; the admin pane lists it and its DELETE removes it.
     """
+    reported: tuple[str, ...] = ()
 
     async def _read_overrides() -> dict[str, Any]:
+        nonlocal reported
         async with session_factory() as session:
-            return await get_runtime_config_overrides(session)
+            overrides, ignored = partition_overrides(await get_runtime_config_overrides(session))
+        if ignored != reported:
+            reported = ignored
+            if ignored:
+                logger.warning("phaze.runtime_config_notify ignoring stale override rows", ignored=list(ignored))
+        return overrides
 
     store.set_override_provider(_read_overrides)
 

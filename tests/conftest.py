@@ -141,6 +141,13 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
         "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
         "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
         "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+        # phaze-mvq8z.22: a thread env var is now a CEILING for the runtime-config store's thread
+        # keys, not merely a layer an override beats. Importing `phaze.services.analysis` stamps the
+        # derived values into this process's os.environ (apply_thread_env), which no api or agent
+        # worker parent process does -- so, left alone, whichever test imported it first would cap
+        # every later test's thread overrides at this machine's derived value.
+        "TF_NUM_INTRAOP_THREADS",
+        "OMP_NUM_THREADS",
     ):
         monkeypatch.delenv(var, raising=False)
 

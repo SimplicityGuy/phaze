@@ -17,6 +17,15 @@ through :func:`phaze.config.get_settings` and is read once at process start.
 The ``env`` layer is fixed for the life of the process -- a container's environment does not
 change under it -- so a reload re-reads only the ``file`` and ``override`` layers.
 
+**A thread env var is a CEILING, not just a layer** (phaze-mvq8z.22). When the process env sets
+``TF_NUM_INTRAOP_THREADS`` / ``OMP_NUM_THREADS``, a ``file`` / ``override`` value may LOWER that
+thread key but never raise it: a higher value is capped at the env value and reported with source
+``env``. The override table is fleet-wide, and ``Dockerfile.agent-arm64``'s ``OMP_NUM_THREADS=1`` is
+a correctness pin against the dual-OpenMP-runtime segfault (docs/arm64-agent-image.md fix #4), so
+an ``analysis_omp_threads`` raise meant for x86 agents must not reach an arm64 agent's children.
+This is an IMPLEMENTER decision, not an operator one: "the env pin wins outright" was the
+alternative, rejected because a cap keeps an operator's lower value working everywhere.
+
 **A reload** (:meth:`RuntimeConfigStore.reload`) reads the override provider on the loop, then
 builds and validates the candidate OFF the loop (file IO, TOML parse, pydantic, the core
 detection behind the sizing check), then runs registered validators, and only then swaps the
@@ -32,6 +41,10 @@ WHOLE reload -- fail closed, one clear error, nothing partially applied:
   Only its NAME is ever reported: several of these carry credentials;
 * ``backends`` / ``buckets`` -> configured in ``backends.toml`` (``phaze-mvq8z.8``), not here;
 * anything else -> an unknown key, so a typo is an error rather than a silent no-op.
+
+The DB-override table is the exception at its READERS, not here: it is shared across builds and
+processes, so both readers pass it through :func:`partition_overrides` first -- a stale or
+newer-than-this-build row is ignored and reported, and the rest applies (phaze-mvq8z.22).
 
 **Appliers** (:meth:`RuntimeConfigStore.register_applier`) are how a subsystem adopts a new
 snapshot: ``applier(old, new)``, sync or async. Each applier remembers the snapshot it last
@@ -273,6 +286,8 @@ class RuntimeConfigStore:
             raise ValueError(f"reloadable settings are invalid at start: {_format_validation_error(exc)}") from exc
         self._base_values = self._base_config.model_dump()
         self._base_sources = base_sources
+        #: The thread keys the process env pinned: a ceiling for every layer above it (module docstring).
+        self._thread_pins = {key: self._base_values[key] for key in _THREAD_ENV if base_sources[key] == "env"}
         self._state = ConfigSnapshot(self._base_config, MappingProxyType(dict(base_sources)), self._base_config.digest())
         self._appliers: dict[str, _Registration] = {}
         self._validators: dict[str, Validator] = {}
@@ -405,8 +420,27 @@ class RuntimeConfigStore:
             config = RuntimeConfig.model_validate(values)
         except ValidationError as exc:
             raise ReloadRejectedError(_format_validation_error(exc)) from exc
+        config = self._cap_at_thread_pins(config, sources)
         self._check_sizing(config, sources)
         return ConfigSnapshot(config, MappingProxyType(sources), config.digest())
+
+    def _cap_at_thread_pins(self, config: RuntimeConfig, sources: dict[str, Layer]) -> RuntimeConfig:
+        """Hold every env-pinned thread key at or below its pin (module docstring). Mutates ``sources``."""
+        capped: dict[str, int] = {}
+        for key, pin in self._thread_pins.items():
+            requested = getattr(config, key)
+            if requested > pin:
+                logger.warning(
+                    "phaze.runtime_config thread env pin caps a reloadable value",
+                    key=key,
+                    env=_THREAD_ENV[key],
+                    pin=pin,
+                    requested=requested,
+                    layer=sources[key],
+                )
+                capped[key] = pin
+                sources[key] = "env"
+        return config.model_copy(update=capped) if capped else config
 
     def _read_file(self) -> dict[str, Any]:
         if self._runtime_toml is None or not self._runtime_toml.is_file():
@@ -504,6 +538,21 @@ class RuntimeConfigStore:
             values[key] = derived[key]
             sources[key] = "default"
         return values, sources
+
+
+def partition_overrides(overrides: Mapping[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Split a DB-override map into (the keys THIS build reloads, the sorted NAMES of every other key).
+
+    The override table is shared, and outlives the code that wrote it (phaze-mvq8z.22): a row whose
+    key a later build renamed or made restart-only, or a key only a NEWER control plane knows, would
+    otherwise make :func:`_check_keys` reject every reload that reads it. Both readers of a remote
+    override set -- the control-plane provider (``phaze.runtime_config_notify``) and the agent's poll
+    (``phaze.tasks.heartbeat``) -- apply the rest and report the ignored names. Names only: a
+    restart-only key's value can be a credential. The local ``runtime.toml`` is not filtered: its
+    unknown keys are the operator's own typo on this host, and still reject.
+    """
+    reloadable = {key: value for key, value in overrides.items() if key in RELOADABLE_KEYS}
+    return reloadable, tuple(sorted(key for key in overrides if key not in RELOADABLE_KEYS))
 
 
 def _check_keys(offered: Mapping[str, Any]) -> None:

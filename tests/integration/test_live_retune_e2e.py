@@ -96,9 +96,11 @@ RAISED = {"lane_analyze_concurrency": 4, "worker_process_pool_size": 3}
 LOWERED = {"lane_analyze_concurrency": 1, "worker_process_pool_size": 1}
 #: The agent is a small host and the control plane a big one, through the production core-count
 #: override (``PHAZE_ANALYSIS_PHYSICAL_CORES``) rather than whatever this machine has, so the
-#: sizing verdicts below are the same everywhere. RAISED needs 3 cores on the agent (3 children x
-#: 1 thread): it fits.
-AGENT_CORES = 4
+#: sizing verdicts below are the same everywhere. RAISED needs 6 cores on the agent (3 children x
+#: 2 threads): it fits. The threads are the agent's env pin, which the reloadable layers can lower
+#: but never raise (phaze-mvq8z.22), so every oversubscription below comes from more CHILDREN.
+AGENT_CORES = 6
+AGENT_THREADS = 2
 CONTROL_CORES = 16
 
 #: Every wait below ends the moment its condition holds; only a wedged worker ever reaches this.
@@ -262,8 +264,8 @@ class AgentProcess:
             "WORKER_PROCESS_POOL_SIZE": str(START["worker_process_pool_size"]),
             "WORKER_MAX_JOBS": "8",
             "PHAZE_ANALYSIS_PHYSICAL_CORES": str(AGENT_CORES),
-            "TF_NUM_INTRAOP_THREADS": "1",
-            "OMP_NUM_THREADS": "1",
+            "TF_NUM_INTRAOP_THREADS": str(AGENT_THREADS),
+            "OMP_NUM_THREADS": str(AGENT_THREADS),
             # Read by _retune_agent_harness (not imported here: importing it builds the agent's queue).
             "PHAZE_RETUNE_PROBE_DIR": str(self.probe_dir),
             "PHAZE_RETUNE_HEARTBEAT_INTERVAL_SEC": str(HEARTBEAT_INTERVAL),
@@ -614,8 +616,8 @@ async def test_retune_through_sighup(launch_agent: Callable[..., Awaitable[Agent
     trigger = sighup_trigger(agent)
 
     async def reject_invalid() -> None:
-        # A sizing that oversubscribes the agent's cores: 3 children x 8 threads on 4 cores.
-        agent.write_runtime_toml({**RAISED, "analysis_intra_op_threads": 8})
+        # A sizing that oversubscribes the agent's cores: 4 children x 2 threads on 6 cores.
+        agent.write_runtime_toml({**RAISED, "worker_process_pool_size": 4})
         os.kill(agent.pid, signal.SIGHUP)
         await agent.until(
             lambda o: _rejected_with(o, f"oversubscribes {AGENT_CORES} physical cores", reload_source="sighup"), "oversubscription is rejected"
@@ -646,19 +648,19 @@ async def test_retune_through_an_admin_api_override(launch_agent: Callable[..., 
             assert restart_only.status_code == 400, restart_only.text
             assert restart_only.json()["detail"] == "requires restart"
             assert await control_plane.overrides() == stored
-            # Valid on the 16-core control plane, so it IS stored -- but 3 children x 2 threads
+            # Valid on the 16-core control plane, so it IS stored -- but 4 children x 2 threads
             # oversubscribes the 4-core agent, which must refuse it when the poll delivers it.
-            threads = await client.post("/admin/runtime-config/analysis_intra_op_threads", data={"value": "2"})
-            assert threads.status_code == 200, threads.text
+            pool = await client.post("/admin/runtime-config/worker_process_pool_size", data={"value": "4"})
+            assert pool.status_code == 200, pool.text
             await agent.until(
                 lambda o: _rejected_with(o, f"oversubscribes {AGENT_CORES} physical cores", reload_source="poll"), "the agent refuses the override"
             )
             effective = agent.observed.effective
             assert effective is not None
-            assert effective["values"]["analysis_intra_op_threads"] == 1
-            assert effective["sources"]["analysis_intra_op_threads"] == "env"
-            # Withdrawn; the agent's next poll takes the (unchanged) remainder cleanly.
-            cleared = await client.delete("/admin/runtime-config/analysis_intra_op_threads")
+            assert effective["values"]["worker_process_pool_size"] == RAISED["worker_process_pool_size"]
+            assert effective["sources"]["worker_process_pool_size"] == "override"
+            # Withdrawn (back to RAISED's value); the agent's next poll takes the unchanged set cleanly.
+            cleared = await client.post("/admin/runtime-config/worker_process_pool_size", data={"value": str(RAISED["worker_process_pool_size"])})
             assert cleared.status_code == 200, cleared.text
         await agent.until(
             lambda o: (

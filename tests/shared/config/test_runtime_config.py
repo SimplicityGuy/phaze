@@ -119,8 +119,10 @@ _LAYER_VALUES: dict[str, tuple[Any, Any, Any]] = {
     "lane_meta_concurrency": (3, 5, 6),
     "lane_io_concurrency": (5, 6, 7),
     "worker_process_pool_size": (2, 3, 5),
-    "analysis_intra_op_threads": (2, 3, 1),
-    "analysis_omp_threads": (2, 3, 1),
+    # The thread keys descend: a thread env var is a hard CEILING for every layer above it
+    # (phaze-mvq8z.22), so a file/override value above the env pin would be capped, not applied.
+    "analysis_intra_op_threads": (3, 2, 1),
+    "analysis_omp_threads": (3, 2, 1),
     "analysis_stall_timeout_sec": (600, 700, 800),
     "cloud_route_threshold_sec": (3600, 3700, 3800),
 }
@@ -268,6 +270,36 @@ def test_an_unknown_start_time_log_level_falls_back_to_info_with_trace_registere
 def test_a_non_integer_thread_env_var_falls_back_to_the_derived_default(tmp_path: Path) -> None:
     store = _store(tmp_path, env={OMP_ENV: "lots"}, cores=2)
     assert (store.current().analysis_omp_threads, store.snapshot().sources["analysis_omp_threads"]) == (2, "default")
+
+
+@pytest.mark.parametrize("layer", ["file", "override"])
+def test_an_arm64_style_thread_env_pin_caps_a_fleet_wide_raise(layer: str, tmp_path: Path) -> None:
+    """phaze-mvq8z.22 finding 3: ``OMP_NUM_THREADS=1`` in the process env is a ceiling, not a default.
+
+    ``Dockerfile.agent-arm64`` pins it to 1 to defuse the dual-OpenMP-runtime segfault
+    (docs/arm64-agent-image.md fix #4). The override table is fleet-wide, so an
+    ``analysis_omp_threads = 4`` meant for x86 agents reaches the arm64 agent too -- and its
+    children are stamped from this snapshot. The pin must hold, and the snapshot must say so.
+    """
+
+    async def scenario() -> None:
+        overrides = _Overrides()
+        store = _store(tmp_path, overrides=overrides, env={OMP_ENV: "1"})
+        if layer == "file":
+            _write_toml(tmp_path, {"analysis_omp_threads": 4, "worker_max_jobs": 6})
+        else:
+            overrides.values = {"analysis_omp_threads": 4, "worker_max_jobs": 6}
+        with capture_logs() as logs:
+            result = await store.reload("api")
+        assert result.outcome == "applied", result.error
+        assert (store.current().analysis_omp_threads, store.snapshot().sources["analysis_omp_threads"]) == (1, "env")
+        # The rest of the same layer still applies: the pin caps one key, it does not reject the reload.
+        assert (store.current().worker_max_jobs, store.snapshot().sources["worker_max_jobs"]) == (6, layer)
+        capped = [entry for entry in logs if entry.get("event") == "phaze.runtime_config thread env pin caps a reloadable value"]
+        assert capped
+        assert (capped[0]["key"], capped[0]["env"], capped[0]["pin"], capped[0]["requested"]) == ("analysis_omp_threads", OMP_ENV, 1, 4)
+
+    asyncio.run(scenario())
 
 
 def test_invalid_start_time_settings_fail_fast_naming_the_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

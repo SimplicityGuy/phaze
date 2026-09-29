@@ -17,6 +17,7 @@ successful write visible to the very next request regardless of NOTIFY.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -26,10 +27,12 @@ from structlog.testing import capture_logs
 from phaze import runtime_config
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.runtime_config import RUNTIME_TOML_NAME, get_runtime_config_store
+from phaze.runtime_config_notify import install_runtime_config_overrides
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from httpx import AsyncClient
@@ -43,7 +46,13 @@ def _wire_runtime_config_store(session: AsyncSession):  # type: ignore[no-untype
     """Fresh global store per test, its override provider bound to THIS test's own session."""
     get_runtime_config_store.cache_clear()
     store = get_runtime_config_store()
-    store.set_override_provider(lambda: get_runtime_config_overrides(session))
+
+    @contextlib.asynccontextmanager
+    async def _this_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    # The api process's own wiring (phaze.main), bound to this test's session.
+    install_runtime_config_overrides(store, _this_session)  # type: ignore[arg-type]
     yield store
     get_runtime_config_store.cache_clear()
 
@@ -211,3 +220,72 @@ async def test_clearing_an_override_that_would_unmask_an_invalid_file_value_is_r
     assert row is not None, "the override was deleted even though clearing it leaves an invalid config"
     assert row.value == 4
     assert get_runtime_config_store().current().worker_max_jobs == 4
+
+
+# phaze-mvq8z.22 finding 1: a stale row -- a key a later build renamed or made restart-only --
+# must neither block the admin API nor be stuck in the table with no way to remove it.
+
+_STALE_DSN = "postgresql://phaze:stale-row-s3cr3t@db.invalid:5432/phaze"
+_STALE_ROWS = {"database_url": _STALE_DSN, "a_key_a_later_build_renamed": 4}
+
+
+async def _seed_stale_rows(session: AsyncSession) -> None:
+    session.add_all([RuntimeConfigOverride(key=key, value=value) for key, value in _STALE_ROWS.items()])
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_row_does_not_block_setting_a_reloadable_key(client: AsyncClient, session: AsyncSession) -> None:
+    await _seed_stale_rows(session)
+
+    response = await client.post("/admin/runtime-config/worker_max_jobs", data={"value": "12"})
+
+    assert response.status_code == 200, response.text
+    assert (await session.get(RuntimeConfigOverride, "worker_max_jobs")) is not None
+    assert get_runtime_config_store().current().worker_max_jobs == 12
+    assert get_runtime_config_store().snapshot().sources["worker_max_jobs"] == "override"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", sorted(_STALE_ROWS))
+async def test_delete_removes_a_stale_non_reloadable_row(key: str, client: AsyncClient, session: AsyncSession) -> None:
+    await _seed_stale_rows(session)
+
+    with capture_logs() as logs:
+        response = await client.delete(f"/admin/runtime-config/{key}")
+
+    assert response.status_code == 200, response.text
+    assert await session.get(RuntimeConfigOverride, key) is None
+    assert set(await get_runtime_config_overrides(session)) == set(_STALE_ROWS) - {key}, "only the named row goes"
+    cleared = [entry for entry in logs if entry.get("event") == "phaze.runtime_config_admin stale override cleared"]
+    assert [entry["key"] for entry in cleared] == [key]
+    assert "stale-row-s3cr3t" not in repr(logs)
+
+
+@pytest.mark.asyncio
+async def test_the_pane_lists_stale_rows_by_name_with_a_clear_control(client: AsyncClient, session: AsyncSession) -> None:
+    await _seed_stale_rows(session)
+
+    response = await client.get("/admin/runtime-config/_table")
+
+    assert response.status_code == 200
+    for key in _STALE_ROWS:
+        assert f'hx-delete="/admin/runtime-config/{key}"' in response.text
+    assert "stale-row-s3cr3t" not in response.text, "a stale row's VALUE may be a credential: only its name is shown"
+
+
+# phaze-mvq8z.22 finding 4: a restart-only key's submitted value may be a DSN or a token.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["database_url", "not_a_real_key"])
+async def test_a_rejected_non_reloadable_post_logs_the_key_name_but_never_the_value(key: str, client: AsyncClient) -> None:
+    dsn = "postgresql://phaze:posted-s3cr3t@db.invalid:5432/phaze"
+
+    with capture_logs() as logs:
+        response = await client.post(f"/admin/runtime-config/{key}", data={"value": dsn})
+
+    assert response.status_code == 400
+    rejected = [entry for entry in logs if entry.get("event") == "phaze.runtime_config_admin override rejected"]
+    assert [entry["key"] for entry in rejected] == [key], "the rejection is still audited, by name"
+    assert "posted-s3cr3t" not in repr(logs)

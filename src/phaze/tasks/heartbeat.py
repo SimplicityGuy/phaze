@@ -56,7 +56,7 @@ from phaze.constants import (
     AGENT_BROKER_UNHEALTHY_BEATS,
     AGENT_HEARTBEAT_INTERVAL_SECONDS,
 )
-from phaze.runtime_config import RESTART_ONLY_KEYS
+from phaze.runtime_config import RESTART_ONLY_KEYS, partition_overrides
 from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH, EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
 from phaze.services.agent_client import AgentApiClientError, AgentApiError
 
@@ -190,8 +190,15 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
         return
     if digest == ctx.get("_runtime_config_digest"):
         return
+    # phaze-mvq8z.22: the endpoint filters by the SERVER's reloadable keys, and a newer control
+    # plane can know a key this agent's build does not. Rejecting the whole reload for it would
+    # strand every other override (log_level included) until the agent upgrades, so the unknown
+    # key is dropped and named, and the rest applies -- the same version-skew tolerance .20 gave
+    # the heartbeat POST.
+    overrides, ignored = partition_overrides(overrides)
+    if ignored:
+        logger.warning("heartbeat: ignoring runtime-config override keys this agent does not know", ignored=list(ignored))
     ctx["_runtime_config_overrides"] = overrides
-    ctx["_runtime_config_digest"] = digest
 
     async def _override_provider() -> dict[str, Any]:
         # Reads ctx fresh on every call (not the `overrides` closed over above) so a LATER
@@ -200,7 +207,16 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
         return dict(ctx.get("_runtime_config_overrides") or {})
 
     store.set_override_provider(_override_provider)
-    await store.reload("poll")
+    # The digest is recorded only once the set it names is IN FORCE (phaze-mvq8z.22). Recorded
+    # before the reload, a rejected set -- a transient validator veto, a failed applier -- was never
+    # retried until the operator changed the set again. A rejection FORGETS the digest instead, so
+    # the next tick reloads whatever the endpoint then serves: the same set again (a retry), or a
+    # withdrawal back to the set already in force, which must still be reloaded -- the provider
+    # above holds the rejected set until it is.
+    if (await store.reload("poll")).successful:
+        ctx["_runtime_config_digest"] = digest
+    else:
+        ctx.pop("_runtime_config_digest", None)
 
 
 def _bounded_error(error: str | None) -> str | None:
