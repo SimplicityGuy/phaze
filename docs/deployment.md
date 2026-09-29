@@ -321,8 +321,8 @@ boundary; every set/clear attempt, accepted or rejected, is audit-logged as the 
 control (see [docs/configuration.md](configuration.md#runtime-config-hot-reload)). An
 invalid value is rejected with nothing written to the database.
 
-The DB-override table is created by Alembic migration `072_runtime_config_override` (chained
-after main's `069_cloud_job_last_failure`, current head `072` — see
+The DB-override table is created by Alembic migration `073_runtime_config_override` (chained
+after main's `072_cloud_job_redrive_after`, current head `073` — see
 [database.md](database.md) for the full migration chain); its downgrade drops the table, which is
 why the whole `phaze-mvq8z` molecule was deliberately landed as a single `--no-ff` merge to
 `main` — an operator decision (2026-09-27, epic `phaze-mvq8z`) — so a single `git revert -m 1`

@@ -136,6 +136,8 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling:
         cloud_submit_max_attempts=cap,
         # phaze-1q4g: the SECOND re-drive budget -- node-loss re-drives spend this one, not ``attempts``.
         cloud_node_loss_max_redrives=node_loss_ceiling,
+        # phaze-d28sn: no backoff, so a re-drive enqueues on the tick that charges it (tested in redrive/test_redrive_backoff.py).
+        cloud_redrive_backoff_sec=(0,),
         cloud_enabled=True,
         backends=[
             SimpleNamespace(

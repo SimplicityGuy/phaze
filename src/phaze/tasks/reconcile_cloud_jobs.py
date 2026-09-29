@@ -94,6 +94,28 @@ reverses phaze-1b39's deadline-and-slack design, which killed every 2-6 h concer
 exactly 3h and burned each file's whole cloud attempt budget (incident 2026-07-28); the wedged-pod
 protection 1b39 wanted is preserved, the collateral damage is not.
 
+phaze-d28sn -- A CHARGED RE-DRIVE WAITS OUT A BACKOFF, HOLDING ITS SLOT. The re-drive used to enqueue its
+fresh submit in the same tick that saw the failure, so a file spent one submit and three re-drives in
+about three minutes and any fault longer than that exhausted every in-flight file (spike
+``phaze-79mu7``). A re-drive that charges ``attempts`` or ``node_loss_redrives`` now deletes the failed
+Job, charges the counter and stamps ``cloud_job.redrive_after`` = ``last_failed_at`` + the
+``cloud_redrive_backoff_sec`` entry for that re-drive (default 2 / 10 / 30 min), and enqueues nothing;
+:func:`_reconcile_backoff` enqueues it on the first tick past that instant. The wait is not an attempt:
+the counter moved once, for the failure, and a waiting tick writes nothing.
+
+HOLD, NOT RELEASE (implementer's decision). The waiting row stays SUBMITTED, so it keeps its burst-lane
+slot and its staged object. Releasing it to ``'awaiting'`` would free the slot for another file, but it
+would delete and later re-upload the staged object on every re-drive, hand the row to the drain, whose
+``cloud_spill_to_local_after_seconds`` clock could spill it to local mid-wait, and make reconcile
+claim slots back, which it never does today (``KueueBackend.reconcile``'s reconcile-only-decrements
+proof). During the lane-wide fault the backoff exists for, an idle slot costs nothing: a new file
+dispatched into it would fail the same way. The price is that one file failing on its own merits
+idles one slot for 42 min at the default schedule over its whole chain.
+
+The uncharged re-drive (``EXIT_CONTROL_PLANE_UNREACHABLE``, phaze-j0ixx) does not wait: it charges
+nothing, and the backend breaker bounds it -- a second unreachable exit on the row, or three distinct
+files, holds the backend. Backing it off as well would only delay that trip.
+
 CONTROL-ONLY: needs PostgreSQL (``ctx["async_session"]``) + the controller queue (``ctx["queue"]``) for
 the re-drive enqueue, and the kube surface via ``kube_staging`` -- exactly like ``stage_cloud_window`` /
 ``recover_orphaned_work``. Register ONLY in ``phaze.tasks.controller`` (``tests/shared/core/test_task_split.py``
@@ -106,7 +128,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
@@ -144,6 +166,7 @@ from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -170,6 +193,17 @@ FAILURE_POD_NOT_FOUND = "pod_not_found"  # the Job read Failed/Evicted but liste
 # ``EXIT_CONTROL_PLANE_UNREACHABLE`` failed because the control plane could not be reached, not because of
 # its file. What bounds it instead is the backend breaker (``services/backend_breaker.py``).
 BUDGET_UNCHARGED = "uncharged_control_plane_unreachable"
+
+
+def redrive_backoff_seconds(schedule: Sequence[int], redrive_number: int) -> int:
+    """Seconds to wait before the ``redrive_number``-th charged re-drive (1-based); the last entry repeats (phaze-d28sn).
+
+    ``redrive_number`` is the value the charged counter takes on this re-drive, so each budget walks the
+    schedule from its own start: a node-loss re-drive after two ordinary ones waits the FIRST entry.
+    """
+    if not schedule or redrive_number < 1:
+        return 0
+    return schedule[min(redrive_number, len(schedule)) - 1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +499,7 @@ async def _spill_to_awaiting(cfg: ControlSettings, row: _RowReconcile, name: str
     row.cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
     row.cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
     row.cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
+    row.cloud_job.redrive_after = None  # phaze-d28sn: nor a backoff left to wait out.
     # phaze-1xngw: the exit status that ended this chain or tripped the hold -- written AFTER the CAS above so no dirty
     # attribute can autoflush ahead of it, and before the commit that precedes the Job delete.
     _record_failure(row.cloud_job, failure, failed_at=datetime.now(UTC))
@@ -481,11 +516,16 @@ async def _redrive_under_ceiling(
     budget: str,
     effective_node_loss_reason: str | None,
     failure: TerminalFailure,
+    backoff_seconds: int,
 ) -> None:
     """The under-ceiling re-drive of :func:`_handle_no_callback_terminal` -- delete, confirm gone, re-submit.
 
     See that function's docstring for the delete-then-confirm-gone race guard, the deferral that charges
     no budget, and the ``kueue_workload=None`` pending-confirmation record this commit leaves behind.
+
+    phaze-d28sn: a positive ``backoff_seconds`` charges the budget and deletes the Job exactly as before
+    but enqueues nothing; it stamps ``redrive_after`` instead and :func:`_reconcile_backoff` enqueues the
+    submit once that passes. ``0`` (every uncharged re-drive, or a schedule entry of 0) enqueues now.
     """
     cloud_job = row.cloud_job
     file_id = cloud_job.file_id
@@ -544,7 +584,26 @@ async def _redrive_under_ceiling(
     # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
     # above from being immediately re-charged before the re-submitted Job even exists.
     cloud_job.kueue_workload = None
-    _record_failure(cloud_job, failure, failed_at=datetime.now(UTC))  # phaze-1xngw: the Job is already deleted.
+    failed_at = datetime.now(UTC)
+    _record_failure(cloud_job, failure, failed_at=failed_at)  # phaze-1xngw: the Job is already deleted.
+    if backoff_seconds > 0:
+        # phaze-d28sn: the backoff clock is ``last_failed_at``, the instant this failure was recorded.
+        cloud_job.redrive_after = failed_at + timedelta(seconds=backoff_seconds)
+        cloud_job.cloud_phase = None  # no pod exists while it waits -- off the Running tile (WR-01's spill does the same).
+        await row.session.commit()
+        row.tally["backoff_held"] += 1
+        logger.info(
+            "reconcile_cloud_jobs: re-drive charged, waiting out its backoff before re-submitting",
+            file_id=str(file_id),
+            attempt=next_attempt,
+            budget=budget,
+            backoff_seconds=backoff_seconds,
+            redrive_after=cloud_job.redrive_after.isoformat(),
+            node_loss_reason=effective_node_loss_reason,
+            exit_code=failure.exit_code,
+            reason=failure.reason,
+        )
+        return
     await row.session.commit()
     await _enqueue_resubmit(row.ctx, file_id)
     row.tally["redriven"] += 1
@@ -691,6 +750,7 @@ async def _handle_no_callback_terminal(
         budget=budget,
         effective_node_loss_reason=effective_node_loss_reason,
         failure=failure,
+        backoff_seconds=redrive_backoff_seconds(cfg.cloud_redrive_backoff_sec, next_attempt),  # phaze-d28sn
     )
 
 
@@ -733,8 +793,9 @@ async def _hold_control_plane_unreachable(cfg: ControlSettings, row: _RowReconci
         else backend_breaker.UnreachableVerdict(held=True, tripped_now=False, reason="cloud_job has no backend_id")
     )
     if not verdict.held:
+        # phaze-d28sn: no backoff -- nothing is charged, and the breaker trips on this row's next unreachable exit.
         await _redrive_under_ceiling(
-            row, name, next_attempt=cloud_job.attempts, budget=BUDGET_UNCHARGED, effective_node_loss_reason=None, failure=failure
+            row, name, next_attempt=cloud_job.attempts, budget=BUDGET_UNCHARGED, effective_node_loss_reason=None, failure=failure, backoff_seconds=0
         )
         return
     await _spill_to_awaiting(cfg, row, name, attempts=cloud_job.attempts, failure=failure)
@@ -787,6 +848,37 @@ async def _finalize_or_redrive(
         node_loss_reason = await _terminal_node_loss_reason(name, row.kube)
         failure = await _terminal_failure(name, row.kube)
     await _handle_no_callback_terminal(row, name, failure=failure or TerminalFailure(None, no_pod_marker), node_loss_reason=node_loss_reason)
+
+
+async def _reconcile_backoff(row: _RowReconcile) -> None:
+    """A charged re-drive waiting out its backoff: hold until ``redrive_after``, then enqueue the submit (phaze-d28sn).
+
+    Holding writes nothing, so the wait charges nothing and ``updated_at`` stays put. Enqueueing clears
+    ``redrive_after`` in its own commit, which moves ``updated_at`` to now: the row is then an ordinary
+    pending-confirmation row whose :data:`PENDING_SUBMIT_CONFIRMATION_SECONDS` bound runs from the
+    enqueue, not from the failure, so no schedule entry can age it into a vanished terminal. The Job was
+    deleted when the attempt was charged, so no pod runs during the wait and nothing here bounds one.
+    """
+    cloud_job = row.cloud_job
+    due = cast("datetime", cloud_job.redrive_after)
+    if due.tzinfo is None:  # the _row_age_seconds convention: assume UTC so the comparison never raises.
+        due = due.replace(tzinfo=UTC)
+    if datetime.now(UTC) < due:
+        await row.session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
+        row.tally["backoff_held"] += 1
+        return
+    cloud_job.redrive_after = None
+    await row.session.commit()
+    await _enqueue_resubmit(row.ctx, cloud_job.file_id)
+    row.tally["redriven"] += 1
+    logger.info(
+        "reconcile_cloud_jobs: backoff elapsed -> re-driving submit_cloud_job",
+        file_id=str(cloud_job.file_id),
+        attempts=cloud_job.attempts,
+        node_loss_redrives=cloud_job.node_loss_redrives,
+        exit_code=cloud_job.last_exit_code,
+        reason=cloud_job.last_failure_reason,
+    )
 
 
 async def _reconcile_pending_confirmation(row: _RowReconcile) -> None:
@@ -1015,7 +1107,12 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     row = _RowReconcile(ctx=ctx, session=session, cloud_job=cloud_job, cap=cap, tally=tally, kube=kube)
     name = cloud_job.kueue_workload
     if not name:
-        await _reconcile_pending_confirmation(row)
+        # phaze-d28sn: a row with no Job is either waiting out a charged re-drive's backoff (``redrive_after``
+        # set, nothing enqueued yet) or pending confirmation of a submit that IS enqueued.
+        if cloud_job.redrive_after is not None:
+            await _reconcile_backoff(row)
+        else:
+            await _reconcile_pending_confirmation(row)
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
@@ -1087,6 +1184,8 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
         "unknown_workload_disposition": 0,
         # phaze-j0ixx: unreachable-control-plane rows spilled uncharged because their backend is held.
         "unreachable_held": 0,
+        # phaze-d28sn: rows waiting out a charged re-drive's backoff this tick (including the tick that charged it).
+        "backoff_held": 0,
     }
 
     async with ctx["async_session"]() as session:

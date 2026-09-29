@@ -21,8 +21,8 @@ downgrade is correct, not merely tolerated: every overridden key falls back to t
 / ``default`` layers the process was already honoring underneath the override, exactly as if the
 operator had cleared every override through the admin API first.
 
-Revision ID: 072
-Revises: 071
+Revision ID: 073
+Revises: 072
 Create Date: 2026-09-28
 """
 
@@ -35,8 +35,8 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision: str = "072"
-down_revision: str | None = "071"
+revision: str = "073"
+down_revision: str | None = "072"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

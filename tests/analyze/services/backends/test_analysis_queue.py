@@ -61,13 +61,23 @@ async def _queue(session: AsyncSession) -> tuple[SimpleNamespace, str]:
     return app_state, resolved[1]
 
 
-def _running_blob(*, started_ago_s: int = 60, touched_ago_s: int = 5, heartbeat: int = _HEARTBEAT) -> dict[str, int]:
-    now = now_ms()
+async def _running_blob(session: AsyncSession, *, started_ago_s: int = 60, touched_ago_s: int = 5, heartbeat: int = _HEARTBEAT) -> dict[str, int]:
+    """A running job's blob, aged from the DATABASE's clock (phaze-neo4z, phaze-jz0fm).
+
+    Every reader that ages a ``saq_jobs`` row -- ``_QUEUE_EXTRAS_SQL``'s claim-overdue /
+    heartbeat-lost SQL FILTERs (``lane_detail.py`` ~514-519), ``queue_introspection``'s
+    ``stuck_past_timeout`` / ``stranded``, and (since phaze-jz0fm) ``get_running_analyses`` /
+    ``get_waiting_page``'s own :func:`~phaze.services.backends.lane_detail._db_now` -- now reads
+    the same Postgres clock, so one seed satisfies all of them. ``touched_ago_s``'s default of 5 s
+    is the tightest margin in this module against the heartbeat-lost predicate.
+    """
+    now = await now_ms(session)
     return {"attempts": 1, "started": now - started_ago_s * 1000, "touched": now - touched_ago_s * 1000, "timeout": 0, "heartbeat": heartbeat}
 
 
-def _claimed_blob(*, claimed_ago_s: int = 1) -> dict[str, int]:
-    now = now_ms()
+async def _claimed_blob(session: AsyncSession, *, claimed_ago_s: int = 1) -> dict[str, int]:
+    """A claimed-but-unrun job's blob, aged from the DATABASE's clock -- see :func:`_running_blob`."""
+    now = await now_ms(session)
     return {"started": now - claimed_ago_s * 1000, "touched": now - claimed_ago_s * 1000, "timeout": 0, "heartbeat": _HEARTBEAT}
 
 
@@ -78,14 +88,19 @@ async def test_queue_split_separates_running_waiting_and_the_three_real_problems
     overdue = claim_overdue_seconds() + 60
     for i in range(3):
         await seed_job(session, queue, key=f"process_file:q{i}", status="queued")
-    await seed_job(session, queue, key="process_file:run", status="active", blob=_running_blob())
-    await seed_job(session, queue, key="process_file:silent", status="active", blob=_running_blob(touched_ago_s=_HEARTBEAT + 60))
-    await seed_job(session, queue, key="process_file:claim-a", status="active", blob=_claimed_blob())
-    await seed_job(session, queue, key="process_file:claim-b", status="active", blob=_claimed_blob())
-    await seed_job(session, queue, key="process_file:claim-old", status="active", blob=_claimed_blob(claimed_ago_s=overdue))
+    await seed_job(session, queue, key="process_file:run", status="active", blob=await _running_blob(session))
+    await seed_job(session, queue, key="process_file:silent", status="active", blob=await _running_blob(session, touched_ago_s=_HEARTBEAT + 60))
+    await seed_job(session, queue, key="process_file:claim-a", status="active", blob=await _claimed_blob(session))
+    await seed_job(session, queue, key="process_file:claim-b", status="active", blob=await _claimed_blob(session))
+    await seed_job(session, queue, key="process_file:claim-old", status="active", blob=await _claimed_blob(session, claimed_ago_s=overdue))
     # A bounded (non-analysis) job abandoned mid-flight long ago: the active reaper's own "stranded" set.
+    stranded_now = await now_ms(session)
     await seed_job(
-        session, queue, key="extract_file_metadata:x", status="active", blob={"attempts": 1, "started": now_ms() - 7_200_000, "timeout": 10}
+        session,
+        queue,
+        key="extract_file_metadata:x",
+        status="active",
+        blob={"attempts": 1, "started": stranded_now - 7_200_000, "timeout": 10},
     )
 
     split = await read_local_analyze_queue(session, app_state)
@@ -103,9 +118,9 @@ async def test_a_fresh_claim_and_a_long_queue_are_not_stuck(session: AsyncSessio
     """A backlog is not a problem: queued rows and just-claimed rows never count as stuck."""
     app_state, queue = await _queue(session)
     await seed_bulk_queued(session, queue, 679)
-    await seed_job(session, queue, key="process_file:run", status="active", blob=_running_blob(started_ago_s=4 * 3600))
+    await seed_job(session, queue, key="process_file:run", status="active", blob=await _running_blob(session, started_ago_s=4 * 3600))
     for i in range(15):
-        await seed_job(session, queue, key=f"process_file:claim-{i}", status="active", blob=_claimed_blob(claimed_ago_s=30))
+        await seed_job(session, queue, key=f"process_file:claim-{i}", status="active", blob=await _claimed_blob(session, claimed_ago_s=30))
 
     split = await read_local_analyze_queue(session, app_state)
 
@@ -134,8 +149,14 @@ async def test_running_list_shows_file_lane_start_windows_and_heartbeat(session:
         AnalysisResult(file_id=running_file.id, fine_windows_analyzed=12, fine_windows_total=40, coarse_windows_analyzed=3, coarse_windows_total=10)
     )
     session.add(CloudJob(file_id=cloud_file.id, s3_key="staging/x", status=CloudJobStatus.RUNNING.value, backend_id="k8s"))
-    await seed_job(session, queue, key=f"process_file:{running_file.id}", status="active", blob=_running_blob(started_ago_s=600, touched_ago_s=30))
-    await seed_job(session, queue, key=f"process_file:{claimed_file.id}", status="active", blob=_claimed_blob())
+    await seed_job(
+        session,
+        queue,
+        key=f"process_file:{running_file.id}",
+        status="active",
+        blob=await _running_blob(session, started_ago_s=600, touched_ago_s=30),
+    )
+    await seed_job(session, queue, key=f"process_file:{claimed_file.id}", status="active", blob=await _claimed_blob(session))
     await session.flush()
 
     lanes = [{"id": "local", "kind": "local"}, {"id": "k8s", "kind": "kueue"}]
@@ -147,8 +168,11 @@ async def test_running_list_shows_file_lane_start_windows_and_heartbeat(session:
     local = by_label["set-01.mp3"]
     assert (local.file_id, local.lane, local.lane_kind) == (running_file.id, "local", "local")
     assert (local.windows_done, local.windows_total, local.percent) == (15, 50, 30)
-    assert local.started_at is not None and 590 <= (datetime.now(UTC) - local.started_at).total_seconds() <= 620
-    assert local.heartbeat_at is not None and 20 <= (datetime.now(UTC) - local.heartbeat_at).total_seconds() <= 60
+    # get_running_analyses now ages this row on the DATABASE's clock (phaze-jz0fm); the assertion
+    # reads the same clock rather than the host's datetime.now(UTC), so it stays exact under skew.
+    db_now = datetime.fromtimestamp(await now_ms(session) / 1000, tz=UTC)
+    assert local.started_at is not None and 590 <= (db_now - local.started_at).total_seconds() <= 620
+    assert local.heartbeat_at is not None and 20 <= (db_now - local.heartbeat_at).total_seconds() <= 60
     assert local.heartbeat_lost is False
     cloud = by_label["set-03.mp3"]
     assert (cloud.lane, cloud.lane_kind, cloud.started_at, cloud.heartbeat_at, cloud.windows_total) == ("k8s", "kueue", None, None, None)
@@ -159,7 +183,13 @@ async def test_running_list_marks_a_lost_heartbeat(session: AsyncSession) -> Non
     """A started job silent past its OWN serialized heartbeat is SAQ's ``Job.stuck`` -- flagged per row."""
     app_state, queue = await _queue(session)
     silent = await _file(session, "set-04.mp3")
-    await seed_job(session, queue, key=f"process_file:{silent.id}", status="active", blob=_running_blob(touched_ago_s=_HEARTBEAT + 120))
+    await seed_job(
+        session,
+        queue,
+        key=f"process_file:{silent.id}",
+        status="active",
+        blob=await _running_blob(session, touched_ago_s=_HEARTBEAT + 120),
+    )
 
     running = await get_running_analyses(session, app_state, [{"id": "local", "kind": "local"}])
 
@@ -185,8 +215,14 @@ async def test_waiting_page_lists_claimed_first_then_queued_and_pages(session: A
     files = [await _file(session, name) for name in names]
     await seed_job(session, queue, key=f"process_file:{files[0].id}", status="queued", scheduled=2)
     await seed_job(session, queue, key=f"process_file:{files[1].id}", status="queued", scheduled=1)
-    await seed_job(session, queue, key=f"process_file:{files[2].id}", status="active", blob=_claimed_blob(claimed_ago_s=claim_overdue_seconds() + 60))
-    await seed_job(session, queue, key=f"process_file:{files[3].id}", status="active", blob=_running_blob())
+    await seed_job(
+        session,
+        queue,
+        key=f"process_file:{files[2].id}",
+        status="active",
+        blob=await _claimed_blob(session, claimed_ago_s=claim_overdue_seconds() + 60),
+    )
+    await seed_job(session, queue, key=f"process_file:{files[3].id}", status="active", blob=await _running_blob(session))
     enqueued = datetime.now(UTC) - timedelta(hours=2)
     session.add(SchedulingLedger(key=f"process_file:{files[1].id}", function="process_file", routing="local", payload={}, enqueued_at=enqueued))
     await session.flush()
@@ -236,9 +272,13 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     # A running local job has its scheduling-ledger row (written at enqueue), so it is routed, not "unrouted".
     session.add(SchedulingLedger(key=f"process_file:{running_file.id}", function="process_file", routing="local", payload={}))
     await seed_bulk_queued(session, queue, 679)
-    await seed_job(session, queue, key=f"process_file:{running_file.id}", status="active", blob=_running_blob(started_ago_s=900))
+    # 905s, not 900 -- clear of the "15m" bucket's own lower edge (phaze-jz0fm). now_ms/db_now share one
+    # NOW() for the whole test, so at exactly 900s the ::bigint ms rounding on the seed can round UP by a
+    # fraction of a millisecond and read back a hair UNDER 900.000s elapsed, flipping int(d // 60) to 14.
+    # See tests/_saq_jobs_seed.py::now_ms's docstring for the measured mechanism.
+    await seed_job(session, queue, key=f"process_file:{running_file.id}", status="active", blob=await _running_blob(session, started_ago_s=905))
     for i in range(15):
-        await seed_job(session, queue, key=f"process_file:claim-{i}", status="active", blob=_claimed_blob(claimed_ago_s=20))
+        await seed_job(session, queue, key=f"process_file:claim-{i}", status="active", blob=await _claimed_blob(session, claimed_ago_s=20))
     await session.commit()
 
     body = (await client.get("/s/analyze", headers={"HX-Request": "true"})).text
@@ -278,7 +318,11 @@ async def test_page_turns_red_for_claims_never_started(client: AsyncClient, sess
     await _file(session, "set-21.mp3")  # a corpus exists, so the workspace renders (not the first-run empty state)
     for i in range(4):
         await seed_job(
-            session, resolved[1], key=f"process_file:claim-{i}", status="active", blob=_claimed_blob(claimed_ago_s=claim_overdue_seconds() + 120)
+            session,
+            resolved[1],
+            key=f"process_file:claim-{i}",
+            status="active",
+            blob=await _claimed_blob(session, claimed_ago_s=claim_overdue_seconds() + 120),
         )
     await session.commit()
 
@@ -302,7 +346,7 @@ async def test_lane_detail_shows_the_lanes_running_list(client: AsyncClient, ses
     assert resolved is not None
     await create_saq_jobs(session)
     running_file = await _file(session, "set-30.mp3")
-    await seed_job(session, resolved[1], key=f"process_file:{running_file.id}", status="active", blob=_running_blob())
+    await seed_job(session, resolved[1], key=f"process_file:{running_file.id}", status="active", blob=await _running_blob(session))
     await seed_bulk_queued(session, resolved[1], 3)
     await session.commit()
 

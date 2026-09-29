@@ -18,6 +18,9 @@
      * queue_depths_note -- why there is no per-tier figure (kueue lane / no live fileserver agent).
      * refreshed_at      -- server render time for the "Updated HH:MM:SS" liveness caption.
      * recent_n          -- the D-07 last-N cap (LANE_RECENT_N).
+     * running_analyses  -- list[RunningAnalysis] (services.backends.lane_detail), or None when unread.
+     * queue_now         -- the database-clock reading (lane_detail.db_now) running_analyses was aged
+                            against (phaze-jz0fm) -- see the Running-now block below.
 
    Kind identity tokens are REUSED verbatim from _lane_card.html (never hue-only -- word + glyph, WCAG
    1.4.1). D-06: quota-waiting + Inadmissible render ONLY for a kueue lane; NO fabricated n/a rows on
@@ -122,16 +125,20 @@
             {% endif %}
         </div>
 
-        {# phaze-lwz8n: the same Running-now rows the workspace shows, scoped to this lane. #}
+        {# phaze-lwz8n: the same Running-now rows the workspace shows, scoped to this lane.
+           queue_now (phaze-jz0fm): the database-clock reading get_running_analyses aged these rows
+           against -- passed to humanize_relative_time so "started/heartbeat N ago" agrees with
+           heartbeat_lost instead of re-deriving "now" from the app host's own clock. #}
         <div>
             <p class="text-xs font-semibold uppercase tracking-wide text-muted ">Running now</p>
             {% set _running = running_analyses if running_analyses is defined else none %}
+            {% set _now = queue_now if queue_now is defined else none %}
             {% if _running is none %}
             <p class="mt-1 text-sm text-muted ">Running analyses could not be read this cycle.</p>
             {% elif _running %}
             <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
                 {% for run in _running %}
-                <li{% if run.heartbeat_lost %} class="text-danger "{% endif %}>▶ {{ run.label }} · {% if run.windows_total %}{{ run.windows_done }}/{{ run.windows_total }} windows{% else %}sizing…{% endif %} · started {{ humanize_relative_time(run.started_at) if run.started_at else "—" }} · heartbeat {{ humanize_relative_time(run.heartbeat_at) if run.heartbeat_at else "—" }}{% if run.heartbeat_lost %} (lost){% endif %}</li>
+                <li{% if run.heartbeat_lost %} class="text-danger "{% endif %}>▶ {{ run.label }} · {% if run.windows_total %}{{ run.windows_done }}/{{ run.windows_total }} windows{% else %}sizing…{% endif %} · started {{ humanize_relative_time(run.started_at, now=_now) if run.started_at else "—" }} · heartbeat {{ humanize_relative_time(run.heartbeat_at, now=_now) if run.heartbeat_at else "—" }}{% if run.heartbeat_lost %} (lost){% endif %}</li>
                 {% endfor %}
             </ul>
             {% else %}

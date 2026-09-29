@@ -460,6 +460,8 @@ class KueueBackend(_BaseBackend):
             # phaze-j0ixx: rows whose pod could not reach the control plane, spilled uncharged while the
             # backend's breaker holds it -- see ``_hold_control_plane_unreachable`` in reconcile_cloud_jobs.py.
             "unreachable_held": 0,
+            # phaze-d28sn: rows waiting out a charged re-drive's backoff -- see ``_reconcile_backoff`` in reconcile_cloud_jobs.py.
+            "backoff_held": 0,
         }
         reconcile_ctx = ctx if ctx is not None else {}
 

@@ -18,6 +18,7 @@ from phaze.services.backends import (
     get_running_analyses,
     get_waiting_page,
 )
+from phaze.services.backends.lane_detail import db_now
 
 
 if TYPE_CHECKING:
@@ -61,7 +62,11 @@ async def lane_detail(
         )
     recent_completions = await get_lane_recent_completions(session, backend_id, lane["kind"])
     # phaze-lwz8n: the lane pane shows the same Running-now rows as the workspace, scoped to this lane.
-    running = await get_running_analyses(session, request.app.state, [lane])
+    # queue_now (phaze-jz0fm): one database-clock read, threaded into get_running_analyses AND the
+    # template's humanize_relative_time(..., now=queue_now) -- so the rendered "N ago" text and the
+    # heartbeat_lost flag it renders age the same row off the same clock.
+    queue_now = await db_now(session)
+    running = await get_running_analyses(session, request.app.state, [lane], now=queue_now)
     # phaze-2u8v.1: the depths are read off the AGENT this lane's dispatch actually enqueues to (a local
     # lane -> the live fileserver agent), never off the registry id. ``depths is None`` is "this lane has
     # no SAQ queue", carried to the template as a NOTE -- the template must not render it as zeros.
@@ -79,6 +84,7 @@ async def lane_detail(
             "refreshed_at": datetime.now(UTC),
             "recent_n": LANE_RECENT_N,
             "running_analyses": running,
+            "queue_now": queue_now,
         },
     )
 
@@ -95,5 +101,8 @@ async def analyze_waiting(
     so a large backlog costs one bounded page read only when someone asks to see it. Degrade-safe: an
     unreadable queue renders its note, never a 500.
     """
-    waiting = await get_waiting_page(session, request.app.state, page=page)
-    return templates.TemplateResponse(request=request, name="pipeline/partials/_analyze_waiting.html", context={"waiting": waiting})
+    queue_now = await db_now(session)
+    waiting = await get_waiting_page(session, request.app.state, page=page, now=queue_now)
+    return templates.TemplateResponse(
+        request=request, name="pipeline/partials/_analyze_waiting.html", context={"waiting": waiting, "queue_now": queue_now}
+    )
