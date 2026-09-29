@@ -9,9 +9,10 @@ is no "unset" sentinel value, only row absence.
 
 Mirrors :class:`~phaze.models.route_control.RouteControl` /
 :class:`~phaze.models.pipeline_stage_control.PipelineStageControl`: a small, durable, directly
-operator-mutable control table outside SAQ's schema, read through a degrade-safe service
-(``phaze.services.runtime_config_overrides.get_runtime_config_overrides``) rather than raised
-straight from the ORM.
+operator-mutable control table outside SAQ's schema, read through a service
+(``phaze.services.runtime_config_overrides.get_runtime_config_overrides``) rather than straight
+from the ORM. Unlike ``route_control``'s reader it raises on a DB error rather than degrading to
+"no overrides" -- see that module's docstring (phaze-mvq8z.19).
 
 ``value`` is JSONB rather than a typed column because the override set spans multiple Python types
 (``str`` for ``log_level``, ``int`` for every sizing/timeout key) across one table -- exactly the
