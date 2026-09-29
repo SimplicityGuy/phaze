@@ -31,7 +31,14 @@ import structlog
 
 from phaze.database import get_session
 from phaze.logging_config import KNOWN_LOG_LEVELS
-from phaze.runtime_config import RELOADABLE_KEYS, RESTART_ONLY_KEYS, ReloadRejectedError, RuntimeConfig, get_runtime_config_store
+from phaze.runtime_config import (
+    RELOADABLE_KEYS,
+    RESTART_ONLY_KEYS,
+    ReloadRejectedError,
+    RuntimeConfig,
+    get_runtime_config_store,
+    partition_overrides,
+)
 from phaze.services.runtime_config_overrides import clear_runtime_config_override, get_runtime_config_overrides, set_runtime_config_override
 from phaze.web.template_globals import register_set_glyph_globals
 
@@ -93,10 +100,13 @@ async def build_runtime_config_pane_context(session: AsyncSession) -> dict[str, 
     default -- via ``RuntimeConfigStore.snapshot()``), not the DB directly: the snapshot IS the
     effective value + source layer this pane exists to show (ADR-0019 (runtime config hot-reload) §15), and re-deriving it
     from a fresh DB read here would risk disagreeing with what every OTHER reader of the store
-    (appliers, telemetry) currently sees. ``session`` is accepted (and unused) only so this
-    function's signature matches every other ``_STAGE_CONTEXT_BUILDERS`` entry's shape.
+    (appliers, telemetry) currently sees.
+
+    ``session`` is read for ONE thing the snapshot cannot show (phaze-mvq8z.22): the NAMES of stale
+    override rows -- keys a later build renamed or made restart-only, which every reader ignores --
+    so an operator can see them and clear them here. Names only; a stale value may be a credential.
     """
-    del session
+    _, stale = partition_overrides(await get_runtime_config_overrides(session))
     snapshot = get_runtime_config_store().snapshot()
     reloadable = [
         {"key": key, "value": getattr(snapshot.config, key), "source": snapshot.sources.get(key, "default")} for key in sorted(RELOADABLE_KEYS)
@@ -104,6 +114,7 @@ async def build_runtime_config_pane_context(session: AsyncSession) -> dict[str, 
     return {
         "reloadable_keys": reloadable,
         "restart_only_keys": sorted(RESTART_ONLY_KEYS),
+        "stale_override_keys": list(stale),
         "log_levels": _LOG_LEVELS,
     }
 
@@ -114,12 +125,16 @@ async def _render_table(request: Request, session: AsyncSession) -> HTMLResponse
     return templates.TemplateResponse(request=request, name="admin/partials/_runtime_config_table.html", context=context)
 
 
-def _reject_unless_reloadable(key: str, *, attempted: Any) -> None:
-    """Raise 400 with a structured audit line for a key this endpoint will not even preview."""
+def _reject_unless_reloadable(key: str) -> None:
+    """Raise 400 with a structured audit line for a key this endpoint will not even preview.
+
+    The line names the KEY only, never the submitted value (phaze-mvq8z.22): a restart-only key's
+    value is a DSN or a token often enough, and an unknown key may be one mistyped.
+    """
     if key in RELOADABLE_KEYS:
         return
     detail = "requires restart" if key in RESTART_ONLY_KEYS else "unknown key"
-    logger.warning("phaze.runtime_config_admin override rejected", key=key, attempted=attempted, error=detail)
+    logger.warning("phaze.runtime_config_admin override rejected", key=key, error=detail)
     raise HTTPException(status_code=400, detail=detail)
 
 
@@ -145,10 +160,11 @@ async def set_override(
     immediate in-process ``reload("api")`` so this same request's write is already live by the
     time it returns, rather than waiting on this process's own LISTEN round-trip.
     """
-    _reject_unless_reloadable(key, attempted=value)
+    _reject_unless_reloadable(key)
     coerced = _coerce(key, value)
     store = get_runtime_config_store()
-    current_overrides = await get_runtime_config_overrides(session)
+    # Stale rows are ignored by every reader, so the candidate ignores them too (phaze-mvq8z.22).
+    current_overrides, _ = partition_overrides(await get_runtime_config_overrides(session))
     candidate = {**current_overrides, key: coerced}
     try:
         await store.preview(candidate)
@@ -171,10 +187,18 @@ async def clear_override(
     after the override was set, say -- and deleting the row would leave every later reload
     rejected, the snapshot stuck on the stale override, and nothing in the DB explaining it. Such a
     clear is refused (409, the core's error) with the row left in place.
+
+    A STALE row -- a key this build no longer reloads -- is always removable (phaze-mvq8z.22). Every
+    reader already ignores it, so removing it changes no effective value and needs no preview; a
+    non-reloadable key with no row is still a 400.
     """
-    _reject_unless_reloadable(key, attempted=None)
     store = get_runtime_config_store()
-    current_overrides = await get_runtime_config_overrides(session)
+    current_overrides, stale = partition_overrides(await get_runtime_config_overrides(session))
+    if key in stale:
+        await clear_runtime_config_override(session, key)
+        logger.info("phaze.runtime_config_admin stale override cleared", key=key)
+        return await _render_table(request, session)
+    _reject_unless_reloadable(key)
     if key in current_overrides:
         candidate = {name: value for name, value in current_overrides.items() if name != key}
         try:

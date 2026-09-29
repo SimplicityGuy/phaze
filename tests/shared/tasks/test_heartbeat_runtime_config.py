@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 import respx
+from structlog.testing import capture_logs
 
 from phaze.config import ControlSettings
 from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
@@ -395,3 +396,109 @@ async def test_a_failed_config_poll_iteration_does_not_kill_the_loop(monkeypatch
     finally:
         await _cancel(task)
     assert task.cancelled()
+
+
+# phaze-mvq8z.22 finding 2: version skew between a NEWER control plane and an OLDER agent. The
+# endpoint filters by the SERVER's reloadable keys, so an agent can be handed a key its own build
+# does not know. That key must be ignored and reported -- not reject the whole reload -- and a
+# reload that IS rejected must not be recorded as applied, or the agent never retries it.
+
+_KEY_FROM_A_NEWER_CONTROL_PLANE = "a_key_from_a_newer_control_plane"
+
+
+def _veto_once(store: RuntimeConfigStore) -> list[int]:
+    """Register a validator that rejects the FIRST candidate it sees and accepts every later one -- a
+    transient veto (phaze-mvq8z.8's in-flight ``cloud_job`` check is the production shape)."""
+    seen: list[int] = []
+
+    def _validator(config: Any) -> None:
+        seen.append(config.worker_max_jobs)
+        if len(seen) == 1:
+            raise RuntimeError("transiently vetoed")
+
+    store.register_validator("veto_once", _validator)
+    return seen
+
+
+async def test_an_override_key_this_agent_does_not_know_is_ignored_and_the_rest_apply(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.reload("startup")
+    client = _StubClient(overrides={"worker_max_jobs": 9, "log_level": "DEBUG", _KEY_FROM_A_NEWER_CONTROL_PLANE: 3})
+    ctx = _ctx(client, store=store)
+
+    with capture_logs() as logs:
+        await send_heartbeat(ctx)
+
+    assert store.last_result is not None
+    assert store.last_result.outcome == "applied", store.last_result.error
+    assert (store.current().worker_max_jobs, store.current().log_level) == (9, "DEBUG")
+    ignored = [entry for entry in logs if entry.get("event") == "heartbeat: ignoring runtime-config override keys this agent does not know"]
+    assert [entry["ignored"] for entry in ignored] == [[_KEY_FROM_A_NEWER_CONTROL_PLANE]]
+    reported = client.heartbeat_calls[0].effective_config
+    assert reported is not None
+    assert reported.values["worker_max_jobs"] == 9
+
+
+async def test_a_rejected_reload_is_retried_on_the_next_poll_with_the_same_digest(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.reload("startup")
+    seen = _veto_once(store)
+    client = _StubClient(overrides={"worker_max_jobs": 9})
+    ctx = _ctx(client, store=store)
+
+    await send_heartbeat(ctx)
+    assert store.last_result is not None
+    assert store.last_result.outcome == "rejected"
+    assert store.current().worker_max_jobs != 9
+
+    await send_heartbeat(ctx)  # the SAME digest: a rejected set was never applied, so it is retried
+
+    assert seen == [9, 9]
+    assert store.last_result.outcome == "applied"
+    assert store.current().worker_max_jobs == 9
+    assert client.heartbeat_calls[-1].effective_config.values["worker_max_jobs"] == 9  # type: ignore[union-attr]
+
+
+async def test_the_config_poll_loop_ignores_an_unknown_key_and_retries_a_rejected_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The heartbeat-disabled worker's loop (phaze-mvq8z.21) shares the poll, and so both fixes."""
+    monkeypatch.setattr(heartbeat, "AGENT_HEARTBEAT_INTERVAL_SECONDS", 0)
+    store = _store(tmp_path)
+    await store.reload("startup")
+    seen = _veto_once(store)
+    client = _StubClient(overrides={"worker_max_jobs": 9, _KEY_FROM_A_NEWER_CONTROL_PLANE: 3})
+    task = asyncio.create_task(heartbeat._config_poll_loop(_ctx(client, store=store)))
+    try:
+        await wait_until(lambda: store.current().worker_max_jobs == 9, description="the vetoed override applied on a later tick")
+    finally:
+        await _cancel(task)
+
+    assert seen[:2] == [9, 9]
+    assert store.snapshot().sources["worker_max_jobs"] == "override"
+    assert client.heartbeat_calls == []
+
+
+async def test_withdrawing_a_rejected_set_back_to_the_one_in_force_is_still_reloaded(tmp_path: Path) -> None:
+    """The withdrawn set's digest is the one already applied -- but the provider still holds the rejected
+    set, so skipping the reload on that digest would leave the next SIGHUP re-rejecting a withdrawn value."""
+    store = _store(tmp_path)
+    await store.reload("startup")
+
+    def _refuse_ten(config: Any) -> None:
+        if config.worker_max_jobs == 10:
+            raise RuntimeError("ten is refused")
+
+    store.register_validator("refuse_ten", _refuse_ten)
+    ctx = _ctx(_StubClient(overrides={"worker_max_jobs": 9}), store=store)
+    await send_heartbeat(ctx)
+    assert store.current().worker_max_jobs == 9
+    ctx["api_client"] = _StubClient(overrides={"worker_max_jobs": 10})
+    await send_heartbeat(ctx)
+    assert store.last_result is not None
+    assert store.last_result.outcome == "rejected"
+
+    ctx["api_client"] = _StubClient(overrides={"worker_max_jobs": 9})  # withdrawn: the digest already applied
+    await send_heartbeat(ctx)
+
+    assert (store.last_result.source, store.last_result.outcome) == ("poll", "unchanged")
+    assert (await store.reload("sighup")).outcome == "unchanged", "the provider still held the withdrawn, rejected set"
+    assert store.current().worker_max_jobs == 9

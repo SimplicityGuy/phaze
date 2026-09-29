@@ -97,6 +97,38 @@
         </table>
     </div>
 
+    {# phaze-mvq8z.22: an agent whose process env sets TF_NUM_INTRAOP_THREADS / OMP_NUM_THREADS holds
+       that value as a CEILING (phaze.runtime_config, "A thread env var is a CEILING"), and this table
+       shows the api process's own snapshot, not any agent's -- so say so where the operator sets it. #}
+    <p class="text-xs text-muted">
+        analysis_intra_op_threads and analysis_omp_threads are capped on any agent whose environment sets
+        TF_NUM_INTRAOP_THREADS or OMP_NUM_THREADS: an override may lower them there, never raise them.
+        The arm64 agent image sets OMP_NUM_THREADS=1 on purpose. Check an agent's effective config for the value it runs.
+    </p>
+
+    {% if stale_override_keys %}
+    {# phaze-mvq8z.22: rows whose key this build no longer reloads (renamed, or made restart-only).
+       Every reader ignores them; they are listed so they can be removed. Names only: a stale row's
+       value may be a credential. #}
+    <div class="rounded-lg border border-amber-300 dark:border-amber-800">
+        <h3 class="px-4 py-2 text-xs uppercase tracking-wider text-muted border-b border-amber-300 dark:border-amber-800">Stale overrides (ignored)</h3>
+        <ul class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for key in stale_override_keys %}
+            <li class="px-4 py-2 flex items-center justify-between text-sm">
+                <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ key }}</span>
+                <button type="button"
+                        hx-delete="/admin/runtime-config/{{ key }}" hx-target="#runtime-config-table" hx-swap="outerHTML"
+                        hx-confirm="Remove the stale override row for {{ key }}? It is already ignored; nothing in force changes."
+                        aria-label="Remove the stale override row for {{ key }}"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    Remove
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
     <div class="rounded-lg border border-gray-200 dark:border-phaze-border">
         <h3 class="px-4 py-2 text-xs uppercase tracking-wider text-muted border-b border-gray-200 dark:border-phaze-border">Restart-only keys</h3>
         <ul class="divide-y divide-gray-100 dark:divide-phaze-border">

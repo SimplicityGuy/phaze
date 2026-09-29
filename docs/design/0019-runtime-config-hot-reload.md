@@ -46,6 +46,19 @@ For a reloadable key only, highest wins:
 4. **Code defaults** (`derive_sizing()`, `src/phaze/services/analysis_sizing.py:396`, for sizing
    defaults specifically)
 
+**One exception to "highest wins", added by `phaze-mvq8z.22` (an implementer decision, not an
+operator one):** for the two thread keys, an env value is a **ceiling** — the `file` / `override`
+layers may lower `analysis_intra_op_threads` / `analysis_omp_threads` below the process's
+`TF_NUM_INTRAOP_THREADS` / `OMP_NUM_THREADS`, never raise them above it. The override table is
+fleet-wide, and `Dockerfile.agent-arm64`'s `OMP_NUM_THREADS=1` is a segfault mitigation
+(`docs/arm64-agent-image.md` fix #4), not a sizing choice. "The env pin wins outright" was the
+alternative; a ceiling was chosen because it keeps a lower override working on every host.
+
+**The override table's readers filter it (`phaze-mvq8z.22`).** It is shared across builds, so both
+readers — the control-plane provider and each agent's poll — drop and report any key outside
+their own build's reloadable set (a stale row, or a key only a newer build knows) and apply the
+rest, rather than rejecting the whole reload. The watched file is not filtered.
+
 A **restart-only key** (DB/queue/Redis URLs, auth tokens, agent id/lane, TLS/CA material, scan
 roots, and anything else not on the reloadable list in §5) never participates in this ladder. A
 change to one of these arriving via the watched file or the admin API is **rejected** and reported

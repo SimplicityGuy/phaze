@@ -1392,6 +1392,37 @@ async def test_a_live_stall_timeout_raise_moves_the_saq_deadline_with_the_watchd
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_an_arm64_omp_pin_reaches_the_child_despite_a_fleet_wide_raise(
+    mock_pool: AsyncMock, _patch_agent_settings: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-mvq8z.22 finding 3: a fleet-wide ``analysis_omp_threads`` raise never un-pins ``OMP_NUM_THREADS=1``.
+
+    The arm64 image pins it to 1 as a segfault mitigation (docs/arm64-agent-image.md fix #4), and
+    every analysis child is stamped from the live snapshot, so the snapshot must keep the pin:
+    the child is spawned with 1, whatever the override table says for the x86 fleet.
+    """
+    from phaze.runtime_config import get_runtime_config_store
+    from phaze.services.analysis_sizing import OMP_ENV
+
+    monkeypatch.setenv(OMP_ENV, "1")
+    get_runtime_config_store.cache_clear()  # built from THIS process env, as the agent's store is at startup
+    store = get_runtime_config_store()
+
+    async def _fleet_wide_raise() -> dict[str, Any]:
+        return {"analysis_omp_threads": 4}
+
+    store.set_override_provider(_fleet_wide_raise)
+    assert (await store.reload("poll")).successful
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+
+    await process_file(_make_ctx(api_client=api), **_make_payload_kwargs())
+
+    assert mock_pool.await_args.kwargs["omp_threads"] == 1
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_a_live_stall_timeout_cut_tightens_the_analysis_touch_cadence(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
     """A live cut of the stall threshold tightens the SAQ touch cadence to fit the new deadline (phaze-mvq8z.21).
 
