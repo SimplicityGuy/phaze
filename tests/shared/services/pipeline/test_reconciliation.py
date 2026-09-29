@@ -13,12 +13,16 @@ from tests.shared.services.pipeline._shared import (
     ScanBatch,
     ScanStatus,
     _completed_batch,
+    _live_batch,
     _NullSavepoint,
     _recon_file,
+    _watcher_file,
     datetime,
     deduped_count,
     get_agent_reconciliations,
+    get_agent_watcher_counts,
     get_global_reconciliation,
+    get_global_watcher_count,
     get_scanned_total,
     pytest,
     seed_active_agent,
@@ -356,3 +360,169 @@ async def test_get_agent_reconciliations_degrade_preserves_caller_loaded_rows(se
 
     assert recon == {}
     assert await session.get(ScanBatch, batch.id) is not None
+
+
+# Watcher-ingested reconciliation (phaze-3sgw0) -- get_agent_watcher_counts / get_global_watcher_count
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_exact_count_on_live_batch(session: AsyncSession) -> None:
+    """3 files stamped onto an agent's LIVE batch -> {'nox': 3}, an exact COUNT on read."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    session.add(live)
+    await session.flush()
+    session.add_all([_watcher_file("nox", live.id, i) for i in range(3)])
+    await session.commit()
+
+    assert await get_agent_watcher_counts(session) == {"nox": 3}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_per_agent(session: AsyncSession) -> None:
+    """Two agents, two LIVE batches: each agent's count is independent."""
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "lux")
+    nox_live = _live_batch("nox")
+    lux_live = _live_batch("lux")
+    session.add_all([nox_live, lux_live])
+    await session.flush()
+    session.add_all([_watcher_file("nox", nox_live.id, i) for i in range(2)])
+    session.add_all([_watcher_file("lux", lux_live.id, i) for i in range(5)])
+    await session.commit()
+
+    counts = await get_agent_watcher_counts(session)
+    assert counts == {"nox": 2, "lux": 5}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_omits_agent_with_no_watcher_files(session: AsyncSession) -> None:
+    """An agent whose LIVE batch owns zero files is ABSENT from the map (not present with 0) --
+    the inner join drops it, mirroring get_agent_reconciliations' 'empty means no annotation'."""
+    await seed_active_agent(session, "nox")
+    session.add(_live_batch("nox"))
+    await session.commit()
+
+    assert await get_agent_watcher_counts(session) == {}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_ignores_non_live_batches(session: AsyncSession) -> None:
+    """Files on a COMPLETED batch never count as watcher-added, only a LIVE batch's rows do."""
+    await seed_active_agent(session, "nox")
+    completed = _completed_batch("nox", 5)
+    session.add(completed)
+    await session.flush()
+    session.add_all([_watcher_file("nox", completed.id, i) for i in range(5)])
+    await session.commit()
+
+    assert await get_agent_watcher_counts(session) == {}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_exact_when_watcher_reingests_already_scanned_file(session: AsyncSession) -> None:
+    """phaze-3sgw0 core scenario: the watcher upsert can move an already-scanned file's
+    ``batch_id`` onto the LIVE batch (``ON CONFLICT DO UPDATE ... batch_id = excluded.batch_id``
+    in routers/agent_files.py). The completed batch's stored counters stay frozen at their
+    original total, but the count here reflects EXACTLY which rows sit on the LIVE batch right
+    now -- computed on read, never from a stored counter.
+    """
+    await seed_active_agent(session, "nox")
+    completed = _completed_batch("nox", 3)
+    live = _live_batch("nox")
+    session.add_all([completed, live])
+    await session.flush()
+    files = [_watcher_file("nox", completed.id, i) for i in range(3)]
+    session.add_all(files)
+    await session.commit()
+
+    # Before any reassignment: nothing sits on the LIVE batch yet.
+    assert await get_agent_watcher_counts(session) == {}
+
+    # The watcher re-ingests one of the three files, moving it onto the LIVE batch --
+    # the completed batch's total_files (3) is now stale/frozen, but the exact watcher
+    # count reflects the single row that actually moved.
+    files[0].batch_id = live.id
+    await session.commit()
+
+    assert await get_agent_watcher_counts(session) == {"nox": 1}
+    # The completed batch's counters are untouched (frozen, as documented).
+    refreshed_completed = await session.get(ScanBatch, completed.id)
+    assert refreshed_completed is not None
+    assert refreshed_completed.total_files == 3
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_degrades_to_empty_on_db_error() -> None:
+    """A forced read error degrades to an empty map, never raising into the 5s poll."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+    assert await get_agent_watcher_counts(_ExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_degrades_when_begin_nested_itself_raises() -> None:
+    """Even if opening the SAVEPOINT itself raises, the map still degrades to {}."""
+
+    class _DoublyExplodingSession:
+        def begin_nested(self) -> object:
+            raise RuntimeError("connection already closed")
+
+    assert await get_agent_watcher_counts(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_watcher_counts_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this session."""
+    from unittest.mock import AsyncMock
+
+    session.add(Agent(id="cr01-watcher-agent", name="Cr01WatcherBox", scan_roots=[], kind="fileserver"))
+    await session.flush()
+    batch = ScanBatch(id=uuid.uuid4(), agent_id="cr01-watcher-agent", scan_path="<watcher>", status=ScanStatus.LIVE.value, total_files=0)
+    session.add(batch)
+    await session.flush()
+
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    counts = await get_agent_watcher_counts(session)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    assert counts == {}
+    assert await session.get(ScanBatch, batch.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_get_global_watcher_count_sums_across_agents(session: AsyncSession) -> None:
+    """Global watcher count is the exact total across every agent's LIVE batch: 2 + 5 -> 7."""
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "lux")
+    nox_live = _live_batch("nox")
+    lux_live = _live_batch("lux")
+    session.add_all([nox_live, lux_live])
+    await session.flush()
+    session.add_all([_watcher_file("nox", nox_live.id, i) for i in range(2)])
+    session.add_all([_watcher_file("lux", lux_live.id, i) for i in range(5)])
+    await session.commit()
+
+    assert await get_global_watcher_count(session) == 7
+
+
+@pytest.mark.asyncio
+async def test_get_global_watcher_count_zero_is_a_genuine_reading(session: AsyncSession) -> None:
+    """No watcher activity at all -> a plain 0, not a hidden/None sentinel (unlike scanned)."""
+    assert await get_global_watcher_count(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_global_watcher_count_degrades_to_zero_on_db_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forced read error degrades to 0 via the shared `_safe_count` primitive, never raising."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    assert await get_global_watcher_count(session) == 0

@@ -51,6 +51,7 @@ from phaze.services.pipeline import (
     get_agent_lane_depths,
     get_agent_recent_scans,
     get_agent_reconciliations,
+    get_agent_watcher_counts,
     get_analysis_failed_count,
     get_analysis_failed_files,
     get_analysis_stalled_count,
@@ -60,6 +61,7 @@ from phaze.services.pipeline import (
     get_backfill_candidates,
     get_discovered_files_with_duration,
     get_global_reconciliation,
+    get_global_watcher_count,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_activity_summary,
@@ -253,6 +255,43 @@ def _completed_batch(agent_id: str, total_files: int, *, status: str = ScanStatu
     return batch
 
 
+def _live_batch(agent_id: str) -> ScanBatch:
+    """Build a LIVE sentinel ScanBatch seed (the watcher's per-agent row, D-09/D-10).
+
+    Mirrors production's invariant of exactly one LIVE batch per agent. Its
+    ``total_files``/``processed_files`` are pinned at 0 -- nothing on the watcher write path
+    (``routers/agent_files.py``) ever increments them, which is exactly the gap
+    :func:`~phaze.services.pipeline.reconciliation.get_agent_watcher_counts` /
+    :func:`~phaze.services.pipeline.reconciliation.get_global_watcher_count` close by counting
+    this batch's FileRecord rows directly ON READ instead.
+    """
+    return ScanBatch(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+
+
+def _watcher_file(agent_id: str, batch_id: uuid.UUID, i: int) -> FileRecord:
+    """Build a FileRecord stamped onto a specific ``batch_id`` (the watcher upsert's shape --
+    ``routers/agent_files.py``'s ``upsert_files`` always sets ``batch_id`` server-side)."""
+    uid = uuid.uuid4()
+    return FileRecord(
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{agent_id}/watcher-{i}-{uid.hex}.mp3",
+        original_filename=f"watcher-{i}.mp3",
+        current_path=f"/music/{agent_id}/watcher-{i}-{uid.hex}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        agent_id=agent_id,
+        batch_id=batch_id,
+    )
+
+
 def _recon_file(agent_id: str, i: int) -> FileRecord:
     """Build a unique FileRecord owned by ``agent_id`` (the reconciliation groups by agent_id)."""
     uid = uuid.uuid4()
@@ -442,6 +481,7 @@ __all__ = [
     "_failed_file",
     "_file",
     "_inflight_analysis_for",
+    "_live_batch",
     "_make_pipeline_file",
     "_make_tracklist",
     "_metadata_for",
@@ -449,6 +489,7 @@ __all__ = [
     "_scan_batch",
     "_seed_cloud_job",
     "_seed_process_file_ledger",
+    "_watcher_file",
     "analyze_lanes_content_hash",
     "asyncio",
     "count_active_agents",
@@ -460,6 +501,7 @@ __all__ = [
     "get_agent_lane_depths",
     "get_agent_recent_scans",
     "get_agent_reconciliations",
+    "get_agent_watcher_counts",
     "get_analysis_failed_count",
     "get_analysis_failed_files",
     "get_analysis_stalled_count",
@@ -469,6 +511,7 @@ __all__ = [
     "get_backfill_candidates",
     "get_discovered_files_with_duration",
     "get_global_reconciliation",
+    "get_global_watcher_count",
     "get_match_busy_count",
     "get_match_pending_tracklists",
     "get_metadata_activity_summary",

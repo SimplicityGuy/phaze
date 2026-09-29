@@ -98,8 +98,17 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
             if file_record is None:
                 continue
 
+            # phaze-iyqhg: a force-SKIPPED enrich stage now satisfies the propose gate, and the file
+            # may still carry that stage's failed (or partial) row -- all-NULL payload columns. Only
+            # a COMPLETED row is data: anything else is sent as null, which naming.md documents as
+            # "not analyzed" / "no tags were read", rather than as a dict of nulls that reads as
+            # "analyzed, found nothing". The same predicates as ``done_clause`` for each stage.
             analysis = analysis_by_id.get(uid)
+            if analysis is not None and analysis.analysis_completed_at is None:
+                analysis = None
             metadata = metadata_by_id.get(uid)
+            if metadata is not None and metadata.failed_at is not None:
+                metadata = None
 
             # phaze-6bkk: the controller is fileless (DIST-01), so the companion read is dispatched
             # to the owning agent through the shared task router the controller already holds.

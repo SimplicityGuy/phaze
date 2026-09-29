@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
@@ -22,7 +22,7 @@ from structlog.testing import capture_logs
 
 from phaze.analysis_child import _TARGET_ENV
 from phaze.config_backends import KubeConfig
-from phaze.services import kube_staging
+from phaze.services import analysis_exec, kube_staging
 from phaze.services.analysis_exec import AnalysisStalledError, AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.resizable_limiter import ResizableLimiter
 from phaze.telemetry import slots
@@ -51,6 +51,72 @@ def _run_from_repo_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def _point_child_at(monkeypatch: pytest.MonkeyPatch, stub: str) -> None:
     monkeypatch.setenv(_TARGET_ENV, f"{_STUBS}:{stub}")
+
+
+class _BeatClock:
+    """The D-08 watchdog's clock, advanced only by the test (phaze-avw21).
+
+    Both halves of the stall arithmetic -- the pumps' activity stamp and the watchdog's "now" --
+    read ``loop.time()`` off the one loop ``run_analysis_subprocess`` fetches, so handing the
+    driver a loop whose ``time()`` is this clock puts every second the watchdog can see under the
+    test's control. Real scheduling is untouched: the watchdog still wakes on real
+    ``asyncio.sleep`` ticks, the child still runs as a real subprocess, and the pumps still read a
+    real pipe. What leaves the picture is real ELAPSED time, which is exactly what made a 0.3 s
+    threshold fail 3/3 under concurrent gates: a loaded machine can go quiet for longer than that
+    between any two beats, or before the child's first line, without anything being wrong.
+
+    ``on_read`` fires on every read -- the hook a test uses to act at the instant the watchdog
+    looks.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.on_read: Callable[[], None] | None = None
+
+    def time(self) -> float:
+        if self.on_read is not None:
+            self.on_read()
+        return self.now
+
+
+class _LoopOnBeatClock:
+    """The running loop, except that ``time()`` reads a :class:`_BeatClock`."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, clock: _BeatClock) -> None:
+        self._loop = loop
+        self._clock = clock
+
+    def time(self) -> float:
+        return self._clock.time()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._loop, name)
+
+
+class _AsyncioOnBeatClock:
+    """``asyncio`` as ``analysis_exec`` sees it, handing out :class:`_LoopOnBeatClock`.
+
+    Installed on the driver module's own ``asyncio`` name rather than on the ``asyncio`` package,
+    so no other caller of ``get_running_loop`` -- asyncio's internals, pytest-asyncio, the test
+    body -- ever sees the virtual clock.
+    """
+
+    def __init__(self, clock: _BeatClock) -> None:
+        self._clock = clock
+
+    def get_running_loop(self) -> _LoopOnBeatClock:
+        return _LoopOnBeatClock(asyncio.get_running_loop(), self._clock)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+
+@pytest.fixture
+def beat_clock(monkeypatch: pytest.MonkeyPatch) -> _BeatClock:
+    """Put the driver's stall watchdog on a :class:`_BeatClock` for this test."""
+    clock = _BeatClock()
+    monkeypatch.setattr(analysis_exec, "asyncio", _AsyncioOnBeatClock(clock))
+    return clock
 
 
 async def test_result_returned_intact_with_mid_run_progress(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,56 +173,105 @@ async def test_child_stderr_is_framed_into_log_events(monkeypatch: pytest.Monkey
     assert any("stray print from the analysis child" in line for line in framed)
 
 
-async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: pytest.MonkeyPatch, beat_clock: _BeatClock) -> None:
     """A child that stops reporting progress is SIGKILLed at the stall threshold (phaze-w55w1).
 
     ``hang_analyze`` emits one beat then wedges for 300 s. The raised
     :class:`AnalysisStalledError` subclasses ``TimeoutError``, which is what both lanes already
     catch to record a terminal, non-retried failure — so the disposition of a wedged child is
     unchanged and only the evidence improves.
+
+    **On the beat clock (phaze-0vlnp), and frozen until the child's one beat.** This used to arm a
+    real 1.5 s threshold from the moment of spawn and bound the whole run at a real 10 s. A loaded
+    machine can keep the child importing for longer than 1.5 s before its first line -- the watchdog
+    then fires with no stage reported and ``last_stage == "fine"`` goes red -- and can take longer
+    than 10 s end to end, which is the same cliff phaze-avw21 removed from the progressing test.
+    Here the watchdog's clock stands still until the beat has been handed over, then advances half
+    the threshold per watchdog read, so the kill is caused by silence AFTER the beat and nothing
+    else. A watchdog that never kills still fails: ``hang_analyze`` then returns a result after its
+    300 s and ``pytest.raises`` sees no error.
     """
+    stall_timeout = 1.5
     _point_child_at(monkeypatch, "hang_analyze")
-    started = time.monotonic()
+    beats: list[str] = []
+
+    def _advance_only_after_the_beat() -> None:
+        if beats:
+            beat_clock.now += stall_timeout / 2
+
+    beat_clock.on_read = _advance_only_after_the_beat
 
     with pytest.raises(AnalysisStalledError, match="stalled: no progress") as excinfo:
-        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", stall_timeout=1.5)
+        await run_analysis_subprocess(
+            "/fake/audio.mp3", "/fake/models", heartbeat_cb=lambda stage, _done, _total: beats.append(stage), stall_timeout=stall_timeout
+        )
 
     # The stored message must name the threshold AND the last stage the child reached -- that is
     # the whole point of storing a real error rather than "timeout".
-    assert excinfo.value.stall_timeout == 1.5
+    assert excinfo.value.stall_timeout == stall_timeout
     assert excinfo.value.last_stage == "fine"
     assert isinstance(excinfo.value, TimeoutError), "lane handlers catch TimeoutError; the subclass must stay one"
-    # Bounded promptly by the stall threshold + kill, not by the stub's 300s hang.
-    assert time.monotonic() - started < 10.0
+    assert beats == ["fine"], "the child's one beat reached the driver before the kill"
+    # The kill came from the watchdog observing the threshold of silence on its own clock.
+    assert beat_clock.now >= stall_timeout
 
 
-async def test_slow_but_progressing_child_survives_far_past_the_stall_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_slow_but_progressing_child_survives_far_past_the_stall_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    beat_clock: _BeatClock,
+) -> None:
     """THE regression test for phaze-1b39 / ADR-0007 (windowed analysis) §7: elapsed time alone must never kill.
 
-    ``crawling_analyze`` runs for ~2 s -- roughly 7x the 0.3 s stall threshold armed here -- but
-    never goes quiet for more than ~0.05 s. Under the retired wall-clock bound this file died;
-    under the stall watchdog it completes, which is exactly the behaviour a multi-hour concert
-    set needs. The ratio, not the absolute durations, is what this test asserts.
-    """
-    _point_child_at(monkeypatch, "crawling_analyze")
-    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.05")
-    monkeypatch.setenv("PHAZE_STUB_BEATS", "40")
-    stall_timeout = 0.3
-    beats: list[tuple[str, int, int]] = []
-    started = time.monotonic()
+    ``crawling_analyze`` emits 40 beats, and each one is worth half the stall threshold on the
+    watchdog's clock (:class:`_BeatClock`), so the run lasts 20x the threshold while no gap
+    between two beats ever reaches it. Under the retired wall-clock bound this file died; under
+    the stall watchdog it completes, which is exactly the behaviour a multi-hour concert set
+    needs. The ratio, not the absolute durations, is what this test asserts.
 
-    result = await run_analysis_subprocess(
-        "/fake/<set-01>",
-        "/fake/models",
-        heartbeat_cb=lambda stage, done, total: beats.append((stage, done, total)),
-        stall_timeout=stall_timeout,
-    )
-    elapsed = time.monotonic() - started
+    **Why the watchdog's clock is the test's (phaze-avw21).** This used to be real time: 0.05 s
+    beats against a real 0.3 s threshold. Under concurrent gates the machine can leave the child
+    unscheduled -- or still importing, before its first line -- for longer than 0.3 s, and the
+    test failed 3/3 in isolation. Raising the threshold only moves that cliff. On the beat clock
+    real scheduling delay adds nothing to "idle", so load cannot fire the watchdog, while a
+    wall-clock kill still fires it: elapsed time is the one quantity this clock accumulates.
+
+    **Why the child parks after its last beat.** A test that merely finishes proves nothing if
+    the watchdog never looked. The child parks at the gate once the clock stands at 20x the
+    threshold, and only the watchdog's next read of the clock reopens it -- nothing else reads
+    it then, since the parked child's pipe is empty. So the run cannot complete unless the
+    armed watchdog has evaluated the full elapsed run and let it live.
+    """
+    gate = tmp_path / "watchdog-looked"
+    beats_total = 40
+    stall_timeout = 0.3
+    beat_worth = stall_timeout / 2
+    _point_child_at(monkeypatch, "crawling_analyze")
+    # Real time no longer matters to the outcome: the beats need only be short.
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.01")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", str(beats_total))
+    monkeypatch.setenv("PHAZE_STUB_GATE_AFTER", str(beats_total))
+    monkeypatch.setenv("PHAZE_STUB_GATE_FILE", str(gate))
+    beats: list[tuple[str, int, int]] = []
+
+    def _on_beat(stage: str, done: int, total: int) -> None:
+        # After the pump has stamped this beat's activity: the time until the next beat starts now.
+        beats.append((stage, done, total))
+        beat_clock.now += beat_worth
+
+    def _reopen_once_the_watchdog_has_seen_the_whole_run() -> None:
+        if len(beats) == beats_total and not gate.exists():
+            gate.touch()
+
+    beat_clock.on_read = _reopen_once_the_watchdog_has_seen_the_whole_run
+
+    result = await run_analysis_subprocess("/fake/<set-01>", "/fake/models", heartbeat_cb=_on_beat, stall_timeout=stall_timeout)
 
     assert result["fine_windows_analyzed"] == 3  # the stub's canned result: it ran to completion
-    assert elapsed > stall_timeout * 3, f"the run ({elapsed:.2f}s) must outlast the stall threshold several times over"
-    assert len(beats) == 40
-    assert beats[-1] == ("fine", 40, 40)
+    assert gate.exists(), "the watchdog never read its clock after the last beat: it was not armed on the beat clock"
+    assert beat_clock.now >= stall_timeout * 10, f"the run ({beat_clock.now:.2f}s) must outlast the stall threshold many times over"
+    assert len(beats) == beats_total
+    assert beats[-1] == ("fine", beats_total, beats_total)
 
 
 async def test_stall_timeout_none_leaves_the_child_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,8 +285,13 @@ async def test_stall_timeout_none_leaves_the_child_unbounded(monkeypatch: pytest
     assert result["fine_windows_analyzed"] == 3
 
 
-async def test_heartbeat_cb_error_never_fails_the_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A raising liveness callback is swallowed, like the progress one: reporting never kills a job."""
+async def test_heartbeat_cb_error_never_fails_the_analysis(monkeypatch: pytest.MonkeyPatch, beat_clock: _BeatClock) -> None:
+    """A raising liveness callback is swallowed, like the progress one: reporting never kills a job.
+
+    The watchdog is armed, because a heartbeat is where the watchdog and the callback meet, but on
+    a :class:`_BeatClock` nobody advances (phaze-avw21): the subject is the swallowed error, and
+    on real time a loaded machine could hold the child silent past 5 s and fail it as a stall.
+    """
     _point_child_at(monkeypatch, "crawling_analyze")
     monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.01")
     monkeypatch.setenv("PHAZE_STUB_BEATS", "3")

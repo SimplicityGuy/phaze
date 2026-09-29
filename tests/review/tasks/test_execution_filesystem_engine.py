@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import errno
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+import unicodedata
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -33,6 +34,7 @@ from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchP
 import phaze.tasks.execution as execmod
 from phaze.tasks.execution import _same_filesystem, _streamed_copy, execute_approved_batch
 from phaze.tasks.execution_filesystem import FilesystemMoveRequest, LocalExecutionFilesystemEngine, LocalFilesystemPrimitives, MoveStep
+from tests._media_path_fakes import byte_exact_exists
 
 
 if TYPE_CHECKING:
@@ -738,3 +740,43 @@ async def test_cross_fs_copy_post_publish_hash_mismatch_fails_loudly_without_del
     assert orig.read_bytes() == content
     assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
     assert api.patch_execution_log.await_args.args[1].error_message.startswith("verify:")
+
+
+async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_path: Path) -> None:
+    """phaze-9pg11: ``item.source_path`` (``FileRecord.current_path``) is stored NFC-normalized
+    (the identity/dedup key), but the real directory entry can be NFD-decomposed. The executor
+    must move the ACTUAL on-disk file, not the never-matching stored path.
+
+    ``phaze.services.media_path_resolve.Path.exists`` is reimplemented as a byte-exact (Linux
+    ext4-style) comparison via ``tests._media_path_fakes.byte_exact_exists``: macOS's own
+    filesystems (HFS+/APFS) are Unicode-normalization-INSENSITIVE at the syscall level, so a dev
+    host running this suite would otherwise treat the NFC-reported path as already existing
+    WITHOUT the resolver doing anything -- exactly the false-negative Linux (this repo's
+    byte-exact target platform) never gets to enjoy. `byte_exact_exists` pins the test to that
+    real invariant (including for the resolver's own longest-existing-ancestor walk, which needs
+    `orig_dir` itself to still read as "existing") and still exercises the real listdir-and-match
+    fallback logic.
+    """
+    nfd_name = unicodedata.normalize("NFD", "Hör.mp3")
+    nfc_name = unicodedata.normalize("NFC", "Hör.mp3")
+    assert nfd_name != nfc_name, "fixture must actually exercise two distinct byte forms"
+
+    orig_dir = tmp_path / "orig"
+    orig_dir.mkdir()
+    on_disk = orig_dir / nfd_name
+    content = b"the real bytes"
+    on_disk.write_bytes(content)
+    stored_nfc_source = str(orig_dir / nfc_name)
+
+    primitives = LocalFilesystemPrimitives()
+    with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists):
+        result = await LocalExecutionFilesystemEngine(primitives).move(
+            FilesystemMoveRequest(item=_item(stored_nfc_source, "moved", nfc_name), scan_roots=[str(tmp_path)]),
+            MoveStep(),
+        )
+
+    assert result.committed_now is True
+    dest = tmp_path / "moved" / nfc_name
+    assert dest.exists()
+    assert dest.read_bytes() == content
+    assert not on_disk.exists()

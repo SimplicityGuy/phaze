@@ -7,6 +7,7 @@ docker_bin="${DOCKER_BIN:-docker}"
 just_bin="${JUST_BIN:-just}"
 pg_image="${PHAZE_INTEGRATION_POSTGRES_IMAGE:-postgres:18-alpine}"
 pg_shm_size="${PHAZE_INTEGRATION_POSTGRES_SHM_SIZE:-256m}"
+redis_image="${PHAZE_INTEGRATION_REDIS_IMAGE:-valkey/valkey:9-alpine}"
 bind_ip="${PHAZE_INTEGRATION_BIND_IP:-127.0.0.1}"
 fixed_pg_port="${PHAZE_INTEGRATION_DB_PORT:-0}"
 fixed_redis_port="${PHAZE_INTEGRATION_REDIS_PORT:-0}"
@@ -126,9 +127,9 @@ run_suite() {
   "$docker_bin" run -d --name "$db_container" "${labels[@]}" \
     -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB=phaze_test \
     --shm-size "$pg_shm_size" -p "$pg_publish" "$pg_image" >/dev/null
-  echo "🟥 Starting ${redis_container} (redis:7-alpine)..."
+  echo "🟥 Starting ${redis_container} (${redis_image})..."
   "$docker_bin" run -d --name "$redis_container" "${labels[@]}" \
-    -p "$redis_publish" redis:7-alpine >/dev/null
+    -p "$redis_publish" "$redis_image" >/dev/null
 
   if [[ "$fixed_pg_port" == "0" ]]; then
     pg_port="$("$docker_bin" port "$db_container" 5432/tcp | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"

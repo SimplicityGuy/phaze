@@ -9,7 +9,7 @@
    (troubleshooting is the second reason anyone opens a record); metadata/identity and history
    fold, because they are reference rather than reading.
 
-   The eight-fact list is deliberately NOT here: the full page renders it in the sidebar and the
+   The nine-fact list is deliberately NOT here: the full page renders it in the sidebar and the
    drawer in its own header block, so this subtree renders byte-identically in both
    presentations -- which is what `test_record_full_page.py`'s text-equality assertion pins. #}
 {% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-muted ' %}
@@ -108,7 +108,13 @@
                             {% include "pipeline/partials/_stage_pill.html" %}
                         {% endwith %}
                         </span>
-                        {% if is_enrich %}
+                        {# phaze-iyqhg: offered only where a skip can change anything -- a failed or
+                           not-started stage, or an ORPHANED one (the ledger reads in_flight but nothing
+                           is running it; the same orphaned_clause fact the line below explains). On a
+                           done stage the marker is a no-op the precedence ladder hides; on a skipped
+                           one it is already there; on a genuinely running one it would race the work. #}
+                        {% set _bucket = stage_buckets[stage_value] %}
+                        {% if is_enrich and (_bucket in ('failed', 'not_started') or (_bucket == 'in_flight' and (orphan_details | default({})).get(stage_value) is not none)) %}
                             {% with stage_value=stage_value, stage_label=stage_label, file_id=file.id %}
                                 {% include "pipeline/partials/_force_skip_dialog.html" %}
                             {% endwith %}
@@ -140,7 +146,47 @@
             </div>
         </details>
 
-        {# 5 — Metadata diff + Identity, folded: reference the operator consults, not reads. #}
+        {# 5 — Extracted metadata (phaze-tuy9m): the FileMetadata tag row -- artist/title/album/
+           year/genre/track/bitrate/duration, plus the raw tag dict in its own inner fold. Named
+           "Extracted metadata" rather than bare "Metadata": the section further down already uses
+           that word for the Identify stage's PROPOSED filename/tag changes, a different thing from
+           the tags already read off the file. Operator report 2026-09-27, verbatim: "where can i
+           see the metadata? it should be presented in this view" -- this card renders OPEN, not
+           folded, unlike Identity/History below: an operator who came looking for the tags must
+           see them without a click. Only the raw tag dump gets an inner fold -- it is the one part
+           that IS reference-of-last-resort. Three explicit states so "no row yet", "extraction
+           failed" and "row exists but nothing came back" never read alike. #}
+        <section id="metadata" data-metadata-card class="scroll-mt-4 {{ _panel }}" aria-labelledby="metadata-heading">
+            <p id="metadata-heading" class="{{ _eyebrow }} mb-3">Extracted metadata</p>
+            <div>
+                {% if metadata_card.status == 'missing' %}
+                <p class="text-sm text-muted ">No metadata extracted yet.</p>
+                {% elif metadata_card.status == 'failed' %}
+                <p class="text-sm text-danger whitespace-pre-wrap break-all">
+                    Metadata extraction failed — {{ metadata_card.error_message or 'no error detail recorded.' }}
+                </p>
+                {% elif metadata_card.fields %}
+                <dl class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2" data-metadata-fields>
+                    {% for mf in metadata_card.fields %}
+                    <div data-metadata-field class="flex items-baseline justify-between gap-3 text-sm">
+                        <dt class="text-muted ">{{ mf.label }}</dt>
+                        <dd class="min-w-0 truncate text-right text-gray-900 dark:text-gray-200">{{ mf.value }}</dd>
+                    </div>
+                    {% endfor %}
+                </dl>
+                {% else %}
+                <p class="text-sm text-muted ">No tag fields were extracted.</p>
+                {% endif %}
+                {% if metadata_card.raw_tags_json %}
+                <details data-metadata-raw-tags class="mt-3">
+                    <summary class="cursor-pointer text-xs text-muted ">Raw tags</summary>
+                    <pre class="relative mt-2 max-h-64 overflow-auto rounded-md bg-gray-100 p-2 text-xs dark:bg-black/30">{{ metadata_card.raw_tags_json }}</pre>
+                </details>
+                {% endif %}
+            </div>
+        </section>
+
+        {# 6 — Metadata diff + Identity, folded: reference the operator consults, not reads. #}
         <details data-metadata-identity class="{{ _panel }}">
             <summary class="{{ _summary }}">Metadata &amp; identity</summary>
             <div class="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -165,7 +211,7 @@
             </div>
         </details>
 
-        {# 6 — History: read-only per-file event list (ExecutionLog + TagWriteLog), folded. #}
+        {# 7 — History: read-only per-file event list (ExecutionLog + TagWriteLog), folded. #}
         <details id="history" data-history class="scroll-mt-4 {{ _panel }}">
             <summary class="{{ _summary }}">History</summary>
             {% if history %}

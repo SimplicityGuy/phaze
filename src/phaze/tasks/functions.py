@@ -40,6 +40,7 @@ from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
+from phaze.services.media_path_resolve import resolve_media_path
 from phaze.services.video_audio import AudioExtractionError, NoAudioTrackError, extract_audio_track
 
 
@@ -626,7 +627,14 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # ephemeral pushed copy instead of original_path -- the analyzer is path-agnostic so this is a
     # pure read-path swap. ``scratch_path is not None`` is ITSELF the compute-read signal. The
     # outer ``finally`` guarantees the scratch copy never outlives the job (CLOUDPIPE-04).
-    read_path = payload.scratch_path or payload.original_path
+    # phaze-9pg11: the scratch copy is always agent-minted (never resolution-sensitive); only the
+    # media-mount `original_path` branch can hit a stored-NFC-vs-on-disk-NFD mismatch, so only it
+    # is routed through the shared resolver. NOT offloaded via asyncio.to_thread (unlike the
+    # essentia child spawn below): the fast path is a single `Path.exists()`, and the fallback
+    # (one parent `iterdir()`, only on an actual NFC/NFD miss) mirrors the already-unoffloaded
+    # `resolve_and_check_containment` calls in tasks/tag_write.py and tasks/cue_write.py -- this
+    # repo's existing precedent for a bounded, occasional path check.
+    read_path = payload.scratch_path or resolve_media_path(payload.original_path)
     # CLOUDPIPE-04 / CR-01: the scratch copy is deleted in the ``finally`` ONLY on a TERMINAL
     # outcome (success, sha256 mismatch, inner-timeout/crash, or a non-retryable failure). On a
     # RETRYABLE re-raise this flips to False so the copy SURVIVES for the in-place SAQ retry to

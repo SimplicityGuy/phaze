@@ -85,6 +85,14 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Kubernetes Burst](k8s-burst.md)** | ☸️ Kueue Job-runner runbook: ResourceFlavor/ClusterQueue/LocalQueue, namespaced RBAC, `_FILE` Secret, S3 staging, enabled via a `kind="kueue"` entry in `backends.toml` |
 | **[arm64 Agent Image](arm64-agent-image.md)** | 🦾 `Dockerfile.agent-arm64` build recipe for the Ampere A1 compute-agent image: Python 3.13 exception, essentia built from source, tag naming |
 
+## 💡 Future Ideas
+
+Idea backlog only — nothing here is a decision or a commitment; each idea needs its own bead.
+
+| Document | Purpose |
+| -------- | ------- |
+| **[Decision-Model Opportunities](ideas/decision-model-opportunities.md)** | 🎯 Where a typed decision model (Jev) could take closed-set judgments out of the proposal LLM, calibrate the review queue, and rerank matches — from a review of 551 shipwithjev.com builds |
+
 ## 🗃️ Repository Boundaries and Fixtures
 
 | Document | Purpose |

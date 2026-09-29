@@ -36,8 +36,20 @@ test_db_port := env_var_or_default("PHAZE_TEST_DB_PORT", "5433")
 test_db_container := "phaze-test-db"
 # Host port for the SHARED test-harness Redis (6380 avoids a dev Redis on 6379)
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
-# Fixed container name for the SHARED test-harness Redis
-test_redis_container := "phaze-test-redis"
+# Container name for the SHARED test-harness Redis. Overridable (phaze-8o294) ONLY so a seat can
+# stand up its own throwaway harness Redis -- e.g. to verify an image bump against the whole suite
+# without recreating the one every concurrent worktree shares. scripts/parallel_test_runner.py and
+# tests/shared/scripts/test_caller_seat_lanes.py read the same variable, so the gate, the lane
+# runner and the harness tests all agree on which container they are talking to.
+test_redis_container := env_var_or_default("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-redis")
+# phaze-8o294: single source of truth for the test-harness Redis image (test-db, integration-test).
+# Valkey, not Redis: one image across the harness, CI and production closes the Redis 7 (tests) vs
+# Redis 8 (prod) skew. docker-compose.yml and .github/workflows/tests.yml cannot read a justfile
+# variable, so they carry their own literal pins; tests/agents/deployment/test_redis_image_pin.py
+# keeps all of them in step. The image ships `redis-cli`/`redis-server` as symlinks to
+# `valkey-cli`/`valkey-server`, which is why every `docker exec ... redis-cli` in this file and in
+# scripts/ works unchanged against both images.
+test_redis_image := "valkey/valkey:9-alpine"
 # Logical database count on the test Redis. Redis defaults to 16; we raise it so the per-worktree
 # index space (DB 0 is the allocation registry, seats get 1..N-1) comfortably exceeds any realistic
 # concurrent-seat count. `just test-db-for <name>` allocates out of this space.
@@ -1045,14 +1057,34 @@ test-db:
     if [ "$redis_running" = "true" ]; then
         redis_reused=1
     else
-        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
+        echo "🟥 Starting ${redis_container} ({{test_redis_image}}, ${redis_databases} logical DBs) on host port ${redis_port}..."
         if docker start "$redis_container" >/dev/null 2>&1; then
             redis_reused=1
         fi
         redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
     fi
     if [ "$redis_running" = "true" ] && [ "$redis_reused" = "1" ]; then
-        verify_reused_container "$redis_container" "redis:7-alpine" "$redis_port" "6379/tcp"
+        # phaze-8o294: a harness created before the Valkey move -- any official `redis:` image -- is
+        # REUSED with a warning rather than refused. Refusing would point every seat at `just
+        # test-db-down`, which cannot run while any other seat is live, so the whole hive would be
+        # wedged until it went idle; recreating it here would take every concurrent seat's keys and
+        # the index registry with it (phaze-ieqg). Its port is still verified exactly as for any
+        # other reuse, and every other image mismatch still refuses (phaze-3yznp). The switch
+        # happens at the next `just test-db-down` taken while nothing else runs, after which this
+        # recipe creates it on test_redis_image. Remove this branch once no such harness can exist.
+        reused_image="$(docker inspect -f '{{{{.Config.Image}}' "$redis_container" 2>/dev/null || echo '')"
+        case "$reused_image" in
+            redis:*)
+                verify_reused_container "$redis_container" "$reused_image" "$redis_port" "6379/tcp"
+                echo "⚠️  ${redis_container} is still on ${reused_image}, not {{test_redis_image}} -- reusing it rather than" >&2
+                echo "   refusing, because replacing it would take every concurrent seat's Redis with it." >&2
+                echo "   Tests on this harness do NOT exercise {{test_redis_image}}. Switch at the next idle moment:" >&2
+                echo "   \`just test-db-down\` (it refuses while any seat is live), then \`just test-db\`." >&2
+                ;;
+            *)
+                verify_reused_container "$redis_container" "{{test_redis_image}}" "$redis_port" "6379/tcp"
+                ;;
+        esac
     fi
     if [ "$redis_running" = "true" ]; then
         # A container started before this setting existed (or with a smaller value) only has 16
@@ -1100,14 +1132,14 @@ test-db:
             docker rm -f "$redis_container" >/dev/null 2>&1 || true
             run_or_yield "$redis_container" "recreated" \
                 -p "{{test_db_bind_ip}}:${redis_port}:6379" \
-                redis:7-alpine redis-server --databases "$redis_databases"
+                {{test_redis_image}} redis-server --databases "$redis_databases"
         fi
     else
         # Neither running nor startable (no container of this name existed) -- create fresh,
         # tolerating a racing sibling's concurrent create as described above.
         run_or_yield "$redis_container" "created" \
             -p "{{test_db_bind_ip}}:${redis_port}:6379" \
-            redis:7-alpine redis-server --databases "$redis_databases"
+            {{test_redis_image}} redis-server --databases "$redis_databases"
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
@@ -1347,7 +1379,7 @@ integration-test-down RUN_ID:
 [doc('Run the validation-grade coverage suite against per-invocation Postgres and Redis containers; always tears down only its own run')]
 [group('test')]
 integration-test:
-    PHAZE_INTEGRATION_POSTGRES_IMAGE={{quote(postgres_image)}} PHAZE_INTEGRATION_POSTGRES_SHM_SIZE={{quote(postgres_shm_size)}} PHAZE_INTEGRATION_BIND_IP={{quote(test_db_bind_ip)}} PHAZE_INTEGRATION_DB_PORT={{quote(integration_db_port)}} PHAZE_INTEGRATION_REDIS_PORT={{quote(integration_redis_port)}} PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_REDIS_PREFIX={{quote(integration_redis_container_prefix)}} bash scripts/integration-test-harness.sh run
+    PHAZE_INTEGRATION_POSTGRES_IMAGE={{quote(postgres_image)}} PHAZE_INTEGRATION_REDIS_IMAGE={{quote(test_redis_image)}} PHAZE_INTEGRATION_POSTGRES_SHM_SIZE={{quote(postgres_shm_size)}} PHAZE_INTEGRATION_BIND_IP={{quote(test_db_bind_ip)}} PHAZE_INTEGRATION_DB_PORT={{quote(integration_db_port)}} PHAZE_INTEGRATION_REDIS_PORT={{quote(integration_redis_port)}} PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_REDIS_PREFIX={{quote(integration_redis_container_prefix)}} bash scripts/integration-test-harness.sh run
 [doc('Run ruff linter')]
 [group('lint')]
 lint:

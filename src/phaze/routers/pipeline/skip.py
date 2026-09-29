@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from phaze.database import get_session
-from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible, resolve_status
+from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible, resolve_status, upstream_satisfied
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -28,6 +28,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.routers.pipeline._common import _stage_pill_oob, logger, router, templates
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import get_file_stage_buckets
@@ -210,7 +211,9 @@ async def _one_stage_scalars(session: AsyncSession, stage: Stage, file_id: uuid.
         return {"row_present": mrow is not None, "failed_at": mrow[0] if mrow else None, "inflight": inflight, "skipped": await _skipped()}
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
-        return {"row_present": present, "failed": False, "inflight": inflight}
+        # phaze-o71bf: the per-file lookup record supplies TRACKLIST's in-flight / failed / skipped.
+        outcome = (await session.execute(select(TracklistFileLookup.outcome).where(TracklistFileLookup.file_id == file_id))).scalar_one_or_none()
+        return {"row_present": present, "lookup_outcome": outcome, "failed": False, "inflight": inflight}
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
         failed = (
@@ -251,21 +254,23 @@ def _eligibility_upstream_verdict(stage: Stage, upstreams: tuple[Stage, ...], st
     Three shapes, STRICTLY mirroring ``eligible()``'s own upstream check:
 
     - ``apply`` is gated on an APPROVED proposal (ELIG-02), NOT on bare done(review).
-    - a downstream enrich/propose/review stage requires every upstream DONE. Under the OQ-1
-      SCOPE-MINIMAL resolution a force-skipped upstream does NOT unblock its downstream (Phase 90), so
-      a SKIPPED upstream is named as still-gating rather than satisfied.
+    - a downstream propose/review stage requires every upstream SATISFIED
+      (:func:`~phaze.enums.stage.upstream_satisfied`: DONE, or a force-SKIPPED enrich stage --
+      phaze-iyqhg, the downstream half of D-08). A skipped upstream is named as skipped, so the trace
+      never reads a skip as completion even while it reports the conjunct met.
     - an enrich stage (no upstream) is vacuously met (ELIG-01 independence).
     """
     if stage is Stage.APPLY:
         return has_approved, ("approved proposal exists" if has_approved else "no approved proposal")
     if not upstreams:
         return True, "no upstream (enrich stage)"
-    unmet = [u for u in upstreams if statuses[u] != Status.DONE]
-    if not unmet:
-        return True, "all upstream done"
-    if statuses[unmet[0]] == Status.SKIPPED:
-        return False, f"{unmet[0].value} skipped — downstream stays gated (Phase 90)"
-    return False, f"{unmet[0].value} not done"
+    unmet = [u for u in upstreams if not upstream_satisfied(statuses[u])]
+    if unmet:
+        return False, f"{unmet[0].value} not done"
+    skipped = [u.value for u in upstreams if statuses[u] == Status.SKIPPED]
+    if skipped:
+        return True, f"all upstream done or skipped ({', '.join(skipped)} skipped)"
+    return True, "all upstream done"
 
 
 def _eligibility_blocker(
@@ -304,10 +309,9 @@ async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, 
     Loads the stage's own status plus its ``ELIGIBILITY_DAG`` upstream statuses (single-row reads),
     evaluates the REAL ``eligible()`` (the scheduler's source of truth) in Python, and names the single
     unmet blocker. Enrich stages have no upstream, so ``upstream met?`` is vacuously true. The upstream
-    conjunct STRICTLY mirrors ``eligible()`` (upstream must be DONE): under the OQ-1 SCOPE-MINIMAL
-    resolution a force-skipped enrich upstream does NOT unblock its downstream (Phase 90), so a SKIPPED
-    upstream is rendered as still-gating — a lenient "skipped = met" display would make the trace claim a
-    downstream is eligible when the scheduler permanently gates it (the deadlock UI-03 exists to expose).
+    conjunct STRICTLY mirrors ``eligible()`` through the SAME ``upstream_satisfied`` predicate
+    (phaze-iyqhg: a force-skipped enrich upstream satisfies it), so the trace can never claim an
+    eligibility the scheduler does not grant, nor hide one it does.
     NOT a corpus query (T-87-23). The per-conjunct verdicts are named helpers
     (:func:`_eligibility_upstream_verdict`, :func:`_eligibility_blocker`, :func:`_eligibility_done_verdict`)
     so this function reads as composition of the four conjuncts rather than one flat branch tree.

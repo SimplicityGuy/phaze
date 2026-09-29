@@ -73,10 +73,12 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-# The five pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
-# OMITTED (the 6-stage -> 5-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
-# "Exec" in the template. Ordered for the matrix's left-to-right column order.
-_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
+# The pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04); REVIEW renders under
+# "Appr" and APPLY under "Exec" in the template. Ordered for the matrix's top-to-bottom row order.
+# phaze-o71bf added TRACKLIST, omitted until then because its status could only say "has a tracklist
+# row or not"; its buckets now come from the per-file lookup record (queued = in flight, retry pending
+# = failed, answered-without-a-tracklist = skipped).
+_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.ANALYZE, Stage.TRACKLIST, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
 
 
 # ``last_seen_at`` with NULL folded to the OLDEST representable instant, so a direction alone decides

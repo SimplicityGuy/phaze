@@ -17,15 +17,29 @@
    The three loops themselves live in `ui/set_marks.html` and are shared with `record/poster.svg`,
    which used to re-implement them with only its colour literals differing (PR #556 review,
    finding 4). This template keeps what is genuinely its own: the section chrome, the accessible
-   label and caption, and the inspection ring below -- which is page-only, because the poster has
-   no cursor. #}
+   label and summary, the runs table below it, and the inspection ring -- which is page-only,
+   because the poster has no cursor.
+
+   Operator decision 2026-09-27 (bead `phaze-37ovq`, "Compact table"): the wheel used to caption
+   itself with a prose sentence naming every jump ("Jumps: 11A → 2B at 8:00; ..."), reported
+   confusing on a long set. The caption is now a one-line summary (unchanged as the SVG's own
+   `aria-label`, `services/harmonic_journey._caption`) plus a table with one row per key run --
+   `harmonic_journey.rows`, in the SAME order and numbering as the wheel's own nodes, so a row's
+   `data-node-index` always names the node it describes. #}
 {% import "ui/set_marks.html" as marks %}
+{# Long sets can run well past a dozen key runs; capping the always-visible rows keeps the
+   sidebar glanceable without hiding anything permanently -- "Show all" (Alpine `x-data`, no
+   round trip) reveals the rest. The number itself is a judgement call, not a measured bound. #}
+{% set _VISIBLE_RUN_CAP = 8 %}
 <section data-harmonic-journey class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel" aria-labelledby="harmonic-journey-heading">
     <p id="harmonic-journey-heading" class="font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">Harmonic journey</p>
     <svg data-harmonic-wheel
          viewBox="0 0 {{ harmonic_journey.canvas }} {{ harmonic_journey.canvas }}"
          class="mx-auto mt-3 block h-auto w-full max-w-64"
-         role="img"
+         {# phaze-n0h86: a `group`, not an `img`, once there are nodes -- `img` makes its children
+            presentational, and the nodes are focusable controls that drive the timeline. With no
+            journey there is nothing to focus, and the wheel stays one labelled image. #}
+         role="{{ 'group' if harmonic_journey.has_journey else 'img' }}"
          aria-label="{% if harmonic_journey.has_journey %}Camelot wheel. {{ harmonic_journey.caption }}{% else %}Camelot wheel with no key path: this file has no analyzed key data.{% endif %}">
         {{ marks.harmonic_wheel_marks(harmonic_journey, marks.SCREEN, interactive=true) }}
         {% if harmonic_journey.has_journey %}
@@ -40,7 +54,62 @@
         {% endif %}
     </svg>
     {% if harmonic_journey.has_journey %}
-    <p data-harmonic-caption class="mt-3 text-xs text-muted ">{{ harmonic_journey.caption }}</p>
+    <p data-harmonic-summary class="mt-3 text-xs text-muted ">{{ harmonic_journey.caption }}</p>
+    {# phaze-37ovq: one row per surviving key run. `x-data` scopes the "Show all" expansion to
+       just this table; rows past the cap ship `x-show`'d closed (a static `display:none`
+       fallback, in case Alpine has not yet run) rather than being omitted, so nothing here is a
+       second render or a round trip. #}
+    <div data-harmonic-runs-wrap class="mt-2" x-data="{ expanded: false }">
+        {# The sidebar is narrow and a key/time/duration/move row can still run wider than it at
+           a phone width; the table scrolls ITSELF rather than the page
+           (`tests/shared/core/test_cross_workspace_responsive_a11y.py`), same idiom as the
+           tracklist review table (`_tracklist_review_body.html`). #}
+        <div class="relative overflow-x-auto">
+        <table data-harmonic-runs class="w-full border-collapse text-left text-xs">
+            <caption class="sr-only">Key runs: one row per surviving run, with its time range, key, duration and how it was entered.</caption>
+            <thead>
+                <tr class="text-muted ">
+                    <th scope="col" class="py-1 pr-2 font-medium">Time</th>
+                    <th scope="col" class="py-1 pr-2 font-medium">Key</th>
+                    <th scope="col" class="py-1 pr-2 font-medium">Dur</th>
+                    <th scope="col" class="py-1 font-medium">Move</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in harmonic_journey.rows %}
+                {# Hovering a row is one more route to the SAME cursor `data-node-index` already
+                   drives on the wheel (phaze-n0h86): `static/js/analysis_timeline.js` looks the
+                   key run up by this identical number, so a row and the node it names can never
+                   disagree about which run they point at. No `tabindex` here on purpose: the
+                   wheel's own nodes are ALREADY the keyboard route to every run (and the
+                   accessible name on each), and adding a second set of tab stops right after
+                   them would put a row between "tab past the last node" and "leave the journey
+                   section", silently breaking phaze-n0h86's own "tabbing out of the wheel rests
+                   the page" contract (`tests/browser/test_analysis_timeline.py`). #}
+                <tr data-journey-row data-node-index="{{ row.index }}"
+                    {% if loop.index > _VISIBLE_RUN_CAP %}x-show="expanded" style="display:none"{% endif %}
+                    class="border-t border-gray-100 dark:border-white/5">
+                    <td class="py-1 pr-2 font-mono tabular-nums text-gray-900 dark:text-gray-200">{{ row.time_range_label }}</td>
+                    <td class="py-1 pr-2 text-gray-900 dark:text-gray-200">
+                        <span class="inline-flex items-center gap-1">
+                            <span class="harmonic-run-dot" style="background-color: hsl({{ row.hue }}, 65%, 45%);" aria-hidden="true"></span>
+                            <span>{{ row.code }}{% if row.key_name %} · {{ row.key_name }}{% endif %}</span>
+                        </span>
+                    </td>
+                    <td class="py-1 pr-2 font-mono tabular-nums text-gray-900 dark:text-gray-200">{{ row.dwell_label }}</td>
+                    <td data-move-kind="{{ row.move_kind or '' }}" class="py-1 text-muted ">{{ row.move_label }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% if harmonic_journey.rows | length > _VISIBLE_RUN_CAP %}
+        <button type="button" data-harmonic-show-all x-show="!expanded" x-on:click="expanded = true"
+                class="mt-2 text-xs font-medium text-cyan-700 hover:underline dark:text-cyan-400">
+            Show all {{ harmonic_journey.rows | length }} runs
+        </button>
+        {% endif %}
+    </div>
     {% else %}
     <p data-harmonic-journey-empty class="mt-3 text-xs text-muted ">No analyzed key data for this file, so there is no harmonic journey to draw.</p>
     {% endif %}

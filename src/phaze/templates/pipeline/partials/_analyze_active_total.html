@@ -8,4 +8,4 @@
         {% set active.total = active.total + lane.active %}
     {% endif %}
 {% endfor %}
-{{ ui.metric("Active", "—" if active.unknown or not active.seen else active.total, "executing now where observable" if active.seen and not active.unknown else "execution activity unavailable", "accent", "analyze-active-total-card", oob | default(false)) }}
+{{ ui.metric("Running", "—" if active.unknown or not active.seen else active.total, "executing now where observable" if active.seen and not active.unknown else "execution activity unavailable", "accent", "analyze-active-total-card", oob | default(false)) }}

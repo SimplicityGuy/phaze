@@ -73,6 +73,8 @@
        OOB-target-must-pre-exist rule (see this file's header) requires a landing placeholder here. #}
     <p id="dag-seed-metadataOrphan" class="hidden"></p>
     <p id="dag-seed-analyzeOrphan" class="hidden"></p>
+    <p id="dag-seed-analyzeRunning" class="hidden"></p>
+    <p id="dag-seed-analyzeWaiting" class="hidden"></p>
     <p id="dag-seed-summaryRecentLive" class="hidden"></p>
     <p id="dag-seed-summaryRecentToday" class="hidden"></p>
     <p id="dag-seed-summaryRecentLifetime" class="hidden"></p>
@@ -117,5 +119,8 @@
        workspace_has_cloud_cards` gate as the six cloud cards — Analyze passes cloud_cards=true so this
        sink is skipped there and its real grid keeps the id (a duplicate would steal the live swap). #}
     <div id="analyze-lanes"></div>
+    {# phaze-lwz8n: the Running-now queue view is re-emitted OOB every tick too; its real host is only
+       in analyze_workspace.html, so every other stage sinks it here under the same gate. #}
+    <section id="analyze-queue"></section>
 </div>
 {% endif %}

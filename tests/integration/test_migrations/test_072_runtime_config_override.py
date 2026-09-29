@@ -1,15 +1,15 @@
-"""Migration 069 (phaze-mvq8z.6): creates ``runtime_config_override``, the DB-override layer.
+"""Migration 072 (phaze-mvq8z.6): creates ``runtime_config_override``, the DB-override layer.
 
 Purely additive: one new standalone table, no changes to any existing one, no seed rows (a key
 with no row here simply falls through to the ``file``/``env``/``default`` layers underneath it --
 see ``phaze.runtime_config``). The tests below discharge this bead's "migration up/down tested"
 acceptance criterion directly, rather than leaving it to prose:
 
-* ``test_upgrade_creates_the_table`` -- 068 -> 069 creates ``runtime_config_override`` with the
+* ``test_upgrade_creates_the_table`` -- 071 -> 072 creates ``runtime_config_override`` with the
   expected columns/types and no rows.
 * ``test_upgrade_round_trips_a_written_row`` -- a row written after the upgrade (mirroring how the
   admin API writes one) reads back with its JSONB value intact, ints and strings both.
-* ``test_downgrade_drops_the_table`` -- 069 -> 068 removes the table outright; this molecule lands
+* ``test_downgrade_drops_the_table`` -- 072 -> 071 removes the table outright; this molecule lands
   as a single ``--no-ff`` merge to ``main`` and is meant to be revertible with one
   ``git revert -m 1`` (epic ``phaze-mvq8z`` comment, 2026-09-28), so the downgrade must genuinely
   work, not merely exist.
@@ -33,14 +33,14 @@ from .conftest import (
 )
 
 
-_PREVIOUS_REVISION = "068"
-_THIS_REVISION = "069"
+_PREVIOUS_REVISION = "071"
+_THIS_REVISION = "072"
 _TABLE = "runtime_config_override"
 
 
 @pytest_asyncio.fixture
 async def engine_at_previous_revision() -> AsyncGenerator[tuple[AsyncEngine, Config]]:
-    """Reset the migrations DB, upgrade it to 068, and yield an engine plus the alembic config.
+    """Reset the migrations DB, upgrade it to 071, and yield an engine plus the alembic config.
 
     Mirrors ``test_066_drop_analysis_window_camelot.py``'s fixture of the same name:
     ``upgrade_to``/``downgrade_to`` are sync and internally ``asyncio.run`` alembic's async env,
@@ -80,7 +80,7 @@ async def _columns(engine: AsyncEngine, table: str) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_upgrade_creates_the_table(engine_at_previous_revision: tuple[AsyncEngine, Config]) -> None:
-    """068 -> 069 creates ``runtime_config_override`` with the expected columns and no rows."""
+    """071 -> 072 creates ``runtime_config_override`` with the expected columns and no rows."""
     engine, cfg = engine_at_previous_revision
     assert not await _table_exists(engine, _TABLE)
 
@@ -117,7 +117,7 @@ async def test_upgrade_round_trips_a_written_row(engine_at_previous_revision: tu
 
 @pytest.mark.asyncio
 async def test_downgrade_drops_the_table(engine_at_previous_revision: tuple[AsyncEngine, Config]) -> None:
-    """069 -> 068 drops the table outright, losing only override rows (never anything else)."""
+    """072 -> 071 drops the table outright, losing only override rows (never anything else)."""
     engine, cfg = engine_at_previous_revision
     await asyncio.to_thread(upgrade_to, cfg, _THIS_REVISION)
     async with engine.begin() as conn:

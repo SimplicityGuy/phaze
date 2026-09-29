@@ -293,7 +293,12 @@ async def _marks(page: Any) -> dict[str, Any]:
             const glyphCursor = document.querySelector('[data-set-glyph-cursor]');
             const currentRibbons = [...document.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon.is-current')];
             const currentRows = [...document.querySelectorAll('[data-track-row].is-current')];
-            const ringedNode = ring && !ring.hidden
+            // The ring is an SVG <circle>, which has no `hidden` IDL property: `ring.hidden` reads
+            // back whatever expando the script last assigned and says nothing about what is drawn.
+            // Read the ATTRIBUTE and the computed display instead -- the pair is what the reader
+            // sees (phaze-n0h86: the ring shipped invisible while `ring.hidden` read false).
+            const ringHidden = !ring || ring.hasAttribute('hidden') || getComputedStyle(ring).display === 'none';
+            const ringedNode = !ringHidden
                 ? [...document.querySelectorAll('[data-journey-node]')].find(
                       (node) => node.getAttribute('cx') === ring.getAttribute('cx') && node.getAttribute('cy') === ring.getAttribute('cy'))
                 : null;
@@ -304,7 +309,7 @@ async def _marks(page: Any) -> dict[str, Any]:
                 ribbonCount: currentRibbons.length,
                 ribbonStart: currentRibbons.length ? currentRibbons[0].dataset.ribbonStart : null,
                 rowPositions: currentRows.map((row) => row.dataset.trackPosition),
-                ringHidden: ring.hidden,
+                ringHidden,
                 ringNodeIndex: ringedNode ? ringedNode.dataset.nodeIndex : null,
                 glyphHidden: glyphCursor.hidden,
                 glyphLeft: glyphCursor.style.left,
@@ -416,6 +421,194 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     left = await _marks(page)
     assert "peak" in left["tooltip"].lower()
     assert left == resting
+
+
+async def test_hovering_the_bpm_chart_shows_the_fine_window_bpm_and_a_marker_at_the_cursor(page: Any, seed: Seeder) -> None:
+    """phaze-f8ptt: the tooltip headline states the BPM in words, and a dot on the chart shows it.
+
+    ``analysis_windows`` seeds fine BPM as ``126.0 + (index % 5)`` over 24 30 s windows, so the
+    distinct values are exactly {126, 127, 128, 129, 130} and ``rounded_bpm_bounds`` rounds that
+    outward to [120, 130] -- both read from the fixture's own construction, not restated as
+    literals that merely happen to match today. Window 0 ([0, 30)) carries BPM 126.0, so parking
+    the cursor at time 0 makes both the tooltip text and the marker's vertical position exact:
+    fraction-from-top = (130 - 126) / (130 - 120) = 0.4, i.e. 40%.
+    """
+    _file, timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+    tooltip = timeline.locator("[data-timeline-tooltip]")
+    cursor = timeline.locator("[data-timeline-cursor]")
+    marker = timeline.locator("[data-timeline-bpm-marker]")
+
+    await inspector.focus()
+    await page.keyboard.press("Home")
+
+    tooltip_text = await tooltip.inner_text()
+    assert tooltip_text.startswith("At 0:00 · BPM 126")
+
+    assert await marker.is_visible()
+    assert _percent(await marker.evaluate("el => el.style.left")) == pytest.approx(_percent(await cursor.evaluate("el => el.style.left")), abs=0.01)
+    assert _percent(await marker.evaluate("el => el.style.top")) == pytest.approx(40.0, abs=0.5)
+    label_text = await marker.locator("[data-timeline-bpm-marker-label]").inner_text()
+    assert label_text == "BPM 126"
+
+    # Hovering a different window moves the tooltip, cursor, and dot together -- the fixture's
+    # window 2 ([60, 90)) carries BPM 128.0, and the dot's fraction moves with it.
+    bounds = await inspector.bounding_box()
+    assert bounds is not None
+    await page.mouse.move(bounds["x"] + bounds["width"] * (75.0 / _INSPECTION_DURATION_SEC), bounds["y"] + 20)
+    moved_text = await tooltip.inner_text()
+    assert "BPM 128" in moved_text
+    assert _percent(await marker.evaluate("el => el.style.top")) == pytest.approx(20.0, abs=0.5)
+
+
+async def test_a_window_with_no_measured_bpm_reads_an_explicit_absence_not_undefined(page: Any, seed: Seeder) -> None:
+    """phaze-f8ptt: an unmeasured BPM is stated plainly, and the chart marker simply does not light.
+
+    Every fine window's ``bpm`` is cleared after seeding, which also empties the server's own
+    ``bpm_lo``/``bpm_hi`` scale (``bpm_spark`` returns ``None, None`` with no valid BPM anywhere) --
+    so this exercises both halves of the absence at once: the tooltip headline's explicit "BPM —"
+    and the marker having no scale to place a dot on.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    windows = await seed.analysis_windows(file, fine_count=24, coarse_count=6)
+    async with seed.session.begin_nested():
+        for window in windows:
+            if window.tier == "fine":
+                window.bpm = None
+    await seed.session.commit()
+
+    await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
+    timeline = page.locator("[data-analysis-timeline]")
+    await timeline.wait_for(state="visible")
+    await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
+    inspector = timeline.locator("[data-timeline-inspector]")
+    tooltip = timeline.locator("[data-timeline-tooltip]")
+    marker = timeline.locator("[data-timeline-bpm-marker]")
+
+    await inspector.focus()
+    await page.keyboard.press("Home")
+
+    tooltip_text = await tooltip.inner_text()
+    assert "BPM —" in tooltip_text
+    assert "undefined" not in tooltip_text.lower()
+    assert await marker.is_hidden()
+
+    # No BPM value anywhere means no scale either -- the server renders no `data-bpm-lo`/
+    # `data-bpm-hi`, which is the other half of the same absence.
+    bpm_plot = timeline.locator("[data-timeline-bpm-plot]")
+    assert await bpm_plot.get_attribute("data-bpm-lo") is None
+    assert await bpm_plot.get_attribute("data-bpm-hi") is None
+
+
+async def test_hovering_or_focusing_a_wheel_node_drives_the_timeline_to_that_key_run(page: Any, seed: Seeder) -> None:
+    """phaze-n0h86: the wheel is an input route too, by pointer and by keyboard.
+
+    The seeded fine tier is 12 windows of A minor (8A) then 12 of C major (8B), 30 s each, so the
+    two key runs are [0, 360) and [360, 720) and their midpoints -- where a node lands the cursor --
+    are 180 s and 540 s. Stated here from the fixture, not read back from the page's payload, so
+    the page cannot agree with this test merely by agreeing with itself.
+
+    Each state is checked on BOTH sides of the link: the timeline's value and readout moved to the
+    node's run, and the ring (visibility read from the attribute and computed style, see
+    ``_marks``) sits on the node that was hovered. Keyboard reach is proved with a real Tab press
+    from one node to the next, not a scripted ``focus()`` alone, because a node that is focusable
+    only by script is not reachable by anyone using a keyboard.
+    """
+    _file, _timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    resting = await _marks(page)
+    node_zero = page.locator('[data-journey-node][data-node-index="0"]')
+    node_one = page.locator('[data-journey-node][data-node-index="1"]')
+
+    # --- Pointer: each node scrubs the timeline to its own run --------------------------------
+    await node_zero.hover()
+    from_zero = await _marks(page)
+    assert from_zero["valueNow"] == "180"
+    assert "8A" in from_zero["valueText"]
+    assert from_zero["rowPositions"] == ["1"]
+    assert from_zero["ringHidden"] is False
+    assert from_zero["ringNodeIndex"] == "0"
+
+    await node_one.hover()
+    from_one = await _marks(page)
+    assert from_one["valueNow"] == "540"
+    assert "8B" in from_one["valueText"]
+    assert from_one["rowPositions"] == ["2"]
+    assert from_one["ringNodeIndex"] == "1"
+
+    # Leaving the wheel returns the whole page to the peak, exactly as leaving the lanes does.
+    await page.mouse.move(4, 4)
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+    assert await _marks(page) == resting
+
+    # --- Keyboard: nodes are tab stops, and Tab between them drives the timeline --------------
+    await node_zero.focus()
+    assert (await _marks(page))["valueNow"] == "180"
+    await page.keyboard.press("Tab")
+    assert await node_one.evaluate("el => el === document.activeElement")
+    from_tab = await _marks(page)
+    assert from_tab["valueNow"] == "540"
+    assert from_tab["ringNodeIndex"] == "1"
+
+    # Tabbing OUT of the wheel rests the page, like tabbing out of the tracklist.
+    await page.keyboard.press("Tab")
+    assert not await page.evaluate("() => document.querySelector('[data-harmonic-wheel]').contains(document.activeElement)")
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+
+    # The ring is decoration: hidden from the accessibility tree, and no live region was added
+    # anywhere for the wheel to announce through.
+    ring = page.locator("[data-journey-cursor-ring]")
+    assert await ring.get_attribute("aria-hidden") == "true"
+    assert await page.locator("[data-harmonic-journey] [aria-live]").count() == 0
+
+
+async def test_hovering_a_runs_table_row_drives_the_timeline_and_rings_the_same_wheel_node(page: Any, seed: Seeder) -> None:
+    """phaze-37ovq: the runs table is one more route to the same one elapsed time.
+
+    Same fixture and same two runs (`_open_inspectable_record`) as the wheel-node test above, but
+    driven through `[data-journey-row]` instead of `[data-journey-node]` -- both carry the
+    IDENTICAL `data-node-index`, so hovering a row must scrub the timeline to the same run AND
+    ring the same wheel node hovering its node would, through the shared `nodeTime` lookup.
+
+    Pointer only, deliberately: a row carries no `tabindex` (see the template's own comment) --
+    the wheel's nodes are already the keyboard route to every run, and giving rows a second,
+    redundant set of tab stops right after them would break phaze-n0h86's own "tabbing out of the
+    wheel rests the page" contract, asserted in the test just above this one.
+    """
+    _file, _timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    resting = await _marks(page)
+    row_zero = page.locator('[data-journey-row][data-node-index="0"]')
+    row_one = page.locator('[data-journey-row][data-node-index="1"]')
+
+    assert await row_zero.get_attribute("tabindex") is None
+    assert await row_one.get_attribute("tabindex") is None
+
+    await row_zero.hover()
+    from_zero = await _marks(page)
+    assert from_zero["valueNow"] == "180"
+    assert "8A" in from_zero["valueText"]
+    assert from_zero["ringHidden"] is False
+    assert from_zero["ringNodeIndex"] == "0"
+
+    await row_one.hover()
+    from_one = await _marks(page)
+    assert from_one["valueNow"] == "540"
+    assert "8B" in from_one["valueText"]
+    assert from_one["ringNodeIndex"] == "1"
+
+    # Leaving the table returns the whole page to the peak, exactly as leaving the wheel does.
+    await page.mouse.move(4, 4)
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
+    assert await _marks(page) == resting
 
 
 async def test_a_time_in_a_coarse_gap_marks_no_glyph_cell_rather_than_the_nearest_one(page: Any, seed: Seeder) -> None:

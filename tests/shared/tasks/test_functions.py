@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 import pytest
 from saq import Status
 
+from phaze.services import media_path_resolve
 from phaze.services.analysis_wire import aggregate_style_scores
 from phaze.services.video_audio import AudioSource
 from phaze.tasks.functions import (
@@ -18,6 +20,7 @@ from phaze.tasks.functions import (
     _features_to_style_dict,
     process_file,
 )
+from tests._media_path_fakes import byte_exact_exists
 
 
 def _extracted(path: str) -> AudioSource:
@@ -1563,3 +1566,54 @@ async def test_process_file_respects_ctx_analysis_semaphore(mock_pool: MagicMock
     result = await asyncio.wait_for(task, timeout=5.0)
     assert result["status"] == "analyzed"
     mock_pool.assert_called_once()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_resolves_nfd_on_disk_file_via_stored_nfc_path(
+    mock_pool: AsyncMock, _patch_extract_audio_track: AsyncMock, tmp_path: Any
+) -> None:
+    """phaze-9pg11: `original_path` is stored NFC-normalized (the identity/dedup key), but the
+    real directory entry can be NFD-decomposed. The local (non-scratch) analysis lane must read
+    the ACTUAL on-disk file, not the never-matching stored path.
+
+    ``phaze.services.media_path_resolve.Path.exists`` is reimplemented as a byte-exact (Linux
+    ext4-style) comparison via ``tests._media_path_fakes.byte_exact_exists``: macOS's own
+    filesystems (HFS+/APFS) are Unicode-normalization-INSENSITIVE at the syscall level, so a dev
+    host running this suite would otherwise treat the NFC-reported path as already existing
+    WITHOUT the resolver doing anything -- exactly the false-negative Linux (this repo's
+    byte-exact target platform) never gets to enjoy. `byte_exact_exists` pins the test to that
+    real invariant (including for the resolver's own longest-existing-ancestor walk, which needs
+    `tmp_path` itself to still read as "existing") while still exercising the real
+    listdir-and-match fallback logic.
+
+    Appended at module end (rather than beside the other ``run_analysis_subprocess`` happy-path
+    tests) deliberately: this module's heartbeat-timing tests further down patch
+    ``time.monotonic`` against a fixed-length ``iter(...)``, and any leaked fire-and-forget
+    progress-posting task from a PRECEDING test can consume an extra tick of that iterator --
+    inserting a new test earlier in the file shifts run order/timing enough to starve it
+    (observed: ``StopIteration`` in an unrelated later test). Appending here changes nothing
+    about the order of every test that already existed.
+    """
+    nfd_name = unicodedata.normalize("NFD", "Hör.mp3")
+    nfc_name = unicodedata.normalize("NFC", "Hör.mp3")
+    assert nfd_name != nfc_name, "fixture must actually exercise two distinct byte forms"
+
+    on_disk = tmp_path / nfd_name
+    on_disk.write_bytes(b"audio-ish bytes")
+    stored_nfc_path = str(tmp_path / nfc_name)
+
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    payload = _make_payload_kwargs()
+    payload["original_path"] = stored_nfc_path
+
+    with patch.object(media_path_resolve.Path, "exists", byte_exact_exists):
+        result = await process_file(ctx, **payload)
+
+    assert result["status"] == "analyzed"
+    # The (autouse-fixture-mocked) audio-extraction probe is the first thing to see `read_path` --
+    # asserting on its call arg proves the RESOLVED real on-disk path reached it, not the stored one.
+    _patch_extract_audio_track.assert_awaited_once()
+    assert _patch_extract_audio_track.await_args.args[0] == str(on_disk)

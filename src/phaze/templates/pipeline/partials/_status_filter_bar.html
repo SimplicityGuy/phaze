@@ -14,13 +14,21 @@
      * active_stage  -- the current stage filter value (Stage enum value) or None.
      * active_bucket -- the current bucket filter value (Status enum value) or None.
 
+   phaze-7sdwt: `active_stage` alone ("any status") is a deliberate no-op at the service layer --
+   there is no status to compare against -- so "Clear filter" below gates on `active_bucket` ALONE,
+   never `active_stage or active_bucket`. `active_bucket` is the one signal that a filter actually
+   applied (get_files_page's contract): "any stage = <status>" filters (some stage has that status),
+   "stage = any status" never does.
+
    Pure filter control: no self-poll (no hx-trigger="every ..."). The only hx-trigger is `change`,
    a user-initiated navigation, exactly like the rail.
 #}
-{# The five matrix stages; Tracklists remain outside this cross-pipeline inventory. #}
+{# The Files table's stage columns (phaze-o71bf added Tracklist, whose buckets come from the per-file
+   lookup record: in flight = queued, failed = retry pending, skipped = answered with no tracklist). #}
 {% set _filter_stages = [
     ('metadata', 'Metadata'),
     ('analyze', 'Analyze'),
+    ('tracklist', 'Tracklist'),
     ('propose', 'Propose'),
     ('review', 'Review'),
     ('apply', 'Execute'),
@@ -57,8 +65,10 @@
         <option value="{{ val }}"{% if active_bucket == val %} selected{% endif %}>{{ label }}</option>
         {% endfor %}
     </select>
-    {% if active_stage or active_bucket %}
-    {# Clear both axes while retaining page size and sort state on the canonical Files route. #}
+    {% if active_bucket %}
+    {# Clear both axes while retaining page size and sort state on the canonical Files route.
+       phaze-7sdwt: gated on active_bucket alone -- a lone active_stage ("any status") never filtered
+       anything, so it must not offer a "Clear filter" for a filter that was never applied. #}
     <a href="/s/files?page_size={{ files_page.page_size }}{% if sort %}&amp;sort={{ sort.key }}&amp;order={{ sort.order }}{% endif %}"
        hx-get="/s/files?page_size={{ files_page.page_size }}{% if sort %}&amp;sort={{ sort.key }}&amp;order={{ sort.order }}{% endif %}" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
        class="text-sm px-2 py-1 rounded text-link hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</a>

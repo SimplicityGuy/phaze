@@ -85,16 +85,20 @@
     }
 
     // Phrases. One vocabulary for the readout, the tooltip and `aria-valuetext`, so a screen
-    // reader hears the same four facts -- time, track, key, mood -- the tooltip shows.
+    // reader hears the same six facts -- time, BPM, track, energy, key, mood -- the tooltip shows.
 
     function range(window) {
         return `${elapsed(window.start)}–${elapsed(window.end)}`;
     }
 
+    function formatBpm(bpm) {
+        return Number(bpm).toFixed(Number.isInteger(bpm) ? 0 : 1);
+    }
+
     function fineDescription(window) {
         if (!window) return "Fine: no measured window";
         const values = [];
-        if (window.bpm !== null) values.push(`BPM ${Number(window.bpm).toFixed(Number.isInteger(window.bpm) ? 0 : 1)}`);
+        if (window.bpm !== null) values.push(`BPM ${formatBpm(window.bpm)}`);
         if (window.key) values.push(`key ${window.key}`);
         return `Fine ${range(window)}: ${values.length ? values.join(", ") : "no BPM or key value"}`;
     }
@@ -110,6 +114,17 @@
     function trackPhrase(segment) {
         if (!segment) return "no track";
         return segment.title ? `track ${segment.position} ${segment.title}` : `track ${segment.position}`;
+    }
+
+    /** The fine window's BPM as the tooltip/readout headline states it, or an explicit absence.
+     *
+     * An absent BPM (no fine window measured here, or the measured one carries no BPM) reads
+     * "BPM —" -- the same em dash the gutter's own scale shows when it has no bounds -- rather
+     * than being silently dropped from the headline or reading "BPM undefined".
+     */
+    function bpmPhrase(fine) {
+        if (!fine || fine.bpm === null || fine.bpm === undefined) return "BPM —";
+        return `BPM ${formatBpm(fine.bpm)}`;
     }
 
     function keyPhrase(fine) {
@@ -180,8 +195,19 @@
         const scope = root.closest(SCOPE_SELECTOR);
         const trackSpan = root.querySelector("[data-timeline-track-span]");
         const keyRibbons = [...root.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon')];
+        const bpmPlot = root.querySelector("[data-timeline-bpm-plot]");
+        const bpmMarker = root.querySelector("[data-timeline-bpm-marker]");
+        const bpmMarkerLabel = bpmMarker ? bpmMarker.querySelector("[data-timeline-bpm-marker-label]") : null;
+        // Undefined on a file with no valid BPM anywhere -- `bpm_spark`/`bpm_segments` render no
+        // scale in that case either (`analysis_timeline.html`'s own `data-bpm-lo`/`data-bpm-hi`
+        // guard), so `null` here and an absent marker are the same claim made twice.
+        const bpmLo = bpmPlot && bpmPlot.dataset.bpmLo !== undefined ? Number(bpmPlot.dataset.bpmLo) : null;
+        const bpmHi = bpmPlot && bpmPlot.dataset.bpmHi !== undefined ? Number(bpmPlot.dataset.bpmHi) : null;
         const tracklist = scope ? scope.querySelector("[data-tracklist-index]") : null;
         const wheelRing = scope ? scope.querySelector("[data-journey-cursor-ring]") : null;
+        // The ring is only rendered on a wheel that has a journey, so a wheel with no nodes to
+        // hover has no ring and is never listened to either.
+        const wheel = wheelRing ? wheelRing.closest("[data-harmonic-wheel]") : null;
         const glyph = scope ? scope.querySelector("[data-set-glyph]") : null;
         const glyphCursor = scope ? scope.querySelector("[data-set-glyph-cursor]") : null;
 
@@ -236,6 +262,27 @@
             else hint.textContent = "Scroll timeline →";
         }
 
+        /** The dot and label at the cursor's fine BPM, or hidden where there is nothing to plot.
+         *
+         * `percent` is the SAME horizontal fraction the cursor and tooltip already use, so the
+         * dot sits on the cursor line rather than drifting to its own x. The vertical fraction
+         * mirrors `bpm_spark`/`bpm_segments` exactly -- `(hi - bpm) / (hi - lo)`, higher BPM
+         * higher on the chart -- so the dot lands on the plotted line, not merely near it.
+         */
+        function markBpmMarker(fine, percent) {
+            if (!bpmMarker) return;
+            const bpm = fine && fine.bpm !== null && fine.bpm !== undefined ? Number(fine.bpm) : null;
+            if (bpm === null || bpmLo === null || bpmHi === null || bpmHi === bpmLo) {
+                bpmMarker.hidden = true;
+                return;
+            }
+            const fraction = clamp((bpmHi - bpm) / (bpmHi - bpmLo), 0, 1);
+            bpmMarker.hidden = false;
+            bpmMarker.style.left = `${percent}%`;
+            bpmMarker.style.top = `${fraction * 100}%`;
+            if (bpmMarkerLabel) bpmMarkerLabel.textContent = `BPM ${formatBpm(bpm)}`;
+        }
+
         function markTrackSpan(segment) {
             if (!trackSpan) return;
             if (!segment) {
@@ -269,18 +316,18 @@
 
         function markWheel(run) {
             if (!wheelRing) return;
-            const wheel = wheelRing.closest("svg");
             const node = run && wheel ? wheel.querySelector(`[data-journey-node][data-node-index="${run.index}"]`) : null;
-            if (!node) {
-                wheelRing.hidden = true;
-                return;
-            }
+            // The ATTRIBUTE, never `wheelRing.hidden`. The ring is an SVG <circle>, and
+            // SVGElement has no `hidden` IDL property: assigning one only sets a JS expando, the
+            // server-rendered `hidden` attribute stays, and `[hidden] { display: none }` keeps
+            // the ring invisible while every read of `.hidden` reports it shown (phaze-n0h86).
+            wheelRing.toggleAttribute("hidden", !node);
+            if (!node) return;
             // The ring reads the NODE's own geometry rather than recomputing a wheel position, so
             // it cannot drift off the dot it is ringing however the wheel's radii change.
             wheelRing.setAttribute("cx", node.getAttribute("cx"));
             wheelRing.setAttribute("cy", node.getAttribute("cy"));
             wheelRing.setAttribute("r", String(Number(node.getAttribute("r")) + 4));
-            wheelRing.hidden = false;
         }
 
         function markGlyph(coarse) {
@@ -311,6 +358,7 @@
             const run = keyRunAt(keyRuns, currentTime, duration);
             const headline = [
                 `At ${elapsed(currentTime)}`,
+                bpmPhrase(fine),
                 trackPhrase(segment),
                 energyPhrase(coarse),
                 keyPhrase(fine),
@@ -335,6 +383,7 @@
             markTracklistRow(segment);
             markWheel(run);
             markGlyph(coarse);
+            markBpmMarker(fine, percent);
             if (ensureVisible) {
                 const target = (currentTime / duration) * inspector.clientWidth;
                 const margin = Math.min(80, viewport.clientWidth / 4);
@@ -427,6 +476,20 @@
             return (start + (Number.isFinite(end) ? clamp(end, start, duration) : duration)) / 2;
         }
 
+        /** The midpoint of the key run an element carries `data-node-index` for, or null if
+         * unknown -- a wheel node's `<circle>` and, since phaze-37ovq, its runs-table `<tr>`.
+         *
+         * Looked up by `index`, the same numbering `markWheel` rings by, so hovering EITHER
+         * element for a run lands the cursor inside that run and rings its wheel node -- never a
+         * sibling visit to the same Camelot position, which is a different node with a different
+         * index.
+         */
+        function nodeTime(node) {
+            const index = Number(node.dataset.nodeIndex);
+            const run = keyRuns.find((candidate) => candidate.index === index);
+            return run ? (clamp(run.start, 0, duration) + clamp(run.end, run.start, duration)) / 2 : null;
+        }
+
         inspector.addEventListener("pointermove", (event) => inspectFromPointer(pointerTime(event)));
         inspector.addEventListener("pointerdown", (event) => inspect(pointerTime(event), false, false));
         inspector.addEventListener("pointerleave", rest);
@@ -471,6 +534,50 @@
             tracklist.addEventListener("focusout", (event) => {
                 if (!tracklist.contains(event.relatedTarget)) rest();
             });
+        }
+
+        // phaze-n0h86: the wheel drives the timeline back. Same shape as the tracklist -- delegated
+        // on the <svg>, hover and focus inspect the node's run, leaving rests -- so a node is one
+        // more route to the one elapsed time rather than a second cursor. The drawer renders no
+        // wheel, so `wheel` is null there and nothing is attached.
+        if (wheel) {
+            const nodeOf = (event) => (event.target instanceof Element ? event.target.closest("[data-journey-node][data-node-index]") : null);
+            const enter = (event) => {
+                const node = nodeOf(event);
+                if (!node) return;
+                const time = nodeTime(node);
+                if (time !== null) inspect(time, event.type === "focusin", false);
+            };
+            wheel.addEventListener("mouseover", enter);
+            wheel.addEventListener("focusin", enter);
+            wheel.addEventListener("mouseleave", rest);
+            wheel.addEventListener("focusout", (event) => {
+                if (!wheel.contains(event.relatedTarget)) rest();
+            });
+        }
+
+        // phaze-37ovq: the harmonic journey's runs table drives the timeline too -- same shape as
+        // the wheel it sits beside, and deliberately reusing `nodeTime` rather than a parallel
+        // lookup: a table row carries the identical `data-node-index` a wheel node does, so
+        // hovering a row lands the cursor in the same run hovering its node would, through the
+        // one shared function. `wheel` (not `scope`) gates this listener too, matching the wheel's
+        // own null-on-the-drawer behaviour -- the runs table only ever renders beside a wheel.
+        //
+        // Pointer (`mouseover`/`mouseleave`) ONLY, deliberately no `focusin`/`focusout`: rows
+        // carry no `tabindex` (see the template), because the wheel's own nodes are already the
+        // keyboard route to every run and its own accessible name, and a second set of tab stops
+        // immediately after them would break phaze-n0h86's "tabbing out of the wheel rests the
+        // page" contract.
+        const runsTable = wheel ? scope.querySelector("[data-harmonic-runs]") : null;
+        if (runsTable) {
+            const rowOf = (event) => (event.target instanceof Element ? event.target.closest("[data-journey-row][data-node-index]") : null);
+            runsTable.addEventListener("mouseover", (event) => {
+                const row = rowOf(event);
+                if (!row) return;
+                const time = nodeTime(row);
+                if (time !== null) inspect(time, false, false);
+            });
+            runsTable.addEventListener("mouseleave", rest);
         }
 
         viewport.addEventListener("scroll", updateOverflow, { passive: true });

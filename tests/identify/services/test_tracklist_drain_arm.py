@@ -6,8 +6,12 @@ Every case here is a plain read-modify-write against the singleton
 * DEFAULT OFF: a freshly-created row (the get-or-create fallback ``get_arm_state`` uses when a
   test database has not run migration 059's seed) reads ``armed=False`` -- the safety invariant
   the whole feature rests on.
-* ``arm_drain`` is the ONLY path that ever sets ``armed=True``, and it resets the failure streak
-  and any stale disarm bookkeeping from a PRIOR pass.
+* ``arm_drain`` and ``arm_if_not_running`` are the only two paths that ever set ``armed=True``,
+  and both reset the failure streak and any stale disarm bookkeeping from a PRIOR pass.
+  ``arm_if_not_running`` (the real "Run tracklist lookups" click, phaze-5sj7k) additionally marks
+  its first slice ``in_flight`` ATOMICALLY with the arm -- a review fix on the same bead: the
+  first version armed but left ``in_flight`` false, so the continuous-drain cron's very next tick
+  enqueued a second, concurrent slice on top of the one "Run" itself was about to enqueue.
 * ``disarm_drain`` is idempotent -- a second disarm never overwrites the first's recorded reason.
 * ``mark_slice_finished`` implements the two auto-disarm rules from the bead's acceptance
   criteria: the 3-consecutive-failure streak (a clean slice resets it), and (via ``disarm_drain``
@@ -23,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from phaze.services.tracklist_drain_arm import (
     arm_drain,
+    arm_if_not_running,
     clear_stale_in_flight,
     disarm_drain,
     get_arm_state,
@@ -102,6 +107,56 @@ class TestArmAndDisarm:
 
         assert state.disarmed_reason == "queue_empty"
         assert state.disarmed_at == NOW + timedelta(minutes=1)
+
+
+class TestArmIfNotRunning:
+    """The real "Run tracklist lookups" click's consent decision (phaze-5sj7k) -- distinct from
+    ``arm_drain`` in that it ALSO marks its first slice ``in_flight``, atomically with the arm.
+    """
+
+    async def test_arms_and_marks_a_slice_in_flight_in_one_call(self, session: AsyncSession) -> None:
+        just_armed = await arm_if_not_running(session, now=NOW)
+        await session.commit()
+
+        assert just_armed is True
+        state = await get_arm_state(session)
+        assert state.armed is True
+        assert state.armed_at == NOW
+        assert state.in_flight is True
+        assert state.slice_enqueued_at == NOW
+
+    async def test_a_second_call_while_already_armed_is_a_no_op_and_returns_false(self, session: AsyncSession) -> None:
+        """A second, or Nth, "Run" click while a pass is already running must change nothing --
+        the caller uses the return value to decide whether to enqueue another slice, and must not."""
+        first = await arm_if_not_running(session, now=NOW)
+        await session.commit()
+        assert first is True
+
+        second = await arm_if_not_running(session, now=NOW + timedelta(minutes=1))
+        await session.commit()
+
+        assert second is False
+        state = await get_arm_state(session)
+        assert state.armed_at == NOW  # untouched by the second call
+        assert state.slice_enqueued_at == NOW  # untouched -- no second slice was marked
+
+    async def test_resets_a_failure_streak_and_prior_disarm_bookkeeping_from_the_last_pass(self, session: AsyncSession) -> None:
+        """Mirrors arm_drain's own reset behaviour (test_arm_resets_a_failure_streak_...
+        above) -- a fresh Run click is a fresh pass, not a continuation of whatever streak or
+        reason ended the last one."""
+        await mark_slice_finished(session, success=False, cooldown_seconds=600, max_consecutive_failures=3, now=NOW)
+        await disarm_drain(session, reason="operator", now=NOW)
+        await session.commit()
+
+        just_armed = await arm_if_not_running(session, now=NOW + timedelta(hours=1))
+        await session.commit()
+
+        assert just_armed is True
+        state = await get_arm_state(session)
+        assert state.consecutive_failures == 0
+        assert state.disarmed_reason is None
+        assert state.disarmed_at is None
+        assert state.next_eligible_at is None
 
 
 class TestSliceLifecycle:

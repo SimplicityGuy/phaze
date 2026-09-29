@@ -720,8 +720,9 @@ alphabetically sorted dependencies.
 **FastAPI** + **Jinja2 / HTMX 2 / Alpine.js / Tailwind 4** — server-rendered admin UI, no JS build
 step (Tailwind compiles at image-build time from a pinned standalone binary; HTMX and Alpine from
 CDN). **SQLAlchemy 2 async + asyncpg + Alembic** on **PostgreSQL 18**. **SAQ** (`saq[postgres]`) for
-the task queue — the broker moved from Redis to Postgres in Phase 36, so **Redis 8** is now cache,
-LLM rate limiting, execution progress and counters only. **mutagen** for tag read *and* write.
+the task queue — the broker moved from Redis to Postgres in Phase 36, so **Valkey 9** (the
+Redis-protocol server; clients stay on redis-py) is now cache, LLM rate limiting, execution progress
+and counters only. **mutagen** for tag read *and* write.
 **essentia-tensorflow** for BPM/key/mood/style. **litellm** + **pydantic** for LLM proposals.
 **pydantic-settings**, **uvicorn**, **Docker Compose 2**.
 
@@ -735,8 +736,14 @@ LLM rate limiting, execution progress and counters only. **mutagen** for tag rea
 | **chromaprint (system)** | Retained permanently with **no known consumer**. It is *not* an essentia runtime dependency (`ldd` on the deployed `_essentia` extension shows no link; `import essentia` succeeds without it) and no phaze source calls `fpcalc`/`acoustid`. **Operator decision 2026-07-29: keep** — a runtime `dlopen` path was never exhaustively ruled out and the install cost is trivial. **Do not re-open as a cleanup task.** See `docs/design/0002-fingerprint-removal.md`. |
 | **pyacoustid** | Never a dependency and never used. The fingerprinting feature it would have served was removed from the product on 2026-07-28 (epic `phaze-0jpe`). |
 
-**Known gap:** the test harness runs `redis:7-alpine` while production runs `redis:8-alpine` —
-version skew the suite does not cover.
+**One Redis-protocol image everywhere: `valkey/valkey:9-alpine`** — production compose, both CI
+service containers, the local harness (`test_redis_image` in the justfile) and the real-server test
+fixtures, kept in step by `tests/agents/deployment/test_redis_image_pin.py`. This retired the old
+harness-on-Redis-7 / production-on-Redis-8 skew (bead `phaze-8o294`). The image ships `redis-cli` /
+`redis-server` as symlinks to the `valkey-*` binaries, so the harness scripts' `docker exec …
+redis-cli` calls work on it and on a pre-migration `phaze-test-redis` alike; `just test-db` reuses
+such a container **with a warning** rather than refusing, and it moves to Valkey at the next idle
+`just test-db-down`. **Until then, a local run on that container does not exercise Valkey** — CI does.
 
 **Do not introduce:** `ffmpeg-python` (abandoned since 2022 — shell out to `ffprobe`, or use
 `python-ffmpeg`) · SQLite (no concurrent writes from parallel workers, no JSON operators) · Celery or

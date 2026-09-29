@@ -41,6 +41,7 @@ from phaze.scripts.download_models import (
     _ensure_present_local,
     download_to,
 )
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 if TYPE_CHECKING:
@@ -565,7 +566,7 @@ def test_cli_without_output_dir_exits_2_with_usage_and_fetches_nothing(tmp_path:
         text=True,
         cwd=tmp_path,
         check=False,
-        timeout=120,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
 
     assert result.returncode == 2, result.stderr

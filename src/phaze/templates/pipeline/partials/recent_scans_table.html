@@ -133,6 +133,11 @@
                         {# quick 260622-i0w: per-agent reconciliation — shown only when this agent's
                            scan total collapsed onto existing rows (deduped > 0). Hidden otherwise. #}
                         {% if batch._reconciliation and batch._reconciliation.deduped > 0 %}<span class="text-xs text-muted ">→ {{ batch._reconciliation.unique }} unique · {{ batch._reconciliation.deduped }} deduped</span>{% endif %}
+                        {# phaze-3sgw0: exact, on-read count of files the agent filewatcher ingested onto its
+                           (hidden) LIVE batch after this scan completed -- shown only when non-zero, mirroring
+                           the dedup hint above. Explains the sidebar Discover count exceeding every visible
+                           scan total: the surplus is watcher-ingested, not lost or miscounted. #}
+                        {% if batch._watcher_added > 0 %}<span class="text-xs text-muted ">· +{{ batch._watcher_added }} via watcher</span>{% endif %}
                         {% if batch._orphan_companion_count > 0 %}
                         <a href="/pipeline/scans/{{ batch.id }}/orphan-companions"
                            hx-get="/pipeline/scans/{{ batch.id }}/orphan-companions"

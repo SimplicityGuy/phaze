@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+import unicodedata
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
@@ -152,6 +153,33 @@ async def test_replay_no_duplicates(authenticated_client: AsyncClient, seed_test
     assert r2.status_code == 200
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_nfc_and_nfd_reported_forms_of_same_path_dedup_to_one_row(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-9pg11: NFC stays the dedup/identity key even when the byte-decomposition of the
+    reported ``original_path`` varies across reports of the SAME on-disk file -- e.g. the watcher
+    posts a live NFD-decomposed inotify path (Pitfall 3: it stats the raw path byte-exact, then
+    normalizes only the outgoing record) while a later full rescan of the same directory reports
+    an already-NFC path for the identical file. Both MUST collide on ``(agent_id, original_path)``,
+    never double-insert.
+    """
+    nfd_path = unicodedata.normalize("NFD", "/test/music/Hör.mp3")
+    nfc_path = unicodedata.normalize("NFC", "/test/music/Hör.mp3")
+    assert nfd_path != nfc_path, "fixture must actually exercise two distinct byte forms"
+
+    r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record(path=nfd_path)]})
+    r2 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record(path=nfc_path)]})
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+
+    result = await session.execute(select(sa_func.count()).select_from(FileRecord))
+    assert result.scalar_one() == 1
+    stored = (await session.execute(select(FileRecord))).scalar_one()
+    assert stored.original_path == nfc_path
+    assert unicodedata.is_normalized("NFC", stored.original_path)
 
 
 @pytest.mark.asyncio

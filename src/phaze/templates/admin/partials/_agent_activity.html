@@ -24,8 +24,10 @@
    into #agent-activity-{id} (removed with the row on dismiss — no orphan loop). "Last refreshed Ns
    ago" reuses the agents_table.html:82-86 Alpine setInterval countdown.
 
-   THE 7-STAGE -> 6-PILL REMAP LANDMINE (RESEARCH Pitfall 3): tracklist is OMITTED and the last two
-   columns are RE-LABELLED — Appr reads buckets.review and Exec reads buckets.apply ON PURPOSE.
+   THE REMAP LANDMINE (RESEARCH Pitfall 3): the last two rows are RE-LABELLED — Appr reads
+   buckets.review and Exec reads buckets.apply ON PURPOSE. phaze-o71bf added the Tracklist row (it was
+   omitted while its status could only say "has a row or not"); its in-flight cell counts files queued
+   in the drain's work list, and skipped counts files the lookup answered without a tracklist.
 
    T-88-09 / T-88-10: agent.name / agent.id / agent.kind stay Jinja-autoescaped (never |safe); the
    body reads ONLY the derived stage_status_case buckets — NEVER FileRecord.state. #}
@@ -57,6 +59,7 @@
 {% set _matrix_stages = [
     ('Meta', buckets.metadata),
     ('Analyze', buckets.analyze),
+    ('Tracklist', buckets.tracklist),
     ('Prop', buckets.propose),
     ('Appr', buckets.review),
     ('Exec', buckets.apply),

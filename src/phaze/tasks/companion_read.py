@@ -32,6 +32,7 @@ from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_tasks import ReadCompanionFilesPayload
 from phaze.services.companion_read import read_companion_bounded_sync
 from phaze.services.containment import resolve_and_check_containment
+from phaze.services.media_path_resolve import resolve_media_path
 
 
 logger = structlog.get_logger(__name__)
@@ -53,8 +54,12 @@ def _read_all_sync(items: list[tuple[str, str]], max_chars: int, scan_roots: lis
         except ValueError:
             logger.warning("companion_containment_escape", companion_path=path)
             continue
+        # phaze-9pg11: the companion path can be derived from a stored NFC-normalized filename;
+        # resolve it against the real on-disk entry -- applied AFTER containment so the fallback
+        # can only ever pick another entry in the SAME already-contained directory.
+        resolved_str = resolve_media_path(str(resolved))
         try:
-            contents.append({"filename": filename, "content": read_companion_bounded_sync(str(resolved), max_chars)})
+            contents.append({"filename": filename, "content": read_companion_bounded_sync(resolved_str, max_chars)})
         except OSError:
             logger.warning("companion_read_failed", companion_path=path, exc_info=True)
             continue

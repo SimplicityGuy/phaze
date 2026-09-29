@@ -63,6 +63,7 @@ def test_the_wheel_is_drawn_even_when_there_is_no_key_data() -> None:
     assert journey.has_journey is False
     assert journey.nodes == []
     assert journey.edges == []
+    assert journey.rows == []
     assert journey.caption == ""
     assert journey.adjacent_share is None
     assert [sector.number for sector in journey.sectors] == list(range(1, 13))
@@ -122,7 +123,10 @@ def test_a_stored_discipline_figure_takes_precedence_over_the_live_recompute() -
 
     assert live_share == pytest.approx(0.25)  # the live figure this scenario would give
     assert journey.adjacent_share == 0.9  # the stored figure wins instead
-    assert "90%" in journey.caption
+    # The caption's "N of M" is derived from the STORED share (round(0.9 * 4) == 4), never from
+    # a fresh recount of the live edges (which would read "1 of 4") -- the two numbers in this
+    # one sentence must agree with EACH OTHER, even though they now disagree with a live recount.
+    assert journey.caption == "5 runs · 4 of 4 moves wheel-adjacent"
     # The nodes and edges are always the live picture -- only the reported SHARE changes -- so
     # the wheel still draws the keys actually in front of the reader.
     assert [node.code for node in journey.nodes] == [run.code for run in flicker_filtered_key_runs(windows)]
@@ -201,20 +205,52 @@ def test_a_move_is_timed_at_the_moment_it_lands_not_when_the_previous_key_began(
     assert edge.label == "8A → 5A"
 
 
-def test_the_caption_names_the_adjacent_share_and_every_jump_with_its_elapsed_time() -> None:
-    """The text alternative carries the one thing in the picture an operator has to act on."""
+def test_the_caption_is_the_one_line_summary_not_a_jump_by_jump_narrative() -> None:
+    """phaze-37ovq: the caption's job shrank to the run count and the adjacent-move count --
+    the jumps it used to name individually now live as rows in `journey.rows` instead (see
+    `test_each_row_carries_its_own_time_range_key_duration_and_how_it_was_entered` below)."""
     journey = build_harmonic_journey(_fine(["8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A"]))
 
-    assert journey.caption == ("5 key runs, 25% of 4 moves wheel-adjacent. Jumps: 9A → 5A at 3:30; 5A → 10B at 4:30; 10B → 5A at 5:30.")
+    assert journey.caption == "5 runs · 1 of 4 moves wheel-adjacent"
     assert [edge.label for edge in journey.jumps] == ["9A → 5A", "5A → 10B", "10B → 5A"]
 
 
-def test_a_fully_disciplined_set_says_so_rather_than_listing_nothing() -> None:
-    """No jumps is a reading in its own right, and reads as one."""
+def test_each_row_carries_its_own_time_range_key_duration_and_how_it_was_entered() -> None:
+    """One row per surviving run, in wheel order, carrying the move that LANDED on it.
+
+    The blip-merged "9A" run (windows 2-3 and 5-6, stitched together once the one-window "3A"
+    blip between them is dropped) is exactly the case that would go wrong first if a row were
+    built from the raw windows instead of from the already-filtered/merged run: its own
+    `time_range_label` must span from where the first "9A" window started to where the second
+    one ended, not just one half of it.
+    """
+    journey = build_harmonic_journey(_fine(["8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A"]))
+
+    assert [row.code for row in journey.rows] == ["8A", "9A", "5A", "10B", "5A"]
+    assert [row.index for row in journey.rows] == [node.index for node in journey.nodes]
+    assert [row.time_range_label for row in journey.rows] == [
+        "0:00\u20131:00",
+        "1:00\u20133:30",
+        "3:30\u20134:30",
+        "4:30\u20135:30",
+        "5:30\u20136:30",
+    ]
+    assert [row.dwell_label for row in journey.rows] == ["1:00", "2:30", "1:00", "1:00", "1:00"]
+    # The first run has no move; every later row's move is the edge that lands on it -- one
+    # adjacent step in ("8A" -> "9A") followed by the same three jumps the wheel draws dashed.
+    assert [row.move_kind for row in journey.rows] == [None, "adjacent", "jump", "jump", "jump"]
+    assert [row.move_label for row in journey.rows] == ["—", "adjacent", "jump", "jump", "jump"]
+    assert journey.rows[0].key_name == key_name_for_camelot("8A")
+    assert journey.rows[0].hue == camelot_hue(8)
+
+
+def test_a_fully_disciplined_set_has_no_jump_rows() -> None:
+    """No jumps is a reading the table gives directly, without a "No jumps" sentence."""
     journey = build_harmonic_journey(_fine(["8A", "8A", "9A", "9A", "10A", "10A"]))
 
     assert journey.jumps == []
-    assert journey.caption == "3 key runs, 100% of 2 moves wheel-adjacent. No jumps."
+    assert journey.caption == "3 runs · 2 of 2 moves wheel-adjacent"
+    assert all(row.move_kind != "jump" for row in journey.rows)
 
 
 def test_a_set_that_never_changes_key_has_one_node_and_no_moves_to_report() -> None:
@@ -224,7 +260,9 @@ def test_a_set_that_never_changes_key_has_one_node_and_no_moves_to_report() -> N
     assert len(journey.nodes) == 1
     assert journey.edges == []
     assert journey.adjacent_share == 1.0
-    assert journey.caption == "1 key run, no key changes."
+    assert journey.caption == "1 run, no key changes."
+    assert [row.move_kind for row in journey.rows] == [None]
+    assert [row.move_label for row in journey.rows] == ["—"]
 
 
 def test_a_code_the_wheel_cannot_place_is_dropped_from_the_picture_not_placed_at_random() -> None:

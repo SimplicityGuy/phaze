@@ -17,6 +17,7 @@ import structlog
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataWriteRequest
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
+from phaze.services.media_path_resolve import resolve_media_path
 from phaze.services.metadata import extract_tags
 
 
@@ -79,7 +80,11 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         # runs the Phase-46 liveness heartbeat (heartbeat.py's design premise is 'the
         # event loop is free'), so an on-loop block risks a false DEAD classification and
         # duplicate-work re-enqueue. Mirrors scan.py's asyncio.to_thread discipline.
-        tags = await asyncio.to_thread(extract_tags, payload.original_path)
+        # phaze-9pg11: `original_path` is stored NFC-normalized (the identity/dedup key); resolve
+        # it against the real on-disk entry before opening -- an NFD-named file's stored path
+        # otherwise never matches its own directory entry (permanent FileNotFoundError).
+        real_path = await asyncio.to_thread(resolve_media_path, payload.original_path)
+        tags = await asyncio.to_thread(extract_tags, real_path)
         logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
 
         # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)

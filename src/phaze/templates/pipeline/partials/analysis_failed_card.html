@@ -1,19 +1,42 @@
 {% import "ui/primitives.html" as ui %}
-{% set lane_state = namespace(over_cap=none, at_cap=none) %}
+{# phaze-lwz8n: the in-flight-vs-cap alarms (UNSAFE / CONGESTED) are evaluated for CLOUD lanes only,
+   whose in_flight is the admission-controlled cloud_job window. The local lane's in_flight is the
+   queue (queued + running) and its cap comes from the control host, so a long queue read as UNSAFE.
+   The local lane's red is `stuck`: stranded rows, claims never started, lost heartbeats. #}
+{# phaze-j0ixx: a lane whose pods cannot reach the control plane is HELD by its breaker -- red, because
+   nothing drains to it until the operator's environment is fixed or a probe gets through. #}
+{% set lane_state = namespace(over_cap=none, at_cap=none, stuck=none, held=none) %}
 {% for candidate in lanes | default([]) %}
-    {% if lane_state.over_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight > candidate.cap %}
-        {% set lane_state.over_cap = candidate %}
+    {% if lane_state.held is none and candidate.breaker_held is defined and candidate.breaker_held %}
+        {% set lane_state.held = candidate %}
     {% endif %}
-    {% if lane_state.at_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight == candidate.cap %}
-        {% set lane_state.at_cap = candidate %}
+    {% if candidate.kind == "local" %}
+        {% if lane_state.stuck is none and candidate.stuck is defined and candidate.stuck %}
+            {% set lane_state.stuck = candidate %}
+        {% endif %}
+    {% else %}
+        {% if lane_state.over_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight > candidate.cap %}
+            {% set lane_state.over_cap = candidate %}
+        {% endif %}
+        {% if lane_state.at_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight == candidate.cap %}
+            {% set lane_state.at_cap = candidate %}
+        {% endif %}
     {% endif %}
 {% endfor %}
-<section id="analysis-health-card" {% if oob %}hx-swap-oob="true"{% endif %} {% if analysis_failed_count or lane_state.over_cap or inadmissible_count or localqueue_unreachable %}role="alert"{% else %}role="status"{% endif %} class="rounded-lg border {% if analysis_failed_count or lane_state.over_cap %}border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950{% elif inadmissible_count or localqueue_unreachable or awaiting_cloud_count %}border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950{% else %}border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel{% endif %}">
+<section id="analysis-health-card" {% if oob %}hx-swap-oob="true"{% endif %} {% if analysis_failed_count or lane_state.stuck or lane_state.held or lane_state.over_cap or inadmissible_count or localqueue_unreachable %}role="alert"{% else %}role="status"{% endif %} class="rounded-lg border {% if analysis_failed_count or lane_state.stuck or lane_state.held or lane_state.over_cap %}border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950{% elif inadmissible_count or localqueue_unreachable or awaiting_cloud_count %}border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950{% else %}border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel{% endif %}">
     <div class="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
             {% if analysis_failed_count %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Analysis health", "FAILED", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ analysis_failed_count }} file(s) need recovery</h2></div>
                 <p class="mt-1 text-sm text-danger ">Terminal analysis failures will not progress. Retry them, or backfill long failures to a cloud lane.</p>
+            {% elif lane_state.stuck %}
+                {% set _st = lane_state.stuck %}
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Analysis queue", "STUCK", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ _st.kind|upper }} · {{ _st.id }} has {{ _st.stuck }} stuck job(s)</h2></div>
+                <p class="mt-1 text-sm text-danger ">{{ _st.claimed_overdue }} claimed but not started past the stall bound · {{ _st.stranded }} stranded · {{ _st.heartbeat_lost }} with a lost heartbeat. The agent is not working these; check its worker and the waiting list below.</p>
+            {% elif lane_state.held %}
+                {% set _held = lane_state.held %}
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud lane", "HELD", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ _held.kind|upper }} · {{ _held.id }} cannot reach the control plane</h2></div>
+                <p class="mt-1 text-sm text-danger ">{{ _held.breaker_reason or "Breaker open" }}. Dispatch to this lane is held and no attempts are charged; it resumes on its own once a probe pod reaches the control plane. Check the cluster's DNS and its network path to the control plane.</p>
             {% elif lane_state.over_cap %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "UNSAFE", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ lane_state.over_cap.kind|upper }} · {{ lane_state.over_cap.id }} exceeds capacity</h2></div>
                 <p class="mt-1 text-sm text-danger ">{{ lane_state.over_cap.in_flight }} in-flight jobs exceed scheduler cap {{ lane_state.over_cap.cap }}. Stop new admission and inspect the lane before increasing capacity.</p>

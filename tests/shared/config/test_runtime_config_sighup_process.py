@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -102,10 +104,10 @@ def harness() -> Iterator[_LiveProcess]:
         if proc.poll() is None:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=CHILD_PROCESS_HANG_GUARD_SEC)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=5)
+                proc.wait(timeout=CHILD_PROCESS_HANG_GUARD_SEC)
 
 
 def test_sighup_installs_successfully_on_a_real_process(harness: _LiveProcess) -> None:

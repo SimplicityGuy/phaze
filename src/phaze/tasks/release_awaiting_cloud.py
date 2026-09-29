@@ -54,7 +54,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord
-from phaze.services import cloud_staging
+from phaze.services import backend_breaker, cloud_staging
 from phaze.services.cloud_budget import CloudBudgetState
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates
@@ -349,8 +349,18 @@ async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSes
     global window) are each probed exactly M times HERE -- NEVER re-probed inside the candidate loop.
     The snapshot IS the atomicity boundary the whole tick routes against.
 
-    Runs inside the caller's advisory-locked transaction; issues no writes and never raises.
+    phaze-j0ixx: a backend whose control-plane-unreachable breaker is open is HELD here -- it keeps
+    ``available=True`` and gets ``remaining=0``, or ONE slot when its probe is due
+    (``backend_breaker.gate_remaining``). "Full", not "offline", on purpose: ``select_backend`` spills to
+    local immediately only when every cloud lane is offline, so a hold that read as offline would flood
+    the local lane with the whole awaiting queue the moment the breaker opened.
+
+    Runs inside the caller's advisory-locked transaction and never raises. Its one write is pushing a
+    held backend's ``next_probe_at`` when it grants the probe slot, under a SAVEPOINT so a failure there
+    cannot poison the tick.
     """
+    now = datetime.now(UTC)
+    breakers = await backend_breaker.load_open_breakers(session)
     snapshot: dict[str, BackendSlot] = {}
     for backend in backends:
         # MKUE-03 / D-07 (research Pitfall 8): per-backend failure isolation for the once-per-tick
@@ -371,6 +381,9 @@ async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSes
             logger.warning("stage_cloud_window: backend snapshot probe failed -> treating as unavailable (0 slots)", backend_id=backend.id)
             snapshot[backend.id] = {"backend": backend, "available": False, "remaining": 0, "cap": backend.cap}
             continue
+        breaker = breakers.get(backend.id)
+        if breaker is not None:
+            remaining = await _hold_for_breaker(session, breaker, remaining, now)
         snapshot[backend.id] = {
             "backend": backend,
             "available": available,
@@ -378,6 +391,31 @@ async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSes
             "cap": backend.cap,
         }
     return snapshot
+
+
+async def _hold_for_breaker(session: AsyncSession, breaker: backend_breaker.OpenBreaker, remaining: int, now: datetime) -> int:
+    """Clamp a breaker-held backend's free slots for this tick, arming the next probe when one is granted (phaze-j0ixx).
+
+    Logs the hold every tick at WARNING -- the lane is not draining because the operator's environment is
+    broken, which is operator-actionable, not routine.
+    """
+    slots, probe = backend_breaker.gate_remaining(breaker, remaining, now)
+    if probe:
+        try:
+            async with session.begin_nested():
+                await backend_breaker.arm_next_probe(session, breaker.backend_id, now)
+        except Exception:
+            # The probe slot is still granted; at worst the next tick grants another one too.
+            logger.warning("stage_cloud_window: could not arm the breaker's next probe", backend_id=breaker.backend_id, exc_info=True)
+    logger.warning(
+        "stage_cloud_window: backend held -- its pods cannot reach the control plane (breaker open)",
+        backend_id=breaker.backend_id,
+        tripped_at=breaker.tripped_at.isoformat(),
+        trip_reason=breaker.trip_reason,
+        probe_slot_granted=probe,
+        next_probe_at=breaker.next_probe_at.isoformat() if breaker.next_probe_at is not None else None,
+    )
+    return slots
 
 
 def _route_candidate(

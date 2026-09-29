@@ -6,8 +6,9 @@ compute / file-server agent worker can import it WITHOUT transitively pulling in
 ``services/stage_status.py`` by an equivalence test.
 
 Hard constraint, enforced by ``tests/shared/test_stage_resolver.py``: this module imports
-ONLY the stdlib — NO ``phaze.models`` / ``phaze.database`` / ``sqlalchemy``. ``resolve_status`` and
-``eligible`` are pure functions over plain scalars owned by the caller.
+ONLY the stdlib and its DB-free sibling :mod:`phaze.enums.tracklist_candidate` — NO ``phaze.models`` /
+``phaze.database`` / ``sqlalchemy``. ``resolve_status`` and ``eligible`` are pure functions over plain
+scalars owned by the caller.
 
 Per-stage semantics:
 - Precedence is ``in_flight ≻ done ≻ failed ≻ not_started``; the SAQ ledger wins.
@@ -21,6 +22,13 @@ from __future__ import annotations
 
 import enum
 from typing import TYPE_CHECKING, Any
+
+from phaze.enums.tracklist_candidate import (
+    TRACKLIST_FAILED_OUTCOMES,
+    TRACKLIST_INFLIGHT_OUTCOMES,
+    TRACKLIST_SKIPPED_OUTCOMES,
+    TracklistFileOutcome,
+)
 
 
 if TYPE_CHECKING:
@@ -44,8 +52,9 @@ class Status(enum.StrEnum):
     ``SKIPPED`` (D-08) is the reported bucket for a force-skipped enrich stage: a ``stage_skip`` marker
     row exists for the ``(file, stage)`` pair. It is ordered ``done ≻ skipped ≻ failed`` — a completed
     stage still reads DONE, but a skipped stage outranks a lingering failure (the writer is additive and
-    never clears ``failed_at``, so the ordering — not the writer — decides). Only the two enrich stages
-    ever carry it; the downstream stages stay 4-way.
+    never clears ``failed_at``, so the ordering — not the writer — decides). The two enrich stages carry
+    it from the force-skip marker, and ``TRACKLIST`` from its per-file lookup record (phaze-o71bf: the
+    lookup answered, and the answer gives this file no tracklist); the other downstream stages stay 4-way.
     """
 
     NOT_STARTED = "not_started"
@@ -130,8 +139,33 @@ def _presence_status(*, present: bool, failed: bool, inflight: bool) -> Status:
     return Status.NOT_STARTED
 
 
-def _tracklist_status(*, row_present: bool, failed: bool, inflight: bool) -> Status:
-    return _presence_status(present=row_present, failed=failed, inflight=inflight)
+def _tracklist_status(*, row_present: bool, lookup_outcome: Any, failed: bool, inflight: bool) -> Status:
+    """tracklist: done iff a ``tracklists`` row exists; the per-file lookup record (phaze-o71bf) supplies the rest.
+
+    ``lookup_outcome`` is the ``tracklist_file_lookups.outcome`` string (or ``None`` when the drain has
+    never seen the file). ``queued`` is in flight, ``retry_pending`` is failed, and an answer that gives
+    the file no tracklist is skipped -- see the outcome sets in :mod:`phaze.enums.tracklist_candidate`.
+    The ``failed`` / ``inflight`` booleans are still honoured, so a caller that has only those keeps
+    the plain presence ladder.
+    """
+    outcome = _parse_tracklist_outcome(lookup_outcome)
+    if inflight or outcome in TRACKLIST_INFLIGHT_OUTCOMES:
+        return Status.IN_FLIGHT
+    if row_present:
+        return Status.DONE
+    if outcome in TRACKLIST_SKIPPED_OUTCOMES:
+        return Status.SKIPPED
+    if failed or outcome in TRACKLIST_FAILED_OUTCOMES:
+        return Status.FAILED
+    return Status.NOT_STARTED
+
+
+def _parse_tracklist_outcome(raw: Any) -> TracklistFileOutcome | None:
+    """Parse a stored outcome, ``None`` for absent or unknown -- which the SQL twin also matches nowhere."""
+    try:
+        return TracklistFileOutcome(raw)
+    except ValueError:
+        return None
 
 
 def _propose_status(*, row_present: bool, failed: bool, inflight: bool) -> Status:
@@ -156,11 +190,13 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
     - analyze: ``completed_at``, ``failed_at``, ``inflight``
     - metadata: ``row_present``, ``failed_at``, ``inflight``
     - downstream (tracklist/propose/review/apply): ``row_present``, ``failed``, ``inflight``
+    - tracklist additionally: ``lookup_outcome`` (the per-file lookup record, phaze-o71bf)
 
     Applies the DERIV-02 precedence ladder ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``
     (``inflight`` from the SAQ scheduling ledger always wins; ``skipped`` from the ``stage_skip`` marker,
     D-08, sits just under ``done``). Never touches a database. The ``skipped`` scalar is passed ONLY to
-    the two enrich branches — the downstream stages have no force-skip marker and ignore it.
+    the two enrich branches — the downstream stages have no force-skip marker and ignore it (TRACKLIST
+    derives its own skipped bucket from ``lookup_outcome``).
     """
     inflight = bool(scalars.get("inflight", False))
     skipped = bool(scalars.get("skipped", False))
@@ -173,7 +209,7 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
     row_present = bool(scalars.get("row_present", False))
     failed = bool(scalars.get("failed", False))
     if stage is Stage.TRACKLIST:
-        return _tracklist_status(row_present=row_present, failed=failed, inflight=inflight)
+        return _tracklist_status(row_present=row_present, lookup_outcome=scalars.get("lookup_outcome"), failed=failed, inflight=inflight)
     if stage is Stage.PROPOSE:
         return _propose_status(row_present=row_present, failed=failed, inflight=inflight)
     if stage is Stage.REVIEW:
@@ -232,7 +268,8 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
       exists). ``has_approved_proposal`` is the approval flag the caller supplies (the SQL twin filters
       ``proposals.status = 'approved'``).
     - ``TRACKLIST`` / ``PROPOSE`` / ``REVIEW``: every upstream in ``ELIGIBILITY_DAG[stage]`` must be
-      ``DONE`` AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts). ``TRACKLIST``'s
+      SATISFIED (:func:`upstream_satisfied` -- ``DONE``, or ``SKIPPED`` for a force-skipped enrich
+      upstream) AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts). ``TRACKLIST``'s
       conjunct list is EMPTY (phaze-0jpe), so it reduces to "not already ``DONE``".
     """
     if stage in (Stage.METADATA, Stage.ANALYZE):
@@ -244,5 +281,23 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
         return status not in (Status.DONE, Status.IN_FLIGHT, Status.SKIPPED) and (status != Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
     if stage is Stage.APPLY:
         return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
-    upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])
-    return upstream_done and status_map.get(stage, Status.NOT_STARTED) != Status.DONE
+    upstream_met = all(upstream_satisfied(status_map.get(u, Status.NOT_STARTED)) for u in ELIGIBILITY_DAG[stage])
+    return upstream_met and status_map.get(stage, Status.NOT_STARTED) != Status.DONE
+
+
+def upstream_satisfied(status: Status | str) -> bool:
+    """Pure predicate: does an upstream stage in ``status`` let its downstream proceed?
+
+    ``DONE`` or ``SKIPPED``. D-08 always defined a force-skip as "stage-satisfied for eligibility +
+    downstream unblocking" (87-CONTEXT.md); Phase 87 shipped only the eligibility/recovery half and
+    deferred the downstream half (87-RESEARCH.md OQ-1, "SCOPE-MINIMAL"). phaze-iyqhg lands it.
+    Operator decision 2026-09-27, question as put: 'Given that, what should the stage control on the
+    file page be?'; answer as given (selected label): '"Skip stage…", honest + working (Recommended)';
+    durable record: the phaze-iyqhg bead description. A skip still never READS as done -- the bucket
+    stays ``skipped`` -- it only stops gating what comes after it.
+
+    The SQL twin is :func:`phaze.services.stage_status.satisfied_clause`, drift-locked by
+    ``tests/integration/test_stage_status_equivalence.py``. Compared by VALUE (WR-03), so a raw-``str``
+    status from a SQL/JSON round-trip agrees with its enum spelling.
+    """
+    return Status(status) in (Status.DONE, Status.SKIPPED)

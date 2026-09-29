@@ -55,7 +55,11 @@
                 {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
                 <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-muted ">RANK {{ lane.rank }}</span>
             </span>
-            {% if lane.available %}
+            {% if _kind == 'local' %}
+            {# phaze-lwz8n: the local lane's in_flight is queued + running and its cap comes from the
+               control host, so the pair is not a capacity reading. Show what is running and waiting. #}
+            <span class="font-mono text-sm font-medium {% if lane.available %}{{ lane_color }}{% else %}text-muted {% endif %}">{{ lane.active if lane.active is not none else "—" }} running · {{ lane.queued if lane.queued is not none else "—" }} waiting</span>
+            {% elif lane.available %}
             <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
             {% else %}
             {# phaze-pc2q (mirrors _lane_card.html's phaze-xd8k fix): an unavailable lane MUST still
@@ -67,12 +71,15 @@
             {% endif %}
         </div>
 
-        {# In-flight/cap capacity bar (frozen h-1.5 geometry, reused verbatim). #}
+        {# In-flight/cap capacity bar (frozen h-1.5 geometry, reused verbatim). Cloud lanes only: their
+           in_flight is the admission-controlled cloud_job window (phaze-lwz8n). #}
+        {% if _kind != 'local' %}
         <div class="h-1.5 rounded-full bg-gray-200 dark:bg-phaze-border">
             {% if lane.available and _pct > 0 %}
             <div class="h-full rounded-full {{ lane_bar }}" style="width: {{ _pct }}%"></div>
             {% endif %}
         </div>
+        {% endif %}
 
         {# Availability (word-labelled, never hue-only). #}
         <p class="text-xs {% if lane.available %}text-muted {% else %}text-warn {% endif %}">
@@ -112,6 +119,23 @@
             {% endif %}
             {% else %}
             <p class="mt-1 text-sm text-muted ">{{ queue_depths_note or '—' }}</p>
+            {% endif %}
+        </div>
+
+        {# phaze-lwz8n: the same Running-now rows the workspace shows, scoped to this lane. #}
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted ">Running now</p>
+            {% set _running = running_analyses if running_analyses is defined else none %}
+            {% if _running is none %}
+            <p class="mt-1 text-sm text-muted ">Running analyses could not be read this cycle.</p>
+            {% elif _running %}
+            <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
+                {% for run in _running %}
+                <li{% if run.heartbeat_lost %} class="text-danger "{% endif %}>▶ {{ run.label }} · {% if run.windows_total %}{{ run.windows_done }}/{{ run.windows_total }} windows{% else %}sizing…{% endif %} · started {{ humanize_relative_time(run.started_at) if run.started_at else "—" }} · heartbeat {{ humanize_relative_time(run.heartbeat_at) if run.heartbeat_at else "—" }}{% if run.heartbeat_lost %} (lost){% endif %}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="mt-1 text-sm text-muted ">Nothing is running on this lane right now.</p>
             {% endif %}
         </div>
 

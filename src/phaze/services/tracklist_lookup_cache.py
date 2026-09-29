@@ -17,15 +17,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, select
+from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
-from phaze.models.tracklist_lookup_cache import TracklistLookupCache
+from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome, TracklistFileOutcome, tracklist_file_outcome
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup, TracklistLookupCache
+from phaze.services.bulk_insert import chunk_rows
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
+    import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +41,41 @@ too eagerly turns the drain into a treadmill that re-asks answered questions ins
 the untouched tail. Six months is roughly "once per corpus pass" at the projected drain duration,
 which is the natural cadence -- the re-check costs a request only after every never-asked set has
 already had its turn."""
+
+LOW_CONFIDENCE_TTL_DAYS: int = 30
+"""How long a NEAR-MISS low-confidence search is held before being re-asked (phaze-no6sv).
+
+A near miss -- rows came back and the best scored in ``[LOW_CONFIDENCE_NEAR_MISS_FLOOR,
+SELECTION_THRESHOLD)`` -- usually means the QUERY was polluted, not that the set is absent, so it
+must not buy the 180-day negative TTL. Not a transient backoff either: re-asking the same text
+minutes later returns the same rows. The main recovery path does not wait for this at all -- a fix
+to query derivation changes the query text, which changes the cache key, which is a fresh ``MISS``.
+
+Operator decision 2026-09-27 (durable record: bead phaze-no6sv comment). Question as put: "How
+long should a low-confidence result wait before being looked up again? (Today every miss waits 180
+days.)" Answer as given (selected option label): "Tiered by best score (Recommended)". The 30 days
+and the band floor of 50 come from that option's description -- the dispatcher's framing, which the
+operator accepted -- not from a measurement."""
+
+LOW_CONFIDENCE_NEAR_MISS_FLOOR: int = 50
+"""Best score at or above which a low-confidence search is a near miss (short hold, above); below it
+the rows are unrelated enough that the set is probably genuinely absent, and the hold is the full
+:data:`NEGATIVE_TTL_DAYS`. Same operator decision and provenance as :data:`LOW_CONFIDENCE_TTL_DAYS`.
+For scale: the captured search for a set that does not exist scored its best row 35, and the best
+wrong-artist row on the right event and date scored 50 (``tracklist_result_scorer.SELECTION_THRESHOLD``'s
+calibration notes)."""
+
+
+def low_confidence_ttl_days(best_score: int | None, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> int:
+    """The hold for a ``LOW_CONFIDENCE`` result, tiered by the best row's score.
+
+    An unknown score (a row written without one) gets the SHORT hold: re-asking costs one request,
+    while guessing "absent" could hide a set for six months.
+    """
+    if best_score is not None and best_score < LOW_CONFIDENCE_NEAR_MISS_FLOOR:
+        return negative_ttl_days
+    return LOW_CONFIDENCE_TTL_DAYS
+
 
 TRANSIENT_BACKOFF_BASE_MINUTES: int = 30
 """First retry delay after a transient failure. Doubles per attempt, capped below.
@@ -94,11 +131,21 @@ class CacheVerdict:
         return None
 
 
+def verdict_for(entry: TracklistLookupCache, now: datetime) -> CacheVerdict:
+    """The verdict a stored row gives right now -- what :func:`lookup_many` would return for its key.
+
+    For a caller that already holds the row (the drain's persist step, straight after
+    :func:`record_outcome`) and must not spend a second round trip re-reading it.
+    """
+    return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, _aware(now)), entry=entry)
+
+
 def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
     """Map a stored row to a decision. THE honesty boundary -- read this before changing it.
 
     ``FOUND`` never expires. ``NOT_FOUND`` -- and only ``NOT_FOUND`` -- suppresses a re-query for
-    the negative TTL. Everything else is a transient failure: it earns a short backoff, then goes
+    the negative TTL. ``LOW_CONFIDENCE`` is held for a TTL tiered by its best score (see
+    :func:`low_confidence_ttl_days`) and is never reported as a negative (phaze-no6sv). Everything else is a transient failure: it earns a short backoff, then goes
     straight back into the queue, and after :data:`TRANSIENT_MAX_ATTEMPTS` it is PARKED for an
     operator rather than being reinterpreted as a negative. An unrecognized outcome string (a row
     written by a newer version, or hand-edited) falls through to ``MISS``: re-querying costs one
@@ -112,6 +159,11 @@ def _decide(entry: TracklistLookupCache, now: datetime) -> CacheDecision:
         if entry.expires_at is not None and _aware(entry.expires_at) <= now:
             return CacheDecision.NEGATIVE_EXPIRED
         return CacheDecision.SUPPRESSED_NEGATIVE
+
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        if entry.expires_at is not None and _aware(entry.expires_at) <= now:
+            return CacheDecision.LOW_CONFIDENCE_EXPIRED
+        return CacheDecision.LOW_CONFIDENCE_HOLD
 
     if outcome is not None and outcome.is_transient:
         if entry.attempts >= TRANSIENT_MAX_ATTEMPTS:
@@ -149,7 +201,9 @@ def _backoff_delay(attempts: int) -> timedelta:
     return timedelta(minutes=min(minutes, TRANSIENT_BACKOFF_MAX_HOURS * 60))
 
 
-def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS) -> datetime | None:
+def compute_expires_at(
+    outcome: LookupOutcome, attempts: int, now: datetime, *, negative_ttl_days: int = NEGATIVE_TTL_DAYS, best_score: int | None = None
+) -> datetime | None:
     """When a row written now should stop suppressing a re-query (None = never).
 
     Exposed rather than inlined so a test -- and the design doc's arithmetic -- can assert the
@@ -159,6 +213,8 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return now + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return now + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     return now + _backoff_delay(attempts)
 
 
@@ -220,11 +276,15 @@ async def lookup_by_query_text(session: AsyncSession, query_text: str, *, now: d
     return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
 
 
-_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset({LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value})
-"""The stored ``outcome`` values that end a transient streak: everything NOT in
-``TRANSIENT_OUTCOMES``. Spelled as a literal set (mirroring that frozenset) because it needs to
-appear inside a SQL ``case()``/``in_()`` expression, which the enum's own ``is_transient`` -- a
-Python-only computed property -- cannot generate."""
+_NON_TRANSIENT_OUTCOMES: frozenset[LookupOutcome] = frozenset({LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.LOW_CONFIDENCE})
+"""Outcomes of a search that ran cleanly: each ends a transient streak (see
+:func:`_next_attempts_on_conflict`). ``LOW_CONFIDENCE`` belongs here -- the site answered, just not
+usefully -- so a later transient failure starts a fresh streak rather than inheriting an old one."""
+
+_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset(outcome.value for outcome in _NON_TRANSIENT_OUTCOMES)
+"""The stored ``outcome`` strings of :data:`_NON_TRANSIENT_OUTCOMES`. Spelled as plain values
+because they need to appear inside a SQL ``case()``/``in_()`` expression, which the enum's own
+``is_transient`` -- a Python-only computed property -- cannot generate."""
 
 
 def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
@@ -250,7 +310,7 @@ def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
     a Python-read value -- see :func:`record_outcome`'s docstring for why that matters under
     concurrent writers).
     """
-    if outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND):
+    if outcome in _NON_TRANSIENT_OUTCOMES:
         return 1
     return case(
         (TracklistLookupCache.outcome.in_(_NON_TRANSIENT_OUTCOME_VALUES), 1),
@@ -287,7 +347,7 @@ async def record_outcome(
     """
     moment = now or datetime.now(UTC)
     insert_attempts = 1
-    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days)
+    insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days, best_score=result_confidence)
 
     statement = pg_insert(TracklistLookupCache).values(
         set_key=set_key,
@@ -313,7 +373,7 @@ async def record_outcome(
             "detail": detail,
             "attempts": _next_attempts_on_conflict(outcome),
             "last_attempted_at": moment,
-            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days),
+            "expires_at": _update_expires_at(outcome, moment, negative_ttl_days, best_score=result_confidence),
         },
     ).returning(TracklistLookupCache)
 
@@ -327,7 +387,7 @@ async def record_outcome(
     return entry
 
 
-def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int) -> Any:
+def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int, *, best_score: int | None = None) -> Any:
     """The ``expires_at`` the ON CONFLICT UPDATE should write.
 
     Positives (never) and definitive negatives (a fixed TTL) do not depend on the attempt count and
@@ -349,6 +409,8 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return moment + timedelta(days=negative_ttl_days)
+    if outcome is LookupOutcome.LOW_CONFIDENCE:
+        return moment + timedelta(days=low_confidence_ttl_days(best_score, negative_ttl_days=negative_ttl_days))
     exponent = _next_attempts_on_conflict(outcome) - 1
     backoff_seconds = func.least(
         float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, exponent),
@@ -375,3 +437,83 @@ async def purge_expired_negatives(session: AsyncSession, *, now: datetime | None
         )
     )
     return cast("CursorResult[Any]", result).rowcount or 0
+
+
+# Per-file outcomes (phaze-o71bf)
+
+
+@dataclass(frozen=True, slots=True)
+class FileOutcome:
+    """What ``tracklist_file_lookups`` should say about one file -- decided before anything is written."""
+
+    file_id: uuid.UUID
+    outcome: TracklistFileOutcome
+    set_key: str | None = None
+    last_attempt_at: datetime | None = None
+    next_eligible_at: datetime | None = None
+
+
+def file_outcome(file_id: uuid.UUID, verdict: CacheVerdict) -> FileOutcome:
+    """Project a set's cache verdict onto one of its member files.
+
+    ``next_eligible_at`` is the cache row's ``expires_at`` only while that timestamp really is the
+    next time the drain will ask: a held negative, a held low-confidence result, or a transient in
+    backoff. A queued set is eligible NOW, a match never expires, and a parked transient
+    (``TRANSIENT_EXHAUSTED``) waits for an operator rather than a clock -- all three store NULL.
+    """
+    entry = verdict.entry
+    outcome = tracklist_file_outcome(verdict.decision)
+    retry_scheduled = verdict.decision in (CacheDecision.SUPPRESSED_NEGATIVE, CacheDecision.LOW_CONFIDENCE_HOLD, CacheDecision.BACKOFF)
+    return FileOutcome(
+        file_id=file_id,
+        outcome=outcome,
+        set_key=verdict.set_key,
+        last_attempt_at=entry.last_attempted_at if entry is not None else None,
+        next_eligible_at=entry.expires_at if entry is not None and retry_scheduled else None,
+    )
+
+
+async def record_file_outcomes(session: AsyncSession, outcomes: Iterable[FileOutcome], *, now: datetime | None = None) -> int:
+    """Upsert one ``tracklist_file_lookups`` row per file; return how many rows actually changed.
+
+    The queue build calls this with EVERY media file the funnel saw, once per drain slice, so the
+    upsert only touches a row whose content differs (``ON CONFLICT ... DO UPDATE ... WHERE ... IS
+    DISTINCT FROM``): an unchanged file costs an index probe, not a dead tuple. Duplicate file ids are
+    collapsed last-wins first, since one INSERT may not update the same row twice. Chunked under the
+    bind-parameter cap by :func:`phaze.services.bulk_insert.chunk_rows`. The caller commits.
+    """
+    moment = now or datetime.now(UTC)
+    by_file = {item.file_id: item for item in outcomes}
+    rows = [
+        {
+            "file_id": item.file_id,
+            "outcome": item.outcome.value,
+            "set_key": item.set_key,
+            "last_attempt_at": item.last_attempt_at,
+            "next_eligible_at": item.next_eligible_at,
+        }
+        for item in by_file.values()
+    ]
+    changed = 0
+    for chunk in chunk_rows(rows):
+        statement = pg_insert(TracklistFileLookup).values(chunk)
+        excluded = statement.excluded
+        upsert = statement.on_conflict_do_update(
+            index_elements=[TracklistFileLookup.file_id],
+            set_={
+                "outcome": excluded.outcome,
+                "set_key": excluded.set_key,
+                "last_attempt_at": excluded.last_attempt_at,
+                "next_eligible_at": excluded.next_eligible_at,
+                "updated_at": moment,
+            },
+            where=or_(
+                TracklistFileLookup.outcome.is_distinct_from(excluded.outcome),
+                TracklistFileLookup.set_key.is_distinct_from(excluded.set_key),
+                TracklistFileLookup.last_attempt_at.is_distinct_from(excluded.last_attempt_at),
+                TracklistFileLookup.next_eligible_at.is_distinct_from(excluded.next_eligible_at),
+            ),
+        )
+        result = await session.execute(upsert)
+        changed += cast("CursorResult[Any]", result).rowcount or 0
+    return changed

@@ -39,11 +39,12 @@
 {% set _stage_cols = [
     ('Metadata', 'metadata'),
     ('Analyze', 'analyze'),
+    ('Tracklist', 'tracklist'),
     ('Propose', 'propose'),
     ('Review', 'review'),
     ('Execute', 'apply'),
 ] %}
-{% set _sort_keys = {'File': 'file', 'Type': 'type', 'Metadata': 'metadata', 'Analyze': 'analyze', 'Propose': 'propose', 'Review': 'review', 'Execute': 'apply'} %}
+{% set _sort_keys = {'File': 'file', 'Type': 'type', 'Metadata': 'metadata', 'Analyze': 'analyze', 'Tracklist': 'tracklist', 'Propose': 'propose', 'Review': 'review', 'Execute': 'apply'} %}
 {% macro details_button(row, full_width=false) %}
 <button type="button"
         hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML"
@@ -58,7 +59,7 @@
    -- a Prev/Next click that dropped the operator's chosen order would silently reset it mid-scan. #}
 {% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (sort.query_state() if sort else '') %}
 {# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
-{% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Review', 'apply': 'Execute'} %}
+{% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'tracklist': 'Tracklist', 'propose': 'Propose', 'review': 'Review', 'apply': 'Execute'} %}
 {% set _stage_display = _stage_names.get(active_stage, active_stage) %}
 {# Per-file retry affordance (87-07, UI-02 / D-04): the URL SEGMENT of the scoped variant of the
    already-live bulk endpoints, keyed by stage. Only the two MANUALLY-retried enrich stages are here:
@@ -88,8 +89,12 @@
     {% if active_bucket == 'failed' and active_stage %}
     {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
     {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
-    {% elif active_stage or active_bucket %}
-    {# Any other active filter that matched nothing -- point the operator at Clear filter above. #}
+    {% elif active_bucket %}
+    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
+       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
+       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
+       contract), so an unfiltered corpus that happens to be empty must fall through to the
+       unfiltered "No files yet" copy below, not this one. #}
     {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
     {% else %}
     {# Unfiltered empty state (Copywriting Contract). #}
@@ -263,7 +268,13 @@
                            the surrounding table's `overflow-x-auto` (see the wrapping `<div>` above)
                            is what absorbs a genuinely narrow viewport -- the row scrolls horizontally
                            rather than wrapping, matching the FILE column's own no-wrap contract. #}
+                        {% if key == 'tracklist' %}
+                        {# phaze-o71bf: the lookup outcome, not the bare bucket -- "not found" and "not
+                           eligible" share the skipped bucket but mean different things to the operator. #}
+                        {% with bucket=row.buckets[key], lookup=row.tracklist_lookup %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}
+                        {% else %}
                         {% with file_id=row.file.id, bucket=row.buckets[key], surface='table', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}
+                        {% endif %}
                     </td>
                     {% endfor %}
                     <td class="px-3 py-2 whitespace-nowrap"><span id="files-current-status-{{ row.file.id }}">{% with buckets=row.buckets %}{% include "pipeline/partials/_files_current_status.html" %}{% endwith %}</span></td>
@@ -300,7 +311,7 @@
                         {% for stage_label, key in _stage_cols %}
                         <div class="flex items-center justify-between gap-3">
                             <dt class="text-xs text-gray-600 dark:text-gray-300">{{ stage_label }}</dt>
-                            <dd>{% with file_id=row.file.id, bucket=row.buckets[key], surface='mobile', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}</dd>
+                            <dd>{% if key == 'tracklist' %}{% with bucket=row.buckets[key], lookup=row.tracklist_lookup %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}{% else %}{% with file_id=row.file.id, bucket=row.buckets[key], surface='mobile', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}{% endif %}</dd>
                         </div>
                         {% endfor %}
                     </dl>

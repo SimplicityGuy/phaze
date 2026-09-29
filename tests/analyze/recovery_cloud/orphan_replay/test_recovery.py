@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
+from sqlalchemy import func, select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -1052,10 +1053,14 @@ async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSessi
     The gate's defensive naive->UTC coercion is covered separately by
     ``test_d10_gate_coerces_a_naive_enqueued_at``, which no longer depends on the schema to produce one.
     """
-    failed_at = datetime.now(UTC)
     f = _make_file()
     session.add(f)
     await session.commit()
+    # One second before the DATABASE's now, not the host's (phaze-0vlnp). ``enqueued_at`` below is the
+    # ledger's server default, so a host-clock ``failed_at`` put two clocks into a sub-second margin. This
+    # assertion went red in a 2026-09-22 verify-main gate, alongside three reaper tests that pin the
+    # Postgres container's clock at least 90 s behind the host at the time, and alone on 2026-09-14.
+    failed_at = await session.scalar(select(func.now() - timedelta(seconds=1)))
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
     key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
