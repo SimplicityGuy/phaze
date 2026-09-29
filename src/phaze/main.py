@@ -13,7 +13,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.database import async_session, engine, run_migrations
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
 from phaze.models.agent import Agent
 from phaze.routers import (
     admin_agents,
@@ -116,7 +116,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # changes log_level, in every process type. Registered BEFORE reload("startup") so that
     # first reload's file/override-layer log_level (folded in below, after the settings-only
     # value the bare configure_logging() call above used) is what actually takes effect.
-    runtime_config_store.register_applier("log_level", lambda _old, new: configure_logging(level=new.log_level))
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=settings.log_json))
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     _app.state.runtime_config_watcher = build_watcher(runtime_config_store)

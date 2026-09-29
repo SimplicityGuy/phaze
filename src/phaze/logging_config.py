@@ -32,9 +32,13 @@ import logging
 from logging import getLogger as _stdlib_get_logger
 import os
 import sys
-from typing import Final
+from typing import TYPE_CHECKING, Final, Protocol
 
 import structlog
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 #: The log_level names RuntimeConfig validates identically in every process type
@@ -237,3 +241,25 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
     psycopg_pool_logger = _stdlib_get_logger(_PSYCOPG_POOL_LOGGER_NAME)
     if not any(isinstance(f, _ElevatePsycopgPoolConnectErrors) for f in psycopg_pool_logger.filters):
         psycopg_pool_logger.addFilter(_ElevatePsycopgPoolConnectErrors())
+
+
+class _HasLogLevel(Protocol):
+    @property
+    def log_level(self) -> str: ...
+
+
+def log_level_applier(*, json_logs: bool | None) -> Callable[[_HasLogLevel, _HasLogLevel], None]:
+    """The ``log_level`` runtime-config applier every process registers (phaze-mvq8z.8).
+
+    ``json_logs`` is the process's own ``settings.log_json``, passed through on every re-apply:
+    without it :func:`configure_logging` re-resolves the format from ``os.environ``/``isatty`` alone,
+    ignoring a ``PHAZE_LOG_JSON`` that lives only in ``.env``. And because appliers fire on ANY
+    reloadable change, the re-apply is skipped unless ``log_level`` itself moved -- together these
+    stop a ``worker_max_jobs`` override from flipping the log format (phaze-mvq8z.20).
+    """
+
+    def _apply(old: _HasLogLevel, new: _HasLogLevel) -> None:
+        if old.log_level != new.log_level:
+            configure_logging(level=new.log_level, json_logs=json_logs)
+
+    return _apply

@@ -58,7 +58,7 @@ from phaze.constants import (
 )
 from phaze.runtime_config import RESTART_ONLY_KEYS
 from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH, EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
-from phaze.services.agent_client import AgentApiError
+from phaze.services.agent_client import AgentApiClientError, AgentApiError
 
 
 logger = structlog.get_logger(__name__)
@@ -81,6 +81,16 @@ The broker read is a NICE-TO-HAVE enrichment of the heartbeat, not its purpose. 
 psycopg pool acquire that never returns must degrade ``queue_depth`` to 0, never delay
 the POST that keeps the agent alive. Kept far below
 ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` so a slow broker cannot eat the whole tick.
+"""
+
+CONFIG_POLL_TIMEOUT_SECONDS = 5.0
+"""Hard deadline on the runtime-config poll's ``GET /api/internal/agent/config`` (phaze-mvq8z.20).
+
+Same shape as ``QUEUE_INFO_TIMEOUT_SECONDS`` and for the same reason: the poll runs inside
+``send_heartbeat`` BEFORE the POST, under the one per-beat ``BEAT_TIMEOUT_SECONDS``, so without its
+own bound a GET that hangs had the whole beat cancelled before the POST that keeps the agent alive.
+The client makes this call as a single attempt (``PhazeAgentClient.get_config``); a missed poll is
+simply retried on the next tick.
 """
 
 HEARTBEAT_INFO_LOG_EVERY = 20
@@ -162,15 +172,19 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
     "local config unchanged this tick" and is logged at WARNING. It NEVER prevents, and is never
     gated on, the heartbeat POST that keeps the agent alive: this function runs BEFORE that POST is
     built (so a just-applied override is reflected in the SAME beat's ``effective_config``), but a
-    failure here does not stop the POST from being sent.
+    failure here does not stop the POST from being sent -- and neither does a HANG, because the GET
+    is bounded by its own ``CONFIG_POLL_TIMEOUT_SECONDS``, far inside the beat's (phaze-mvq8z.20).
     """
     store = ctx.get("runtime_config_store")
     if store is None:
         return
     try:
-        response = await client.get_config()
+        response = await asyncio.wait_for(client.get_config(), timeout=CONFIG_POLL_TIMEOUT_SECONDS)
         overrides = dict(response.overrides)
         digest = str(response.digest)
+    except TimeoutError:
+        logger.warning("heartbeat: runtime-config poll timed out after %.1fs; local config unchanged", CONFIG_POLL_TIMEOUT_SECONDS)
+        return
     except Exception:
         logger.warning("heartbeat: runtime-config poll failed; local config unchanged", exc_info=True)
         return
@@ -217,7 +231,7 @@ def _build_effective_config(store: Any) -> EffectiveConfig:
         else None
     )
     return EffectiveConfig(
-        values=snapshot.config,
+        values=snapshot.config.model_dump(mode="json"),
         sources=dict(snapshot.sources),
         restart_only_keys=sorted(RESTART_ONLY_KEYS),
         last_reload=last_reload,
@@ -295,7 +309,17 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         effective_config=_build_effective_config(runtime_config_store) if runtime_config_store is not None else None,
     )
     try:
-        await client.heartbeat(payload)
+        try:
+            await client.heartbeat(payload)
+        except AgentApiClientError:
+            if payload.effective_config is None:
+                raise
+            # phaze-mvq8z.20: a control plane older than `effective_config` 422s every beat that
+            # carries it, and agents may upgrade first. The snapshot is optional; liveness is not --
+            # so re-send the core beat without it. Tried again with the snapshot on every tick, so
+            # the panel fills in by itself once the control plane catches up.
+            logger.warning("heartbeat: control plane rejected effective_config; re-sending the beat without it")
+            await client.heartbeat(payload.model_copy(update={"effective_config": None}))
         # DEBUG only by design (PR3): the 30s cadence fires constantly, so an INFO
         # here would flood operational logs -- heartbeat liveness lives at DEBUG.
         logger.debug("heartbeat sent", agent=identity.agent_id, queue_depth=queue_depth)

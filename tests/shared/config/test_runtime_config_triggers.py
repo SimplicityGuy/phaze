@@ -16,11 +16,14 @@ and wiring* in-process (fast, no subprocess), and the directory-watch debounce/h
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import os
 from pathlib import Path
 import signal
 import threading
 from unittest.mock import AsyncMock, MagicMock
+import weakref
 
 import pytest
 
@@ -289,6 +292,44 @@ async def test_install_sighup_handler_triggers_exactly_one_reload_and_the_loop_k
         os.kill(os.getpid(), signal.SIGHUP)
         await _wait_for_call_count(spy, 2)
         assert spy.await_count == 2
+    finally:
+        loop.remove_signal_handler(signal.SIGHUP)
+
+
+@pytest.mark.asyncio
+async def test_the_sighup_reload_task_is_held_strongly_until_it_finishes() -> None:
+    """phaze-mvq8z.20 finding 3: asyncio holds tasks WEAKLY, so a fire-and-forget reload task whose
+    only other referent is the future it awaits is a garbage cycle -- ``gc.collect()`` destroys it
+    mid-flight ("Task was destroyed but it is pending!"), losing the reload, possibly while it holds
+    the store lock. The reload here parks on a future nothing outside the task references, which is
+    exactly that cycle; the handler must keep the task alive until it finishes, then let it go.
+    """
+    started = asyncio.Event()
+
+    class _ParkedStore:
+        async def reload(self, _source: str) -> None:
+            started.set()
+            await asyncio.get_running_loop().create_future()
+
+    loop = asyncio.get_running_loop()
+    assert install_sighup_handler(loop, _ParkedStore()) is True  # type: ignore[arg-type]
+    try:
+        os.kill(os.getpid(), signal.SIGHUP)
+        await asyncio.wait_for(started.wait(), timeout=_WAIT_TIMEOUT)
+        task_ref = weakref.ref(next(task for task in asyncio.all_tasks() if task.get_name() == "runtime-config-sighup-reload"))
+
+        gc.collect()
+        task = task_ref()
+        assert task is not None, "the in-flight SIGHUP reload task was garbage-collected"
+        assert not task.done()
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        del task
+        await asyncio.sleep(0)  # let the done-callbacks the finished task scheduled run
+        gc.collect()
+        assert task_ref() is None, "a FINISHED reload task must be released, not accumulated"
     finally:
         loop.remove_signal_handler(signal.SIGHUP)
 

@@ -14,15 +14,23 @@ module's tests are most concerned with -- see ``test_ctx_without_a_store_skips_t
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
+
+import httpx
+from pydantic import BaseModel, ConfigDict, ValidationError
+import respx
 
 from phaze.config import ControlSettings
 from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
 from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_digest
 from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH
 from phaze.schemas.agent_identity import AgentIdentity
+from phaze.services.agent_client import PhazeAgentClient
+from phaze.tasks import heartbeat
 from phaze.tasks.heartbeat import send_heartbeat
 
 
@@ -35,6 +43,14 @@ if TYPE_CHECKING:
 
 
 _IDENTITY = AgentIdentity(agent_id="test-agent", name="Test Agent", scan_roots=["/data"], created_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+
+_BASE_URL = "http://app.test"
+_TOKEN = "phaze_agent_test-token-1234567890abcdef"
+
+
+async def _no_retry_sleep(_delay: float) -> None:
+    return None
 
 
 def _store(tmp_path: Path, *, cores: int = 64) -> RuntimeConfigStore:
@@ -94,7 +110,7 @@ async def test_an_override_reached_via_the_poll_is_applied_and_reported(tmp_path
     assert len(client.heartbeat_calls) == 1
     payload = client.heartbeat_calls[0]
     assert payload.effective_config is not None
-    assert payload.effective_config.values.worker_max_jobs == 9
+    assert payload.effective_config.values["worker_max_jobs"] == 9
     assert payload.effective_config.sources["worker_max_jobs"] == "override"
     assert payload.effective_config.last_reload is not None
     assert payload.effective_config.last_reload.source == "poll"
@@ -212,3 +228,122 @@ async def test_a_long_rejected_reload_error_still_produces_a_heartbeat(tmp_path:
     assert last_reload.error is not None
     assert len(last_reload.error) <= LAST_RELOAD_ERROR_MAX_LENGTH
     assert last_reload.error.startswith("unknown key(s): not_a_real_key_000"), "truncation must keep the head of the error"
+
+
+class _PreEffectiveConfigHeartbeatRequest(BaseModel):
+    """The heartbeat schema an OLD control plane validates against -- ``HeartbeatRequest`` exactly as
+    it stood before phaze-mvq8z.9 added ``effective_config`` (``extra="forbid"`` included)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_version: str
+    worker_pid: int
+    queue_depth: int
+    lane: str | None = None
+
+
+def _old_control_plane(accepted: list[dict[str, Any]]) -> Any:
+    """A respx side effect standing in for an old control plane's heartbeat route: 422 on any body
+    its schema rejects (FastAPI's behaviour), 204 -- recording the body -- on one it accepts."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        try:
+            _PreEffectiveConfigHeartbeatRequest.model_validate(body)
+        except ValidationError as exc:
+            return httpx.Response(422, json={"detail": exc.errors(include_url=False, include_context=False)})
+        accepted.append(body)
+        return httpx.Response(204)
+
+    return _handler
+
+
+@respx.mock
+async def test_a_new_agent_still_beats_against_a_control_plane_that_rejects_effective_config(tmp_path: Path) -> None:
+    """phaze-mvq8z.20 finding 1, agent half: agents may upgrade before the control plane. An old
+    control plane 422s every beat carrying ``effective_config``; the agent must fall back to the
+    core beat so ``last_seen_at`` keeps moving -- the optional snapshot can never cost liveness.
+
+    The real ``PhazeAgentClient`` is driven over HTTP (respx) so the 422 travels the real
+    ``_request`` funnel into the real exception class ``send_heartbeat`` has to handle.
+    """
+    store = _store(tmp_path)
+    await store.reload("startup")
+    accepted: list[dict[str, Any]] = []
+    respx.get(f"{_BASE_URL}/api/internal/agent/config").mock(return_value=httpx.Response(404))
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(side_effect=_old_control_plane(accepted))
+
+    client = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_retry_sleep)
+    try:
+        await send_heartbeat(_ctx(client, store=store))
+    finally:
+        await client.close()
+
+    assert len(accepted) == 1, "the old control plane never accepted a beat -- the agent would read stale, then dead"
+    assert "effective_config" not in accepted[0]
+    assert route.call_count == 2  # the full beat (422), then the core beat
+
+
+@respx.mock
+async def test_a_beat_without_effective_config_omits_the_key_for_an_old_control_plane() -> None:
+    """Found while writing the test above: ``PhazeAgentClient.heartbeat`` dumped an absent snapshot
+    as ``"effective_config": null``, which an old control plane's ``extra="forbid"`` rejects exactly
+    like a populated one -- so even a beat with NO snapshot (and the fallback beat) 422'd. An absent
+    snapshot must be absent from the body, and the old control plane must accept it first time."""
+    accepted: list[dict[str, Any]] = []
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(side_effect=_old_control_plane(accepted))
+
+    client = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_retry_sleep)
+    try:
+        await send_heartbeat(_ctx(client))
+    finally:
+        await client.close()
+
+    assert route.call_count == 1
+    assert len(accepted) == 1
+    assert "effective_config" not in accepted[0]
+
+
+@respx.mock
+async def test_a_rejected_beat_without_effective_config_is_not_re_sent(caplog: pytest.LogCaptureFixture) -> None:
+    """The fallback exists only to shed the optional snapshot: a 4xx on a beat that carries none has
+    nothing to shed, so it is reported once and NOT re-sent (it would fail identically)."""
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(return_value=httpx.Response(422, json={"detail": []}))
+
+    client = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_retry_sleep)
+    try:
+        with caplog.at_level("WARNING", logger="phaze.tasks.heartbeat"):
+            await send_heartbeat(_ctx(client))
+    finally:
+        await client.close()
+
+    assert route.call_count == 1
+    assert any("heartbeat failed:" in r.message for r in caplog.records)
+    assert not any("re-sending the beat without it" in r.message for r in caplog.records)
+
+
+async def test_a_hanging_config_poll_does_not_prevent_the_heartbeat_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.20 finding 4: the poll runs inside ``send_heartbeat`` under the loop's per-beat
+    bound (``BEAT_TIMEOUT_SECONDS``), and the client allowed it 30 s x 3 attempts -- so a GET that
+    hangs had the beat cancelled BEFORE the heartbeat POST. The poll now has its own short bound.
+
+    Deterministic: the GET never returns at all (an Event nobody sets), so no ratio of timeouts
+    decides the outcome -- only whether the poll is bounded separately from the beat. The outer
+    ``wait_for`` is the loop's own production bound, unpatched.
+    """
+    monkeypatch.setattr(heartbeat, "CONFIG_POLL_TIMEOUT_SECONDS", 0.01, raising=False)
+    store = _store(tmp_path)
+    await store.reload("startup")
+
+    class _HangingPollClient(_StubClient):
+        async def get_config(self) -> AgentConfigResponse:
+            self.get_config_calls += 1
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    client = _HangingPollClient()
+    await asyncio.wait_for(send_heartbeat(_ctx(client, store=store)), timeout=heartbeat.BEAT_TIMEOUT_SECONDS)
+
+    assert client.get_config_calls == 1
+    assert len(client.heartbeat_calls) == 1, "a hanging config poll cost the heartbeat POST"
+    assert client.heartbeat_calls[0].effective_config is not None  # still reports the last good local state

@@ -90,6 +90,10 @@ logger = structlog.get_logger(__name__)
 # follow the push_connect_timeout_sec pattern in phaze.config instead.
 _PROGRESS_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 
+# The runtime-config poll's per-request timeout (phaze-mvq8z.20) -- same shape as the progress
+# POST's, for the same reason: best-effort, and fired on every heartbeat tick.
+_CONFIG_POLL_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+
 
 class AgentApiError(Exception):
     """Base for all PhazeAgentClient errors."""
@@ -693,17 +697,28 @@ class PhazeAgentClient:
         return None
 
     async def heartbeat(self, payload: HeartbeatRequest) -> None:
-        """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content)."""
+        """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content).
+
+        An absent ``effective_config`` is OMITTED from the body, never sent as ``null``: a control
+        plane older than that field forbids extra keys and 422s ``"effective_config": null`` exactly
+        as it would a populated one, so the core beat ``send_heartbeat`` falls back to must not
+        carry the key at all (phaze-mvq8z.20).
+        """
         await self._request(
             "POST",
             "/api/internal/agent/heartbeat",
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(mode="json", exclude={"effective_config"} if payload.effective_config is None else None),
         )
         return None
 
     async def get_config(self) -> AgentConfigResponse:
-        """GET /api/internal/agent/config -- the DB-override layer for reloadable keys (phaze-mvq8z.9)."""
+        """GET /api/internal/agent/config -- the DB-override layer for reloadable keys (phaze-mvq8z.9).
+
+        A single attempt against the short ``_CONFIG_POLL_TIMEOUT`` rather than the default 30s x 3
+        (phaze-mvq8z.20): the heartbeat polls this every tick inside the beat's own deadline, before
+        the POST that keeps the agent alive, and a missed poll is simply retried on the next tick.
+        """
         from phaze.schemas.agent_config import AgentConfigResponse  # noqa: PLC0415
 
-        response = await self._request("GET", "/api/internal/agent/config")
+        response = await self._request("GET", "/api/internal/agent/config", max_attempts=1, timeout=_CONFIG_POLL_TIMEOUT)
         return AgentConfigResponse.model_validate(response.json())
