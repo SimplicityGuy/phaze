@@ -304,6 +304,24 @@ async def test_a_beat_without_effective_config_omits_the_key_for_an_old_control_
     assert "effective_config" not in accepted[0]
 
 
+@respx.mock
+async def test_a_rejected_beat_without_effective_config_is_not_re_sent(caplog: pytest.LogCaptureFixture) -> None:
+    """The fallback exists only to shed the optional snapshot: a 4xx on a beat that carries none has
+    nothing to shed, so it is reported once and NOT re-sent (it would fail identically)."""
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(return_value=httpx.Response(422, json={"detail": []}))
+
+    client = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_retry_sleep)
+    try:
+        with caplog.at_level("WARNING", logger="phaze.tasks.heartbeat"):
+            await send_heartbeat(_ctx(client))
+    finally:
+        await client.close()
+
+    assert route.call_count == 1
+    assert any("heartbeat failed:" in r.message for r in caplog.records)
+    assert not any("re-sending the beat without it" in r.message for r in caplog.records)
+
+
 async def test_a_hanging_config_poll_does_not_prevent_the_heartbeat_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """phaze-mvq8z.20 finding 4: the poll runs inside ``send_heartbeat`` under the loop's per-beat
     bound (``BEAT_TIMEOUT_SECONDS``), and the client allowed it 30 s x 3 attempts -- so a GET that
