@@ -30,12 +30,16 @@ def test_all_tables_defined() -> None:
         # taking the file's retry budget with it -- which let one file start an unbounded number of
         # fresh cloud attempt chains.
         "cloud_budget",
+        # phaze-j0ixx (migration 071): the per-backend control-plane-unreachable breaker, keyed by the
+        # registry backend id -- tripped by reconcile, read by the drain, closed by the presign endpoint.
+        "backend_breaker",
         "route_control",  # Phase 71 (71-02, BEUI-02): force-local control row (migration 031)
         "dedup_resolution",  # Phase 77 (77-02, D-07): dedup marker sidecar (migration 032)
         "dedup_review_plan",  # Opaque reviewed decision required before a dedup resolution commit.
         "stage_skip",  # Phase 87 (87-01, D-13): force-skip marker sidecar (migration 037)
         # phaze-fq9h.3 (migration 049): persisted positive/negative 1001TL lookup cache, so the
         # rate-capped drain never re-spends a request on a set it has already asked about.
+        "tracklist_file_lookups",
         "tracklist_lookup_cache",
         # phaze-fq9h.8 (migration 052): persisted operator "answer this file first" priority flag,
         # so it survives past the single drain job it was originally passed into.
@@ -50,7 +54,7 @@ def test_all_tables_defined() -> None:
         # camelot_modal, harmonic_discipline, peak_sec, projection_version, 1:1 with files.
         "set_profile",
         "orphan_companion_diagnostics",
-        # phaze-mvq8z.6 (migration 069): the DB-override layer for hot-reloadable config -- one row
+        # phaze-mvq8z.6 (migration 072): the DB-override layer for hot-reloadable config -- one row
         # per RELOADABLE key currently overridden through the admin API/UI.
         "runtime_config_override",
     }

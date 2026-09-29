@@ -540,7 +540,14 @@ async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, sessio
 
     assert f"· {lane['id']}" in body
     assert f"RANK {lane['rank']}" in body
-    assert f"{lane['in_flight']}/{lane['cap']}" in body
+    # phaze-lwz8n: a LOCAL lane no longer renders its in_flight/cap pair (queued + running against a
+    # cap derived from the control host is not a capacity reading); it names running and waiting.
+    if lane["kind"] == "local":
+        assert f"{lane['in_flight']}/{lane['cap']}" not in body
+        assert "running ·" in body and "waiting" in body
+        assert "Running now" in body
+    else:
+        assert f"{lane['in_flight']}/{lane['cap']}" in body
     # Queue depths degrade to 0 (test client skips the lifespan -> no task_router) but still render.
     assert "Queue depth" in body
     assert "Recent completions" in body

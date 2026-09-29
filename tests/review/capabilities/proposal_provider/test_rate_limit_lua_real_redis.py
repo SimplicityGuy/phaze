@@ -26,12 +26,12 @@ here too, per CLAUDE.md's "verify with the artifact's real consumer" rule.
 
 REDIS VERSION
 --------------
-Run against the harness's ``redis:7-alpine`` (measured ``redis_version:7.4.11`` at test-authoring
-time via ``docker exec phaze-test-redis redis-cli INFO server``). Production runs ``redis:8-alpine``
-(``docker-compose.yml``, CLAUDE.md's "Known gap"). Every command this script uses --
-``INCR``/``DECR``/``TTL``/``EXPIRE``/``EVAL`` -- has unchanged reply semantics between Redis 7 and
-8 (Redis 8 only ADDS commands -- hash-field TTL, vector sets -- over the 7.x line; it does not
-change the semantics of these five); flagged here rather than silently assumed.
+Written against the harness's former ``redis:7-alpine`` (``redis_version:7.4.11``) while production
+ran ``redis:8-alpine``. Since phaze-8o294 the harness, CI and production all run the same
+``valkey/valkey:9-alpine`` (measured ``valkey_version:9.1.2`` via ``redis-cli INFO server``), so the
+skew this section used to flag is closed rather than argued: this script was run through redis-py on
+redis 7.4.11, redis 8.10.2 and Valkey 9.1.2 with identical replies and key state (bead
+``phaze-8o294``'s comments carry the differential).
 
 CONCURRENCY
 ------------
@@ -107,6 +107,28 @@ def scratch_key() -> str:
     return f"phaze:llm:rpm:test:{uuid.uuid4()}"
 
 
+async def _server_ms(redis: redis_async.Redis) -> int:
+    """Redis's own clock, in ms: the clock the key's expiry is kept on."""
+    seconds, micros = await redis.time()
+    return int(seconds) * 1000 + int(micros) // 1000
+
+
+async def _assert_armed_for(redis: redis_async.Redis, key: str, seconds: int, *, between: tuple[int, int]) -> None:
+    """``key``'s expiry was set to exactly ``seconds`` at some instant inside ``between`` (server ms).
+
+    Not ``TTL == seconds`` (phaze-0vlnp). ``TTL`` reports what is LEFT, rounded to the second, so it
+    read 59 against a 60 s window once 0.5 s of a loaded machine passed between the arming EVAL and
+    the read -- a real-Redis gate went red on exactly that. The absolute expiry (``PEXPIRETIME``) and
+    the bracketing ``TIME`` reads are all on the server's clock, so the check is exact however long
+    the round trips take, and a wrong window, a wrong unit or no expiry at all still fails it.
+    """
+    armed_after, armed_before = between
+    expires_at = await redis.pexpiretime(key)
+    assert armed_after + seconds * 1000 <= expires_at <= armed_before + seconds * 1000, (
+        f"expected an expiry {seconds}s after an arming inside [{armed_after}, {armed_before}] ms, got {expires_at}"
+    )
+
+
 class _RateLimited(Exception):
     """Sentinel the test's ``sleep`` stub raises instead of really backing off 2s.
 
@@ -123,11 +145,12 @@ async def _refuse_and_stop(_delay: float) -> None:
 
 async def test_first_call_on_a_fresh_key_arms_the_ttl(scratch_key: str, byte_mode_redis: redis_async.Redis) -> None:
     """Raw-eval the real script text on a fresh key: INCR to 1, TTL was -1, so it gets armed."""
+    before = await _server_ms(byte_mode_redis)
     count = int(await byte_mode_redis.eval(_RATE_LIMIT_LUA, 1, scratch_key, _RATE_LIMIT_WINDOW_SEC))
+    after = await _server_ms(byte_mode_redis)
 
     assert count == 1
-    ttl = await byte_mode_redis.ttl(scratch_key)
-    assert ttl == _RATE_LIMIT_WINDOW_SEC
+    await _assert_armed_for(byte_mode_redis, scratch_key, _RATE_LIMIT_WINDOW_SEC, between=(before, after))
 
 
 async def test_a_ttl_less_key_self_heals_on_the_next_eval(scratch_key: str, byte_mode_redis: redis_async.Redis) -> None:
@@ -139,10 +162,12 @@ async def test_a_ttl_less_key_self_heals_on_the_next_eval(scratch_key: str, byte
     await byte_mode_redis.set(scratch_key, 5)
     assert await byte_mode_redis.ttl(scratch_key) == -1
 
+    before = await _server_ms(byte_mode_redis)
     count = int(await byte_mode_redis.eval(_RATE_LIMIT_LUA, 1, scratch_key, _RATE_LIMIT_WINDOW_SEC))
+    after = await _server_ms(byte_mode_redis)
 
     assert count == 6
-    assert await byte_mode_redis.ttl(scratch_key) == _RATE_LIMIT_WINDOW_SEC
+    await _assert_armed_for(byte_mode_redis, scratch_key, _RATE_LIMIT_WINDOW_SEC, between=(before, after))
 
 
 async def test_an_already_armed_ttl_is_not_reset(scratch_key: str, byte_mode_redis: redis_async.Redis) -> None:
@@ -154,12 +179,13 @@ async def test_an_already_armed_ttl_is_not_reset(scratch_key: str, byte_mode_red
     """
     await byte_mode_redis.eval(_RATE_LIMIT_LUA, 1, scratch_key, _RATE_LIMIT_WINDOW_SEC)
     await byte_mode_redis.expire(scratch_key, 5)  # simulate time having passed within the window
-    assert await byte_mode_redis.ttl(scratch_key) == 5
+    armed_at = await byte_mode_redis.pexpiretime(scratch_key)
+    assert armed_at > 0
 
     await byte_mode_redis.eval(_RATE_LIMIT_LUA, 1, scratch_key, _RATE_LIMIT_WINDOW_SEC)
 
-    ttl = await byte_mode_redis.ttl(scratch_key)
-    assert ttl == 5, "an already-armed TTL must be left alone, not reset to the full window"
+    # The absolute expiry, not the remaining TTL (phaze-0vlnp): unchanged to the millisecond, however long the EVAL took.
+    assert await byte_mode_redis.pexpiretime(scratch_key) == armed_at, "an already-armed TTL must be left alone, not reset to the full window"
 
 
 async def test_over_limit_path_decrements_then_recovers_when_the_window_lapses(byte_mode_redis: redis_async.Redis) -> None:
@@ -182,11 +208,13 @@ async def test_over_limit_path_decrements_then_recovers_when_the_window_lapses(b
         sleeps.append(delay)
         await byte_mode_redis.delete(_PROD_RATE_LIMIT_KEY)
 
+    before = await _server_ms(byte_mode_redis)
     await check_rate_limit(byte_mode_redis, max_rpm, sleep=_lapse_window)
+    after = await _server_ms(byte_mode_redis)
 
     assert sleeps == [2.0]
     assert int(await byte_mode_redis.get(_PROD_RATE_LIMIT_KEY)) == 1
-    assert await byte_mode_redis.ttl(_PROD_RATE_LIMIT_KEY) == _RATE_LIMIT_WINDOW_SEC
+    await _assert_armed_for(byte_mode_redis, _PROD_RATE_LIMIT_KEY, _RATE_LIMIT_WINDOW_SEC, between=(before, after))
 
 
 async def test_n_concurrent_callers_against_limit_k_let_exactly_k_through(byte_mode_redis: redis_async.Redis) -> None:
@@ -224,8 +252,10 @@ async def test_concurrent_raw_evals_never_lose_or_duplicate_an_increment(scratch
     async def _one_eval() -> int:
         return int(await byte_mode_redis.eval(_RATE_LIMIT_LUA, 1, scratch_key, _RATE_LIMIT_WINDOW_SEC))
 
+    before = await _server_ms(byte_mode_redis)
     counts = await asyncio.gather(*(_one_eval() for _ in range(n)))
+    after = await _server_ms(byte_mode_redis)
 
     assert sorted(counts) == list(range(1, n + 1))
     assert int(await byte_mode_redis.get(scratch_key)) == n
-    assert await byte_mode_redis.ttl(scratch_key) == _RATE_LIMIT_WINDOW_SEC
+    await _assert_armed_for(byte_mode_redis, scratch_key, _RATE_LIMIT_WINDOW_SEC, between=(before, after))

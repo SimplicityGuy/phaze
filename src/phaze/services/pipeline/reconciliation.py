@@ -163,3 +163,62 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
     except Exception:
         logger.warning("agent_reconciliations_degraded", exc_info=True)
         return {}
+
+
+# Watcher-ingested reconciliation (phaze-3sgw0) -- the sidebar Discover count is
+# COUNT(all FileRecord), and the completed-batch counters above only ever describe the
+# batch a directory WALK produced. Files the agent filewatcher ingests after that walk are
+# stamped onto the agent's LIVE sentinel batch (routers/agent_files.py D-18), whose own
+# total_files/processed_files counters stay pinned at 0 forever -- nothing in the reconcile-
+# deduped arithmetic above accounts for them, so a watcher-fed archive shows a Discover count
+# strictly larger than every visible scan total with no explanation. These two helpers close
+# that gap by counting the LIVE batch's rows directly ON READ (never a stored counter), so a
+# watcher upsert that reassigns an already-scanned file's `batch_id` onto the LIVE batch
+# (the same upsert path) is reflected exactly on the very next read -- no write-path change,
+# no counter to keep in sync, no counter to go stale.
+
+
+async def get_agent_watcher_counts(session: AsyncSession) -> dict[str, int]:
+    """Exact per-agent "added via watcher" count: COUNT(FileRecord) whose ``batch_id`` is
+    that agent's LIVE sentinel batch, joined and grouped in one query.
+
+    An agent with no LIVE batch, or whose LIVE batch owns zero files, is simply ABSENT from
+    the returned map -- the inner join drops it, mirroring :func:`get_agent_reconciliations`'s
+    "an empty map means no annotations" contract (the template hides the hint for any agent
+    not present here). Degrades to ``{}`` on any error, the same never-500 discipline as every
+    other reconciliation read, and runs inside its own SAVEPOINT (CR-01) so a failure never
+    expires ORM rows a caller already loaded on this shared session.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (
+                await session.execute(
+                    select(ScanBatch.agent_id, func.count(FileRecord.id))
+                    .select_from(ScanBatch)
+                    .join(FileRecord, FileRecord.batch_id == ScanBatch.id)
+                    .where(ScanBatch.status == ScanStatus.LIVE.value)
+                    .group_by(ScanBatch.agent_id)
+                )
+            ).all()
+        return {agent_id: int(count) for agent_id, count in rows}
+    except Exception:
+        logger.warning("agent_watcher_counts_degraded", exc_info=True)
+        return {}
+
+
+async def get_global_watcher_count(session: AsyncSession) -> int:
+    """Exact global "added via watcher" count: COUNT(FileRecord) across EVERY agent's LIVE
+    sentinel batch, computed fresh on every read.
+
+    Unlike :func:`get_scanned_total`'s ``None`` "hide the line" sentinel, 0 is a genuine,
+    common reading here (no watcher activity yet) rather than "unavailable" -- so this
+    degrades to a plain 0 via :func:`_safe_count`, the same degrade primitive
+    :func:`get_global_reconciliation` uses for ``discovery_done``.
+    """
+    stmt = (
+        select(func.count(FileRecord.id))
+        .select_from(FileRecord)
+        .join(ScanBatch, FileRecord.batch_id == ScanBatch.id)
+        .where(ScanBatch.status == ScanStatus.LIVE.value)
+    )
+    return await _safe_count(session, stmt, node="reconcile_watcher_added")

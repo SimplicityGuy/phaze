@@ -725,3 +725,46 @@ async def test_an_unreadable_pod_list_degrades_to_the_ordinary_budget(session: A
     assert cj.attempts == 1  # the terminal still happened -- the row is NOT left wedged in-flight
     assert cj.node_loss_redrives == 0
     assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_pod_that_never_started_records_the_wedge_reason(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1xngw: a pod stuck in ImagePullBackOff has no exit code, so the wedge verdict is the recorded reason."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", waiting_reason="ImagePullBackOff")),
+    )
+
+    await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.last_exit_code is None
+    assert cj.last_failure_reason is not None
+    assert cj.last_failure_reason.startswith("dead_before_start")
+    assert "ImagePullBackOff" in cj.last_failure_reason
+    assert cj.last_failed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_pod_that_did_terminate_records_its_exit_code(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1xngw: a node-lost pod whose container DID terminate keeps that container's exit status, not the verdict text."""
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=2)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    pod = fake_pod("Failed", status_reason="NodeShutdown")
+    pod.status["containerStatuses"] = [{"name": "analyze", "state": {"terminated": {"exitCode": 137, "reason": "Error"}}}]
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(pod),
+    )
+
+    await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.node_loss_redrives == 1
+    assert (cj.last_exit_code, cj.last_failure_reason) == (137, "Error")

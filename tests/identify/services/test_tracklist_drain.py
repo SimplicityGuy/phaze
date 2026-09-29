@@ -32,9 +32,20 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from phaze.enums.tracklist_candidate import TRANSIENT_OUTCOMES, CacheDecision, DuplicateConfidence, LookupOutcome
+from phaze.enums.stage import Stage
+from phaze.enums.tracklist_candidate import (
+    TRANSIENT_OUTCOMES,
+    CacheDecision,
+    DuplicateConfidence,
+    LookupOutcome,
+    TracklistFileOutcome,
+    tracklist_file_outcome,
+)
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup, TracklistLookupCache
+from phaze.services.stage_status import stage_status_case
 from phaze.services.tracklist_candidate_queue import QueuedCandidate
 from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
 from phaze.services.tracklist_drain import (
@@ -47,9 +58,21 @@ from phaze.services.tracklist_drain import (
     perform_lookup,
     persist_lookup,
 )
-from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup, record_outcome
+from phaze.services.tracklist_lookup_cache import (
+    LOW_CONFIDENCE_NEAR_MISS_FLOOR,
+    LOW_CONFIDENCE_TTL_DAYS,
+    NEGATIVE_TTL_DAYS,
+    CacheVerdict,
+    FileOutcome,
+    file_outcome,
+    lookup,
+    low_confidence_ttl_days,
+    record_file_outcomes,
+    record_outcome,
+)
 from phaze.services.tracklist_query import derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
+from phaze.services.tracklist_result_scorer import SELECTION_THRESHOLD
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistScraper, TracklistSearchResult
 
 
@@ -250,14 +273,22 @@ class TestPerformLookupHonesty:
     set from the queue for the negative TTL because of a flaky browser.
     """
 
-    async def test_a_genuinely_absent_set_is_a_definitive_negative(self) -> None:
-        """The `no-such-set` capture returns 30 rows anyway -- there is no empty-page signal."""
+    async def test_a_genuinely_absent_set_is_low_confidence_held_for_the_full_ttl(self) -> None:
+        """The `no-such-set` capture returns 30 rows anyway -- there is no empty-page signal.
+
+        phaze-no6sv: rows that all score low are LOW_CONFIDENCE, never the definitive NOT_FOUND --
+        but a best score this far off (under LOW_CONFIDENCE_NEAR_MISS_FLOOR) is the "probably
+        genuinely absent" tier, so its score is recorded and the hold is the full negative TTL.
+        """
         search = FakeSearch("no-such-set")
         renderer = FakeRenderer()
         attempt = await perform_lookup(candidate_for(NO_MATCH_FILENAME), search=search, renderer=renderer)
 
-        assert attempt.outcome is LookupOutcome.NOT_FOUND
-        assert attempt.outcome.is_definitive_negative
+        assert attempt.outcome is LookupOutcome.LOW_CONFIDENCE
+        assert not attempt.outcome.is_definitive_negative
+        assert attempt.result_confidence is not None
+        assert attempt.result_confidence < LOW_CONFIDENCE_NEAR_MISS_FLOOR
+        assert low_confidence_ttl_days(attempt.result_confidence) == NEGATIVE_TTL_DAYS
         assert renderer.urls == [], "nothing may be rendered when no candidate clears the bar"
 
     async def test_an_ambiguous_search_is_transient_not_a_negative(self) -> None:
@@ -358,9 +389,10 @@ class TestPerformLookupHonesty:
             LookupOutcome.RENDER_FAILED,
             LookupOutcome.BLOCKED,
             LookupOutcome.PARSE_FAILED,
+            LookupOutcome.LOW_CONFIDENCE,
         }
         assert producible == set(LookupOutcome)
-        assert producible - {LookupOutcome.FOUND, LookupOutcome.NOT_FOUND} == TRANSIENT_OUTCOMES
+        assert producible - {LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.LOW_CONFIDENCE} == TRANSIENT_OUTCOMES
 
 
 # Priority
@@ -473,10 +505,66 @@ class TestPersistence:
         assert verdict.decision is CacheDecision.BACKOFF, "a block earns a backoff, never the negative TTL"
         assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
 
-    async def test_a_definitive_negative_is_cached_and_suppresses_the_next_pass(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    async def test_a_far_off_low_confidence_search_is_held_for_the_negative_ttl_not_suppressed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=NO_MATCH_FILENAME)
         candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
         attempt = await perform_lookup(candidate, search=FakeSearch("no-such-set"), renderer=FakeRenderer())
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.decision is CacheDecision.LOW_CONFIDENCE_HOLD
+        assert verdict.entry is not None
+        assert verdict.entry.result_confidence == attempt.result_confidence
+        assert verdict.entry.expires_at == NOW + timedelta(days=NEGATIVE_TTL_DAYS)
+
+    async def test_a_near_miss_low_confidence_search_is_held_for_the_short_ttl(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A single wrong-year row scoring 64: a near miss, so re-asked after 30 days, not 180."""
+        row = TracklistSearchResult(
+            external_id="wy01",
+            title="Sven Väth @ Time Warp, Germany",
+            url="https://www.1001tracklists.com/tracklist/wy01/x.html",
+            artist="Sven Väth",
+            event="Time Warp, Germany",
+            date="2019-04-06",
+        )
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+        attempt = await perform_lookup(candidate, search=FakeSearch(rows=[row]), renderer=FakeRenderer())
+        assert attempt.outcome is LookupOutcome.LOW_CONFIDENCE
+        assert attempt.result_confidence is not None
+        assert LOW_CONFIDENCE_NEAR_MISS_FLOOR <= attempt.result_confidence < SELECTION_THRESHOLD
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.decision is CacheDecision.LOW_CONFIDENCE_HOLD
+        assert verdict.entry is not None
+        assert verdict.entry.expires_at == NOW + timedelta(days=LOW_CONFIDENCE_TTL_DAYS)
+        assert LOW_CONFIDENCE_TTL_DAYS < NEGATIVE_TTL_DAYS
+
+    async def test_a_low_confidence_search_clears_the_operator_flag(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """The search the operator asked for ran cleanly; a lingering flag would claim it is still queued."""
+        from phaze.services.tracklist_priority import flag_file_for_lookup, load_flagged_file_ids
+
+        file = await make_file(original_filename=NO_MATCH_FILENAME)
+        await flag_file_for_lookup(session, file.id, now=NOW)
+        candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
+        attempt = await perform_lookup(candidate, search=FakeSearch("no-such-set"), renderer=FakeRenderer())
+        assert attempt.outcome is LookupOutcome.LOW_CONFIDENCE
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        assert file.id not in await load_flagged_file_ids(session)
+
+    async def test_a_definitive_negative_is_cached_and_suppresses_the_next_pass(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        file = await make_file(original_filename=NO_MATCH_FILENAME)
+        candidate = candidate_for(NO_MATCH_FILENAME, files=[(file.id, file.sha256_hash)])
+        attempt = await perform_lookup(candidate, search=FakeSearch(rows=[]), renderer=FakeRenderer())
+        assert attempt.outcome is LookupOutcome.NOT_FOUND
 
         await persist_lookup(session, candidate, attempt, now=NOW)
         await session.flush()
@@ -876,9 +964,233 @@ class TestTally:
         from phaze.services.tracklist_drain import PersistResult, _tally
 
         report = DrainReport()
-        for outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND, LookupOutcome.BLOCKED, LookupOutcome.PARSE_FAILED):
+        for outcome in (
+            LookupOutcome.FOUND,
+            LookupOutcome.NOT_FOUND,
+            LookupOutcome.BLOCKED,
+            LookupOutcome.PARSE_FAILED,
+            LookupOutcome.LOW_CONFIDENCE,
+        ):
             _tally(report, LookupAttempt(set_key="k", query_text="q", outcome=outcome, host_requests=2), PersistResult())
 
-        assert (report.found, report.not_found, report.transient) == (1, 1, 2)
-        assert report.attempted == report.found + report.not_found + report.transient
-        assert report.host_requests == 8
+        assert (report.found, report.not_found, report.transient, report.low_confidence) == (1, 1, 2, 1)
+        assert report.attempted == report.found + report.not_found + report.transient + report.low_confidence
+        assert report.host_requests == 10
+        assert report.as_dict()["low_confidence"] == 1
+
+
+# phaze-o71bf: the per-file lookup record (tracklist_file_lookups)
+
+
+AMBIGUOUS_FILENAME = "Sven_Vath-Live_At_Time_Warp-WEB-FLAC-GRVMSTR.mp3"
+"""No resolvable date: against the `sven-vath-time-warp` capture the margin gate refuses to pick -- a transient."""
+
+PENDING_FILENAME = "Artist9 - Live @ Event 2024-04-19.mp3"
+TRACK_FILENAME = "03 - Some Artist - Some Title.mp3"
+
+
+async def _file_record(session: AsyncSession, file_id: uuid.UUID) -> TracklistFileLookup | None:
+    return (await session.execute(select(TracklistFileLookup).where(TracklistFileLookup.file_id == file_id))).scalar_one_or_none()
+
+
+async def _tracklist_status(session: AsyncSession, file_id: uuid.UUID) -> str:
+    """The SQL-derived TRACKLIST bucket -- what the Files column and the agent table read."""
+    return str((await session.execute(select(stage_status_case(Stage.TRACKLIST)).where(FileRecord.id == file_id))).scalar_one())
+
+
+class TestPerFileLookupRecord:
+    """After a drain slice, every file it looked up carries a record with the right outcome.
+
+    Each lookup runs as its own ``target_file_ids`` slice so the fakes can give each set a different
+    answer; the queue build and the persist are the real ones, against real Postgres.
+    """
+
+    async def test_a_slice_records_matched_not_found_retry_pending_and_low_confidence(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        seed = TestDrainPass._seed
+        matched = await seed(make_file, session, ANCHOR_FILENAME, duration=3600.0)
+        # Same derived query, a duration far outside the grouping tolerance: a SEPARATE set whose
+        # search still selects the anchor row, so the renderer alone decides NOT_FOUND.
+        not_found = await seed(make_file, session, "Sven_Vath-Live_At_Time_Warp_Mannheim-2024-10-25-WEB-MP3-OTHERCRW.mp3", duration=14400.0)
+        retry = await seed(make_file, session, AMBIGUOUS_FILENAME)
+        low = await seed(make_file, session, NO_MATCH_FILENAME)
+        factory = session_factory_for(session)
+
+        queue = await build_drain_queue(session)
+        sets = {m.file_id: entry.set_key for entry in queue.entries for m in entry.unique_set.members}
+        assert len({sets[f.id] for f in (matched, not_found, retry, low)}) == 4, "each file must be its own set for this test to mean anything"
+
+        search, renderer = anchor_lookup()
+        await drain_once(factory, search=search, renderer=renderer, limit=1, target_file_ids=[matched.id])
+        await drain_once(
+            factory,
+            search=FakeSearch("time-warp-2024"),
+            renderer=FakeRenderer(outcome=RenderOutcome.NO_TRACKLIST),
+            limit=1,
+            target_file_ids=[not_found.id],
+        )
+        await drain_once(
+            factory, search=FakeSearch(rows=load_search("sven-vath-time-warp")), renderer=FakeRenderer(), limit=1, target_file_ids=[retry.id]
+        )
+        await drain_once(factory, search=FakeSearch("no-such-set"), renderer=FakeRenderer(), limit=1, target_file_ids=[low.id])
+
+        expected = {
+            matched.id: (TracklistFileOutcome.MATCHED, "done"),
+            not_found.id: (TracklistFileOutcome.NOT_FOUND, "skipped"),
+            retry.id: (TracklistFileOutcome.RETRY_PENDING, "failed"),
+            low.id: (TracklistFileOutcome.LOW_CONFIDENCE, "skipped"),
+        }
+        for file_id, (outcome, status) in expected.items():
+            record = await _file_record(session, file_id)
+            assert record is not None, f"no record for the {outcome.value} file"
+            assert record.outcome == outcome.value
+            assert record.set_key == sets[file_id]
+            assert record.last_attempt_at is not None, "a looked-up file records when it was asked"
+            assert await _tracklist_status(session, file_id) == status
+
+        assert (await _file_record(session, matched.id)).next_eligible_at is None, "a match is never re-asked"  # type: ignore[union-attr]
+        for file_id in (not_found.id, retry.id, low.id):
+            record = await _file_record(session, file_id)
+            assert record is not None
+            cache = await lookup(session, sets[file_id])
+            assert cache.entry is not None
+            assert record.next_eligible_at == cache.entry.expires_at, "the retry date is the cache row's own expiry"
+
+    async def test_the_queue_build_records_queued_and_not_eligible_and_keeps_answers(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """limit=0 spends nothing, but the queue build still writes where every file it saw stands."""
+        seed = TestDrainPass._seed
+        answered = await seed(make_file, session, NO_MATCH_FILENAME)
+        pending = await seed(make_file, session, PENDING_FILENAME)
+        track = await seed(make_file, session, TRACK_FILENAME, duration=240.0)
+        factory = session_factory_for(session)
+        await drain_once(factory, search=FakeSearch("no-such-set"), renderer=FakeRenderer(), limit=1, target_file_ids=[answered.id])
+
+        search = FakeSearch("no-such-set")
+        report = await drain_once(factory, search=search, renderer=FakeRenderer(), limit=0)
+
+        assert report.attempted == 0
+        assert search.queries == []
+        assert (await _file_record(session, pending.id)).outcome == TracklistFileOutcome.QUEUED.value  # type: ignore[union-attr]
+        assert await _tracklist_status(session, pending.id) == "in_flight"
+        assert (await _file_record(session, track.id)).outcome == TracklistFileOutcome.NOT_ELIGIBLE.value  # type: ignore[union-attr]
+        assert await _tracklist_status(session, track.id) == "skipped"
+        assert (await _file_record(session, answered.id)).outcome == TracklistFileOutcome.LOW_CONFIDENCE.value, (
+            "the cache's answer survives a rebuild"
+        )  # type: ignore[union-attr]
+
+    async def test_every_member_of_a_found_set_is_recorded_including_a_withheld_duplicate(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A duplicate below the propagation gate gets no tracklist row, so it reads skipped, not done."""
+        first, second = await TestPropagation._two_files(make_file, identical_bytes=False)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(first.id, first.sha256_hash), (second.id, second.sha256_hash)])
+        canonical_id = candidate.unique_set.canonical_file_id
+        withheld_id = next(m.file_id for m in candidate.unique_set.members if m.file_id != canonical_id)
+        search, renderer = anchor_lookup()
+        attempt = await perform_lookup(candidate, search=search, renderer=renderer)
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        for file_id in (canonical_id, withheld_id):
+            record = await _file_record(session, file_id)
+            assert record is not None
+            assert record.outcome == TracklistFileOutcome.MATCHED.value
+            assert record.last_attempt_at == NOW
+        assert await _tracklist_status(session, canonical_id) == "done"
+        assert await _tracklist_status(session, withheld_id) == "skipped"
+
+    async def test_a_set_answered_mid_pass_rewrites_its_queued_record(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """The pre-spend re-check skips the request AND corrects the ``queued`` the queue build wrote."""
+        file = await TestDrainPass._seed(make_file, session, PENDING_FILENAME)
+        queue = await build_drain_queue(session, now=NOW)
+        (entry,) = queue.entries
+
+        factory = session_factory_for(session)
+
+        @contextlib.asynccontextmanager
+        async def answering_factory() -> AsyncIterator[AsyncSession]:
+            # The first session is the queue build; answer the set right after it, before the re-check.
+            async with factory() as inner:
+                yield inner
+            if (await _file_record(session, file.id)) is not None and not (await lookup(session, entry.set_key, now=NOW)).entry:
+                await record_outcome(session, set_key=entry.set_key, query_text=entry.derived.query, outcome=LookupOutcome.NOT_FOUND, now=NOW)
+                await session.flush()
+
+        search = FakeSearch()
+        report = await drain_once(answering_factory, search=search, renderer=FakeRenderer(), limit=5, now=NOW)
+
+        assert report.skipped_cached == 1
+        assert search.queries == []
+        record = await _file_record(session, file.id)
+        assert record is not None
+        assert record.outcome == TracklistFileOutcome.NOT_FOUND.value
+        assert record.next_eligible_at is not None
+
+
+class TestFileOutcomeMapping:
+    """``tracklist_file_outcome`` / ``file_outcome``: the one verdict -> per-file mapping both write paths share."""
+
+    @pytest.mark.parametrize(
+        ("decision", "expected", "retry_dated"),
+        [
+            (CacheDecision.MISS, TracklistFileOutcome.QUEUED, False),
+            (CacheDecision.NEGATIVE_EXPIRED, TracklistFileOutcome.QUEUED, False),
+            (CacheDecision.TRANSIENT_RETRY_READY, TracklistFileOutcome.QUEUED, False),
+            (CacheDecision.LOW_CONFIDENCE_EXPIRED, TracklistFileOutcome.QUEUED, False),
+            (CacheDecision.HIT_POSITIVE, TracklistFileOutcome.MATCHED, False),
+            (CacheDecision.SUPPRESSED_NEGATIVE, TracklistFileOutcome.NOT_FOUND, True),
+            (CacheDecision.LOW_CONFIDENCE_HOLD, TracklistFileOutcome.LOW_CONFIDENCE, True),
+            (CacheDecision.BACKOFF, TracklistFileOutcome.RETRY_PENDING, True),
+            (CacheDecision.TRANSIENT_EXHAUSTED, TracklistFileOutcome.RETRY_PENDING, False),
+        ],
+    )
+    def test_every_cache_decision_maps_to_one_file_outcome(self, decision: CacheDecision, expected: TracklistFileOutcome, retry_dated: bool) -> None:
+        expires = NOW + timedelta(days=3)
+        entry = TracklistLookupCache(set_key="k", query_text="q", outcome="x", attempts=1, last_attempted_at=NOW, expires_at=expires)
+        got = file_outcome(uuid.uuid4(), CacheVerdict(set_key="k", decision=decision, entry=entry))
+
+        assert tracklist_file_outcome(decision) is expected
+        assert got.outcome is expected
+        assert got.set_key == "k"
+        assert got.last_attempt_at == NOW
+        assert got.next_eligible_at == (expires if retry_dated else None), "only a clock-held answer carries a retry date"
+
+    def test_a_never_asked_set_has_no_attempt(self) -> None:
+        got = file_outcome(uuid.uuid4(), CacheVerdict(set_key="k", decision=CacheDecision.MISS))
+        assert (got.outcome, got.last_attempt_at, got.next_eligible_at) == (TracklistFileOutcome.QUEUED, None, None)
+
+
+class TestRecordFileOutcomes:
+    async def test_an_unchanged_record_is_not_rewritten(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """The queue build re-sends every file each slice; only a changed row may cost a write."""
+        file = await make_file()
+        row = FileOutcome(file_id=file.id, outcome=TracklistFileOutcome.NOT_ELIGIBLE)
+
+        assert await record_file_outcomes(session, [row, row], now=NOW) == 1, "duplicates collapse; the insert is the one write"
+        assert await record_file_outcomes(session, [row], now=NOW) == 0
+        assert await record_file_outcomes(session, [replace(row, outcome=TracklistFileOutcome.QUEUED)], now=NOW) == 1
+        assert await record_file_outcomes(session, [], now=NOW) == 0
+
+
+class TestQueueFileOutcomesUnderATarget:
+    async def test_an_exact_set_request_records_only_the_target_file(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A ``target_file_ids`` slice describes the target alone, never its set's other members.
+
+        The other member is a byte-identical duplicate, so it shares the target's set in both the work
+        list and, once answered, the cache -- the two places ``file_outcomes`` must narrow.
+        """
+        shared = new_sha()
+        target = await make_file(original_filename=PENDING_FILENAME, sha256=shared)
+        other = await make_file(original_filename=PENDING_FILENAME, sha256=shared)
+        for file in (target, other):
+            session.add(FileMetadata(file_id=file.id, duration=3600.0))
+        await session.flush()
+
+        queued = await build_drain_queue(session, target_file_ids=[target.id], now=NOW)
+        (entry,) = queued.entries
+        assert {m.file_id for m in entry.unique_set.members} == {target.id, other.id}
+        assert [(o.file_id, o.outcome) for o in queued.file_outcomes()] == [(target.id, TracklistFileOutcome.QUEUED)]
+
+        await record_outcome(session, set_key=entry.set_key, query_text=entry.derived.query, outcome=LookupOutcome.NOT_FOUND, now=NOW)
+        await session.flush()
+        answered = await build_drain_queue(session, target_file_ids=[target.id], now=NOW)
+        assert answered.entries == ()
+        assert [(o.file_id, o.outcome) for o in answered.file_outcomes()] == [(target.id, TracklistFileOutcome.NOT_FOUND)]

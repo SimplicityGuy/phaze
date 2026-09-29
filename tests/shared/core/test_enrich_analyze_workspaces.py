@@ -609,10 +609,15 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "RANK 10 · cap 4" in body
     assert "RANK 20 · cap 3" in body
     assert "RANK 99 · cap 8" in body
-    # Scheduler capacity is explicit and comparable in every row: in-flight / configured cap.
+    # Scheduler capacity stays explicit on every CLOUD row: in-flight / configured cap.
     assert "2/4" in body
     assert "1/3" in body
-    assert "5/8" in body
+    # phaze-lwz8n: the LOCAL lane's in-flight is queued + running and its cap comes from the control host,
+    # so it renders no in-flight/cap pair at all -- it names waiting, running and claimed instead.
+    assert "5/8" not in body
+    local_card = body[body.index("LOCAL · nox") :]
+    assert re.search(r">Waiting</dt><dd[^>]*>3</dd>", local_card)
+    assert re.search(r">Running</dt><dd[^>]*>5</dd>", local_card)
     # queued/working/processed render per lane, 24h primary + lifetime caption (acceptance rule 1).
     assert "processed 12 (24h) / 340 all time" in body  # a1
     assert "processed 5 (24h) / 42 all time" in body  # k8s
@@ -690,14 +695,15 @@ async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: A
     diagnostics = body.index('id="analysis-diagnostics"')
     files = body.index('id="analyze-files-view"')
     assert metrics < health < lanes < diagnostics < files
-    for label in ("Queued", "Active", "Awaiting route", "Completed"):
+    for label in ("Waiting", "Running", "Awaiting route", "Completed"):
         assert label in body[metrics:health]
     assert 'id="analyze-active-total-card"' in body[metrics:health]
     assert 'x-text="$store.pipeline.analyzeActive"' not in body[metrics:health]
     assert "execution activity unavailable" in body[metrics:health]
     assert "executing now" not in body[metrics:health]
     assert 'x-text="$store.pipeline.analyzeDone"' in body[metrics:health]
-    assert "Queued" in body and "lane capacity" in body and "Completed" in body
+    assert "Waiting" in body and "Running" in body and "Completed" in body
+    assert "lane capacity" not in body.lower(), "phaze-lwz8n: the local lane has no capacity reading to compare against"
     assert "Technical diagnostics" in body
     assert 'hx-get="/pipeline/analyze-files"' in body
     assert 'hx-post="/pipeline/stages/analyze/pause"' in body
@@ -787,18 +793,136 @@ async def test_poll_repushes_lane_attributed_active_metric(
     assert re.search(r">\s*—\s*</dd>", card), "an empty/degraded snapshot is unknown, not zero"
 
 
+def _health_card(body: str) -> str:
+    start = body.index('id="analysis-health-card"')
+    return body[start : body.index("</section>", start)]
+
+
 @pytest.mark.asyncio
-async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
+async def test_local_lane_large_queue_renders_no_red(
     client: AsyncClient,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real scheduler in-flight over-capacity is red even when active execution remains below cap."""
+    """phaze-lwz8n acceptance 1 -- the operator's exact scenario is a queue, not an alarm.
+
+    679 queued and 16 claimed-but-only-1-running on a local lane with cap 1 (the ledger in_flight read
+    695). Before this bead that rendered "UNSAFE · LOCAL EXCEEDS CAPACITY", an OVER LIMIT badge and
+    "695/1". None of that is a problem: nothing is stuck, the agent is working one file at a time.
+    """
     import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lane = {
         "id": "local",
         "kind": "local",
+        "rank": 99,
+        "cap": 1,
+        "in_flight": 695,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 679 + 15,
+        "working": 1,
+        "active": 1,
+        "processed_24h": 8,
+        "processed_lifetime": 80,
+        "claimed_unrun": 15,
+        "stranded": 0,
+        "claimed_overdue": 0,
+        "heartbeat_lost": 0,
+        "stuck": 0,
+    }
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        return [lane]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    health = _health_card(body)
+    for alarm in ("UNSAFE", "OVER LIMIT", "AT CAPACITY", "CONGESTED", "STUCK", "exceeds scheduler cap", "exceeds capacity"):
+        assert alarm not in body, alarm
+    assert "bg-red-50" not in health and 'role="alert"' not in health
+    assert "HEALTHY" in health
+    assert "695/1" not in body
+    lanes_start = body.index('id="analyze-lanes"')
+    lane_grid = body[lanes_start : body.index('id="detail-pane', lanes_start)]
+    assert "bg-red-50" not in lane_grid and 'role="alert"' not in lane_grid
+    assert re.search(r">Waiting</dt><dd[^>]*>694</dd>", body)
+    assert re.search(r">Running</dt><dd[^>]*>1</dd>", body)
+    assert re.search(r">Claimed</dt><dd[^>]*>15</dd>", body)
+
+    # The poll carries the same verdict: the OOB health card and lane grid stay calm on every tick.
+    poll = (await client.get("/pipeline/stats")).text
+    for alarm in ("UNSAFE", "OVER LIMIT", "exceeds scheduler cap"):
+        assert alarm not in poll, alarm
+
+
+@pytest.mark.asyncio
+async def test_local_lane_stuck_jobs_render_red(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-lwz8n acceptance 3 -- a stranded job, or a claim left unstarted past the threshold, is red."""
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
+
+    base = {
+        "id": "local",
+        "kind": "local",
+        "rank": 99,
+        "cap": 1,
+        "in_flight": 20,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 20,
+        "working": 0,
+        "active": 0,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
+        "claimed_unrun": 4,
+        "heartbeat_lost": 0,
+    }
+    state: dict[str, dict[str, object]] = {"lane": {**base, "stranded": 0, "claimed_overdue": 4, "stuck": 4}}
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        return [state["lane"]]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session)
+
+    for lane, detail in (
+        ({**base, "stranded": 0, "claimed_overdue": 4, "stuck": 4}, "4 claimed but not started past the stall bound"),
+        ({**base, "stranded": 2, "claimed_overdue": 0, "stuck": 2}, "2 stranded"),
+    ):
+        state["lane"] = lane
+        body = (await client.get("/s/analyze", headers={"HX-Request": "true"})).text
+        health = _health_card(body)
+        assert 'role="alert"' in health and "bg-red-50" in health
+        assert "STUCK" in health and detail in health
+        assert "LOCAL · local has" in health
+        card = body[body.index("LOCAL · local") :]
+        assert "STUCK" in card and "are stuck" in card
+        # Still no capacity verdict for the local lane.
+        assert "UNSAFE" not in body and "OVER LIMIT" not in body
+
+
+@pytest.mark.asyncio
+async def test_cloud_lane_over_limit_is_still_unsafe(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLOUD lane's in-flight is its admission-controlled cloud_job window: over cap is still red."""
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
+
+    lane = {
+        "id": "k8s",
+        "kind": "kueue",
         "rank": 10,
         "cap": 2,
         "in_flight": 3,
@@ -821,7 +945,7 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
-    health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
+    health = _health_card(body)
     assert "UNSAFE" in health
     assert "3 in-flight jobs exceed scheduler cap 2" in health
     assert "Stop new admission and inspect the lane" in health
@@ -832,17 +956,17 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
 
 
 @pytest.mark.asyncio
-async def test_analyze_exact_capacity_is_amber_congestion(
+async def test_cloud_lane_exact_capacity_is_amber_congestion(
     client: AsyncClient,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exactly full capacity queues new work but is not the unsafe red over-limit condition."""
+    """Exactly full CLOUD capacity queues new work but is not the unsafe red over-limit condition."""
     import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lane = {
-        "id": "local",
-        "kind": "local",
+        "id": "k8s",
+        "kind": "kueue",
         "rank": 10,
         "cap": 2,
         "in_flight": 2,
@@ -865,7 +989,7 @@ async def test_analyze_exact_capacity_is_amber_congestion(
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
-    health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
+    health = _health_card(body)
     assert "CONGESTED" in health and "2 in-flight jobs fill scheduler cap 2" in health
     assert "AT CAPACITY" in body
     assert "New work remains queued until a slot opens" in body
@@ -911,7 +1035,11 @@ async def test_lane_grid_subcount_makes_no_across_lanes_claim(client: AsyncClien
     assert "flight across" not in body
     assert "3 lanes" not in body
     assert "2 lanes" not in body
-    assert "files in the analyze stage" in body
+    # phaze-lwz8n: the header is running + waiting, labelled as such -- not the ledger in-flight count.
+    assert "files in the analyze stage" not in body
+    assert "$store.pipeline.analyzeRunning" in body and "running ·" in body
+    assert "$store.pipeline.analyzeWaiting" in body and "waiting" in body
+    assert "$store.pipeline.analyzeActive" not in body
     # The compute lane renders configured + available off the snapshot; "not configured" is retired.
     assert "COMPUTE · a1" in body
     assert "not configured" not in body

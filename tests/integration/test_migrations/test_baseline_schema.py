@@ -78,6 +78,9 @@ _EXPECTED_TABLES = frozenset(
         "agents",
         "analysis",
         "analysis_window",
+        # phaze-j0ixx (migration 071): the per-backend control-plane-unreachable breaker. Its own table
+        # because it is keyed by backend id, which lives in config, not in any existing table.
+        "backend_breaker",
         # phaze-2mwyo (migration 055): the DURABLE per-file cloud budget. Deliberately its OWN table
         # rather than columns on `files` -- the D-14 reaper deletes the `cloud_job` sidecar that used to
         # hold the budget, and Phase 90 (MIG-04) removed `files.state` precisely so `files` carries
@@ -97,7 +100,7 @@ _EXPECTED_TABLES = frozenset(
         "pipeline_stage_control",
         "proposals",
         "route_control",
-        # phaze-mvq8z.6 (migration 069): the DB-override layer for hot-reloadable config
+        # phaze-mvq8z.6 (migration 072): the DB-override layer for hot-reloadable config
         # (docs/design/0019-runtime-config-hot-reload.md) -- one row per RELOADABLE key currently
         # overridden through the admin API/UI.
         "runtime_config_override",
@@ -111,6 +114,8 @@ _EXPECTED_TABLES = frozenset(
         "stage_skip",
         "tag_write_log",
         "tracklist_drain_arm_state",
+        # phaze-o71bf (migration 070): the per-file edge to the set-keyed cache above.
+        "tracklist_file_lookups",
         "tracklist_lookup_cache",
         "tracklist_priority_flags",
         "tracklist_tracks",
@@ -288,11 +293,12 @@ def test_baseline_is_the_only_migration() -> None:
     a read-time AnalysisWindow.camelot property instead (operator decision 2026-09-16);
     067 (phaze-z66hq) restores file-level ranked style scores in JSONB and a separate
     duration-modal category label from stored coarse windows; 068 (phaze-3agnm) ANALYZEs
-    metadata and cloud_job so filter columns added by ALTER carry planner statistics;
-    069 (phaze-mvq8z.6) creates runtime_config_override -- the DB-override layer for
-    hot-reloadable config (docs/design/0019-runtime-config-hot-reload.md), one row per
-    RELOADABLE key currently overridden through the admin API/UI; pure additive DDL, no
-    seed rows, downgrade drops the table outright.
+    metadata and cloud_job so filter columns added by ALTER carry planner statistics; 069
+    (phaze-1xngw) adds cloud_job's last-failure record (exit code, reason, time); 070
+    (phaze-o71bf) creates tracklist_file_lookups, the per-file record of the tracklist drain; 071
+    (phaze-j0ixx) adds the backend_breaker table and ANALYZEs cloud_job for its trip rule; 072
+    (phaze-mvq8z.6) creates runtime_config_override, the DB-override layer for hot-reloadable
+    config (docs/design/0019-runtime-config-hot-reload.md).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -327,7 +333,10 @@ def test_baseline_is_the_only_migration() -> None:
         "066_drop_analysis_window_camelot.py",
         "067_backfill_dominant_style.py",
         "068_analyze_stat_less_filter_columns.py",
-        "069_runtime_config_override.py",
+        "069_cloud_job_last_failure.py",
+        "070_tracklist_file_lookups.py",
+        "071_backend_breaker.py",
+        "072_runtime_config_override.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -356,10 +365,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (069: runtime_config_override)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (072: runtime_config_override)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "069"
+    assert version == "072"
 
 
 @pytest.mark.asyncio
@@ -685,7 +694,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "069"
+        assert version == "072"
     finally:
         if engine is not None:
             await engine.dispose()

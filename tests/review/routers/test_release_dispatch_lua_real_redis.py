@@ -27,11 +27,11 @@ tests target.
 
 REDIS VERSION
 --------------
-Run against the harness's ``redis:7-alpine`` (measured ``redis_version:7.4.11`` via
-``docker exec phaze-test-redis redis-cli INFO server``). Production runs ``redis:8-alpine``
-(``docker-compose.yml`` / CLAUDE.md's "Known gap"). This script's commands -- ``GET``/``DEL`` --
-have identical reply semantics on both lines; Redis 8 only adds commands over 7.x, it does not
-change these.
+Written against the harness's former ``redis:7-alpine`` (``redis_version:7.4.11``) while production
+ran ``redis:8-alpine``. Since phaze-8o294 the harness, CI and production all run the same
+``valkey/valkey:9-alpine`` (measured ``valkey_version:9.1.2``), so the version skew is closed rather
+than argued; this script was run through redis-py on all three servers with identical replies and
+key state (bead ``phaze-8o294``'s comments carry the differential).
 
 CONCURRENCY / THE "DOUBLE-MOVE" HAZARD
 ----------------------------------------

@@ -43,6 +43,7 @@ from phaze.tasks.execution_filesystem import (
     LocalFilesystemPrimitives,
     MoveStep,
 )
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 if TYPE_CHECKING:
@@ -241,7 +242,7 @@ def _run_child_and_sigkill(tmp_path: Path, item: ExecuteBatchProposalItem, kill_
         stderr=subprocess.PIPE,
     )
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + CHILD_PROCESS_HANG_GUARD_SEC
         while not ready.exists():
             if child.poll() is not None:
                 _, err = child.communicate()
@@ -250,11 +251,11 @@ def _run_child_and_sigkill(tmp_path: Path, item: ExecuteBatchProposalItem, kill_
                 pytest.fail("child never reached the kill point")
             time.sleep(0.05)
         os.kill(child.pid, signal.SIGKILL)
-        child.wait(timeout=30)
+        child.wait(timeout=CHILD_PROCESS_HANG_GUARD_SEC)
     finally:
         if child.poll() is None:
             child.kill()
-            child.wait(timeout=30)
+            child.wait(timeout=CHILD_PROCESS_HANG_GUARD_SEC)
     assert child.returncode == -signal.SIGKILL
 
 

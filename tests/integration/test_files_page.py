@@ -191,6 +191,33 @@ async def test_explain_uses_partial_indexes(db_env: tuple[AsyncSession, AsyncEng
 # T-87-12: SAVEPOINT degrade -> safe empty page, never a raise.
 
 
+# phaze-7sdwt: EXPLAIN of the "any stage = failed" OR lens -- the fix for the silently-ignored
+# bucket-alone filter. Same PERF-01 posture as the single-stage EXPLAIN above: seqscan disabled so
+# the planner must reveal what it CAN use, proving the OR over _FILES_PAGE_STAGES still reaches the
+# partial indexes rather than degrading to a sequential scan across every disjunct.
+
+
+@pytest.mark.asyncio
+async def test_explain_any_stage_failed_filter_uses_partial_indexes(db_env: tuple[AsyncSession, AsyncEngine]) -> None:
+    """EXPLAIN of the any-stage (``stage=None``) ``bucket="failed"`` OR lens names the partial indexes."""
+    session, _engine = db_env
+    meta_failed = await _new_file(session)
+    session.add(FileMetadata(file_id=meta_failed, failed_at=datetime.now(UTC)))
+    analyze_failed = await _new_file(session)
+    session.add(AnalysisResult(file_id=analyze_failed, failed_at=datetime.now(UTC)))
+    await session.flush()
+
+    stmt = _files_page_stmt(page=1, page_size=25, stage=None, bucket="failed")
+    compiled = stmt.compile(dialect=session.bind.dialect, compile_kwargs={"literal_binds": True})  # type: ignore[union-attr]
+
+    await session.execute(text("SET LOCAL enable_seqscan = off"))
+    rows = (await session.execute(text(f"EXPLAIN {compiled}"))).all()
+    plan = "\n".join(r[0] for r in rows)
+
+    for index_name in ("ix_metadata_failed", "ix_analysis_failed"):
+        assert index_name in plan, f"{index_name} not used in EXPLAIN plan:\n{plan}"
+
+
 @pytest.mark.asyncio
 async def test_degrades_to_empty_page_on_error(db_env: tuple[AsyncSession, AsyncEngine], monkeypatch: pytest.MonkeyPatch) -> None:
     """A forced build-time error degrades to a safe empty page (rows=[], has_next False), never a 500."""

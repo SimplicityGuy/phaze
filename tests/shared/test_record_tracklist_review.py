@@ -79,6 +79,37 @@ async def test_a_definitive_negative_reads_distinctly_from_a_transient_failure(c
 
 
 @pytest.mark.asyncio
+async def test_the_panel_shows_the_query_text_that_was_searched(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-no6sv: the operator must be able to see WHAT was searched, so a polluted query is visible."""
+    file_rec = await _seed_live_set(make_file, session)
+    key = await _set_key_for(file_rec, duration=7200.0)
+    await record_outcome(session, set_key=key, query_text="Coldwave Deep Field March 1470354508 2025", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+    await session.commit()
+
+    body = (await client.get(f"/record/{file_rec.id}")).text
+
+    assert "data-searched-query" in body
+    assert "Searched for:" in body
+    assert "Coldwave Deep Field March 1470354508 2025" in body
+
+
+@pytest.mark.asyncio
+async def test_a_low_confidence_search_reads_as_held_not_as_a_negative(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    file_rec = await _seed_live_set(make_file, session)
+    key = await _set_key_for(file_rec, duration=7200.0)
+    # Real "now": the review computes its verdict against the wall clock, and the hold is short.
+    await record_outcome(session, set_key=key, query_text="coldwave deep field", outcome=LookupOutcome.LOW_CONFIDENCE, now=datetime.now(UTC))
+    await session.commit()
+
+    body = (await client.get(f"/record/{file_rec.id}")).text
+
+    assert "Only low-confidence matches on 1001Tracklists" in body
+    assert "No confident match on 1001Tracklists" not in body
+    assert "after a low-confidence search" in body
+    assert "definitive-negative TTL" not in body
+
+
+@pytest.mark.asyncio
 async def test_a_transient_block_reads_distinctly_from_not_found(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     file_rec = await _seed_live_set(make_file, session)
     key = await _set_key_for(file_rec, duration=7200.0)

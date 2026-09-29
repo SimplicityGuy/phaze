@@ -106,6 +106,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
@@ -115,12 +116,13 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
-from phaze.services import kube_staging, s3_staging
+from phaze.services import backend_breaker, kube_staging, s3_staging
 from phaze.tasks.cloud_reconcile_observation import (
     NO_POD_PROBE_SECONDS as _NO_POD_PROBE_SECONDS,
     PENDING_SUBMIT_CONFIRMATION_SECONDS as _PENDING_SUBMIT_CONFIRMATION_SECONDS,
     JobDisposition,
     PendingConfirmationDisposition,
+    TerminalFailure,
     Wedge,
     WorkloadDisposition,
     classify_job,
@@ -132,6 +134,7 @@ from phaze.tasks.cloud_reconcile_observation import (
     observe_analysis_completed,
     observe_job_gone,
     observe_pod_wedge_reason,
+    observe_terminal_failure,
     observe_terminal_node_loss_reason,
     quota_hold_reason as _observe_quota_hold_reason,
     row_age_seconds as _observe_row_age_seconds,
@@ -155,6 +158,18 @@ logger = structlog.get_logger(__name__)
 # facade even though their ownership now lives with observation/classification.
 NO_POD_PROBE_SECONDS = _NO_POD_PROBE_SECONDS
 PENDING_SUBMIT_CONFIRMATION_SECONDS = _PENDING_SUBMIT_CONFIRMATION_SECONDS
+
+# phaze-1xngw: the explicit ``cloud_job.last_failure_reason`` markers for a no-callback terminal with
+# no pod to read an exit status from. Each names WHICH branch saw no pod, so the row says why its
+# ``last_exit_code`` is NULL rather than leaving the two columns silently empty.
+FAILURE_JOB_VANISHED = "job_vanished"  # the Job 404'd before reconcile read it (TTL GC, external delete)
+FAILURE_PENDING_CONFIRMATION_EXPIRED = "pending_confirmation_expired"  # no Job was ever stamped within the bound
+FAILURE_POD_NOT_FOUND = "pod_not_found"  # the Job read Failed/Evicted but listed no pod
+
+# phaze-j0ixx: the ``budget`` label of a re-drive that charges NEITHER counter -- a pod that exited
+# ``EXIT_CONTROL_PLANE_UNREACHABLE`` failed because the control plane could not be reached, not because of
+# its file. What bounds it instead is the backend breaker (``services/backend_breaker.py``).
+BUDGET_UNCHARGED = "uncharged_control_plane_unreachable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +217,39 @@ async def _terminal_node_loss_reason(name: str, kube: KubeConfig) -> str | None:
     of the two budgets, which is the whole defect this bead closes.
     """
     return await observe_terminal_node_loss_reason(name, kube)
+
+
+async def _terminal_failure(name: str, kube: KubeConfig) -> TerminalFailure | None:
+    """Return the Job's terminated pod exit code + reason, or None when no pod is readable (phaze-1xngw).
+
+    The Job is deleted on every re-drive and spill, so this read -- taken BEFORE that delete -- is the
+    only chance to keep the pod's exit status (spike phaze-79mu7). Like :func:`_terminal_node_loss_reason`
+    it refines a terminal already decided on and must not raise, so a kube failure degrades to None.
+    """
+    return await observe_terminal_failure(name, kube)
+
+
+def _effective_failure(cloud_job: CloudJob, failure: TerminalFailure) -> TerminalFailure:
+    """Prefer an exit status stashed by the still-terminating deferral over a caller's pod-less marker.
+
+    The deferral in :func:`_redrive_under_ceiling` reads the pods of a Job it has just deleted, then
+    returns without spending a budget. If that Job has finished vanishing by the next tick,
+    ``_reconcile_one`` re-enters through the vanished-Job branch, which has no pods left and would
+    record ``job_vanished`` over the exit code the deferral saw -- the same blind spot phaze-mwbz3
+    closed for the node-loss verdict. The deferral therefore records ``last_exit_code`` /
+    ``last_failure_reason`` with ``last_failed_at`` left NULL, and that combination IS the pending
+    record: every re-drive and spill stamps ``last_failed_at``, so nothing else produces it.
+    """
+    if failure.exit_code is None and cloud_job.last_failed_at is None and cloud_job.last_failure_reason is not None:
+        return TerminalFailure(cloud_job.last_exit_code, cloud_job.last_failure_reason)
+    return failure
+
+
+def _record_failure(cloud_job: CloudJob, failure: TerminalFailure, *, failed_at: datetime | None) -> None:
+    """Write the terminal's exit status onto the row (phaze-1xngw); ``failed_at=None`` marks it pending."""
+    cloud_job.last_exit_code = failure.exit_code
+    cloud_job.last_failure_reason = failure.reason
+    cloud_job.last_failed_at = failed_at
 
 
 def _row_age_seconds(cloud_job: CloudJob) -> float:
@@ -347,11 +395,33 @@ async def _spill_to_awaiting_at_ceiling(
     ceiling: int,
     budget: str,
     effective_node_loss_reason: str | None,
+    failure: TerminalFailure,
 ) -> None:
     """The at-ceiling terminal of :func:`_handle_no_callback_terminal` -- spill the sidecar to 'awaiting'.
 
     Reached when ``next_attempt > ceiling`` on EITHER budget; see that function's docstring for why the
     two ceilings deliberately share this one terminal, and why it is not a hard analyze failure.
+    """
+    await _spill_to_awaiting(cfg, row, name, attempts=row.cap, failure=failure)
+    row.tally["failed"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
+        file_id=str(row.cloud_job.file_id),
+        attempt=next_attempt,
+        cap=ceiling,
+        budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
+        node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
+        exit_code=failure.exit_code,  # phaze-1xngw: the pod's terminated exit status, or None + a marker reason.
+        reason=failure.reason,
+    )
+
+
+async def _spill_to_awaiting(cfg: ControlSettings, row: _RowReconcile, name: str | None, *, attempts: int, failure: TerminalFailure) -> None:
+    """Spill an in-flight row back to 'awaiting' with ``attempts`` stamped, delete its staged object and Job.
+
+    The shared body of the at-ceiling spill (``attempts=cap``, the budget-spent marker that routes the file
+    to local) and the phaze-j0ixx breaker hold (``attempts`` UNCHANGED, so the file stays cloud-eligible and
+    nothing is charged). Logging and the tally belong to the caller, which knows which of the two it is.
     """
     file_id = row.cloud_job.file_id
     # SCHED-03/D-04/phaze-1q4g: either retry ceiling spends the cloud budget and spills to ``awaiting``
@@ -369,9 +439,10 @@ async def _spill_to_awaiting_at_ceiling(
     # awaiting writer in spill mode (reconcile is its FOURTH caller, alongside agent_s3/agent_push). The
     # rowcount-guarded CAS OWNS the status write (UPDATE cloud_job ... WHERE status IN (SUBMITTED,RUNNING)),
     # so we do NOT pre-mutate cloud_job.status here -- an autoflush of a dirty status would make the CAS
-    # miss its own row (RESEARCH Landmine 3). ``attempts=cap`` is the budget-spent MARKER (a set, NOT an
-    # increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file
-    # to local; ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
+    # miss its own row (RESEARCH Landmine 3). On the at-ceiling path ``attempts=cap`` is the budget-spent
+    # MARKER (a set, NOT an increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap``
+    # and routes the file to local; on the phaze-j0ixx breaker hold it is the row's own unchanged value, so
+    # the file stays cloud-eligible. ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
     # agent_s3/agent_push siblings (which KEEP the gated FileRecord dual-write, 83 D-00c), reconcile writes
     # NO FileRecord.state at all (D-04): the spilled kueue file stays at its prior PUSHED state, which
     # satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD state=AWAITING_CLOUD +
@@ -387,25 +458,19 @@ async def _spill_to_awaiting_at_ceiling(
         await hold_awaiting_cloud(
             row.session,
             file,
-            attempts=row.cap,
+            attempts=attempts,
             expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value),
             clear_cloud_phase=True,
         )
     row.cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
     row.cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
     row.cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
+    # phaze-1xngw: the exit status that ended this chain or tripped the hold -- written AFTER the CAS above so no dirty
+    # attribute can autoflush ahead of it, and before the commit that precedes the Job delete.
+    _record_failure(row.cloud_job, failure, failed_at=datetime.now(UTC))
     await row.session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, row.kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
-    row.tally["failed"] += 1
-    logger.warning(
-        "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
-        file_id=str(file_id),
-        attempt=next_attempt,
-        cap=ceiling,
-        budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
-        node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
-    )
 
 
 async def _redrive_under_ceiling(
@@ -415,6 +480,7 @@ async def _redrive_under_ceiling(
     next_attempt: int,
     budget: str,
     effective_node_loss_reason: str | None,
+    failure: TerminalFailure,
 ) -> None:
     """The under-ceiling re-drive of :func:`_handle_no_callback_terminal` -- delete, confirm gone, re-submit.
 
@@ -446,18 +512,27 @@ async def _redrive_under_ceiling(
         # (ordinary, non-node-loss cause) correctly clears any stale marker from an earlier, unrelated Job
         # under this same deterministic name.
         cloud_job.node_loss_pending = effective_node_loss_reason
+        # phaze-1xngw: persist the exit status for the same reason -- this deferral just deleted the Job, so
+        # its pods may be gone by the next tick. ``failed_at=None`` is the pending record
+        # :func:`_effective_failure` reads back; the re-drive that eventually runs stamps it.
+        _record_failure(cloud_job, failure, failed_at=None)
         await row.session.commit()
         logger.info(
             "reconcile_cloud_jobs: prior Job still terminating; deferring re-drive",
             file_id=str(file_id),
             kueue_workload=name,
             node_loss_reason=effective_node_loss_reason,
+            exit_code=failure.exit_code,
+            reason=failure.reason,
         )
         return
     # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
     # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
     # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
-    if effective_node_loss_reason is not None:
+    # phaze-j0ixx: an unreachable-control-plane re-drive charges neither; the breaker bounds it.
+    if budget == BUDGET_UNCHARGED:
+        pass
+    elif effective_node_loss_reason is not None:
         cloud_job.node_loss_redrives = next_attempt
     else:
         cloud_job.attempts = next_attempt
@@ -469,6 +544,7 @@ async def _redrive_under_ceiling(
     # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
     # above from being immediately re-charged before the re-submitted Job even exists.
     cloud_job.kueue_workload = None
+    _record_failure(cloud_job, failure, failed_at=datetime.now(UTC))  # phaze-1xngw: the Job is already deleted.
     await row.session.commit()
     await _enqueue_resubmit(row.ctx, file_id)
     row.tally["redriven"] += 1
@@ -478,6 +554,8 @@ async def _redrive_under_ceiling(
         attempt=next_attempt,
         budget=budget,  # phaze-1q4g: which of the two re-drive budgets this one spent, and (when it is
         node_loss_reason=effective_node_loss_reason,  # the node-loss one) the pod evidence that classified it.
+        exit_code=failure.exit_code,  # phaze-1xngw: why the previous pod ended, or None + a marker reason.
+        reason=failure.reason,
     )
 
 
@@ -485,6 +563,7 @@ async def _handle_no_callback_terminal(
     row: _RowReconcile,
     name: str | None,
     *,
+    failure: TerminalFailure,
     node_loss_reason: str | None = None,
 ) -> None:
     """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill the sidecar to 'awaiting' at cap (D-08/SCHED-03).
@@ -559,9 +638,20 @@ async def _handle_no_callback_terminal(
     ``FileRecord.state`` and no analysis result -- D-04/KSUBMIT-03: cloud flakiness must not fail a
     file), and specifically NOT a hold: leaving the row SUBMITTED/RUNNING is the shape that STRANDS,
     because no writer but this cron can advance it and this cron would only re-drive it again.
+
+    phaze-1xngw: ``failure`` is the terminal's exit status as its caller could observe it -- the pod's
+    terminated exit code and reason, or an explicit marker when there was no pod. Both terminals below
+    persist it onto the row before the Job is deleted, and both log lines carry it.
     """
     cloud_job = row.cloud_job
+    failure = _effective_failure(cloud_job, failure)
     cfg = cast("ControlSettings", get_settings())
+    # phaze-j0ixx: the pod said, by its own exit code, that it never reached the control plane. That is
+    # the environment's fault on every file alike, so it spends no budget -- checked before the
+    # node-loss choice below, since a pod that exited on its own was not taken by its node.
+    if failure.exit_code == backend_breaker.UNREACHABLE_EXIT_CODE:
+        await _hold_control_plane_unreachable(cfg, row, name, failure=failure)
+        return
     # phaze-mwbz3: the still-terminating deferral below commits with NO other DB mutation, so a FRESH
     # node-loss verdict computed for THIS call (``node_loss_reason`` not None) must be persisted across
     # it -- otherwise it dies with this stack frame and, once the Job finally vanishes, the NEXT tick
@@ -590,6 +680,7 @@ async def _handle_no_callback_terminal(
             ceiling=ceiling,
             budget=budget,
             effective_node_loss_reason=effective_node_loss_reason,
+            failure=failure,
         )
         return
 
@@ -599,6 +690,64 @@ async def _handle_no_callback_terminal(
         next_attempt=next_attempt,
         budget=budget,
         effective_node_loss_reason=effective_node_loss_reason,
+        failure=failure,
+    )
+
+
+async def _hold_control_plane_unreachable(cfg: ControlSettings, row: _RowReconcile, name: str | None, *, failure: TerminalFailure) -> None:
+    """The ``EXIT_CONTROL_PLANE_UNREACHABLE`` terminal: charge nothing, feed the backend breaker (phaze-j0ixx).
+
+    Spike phaze-79mu7: two infrastructure faults made every burst pod fail its presign request, and
+    charging each of those against ``attempts`` spent 302 healthy files' whole cloud budget. Neither
+    ``attempts`` nor ``node_loss_redrives`` moves here, in either branch.
+
+    * **Breaker closed** (the rule in ``services/backend_breaker.py`` did not trip on this exit): re-drive
+      in place through the ordinary delete / confirm-gone / pending-confirmation machinery, keeping the
+      staged object, with :data:`BUDGET_UNCHARGED`. A fault that clears within a minute costs one pod.
+    * **Breaker open** (this exit tripped it, or it already was): spill the row back to ``'awaiting'``
+      with ``attempts`` UNCHANGED -- releasing its slot and staying cloud-eligible -- instead of
+      re-driving into a fault the drain has stopped dispatching into. The staged object is deleted like
+      every spill's (the re-dispatch after the breaker closes re-stages it).
+
+    "Not charged" must still be bounded (the phaze-1q4g lesson): the breaker's repeat clause trips on a
+    row's SECOND unreachable exit within the window, so a lone file costs at most two pods before it is
+    held, and while held the drain grants at most one probe slot per interval.
+
+    A row with no ``backend_id`` cannot feed a breaker, so it takes the held branch -- a spill that
+    charges nothing and cannot loop. KueueBackend.reconcile only selects rows stamped with its own id, so
+    this is defence in depth, not a live path.
+    """
+    cloud_job = row.cloud_job
+    now = datetime.now(UTC)
+    backend_id = cloud_job.backend_id
+    verdict = (
+        await backend_breaker.record_unreachable_exit(
+            row.session,
+            backend_id,
+            cloud_job.file_id,
+            now,
+            previous_exit_code=cloud_job.last_exit_code,
+            previous_failed_at=cloud_job.last_failed_at,
+        )
+        if backend_id is not None
+        else backend_breaker.UnreachableVerdict(held=True, tripped_now=False, reason="cloud_job has no backend_id")
+    )
+    if not verdict.held:
+        await _redrive_under_ceiling(
+            row, name, next_attempt=cloud_job.attempts, budget=BUDGET_UNCHARGED, effective_node_loss_reason=None, failure=failure
+        )
+        return
+    await _spill_to_awaiting(cfg, row, name, attempts=cloud_job.attempts, failure=failure)
+    row.tally["unreachable_held"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: control plane unreachable from the pod -> backend held, cloud_job re-stamped 'awaiting' uncharged",
+        file_id=str(cloud_job.file_id),
+        backend_id=backend_id,
+        attempts=cloud_job.attempts,
+        breaker_tripped_now=verdict.tripped_now,
+        breaker_reason=verdict.reason,
+        exit_code=failure.exit_code,
+        reason=failure.reason,
     )
 
 
@@ -606,6 +755,7 @@ async def _finalize_or_redrive(
     row: _RowReconcile,
     name: str | None,
     *,
+    no_pod_marker: str,
     probe_node_loss: bool = False,
 ) -> None:
     """The terminal seam every no-callback branch shares: finalize a landed callback, else re-drive.
@@ -624,12 +774,19 @@ async def _finalize_or_redrive(
     for a row that is about to be recorded a success -- and only for the two branches that still have a
     real Job whose pods can be classified (Job Failed, Workload Evicted). The phantom-row and
     vanished-Job callers have no pods left to ask and leave it False, exactly as before.
+
+    phaze-1xngw: the same two branches also read the pods' terminated exit status; every caller names
+    the ``no_pod_marker`` recorded instead when there is no pod to read it from.
     """
     if await _analysis_completed(row.session, row.cloud_job.file_id):
         await _record_success(row, name)
         return
-    node_loss_reason = await _terminal_node_loss_reason(name, row.kube) if probe_node_loss and name is not None else None
-    await _handle_no_callback_terminal(row, name, node_loss_reason=node_loss_reason)
+    node_loss_reason = None
+    failure = None
+    if probe_node_loss and name is not None:
+        node_loss_reason = await _terminal_node_loss_reason(name, row.kube)
+        failure = await _terminal_failure(name, row.kube)
+    await _handle_no_callback_terminal(row, name, failure=failure or TerminalFailure(None, no_pod_marker), node_loss_reason=node_loss_reason)
 
 
 async def _reconcile_pending_confirmation(row: _RowReconcile) -> None:
@@ -663,7 +820,7 @@ async def _reconcile_pending_confirmation(row: _RowReconcile) -> None:
     # The callback may have landed anyway (it keys off file_id, not the Job) -- ``_finalize_or_redrive``
     # finalizes that as the success it is rather than re-driving an already-analyzed file. name=None:
     # there is no Job to delete, and no pods to classify, so no node-loss probe.
-    await _finalize_or_redrive(row, None)
+    await _finalize_or_redrive(row, None, no_pod_marker=FAILURE_PENDING_CONFIRMATION_EXPIRED)
 
 
 async def _reconcile_job_terminal_signal(row: _RowReconcile, job: Any, name: str) -> bool:
@@ -684,7 +841,7 @@ async def _reconcile_job_terminal_signal(row: _RowReconcile, job: Any, name: str
         # guard. phaze-1q4g: with ``backoffLimit: 0`` a Job reads Failed for BOTH "the analysis died" and
         # "the node took the pod", and the two must not share a retry budget. The Job cannot tell them
         # apart; its pods can. Ask them once, here on the terminal path only (probe_node_loss).
-        await _finalize_or_redrive(row, name, probe_node_loss=True)
+        await _finalize_or_redrive(row, name, no_pod_marker=FAILURE_POD_NOT_FOUND, probe_node_loss=True)
         return True
     return False
 
@@ -724,7 +881,10 @@ async def _terminalize_if_wedged(row: _RowReconcile, job: Any, name: str) -> boo
         wedge_reason=wedge.reason,
         node_loss=wedge.node_loss,  # phaze-1q4g: which budget the re-drive below will spend.
     )
-    await _handle_no_callback_terminal(row, name, node_loss_reason=wedge.reason if wedge.node_loss else None)
+    # phaze-1xngw: a wedged pod usually never started, so it has no exit code; the wedge reason is then the record.
+    observed = await _terminal_failure(name, row.kube)
+    failure = observed if observed is not None and observed.exit_code is not None else TerminalFailure(None, wedge.reason)
+    await _handle_no_callback_terminal(row, name, failure=failure, node_loss_reason=wedge.reason if wedge.node_loss else None)
     return True
 
 
@@ -800,7 +960,7 @@ async def _reconcile_workload_state(row: _RowReconcile, job: Any, workload: Any,
         # object the callback already deleted. phaze-1q4g: same question about WHICH budget, too -- a
         # Kueue eviction is usually quota pressure (ordinary), but a node going down also evicts, and the
         # pods say which.
-        await _finalize_or_redrive(row, name, probe_node_loss=True)
+        await _finalize_or_redrive(row, name, no_pod_marker=FAILURE_POD_NOT_FOUND, probe_node_loss=True)
         return
 
     if disposition is WorkloadDisposition.INADMISSIBLE:
@@ -873,7 +1033,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         # by ttlSecondsAfterFinished before this lagging tick read it) instead of re-driving an
         # already-analyzed file against a staged object the success callback already deleted. There are no
         # pods left to classify here, so no node-loss probe.
-        await _finalize_or_redrive(row, name)
+        await _finalize_or_redrive(row, name, no_pod_marker=FAILURE_JOB_VANISHED)
         return
 
     # 1. Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
@@ -925,6 +1085,8 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
         # -- listed explicitly so this dict stays the single place naming every tally key, matching
         # every other key here.
         "unknown_workload_disposition": 0,
+        # phaze-j0ixx: unreachable-control-plane rows spilled uncharged because their backend is held.
+        "unreachable_held": 0,
     }
 
     async with ctx["async_session"]() as session:

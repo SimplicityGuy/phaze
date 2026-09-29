@@ -71,6 +71,9 @@
 <p id="dag-seed-{{ key }}" hx-swap-oob="true" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
 {% endfor %}
 {# Summary Recent Activity rides this same poll. null preserves degraded reads as unknown. #}
+{# phaze-lwz8n: the Analyze header's running / waiting figures; null preserves an unknown as unknown. #}
+<p id="dag-seed-analyzeRunning" hx-swap-oob="true" x-init="$store.pipeline.analyzeRunning = {{ analyze_running_total if analyze_running_total is not none else 'null' }}" class="hidden"></p>
+<p id="dag-seed-analyzeWaiting" hx-swap-oob="true" x-init="$store.pipeline.analyzeWaiting = {{ total_queued_analyze if total_queued_analyze is not none else 'null' }}" class="hidden"></p>
 <p id="dag-seed-summaryRecentLive" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLive = {{ summary_recent_live if summary_recent_live is not none else 'null' }}" class="hidden"></p>
 <p id="dag-seed-summaryRecentToday" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentToday = {{ summary_recent_today if summary_recent_today is not none else 'null' }}" class="hidden"></p>
 <p id="dag-seed-summaryRecentLifetime" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLifetime = {{ summary_recent_lifetime if summary_recent_lifetime is not none else 'null' }}" class="hidden"></p>
@@ -129,4 +132,7 @@
    Compute and degraded lanes are unknown, which propagates to the roll-up rather than inventing
    activity from cloud-window lifecycle states. Re-push from the same snapshot without a new poll. #}
 {% with oob = True %}{% include "pipeline/partials/_analyze_active_total.html" %}{% endwith %}
+{# phaze-lwz8n: the Running-now queue view, re-pushed OUT-OF-BAND on the same tick (and it seeds the
+   workspace header's running/waiting store keys). running_analyses rides this poll context. #}
+{% with oob = True %}{% include "pipeline/partials/_analyze_queue.html" %}{% endwith %}
 {% endif %}

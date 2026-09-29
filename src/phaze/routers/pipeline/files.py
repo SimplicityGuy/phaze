@@ -105,7 +105,7 @@ TRACKLIST_SETS_SORT = SortContract(
 # phaze-cvn6.1: ``file`` sorts the rendered full path, while stage columns use
 # ``stage_status_sort_case`` rather than a meaningless alphabetical enum order. See
 # ``STAGE_STATUS_DISPLAY_ORDER`` in ``services/stage_status.py``.
-# The five stage labels MUST stay identical to ``_stage_cols`` in ``files_table_view.html`` -- a label is
+# The stage labels MUST stay identical to ``_stage_cols`` in ``files_table_view.html`` -- a label is
 # how the template recognises a header as sortable, so a typo degrades the header to plain text
 # rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
 # directions, so the pair cannot drift silently.
@@ -120,6 +120,7 @@ FILES_SORT = SortContract(
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
         SortableColumn(key="metadata", label="Metadata", expression=stage_status_sort_case(Stage.METADATA)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
+        SortableColumn(key="tracklist", label="Tracklist", expression=stage_status_sort_case(Stage.TRACKLIST)),
         SortableColumn(key="propose", label="Propose", expression=stage_status_sort_case(Stage.PROPOSE)),
         SortableColumn(key="review", label="Review", expression=stage_status_sort_case(Stage.REVIEW)),
         SortableColumn(key="apply", label="Execute", expression=stage_status_sort_case(Stage.APPLY)),

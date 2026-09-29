@@ -13,11 +13,16 @@ One job = one BOUNDED SLICE of a months-long pass. That framing is the whole des
 * ``limit`` bounds the slice in LOOKUPS (host requests), never in wall clock or files, because
   requests are the scarce resource. The task's own timeout is a backstop, not the mechanism.
 
-There is NO CronJob for this task, deliberately. The epic's ethics bound is that the drain is
+There is NO CronJob for THIS task, deliberately. The epic's ethics bound is that the drain is
 operator-initiated rather than a blanket pipeline stage -- it deploys from a residential IP, it
 runs a headful browser, and it spends a shared public host's published budget. A cron that started
 crawling on its own the moment the container came up would take that decision away from the
-operator. The admin UI (phaze-fq9h.8) is the intended trigger.
+operator. The admin UI's "Run tracklist lookups" button (routers.pipeline.tracklists.
+run_tracklist_drain_ui) is the intended trigger for the first slice; phaze-5sj7k made that same
+click also arm the durable ``TracklistDrainArmState`` row, so ``tasks.tracklist_drain_control``'s
+SEPARATE, narrowly-scoped ``continue_armed_tracklist_drain`` CronJob paces every subsequent slice
+of that pass -- still gated entirely on the operator's own click, never on container boot (see
+that module's docstring for why this is not the forbidden auto-advance-cron shape).
 
 The renderer's browser is launched ONCE per job and reused across every candidate in the slice.
 That is not just an optimisation: the phaze-fq9h.1 capture measured 16/16 first-navigation clears
@@ -161,6 +166,7 @@ async def tracklist_drain_status(ctx: dict[str, Any], *, agent_id: str | None = 
         "cached_negative": stats.cached_negative,
         "cached_backoff": stats.cached_backoff,
         "cached_exhausted": stats.cached_exhausted,
+        "cached_low_confidence": stats.cached_low_confidence,
         "next_set_keys": [candidate.set_key for candidate in queue.entries[:10]],
         "flagged_queued": sum(1 for candidate in queue.entries if candidate.flagged),
         "flagged_total": flagged_total,

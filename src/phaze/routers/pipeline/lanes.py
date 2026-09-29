@@ -1,16 +1,23 @@
-"""Compute-lane detail pane route."""
+"""Compute-lane detail pane route, and the Analyze waiting list (phaze-lwz8n)."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
 from phaze.database import get_session
 from phaze.routers.pipeline._common import router, templates
-from phaze.services.backends import LANE_RECENT_N, get_backend_lane_snapshot, get_lane_queue_depths, get_lane_recent_completions
+from phaze.services.backends import (
+    LANE_RECENT_N,
+    get_backend_lane_snapshot,
+    get_lane_queue_depths,
+    get_lane_recent_completions,
+    get_running_analyses,
+    get_waiting_page,
+)
 
 
 if TYPE_CHECKING:
@@ -53,6 +60,8 @@ async def lane_detail(
             },
         )
     recent_completions = await get_lane_recent_completions(session, backend_id, lane["kind"])
+    # phaze-lwz8n: the lane pane shows the same Running-now rows as the workspace, scoped to this lane.
+    running = await get_running_analyses(session, request.app.state, [lane])
     # phaze-2u8v.1: the depths are read off the AGENT this lane's dispatch actually enqueues to (a local
     # lane -> the live fileserver agent), never off the registry id. ``depths is None`` is "this lane has
     # no SAQ queue", carried to the template as a NOTE -- the template must not render it as zeros.
@@ -69,5 +78,22 @@ async def lane_detail(
             "queue_depths_note": queue_depths.note,
             "refreshed_at": datetime.now(UTC),
             "recent_n": LANE_RECENT_N,
+            "running_analyses": running,
         },
     )
+
+
+@router.get("/pipeline/analyze-queue/waiting", response_class=HTMLResponse)
+async def analyze_waiting(
+    request: Request,
+    page: int = Query(1, ge=1),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return one page of the local lane's waiting list (phaze-lwz8n).
+
+    Loaded when the operator opens the Waiting list and on its Prev/Next buttons -- never by the 5s poll,
+    so a large backlog costs one bounded page read only when someone asks to see it. Degrade-safe: an
+    unreadable queue renders its note, never a 500.
+    """
+    waiting = await get_waiting_page(session, request.app.state, page=page)
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_analyze_waiting.html", context={"waiting": waiting})

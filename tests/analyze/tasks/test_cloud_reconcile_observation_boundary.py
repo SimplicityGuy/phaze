@@ -169,3 +169,48 @@ def test_observation_module_has_no_reconciliation_side_effect_adapters() -> None
     forbidden_calls = {"commit", "rollback", "enqueue", "delete_job", "delete_staged_object"}
     called_attributes = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     assert called_attributes.isdisjoint(forbidden_calls)
+
+
+def _terminated(exit_code: Any, *, reason: str | None = "Error", finished_at: str | None = None) -> dict[str, Any]:
+    terminated: dict[str, Any] = {"exitCode": exit_code}
+    if reason is not None:
+        terminated["reason"] = reason
+    if finished_at is not None:
+        terminated["finishedAt"] = finished_at
+    return {"name": "analyze", "state": {"terminated": terminated}}
+
+
+def test_terminal_failure_is_none_without_a_pod() -> None:
+    """phaze-1xngw: no pod means the caller records its own marker, so the classifier must not invent one."""
+    assert observation.terminal_failure([]) is None
+
+
+def test_terminal_failure_prefers_the_most_recently_finished_container() -> None:
+    older = SimpleNamespace(status={"phase": "Failed", "containerStatuses": [_terminated(10, finished_at="2026-09-27T02:05:13Z")]})
+    newer = SimpleNamespace(status={"phase": "Failed", "containerStatuses": [_terminated(13, finished_at="2026-09-27T02:09:01Z")]})
+    assert observation.terminal_failure([newer, older]) == observation.TerminalFailure(13, "Error")
+    assert observation.terminal_failure([older, newer]) == observation.TerminalFailure(13, "Error")
+
+
+def test_terminal_failure_tolerates_a_malformed_terminated_state() -> None:
+    """A non-integer exit code reads as None and a missing reason as ``terminated`` -- never a raise inside the cron."""
+    pod = SimpleNamespace(status={"phase": "Failed", "containerStatuses": [_terminated("x", reason=None)]})
+    assert observation.terminal_failure([pod]) == observation.TerminalFailure(None, "terminated")
+
+
+def test_terminal_failure_without_a_terminated_container_reports_the_pod_state() -> None:
+    pod = SimpleNamespace(
+        status={"phase": "Pending", "containerStatuses": [{"name": "analyze", "state": {"waiting": {"reason": "ImagePullBackOff"}}}]}
+    )
+    assert observation.terminal_failure([pod]) == observation.TerminalFailure(None, "Pending/ImagePullBackOff")
+
+
+@pytest.mark.asyncio
+async def test_observe_terminal_failure_degrades_a_kube_error_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read refines a terminal already decided on, so a failing pod list must not abort it."""
+
+    async def _boom(name: str, kube: Any) -> list[Any]:
+        raise RuntimeError("kube unreachable")
+
+    monkeypatch.setattr(observation.kube_staging, "list_pods_for_job", _boom)
+    assert await observation.observe_terminal_failure("job", SimpleNamespace()) is None

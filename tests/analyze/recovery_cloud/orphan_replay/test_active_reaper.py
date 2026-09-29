@@ -60,10 +60,18 @@ def _make_ctx() -> dict[str, Any]:
     return {"async_session": async_session}
 
 
-def _now_ms() -> int:
-    import time
+async def _now_ms(session: AsyncSession) -> int:
+    """The current time on the DATABASE's clock, in SAQ's epoch-ms unit (phaze-0vlnp).
 
-    return int(time.time() * 1000)
+    The reaper ages each row as ``EXTRACT(EPOCH FROM NOW()) * 1000 - started``, so ``NOW()`` is the
+    Postgres container's clock. Seeding ``started`` from the host's ``time.time()`` put a second clock
+    into every margin below: the two were measured 50 ms apart on 2026-09-28, and on 2026-09-22 a
+    verify-main gate went red on four tests at once whose only common factor is a container clock at
+    least 90 s behind the host (three reapers finding ``reaped: 0`` with no degraded warning, and
+    ``test_d10_gate_does_not_crash_on_db_read_ledger_row``). Reading the reference from the clock the
+    reaper reads leaves each margin exactly as wide as it is written.
+    """
+    return int(await session.scalar(text("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")))
 
 
 async def _seed_job(
@@ -87,7 +95,7 @@ async def _seed_job(
     the SAQ dataclass default (10s); ``None`` models a legacy/bare row, exercising the COALESCE
     fallback. ``attempts`` is omitted when None, as SAQ omits it at 0.
     """
-    blob: dict[str, Any] = {"function": "process_file", "status": status, "started": started_ms, "touched": _now_ms()}
+    blob: dict[str, Any] = {"function": "process_file", "status": status, "started": started_ms, "touched": await _now_ms(session)}
     if timeout is not None:
         blob["timeout"] = timeout
     if attempts is not None:
@@ -117,7 +125,7 @@ async def test_reaper_frees_stranded_active_row(session: AsyncSession, monkeypat
         session,
         key=stranded_key,
         status="active",
-        started_ms=_now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
+        started_ms=await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
         timeout=_PROCESS_FILE_TIMEOUT,
     )
     await session.commit()
@@ -134,7 +142,7 @@ async def test_reaper_leaves_fresh_active_row(session: AsyncSession, monkeypatch
     """A row that only just went 'active' is NOT reaped -- a genuinely-running job must not be stolen."""
     await session.execute(_CREATE_SAQ_JOBS)
     fresh_key = f"process_file:{uuid.uuid4()}"
-    await _seed_job(session, key=fresh_key, status="active", started_ms=_now_ms() - 5 * 1000, timeout=600)  # 5s old
+    await _seed_job(session, key=fresh_key, status="active", started_ms=await _now_ms(session) - 5 * 1000, timeout=600)  # 5s old
     await session.commit()
 
     _patch_slack(monkeypatch, 900)
@@ -155,7 +163,7 @@ async def test_reaper_bound_is_per_row_not_a_fixed_constant(session: AsyncSessio
     await session.execute(_CREATE_SAQ_JOBS)
     slack = 900
     key = f"process_file:{uuid.uuid4()}"
-    await _seed_job(session, key=key, status="active", started_ms=_now_ms() - 1800 * 1000, timeout=_PROCESS_FILE_TIMEOUT)
+    await _seed_job(session, key=key, status="active", started_ms=await _now_ms(session) - 1800 * 1000, timeout=_PROCESS_FILE_TIMEOUT)
     await session.commit()
 
     _patch_slack(monkeypatch, slack)
@@ -165,7 +173,11 @@ async def test_reaper_bound_is_per_row_not_a_fixed_constant(session: AsyncSessio
     # Age it past its OWN 8100s window -> now it is genuinely stranded and gets reaped.
     await session.execute(text("DELETE FROM saq_jobs WHERE key = :k"), {"k": key})
     await _seed_job(
-        session, key=key, status="active", started_ms=_now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 60) * 1000, timeout=_PROCESS_FILE_TIMEOUT
+        session,
+        key=key,
+        status="active",
+        started_ms=await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 60) * 1000,
+        timeout=_PROCESS_FILE_TIMEOUT,
     )
     await session.commit()
 
@@ -179,7 +191,7 @@ async def test_reaper_falls_back_to_saq_default_timeout_when_blob_has_none(sessi
     slack = 900
     key = f"process_file:{uuid.uuid4()}"
     # No `timeout` kwarg -> blob omits it. 10s (SAQ default) + 900s slack = 910s window.
-    await _seed_job(session, key=key, status="active", started_ms=_now_ms() - 1000 * 1000)
+    await _seed_job(session, key=key, status="active", started_ms=await _now_ms(session) - 1000 * 1000)
     await session.commit()
 
     _patch_slack(monkeypatch, slack)
@@ -206,7 +218,7 @@ async def test_reaper_exempts_timeout_zero_rows_as_unbounded(session: AsyncSessi
         session,
         key=key,
         status="active",
-        started_ms=_now_ms() - (slack + 3600) * 1000,
+        started_ms=await _now_ms(session) - (slack + 3600) * 1000,
         timeout=0,
     )
     await session.commit()
@@ -233,7 +245,7 @@ async def test_reaper_reaps_a_row_that_was_picked_up_then_abandoned(session: Asy
         session,
         key=key,
         status="active",
-        started_ms=_now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
+        started_ms=await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
         timeout=_PROCESS_FILE_TIMEOUT,
         attempts=1,
     )
@@ -256,7 +268,7 @@ async def test_reaper_ignores_non_active_rows(session: AsyncSession, monkeypatch
     slack = 900
     aborting_key = f"process_file:{uuid.uuid4()}"
     queued_key = f"process_file:{uuid.uuid4()}"
-    old = _now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000
+    old = await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000
     await _seed_job(session, key=aborting_key, status="aborting", started_ms=old, timeout=_PROCESS_FILE_TIMEOUT)
     await _seed_job(session, key=queued_key, status="queued", started_ms=old, timeout=_PROCESS_FILE_TIMEOUT)
     await session.commit()
@@ -273,7 +285,7 @@ async def test_reaper_skips_a_row_with_no_started_timestamp(session: AsyncSessio
     """A blob without ``started`` is excluded, not reaped on incomplete data (age is unknowable)."""
     await session.execute(_CREATE_SAQ_JOBS)
     key = f"process_file:{uuid.uuid4()}"
-    blob = {"function": "process_file", "status": "active", "touched": _now_ms(), "timeout": 600}
+    blob = {"function": "process_file", "status": "active", "touched": await _now_ms(session), "timeout": 600}
     await session.execute(
         text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:key, :job, :queue, 'active', 0)"),
         {"key": key, "job": json.dumps(blob).encode("utf-8"), "queue": _QUEUE},
@@ -312,7 +324,7 @@ async def test_stranded_count_equals_what_the_reaper_deletes(session: AsyncSessi
     monkeypatch.setattr("phaze.services.queue_introspection.get_settings", lambda: _StubCfg(slack))
     _patch_slack(monkeypatch, slack)
 
-    now = _now_ms()
+    now = await _now_ms(session)
     stranded_ms = now - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000
     for _ in range(6):
         await _seed_job(session, key=f"process_file:{uuid.uuid4()}", status="active", started_ms=stranded_ms, timeout=_PROCESS_FILE_TIMEOUT)
@@ -343,7 +355,7 @@ async def test_guard_is_silent_at_or_below_concurrency(session: AsyncSession, mo
     await session.execute(_CREATE_SAQ_JOBS)
     slack = 900
     monkeypatch.setattr("phaze.services.queue_introspection.get_settings", lambda: _StubCfg(slack))
-    stranded_ms = _now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000
+    stranded_ms = await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000
     for _ in range(4):
         await _seed_job(session, key=f"process_file:{uuid.uuid4()}", status="active", started_ms=stranded_ms, timeout=_PROCESS_FILE_TIMEOUT)
     await session.commit()
@@ -394,7 +406,7 @@ async def _seed_blocked_file(session: AsyncSession, *, slack: int, agent_id: str
         session,
         key=key,
         status="active",
-        started_ms=_now_ms() - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
+        started_ms=await _now_ms(session) - (_PROCESS_FILE_TIMEOUT + slack + 300) * 1000,
         timeout=_PROCESS_FILE_TIMEOUT,
     )
     await session.commit()

@@ -49,6 +49,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 from tests.conftest import _SESSION_LOCK_ATTR, TEST_DATABASE_URL
 from tests.db_guard import (
     ALLOW_SHARED_ENV_VAR,
@@ -161,7 +162,7 @@ def test_a_real_second_pytest_process_is_refused_and_collect_only_is_not(pytestc
         capture_output=True,
         text=True,
         check=False,
-        timeout=300,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
     assert collect.returncode == 0, f"--collect-only must be allowed while a suite holds the lock:\n{collect.stdout}{collect.stderr}"
 
@@ -171,7 +172,7 @@ def test_a_real_second_pytest_process_is_refused_and_collect_only_is_not(pytestc
         capture_output=True,
         text=True,
         check=False,
-        timeout=300,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
     assert run.returncode == pytest.ExitCode.USAGE_ERROR, f"a second real pytest process must be refused, got {run.returncode}"
     assert "Refusing to start" in run.stdout + run.stderr

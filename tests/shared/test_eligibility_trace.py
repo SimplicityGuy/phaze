@@ -10,11 +10,10 @@ Behavior 10 coverage:
 - The trace is a single-row evaluation: every emitted SELECT is file_id-scoped, and no whole-corpus
   COUNT/scan is issued.
 - An enrich stage renders ``upstream met?`` vacuously satisfied (no upstream).
-- The trace verdict is the REAL ``eligible()`` — the scheduler's source of truth. Under the OQ-1
-  SCOPE-MINIMAL resolution a force-skipped enrich upstream does NOT unblock its downstream (deferred to
-  Phase 90), so a SKIPPED upstream is rendered as still-gating (an HONEST blocker) rather than
-  "satisfied" — a lenient display would make the trace claim a downstream is eligible when the
-  scheduler permanently gates it (the exact deadlock UI-03 exists to expose).
+- The trace verdict is the REAL ``eligible()`` — the scheduler's source of truth. Since phaze-iyqhg a
+  force-skipped enrich upstream satisfies its downstream (D-08's downstream half, deferred by OQ-1's
+  SCOPE-MINIMAL resolution until then), so a SKIPPED upstream renders as met AND is named as skipped —
+  the trace neither claims an eligibility the scheduler withholds nor reads a skip as completion.
 - An unknown stage degrades to "Trace unavailable this tick." (a poll never 500s).
 
 Must pass in the ``shared`` bucket in isolation (consumes the DB fixtures -> auto-marked integration).
@@ -120,13 +119,12 @@ async def test_enrich_stage_upstream_is_vacuously_met(client: AsyncClient, sessi
 
 
 @pytest.mark.asyncio
-async def test_skipped_upstream_still_gates_downstream(client: AsyncClient, session: AsyncSession) -> None:
-    """A force-skipped metadata upstream does NOT unblock propose (OQ-1 scope-minimal) -- rendered honestly.
+async def test_skipped_upstream_unblocks_downstream_and_is_named(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-iyqhg: a force-skipped metadata upstream UNBLOCKS propose, and the trace says it was a skip.
 
-    This is the DEVIATION from the plan's "a skipped upstream renders as satisfied" note: under the
-    RESOLVED scope-minimal semantics ``eligible()`` strictly requires the upstream DONE, so a SKIPPED
-    metadata keeps propose gated. The trace reflects the scheduler's real behavior rather than claiming
-    an eligibility the scheduler will never grant.
+    Until this bead the trace (correctly, for the code of the day) rendered "metadata skipped —
+    downstream stays gated (Phase 90)" while the skip dialog promised "so downstream stages can
+    proceed". Both now tell the truth: propose is eligible, and the upstream line names the skip.
     """
     file_id = await _seed_file(session)
     await _mark_analyze_done(session, file_id)
@@ -137,9 +135,10 @@ async def test_skipped_upstream_still_gates_downstream(client: AsyncClient, sess
 
     assert response.status_code == 200
     body = response.text
-    assert "Propose — NOT eligible" in body
-    assert "metadata skipped — downstream stays gated" in body
-    assert "← blocker" in body
+    assert "Propose — eligible (in the pending set)" in body
+    assert "all upstream done or skipped (metadata skipped)" in body
+    assert "downstream stays gated" not in body
+    assert "← blocker" not in body
 
 
 @pytest.mark.asyncio
@@ -181,7 +180,7 @@ async def test_force_skip_appears_only_on_enrich_pills(client: AsyncClient, sess
 
     for stage in _ENRICH:
         assert f"/pipeline/files/{file_id}/skip/{stage}" in body, f"missing force-skip for enrich {stage}"
-        assert f"Force {stage} complete for this file?" in body  # verbatim UI-SPEC confirm heading
+        assert f"Skip {stage} for this file?" in body  # phaze-iyqhg confirm heading
     for stage in _DOWNSTREAM:
         assert f"/pipeline/files/{file_id}/skip/{stage}" not in body, f"approval-bypass: skip affordance on {stage}"
 
@@ -196,4 +195,5 @@ async def test_force_skip_dialog_copy_and_required_reason(client: AsyncClient, s
     assert "Why are you skipping this? (required)" in body  # reason label
     assert 'placeholder="e.g. corrupt source file, analyze crashes on this set"' in body
     assert 'name="reason" required' in body  # the textarea is required (browser-side gate)
-    assert "Force complete / skip" in body  # the CTA label
+    assert "Skip stage…" in body  # the CTA label (phaze-iyqhg)
+    assert "Force complete" not in body  # the misnomer is gone

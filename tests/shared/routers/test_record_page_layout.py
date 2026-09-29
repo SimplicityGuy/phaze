@@ -4,7 +4,7 @@ The bead's acceptance is discharged here, criterion by criterion, against the RE
 rather than against the templates' source: the full page renders a sidebar carrying the eight
 facts and the harmonic-journey wheel, the drawer renders the set panel and the tracklist index
 and NO sidebar, and every control the record already had -- the five stage trace triggers, the
-force-skip dialogs on the three ENRICH stages only, the Changes Review link carrying
+force-skip dialogs on the ENRICH stages only (and, since phaze-iyqhg, only on an unfinished one), the Changes Review link carrying
 ``status=needs_review``, and the history list -- survives the re-layout in both presentations.
 
 That last clause is the blast-radius statement's proof obligation. The re-layout moved every
@@ -18,6 +18,7 @@ Consumes the DB fixtures, so ``conftest.py`` auto-marks this module ``integratio
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
@@ -25,8 +26,10 @@ from bs4 import BeautifulSoup
 import pytest
 
 from phaze.models.analysis import AnalysisWindow
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
+from phaze.services.analysis_timeline import format_elapsed_time
 from phaze.services.record_facts import ABSENT
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import flicker_filtered_key_runs, key_name_for_camelot
@@ -49,8 +52,8 @@ if TYPE_CHECKING:
 _JOURNEY_KEYS = ("8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A")
 _WINDOW_SEC = 30.0
 
-# The eight sidebar rows, in the order build_record_facts emits them.
-_EXPECTED_FACT_LABELS = ["Format", "Duration", "sha256", "Lane", "Windows", "Median BPM", "Modal key", "Mood · style"]
+# The nine sidebar rows, in the order build_record_facts emits them.
+_EXPECTED_FACT_LABELS = ["Format", "Duration", "sha256", "Lane", "Windows", "Median BPM", "Modal key", "Mood", "Style"]
 
 # The three ENRICH stages carry a force-skip control; the three downstream stages must not
 # (approval-bypass hazard, D-10).
@@ -87,12 +90,12 @@ def _soup(body: str) -> BeautifulSoup:
 
 
 @pytest.mark.asyncio
-async def test_the_full_page_renders_the_sidebar_with_the_eight_facts_and_the_wheel(  # type: ignore[no-untyped-def]
+async def test_the_full_page_renders_the_sidebar_with_the_nine_facts_and_the_wheel(  # type: ignore[no-untyped-def]
     client: AsyncClient,
     session: AsyncSession,
     seed_file_with_windows,
 ) -> None:
-    """Acceptance 1a: the page's right sidebar carries the eight facts and the harmonic wheel."""
+    """Acceptance 1a: the page's right sidebar carries the nine facts and the harmonic wheel."""
     file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
     await _seed_keyed_windows(session, file)
 
@@ -114,8 +117,81 @@ async def test_the_full_page_renders_the_sidebar_with_the_eight_facts_and_the_wh
     assert values["Lane"] == "🖥️ local"
     assert values["Duration"] == "6:30", "the analyzed extent of the seeded windows, as h:mm:ss"
     assert values["sha256"].startswith(file.sha256_hash[:12])
-    assert values["Mood · style"] == "energetic · techno"
+    assert values["Style"] == "techno", "dominant_style is still read verbatim off AnalysisResult"
+    # `seed_file_with_windows` seeds no `SetProfile` and no coarse `mood_scores` -- only the
+    # legacy `AnalysisWindow.mood` free-text column -- so the Mood row has nothing to chip from
+    # and shows the honest absent state rather than the old (now-unread) `AnalysisResult.mood`.
+    assert values["Mood"] == ABSENT
     assert values["Median BPM"] != ABSENT
+
+
+@pytest.mark.asyncio
+async def test_the_mood_row_renders_coloured_chips_from_the_set_profiles_mean_vector(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: a file with a set_profile shows 3 mood chips with labels, colours and
+    percentages, no ellipsis truncation, and the full ranked list on hover."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    # MOOD_ORDER-positional: mood_acoustic, mood_electronic, mood_aggressive, mood_relaxed,
+    # mood_happy, mood_sad, mood_party, danceability, gender, tonality, voice_instrumental --
+    # the operator report's own numbers (electronic=0.88, party=0.72, aggressive=0.40) plus a
+    # realistic reading for the rest, never a placeholder string.
+    mean_vector = [0.12, 0.88, 0.40, 0.15, 0.30, 0.05, 0.72, 0.65, 0.50, 0.60, 0.20]
+    session.add(SetProfile(file_id=file.id, mean_vector=mean_vector, camelot_modal="8A"))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    mood_row = next(row for row in page.select("[data-record-sidebar] [data-record-fact]") if row.select_one("dt").get_text(strip=True) == "Mood")  # type: ignore[union-attr]
+
+    chips = mood_row.select("[data-mood-chip]")
+    assert [chip.get_text(" ", strip=True) for chip in chips] == ["Electronic 34%", "Party 27%", "Aggressive 15%"]
+    assert "…" not in mood_row.get_text(), "no ellipsis truncation of the mood chips"
+
+    # The chip row renders no CSS `truncate` -- unlike every plain-text fact row -- so a chip's
+    # text can never be clipped the way the old single-string value was.
+    dd = mood_row.select_one("dd")
+    assert dd is not None
+    assert "truncate" not in dd.get("class", [])
+
+    # Each chip carries its own hue swatch, from the one shared mood-colour table.
+    swatches = [chip.select_one("span") for chip in chips]
+    assert all(swatch is not None and "background-color: hsl(" in swatch.get("style", "") for swatch in swatches)  # type: ignore[union-attr]
+
+    # The full 7-mood ranked list is available on hover, not just the top 3 chips shown.
+    title = dd.get("title", "")
+    assert title.count("%") == 7
+    assert title.startswith("Electronic 34% · Party 27% · Aggressive 15%")
+
+
+@pytest.mark.asyncio
+async def test_the_mood_row_falls_back_to_coarse_window_mood_scores_without_a_set_profile(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """A file with no `set_profile` row but coarse windows carrying real `mood_scores` still
+    gets chips, averaged from the windows rather than shown as absent."""
+    file, _result, windows = await seed_file_with_windows(original_filename="<set-01>.mp3", coarse_count=1)
+    coarse_window = next(window for window in windows if window.tier == "coarse")
+    coarse_window.mood_scores = {
+        "mood_acoustic": 0.1,
+        "mood_electronic": 0.9,
+        "mood_aggressive": 0.2,
+        "mood_relaxed": 0.05,
+        "mood_happy": 0.05,
+        "mood_sad": 0.02,
+        "mood_party": 0.3,
+    }
+    session.add(coarse_window)
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    mood_row = next(row for row in page.select("[data-record-sidebar] [data-record-fact]") if row.select_one("dt").get_text(strip=True) == "Mood")  # type: ignore[union-attr]
+
+    chips = mood_row.select("[data-mood-chip]")
+    assert next(chip.get_text(" ", strip=True) for chip in chips) == "Electronic 56%"
 
 
 @pytest.mark.asyncio
@@ -183,8 +259,10 @@ async def test_both_presentations_keep_every_control_the_relayout_moved(  # type
 
     # Force-skip on the ENRICH stages only. The dialog names its stage in its own POST url, so
     # the presence of that url is what distinguishes "has a skip control" from "does not".
-    for stage in _ENRICH_STAGES:
-        assert f"/skip/{stage}" in body, f"the {stage} force-skip control is missing"
+    # phaze-iyqhg: and only where a skip can change anything. This seed's analysis is COMPLETED
+    # (done) and its metadata never ran (not started), so exactly one enrich stage offers it.
+    assert "/skip/metadata" in body, "the not-started metadata stage lost its Skip stage… control"
+    assert "/skip/analyze" not in body, "a DONE analyze stage must offer no skip (a no-op marker)"
     for stage in _DOWNSTREAM_STAGES:
         assert f"/skip/{stage}" not in body, f"{stage} must carry no skip affordance (D-10)"
 
@@ -207,12 +285,13 @@ async def test_the_wheel_plots_the_flicker_filtered_runs_with_dashed_amber_jumps
     session: AsyncSession,
     seed_file_with_windows,
 ) -> None:
-    """Acceptance 2: node count = filtered key runs; jump edges dashed and amber; caption names them.
+    """Acceptance 2: node count = filtered key runs; jump edges dashed and amber; the runs table
+    names every run's time, key, duration and move.
 
     The node count is asserted against ``flicker_filtered_key_runs`` rather than against a
     hand-counted literal on purpose: that function is also what
     ``set_projection.harmonic_discipline`` counts, so this pins the wheel to the SAME filtered
-    sequence the percentage in its own caption is computed from.
+    sequence the summary above the table is computed from.
     """
     file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
     windows = await _seed_keyed_windows(session, file)
@@ -258,13 +337,134 @@ async def test_the_wheel_plots_the_flicker_filtered_runs_with_dashed_amber_jumps
     assert banner is not None
     assert any("amber-500" in name for name in banner.get("class", [])), "the jump stroke names the banner's own amber"
 
-    # The caption names the adjacent share and every jump by code pair and elapsed time.
-    caption = wheel.select_one("[data-harmonic-caption]")
-    assert caption is not None
-    caption_text = caption.get_text(" ", strip=True)
-    assert f"{len(expected_runs)} key runs" in caption_text
-    assert "wheel-adjacent" in caption_text
-    assert "10B → 5A at 5:30" in caption_text, "each jump is named by code pair and by when it lands"
+    # The one-line summary states the run count and how many of the wheel's own edges were
+    # adjacent -- the SAME two numbers, never a re-derivation -- and doubles as the SVG's own
+    # accessible label (acceptance: "keep a meaningful aria-label").
+    summary = wheel.select_one("[data-harmonic-summary]")
+    assert summary is not None
+    summary_text = summary.get_text(" ", strip=True)
+    assert summary_text == f"{len(expected_runs)} runs · {len(adjacent)} of {len(edges)} moves wheel-adjacent"
+    svg = wheel.select_one("[data-harmonic-wheel]")
+    assert svg is not None
+    assert summary_text in str(svg["aria-label"])
+
+    # The table has one row per surviving key run, in the SAME order and numbering the wheel's
+    # own nodes carry: a row's `data-node-index` must always name the node it draws beside, so
+    # hovering it can never ring the wrong dot.
+    rows = wheel.select("[data-journey-row]")
+    assert len(rows) == len(expected_runs)
+    assert [row["data-node-index"] for row in rows] == [node["data-node-index"] for node in nodes]
+
+    # Time range and duration, read straight off the filtered runs -- never a re-derivation from
+    # the raw windows, which would get the blip-merged "9A" run's span wrong.
+    assert [row.select("td")[0].get_text(strip=True) for row in rows] == [
+        f"{format_elapsed_time(run.start_sec)}\u2013{format_elapsed_time(run.end_sec)}" for run in expected_runs
+    ]
+    assert [row.select("td")[2].get_text(strip=True) for row in rows] == [format_elapsed_time(run.dwell_sec) for run in expected_runs]
+
+    # The key column names the run by Camelot code and canonical key name, with a colour dot in
+    # the SAME hue as the node it sits beside -- never a re-derived colour.
+    assert [row.select("td")[1].get_text(" ", strip=True) for row in rows] == [
+        f"{run.code} · {key_name_for_camelot(run.code)}" for run in expected_runs
+    ]
+    dots = [row.select_one(".harmonic-run-dot") for row in rows]
+    assert all(dot is not None for dot in dots)
+    assert [dot["style"] for dot in dots] == [f"background-color: {node['fill']};" for node in nodes]
+
+    # The move column reads "—" for the first run, else the same "adjacent"/"jump" word the
+    # wheel's own edges are classified with -- the first run's first-of-set, the rest walking
+    # the four edges asserted above in order.
+    move_cells = [row.select_one("[data-move-kind]") for row in rows]
+    assert [str(cell["data-move-kind"]) for cell in move_cells] == ["", "adjacent", "jump", "jump", "jump"]
+    assert [cell.get_text(strip=True) for cell in move_cells] == ["—", "adjacent", "jump", "jump", "jump"]
+
+
+@pytest.mark.asyncio
+async def test_the_summarys_two_numbers_stay_consistent_when_the_stored_share_differs_from_the_live_edges(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: the summary's "N of M" agrees with ITSELF even when the STORED
+    ``SetProfile.harmonic_discipline`` disagrees with a fresh recount of the wheel's own edges.
+
+    The synthetic journey's live share is 25% (1 of its 4 edges classified adjacent -- see the
+    previous test); seeding a stored discipline of 90% instead makes the two figures disagree on
+    purpose. The requirement (``harmonic_journey.py:build_harmonic_journey``'s own docstring, and
+    the bead's own acceptance) is that the total move count ("M") still comes from the wheel's
+    own LIVE edges -- it is what is drawn -- while the adjacent count ("N") is derived from that
+    SAME stored share, never from a naive recount of those edges that would print an "N" the
+    share does not agree with.
+    """
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    windows = await _seed_keyed_windows(session, file)
+    expected_runs = flicker_filtered_key_runs(windows)
+    session.add(SetProfile(file_id=file.id, harmonic_discipline=0.9))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    wheel = page.select_one("[data-harmonic-journey]")
+    assert wheel is not None
+
+    edges = wheel.select("[data-journey-edge]")
+    live_adjacent = [edge for edge in edges if edge["data-edge-kind"] == "adjacent"]
+    assert len(edges) == len(expected_runs) - 1
+    assert len(live_adjacent) == 1, "the live edges still classify only one move as adjacent"
+
+    summary = wheel.select_one("[data-harmonic-summary]")
+    assert summary is not None
+    summary_text = summary.get_text(" ", strip=True)
+    # round(0.9 * 4) == 4 -- the STORED share, not the live recount of 1, is what "N" agrees
+    # with; "M" is still the wheel's own 4 live edges either way.
+    assert summary_text == f"{len(expected_runs)} runs · 4 of {len(edges)} moves wheel-adjacent"
+    svg = wheel.select_one("[data-harmonic-wheel]")
+    assert svg is not None
+    assert summary_text in str(svg["aria-label"]), "the aria-label carries the SAME summary, never a second figure"
+
+
+@pytest.mark.asyncio
+async def test_runs_past_the_visible_cap_ship_hidden_behind_a_show_all_control(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """A long set's rows all ship in the response body -- nothing is a second fetch -- with the
+    rows past the cap starting hidden and a "Show all" control naming the true total."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    # 20 fine windows as 10 runs of 2 windows each, alternating between two adjacent codes so
+    # consecutive blocks never merge into one run: 10 key runs, comfortably past any cap of 8.
+    codes = [code for index in range(10) for code in (("8A", "8A") if index % 2 == 0 else ("9A", "9A"))]
+    windows = [
+        AnalysisWindow(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            tier="fine",
+            window_index=index,
+            start_sec=index * _WINDOW_SEC,
+            end_sec=(index + 1) * _WINDOW_SEC,
+            musical_key=key_name_for_camelot(code),
+        )
+        for index, code in enumerate(codes)
+    ]
+    session.add_all(windows)
+    await session.commit()
+    expected_runs = flicker_filtered_key_runs(windows)
+    assert len(expected_runs) == 10, "the fixture must actually exceed the cap for this test to mean anything"
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    wheel = page.select_one("[data-harmonic-journey]")
+    assert wheel is not None
+
+    rows = wheel.select("[data-journey-row]")
+    assert len(rows) == len(expected_runs), "every row ships in the response body -- nothing is a second fetch"
+    visible = [row for row in rows if "display:none" not in row.get("style", "").replace(" ", "")]
+    hidden = [row for row in rows if row not in visible]
+    assert 0 < len(visible) < len(rows), "some rows start visible and some start hidden behind the cap"
+    assert len(hidden) == len(rows) - len(visible)
+
+    control = wheel.select_one("[data-harmonic-show-all]")
+    assert control is not None
+    assert str(len(expected_runs)) in control.get_text(" ", strip=True), "the control names the TRUE total, not just the hidden count"
 
 
 @pytest.mark.asyncio
@@ -392,3 +592,189 @@ async def test_more_like_this_renders_real_neighbours_with_glyphs_links_and_scor
     scoring_line = row.select_one("[data-similar-set-line]").get_text(strip=True)  # type: ignore[union-attr]
     assert scoring_line.startswith("arc 0.00"), "identical arcs and mean_vector: the duplicate-rip shape"
     assert scoring_line.endswith("8A")
+
+
+# phaze-tuy9m: the extracted-metadata card. `_record_content.html` is the shared partial both
+# routes render, so a field-presence test against ONE route and a drawer/page parity test (already
+# held by `tests/shared/test_record_full_page.py`'s text-equality assertion) together cover both
+# presentations without duplicating every assertion twice.
+
+
+def _metadata_field_values(soup: BeautifulSoup) -> dict[str, str]:
+    card = soup.select_one("[data-metadata-card]")
+    assert card is not None, "the extracted-metadata card is missing"
+    return {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in card.select("[data-metadata-field]")
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("presentation", ["page", "drawer"])
+async def test_the_metadata_card_renders_every_non_null_tag_field_on_both_presentations(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+    presentation: str,
+) -> None:
+    """Acceptance 1: a populated ``FileMetadata`` row renders every non-null field, on both routes."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(
+        FileMetadata(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            artist="Artist",
+            title="Title",
+            album="Album",
+            year=2024,
+            genre="Techno",
+            track_number=3,
+            bitrate=320,
+            duration=125.0,
+        )
+    )
+    await session.commit()
+
+    url = f"/files/{file.id}" if presentation == "page" else f"/record/{file.id}"
+    response = await client.get(url, headers={"HX-Request": "true"} if presentation == "drawer" else None)
+    assert response.status_code == 200
+    soup = _soup(response.text)
+
+    assert _metadata_field_values(soup) == {
+        "Artist": "Artist",
+        "Title": "Title",
+        "Album": "Album",
+        "Year": "2024",
+        "Genre": "Techno",
+        "Track #": "3",
+        "Bitrate": "320 kbps",
+        "Duration": "2:05",
+    }
+
+    # phaze-tuy9m follow-up (operator report 2026-09-27, verbatim: "where can i see the metadata?
+    # it should be presented in this view"): the tag values must be in the VISIBLE markup, not
+    # hidden behind a closed <details> a click is needed to open.
+    card = soup.select_one("[data-metadata-card]")
+    assert card is not None
+    assert card.name != "details", "the card itself must not be a collapsible fold"
+    assert card.find_parent("details") is None, "no ancestor fold hides the card from initial render"
+
+
+@pytest.mark.asyncio
+async def test_the_metadata_card_is_not_folded_even_with_no_tag_data(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """The visibility requirement holds regardless of state -- missing/failed/empty all render open."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.name == "section"
+    assert card.find_parent("details") is None
+    assert "No metadata extracted yet." in card.get_text(" ", strip=True)
+
+
+@pytest.mark.asyncio
+async def test_raw_tags_render_in_a_collapsed_details_section(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: raw tags are folded, not dumped open beside the formatted fields -- even though
+    the card AROUND them (phaze-tuy9m follow-up) renders open, this inner blob stays a fold."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist="Artist", raw_tags={"TPE1": "Artist"}))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    raw = page.select_one("[data-metadata-raw-tags]")
+
+    assert raw is not None
+    assert raw.name == "details", "raw tags fold on their own, unlike the card around them"
+    assert raw.get("open") is None, "collapsed by default"
+    pre = raw.select_one("pre")
+    assert pre is not None
+    assert '"TPE1": "Artist"' in pre.text
+
+
+@pytest.mark.asyncio
+async def test_missing_metadata_shows_an_explicit_state(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: no ``FileMetadata`` row at all is a named state, not a blank card."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.select("[data-metadata-field]") == []
+    assert "No metadata extracted yet." in card.get_text(" ", strip=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_metadata_shows_the_stored_error_message(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: a failed extraction shows WHY, the same stored reason the stage pill reads."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, failed_at=datetime.now(UTC), error_message="no ID3 frames found"))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    card = page.select_one("[data-metadata-card]")
+
+    assert card is not None
+    assert card.select("[data-metadata-field]") == []
+    card_text = card.get_text(" ", strip=True)
+    assert "no ID3 frames found" in card_text
+    assert "failed" in card_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_duration_falls_back_to_metadata_duration_when_there_are_no_analysis_windows(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    make_file,
+) -> None:
+    """Acceptance: a file with tag metadata but no analysis windows shows THAT duration in Facts,
+    visibly marked as read from tags rather than analyzed."""
+    file = await make_file(original_filename="<set-03>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=125.0))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    values = {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in page.select("[data-record-sidebar] [data-record-fact]")
+    }
+
+    assert values["Duration"] == "2:05 (from tags)"
+
+
+@pytest.mark.asyncio
+async def test_duration_still_shows_the_analyzed_extent_when_windows_exist_even_with_metadata(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """Acceptance: windows win. The Facts duration must never fall back to the tag value once
+    there is a real analyzed extent to show, even when the two disagree."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=99999.0))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    values = {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd").get_text(" ", strip=True)  # type: ignore[union-attr]
+        for row in page.select("[data-record-sidebar] [data-record-fact]")
+    }
+
+    assert values["Duration"] == "2:00", "the analyzed extent of the seeded windows, not the tag duration"
+    assert "from tags" not in values["Duration"]

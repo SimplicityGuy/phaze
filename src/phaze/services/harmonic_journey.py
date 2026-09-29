@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Final
 
 from phaze.services.analysis_timeline import format_elapsed_time
 from phaze.services.set_glyph_colors import camelot_hue
-from phaze.services.set_projection import flicker_filtered_key_runs, placeable_key_runs, wheel_adjacent
+from phaze.services.set_projection import flicker_filtered_key_runs, key_name_for_camelot, placeable_key_runs, wheel_adjacent
 
 
 if TYPE_CHECKING:
@@ -146,8 +146,35 @@ class JourneyEdge:
 
     @property
     def label(self) -> str:
-        """The move as the caption names it: ``"10B → 5A"``."""
+        """The move as it would be named in prose: ``"10B → 5A"``."""
         return f"{self.from_code} → {self.to_code}"
+
+
+@dataclass(frozen=True)
+class JourneyRow:
+    """One row of the compact runs table: a key run's identity, its time range, and its move.
+
+    Operator decision 2026-09-27 (bead ``phaze-37ovq``, "Compact table"): the caption used to
+    name every jump in prose ("Jumps: 11A → 2B at 8:00; ..."), which an operator reported as
+    confusing on a long set. Each surviving run is now a table row instead, in the SAME order
+    :func:`build_harmonic_journey` places nodes -- ``index`` is the wheel's own
+    ``data-node-index``, so a row and the node it describes share one number and the table's
+    hover can drive the wheel and the timeline through the identical lookup the wheel's own
+    nodes already use (``static/js/analysis_timeline.js``'s ``nodeTime``).
+    """
+
+    index: int
+    code: str
+    key_name: str | None
+    hue: int
+    time_range_label: str
+    dwell_label: str
+    move_kind: str | None
+    """``None`` for the first run (nothing was entered), else ``"adjacent"`` or ``"jump"`` --
+    :attr:`JourneyEdge.kind` of the edge that landed on this run, never a re-derivation."""
+    move_label: str
+    """``"—"`` for the first run, else the same word as ``move_kind`` -- what the table cell
+    prints, kept as its own field so the template never has to spell out the dash itself."""
 
 
 @dataclass(frozen=True)
@@ -158,11 +185,17 @@ class HarmonicJourney:
     even when nothing is plotted on it, so an empty wheel reads as "no key path here" rather
     than as a missing component. ``nodes`` empty is what ``has_journey`` reports, and the
     template pairs that with a text alternative rather than an empty graphic.
+
+    ``caption`` is the one-line summary ("18 runs · 2 of 17 moves wheel-adjacent") -- it is BOTH
+    the text rendered above the runs table and the SVG's own ``aria-label`` content, so the two
+    can never say something different about the same picture. ``rows`` is the table itself, one
+    :class:`JourneyRow` per node in the same order.
     """
 
     sectors: list[WheelSector]
     nodes: list[JourneyNode] = field(default_factory=list)
     edges: list[JourneyEdge] = field(default_factory=list)
+    rows: list[JourneyRow] = field(default_factory=list)
     adjacent_share: float | None = None
     caption: str = ""
     canvas: float = CANVAS
@@ -265,25 +298,62 @@ def _edges(placed: Sequence[tuple[KeyRun, int]], nodes: Sequence[JourneyNode]) -
 
 
 def _caption(nodes: Sequence[JourneyNode], edges: Sequence[JourneyEdge], adjacent_share: float | None) -> str:
-    """The wheel's text alternative: the run count, the adjacent share, and every jump by name.
+    """The wheel's one-line summary: the run count and how many moves were wheel-adjacent.
 
-    The jumps are named individually and with their elapsed time because that is the only part
-    of the picture an operator has to ACT on -- "82% adjacent" says the set is disciplined, but
-    "10B → 5A at 1:02:30" says where to listen.
+    Operator decision 2026-09-27 (bead ``phaze-37ovq``, "Compact table"): this used to also name
+    every jump in prose ("Jumps: 11A → 2B at 8:00; ..."), which an operator reported as confusing
+    on a long set -- that detail now lives per-row in ``HarmonicJourney.rows`` instead, and this
+    string is left as the short summary sentence rendered above the table AND, unchanged, as the
+    SVG's own ``aria-label`` (``_harmonic_wheel.html``): one string, so the two can never drift.
+
+    The "N of M" count is derived from ``adjacent_share`` -- never from a fresh count of
+    ``edges`` -- because ``adjacent_share`` may be the caller's STORED ``harmonic_discipline``
+    figure rather than a live recount (see ``build_harmonic_journey``), and a share that predates
+    ``edges`` would otherwise let this sentence's own two numbers disagree with each other. When
+    ``adjacent_share`` genuinely comes from live ``edges`` (no stored figure given), this is
+    exactly a live count: ``round(k/n * n) == k`` for the integers involved.
 
     Only ever called with at least one node: :func:`build_harmonic_journey` returns the empty
     journey -- whose caption is the empty string -- before it reaches here. A guard for the
     empty case would be a branch no test could close through the public API.
     """
-    runs = f"{len(nodes)} key run{'' if len(nodes) == 1 else 's'}"
+    runs = f"{len(nodes)} run{'' if len(nodes) == 1 else 's'}"
     if not edges:
         return f"{runs}, no key changes."
-    share = f"{round((adjacent_share or 0.0) * 100)}% of {len(edges)} move{'' if len(edges) == 1 else 's'} wheel-adjacent"
-    jumps = [edge for edge in edges if not edge.adjacent]
-    if not jumps:
-        return f"{runs}, {share}. No jumps."
-    named = "; ".join(f"{edge.label} at {edge.at_label}" for edge in jumps)
-    return f"{runs}, {share}. Jump{'' if len(jumps) == 1 else 's'}: {named}."
+    total = len(edges)
+    adjacent_count = round((adjacent_share or 0.0) * total)
+    return f"{runs} · {adjacent_count} of {total} move{'' if total == 1 else 's'} wheel-adjacent"
+
+
+def _rows(placed: Sequence[tuple[KeyRun, int]], nodes: Sequence[JourneyNode], edges: Sequence[JourneyEdge]) -> list[JourneyRow]:
+    """One :class:`JourneyRow` per node, carrying how each run was entered.
+
+    ``edges[i - 1]`` is the move that LANDS on ``nodes[i]`` (:func:`_edges` builds one edge per
+    consecutive pair), so row ``i`` reads its own move from that same edge rather than
+    re-deriving adjacency -- the table and the wheel's dashed/solid edges can never disagree
+    about which moves were jumps.
+    """
+    rows: list[JourneyRow] = []
+    for index, (run, _number) in enumerate(placed):
+        node = nodes[index]
+        if index == 0:
+            move_kind, move_label = None, "—"
+        else:
+            edge = edges[index - 1]
+            move_kind = move_label = edge.kind
+        rows.append(
+            JourneyRow(
+                index=node.index,
+                code=node.code,
+                key_name=key_name_for_camelot(node.code),
+                hue=node.hue,
+                time_range_label=f"{format_elapsed_time(run.start_sec)}\u2013{format_elapsed_time(run.end_sec)}",
+                dwell_label=node.dwell_label,
+                move_kind=move_kind,
+                move_label=move_label,
+            )
+        )
+    return rows
 
 
 def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow], *, stored_discipline: float | None = None) -> HarmonicJourney:
@@ -320,6 +390,7 @@ def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow], *, stored_dis
         sectors=sectors,
         nodes=nodes,
         edges=edges,
+        rows=_rows(placed, nodes, edges),
         adjacent_share=adjacent_share,
         caption=_caption(nodes, edges, adjacent_share),
     )
@@ -332,6 +403,7 @@ __all__ = [
     "HarmonicJourney",
     "JourneyEdge",
     "JourneyNode",
+    "JourneyRow",
     "WheelSector",
     "build_harmonic_journey",
 ]

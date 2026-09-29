@@ -364,3 +364,88 @@ async def test_presign_download_unresolvable_bucket_returns_409(
 
     assert resp.status_code == 409, resp.text
     assert "staging bucket" in resp.json()["detail"]
+
+
+# phaze-j0ixx -- a successful presign is the proof a backend's pods can reach the control plane again,
+# so it closes that backend's control-plane-unreachable breaker.
+
+
+async def _seed_breaker(session: AsyncSession, backend_id: str, *, open_: bool) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.models.backend_breaker import BackendBreaker
+
+    now = datetime.now(UTC)
+    session.add(
+        BackendBreaker(
+            backend_id=backend_id,
+            tripped_at=now - timedelta(minutes=30) if open_ else None,
+            trip_reason="3 files exited 14 (control plane unreachable) within 15 min" if open_ else None,
+            next_probe_at=now if open_ else None,
+        )
+    )
+    await session.commit()
+
+
+async def _breaker_row(session: AsyncSession, backend_id: str):  # type: ignore[no-untyped-def]
+    from sqlalchemy import select
+
+    from phaze.models.backend_breaker import BackendBreaker
+
+    session.expire_all()
+    return (await session.execute(select(BackendBreaker).where(BackendBreaker.backend_id == backend_id))).scalar_one()
+
+
+async def _seed_on_backend(session: AsyncSession, agent: Agent, backend_id: str) -> FileRecord:
+    from sqlalchemy import update
+
+    file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.SUBMITTED)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=backend_id))
+    await session.commit()
+    return file
+
+
+async def test_presign_closes_the_backends_open_breaker(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """A pod on the held backend reached the control plane: the breaker closes and reset_at retires the old exits."""
+    agent, _token = seed_test_agent
+    file = await _seed_on_backend(session, agent, "cluster-01")
+    await _seed_breaker(session, "cluster-01", open_=True)
+    await _seed_breaker(session, "cluster-02", open_=True)
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 200
+    closed = await _breaker_row(session, "cluster-01")
+    assert (closed.tripped_at, closed.trip_reason, closed.next_probe_at) == (None, None, None)
+    assert closed.reset_at is not None
+    assert (await _breaker_row(session, "cluster-02")).tripped_at is not None  # another backend's proof it is not
+
+
+async def test_presign_still_succeeds_when_closing_the_breaker_fails(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pod is waiting on this URL: a breaker write failure must not turn a working presign into a 500."""
+    from unittest.mock import AsyncMock
+
+    from phaze.services import backend_breaker
+
+    agent, _token = seed_test_agent
+    file = await _seed_on_backend(session, agent, "cluster-01")
+    await _seed_breaker(session, "cluster-01", open_=True)
+    monkeypatch.setattr(backend_breaker, "close_breaker", AsyncMock(side_effect=RuntimeError("db hiccup")))
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 200
+    assert resp.json()["expected_sha256"] == _SHA
+    assert (await _breaker_row(session, "cluster-01")).tripped_at is not None

@@ -208,17 +208,25 @@ class TestFunnel:
             keys[1]: CacheVerdict(keys[1], CacheDecision.SUPPRESSED_NEGATIVE),
             keys[2]: CacheVerdict(keys[2], CacheDecision.BACKOFF),
             keys[3]: CacheVerdict(keys[3], CacheDecision.TRANSIENT_EXHAUSTED),
+            keys[4]: CacheVerdict(keys[4], CacheDecision.LOW_CONFIDENCE_HOLD),
         }
         queue = build_queue_from_signals(corpus, verdicts)
-        assert queue.stats.queued == 1
+        assert queue.stats.queued == 0
         assert (queue.stats.cached_positive, queue.stats.cached_negative) == (1, 1)
         assert (queue.stats.cached_backoff, queue.stats.cached_exhausted) == (1, 1)
-        assert len(queue.cached) == 4, "explained, not merely absent -- the admin UI needs the reason"
+        assert queue.stats.cached_low_confidence == 1, "a low-confidence hold is counted on its own, never as a negative"
+        assert len(queue.cached) == 5, "explained, not merely absent -- the admin UI needs the reason"
+        assert "held after a low-confidence hit" in format_corpus_report(queue.stats)
 
     def test_retryable_verdicts_stay_in_the_queue(self) -> None:
         corpus = [signals("A - Live @ E 2024-04-12.mp3", duration=3600.0)]
         key = build_queue_from_signals(corpus, {}).entries[0].unique_set.key
-        for decision in (CacheDecision.NEGATIVE_EXPIRED, CacheDecision.TRANSIENT_RETRY_READY, CacheDecision.MISS):
+        for decision in (
+            CacheDecision.NEGATIVE_EXPIRED,
+            CacheDecision.TRANSIENT_RETRY_READY,
+            CacheDecision.LOW_CONFIDENCE_EXPIRED,
+            CacheDecision.MISS,
+        ):
             queue = build_queue_from_signals(corpus, {key: CacheVerdict(key, decision)})
             assert queue.stats.queued == 1, decision
 

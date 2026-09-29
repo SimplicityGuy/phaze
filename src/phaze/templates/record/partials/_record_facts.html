@@ -1,6 +1,6 @@
-{# phaze-x1qr3.8: the record's eight facts as a definition list. Built by
+{# phaze-x1qr3.8: the record's nine facts as a definition list. Built by
    `services/record_facts.build_record_facts` -- the template's whole job is the loop, because
-   four of the eight (windows coverage, median BPM, modal key, dominant mood/style) are
+   five of the nine (windows coverage, median BPM, modal key, mood chips, dominant style) are
    derivations, and a derivation written in Jinja is one nothing can test.
 
    Rendered in TWO places and deliberately not inside `_record_content.html`: the full page puts
@@ -11,7 +11,15 @@
 
    `tone` arrives as an intent name and is mapped to a semantic utility here, so every class
    string stays a literal in the markup -- Tailwind's `@source` scan and the a11y guard's
-   semantic-token rule both read this file, not the service. #}
+   semantic-token rule both read this file, not the service.
+
+   phaze-4ye5i: the Mood row is the one exception to "a fact is one line of text" -- it carries
+   `fact.chips`, up to 3 `MoodChip`s, rendered as the SAME rounded-full chip shape the timeline's
+   own coverage chip uses (`proposals/partials/analysis_timeline.html`), each with a small hue
+   swatch reusing the mood legend's own idiom (`style="background-color: hsl(...)"` -- the one
+   place mood colour is declared, never re-derived here). `fact.value`/`.title` stay populated
+   even when chips render, so the row still reads as plain text to anything that only reads the
+   `dd`'s text content, and the full ranked mood list stays available as the row's `title`. #}
 {% set _fact_tones = {
     'ok': 'text-ok ',
     'info': 'text-info ',
@@ -23,8 +31,20 @@
     {% for fact in record_facts %}
     <div data-record-fact class="flex items-baseline justify-between gap-3 py-2">
         <dt class="shrink-0 font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">{{ fact.label }}</dt>
+        {% if fact.chips %}
+        <dd class="flex min-w-0 flex-wrap justify-end gap-1 text-right text-sm {{ _fact_tones.get(fact.tone, _fact_tones.neutral) }}"
+            title="{{ fact.title }}">
+            {% for chip in fact.chips %}
+            <span data-mood-chip
+                  class="inline-flex items-center gap-1 rounded-full border border-gray-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-900 dark:border-phaze-border dark:text-gray-200">
+                <span class="h-2 w-2 shrink-0 rounded-full" style="background-color: hsl({{ chip.hue }}, 62%, 48%);"></span>{{ chip.label }} {{ chip.pct }}%
+            </span>
+            {% endfor %}
+        </dd>
+        {% else %}
         <dd class="min-w-0 truncate text-right text-sm {{ 'font-mono text-xs' if fact.mono else '' }} {{ _fact_tones.get(fact.tone, _fact_tones.neutral) }}"
             {% if fact.title %}title="{{ fact.title }}"{% endif %}>{% if fact.glyph %}{{ fact.glyph }} {% endif %}{{ fact.value }}</dd>
+        {% endif %}
     </div>
     {% endfor %}
 </dl>

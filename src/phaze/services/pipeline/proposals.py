@@ -17,6 +17,7 @@ from phaze.models.file import FileRecord
 from phaze.services.stage_status import (
     done_clause,
     inflight_clause,
+    satisfied_clause,
 )
 
 
@@ -37,9 +38,16 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
     number in front of the operator that the button does not honour -- exactly the class of
     dishonest UI this bead exists to remove.
 
-    Four conjuncts: not already proposed, metadata present, a COMPLETED analysis, and (phaze-3542b)
+    Four conjuncts: not already proposed, metadata satisfied, analysis satisfied, and (phaze-3542b)
     NO enrich stage in flight. The fourth is not a convergence condition -- it is a safety
     interlock against the move a proposal ultimately performs; see its comment below.
+
+    "Satisfied" (phaze-iyqhg) is DONE or force-SKIPPED -- :func:`satisfied_clause`, the SQL twin of
+    :func:`phaze.enums.stage.upstream_satisfied`, so this gate and ``eligible(..., Stage.PROPOSE)``
+    answer the same question (drift-locked in ``tests/integration/test_stage_status_equivalence.py``).
+    A skipped stage contributes NO data to the proposal: ``tasks/proposal.py`` sends ``analysis`` /
+    ``tags`` as null for a stage that did not complete, which the naming prompt documents as "not
+    analyzed" / "no tags were read".
     """
     return (
         # PR-A/Pitfall 4: the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
@@ -63,11 +71,13 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # fix is at the gate, so the state that strands them is never reached, rather than at four
         # call sites whose read path would change for every file in the archive.
         #
-        # Force-skip is NOT affected and must not be "fixed" to compensate: ``force_skip_stage``
-        # (routers/pipeline/skip.py) writes ONLY a ``stage_skip`` marker and is documented
-        # additive-only and "deliberately NOT ``done``", so a skipped file has no ``metadata`` row to
-        # satisfy either form of this conjunct -- it was un-proposable before this change too.
-        done_clause(Stage.METADATA),
+        # phaze-iyqhg: the conjunct is ``satisfied_clause`` -- ``done_clause`` OR a force-skip
+        # marker. The phaze-rhs6m property still holds: a FAILURE-only row satisfies neither half,
+        # so a file whose metadata merely failed stays un-proposable. Only an operator's explicit,
+        # reasoned skip admits it, and a skipped stage has left the metadata pending set
+        # (``eligible_clause``'s ``~skipped_clause``), so the automatic re-drive at
+        # ``original_path`` described above cannot reach it.
+        satisfied_clause(Stage.METADATA),
         # D-03 KEY RISK: require the COMPLETION discriminator, not bare row-existence.
         # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
         # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
@@ -76,8 +86,11 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # completed_at NULL. phaze-rhs6m composes this from the shared ``done_clause`` builder rather
         # than hand-rolling the same EXISTS -- a byte-equivalent swap (stage_status.py's ANALYZE
         # branch IS this predicate), made so both conjuncts now read from ONE definition and the
-        # asymmetry above cannot silently reappear on either side.
-        done_clause(Stage.ANALYZE),
+        # asymmetry above cannot silently reappear on either side. phaze-iyqhg widens BOTH conjuncts
+        # to ``satisfied_clause`` together, keeping them symmetric: a partial (in-flight) or failed
+        # analysis row still does not satisfy it; a force-skip does, and ``tasks/proposal.py`` then
+        # sends ``analysis: null`` rather than that row's NULL aggregates.
+        satisfied_clause(Stage.ANALYZE),
         # phaze-3542b: NO ENRICH STAGE MAY BE IN FLIGHT. A proposal that is approved and executed
         # MOVES the file and unlinks the source, while every enrich payload carries the pre-move
         # `FileRecord.original_path` (D-24). A job already enqueued when the move lands therefore
@@ -142,7 +155,8 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     """Return the ``generate_proposals`` pending set as deterministic, sibling-grouped file-id batches.
 
     Runs the convergence query (files NOT yet proposed -- ``~done_clause(PROPOSE)`` -- with BOTH a
-    ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row, and since phaze-3542b with NEITHER
+    ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row, or since phaze-iyqhg a force-skip marker
+    standing in for either, and since phaze-3542b with NEITHER
     enrich stage in flight -- the EXACT set the manual proposals triggers use), then GROUPS the
     pending files by the parent directory of ``FileRecord.original_path`` before packing them into
     ``batch_size`` groups. PR-A/Pitfall 4: the propose-exclusion replaces the retired

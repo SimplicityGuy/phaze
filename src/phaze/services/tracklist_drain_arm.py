@@ -10,8 +10,10 @@ at once, so a read-modify-write that skips the lock can lose one side's write.
 
 STATE MACHINE (see the model's own docstring for the full field list)
 -----------------------------------------------------------------------
-``get_or_create`` -> ``arm`` -> {cron loop: ``mark_slice_enqueued`` -> [the slice runs] ->
-``mark_slice_finished``} -> eventually ``disarm`` (operator, or auto via
+``get_or_create`` -> ``arm`` + ``mark_slice_enqueued`` IN ONE CALL (via ``arm_if_not_running``,
+the "Run tracklist lookups" click -- phaze-5sj7k -- which enqueues that first slice itself; or
+``arm_drain`` alone, kept for tests) -> {cron loop: ``mark_slice_enqueued`` -> [the slice runs] ->
+``mark_slice_finished``} -> eventually ``disarm`` (operator's "Stop" click, or auto via
 ``mark_slice_finished``'s failure-streak branch, or via ``disarm`` called directly for the
 queue-empty case).
 
@@ -61,6 +63,18 @@ async def get_arm_state(session: AsyncSession) -> TracklistDrainArmState:
     return await _load_or_create(session)
 
 
+def _apply_arm(row: TracklistDrainArmState, moment: datetime) -> None:
+    """Shared field-level transition for arming, used by both :func:`arm_drain` and
+    :func:`arm_if_not_running` -- the two entry points arm identically, and only differ in
+    whether they check ``row.armed`` first."""
+    row.armed = True
+    row.armed_at = moment
+    row.disarmed_at = None
+    row.disarmed_reason = None
+    row.consecutive_failures = 0
+    row.next_eligible_at = None
+
+
 async def arm_drain(session: AsyncSession, *, now: datetime | None = None) -> TracklistDrainArmState:
     """The operator's ONE consent decision: arm the continuous drain.
 
@@ -74,16 +88,61 @@ async def arm_drain(session: AsyncSession, *, now: datetime | None = None) -> Tr
     in-flight slice from a PRIOR arm (unusual, but not impossible if the operator disarms and
     immediately re-arms) must not let a second slice enqueue on top of the first -- the cron's
     ``in_flight`` gate stays authoritative regardless of which arm cycle started it.
+
+    The standalone ``POST /pipeline/arm-tracklist-drain`` endpoint that used to call this
+    directly is GONE (phaze-5sj7k: no served template linked to it once "Run tracklist lookups"
+    started arming the drain itself, which flags as an orphaned route -- see
+    ``test_no_orphaned_ui_route``). This function is kept for tests that need an armed row
+    without going through a live SAQ enqueue; the operator's own click now goes through
+    :func:`arm_if_not_running`.
     """
     moment = now or datetime.now(UTC)
     row = await _load_or_create(session, lock=True)
-    row.armed = True
-    row.armed_at = moment
-    row.disarmed_at = None
-    row.disarmed_reason = None
-    row.consecutive_failures = 0
-    row.next_eligible_at = None
+    _apply_arm(row, moment)
     return row
+
+
+async def arm_if_not_running(session: AsyncSession, *, now: datetime | None = None) -> bool:
+    """Atomically arm the drain UNLESS it is already armed, marking its first slice ``in_flight``
+    in the SAME lock/transaction as the arm -- the "Run tracklist lookups" click's consent
+    decision (phaze-5sj7k).
+
+    The operator's mental model is "clicking Run makes the lookups run until done", not "one
+    click, one slice, arm separately for the rest" -- so this is now the ONE thing "Run tracklist
+    lookups" does before its caller enqueues the first slice. Returns ``True`` when this call is
+    the one that transitioned the row from disarmed to armed (the caller should then enqueue that
+    first slice) and ``False`` when it was already armed (a second, or Nth, click while a pass is
+    already running) -- the caller must not enqueue another slice in that case, since the
+    already-running pass (via the continuous-drain cron, ``tasks.tracklist_drain_control``) owns
+    pacing the rest of it. The check-and-set happens under the same ``with_for_update`` lock every
+    other mutation here uses, so two concurrent clicks cannot both observe "not armed" and both
+    enqueue a slice.
+
+    REVIEW FIX (still phaze-5sj7k): the first version of this function armed the row but never
+    set ``in_flight`` -- so a Run click's own slice was invisible to both
+    ``continue_armed_tracklist_drain`` (which enqueued a SECOND, concurrent slice on its very
+    next tick, since it saw armed and not in_flight and no cooldown yet -- doubling the spend of
+    the public host's request budget ``in_flight`` exists to bound) and to
+    ``record_drain_slice_completion`` (which only acts on ``in_flight`` rows, so the Run slice's
+    own completion set no cooldown and did no failure accounting). Folding
+    ``in_flight``/``slice_enqueued_at`` into THIS call, atomically with the arm, closes both
+    holes: the row this transaction commits already reads as "a slice is running" the instant the
+    caller's own enqueue follows. If that enqueue subsequently fails, the row is left
+    ``in_flight=true`` for a slice that was never actually queued --
+    :func:`clear_stale_in_flight` exists for exactly that shape (a slice whose ``after_process``
+    hook never ran) and the continuous-drain cron already checks for it every tick, but its
+    staleness window is several minutes; a caller that wants the row corrected sooner should call
+    :func:`clear_stale_in_flight` itself on the enqueue failure path (see
+    ``routers.pipeline.run_tracklist_drain_ui``).
+    """
+    moment = now or datetime.now(UTC)
+    row = await _load_or_create(session, lock=True)
+    if row.armed:
+        return False
+    _apply_arm(row, moment)
+    row.in_flight = True
+    row.slice_enqueued_at = moment
+    return True
 
 
 async def disarm_drain(session: AsyncSession, *, reason: str, now: datetime | None = None) -> TracklistDrainArmState:

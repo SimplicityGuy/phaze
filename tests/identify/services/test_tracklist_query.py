@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from phaze.services.tracklist_matcher import parse_live_set_filename
 from phaze.services.tracklist_query import DerivedQuery, derive_query, resolve_ambiguous_date_order
 
@@ -379,3 +381,204 @@ class TestBeatsNaiveHeuristicOnLabeledSample:
             assert naive is None
             assert derived.query.startswith(artist)
             assert event in derived.query
+
+
+# Exact-output table (phaze-no6sv)
+
+# (filename, query, artist, event, year, month, date). Every filename this module's tests already
+# used, with the output it produced BEFORE phaze-no6sv -- pinned exactly so a derivation change
+# cannot quietly alter a query that was already matching -- followed by the new id-suffix and
+# month-name shapes.
+_EXISTING_EXACT: tuple[tuple[str, str, str | None, str | None, int | None, int | None, date | None], ...] = (
+    (".mp3", "mp3", None, None, None, None, None),
+    (
+        "01 - Nova Ryn - Nightgrove Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp3",
+        "Nova Ryn Nightgrove Festival 2019",
+        "Nova Ryn",
+        "Nightgrove Festival",
+        2019,
+        8,
+        date(2019, 8, 10),
+    ),
+    (
+        "02 - Adrian Vale - Nightgrove - 2020-07-19-CDR-TSP.mp3",
+        "Adrian Vale Nightgrove 2020",
+        "Adrian Vale",
+        "Nightgrove",
+        2020,
+        7,
+        date(2020, 7, 19),
+    ),
+    ("Artist - Live @ .mp3", "Artist", "Artist", None, None, None, None),
+    ("Artist - Nightgrove VNL.mp3", "Artist Nightgrove VNL", "Artist", "Nightgrove VNL", None, None, None),
+    ("Artist - Nova Bay QRS.mp3", "Artist Nova Bay QRS", "Artist", "Nova Bay QRS", None, None, None),
+    ("Artist - Vortex Loop KV.mp3", "Artist Vortex Loop KV", "Artist", "Vortex Loop KV", None, None, None),
+    ("Lena Voss - Duskwing Hall.mp3", "Lena Voss Duskwing Hall", "Lena Voss", "Duskwing Hall", None, None, None),
+    ("Lena Voss - Meridian - 2019-06-15-320.mp3", "Lena Voss Meridian 2019", "Lena Voss", "Meridian", 2019, 6, date(2019, 6, 15)),
+    ("Lena Voss.mp3", "Lena Voss", "Lena Voss", None, None, None, None),
+    ("Marin Sol - Nightgrove - 2021-06-12-AAC-PSYCON.mp3", "Marin Sol Nightgrove 2021", "Marin Sol", "Nightgrove", 2021, 6, date(2021, 6, 12)),
+    (
+        "Marin Sol - Nightgrove - 2021-06-12-thegroup.mp3",
+        "Marin Sol Nightgrove thegroup 2021",
+        "Marin Sol",
+        "Nightgrove thegroup",
+        2021,
+        6,
+        date(2021, 6, 12),
+    ),
+    (
+        "Mireille de Haan - Skyline Mainstage [WEB] 2022.mp3",
+        "Mireille de Haan Skyline Mainstage 2022",
+        "Mireille de Haan",
+        "Skyline Mainstage",
+        2022,
+        None,
+        None,
+    ),
+    (
+        "North & Vale - Circuit Session (Overnight Radio Essential Mix) 2020-03-14.mp3",
+        "North & Vale Circuit Session 2020",
+        "North & Vale",
+        "Circuit Session",
+        2020,
+        3,
+        date(2020, 3, 14),
+    ),
+    (
+        "North & Vale - Circuit Session - 2020-03-14.mp3",
+        "North & Vale Circuit Session 2020",
+        "North & Vale",
+        "Circuit Session",
+        2020,
+        3,
+        date(2020, 3, 14),
+    ),
+    (
+        "Nova Ryn - Duskwing Hall (Radio Broadcast) - 2018-11-02.mp3",
+        "Nova Ryn Duskwing Hall 2018",
+        "Nova Ryn",
+        "Duskwing Hall",
+        2018,
+        11,
+        date(2018, 11, 2),
+    ),
+    ("Nova Ryn - Live @ ZKX.mp3", "Nova Ryn ZKX", "Nova Ryn", "ZKX", None, None, None),
+    ("Nova Ryn - Live Broadcast (Radio Show) - 2019-05-01.mp3", "Nova Ryn Broadcast 2019", "Nova Ryn", "Broadcast", 2019, 5, date(2019, 5, 1)),
+    ("Nova Ryn - Nightgrove () - 2019-08-10.mp3", "Nova Ryn Nightgrove 2019", "Nova Ryn", "Nightgrove", 2019, 8, date(2019, 8, 10)),
+    (
+        "Nova Ryn - Nightgrove (Duskwing Hall Stage) - 2019-08-10.mp3",
+        "Nova Ryn Nightgrove Duskwing Hall Stage 2019",
+        "Nova Ryn",
+        "Nightgrove Duskwing Hall Stage",
+        2019,
+        8,
+        date(2019, 8, 10),
+    ),
+    ("Nova Ryn - Nightgrove - 05-08-2021-SBD-0DAY.mp3", "Nova Ryn Nightgrove 2021", "Nova Ryn", "Nightgrove", 2021, None, None),
+    ("Nova Ryn - Nightgrove - 2019-08-10-X.mp3", "Nova Ryn Nightgrove X 2019", "Nova Ryn", "Nightgrove X", 2019, 8, date(2019, 8, 10)),
+    ("Nova Ryn - Nightgrove - 2019-08-10.mp3", "Nova Ryn Nightgrove 2019", "Nova Ryn", "Nightgrove", 2019, 8, date(2019, 8, 10)),
+    ("Nova Ryn - Nightgrove - 2020-02-30.mp3", "Nova Ryn Nightgrove 2020", "Nova Ryn", "Nightgrove", 2020, 2, None),
+    ("Nova Ryn - Nightgrove - 27-08-2021-SBD-0DAY.mp3", "Nova Ryn Nightgrove 2021", "Nova Ryn", "Nightgrove", 2021, 8, date(2021, 8, 27)),
+    ("Nova Ryn - Nightgrove - 27-08-2021-SBD.mp3", "Nova Ryn Nightgrove 2021", "Nova Ryn", "Nightgrove", 2021, 8, date(2021, 8, 27)),
+    (
+        "Nova Ryn - Nightgrove Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp3",
+        "Nova Ryn Nightgrove Festival 2019",
+        "Nova Ryn",
+        "Nightgrove Festival",
+        2019,
+        8,
+        date(2019, 8, 10),
+    ),
+    ("Nova Ryn - Nightgrove-D&B!.mp3", "Nova Ryn Nightgrove D&B!", "Nova Ryn", "Nightgrove D&B!", None, None, None),
+    ("Voltrex - Duskfield - 2018.04.15-320-C4.mp3", "Voltrex Duskfield 2018", "Voltrex", "Duskfield", 2018, 4, date(2018, 4, 15)),
+    ("VÃƒÂ¶rn - Vortex Loop - 2017-04-01-WEB-GRVMSTR.mp3", "Vörn Vortex Loop 2017", "Vörn", "Vortex Loop", 2017, 4, date(2017, 4, 1)),
+    ("VÃƒÂ¶rn - Vortex Loop - 2017-04-01-WEB.mp3", "Vörn Vortex Loop 2017", "Vörn", "Vortex Loop", 2017, 4, date(2017, 4, 1)),
+    ("Vörn - Vortex Loop - 2017-04-01-WEB.mp3", "Vörn Vortex Loop 2017", "Vörn", "Vortex Loop", 2017, 4, date(2017, 4, 1)),
+    ("Webrunner - Duskwing Hall - 2020-01-05.mp3", "Webrunner Duskwing Hall 2020", "Webrunner", "Duskwing Hall", 2020, 1, date(2020, 1, 5)),
+    ("[WEB]-[FLAC]-GROUPTAG.mp3", "GROUPTAG", "GROUPTAG", None, None, None, None),
+    ("nightfox9 - Duskfield - 2018-04-15.mp3", "nightfox9 Duskfield 2018", "nightfox9", "Duskfield", 2018, 4, date(2018, 4, 15)),
+    ("nightfox9 - Live @ Skyline 2019.07.20.flac", "nightfox9 Skyline 2019", "nightfox9", "Skyline", 2019, 7, date(2019, 7, 20)),
+)
+
+_NO6SV_EXACT: tuple[tuple[str, str, str | None, str | None, int | None, int | None, date | None], ...] = (
+    (
+        "Kalt Signal - Hard Techno live mix at 303 studio Frankfurt March 2023-1470354508.m4a",
+        "Kalt Signal Hard Techno at 303 studio Frankfurt 2023",
+        "Kalt Signal",
+        "Hard Techno at 303 studio Frankfurt",
+        2023,
+        3,
+        None,
+    ),
+    ("Kalt Signal - Warehouse Session Mar 2023.mp3", "Kalt Signal Warehouse Session 2023", "Kalt Signal", "Warehouse Session", 2023, 3, None),
+    ("Kalt Signal - Warehouse Session 2023 March.mp3", "Kalt Signal Warehouse Session 2023", "Kalt Signal", "Warehouse Session", 2023, 3, None),
+    ("Kalt Signal - Warehouse Session Sept.2023.mp3", "Kalt Signal Warehouse Session 2023", "Kalt Signal", "Warehouse Session", 2023, 9, None),
+    (
+        "Kalt Signal - Warehouse Session - 25 April 2014.mp3",
+        "Kalt Signal Warehouse Session 2014",
+        "Kalt Signal",
+        "Warehouse Session",
+        2014,
+        4,
+        date(2014, 4, 25),
+    ),
+    ("Kalt Signal - Nightgrove - 31 February 2019.mp3", "Kalt Signal Nightgrove 2019", "Kalt Signal", "Nightgrove", 2019, 2, None),
+    (
+        "Kalt Signal - Nightgrove - 2019-08-10-WEB-GRVMSTR-99887766.mp3",
+        "Kalt Signal Nightgrove 2019",
+        "Kalt Signal",
+        "Nightgrove",
+        2019,
+        8,
+        date(2019, 8, 10),
+    ),
+    (
+        "Kalt Signal - Nightgrove 1470354508 Stage - 2019.mp3",
+        "Kalt Signal Nightgrove Stage 2019",
+        "Kalt Signal",
+        "Nightgrove Stage",
+        2019,
+        None,
+        None,
+    ),
+    (
+        "Kalt Signal - Nightgrove 20190810 Stage.mp3",
+        "Kalt Signal Nightgrove 20190810 Stage",
+        "Kalt Signal",
+        "Nightgrove 20190810 Stage",
+        None,
+        None,
+        None,
+    ),
+    ("Kalt Signal - Room 303 - 2019.mp3", "Kalt Signal Room 303 2019", "Kalt Signal", "Room 303", 2019, None, None),
+    ("Vela May - 2019 Nightgrove.mp3", "Vela May Nightgrove 2019", "Vela May", "Nightgrove", 2019, None, None),
+)
+
+
+class TestExactDerivationTable:
+    @pytest.mark.parametrize(("filename", "query", "artist", "event", "year", "month", "full_date"), _EXISTING_EXACT + _NO6SV_EXACT)
+    def test_exact_output(
+        self, filename: str, query: str, artist: str | None, event: str | None, year: int | None, month: int | None, full_date: date | None
+    ) -> None:
+        result = derive_query(filename)
+        assert (result.query, result.artist, result.event, result.year, result.month, result.date) == (query, artist, event, year, month, full_date)
+
+
+class TestNumericIdAndMonthName:
+    """phaze-no6sv's acceptance example, stated as its own test rather than only as a table row."""
+
+    def test_trailing_download_id_and_month_name_leave_the_query(self) -> None:
+        result = derive_query("Kalt Signal - Hard Techno live mix at 303 studio Frankfurt March 2023-1470354508.m4a")
+        assert not any(token.isdigit() and len(token) >= 6 for token in result.query.split())
+        assert "March" not in result.query
+        assert (result.year, result.month) == (2023, 3)
+        # The venue's own short number is name text, not an id, and must survive.
+        assert "303" in result.query
+
+    def test_a_compact_yyyymmdd_date_is_not_mistaken_for_an_id(self) -> None:
+        assert "20190810" in derive_query("Kalt Signal - Nightgrove 20190810 Stage.mp3").query
+
+    def test_a_month_word_ending_the_artist_field_is_not_read_as_a_date(self) -> None:
+        result = derive_query("Vela May - 2019 Nightgrove.mp3")
+        assert result.artist == "Vela May"
+        assert result.month is None

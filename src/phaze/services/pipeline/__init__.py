@@ -174,7 +174,9 @@ from phaze.services.pipeline.proposals import (
 from phaze.services.pipeline.reconciliation import (
     deduped_count,
     get_agent_reconciliations,
+    get_agent_watcher_counts,
     get_global_reconciliation,
+    get_global_watcher_count,
     get_scanned_total,
 )
 from phaze.services.pipeline.stages import (
@@ -268,6 +270,7 @@ __all__ = [
     "get_agent_lane_depths",
     "get_agent_recent_scans",
     "get_agent_reconciliations",
+    "get_agent_watcher_counts",
     "get_analysis_failed_count",
     "get_analysis_failed_files",
     "get_analysis_stalled_count",
@@ -283,6 +286,7 @@ __all__ = [
     "get_file_stage_buckets",
     "get_files_page",
     "get_global_reconciliation",
+    "get_global_watcher_count",
     "get_inadmissible_count",
     "get_live_job_keys",
     "get_match_busy_count",

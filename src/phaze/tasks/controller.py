@@ -3,7 +3,9 @@
 Control role: runs the application server's SAQ worker pool. Fileless tasks only, e.g.:
 - generate_proposals (LLM-driven rename suggestions)
 - match_tracklist_to_discogs (Discogsography HTTP API)
-- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated, NO cron)
+- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated via
+  "Run tracklist lookups", which also arms continued pacing; the underlying job has NO cron of its
+  own -- see ``continue_armed_tracklist_drain`` below)
 - refresh_tracklists (operator-initiated re-arm of the drain for specific pages -- NO cron)
 - reap_stalled_scans, recover_orphaned_work, stage_cloud_window, submit_cloud_job,
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
@@ -62,6 +64,7 @@ from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.filename_convention import learn_filename_conventions
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.reap_orphaned_backend_cloud_jobs import reap_orphaned_backend_cloud_jobs
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
@@ -331,6 +334,21 @@ async def startup(ctx: dict[str, Any]) -> None:
     if result is not None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
 
+    # phaze-pnt12: a cloud_job row can only become backend-orphaned via a [[backends]] config edit,
+    # and that edit only takes effect on THIS restart -- so boot is the only moment the condition this
+    # reaper exists for can newly arise (same reasoning as recover_orphaned_work above; see
+    # reap_orphaned_backend_cloud_jobs's module docstring for why this is gated at boot rather than a
+    # periodic cron). Same bounded retry-with-backoff as the two reconciles above, for the same
+    # schema-not-ready-yet race.
+    async def _do_orphan_reap() -> dict[str, int]:
+        return await reap_orphaned_backend_cloud_jobs(ctx)
+
+    orphan_tally = await _run_boot_reconcile_with_retry(
+        "reap_orphaned_backend_cloud_jobs on startup", _do_orphan_reap, delay_seconds=_BOOT_RECONCILE_RETRY_DELAY_SECONDS
+    )
+    if orphan_tally is not None:
+        logger.info("phaze.controller startup orphaned-backend reap", **orphan_tally)
+
     control_cfg = cast("ControlSettings", cfg)
     await _probe_kueue_local_queues(control_cfg)
     await _push_bucket_lifecycle_ttls(control_cfg)
@@ -487,6 +505,16 @@ settings = {
         # Phase 54 (KSUBMIT-04): the every-minute in-flight K8s reconcile cron. Registered in BOTH functions
         # and cron_jobs (mirroring reap_stalled_scans); cron-only, NOT in enqueue_router.CONTROLLER_TASKS.
         reconcile_cloud_jobs,
+        # phaze-pnt12: the backend-registry-orphan reaper. Every reconcile above is scoped to ONE
+        # resolved backend (``backend_id == self.id``), so a cloud_job row whose backend_id names a
+        # RETIRED backend is invisible to all of them at once -- this is the general catch-all for
+        # that gap. Registered here as a plain function (mirrors recover_orphaned_work) but
+        # deliberately NOT wired as a CronJob and NOT in enqueue_router.CONTROLLER_TASKS: a row can
+        # only become orphaned by an operator config edit, which only takes effect on THIS restart,
+        # so `startup` below gates it exactly once per boot (see the task module's own docstring for
+        # the full reasoning, including why a */5 cron would trip test_no_auto_advance_cron for no
+        # benefit).
+        reap_orphaned_backend_cloud_jobs,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
@@ -503,10 +531,14 @@ settings = {
         # boot. `continue_armed_tracklist_drain` below is a DIFFERENT function: it is a narrow
         # continuation gate that only re-enqueues a slice when the durable
         # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by the
-        # operator's explicit Arm click (never by this cron, never by boot/deploy). Every-minute
-        # cadence matches this file's other reapers; a full slice's own host-budget pacing (~1
-        # req/8s) is far coarser than one minute, so this cadence only bounds how quickly the NEXT
-        # slice starts after the previous one's cooldown elapses, never how fast requests fire.
+        # operator's "Run tracklist lookups" click (phaze-5sj7k,
+        # services.tracklist_drain_arm.arm_if_not_running) -- never by this cron, never by
+        # boot/deploy. (The standalone Arm endpoint that used to set this directly is GONE, once
+        # no served template linked to it any more -- test_no_orphaned_ui_route.) Every-minute
+        # cadence matches this file's other reapers; a full slice's
+        # own host-budget pacing (~1 req/8s) is far coarser than one minute, so this cadence only
+        # bounds how quickly the NEXT slice starts after the previous one's cooldown elapses, never
+        # how fast requests fire.
         CronJob(continue_armed_tracklist_drain, cron="* * * * *"),  # type: ignore[type-var]
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form.
@@ -558,6 +590,12 @@ settings = {
         # cron only drives cleanup, re-drive, and alerting. NARROW: in-flight K8s reconcile ONLY -- DO
         # NOT re-add a general auto-advance / recover_orphaned_work cron here (same guard as above).
         CronJob(reconcile_cloud_jobs, cron="* * * * *"),  # type: ignore[type-var]
+        # phaze-pnt12: deliberately NO reap_orphaned_backend_cloud_jobs CronJob here. It is a gated
+        # BOOT-ONLY reconcile (see `startup` below), mirroring recover_orphaned_work exactly -- a
+        # backend can only become orphaned via a config edit that takes effect on THIS restart, so
+        # boot is the only moment the condition can newly arise, and this is the SAME "no general
+        # auto-advance cron" guard as the reenqueue_discovered note above. DO NOT add a periodic
+        # cron for it.
     ],
     "startup": startup,
     "shutdown": shutdown,

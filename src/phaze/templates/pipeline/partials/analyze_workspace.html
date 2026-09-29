@@ -1,7 +1,10 @@
 {# Analyze is presentation-only: execution, routing, liveness, recovery, and polling contracts stay on their existing endpoints and stable ids. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = '`${$store.pipeline.analyzeActive} files in the analyze stage`' %}
+{# phaze-lwz8n: the header is running + waiting, labelled as such -- NOT the scheduling-ledger in-flight
+   count (analyzeActive), which is queued and running together. Both figures are seeded by the
+   #analyze-queue section below on every 5s poll; null (an unknown) renders an em-dash, never a 0. #}
+{% set subcount = "`${$store.pipeline.analyzeRunning ?? '—'} running · ${$store.pipeline.analyzeWaiting ?? '—'} waiting`" %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button"
@@ -24,6 +27,20 @@
     <div id="analyze-trigger-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
 
     <div class="space-y-4 px-4 pt-4 sm:px-6">
+        {% include "pipeline/partials/_analyze_queue.html" %}
+        {# The waiting list is loaded on demand (first open) and never by the 5s poll, so a backlog of
+           thousands costs nothing until the operator asks to see it. It lives OUTSIDE #analyze-queue so
+           the poll's OOB swap cannot collapse it or reset its page. #}
+        <details id="analyze-waiting" class="rounded-lg border border-gray-200 dark:border-phaze-border"
+                 hx-get="/pipeline/analyze-queue/waiting" hx-trigger="toggle once" hx-target="#analyze-waiting-view" hx-swap="innerHTML">
+            <summary class="cursor-pointer px-4 py-3 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Waiting list <span class="font-mono tabular-nums text-muted" x-text="$store.pipeline.analyzeWaiting ?? '—'"></span>
+                <span class="text-xs font-normal text-muted ">· local lane queue, claimed-but-unstarted first</span>
+            </summary>
+            <div id="analyze-waiting-view" hx-sync="this:replace" class="border-t border-gray-200 dark:border-phaze-border">
+                <p class="px-4 py-6 text-center text-sm text-muted ">Loading waiting list…</p>
+            </div>
+        </details>
         {% call ui.metric_strip(label="Analyze flow metrics") %}
             {% include "pipeline/partials/_analyze_queue_total.html" %}
             {% include "pipeline/partials/_analyze_active_total.html" %}
@@ -31,11 +48,11 @@
             {{ ui.metric("Completed", '<span x-text="$store.pipeline.analyzeDone">0</span>' | safe, "all analyzed files", "success") }}
         {% endcall %}
         <div aria-label="Analyze queue progression" class="relative flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-muted dark:border-phaze-border ">
-            <span class="whitespace-nowrap font-medium text-gray-700 dark:text-gray-200">Queued</span>
+            <span class="whitespace-nowrap font-medium text-gray-700 dark:text-gray-200">Waiting</span>
             <span aria-hidden="true" class="text-info">→</span>
-            <span class="whitespace-nowrap">lane capacity</span>
+            <span class="whitespace-nowrap">a free lane slot</span>
             <span aria-hidden="true" class="text-info">→</span>
-            <span class="whitespace-nowrap font-medium text-info ">Active</span>
+            <span class="whitespace-nowrap font-medium text-info ">Running</span>
             <span aria-hidden="true" class="text-info">→</span>
             <span class="whitespace-nowrap font-medium text-ok ">Completed</span>
             <span class="ml-auto whitespace-nowrap text-warn ">Awaiting route branches until a lane is available</span>
@@ -46,8 +63,8 @@
     <section aria-labelledby="analyze-lanes-heading" class="mt-6 border-y border-gray-200 dark:border-phaze-border">
         <div class="flex flex-col gap-1 px-4 pb-3 sm:flex-row sm:items-end sm:justify-between sm:px-6">
             <div>
-                <h2 id="analyze-lanes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Lane capacity</h2>
-                <p class="mt-1 text-xs text-muted ">Compare queued work, active slots, status, and 24-hour throughput. Open a lane for live queue detail.</p>
+                <h2 id="analyze-lanes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Lanes</h2>
+                <p class="mt-1 text-xs text-muted ">Compare waiting and running work, status, and 24-hour throughput per lane. Open a lane for live queue detail.</p>
             </div>
             {{ ui.refresh_status("Live · updates every 5s", "Refreshing lanes…") }}
         </div>

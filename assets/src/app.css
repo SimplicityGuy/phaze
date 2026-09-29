@@ -369,6 +369,16 @@ body { font-family: 'Inter', sans-serif; }
     border-radius: 9999px;
     vertical-align: baseline;
 }
+/* phaze-37ovq: the per-row key colour dot in the harmonic journey's runs table -- the SAME
+   Camelot hue the wheel's own node draws that run at, arriving as an inline hue from the row. */
+.harmonic-run-dot {
+    display: inline-block;
+    height: 0.5rem;
+    width: 0.5rem;
+    flex: none;
+    border-radius: 9999px;
+    vertical-align: baseline;
+}
 .tracklist-energy-bar {
     display: inline-block;
     height: 0.375rem;
@@ -417,6 +427,31 @@ body { font-family: 'Inter', sans-serif; }
 }
 .analysis-timeline-tooltip[data-side="start"] { transform: none; }
 .analysis-timeline-tooltip[data-side="end"] { transform: translateX(-100%); }
+.analysis-timeline-bpm-marker {
+    position: absolute;
+    z-index: 4;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-left: -0.25rem;
+    margin-top: -0.25rem;
+    border-radius: 9999px;
+    background: var(--phaze-text-link);
+    pointer-events: none;
+}
+.analysis-timeline-bpm-marker-label {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translate(-50%, -0.25rem);
+    white-space: nowrap;
+    border-radius: 0.25rem;
+    background: white;
+    padding: 0 0.25rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--phaze-text-link);
+}
+.dark .analysis-timeline-bpm-marker-label { background: var(--color-phaze-bg); }
 
 /* phaze-x1qr3.10: the six marks one elapsed time drives outside the cursor and the readout.
    Every one of them is a HIGHLIGHT over something already drawn -- none of them adds a value,
@@ -447,6 +482,13 @@ tr[data-track-row].is-current {
 tr[data-track-row][tabindex]:focus-visible {
     outline: 2px solid var(--phaze-text-link);
     outline-offset: -2px;
+}
+/* phaze-n0h86: a focused wheel node. Focus also inspects that node's run, so the cursor ring
+   lands on it too -- the outline is what keeps "focused" tellable from "current" when the ring
+   later moves on to a node the pointer drove. */
+circle[data-journey-node][tabindex]:focus-visible {
+    outline: 2px solid var(--phaze-text-link);
+    outline-offset: 2px;
 }
 .set-glyph-cursor {
     position: absolute;

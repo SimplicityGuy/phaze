@@ -37,10 +37,10 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status
+from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status, upstream_satisfied
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -51,6 +51,7 @@ from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.services.backends import ComputeAgentBackend, KueueBackend
 from phaze.services.pipeline import get_pushed_count, get_pushing_count
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
@@ -236,6 +237,58 @@ async def seed_tracklist_done(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
+async def _seed_tracklist_lookup(session: AsyncSession, outcome: str, *, with_row: bool = False) -> uuid.UUID:
+    """phaze-o71bf: a per-file ``tracklist_file_lookups`` record, optionally beside a ``tracklists`` row."""
+    fid = await seed_tracklist_done(session) if with_row else await _new_file(session)
+    session.add(TracklistFileLookup(file_id=fid, outcome=outcome, set_key="k" * 64))
+    await session.flush()
+    return fid
+
+
+async def seed_tracklist_queued(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "queued")
+
+
+async def seed_tracklist_queued_over_row(session: AsyncSession) -> uuid.UUID:
+    """A forced refresh: the file HAS a tracklist and is queued again -- in_flight ≻ done."""
+    return await _seed_tracklist_lookup(session, "queued", with_row=True)
+
+
+async def seed_tracklist_matched_with_row(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "matched", with_row=True)
+
+
+async def seed_tracklist_matched_without_row(session: AsyncSession) -> uuid.UUID:
+    """A duplicate withheld by the propagation gate: its set matched, it carries no tracklist -- skipped."""
+    return await _seed_tracklist_lookup(session, "matched")
+
+
+async def seed_tracklist_not_found(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "not_found")
+
+
+async def seed_tracklist_low_confidence(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "low_confidence")
+
+
+async def seed_tracklist_not_eligible(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "not_eligible")
+
+
+async def seed_tracklist_retry_pending(session: AsyncSession) -> uuid.UUID:
+    return await _seed_tracklist_lookup(session, "retry_pending")
+
+
+async def seed_tracklist_retry_pending_over_row(session: AsyncSession) -> uuid.UUID:
+    """A refresh that failed transiently still has its old tracklist -- done ≻ failed."""
+    return await _seed_tracklist_lookup(session, "retry_pending", with_row=True)
+
+
+async def seed_tracklist_unknown_outcome(session: AsyncSession) -> uuid.UUID:
+    """An outcome string this version does not know matches no clause in EITHER twin -- not_started."""
+    return await _seed_tracklist_lookup(session, "from_the_future")
+
+
 async def seed_propose_none(session: AsyncSession) -> uuid.UUID:
     return await _new_file(session)
 
@@ -308,6 +361,17 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
     # tracklist (downstream presence)
     (Stage.TRACKLIST, seed_tracklist_none, "not_started"),
     (Stage.TRACKLIST, seed_tracklist_done, "done"),
+    # tracklist per-file lookup record (phaze-o71bf)
+    (Stage.TRACKLIST, seed_tracklist_queued, "in_flight"),
+    (Stage.TRACKLIST, seed_tracklist_queued_over_row, "in_flight"),  # precedence: in_flight ≻ done
+    (Stage.TRACKLIST, seed_tracklist_matched_with_row, "done"),
+    (Stage.TRACKLIST, seed_tracklist_matched_without_row, "skipped"),
+    (Stage.TRACKLIST, seed_tracklist_not_found, "skipped"),
+    (Stage.TRACKLIST, seed_tracklist_low_confidence, "skipped"),
+    (Stage.TRACKLIST, seed_tracklist_not_eligible, "skipped"),
+    (Stage.TRACKLIST, seed_tracklist_retry_pending, "failed"),
+    (Stage.TRACKLIST, seed_tracklist_retry_pending_over_row, "done"),  # precedence: done ≻ failed
+    (Stage.TRACKLIST, seed_tracklist_unknown_outcome, "not_started"),
     # propose (downstream presence)
     (Stage.PROPOSE, seed_propose_none, "not_started"),
     (Stage.PROPOSE, seed_propose_done, "done"),
@@ -364,7 +428,8 @@ async def load_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) 
         }
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
-        return {"row_present": present, "failed": False, "inflight": inflight}
+        outcome = (await session.execute(select(TracklistFileLookup.outcome).where(TracklistFileLookup.file_id == file_id))).scalar_one_or_none()
+        return {"row_present": present, "lookup_outcome": outcome, "failed": False, "inflight": inflight}
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
         failed = (
@@ -613,6 +678,107 @@ async def test_eligible_sql_equals_python(
     py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
     py_eligible = eligible({stage: py_status}, stage)
     assert sql_eligible == py_eligible == expected
+
+
+# phaze-iyqhg: the downstream half of D-08. ``upstream_satisfied`` (Python) and ``satisfied_clause``
+# (SQL) answer "does this enrich stage let its downstream proceed?" -- DONE or force-SKIPPED. Every
+# enrich seed above, so a satisfied predicate that drifted on ANY bucket (a partial row, a failure-only
+# row, an in-flight precedence cell) goes red here rather than in production.
+SATISFIED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
+    (Stage.METADATA, seed_metadata_none, False),
+    (Stage.METADATA, seed_metadata_done, True),
+    (Stage.METADATA, seed_metadata_failed_only, False),  # a failure is NOT a skip (phaze-rhs6m holds)
+    (Stage.METADATA, seed_metadata_skipped, True),
+    (Stage.ANALYZE, seed_analysis_none, False),
+    (Stage.ANALYZE, seed_analysis_partial, False),  # DERIV-03: a partial row is not data
+    (Stage.ANALYZE, seed_analysis_completed, True),
+    (Stage.ANALYZE, seed_analysis_failed, False),
+    (Stage.ANALYZE, seed_analysis_skipped_over_failed, True),  # the cell this bead exists for
+]
+
+
+@pytest.mark.parametrize("stage,seed_fn,expected", SATISFIED_CASES)
+async def test_satisfied_sql_equals_python(
+    db_session: AsyncSession,
+    stage: Stage,
+    seed_fn: Callable[[AsyncSession], Awaitable[uuid.UUID]],
+    expected: bool,
+) -> None:
+    """SQL ``satisfied_clause`` == Python ``upstream_satisfied`` == expected, per enrich cell."""
+    from phaze.services.stage_status import satisfied_clause  # lazy, like every stage_status import here
+
+    file_id = await seed_fn(db_session)
+    sql_satisfied = bool((await db_session.execute(select(satisfied_clause(stage)).where(FileRecord.id == file_id))).scalar_one())
+    py_satisfied = upstream_satisfied(resolve_status(stage, await load_scalars(db_session, stage, file_id)))
+    assert sql_satisfied == py_satisfied == expected
+
+
+# PROPOSE eligibility drift-lock (phaze-iyqhg). The SQL side of ``eligible(..., Stage.PROPOSE)`` is not
+# an ``eligible_clause`` builder (that is enrich-only) but the proposal convergence gate itself,
+# ``services/pipeline/proposals._proposal_pending_clauses`` -- the predicate the GENERATE trigger and the
+# drain actually batch on. Before this bead nothing locked the two together, which is how "skipped does
+# not satisfy propose" survived in both while the dialog promised the opposite. Each cell composes a
+# metadata state with an analyze state (plus the two conditions only the gate spells out: an existing
+# proposal, and an enrich ledger row) and asserts gate == ``eligible`` == expected.
+async def _seed_propose_cell(
+    session: AsyncSession,
+    *,
+    metadata: str,
+    analyze: str,
+    proposed: bool = False,
+    analyze_inflight: bool = False,
+) -> uuid.UUID:
+    fid = await _new_file(session)
+    now = datetime.now(UTC)
+    if metadata == "done":
+        session.add(FileMetadata(file_id=fid, failed_at=None))
+    elif metadata == "failed":
+        session.add(FileMetadata(file_id=fid, failed_at=now))
+    elif metadata == "skipped":
+        session.add(FileMetadata(file_id=fid, failed_at=now))  # the realistic skip: a failure, then the marker
+        session.add(StageSkip(file_id=fid, stage="metadata", reason="unreadable tags"))
+    if analyze == "done":
+        session.add(AnalysisResult(file_id=fid, analysis_completed_at=now))
+    elif analyze == "partial":
+        session.add(AnalysisResult(file_id=fid, analysis_completed_at=None))
+    elif analyze == "failed":
+        session.add(AnalysisResult(file_id=fid, failed_at=now))
+    elif analyze == "skipped":
+        session.add(AnalysisResult(file_id=fid, failed_at=now))
+        session.add(StageSkip(file_id=fid, stage="analyze", reason="corrupt source"))
+    if proposed:
+        session.add(RenameProposal(file_id=fid, proposed_filename="better.mp3", status="pending"))
+    await session.flush()
+    if analyze_inflight:
+        await _seed_ledger(session, Stage.ANALYZE, fid)
+    return fid
+
+
+PROPOSE_ELIGIBLE_CASES: list[tuple[str, dict[str, Any], bool]] = [
+    ("both-done", {"metadata": "done", "analyze": "done"}, True),
+    ("analyze-skipped", {"metadata": "done", "analyze": "skipped"}, True),  # the operator's case
+    ("metadata-skipped", {"metadata": "skipped", "analyze": "done"}, True),
+    ("both-skipped", {"metadata": "skipped", "analyze": "skipped"}, True),
+    ("analyze-failed-not-skipped", {"metadata": "done", "analyze": "failed"}, False),
+    ("analyze-partial", {"metadata": "done", "analyze": "partial"}, False),
+    ("analyze-not-started", {"metadata": "done", "analyze": "none"}, False),
+    ("metadata-failed-not-skipped", {"metadata": "failed", "analyze": "done"}, False),
+    ("metadata-not-started", {"metadata": "none", "analyze": "done"}, False),
+    ("analyze-skipped-but-inflight", {"metadata": "done", "analyze": "skipped", "analyze_inflight": True}, False),
+    ("analyze-skipped-already-proposed", {"metadata": "done", "analyze": "skipped", "proposed": True}, False),
+]
+
+
+@pytest.mark.parametrize("cell,shape,expected", PROPOSE_ELIGIBLE_CASES, ids=[c[0] for c in PROPOSE_ELIGIBLE_CASES])
+async def test_propose_gate_equals_python_eligible(db_session: AsyncSession, cell: str, shape: dict[str, Any], expected: bool) -> None:
+    """The proposal convergence gate (SQL) == ``eligible(status_map, PROPOSE)`` (Python) == expected."""
+    from phaze.services.pipeline.proposals import _proposal_pending_clauses
+
+    file_id = await _seed_propose_cell(db_session, **shape)
+    sql_eligible = bool((await db_session.execute(select(and_(*_proposal_pending_clauses())).where(FileRecord.id == file_id))).scalar_one())
+    status_map = {s: resolve_status(s, await load_scalars(db_session, s, file_id)) for s in (Stage.METADATA, Stage.ANALYZE, Stage.PROPOSE)}
+    py_eligible = eligible(status_map, Stage.PROPOSE)
+    assert sql_eligible == py_eligible == expected, f"{cell}: gate={sql_eligible} eligible()={py_eligible} statuses={status_map}"
 
 
 async def _eval_inflight(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:

@@ -46,6 +46,7 @@ from scripts.parallel_test_runner import (
     production_dependencies,
     registry_seat_index,
 )
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 if TYPE_CHECKING:
@@ -62,7 +63,11 @@ _JUST = shutil.which("just") or "just"
 _BASH = shutil.which("bash") or "bash"
 _DOCKER = shutil.which("docker") or "docker"
 _PG_PORT = "5433"
-_REDIS_PORT = "6380"
+# phaze-8o294: the harness Redis these tests drive is whichever the justfile resolves -- the same env
+# overrides (test_redis_port / test_redis_container), so a seat verifying against its own throwaway
+# harness Redis does not have `just test-db-for` provision on one container while these read another.
+_REDIS_PORT = os.environ.get("PHAZE_TEST_REDIS_PORT", "6380")
+_REDIS_CONTAINER = os.environ.get("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-redis")
 _SEAT = "phaze_qov36_48f37603"
 _MINTED = {
     "TEST_DATABASE_URL": f"postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_{_SEAT}_test",
@@ -293,7 +298,7 @@ def _harness_is_up() -> bool:
     if docker is None or shutil.which("just") is None:
         return False
     probes = (
-        [docker, "exec", "phaze-test-redis", "redis-cli", "PING"],
+        [docker, "exec", _REDIS_CONTAINER, "redis-cli", "PING"],
         [docker, "exec", "phaze-test-db", "pg_isready", "-U", "phaze"],
     )
     return all(subprocess.run(probe, capture_output=True, check=False).returncode == 0 for probe in probes)  # noqa: S603 - resolved executable, fixed test argv
@@ -308,11 +313,11 @@ def _derived(raw: str) -> str:
 
 
 def _registered(seat_id: str) -> bool:
-    return registry_seat_index(_ROOT, "phaze-test-redis")(seat_id) is not None
+    return registry_seat_index(_ROOT, _REDIS_CONTAINER)(seat_id) is not None
 
 
 def _redis_dbsize(index: str) -> int:
-    result = subprocess.run([_DOCKER, "exec", "phaze-test-redis", "redis-cli", "-n", index, "DBSIZE"], capture_output=True, text=True, check=True)  # noqa: S603 - resolved executable, fixed test argv
+    result = subprocess.run([_DOCKER, "exec", _REDIS_CONTAINER, "redis-cli", "-n", index, "DBSIZE"], capture_output=True, text=True, check=True)  # noqa: S603 - resolved executable, fixed test argv
     return int(result.stdout.strip())
 
 
@@ -352,7 +357,7 @@ def _runner_cli(*args: str, environ: Mapping[str, str]) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=False,
-        timeout=120,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
 
 
@@ -462,7 +467,7 @@ def test_real_lanes_derived_from_a_caller_seat_are_isolated_and_released(
     lane_ids = [_derived(f"{caller_id}-lane-a"), _derived(f"{caller_id}-lane-b")]
     try:
         environ = {**caller, "PHAZE_TEST_PARALLEL": "1"}
-        verdict = classify_caller_seat(environ, pg_port=_PG_PORT, redis_port=_REDIS_PORT, seat_index=registry_seat_index(_ROOT, "phaze-test-redis"))
+        verdict = classify_caller_seat(environ, pg_port=_PG_PORT, redis_port=_REDIS_PORT, seat_index=registry_seat_index(_ROOT, _REDIS_CONTAINER))
         assert verdict.seat_id == caller_id, verdict.reason
 
         real = production_dependencies(_ROOT)
