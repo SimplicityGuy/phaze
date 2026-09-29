@@ -113,6 +113,14 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
    > so an image or deployment that sets `OMP_NUM_THREADS=1` keeps `1` and still gets the
    > derived `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS`. Do not "clean up" the
    > explicit `=1` on the arm64 path on the grounds that phaze derives it now.
+   >
+   > **It also holds against a hot-reloaded `analysis_omp_threads`** (`phaze-mvq8z.22`). The
+   > runtime-config override table is fleet-wide, and each analysis child is stamped from the live
+   > snapshot, so an override raised for x86 agents would otherwise reach this image's children
+   > too. A thread env var set in the agent's process environment is a **ceiling** for the
+   > reloadable layers (see [`configuration.md`](configuration.md), "A thread env var is a
+   > ceiling"): the arm64 agent keeps `1`, logs the capped request, and reports
+   > `analysis_omp_threads` with source `env` in its effective config.
 
 ### Runtime-libs-or-crash-loop rule (T-47-06)
 

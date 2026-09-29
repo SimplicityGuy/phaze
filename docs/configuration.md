@@ -213,7 +213,25 @@ For a reloadable key only:
 A **restart-only** key never participates in this ladder: an attempt to set one through the
 `file` or `override` layer **rejects the whole reload**, reporting "requires restart" and the
 key's *name only* (several restart-only keys carry credentials, so only the name is ever logged
-or returned).
+or returned). That includes the admin API's own rejection line: a POST to a restart-only or unknown
+key logs the key, never the submitted value (`phaze-mvq8z.22`).
+
+**The override table is shared, so its readers filter it** (`phaze-mvq8z.22`). A row whose key a
+later build renamed or made restart-only (a *stale* row), or a key only a newer control plane knows,
+is **ignored and reported by name** by both readers — the api/control-worker override provider
+and each agent's config poll — and every other override still applies. The admin pane lists stale
+rows under "Stale overrides (ignored)" with a Remove control; `DELETE /admin/runtime-config/<key>`
+removes one even though the key is not reloadable. The local `runtime.toml` is **not** filtered:
+an unknown key there is this host's own typo and still rejects the reload.
+
+**A thread env var is a ceiling** (`phaze-mvq8z.22`, an implementer decision). When an agent's
+process environment sets `TF_NUM_INTRAOP_THREADS` or `OMP_NUM_THREADS`, the `file` and `override`
+layers may **lower** that key on that agent but never raise it: a higher value is capped at the env
+value, logged, and reported with source `env` in the agent's effective config. The override table is
+fleet-wide, and the arm64 agent image's `OMP_NUM_THREADS=1` is a correctness pin
+([`arm64-agent-image.md`](arm64-agent-image.md) fix #4), so an `analysis_omp_threads` raise meant for
+x86 agents never reaches an arm64 agent's analysis children. To make a thread key fully live-tunable
+on a host, leave its env var unset there.
 
 ### Reloadable keys
 
@@ -226,7 +244,7 @@ or returned).
 | `lane_io_concurrency` | `PHAZE_LANE_IO_CONCURRENCY` | Same, on the io-lane agent worker. |
 | `worker_process_pool_size` | `WORKER_PROCESS_POOL_SIZE` | Grow: wakes any analysis call already waiting on the semaphore immediately. Shrink: lowers the ceiling and drains by attrition — an in-flight essentia `analysis_child` subprocess is never cancelled. Also resizes the per-agent telemetry worker-slot pool to match (see [`docs/design/0017-telemetry-export-topology.md`](design/0017-telemetry-export-topology.md) §8), so the two can never drift apart. |
 | `analysis_intra_op_threads` | `TF_NUM_INTRAOP_THREADS` — an env override read directly, not a settings field; defaults from `derive_sizing()` | New analysis children only. Stamped into a child's environment at spawn time; a child already running keeps whatever thread counts it was `exec`'d with, unaffected. |
-| `analysis_omp_threads` | `OMP_NUM_THREADS`, same shape as above | New analysis children only, same as above. |
+| `analysis_omp_threads` | `OMP_NUM_THREADS`, same shape as above | New analysis children only, same as above. For both thread keys, a value set in the agent's env is a ceiling the reloadable layers cannot raise (above). |
 | `analysis_stall_timeout_sec` | `PHAZE_ANALYSIS_STALL_TIMEOUT_SEC` | The **next** job's liveness window. A job already in flight keeps the stall timeout it started with. |
 | `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` | The next routing decision — read fresh from the live snapshot per file, never cached. |
 
