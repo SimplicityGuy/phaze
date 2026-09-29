@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 from phaze.config import ControlSettings
 from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
 from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_digest
+from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH
 from phaze.schemas.agent_identity import AgentIdentity
 from phaze.tasks.heartbeat import send_heartbeat
 
@@ -185,3 +186,29 @@ async def test_bare_asyncmock_client_does_not_crash_the_poll(tmp_path: Path) -> 
     await send_heartbeat(_ctx(client, store=store))  # must not raise
 
     assert client.heartbeat.await_count == 1
+
+
+async def test_a_long_rejected_reload_error_still_produces_a_heartbeat(tmp_path: Path) -> None:
+    """phaze-mvq8z.19 finding 2: a reload error longer than the wire bound must never stop a beat.
+
+    Reload errors are unbounded (every unknown key is listed by name), while
+    ``EffectiveConfigLastReload.error`` keeps its server-side ``max_length``. Built from the raw
+    error, the payload fails validation BEFORE ``client.heartbeat`` is called, so a config typo would
+    turn into a liveness outage. The agent truncates to the bound instead.
+    """
+    store = _store(tmp_path)
+    (tmp_path / RUNTIME_TOML_NAME).write_text("".join(f"not_a_real_key_{index:03d} = 1\n" for index in range(60)), encoding="utf-8")
+    result = await store.reload("file")
+    assert result.outcome == "rejected"
+    assert len(result.error or "") > LAST_RELOAD_ERROR_MAX_LENGTH, "the fixture must actually exceed the wire bound"
+    client = _StubClient()
+
+    await send_heartbeat(_ctx(client, store=store))
+
+    assert len(client.heartbeat_calls) == 1, "the beat was never sent"
+    last_reload = client.heartbeat_calls[0].effective_config.last_reload  # type: ignore[union-attr]
+    assert last_reload is not None
+    assert last_reload.outcome == "rejected"
+    assert last_reload.error is not None
+    assert len(last_reload.error) <= LAST_RELOAD_ERROR_MAX_LENGTH
+    assert last_reload.error.startswith("unknown key(s): not_a_real_key_000"), "truncation must keep the head of the error"

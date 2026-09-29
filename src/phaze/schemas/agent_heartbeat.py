@@ -27,6 +27,13 @@ QUEUE_DEPTH_MAX = 1_000_000_000_000  # 10**12 per lane; even summed over 1000 la
 # still ~4 orders of magnitude under INT64_MAX (~9.22 * 10**18), so SUM(...) can never overflow int8.
 
 
+#: Server-side bound on ``EffectiveConfigLastReload.error``. A reload error is itself unbounded (it
+#: lists every offending key by name), so the AGENT truncates to this before building a beat
+#: (``phaze.tasks.heartbeat._build_effective_config``) -- an over-long error must cost the operator
+#: the tail of a message, never the heartbeat (phaze-mvq8z.19).
+LAST_RELOAD_ERROR_MAX_LENGTH = 500
+
+
 class EffectiveConfigLastReload(BaseModel):
     """One reload attempt, as the agent's OWN :class:`~phaze.runtime_config.RuntimeConfigStore` last
     resolved it -- mirrors :class:`phaze.runtime_config.ReloadResult` (a dataclass, not a pydantic
@@ -40,7 +47,7 @@ class EffectiveConfigLastReload(BaseModel):
 
     source: ReloadSource
     outcome: ReloadOutcome
-    error: str | None = Field(default=None, max_length=500)
+    error: str | None = Field(default=None, max_length=LAST_RELOAD_ERROR_MAX_LENGTH)
     at: float
     """``time.time()`` when this reload attempt completed (``ReloadResult.at``)."""
 

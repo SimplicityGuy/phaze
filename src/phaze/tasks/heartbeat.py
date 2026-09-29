@@ -57,7 +57,7 @@ from phaze.constants import (
     AGENT_HEARTBEAT_INTERVAL_SECONDS,
 )
 from phaze.runtime_config import RESTART_ONLY_KEYS
-from phaze.schemas.agent_heartbeat import EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
+from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH, EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
 from phaze.services.agent_client import AgentApiError
 
 
@@ -189,6 +189,19 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
     await store.reload("poll")
 
 
+def _bounded_error(error: str | None) -> str | None:
+    """Fit a reload error to the wire's ``max_length``, keeping its head (phaze-mvq8z.19).
+
+    A reload error is unbounded -- it names every offending key -- and an over-long one would fail
+    ``HeartbeatRequest`` validation before the POST, so NO beat would be sent and a config typo
+    would become a liveness outage. The full error is still in this agent's own reload log line.
+    """
+    if error is None or len(error) <= LAST_RELOAD_ERROR_MAX_LENGTH:
+        return error
+    marker = "... (truncated)"
+    return error[: LAST_RELOAD_ERROR_MAX_LENGTH - len(marker)] + marker
+
+
 def _build_effective_config(store: Any) -> EffectiveConfig:
     """Render ``store``'s current snapshot + last reload attempt as the wire shape (phaze-mvq8z.9).
 
@@ -198,7 +211,11 @@ def _build_effective_config(store: Any) -> EffectiveConfig:
     """
     snapshot = store.snapshot()
     last = store.last_result
-    last_reload = EffectiveConfigLastReload(source=last.source, outcome=last.outcome, error=last.error, at=last.at) if last is not None else None
+    last_reload = (
+        EffectiveConfigLastReload(source=last.source, outcome=last.outcome, error=_bounded_error(last.error), at=last.at)
+        if last is not None
+        else None
+    )
     return EffectiveConfig(
         values=snapshot.config,
         sources=dict(snapshot.sources),
