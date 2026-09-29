@@ -154,7 +154,7 @@ destination was never specified.**
 
 **Metrics cannot answer "how far along is THIS file", by construction.** File identity, window
 index and chunk index are span attributes and are deliberately never metric labels — that
-constraint is what holds an 11,428-file corpus at 8,587 series
+constraint is what holds an 11,428-file corpus at 8,609 series
 (`docs/telemetry/metric-catalogue.md` §1). `phaze_analysis_windows_total{tier}` and
 `phaze_analysis_chunks_total{tier}` are monotonic counters with **no file dimension**, so
 Prometheus can only ever yield fleet-level rate and throughput.
@@ -340,10 +340,16 @@ the process falls back to the shared identity rather than minting an unbounded o
 | analysis-role catalogue block | 2,290 |
 | × 4 slots (host lane, `phaze-21nnf`) | **9,160** |
 | × (4 host-lane + 4 burst-lane slots), separate identity spaces (`phaze-7nl67`) | **18,320** |
-| whole-catalogue ceiling, before | 8,587 |
-| whole-catalogue ceiling, host lane only | 15,457 |
-| whole-catalogue ceiling, both lanes (current) | **24,617** |
+| whole-catalogue ceiling, before | 8,609 |
+| whole-catalogue ceiling, host lane only | 15,479 |
+| whole-catalogue ceiling, both lanes (current) | **24,639** |
 | a per-pod id instead: 2,290 × 11,428 files | **26,170,120** |
+
+(The per-instance base moved 8,587 → 8,609 when the runtime-config reload family,
+`phaze-mvq8z.4`, added 22 series — see
+[`metric-catalogue.md`](../telemetry/metric-catalogue.md#the-instance-multiplier-8609-becomes-24639-and-the-reason-it-stops-there).
+The two operator-decision quotes below (round 3/4, 2026-09-24) predate that change and are left
+verbatim at the figures actually discussed at the time.)
 
 **The bound is a multiple of the CONCURRENCY, not of the corpus.** Slots are reused by the
 next child, so the figure does not move as the archive grows — which is the entire difference
@@ -373,7 +379,7 @@ on the same index merged. Every burst Job now carries a code-injected `PHAZE_TEL
 which `_instance_id` puts between the base and the slot (`phaze-analysis-burst-<n>`), so the two
 lanes' identities are disjoint. **The analysis block is now
 `2,290 x (worker_process_pool_size + Σ kueue caps)`**, which is `2,290 x 8` = **18,320** at the
-deployed pool of 4 and cap of 4. The whole-catalogue ceiling is **24,617**. That is 9,160 series
+deployed pool of 4 and cap of 4. The whole-catalogue ceiling is **24,639**. That is 9,160 series
 more than the shared-space figure, and it is the price of not merging.
 
 **Why no collision-free design costs less: 8 producers need 8 identities.** When both lanes are
@@ -389,7 +395,7 @@ The old 9,160 was reachable only because producers collided. A deployment that a
 `PHAZE_TELEMETRY_INSTANCE` on the agent host, as `telemetry/exporter.md` §3 advises, was already
 paying 18,320.
 
-**The 8-producer floor and the 24,617 ceiling are PER AGENT HOST.** Each agent host that runs
+**The 8-producer floor and the 24,639 ceiling are PER AGENT HOST.** Each agent host that runs
 analysis has its own slot pool counting from 0: the fileserver agent and every `kind="compute"`
 agent (`docs/k8s-burst.md`). The burst term is shared across the whole deployment, but each host adds
 its own pool. So the general form is `2,290 x (Σ over analysis hosts of worker_process_pool_size + Σ
@@ -583,7 +589,7 @@ this, withdrawing an earlier comment that had read the answer as covering the ch
   space.
 
 **Cardinality: the lanes' slots now ADD rather than share**, as restated in §8b: 18,320 for the
-analysis block and 24,617 for the catalogue ceiling at the deployed configuration, which is +9,160
+analysis block and 24,639 for the catalogue ceiling at the deployed configuration, which is +9,160
 series. **No collision-free design costs less.** Eight concurrent producers need eight identities.
 
 `test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_identities` drives a real

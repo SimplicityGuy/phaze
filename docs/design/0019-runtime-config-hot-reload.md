@@ -105,11 +105,15 @@ A successful swap runs every registered **applier** with `(old, new)`, so each s
 for itself what "resizable" means for its own resource (§7, §8, §9).
 
 **Audit and telemetry**, on every attempt, successful or not: the trigger source
-(`sighup|file|api|poll`), every changed key with its old and new value, and the result. Metrics:
-`phaze_config_last_reload_successful` and `phaze_config_last_reload_timestamp_seconds` (names to
-be verified against this repo's existing telemetry conventions — see
-`docs/design/0017-telemetry-export-topology.md` — before the metrics-emitting bead ships them).
-This audit trail is also the compensating control referenced in §10.
+(`sighup|file|api|poll`), every changed key with its old and new value, and the result. As shipped
+(`phaze-mvq8z.4`, `src/phaze/runtime_config.py`), the metrics are `phaze_config_reloads_total`
+(counter, labeled `source`/`outcome`), `phaze_config_last_reload_successful` (gauge) and
+`phaze_config_last_reload_success_timestamp_seconds` (gauge) — see
+[`docs/telemetry/metric-catalogue.md`](../telemetry/metric-catalogue.md), the authoritative
+catalogue, which is where these are pinned against `src/phaze/telemetry/catalogue.py`. This
+paragraph's earlier draft named `phaze_config_last_reload_timestamp_seconds`, which was never
+built; the shipped name carries `success_` (the timestamp of the last *successful* reload, not of
+the last attempt). This audit trail is also the compensating control referenced in §10.
 
 ## 7. Appliers: semaphore, pool, thread env, timeouts, log level
 
@@ -148,6 +152,42 @@ stays pinned to an exact version tested against this subclass (mirroring the lit
 pin in `CLAUDE.md`'s pins table, for the same reason — an unpinned dependency this load-bearing is
 a supply-chain-shaped risk even without a security angle), and a SAQ version bump is treated as a
 compatibility review of this subclass specifically, not a routine dependency update.
+
+**As shipped (`phaze-mvq8z.10`, `src/phaze/tasks/_shared/live_worker.py`) — three implementer
+decisions accepted by the molecule's dispatcher (2026-09-28), narrower than the operator was
+asked.** The operator decision above selected only the *label* "Worker subclass (Recommended)";
+the shape below was never itself put to the operator:
+
+1. **Adoption, not construction, and from the SAQ startup hook.** SAQ's own CLI (`saq
+   <module>.settings`, which every compose service and the arm64 image run) constructs a plain
+   `saq.Worker(**settings)` directly — there is no worker-class hook to swap in
+   `LiveConcurrencyWorker` at construction time. `install_live_concurrency` instead **adopts** that
+   already-constructed instance in place (`worker.__class__ = LiveConcurrencyWorker`) from inside a
+   SAQ startup hook, which runs after construction but *before* `Worker.start()` spawns the
+   `_process()` loops (`saq/worker.py:194-201`) — so the class swap always lands before any loop
+   exists to be uncounted by it. This covers every entry point, including an operator's
+   `PHAZE_CLOUD_AGENT_CMD` override, without changing any of them. It logs once at startup
+   (`"phaze.saq_worker adopted; concurrency is live"`), so a worker that was *not* adopted (no SAQ
+   `Worker` in `ctx`, e.g. a startup hook driven directly rather than through `Worker.start()`)
+   shows in the logs as fixed-concurrency rather than failing silently.
+2. **Shrink also trims idle-in-dequeue loops, gated on an empty claim buffer.** Attrition alone
+   (a loop stops relaunching once its current job finishes) gets one case wrong: a loop parked
+   inside `PostgresQueue.dequeue()` is idle, not running a job, and would otherwise claim and run
+   one more job before honouring a lowered target — an over-target burst. `_trim_idle` cancels
+   every such idle loop, but only while holding the queue's own `_dequeue_lock` *and* with
+   `_job_queue.empty()` (no claimed-but-unbuffered row in flight), with no `await` between the
+   check and the cancels, and it relaunches exactly as many loops as the target needs afterward
+   (one of them necessarily takes over the queue's single `LISTEN` waiter). This is the riskiest
+   mechanism in the module — a cancel *inside* a claim would strand a row `active` — so it is the
+   one `tests/integration/test_live_worker_concurrency.py` holds to "every job reaches a terminal
+   status exactly once" across repeated resizes, with a dedicated test for the empty-buffer guard.
+3. **SAQ pinned `>=0.26.4,<0.27.0`, with the contract test's exact verified set at one version.**
+   `tests/shared/tasks/test_saq_worker_contract.py::VERIFIED_SAQ_VERSIONS = frozenset({"0.26.4"})`
+   fails the build on any other installed SAQ version — narrower than the pin range itself, so a
+   `0.26.x` patch bump inside the allowed range still requires re-verifying and widening
+   `VERIFIED_SAQ_VERSIONS` before it's a green build, not just before a `0.27` bump. This sharpens
+   §16's "every SAQ version bump requires a compatibility check" into a specific enforced gate
+   rather than a process reminder alone.
 
 ## 9. `backends.toml` reload and the backend-removal policy
 
