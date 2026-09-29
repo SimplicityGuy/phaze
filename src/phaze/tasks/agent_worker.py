@@ -443,9 +443,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     # phaze.telemetry.slots and docs/design/0017-telemetry-export-topology.md section 8.
     #
     # phaze-mvq8z.7: also a registered applier -- a live pool-size reload calls
-    # `set_default_pool_size` again, which itself declines the resize (logged) rather than
-    # reissuing a slot that is currently held, so a shrink or grow while children are
-    # in-flight is safe by construction (phaze.telemetry.slots.set_default_pool_size).
+    # `set_default_pool_size` again, which resizes the pool IN PLACE with the limiter's own
+    # semantics (grow now, shrink by attrition) and never reissues a slot that is currently
+    # held, so the slot pool tracks the limiter even while children are in flight
+    # (phaze-mvq8z.19; phaze.telemetry.slots.SlotPool.resize).
     telemetry_slots.set_default_pool_size(runtime_cfg.worker_process_pool_size)
     runtime_config_store.register_applier(
         "telemetry_slot_pool",

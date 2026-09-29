@@ -249,22 +249,44 @@ def test_the_default_pool_is_sized_from_the_concurrency_knob() -> None:
     assert slots.default_pool().size == 7
 
 
-def test_a_resize_is_declined_while_slots_are_held(caplog: pytest.LogCaptureFixture) -> None:
-    """Shrinking under live children would hand out a DUPLICATE, so it does not happen.
+def test_a_resize_while_slots_are_held_takes_effect_and_never_reissues_a_held_slot() -> None:
+    """Resizing under live children must neither DECLINE nor hand out a DUPLICATE (phaze-mvq8z.19).
 
-    Rebuilding the pool forgets which slots are out, and the next acquire would reissue
-    slot 0 to a second live child -- the exact collision the module exists to prevent. In
-    production the resize happens once, at worker startup, before any child exists; this is
-    the guard for every other ordering.
+    The duplicate is the collision the module exists to prevent: forgetting which slots are out
+    would let the next acquire reissue slot 0 to a second live child. Declining is the other
+    failure: a hot reload of ``worker_process_pool_size`` lands while children are running (almost
+    always, on a busy agent), and a pool left at the old size while the analysis limiter admits the
+    new one sends the extra children out under the shared identity. So a resize takes effect at
+    once for the free list and drains held slots by attrition, like the limiter it mirrors.
     """
     slots.set_default_pool_size(4)
-    held = slots.default_pool().acquire()
-    with caplog.at_level(logging.WARNING, logger="phaze.telemetry.slots"):
-        slots.set_default_pool_size(2)
+    pool = slots.default_pool()
+    held = [pool.acquire() for _ in range(4)]
+    assert held == [0, 1, 2, 3]
 
-    assert slots.default_pool().size == 4, "the pool was rebuilt while a slot was out"
-    assert any("resize_declined" in record.getMessage() for record in caplog.records)
-    slots.default_pool().release(held)
+    # Grow while every slot is held: the new slots are issued now, the held ones never.
+    slots.set_default_pool_size(6)
+    assert slots.default_pool() is pool, "the pool was rebuilt, forgetting which slots are out"
+    assert pool.size == 6
+    assert [pool.acquire(), pool.acquire()] == [4, 5]
+    assert pool.acquire() is None
+
+    # Shrink while slots are held: nothing is revoked, and a slot past the new ceiling is
+    # dropped on release rather than returned to the free list.
+    slots.set_default_pool_size(2)
+    assert pool.size == 2
+    pool.release(5)
+    pool.release(3)
+    assert pool.acquire() is None, "a slot past the new ceiling was reissued"
+    pool.release(1)
+    assert pool.acquire() == 1
+
+    # Grow again while slot 2 is still out: it stays out.
+    slots.set_default_pool_size(4)
+    assert pool.acquire() == 3
+    assert pool.acquire() is None, "slot 2 is still held and must not be reissued"
+    for slot in (0, 1, 2, 3, 4):
+        pool.release(slot)
 
 
 def test_the_default_pool_is_a_singleton() -> None:
