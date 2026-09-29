@@ -195,7 +195,7 @@ entries from `backends.toml`** (or unmounting the file entirely, which resolves 
 local-only registry).
 
 **Since `phaze-mvq8z` (2026-09), `backends.toml` is hot-reloadable** — see
-[Runtime config hot-reload](#runtime-config-hot-reload-adr-0019) below. A restart is no longer
+[Runtime config hot-reload](#runtime-config-hot-reload) below. A restart is no longer
 required: an edit that lands via the watched directory, or a `docker compose kill -s HUP worker
 api`, re-validates and swaps the registry live. A **restart still works** too
 (`docker compose up -d --force-recreate worker api`) and is the only option pre-`phaze-mvq8z`
@@ -212,14 +212,14 @@ API, LocalQueues, S3 buckets, mounted Secrets, or the OCI A1 host to disable —
 place, inert. Re-enabling later is just re-adding the `[[backends]]`/`[[buckets]]` entries plus a
 reload (or a restart), with no re-provisioning.
 
-## Runtime config hot-reload (ADR-0019)
+## Runtime config hot-reload
 
 Since `phaze-mvq8z` (2026-09) a subset of settings — worker/lane concurrency, the analysis
 process-pool size, analysis thread counts for new children, the analysis stall timeout, the
 cloud route threshold, log level, and `backends.toml` — can be changed on a **running**
 deployment without a restart and without dropping in-flight jobs. Design rationale and the full
 reloadable-key list with what each key's live update actually does:
-[docs/configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload-adr-0019)
+[docs/configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)
 (ADR-0019 (runtime config hot-reload), [docs/design/0019-runtime-config-hot-reload.md](design/0019-runtime-config-hot-reload.md)). This
 section is the deployment-side mount/trigger reference.
 
@@ -318,15 +318,15 @@ source layer (`override`/`file`/`env`/`default`), plus every restart-only key sh
 every other operator admin surface in this repo (`route_control`, `/admin/agents`, …), it carries
 **no authentication of its own** and sits behind the same private-LAN reverse-proxy trust
 boundary; every set/clear attempt, accepted or rejected, is audit-logged as the compensating
-control (see [docs/configuration.md](configuration.md#runtime-config-hot-reload-adr-0019)). An
+control (see [docs/configuration.md](configuration.md#runtime-config-hot-reload)). An
 invalid value is rejected with nothing written to the database.
 
 The DB-override table is created by Alembic migration `072_runtime_config_override` (chained
 after main's `069_cloud_job_last_failure`, current head `072` — see
 [database.md](database.md) for the full migration chain); its downgrade drops the table, which is
 why the whole `phaze-mvq8z` molecule was deliberately landed as a single `--no-ff` merge to
-`main` (operator decision, epic `phaze-mvq8z`) — a single `git revert -m 1` cleanly removes both
-the code and the migration together.
+`main` — an operator decision (2026-09-27, epic `phaze-mvq8z`) — so a single `git revert -m 1`
+cleanly removes both the code and the migration together.
 
 ## Controller vs Agent roles
 

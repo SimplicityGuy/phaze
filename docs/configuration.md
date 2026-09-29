@@ -154,7 +154,7 @@ These size the SQLAlchemy engine pool shared by the api and control-worker engin
 | `PHAZE_DISPATCH_QUEUE_MIN_SIZE` (or `dispatch_queue_min_size`) | No | `0` | psycopg3 `min_size` for each control-side per-(agent,lane) dispatch queue. `0` keeps zero idle server connections pinned. |
 | `PHAZE_DISPATCH_QUEUE_MAX_SIZE` (or `dispatch_queue_max_size`) | No | `2` | psycopg3 `max_size` for each control-side per-(agent,lane) dispatch queue, capping the enqueue burst. |
 
-## Runtime config hot-reload (ADR-0019)
+## Runtime config hot-reload
 
 Since `phaze-mvq8z` (2026-09), a **subset** of settings can be changed on a running `api` /
 control-worker / agent-worker process — no restart, no dropped in-flight jobs. Everything else
@@ -172,7 +172,7 @@ rebuilt snapshot contains:
 1. **Admin UI/API** (writes the top, DB-override layer) — the "Runtime config" pane in the admin
    shell (`/s/runtime-config`), backed by `POST`/`DELETE /admin/runtime-config/<key>`. Carries
    **no authentication of its own** — it sits behind the same private-LAN trust boundary as every
-   other operator admin surface in this repo (ADR-0019 §10); every attempt, accepted or rejected,
+   other operator admin surface in this repo (ADR-0019 (runtime config hot-reload) §10); every attempt, accepted or rejected,
    is audit-logged as the compensating control. An invalid value is rejected (400, with the
    validation error) with **nothing stored** — it is previewed through the same validation path a
    real reload uses before the DB write happens, never written-then-rolled-back.
@@ -220,7 +220,7 @@ or returned).
 | Key | Env var (unchanged meaning) | Applies |
 |-----|------------------------------|---------|
 | `log_level` | `PHAZE_LOG_LEVEL` | Immediately — `configure_logging` is re-applied (already idempotent). |
-| `worker_max_jobs` | `WORKER_MAX_JOBS` | Grow: immediately — the phaze SAQ `Worker` subclass (ADR-0019 §8) spawns the extra job loops right away. Shrink: by attrition — a loop parked idle in dequeue is trimmed at once, but a loop mid-job finishes that job first; never a forced kill. |
+| `worker_max_jobs` | `WORKER_MAX_JOBS` | Grow: immediately — the phaze SAQ `Worker` subclass (ADR-0019 (runtime config hot-reload) §8) spawns the extra job loops right away. Shrink: by attrition — a loop parked idle in dequeue is trimmed at once, but a loop mid-job finishes that job first; never a forced kill. |
 | `lane_analyze_concurrency` | `PHAZE_LANE_ANALYZE_CONCURRENCY` | Same grow/shrink shape as `worker_max_jobs`, on the analyze-lane agent worker only (effective concurrency is `min(lane knob, worker_max_jobs)`). |
 | `lane_meta_concurrency` | `PHAZE_LANE_META_CONCURRENCY` | Same, on the meta-lane agent worker. |
 | `lane_io_concurrency` | `PHAZE_LANE_IO_CONCURRENCY` | Same, on the io-lane agent worker. |
@@ -252,8 +252,10 @@ of `runtime_config_dir`; the two default to two entirely separate directories) a
 SIGHUP/admin-reload pipeline, but it is not one of the `runtime.toml` keys above: it is validated
 and swapped as a whole registry, and a reload that would **remove** a backend still referenced by
 an in-flight `cloud_job` row is **rejected outright** — the whole reload fails closed rather than
-partially dropping that one backend (ADR-0019 §9, an operator decision: *"Reject while
-in-flight"*). The backend becomes removable once no `cloud_job` row references it any longer.
+partially dropping that one backend. This is an operator decision (2026-09-27, epic `phaze-mvq8z`;
+full citation in [ADR-0019 (runtime config hot-reload) §9](design/0019-runtime-config-hot-reload.md#9-backendstoml-reload-and-the-backend-removal-policy)):
+*"Reject while in-flight"*. The backend becomes removable once no `cloud_job` row references it
+any longer.
 
 ### Effective config visibility
 
@@ -265,7 +267,7 @@ in-flight"*). The backend becomes removable once no `cloud_job` row references i
   of a DB-override reload via Postgres `NOTIFY` (with a fallback poll for a missed notify). A
   remote agent has no Postgres reachability of its own, so it instead polls the
   agent-authenticated `GET /api/internal/agent/config` on the **same ~30s cadence as its own
-  liveness heartbeat** (ADR-0019 §14, an accepted latency — *"~30s is fine"*) and reloads its
+  liveness heartbeat** (ADR-0019 (runtime config hot-reload) §14, an accepted latency — *"~30s is fine"*) and reloads its
   local store only when the returned digest changes. The resolved effective config (value, source
   layer, restart-required keys, last reload result) rides an optional `effective_config` field on
   the heartbeat request into `agents.last_status`, rendered in the per-agent activity panel on

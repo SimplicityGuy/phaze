@@ -1330,8 +1330,8 @@ hot-reloadable without a control-plane restart: an edit via the watched config d
 `docker compose kill -s HUP worker api`, or the admin API/UI all re-validate and swap the
 registry live, subject to the same in-flight-removal safety rule as any other reload (a reload
 that would remove a backend still referenced by an in-flight `cloud_job` row is rejected
-outright). See [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload-adr-0019)
-and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload-adr-0019)
+outright). See [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)
+and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload)
 for the full mechanism, mount requirements, and trigger reference.
 
 **A Kueue burst pod itself is explicitly out of scope for this mechanism, and deliberately so
@@ -1359,7 +1359,7 @@ operator-applied, cluster-admin-owned objects exactly as documented above.
   (remove the non-local backends, or the Phase 71 force-local override).
 - [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (a `kind="compute"`
   backend in the same registry).
-- [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload-adr-0019)
-  and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload-adr-0019)
+- [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)
+  and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload)
   — the hot-reload mechanism `backends.toml` now participates in (control plane only; burst pods
   are out of scope, see above).
