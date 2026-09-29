@@ -169,6 +169,13 @@ class CloudJob(TimestampMixin, Base):
     last_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # phaze-d28sn: when a CHARGED re-drive may enqueue its fresh submit. Set by the reconcile cron in the
+    # same commit that charges the attempt and deletes the failed Job (``last_failed_at`` + the
+    # ``cloud_redrive_backoff_sec`` entry for that attempt); while it is in the future the row waits
+    # SUBMITTED with no ``kueue_workload``, keeping its burst-lane slot and charging nothing more.
+    # Cleared when the resubmit is enqueued and whenever the row leaves in-flight. It is what tells a
+    # waiting row from a pending-confirmation one: both have no Job, but only the latter has a submit queued.
+    redrive_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         # Bare name "status_enum"; the ck_%(table_name)s_%(constraint_name)s convention re-prefixes it.

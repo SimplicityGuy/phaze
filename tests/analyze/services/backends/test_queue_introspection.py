@@ -58,10 +58,16 @@ _CREATE_SAQ_JOBS = text(
 _QUEUE = "phaze-agent-nox-analyze"
 
 
-def _now_ms() -> int:
-    import time
+async def _now_ms(session: AsyncSession) -> int:
+    """The current time on the DATABASE's clock, in SAQ's epoch-ms unit (phaze-neo4z).
 
-    return int(time.time() * 1000)
+    ``summarize_active_jobs`` ages ``stuck_past_timeout`` and ``stranded`` as
+    ``EXTRACT(EPOCH FROM NOW()) * 1000 - started``, i.e. on the Postgres container's clock. Seeding
+    ``started`` from the host's ``time.time()`` put a second clock into every margin below -- the
+    same class phaze-0vlnp fixed in the reapers and phaze-neo4z carries here. Reading the reference
+    from the clock the SQL reads leaves each margin exactly as wide as it is written.
+    """
+    return int(await session.scalar(text("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")))
 
 
 async def _seed(session: AsyncSession, *, key: str, status: str, blob: dict[str, object]) -> None:
@@ -75,7 +81,7 @@ async def _seed(session: AsyncSession, *, key: str, status: str, blob: dict[str,
 async def test_breakdown_separates_running_from_claimed_unrun(session: AsyncSession) -> None:
     """2 running (attempts present) + 3 claimed-but-unrun (attempts absent) => running == 2, not 5."""
     await session.execute(_CREATE_SAQ_JOBS)
-    now = _now_ms()
+    now = await _now_ms(session)
     # Genuinely running: attempts key present (SAQ omits it only when 0).
     for i in range(2):
         await _seed(session, key=f"process_file:run-{i}", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
@@ -110,7 +116,7 @@ async def test_breakdown_exempts_timeout_zero_rows_from_stuck_and_stranded(sessi
     of age, not just "not yet due".
     """
     await session.execute(_CREATE_SAQ_JOBS)
-    now = _now_ms()
+    now = await _now_ms(session)
     slack_s = 900  # default active_reap_slack_seconds
     await _seed(
         session,
@@ -132,7 +138,7 @@ async def test_breakdown_exempts_timeout_zero_rows_from_stuck_and_stranded(sessi
 async def test_breakdown_scopes_to_the_named_queue(session: AsyncSession) -> None:
     """Active rows on OTHER queues are not counted -- the split is per-queue."""
     await session.execute(_CREATE_SAQ_JOBS)
-    now = _now_ms()
+    now = await _now_ms(session)
     await _seed(session, key="process_file:mine", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
     await session.execute(
         text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:k, :j, :q, 'active', 0)"),

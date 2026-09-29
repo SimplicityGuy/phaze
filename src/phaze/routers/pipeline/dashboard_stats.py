@@ -25,6 +25,7 @@ from phaze.services.backends import (
     get_backend_lane_snapshot,
     get_running_analyses,
 )
+from phaze.services.backends.lane_detail import db_now
 from phaze.services.pipeline import (
     _read_in_own_session,
     _stats_fanout,
@@ -52,6 +53,8 @@ from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
@@ -304,6 +307,7 @@ def _shared_stats_context(
     cloud_phase_counts: dict[str, int],
     lanes: list[dict[str, Any]],
     running_analyses: list[RunningAnalysis] | None,
+    queue_now: datetime,
     analyze_queue_totals: dict[str, int | None],
     activity: dict[str, int],
     dag_ctx: dict[str, Any],
@@ -355,6 +359,7 @@ def _shared_stats_context(
         "finished_count": cloud_phase_counts["finished"],
         "lanes": lanes,
         "running_analyses": running_analyses,
+        "queue_now": queue_now,
         "analyze_running_total": _analyze_running_total(lanes),
         "total_queued_analyze": analyze_queue_totals["total_queued"],
         "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
@@ -488,7 +493,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # phaze-lwz8n: the Running-now rows (local SAQ rows the worker started + Kueue pods RUNNING), keyed off
     # the SAME lane snapshot. Seeded IDENTICALLY in pipeline_stats_partial() below (the OOB swap contract).
     # Degrade-safe at the service layer (-> None, rendered as "unavailable"), so NO router try/except.
-    running_analyses = await get_running_analyses(session, app_state, lanes)
+    # queue_now (phaze-jz0fm): one database-clock read, threaded into get_running_analyses AND back out
+    # through _shared_stats_context to the template's humanize_relative_time(..., now=queue_now), so the
+    # rendered "N ago" text and the heartbeat_lost flag it renders age the same row off the same clock.
+    queue_now = await db_now(session)
+    running_analyses = await get_running_analyses(session, app_state, lanes, now=queue_now)
 
     # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
     # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
@@ -524,6 +533,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
             # identically in pipeline_stats_partial via the shared helper).
             lanes=lanes,
             running_analyses=running_analyses,
+            queue_now=queue_now,
             # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
             # remainder (seeded above, mirrored identically in pipeline_stats_partial).
             analyze_queue_totals=analyze_queue_totals,
@@ -680,7 +690,8 @@ async def pipeline_stats_partial(
     # phaze-lwz8n: the same Running-now rows build_dashboard_context seeds on first load, re-pushed on every
     # tick via the OOB #analyze-queue section. Depends on the just-resolved `lanes`, so it runs here. Cost:
     # two indexed (status, queue) reads bounded by RUNNING_LIMIT plus one id-keyed join for the labels.
-    running_analyses = await get_running_analyses(session, request.app.state, lanes)
+    queue_now = await db_now(session)
+    running_analyses = await get_running_analyses(session, request.app.state, lanes, now=queue_now)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
@@ -719,6 +730,7 @@ async def pipeline_stats_partial(
                 cloud_phase_counts=cloud_phase_counts,
                 lanes=lanes,
                 running_analyses=running_analyses,
+                queue_now=queue_now,
                 analyze_queue_totals=analyze_queue_totals,
                 activity=activity,
                 dag_ctx=dag_ctx,

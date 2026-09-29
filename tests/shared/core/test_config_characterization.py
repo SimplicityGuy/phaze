@@ -112,7 +112,8 @@ def test_pydantic_validator_registration_order_is_unchanged() -> None:
             "model": ["_apply_redis_password", "_resolve_secret_files"],
         },
         "ControlSettings": {
-            "field": ["_strip_sqlalchemy_driver"],
+            # phaze-d28sn: comma-splits PHAZE_CLOUD_REDRIVE_BACKOFF_SEC, the scan_roots convention.
+            "field": ["_strip_sqlalchemy_driver", "_split_redrive_backoff"],
             "model": [
                 "_apply_redis_password",
                 "_resolve_secret_files",
