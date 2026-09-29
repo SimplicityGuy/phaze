@@ -15,7 +15,7 @@ re-deriving it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -23,16 +23,21 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.sql import func as sa_func
 
+from phaze.config import ControlSettings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.routers.agent_config import router as agent_config_router
-from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore, get_runtime_config_store
 from phaze.schemas.agent_config import compute_overrides_digest
+from phaze.services.agent_client import AgentApiServerError, PhazeAgentClient
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
+from phaze.tasks.heartbeat import _poll_runtime_config
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -125,3 +130,54 @@ async def test_non_reloadable_override_row_is_filtered_out_defensively(seed_test
     assert response.status_code == 200
     body = response.json()
     assert body["overrides"] == {"worker_max_jobs": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_override_read_is_a_5xx_and_the_agent_keeps_its_last_good_override(
+    seed_test_agent: tuple[Agent, str], session: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """phaze-mvq8z.19 finding 1, the agent half, driven through the agent's REAL consumer
+    (``PhazeAgentClient.get_config`` + the heartbeat's ``_poll_runtime_config``).
+
+    A DB failure reading the override table must not be served as an empty override set: that
+    comes with a NEW digest, so every polling agent would reload and drop every override it had.
+    The endpoint fails instead (5xx), the client raises, and the agent's store keeps last-good.
+    """
+    _agent, raw_token = seed_test_agent
+    session.add(RuntimeConfigOverride(key="worker_max_jobs", value=12))
+    await session.flush()
+
+    app = _make_smoke_app(session)
+    http = AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test", headers={"Authorization": f"Bearer {raw_token}"}
+    )
+
+    async def _no_backoff(_delay: float) -> None:
+        return None
+
+    client = PhazeAgentClient("http://test", raw_token, _client=http, _retry_sleep=_no_backoff)
+    store = RuntimeConfigStore(ControlSettings(), runtime_toml=tmp_path / RUNTIME_TOML_NAME, physical_cores=lambda: 64)
+    await store.reload("startup")
+    ctx: dict[str, Any] = {"runtime_config_store": store}
+    try:
+        await _poll_runtime_config(ctx, client)
+        assert store.current().worker_max_jobs == 12
+        before = store.snapshot()
+
+        real_execute = session.execute
+
+        async def _override_read_fails(statement: Any, *args: Any, **kwargs: Any) -> Any:
+            # Only the override table's read fails -- agent authentication still reads the DB.
+            if "runtime_config_override" in str(statement):
+                raise RuntimeError("simulated DB failure")
+            return await real_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "execute", _override_read_fails)
+        with pytest.raises(AgentApiServerError):
+            await client.get_config()
+        await _poll_runtime_config(ctx, client)
+
+        assert store.snapshot() is before
+        assert store.current().worker_max_jobs == 12
+    finally:
+        await client.close()

@@ -4,7 +4,7 @@ ADR-0019 (runtime config hot-reload) §14: a remote agent has no Postgres reacha
 invariant ``phaze.tasks.heartbeat`` enforces -- see that module's docstring), so it cannot install the
 DB-override layer directly the way the api process and control worker do
 (``phaze.runtime_config_notify.install_runtime_config_overrides``, wired via a shared asyncpg LISTEN
-connection). This endpoint is that layer's HTTP mirror: the SAME degrade-safe reader
+connection). This endpoint is that layer's HTTP mirror: the SAME reader
 (:func:`~phaze.services.runtime_config_overrides.get_runtime_config_overrides`, phaze-mvq8z.6),
 restricted to :data:`~phaze.runtime_config.RELOADABLE_KEYS` defensively -- the DB should never hold a
 non-reloadable key (``set_runtime_config_override``'s only caller, the admin router, already runs
@@ -17,6 +17,11 @@ route uses (401 missing/malformed header, 403 unknown/revoked token).
 (the operator's ~30s-latency decision, ADR-0019 (runtime config hot-reload) §14) and reloads its LOCAL
 ``RuntimeConfigStore`` only when the returned ``digest`` changes -- see that module for the client
 side of this round trip.
+
+A failed override read is a 5xx, never an empty override set (phaze-mvq8z.19): ``{}`` carries a
+NEW digest, so every polling agent would reload and drop every override it holds. The reader
+raises; the error surfaces as a 500, which ``PhazeAgentClient`` retries and then raises, and the
+heartbeat's poll treats as "local config unchanged this tick" -- each agent keeps last-good.
 
 The response is NOT per-agent: every agent reading this endpoint sees the SAME override layer (the
 DB table has no agent-scoped rows). The auth dependency exists to keep this off the open internet,

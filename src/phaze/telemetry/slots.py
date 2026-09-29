@@ -252,6 +252,7 @@ class SlotPool:
         self._lock = threading.Lock()
         self._size = max(1, size)
         self._free: list[int] = list(range(self._size))
+        self._held: set[int] = set()
 
     @property
     def size(self) -> int:
@@ -263,7 +264,21 @@ class SlotPool:
             if not self._free:
                 log.warning("telemetry_slot_pool_exhausted size=%d using_shared_identity", self._size)
                 return None
-            return self._free.pop(0)
+            slot = self._free.pop(0)
+            self._held.add(slot)
+            return slot
+
+    def resize(self, size: int) -> None:
+        """Change the ceiling in place, with the analysis limiter's semantics (phaze-mvq8z.19).
+
+        Grow issues the new slots at once; shrink revokes nothing -- a held slot past the new
+        ceiling simply is not returned to the free list on release, so the excess drains by
+        attrition (``phaze.services.resizable_limiter``). The pool is resized rather than
+        rebuilt because only it knows which slots are out: a rebuilt pool would reissue them.
+        """
+        with self._lock:
+            self._size = max(1, size)
+            self._free = [slot for slot in range(self._size) if slot not in self._held]
 
     def release(self, slot: int | None) -> None:
         """Hand a slot back. Tolerates None and a double release, on purpose.
@@ -276,7 +291,10 @@ class SlotPool:
         if slot is None:
             return
         with self._lock:
-            if 0 <= slot < self._size and slot not in self._free:
+            if slot not in self._held:
+                return
+            self._held.discard(slot)
+            if slot < self._size:
                 self._free.append(slot)
                 self._free.sort()
 
@@ -295,22 +313,27 @@ def default_pool() -> SlotPool:
 
 
 def set_default_pool_size(size: int) -> None:
-    """Size the pool from the knob that ACTUALLY bounds concurrency. Called at worker startup.
+    """Size the pool from the knob that ACTUALLY bounds concurrency. Called at worker startup,
+    and again by the ``telemetry_slot_pool`` applier on every live ``worker_process_pool_size``
+    reload (phaze-mvq8z.7).
 
     The host lane's ceiling is ``worker_process_pool_size``, and this exists so the
     cardinality bound is read from that number rather than from a second copy of it in the
     environment. That is only half the job: the size set here is what :func:`assign` then
     stamps into each child's environment, because the child enforces the bound and would
     otherwise fall back to :data:`DEFAULT_SLOT_MAX` and refuse the very slots this pool
-    hands out. Sizing down while slots are held would hand out a duplicate on the next
-    acquire, so a resize replaces the pool only when nothing is out.
+    hands out. An existing pool is resized IN PLACE (:meth:`SlotPool.resize`), never rebuilt:
+    a rebuilt pool would forget which slots are out and reissue one to a second live child,
+    and declining instead (the pre-phaze-mvq8z.19 behaviour) left the pool at its old size
+    while the analysis limiter admitted the new one -- almost every live reload lands while
+    children are running -- so the extra children exported under the shared identity.
     """
     global _pool  # process-wide singleton, like the providers in bootstrap
     with _pool_lock:
-        if _pool is not None and len(_pool._free) != _pool.size:
-            log.warning("telemetry_slot_pool_resize_declined held=%d size=%d", _pool.size - len(_pool._free), _pool.size)
-            return
-        _pool = SlotPool(size)
+        if _pool is None:
+            _pool = SlotPool(size)
+        else:
+            _pool.resize(size)
 
 
 def disown_inherited_slot(environ: dict[str, str] | None = None) -> int | None:

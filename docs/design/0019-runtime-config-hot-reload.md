@@ -101,6 +101,13 @@ reference** that live code reads. On validation failure, the process **keeps the
 snapshot** and reports a structured error — a bad reload never leaves the process on a partially
 applied config, and never crashes it.
 
+The `derive_sizing` coherence check runs only in an **agent** process — the only process that runs
+analysis children, so the only one whose cores can judge the sizing keys. The api and control
+processes skip it: judged against the API host's cores, the admin preview rejected values valid on
+every agent and accepted values a smaller agent then refused. An agent that refuses an override
+keeps last-good and reports the rejection in `effective_config.last_reload` (§15). This is an
+**implementer decision** (`phaze-mvq8z.19`), not an operator one.
+
 A successful swap runs every registered **applier** with `(old, new)`, so each subsystem decides
 for itself what "resizable" means for its own resource (§7, §8, §9).
 

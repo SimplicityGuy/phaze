@@ -119,11 +119,12 @@ async def test_a_live_pool_size_reload_resizes_both_the_limiter_and_the_telemetr
     assert telemetry_slots.default_pool().size == 5
 
 
-async def test_a_pool_size_reload_that_declines_leaves_both_where_they_were(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A held telemetry slot makes ``set_default_pool_size`` decline (its own pre-existing
-    safety net, phaze.telemetry.slots): the reload still succeeds overall (`outcome="applied"`,
-    since the limiter's OWN applier ran and changed something), but the pool stays exactly as it
-    was rather than silently reissuing a slot a child still holds."""
+async def test_a_pool_size_reload_with_a_slot_held_still_resizes_the_telemetry_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A held telemetry slot must not make the telemetry pool's applier a silent no-op
+    (phaze-mvq8z.19 finding 3). Slots are held whenever analysis is running, which is exactly when
+    an operator retunes the pool: if the limiter admits 5 while the slot pool stays at 3, children 4
+    and 5 get no slot and export under the shared identity. Both must reach the new size, and the
+    held slot must still never be reissued."""
     from phaze.config import AgentSettings
     from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
     from phaze.telemetry import slots as telemetry_slots
@@ -139,7 +140,8 @@ async def test_a_pool_size_reload_that_declines_leaves_both_where_they_were(monk
 
     ctx = await _start(monkeypatch, store)
     limiter = ctx["analysis_semaphore"]
-    held = telemetry_slots.default_pool().acquire()
+    pool = telemetry_slots.default_pool()
+    held = pool.acquire()
     assert held is not None
 
     runtime_toml.write_text("worker_process_pool_size = 5\n", encoding="utf-8")
@@ -147,4 +149,7 @@ async def test_a_pool_size_reload_that_declines_leaves_both_where_they_were(monk
 
     assert result.outcome == "applied", result.error
     assert limiter.total_tokens == 5, "the limiter has no in-flight-holding concept of its own; it always resizes"
-    assert telemetry_slots.default_pool().size == 3, "a pool with a slot held must decline the resize, not reissue it"
+    assert telemetry_slots.default_pool().size == 5, "a held slot made the telemetry pool decline the resize"
+    issued = [telemetry_slots.default_pool().acquire() for _ in range(4)]
+    assert held not in issued, "the held slot was reissued"
+    assert sorted(slot for slot in issued if slot is not None) == [1, 2, 3, 4]

@@ -2,14 +2,19 @@
 
 Three surfaces over :class:`~phaze.models.runtime_config_override.RuntimeConfigOverride`:
 
-* :func:`get_runtime_config_overrides` -- the DEGRADE-SAFE reader, wired into
+* :func:`get_runtime_config_overrides` -- the reader, wired into
   :class:`phaze.runtime_config.RuntimeConfigStore` as its ``override_provider``
-  (``phaze.runtime_config_notify.install_runtime_config_overrides``). It is on the reload hot path
-  (every SIGHUP, file-watch tick, admin-API write, and fallback poll calls it), so it mirrors
-  :func:`phaze.services.route_control.get_route_control`'s degrade discipline EXACTLY: a SAVEPOINT
-  read, absent table/rows -> ``{}`` (no overrides -- every key falls through to the next layer),
-  ANY DB exception -> ``{}``, NEVER raises. A raise here would turn a transient DB hiccup into a
-  crashed reload instead of the last-good snapshot the core is built to keep.
+  (``phaze.runtime_config_notify.install_runtime_config_overrides``) and served to agents by
+  ``GET /api/internal/agent/config``. Absent rows -> ``{}`` (no overrides -- every key falls
+  through to the next layer); a DB exception RAISES, after a SAVEPOINT rollback that leaves the
+  caller's transaction usable. It deliberately does NOT copy
+  :func:`phaze.services.route_control.get_route_control`'s degrade-to-default shape
+  (phaze-mvq8z.19): ``{}`` is also the true answer for "no overrides set", so degrading to it
+  makes a transient DB failure look like an operator clearing every override -- a new digest the
+  store would swap to and run every applier on, and that every polling agent would adopt. A raise
+  is what lets each consumer keep last-good instead: ``RuntimeConfigStore.reload()`` turns a
+  provider exception into ``outcome="rejected"`` with the last-good snapshot kept, and the agent
+  endpoint turns it into a 5xx that the agent's poll treats as "local config unchanged".
 * :func:`set_runtime_config_override` -- the WRITE path the admin API calls only AFTER
   ``RuntimeConfigStore.preview()`` has already validated the candidate off the loop (the admin
   router owns that ordering; this function has no opinion on validity, matching ``routing.py``'s
@@ -35,7 +40,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import select, text
-import structlog
 
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 
@@ -44,8 +48,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-logger = structlog.get_logger(__name__)
-
 #: The Postgres NOTIFY channel every DB-override write signals on (ADR-0019 (runtime config hot-reload) §14). A single
 #: process-wide constant -- both the writer (this module) and every listener
 #: (``phaze.runtime_config_notify``) reference it, so the two sides cannot drift apart.
@@ -53,18 +55,14 @@ RUNTIME_CONFIG_NOTIFY_CHANNEL: Final = "phaze_runtime_config"
 
 
 async def get_runtime_config_overrides(session: AsyncSession) -> dict[str, Any]:
-    """Return every currently-set override as ``{key: value}``. NEVER raises (see module docstring).
+    """Return every currently-set override as ``{key: value}``. RAISES on a DB error (see module docstring).
 
-    Absent table/rows -> ``{}``. Any DB exception -> SAVEPOINT rollback -> ``{}`` (route_control's
-    exact degrade shape, generalized from a single boolean row to a full key/value map).
+    Absent rows -> ``{}``. A failed read is never reported as ``{}``: that would be
+    indistinguishable from "no overrides", which is a real, different state.
     """
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(select(RuntimeConfigOverride))).scalars().all()
-        return {row.key: row.value for row in rows}
-    except Exception:
-        logger.warning("runtime_config_overrides_degraded", exc_info=True)
-        return {}
+    async with session.begin_nested():
+        rows = (await session.execute(select(RuntimeConfigOverride))).scalars().all()
+    return {row.key: row.value for row in rows}
 
 
 async def _notify(session: AsyncSession) -> None:

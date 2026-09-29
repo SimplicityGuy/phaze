@@ -17,20 +17,25 @@ successful write visible to the very next request regardless of NOTIFY.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from sqlalchemy import select
 from structlog.testing import capture_logs
 
+from phaze import runtime_config
 from phaze.models.runtime_config_override import RuntimeConfigOverride
-from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config import RUNTIME_TOML_NAME, get_runtime_config_store
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.runtime_config import RuntimeConfigStore
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +153,61 @@ async def test_delete_a_restart_only_key_is_rejected(client: AsyncClient) -> Non
     response = await client.delete("/admin/runtime-config/database_url")
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_an_agent_sizing_override_is_not_judged_against_the_api_hosts_cores(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-mvq8z.19 finding 4: the sizing keys size ANALYSIS children, which only agent hosts run.
+
+    On a 2-core API host, 8 intra-op threads per child oversubscribes the API host -- which runs no
+    analysis at all -- and says nothing about an agent. The api process's store must not veto (or
+    later reject a reload over) an agent-scoped sizing value on the strength of its own cores; each
+    agent judges it against its own on its own reload, and reports a rejection back through
+    ``effective_config.last_reload``.
+    """
+    real_derive_sizing = runtime_config.derive_sizing
+
+    def _two_core_api_host(physical_cores: int | None = None, **kwargs: Any) -> Any:
+        return real_derive_sizing(2 if physical_cores is None else physical_cores, **kwargs)
+
+    monkeypatch.setattr(runtime_config, "derive_sizing", _two_core_api_host)
+    get_runtime_config_store.cache_clear()
+    store = get_runtime_config_store()
+    store.set_override_provider(lambda: get_runtime_config_overrides(session))
+
+    response = await client.post("/admin/runtime-config/analysis_intra_op_threads", data={"value": "8"})
+
+    assert response.status_code == 200, response.text
+    row = await session.get(RuntimeConfigOverride, "analysis_intra_op_threads")
+    assert row is not None
+    assert row.value == 8
+    assert store.current().analysis_intra_op_threads == 8, "the api's own reload rejected an agent-scoped sizing value"
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_override_that_would_unmask_an_invalid_file_value_is_refused(
+    client: AsyncClient, session: AsyncSession, tmp_path: Path, _wire_runtime_config_store: RuntimeConfigStore
+) -> None:
+    """phaze-mvq8z.19 finding 5: clearing is NOT always valid -- the layer underneath may be invalid.
+
+    ``runtime.toml`` carries ``worker_max_jobs = 0`` (below the ``ge=1`` bound), masked by an
+    override of 4. Deleting the override would leave every later reload rejected, the snapshot stuck
+    on the stale override, and the pane still showing a Clear button for a row that no longer
+    exists. The delete is previewed like a set, and refused with the core's error.
+    """
+    runtime_toml = tmp_path / RUNTIME_TOML_NAME
+    runtime_toml.write_text("worker_max_jobs = 0\n", encoding="utf-8")
+    _wire_runtime_config_store._runtime_toml = runtime_toml
+    assert (await client.post("/admin/runtime-config/worker_max_jobs", data={"value": "4"})).status_code == 200
+    assert get_runtime_config_store().current().worker_max_jobs == 4
+
+    response = await client.delete("/admin/runtime-config/worker_max_jobs")
+
+    assert response.status_code == 409
+    assert "worker_max_jobs" in response.json()["detail"]
+    row = await session.get(RuntimeConfigOverride, "worker_max_jobs")
+    assert row is not None, "the override was deleted even though clearing it leaves an invalid config"
+    assert row.value == 4
+    assert get_runtime_config_store().current().worker_max_jobs == 4

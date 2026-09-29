@@ -779,3 +779,30 @@ def test_preview_agrees_with_a_real_reload_for_the_same_candidate(tmp_path: Path
         assert store.current().worker_max_jobs == previewed.worker_max_jobs == 11
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("role", "rejects"), [("control", False), ("agent", True)])
+def test_the_process_store_checks_sizing_only_in_an_agent_process(role: str, rejects: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.19 finding 4: only an agent runs analysis children, so only an agent's store
+    judges the sizing keys against its cores. The api/control store would otherwise veto a value
+    that is valid on every agent because the API host happens to be small."""
+    from phaze import runtime_config
+
+    for name, value in _AGENT_MIN_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PHAZE_RUNTIME_CONFIG_DIR", str(tmp_path))
+    settings = AgentSettings() if role == "agent" else ControlSettings()
+    monkeypatch.setattr(runtime_config, "get_settings", lambda: settings)
+    real_derive_sizing = runtime_config.derive_sizing
+    monkeypatch.setattr(runtime_config, "derive_sizing", lambda physical_cores=None, **kw: real_derive_sizing(physical_cores or 2, **kw))
+    store = get_runtime_config_store()
+    oversubscribing = {"lane_analyze_concurrency": 100, "worker_max_jobs": 100, "worker_process_pool_size": 100, "analysis_intra_op_threads": 8}
+
+    async def scenario() -> None:
+        if rejects:
+            with pytest.raises(ReloadRejectedError, match="oversubscribes 2 physical cores"):
+                await store.preview(oversubscribing)
+        else:
+            assert (await store.preview(oversubscribing)).analysis_intra_op_threads == 8
+
+    asyncio.run(scenario())

@@ -105,9 +105,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # phaze-mvq8z.6 deliberately does NOT install the DB-override provider here: the override
     # table only exists once `run_migrations()` below has run, and this reload happens BEFORE
     # that -- before the database is even confirmed reachable (the `SELECT 1` check further
-    # down). Reading the override table this early would work (the reader is degrade-safe), but
-    # would print a scary "relation does not exist" warning on every fresh-DB first boot for no
-    # benefit, since there is nothing yet to override. This first reload validates the env/file
+    # down). Reading the override table this early would fail on every fresh-DB first boot (the
+    # reader raises on a DB error, phaze-mvq8z.19), rejecting this reload for no benefit, since
+    # there is nothing yet to override. This first reload validates the env/file
     # layers only; a SECOND reload once the DB-override layer is wired in (below) folds in
     # anything an operator already set, so it takes effect immediately rather than waiting for
     # this process's first NOTIFY/poll tick or a SIGHUP.
