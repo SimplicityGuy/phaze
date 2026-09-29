@@ -4,8 +4,11 @@
 
    Context: `waiting` -- services.backends.lane_detail.WaitingPage. `note` set means the queue could not
    be read; it is rendered as such, never as an empty queue. Claimed rows come first: the agent took them
-   but never started them. One claimed past the stall bound is the phaze-tch4d signature and is red. #}
+   but never started them. One claimed past the stall bound is the phaze-tch4d signature and is red.
+   `queue_now` -- the database-clock reading (lane_detail.db_now) get_waiting_page aged `row.overdue`
+   against (phaze-jz0fm); passed to humanize_relative_time so "claimed N ago" agrees with that flag. #}
 {% import "ui/primitives.html" as ui %}
+{% set _now = queue_now if queue_now is defined else none %}
 <div>
     {% if waiting.note %}
         <p role="status" class="px-4 py-4 text-sm text-muted ">{{ waiting.note }}</p>
@@ -25,11 +28,11 @@
             <tr{% if row.overdue %} class="bg-red-50 dark:bg-red-950"{% endif %}>
                 <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" title="{{ row.label }}">{{ row.label }}</td>
                 <td class="whitespace-nowrap px-4 py-2 text-xs">
-                    {% if row.overdue %}{{ ui.status_badge("Waiting state", "CLAIMED, NOT STARTED", "danger", "✕") }} <span class="text-danger ">claimed {{ humanize_relative_time(row.claimed_at) }}</span>
-                    {% elif row.claimed %}{{ ui.status_badge("Waiting state", "CLAIMED", "neutral", "…") }} <span class="text-muted ">{{ humanize_relative_time(row.claimed_at) }}</span>
+                    {% if row.overdue %}{{ ui.status_badge("Waiting state", "CLAIMED, NOT STARTED", "danger", "✕") }} <span class="text-danger ">claimed {{ humanize_relative_time(row.claimed_at, now=_now) }}</span>
+                    {% elif row.claimed %}{{ ui.status_badge("Waiting state", "CLAIMED", "neutral", "…") }} <span class="text-muted ">{{ humanize_relative_time(row.claimed_at, now=_now) }}</span>
                     {% else %}<span class="text-muted ">queued</span>{% endif %}
                 </td>
-                <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(row.enqueued_at) if row.enqueued_at else "—" }}</td>
+                <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(row.enqueued_at, now=_now) if row.enqueued_at else "—" }}</td>
             </tr>
             {% endfor %}
         </tbody>

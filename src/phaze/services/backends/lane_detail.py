@@ -483,6 +483,26 @@ def _ms_to_datetime(value: Any) -> datetime | None:
     return datetime.fromtimestamp(int(value) / 1000, tz=UTC)
 
 
+async def db_now(session: AsyncSession) -> datetime:
+    """The reference time every lane_detail / analyze-queue age, overdue, and "N ago" render reads (phaze-jz0fm).
+
+    ``_QUEUE_EXTRAS_SQL``'s claim-overdue / heartbeat-lost counts age a row against Postgres
+    ``NOW()`` -- the database container's clock. Before this, :func:`get_running_analyses` and
+    :func:`get_waiting_page` aged the SAME rows with Python's ``datetime.now(UTC)`` -- the app
+    host's clock -- so a host-vs-container skew moved a rendered "N ago" label and an overdue flag
+    independently of the SQL-derived counts for the same row (phaze-neo4z). Public (not ``_``-
+    prefixed): the routers that render ``_analyze_queue.html`` / ``_analyze_waiting.html`` /
+    ``_lane_detail.html`` call this ONCE per request and thread the same value into both these two
+    functions (via their ``now`` kwarg) and the template's ``humanize_relative_time(..., now=...)``,
+    so the displayed text and the server-computed overdue/heartbeat_lost flags always agree -- one
+    query per render, never per row and never a second, independent read.
+    """
+    now = await session.scalar(select(func.now()))
+    if now is None:  # pragma: no cover -- NOW() is never NULL; a bare `assert` here trips bandit B101 in src/
+        raise RuntimeError("SELECT now() returned NULL")
+    return now
+
+
 def _file_id_from_key(key: str) -> uuid.UUID | None:
     """Return the file id a ``process_file:<file_id>`` broker key names, or ``None`` for any other key."""
     if not key.startswith(_PROCESS_FILE_PREFIX):
@@ -697,18 +717,26 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str]) -> list[
     ]
 
 
-async def get_running_analyses(session: AsyncSession, app_state: Any, lanes: list[dict[str, Any]]) -> list[RunningAnalysis] | None:
+async def get_running_analyses(
+    session: AsyncSession, app_state: Any, lanes: list[dict[str, Any]], *, now: datetime | None = None
+) -> list[RunningAnalysis] | None:
     """Return every analysis executing now, across the local lane and every Kueue lane in ``lanes``.
 
     ``lanes`` is the lane snapshot the caller already holds (its ids and kinds, no extra read). Compute
     lanes contribute nothing: they expose no execution signal (see ``lane_metrics._cloud_lane_active``).
     ``None`` means the list could not be read at all; a local lane with no live fileserver agent simply
     contributes no rows (its lane card already says why).
+
+    ``now`` lets the caller pass the SAME :func:`db_now` reading it also hands the template's
+    ``humanize_relative_time(..., now=...)`` (phaze-jz0fm), so the "N ago" text and this function's
+    own heartbeat_lost flag age the row identically. Omitted, it reads the database clock itself.
     """
-    now = datetime.now(UTC)
     local_ids = [str(lane["id"]) for lane in lanes if lane.get("kind") == "local"]
     kueue_ids = [str(lane["id"]) for lane in lanes if lane.get("kind") == "kueue"]
     try:
+        if now is None:
+            async with session.begin_nested():
+                now = await db_now(session)
         running: list[RunningAnalysis] = []
         if local_ids:
             resolved = await resolve_local_analyze_queue_name(session, app_state)
@@ -723,11 +751,15 @@ async def get_running_analyses(session: AsyncSession, app_state: Any, lanes: lis
     return running
 
 
-async def get_waiting_page(session: AsyncSession, app_state: Any, *, page: int = 1, page_size: int = WAITING_PAGE_SIZE) -> WaitingPage:
+async def get_waiting_page(
+    session: AsyncSession, app_state: Any, *, page: int = 1, page_size: int = WAITING_PAGE_SIZE, now: datetime | None = None
+) -> WaitingPage:
     """Return one page of the local lane's waiting list: claimed-but-unrun first, then queued in SAQ order.
 
     ``has_next`` rides a ``page_size + 1`` sentinel, never a COUNT. Loaded on demand by the operator,
     never by the 5s poll, so a large backlog costs nothing until someone asks to see it.
+
+    ``now`` -- see :func:`get_running_analyses`'s docstring; same contract, same :func:`db_now`.
     """
     page = max(1, page)
     resolved = await resolve_local_analyze_queue_name(session, app_state)
@@ -735,10 +767,11 @@ async def get_waiting_page(session: AsyncSession, app_state: Any, *, page: int =
         return WaitingPage(
             rows=[], page=page, page_size=page_size, has_next=False, note="Unavailable — no live fileserver agent to read the queue from."
         )
-    now = datetime.now(UTC)
     overdue_after = claim_overdue_seconds()
     try:
         async with session.begin_nested():
+            if now is None:
+                now = await db_now(session)
             rows = (await session.execute(_WAITING_ROWS_SQL, {"queue": resolved[1], "limit": page_size + 1, "offset": (page - 1) * page_size})).all()
             has_next = len(rows) > page_size
             rows = rows[:page_size]
