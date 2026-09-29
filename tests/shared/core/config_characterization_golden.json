@@ -613,6 +613,11 @@
     "cloud_budget_max_chains": 3,
     "cloud_budget_max_node_loss": 3,
     "cloud_node_loss_max_redrives": 1,
+    "cloud_redrive_backoff_sec": [
+      120,
+      600,
+      1800
+    ],
     "cloud_route_threshold_sec": 5400,
     "cloud_spill_to_local_after_seconds": 900,
     "cloud_submit_max_attempts": 3,
@@ -736,6 +741,10 @@
     "cloud_node_loss_max_redrives": [
       "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES",
       "cloud_node_loss_max_redrives"
+    ],
+    "cloud_redrive_backoff_sec": [
+      "PHAZE_CLOUD_REDRIVE_BACKOFF_SEC",
+      "cloud_redrive_backoff_sec"
     ],
     "cloud_route_threshold_sec": [
       "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC",
@@ -1049,6 +1058,8 @@
     "CLOUD_BUDGET_MAX_NODE_LOSS_FILE",
     "CLOUD_NODE_LOSS_MAX_REDRIVES",
     "CLOUD_NODE_LOSS_MAX_REDRIVES_FILE",
+    "CLOUD_REDRIVE_BACKOFF_SEC",
+    "CLOUD_REDRIVE_BACKOFF_SEC_FILE",
     "CLOUD_ROUTE_THRESHOLD_SEC",
     "CLOUD_ROUTE_THRESHOLD_SEC_FILE",
     "CLOUD_SCRATCH_DIR",
@@ -1166,6 +1177,8 @@
     "PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS_FILE",
     "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES",
     "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES_FILE",
+    "PHAZE_CLOUD_REDRIVE_BACKOFF_SEC",
+    "PHAZE_CLOUD_REDRIVE_BACKOFF_SEC_FILE",
     "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC",
     "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC_FILE",
     "PHAZE_CLOUD_SCRATCH_DIR",

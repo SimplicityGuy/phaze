@@ -247,10 +247,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-071)
+### Post-baseline chain (040-072)
 
-`alembic/versions/` holds **33** files: the `039` baseline plus a linear chain to the current
-head, **`071`**.
+`alembic/versions/` holds **34** files: the `039` baseline plus a linear chain to the current
+head, **`072`**.
 
 | Rev | Change |
 |-----|--------|
@@ -285,7 +285,8 @@ head, **`071`**.
 | `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op (phaze-3agnm) |
 | `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted (phaze-1xngw) |
 | `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) |
-| `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) — **head** |
+| `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) |
+| `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting (phaze-d28sn) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

@@ -123,7 +123,7 @@ _KUEUE_BACKEND_ID = "kueue-x64"
 _STAGING_BUCKET_ID = "staging-a"
 
 
-def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling: int = 1) -> None:
+def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling: int = 1, backoff: tuple[int, ...] = (0,)) -> None:
     """Pin ``get_settings()`` for BOTH the cron and ``KueueBackend.reconcile`` so cap + registry are deterministic.
 
     The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
@@ -135,6 +135,9 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling:
         cloud_submit_max_attempts=cap,
         # phaze-1q4g: the SECOND re-drive budget -- node-loss re-drives spend this one, not ``attempts``.
         cloud_node_loss_max_redrives=node_loss_ceiling,
+        # phaze-d28sn: the re-drive backoff schedule. (0,) -- the default here -- enqueues a re-drive on the tick that
+        # charges it, which is what every re-drive test below asserts; redrive/test_redrive_backoff.py tests the wait.
+        cloud_redrive_backoff_sec=backoff,
         cloud_enabled=True,
         backends=[
             SimpleNamespace(

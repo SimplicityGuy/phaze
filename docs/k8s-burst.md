@@ -298,6 +298,20 @@ dropped/expired watch never loses or duplicates a result" true.
   currently use up their 3 attempts. How should phaze respond instead?"* — answer as given: *"Both:
   exit code + breaker (Recommended)"*; durable record: the bead `phaze-j0ixx` comment. The thresholds
   and the probe are the implementer's choice, reasoned in `services/backend_breaker.py`.
+- **A charged re-drive waits out a backoff, holding its slot (phaze-d28sn)** — reconcile used to
+  enqueue the fresh submit on the tick that saw the failure, so a file spent one submit and three
+  re-drives in about three minutes (spike `phaze-79mu7`). A re-drive that charges `attempts` or
+  `node_loss_redrives` now deletes the Job and charges the counter as before, then stamps
+  `cloud_job.redrive_after` = `last_failed_at` + the `cloud_redrive_backoff_sec` entry for that
+  re-drive (default 2 / 10 / 30 minutes) and enqueues nothing; the first tick past that instant
+  enqueues the submit. The wait is not an attempt, and a waiting tick writes nothing. The waiting row
+  stays `SUBMITTED` with no `kueue_workload`, so it **keeps its burst-lane slot** and its staged object
+  — the implementer's choice over releasing it to `'awaiting'`, which would re-upload the file on every
+  re-drive and let the drain's `cloud_spill_to_local_after_seconds` spill it to local mid-wait
+  (`tasks/reconcile_cloud_jobs.py` has the reasoning). `redrive_after` is also what separates a waiting
+  row from a pending-confirmation one, so no schedule entry can age a row into the charged
+  vanished-submit terminal. An exit `14` re-drive does not wait: it charges nothing, and the breaker
+  above bounds it. No pod runs while a row waits, so nothing bounds a running analysis.
 - **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
   `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal

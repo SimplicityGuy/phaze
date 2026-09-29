@@ -2,10 +2,11 @@
 
 from pathlib import Path
 import tomllib
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import NoDecode
 import structlog
 
 from phaze.config_backends import BackendConfig, BucketConfig, _default_local_registry
@@ -55,6 +56,14 @@ class ControlSettings(BaseSettings):
         data["backends"] = parsed.get("backends", [])
         data["buckets"] = parsed.get("buckets", [])
         return data
+
+    @field_validator("cloud_redrive_backoff_sec", mode="before")
+    @classmethod
+    def _split_redrive_backoff(cls, value: object) -> object:
+        """Comma-split ``PHAZE_CLOUD_REDRIVE_BACKOFF_SEC`` (the ``scan_roots`` convention); native sequences pass through."""
+        if isinstance(value, str):
+            return tuple(item.strip() for item in value.split(",") if item.strip())
+        return value
 
     @model_validator(mode="after")
     def _validate_registry(self) -> "ControlSettings":
@@ -222,6 +231,20 @@ class ControlSettings(BaseSettings):
         description=(
             "Max re-drives of a kube Job whose pod died WITH ITS NODE before the file spills to the local safety net (phaze-1q4g). "
             "Charged to cloud_job.node_loss_redrives, NOT to attempts. Default 1; bounded gt=0, lt=20."
+        ),
+    )
+    # phaze-d28sn: spacing between CHARGED re-drives, so a fault shorter than the schedule cannot spend
+    # a file's whole budget. Entry n is the wait before the n-th re-drive of either charged counter; the
+    # last entry repeats past the end. The default spans 42 min across the 3 re-drives of the default cap.
+    cloud_redrive_backoff_sec: Annotated[tuple[Annotated[int, Field(ge=0, le=86400)], ...], NoDecode] = Field(
+        default=(120, 600, 1800),
+        min_length=1,
+        validation_alias=AliasChoices("PHAZE_CLOUD_REDRIVE_BACKOFF_SEC", "cloud_redrive_backoff_sec"),
+        description=(
+            "Seconds to wait before each CHARGED kube Job re-drive (phaze-d28sn), as a comma-separated list: entry n is the wait "
+            "before the n-th re-drive, and the last entry repeats. The waiting row keeps its burst-lane slot and is not charged "
+            "again for the wait. Uncharged re-drives (control plane unreachable) are bounded by the backend breaker instead and "
+            "never wait. Default 120,600,1800 (2 / 10 / 30 min, 42 min in all); 0 re-drives on the same tick. Each entry 0..86400."
         ),
     )
     # Per-file evidence survives cloud_job cleanup; configuration turns it into the cross-chain
