@@ -60,6 +60,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+_SIGHUP_RELOAD_TASKS: set[asyncio.Task[object]] = set()
+"""Strong references to in-flight SIGHUP reloads -- see :func:`install_sighup_handler`."""
+
 
 def install_sighup_handler(loop: asyncio.AbstractEventLoop, store: RuntimeConfigStore) -> bool:
     """Install the phaze-owned SIGHUP -> ``reload("sighup")`` handler on ``loop``.
@@ -74,11 +77,16 @@ def install_sighup_handler(loop: asyncio.AbstractEventLoop, store: RuntimeConfig
     failure -- the file/API/DB reload layers still work.
 
     ``store.reload`` never raises (see its docstring), so the scheduled task is fire-and-forget:
-    nothing here can turn a delivered signal into an unhandled exception on the loop.
+    nothing here can turn a delivered signal into an unhandled exception on the loop. Fire-and-forget
+    does not mean unreferenced, though: asyncio holds tasks only weakly, so each one is kept in
+    :data:`_SIGHUP_RELOAD_TASKS` until it finishes -- otherwise a reload parked on an await could be
+    garbage-collected mid-flight, losing the reload while it may hold the store lock (phaze-mvq8z.20).
     """
 
     def _on_sighup() -> None:
-        loop.create_task(store.reload("sighup"), name="runtime-config-sighup-reload")
+        task = loop.create_task(store.reload("sighup"), name="runtime-config-sighup-reload")
+        _SIGHUP_RELOAD_TASKS.add(task)
+        task.add_done_callback(_SIGHUP_RELOAD_TASKS.discard)
 
     try:
         loop.add_signal_handler(signal.SIGHUP, _on_sighup)
