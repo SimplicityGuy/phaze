@@ -68,7 +68,7 @@ from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
-from phaze.tasks.heartbeat import _heartbeat_loop
+from phaze.tasks.heartbeat import _config_poll_loop, _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
@@ -415,6 +415,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["agent_lane"] = _lane
     if cfg.agent_heartbeat_enabled:
         ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
+    else:
+        # phaze-mvq8z.21: the heartbeat loop is also the DB-override delivery path. A worker with
+        # heartbeats off still runs jobs (worker-drain runs process_file), so it polls the config
+        # on its own loop -- or an admin override would never reach it.
+        ctx["config_poll_task"] = asyncio.create_task(_config_poll_loop(ctx))
 
     # Bound concurrent essentia analysis children. The exec'd
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
@@ -486,11 +491,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     # Phase 46: cancel the background heartbeat FIRST, before closing api_client, so an
     # in-flight heartbeat POST never hits a closed client. Guarded: the key may be absent
     # if startup never reached the launch point.
-    heartbeat_task = ctx.get("heartbeat_task")
-    if heartbeat_task is not None:
-        heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
+    # phaze-mvq8z.21: the heartbeat-disabled worker's config poll uses the same client, so it goes too.
+    for key in ("heartbeat_task", "config_poll_task"):
+        task = ctx.get(key)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     # Phase 101: no process pool to tear down — analysis children are per-file
     # subprocesses owned and reaped by services.analysis_exec; the semaphore needs

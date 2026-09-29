@@ -282,7 +282,10 @@ missed. There is no existing control-plane → agent push channel — the heartb
 bare `204` with no body, and `HeartbeatRequest` is `extra="forbid"` — so a **remote agent instead
 polls a new agent-authenticated `GET /api/internal/agent/config`** on the existing heartbeat
 cadence, accepting the same ~30 s worst-case propagation latency the operator accepted above,
-rather than building a second, lower-latency channel for this one use.
+rather than building a second, lower-latency channel for this one use. A worker started with
+heartbeats disabled (`PHAZE_AGENT_HEARTBEAT=false`, e.g. the worker-drain all-mode worker, which
+still runs `process_file`) runs the same poll on a loop of its own at the same cadence
+(`phaze-mvq8z.21`); it sends no heartbeat, so it reports no effective config (§15).
 
 **Explicitly out of scope:** Kubernetes burst pods. Each burst pod is one Job per file and already
 picks up `ConfigMap` changes on its **next** Job — there is no long-lived process inside it for
