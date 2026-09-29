@@ -693,11 +693,17 @@ class PhazeAgentClient:
         return None
 
     async def heartbeat(self, payload: HeartbeatRequest) -> None:
-        """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content)."""
+        """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content).
+
+        An absent ``effective_config`` is OMITTED from the body, never sent as ``null``: a control
+        plane older than that field forbids extra keys and 422s ``"effective_config": null`` exactly
+        as it would a populated one, so the core beat ``send_heartbeat`` falls back to must not
+        carry the key at all (phaze-mvq8z.20).
+        """
         await self._request(
             "POST",
             "/api/internal/agent/heartbeat",
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(mode="json", exclude={"effective_config"} if payload.effective_config is None else None),
         )
         return None
 

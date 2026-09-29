@@ -158,7 +158,9 @@ async def test_laned_beat_with_effective_config_persists_it_per_lane(seed_test_a
         analysis_stall_timeout_sec=1800,
         cloud_route_threshold_sec=3600,
     )
-    effective_config = EffectiveConfig(values=values, sources=dict.fromkeys(RuntimeConfig.model_fields, "default"), restart_only_keys=[])
+    effective_config = EffectiveConfig(
+        values=values.model_dump(mode="json"), sources=dict.fromkeys(RuntimeConfig.model_fields, "default"), restart_only_keys=[]
+    )
     payload = _beat("analyze", 42)
     payload["effective_config"] = effective_config.model_dump(mode="json")
 

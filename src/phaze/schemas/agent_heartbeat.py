@@ -1,8 +1,7 @@
 """Pydantic schema for POST /api/internal/agent/heartbeat (phase-25 D-17, D-19)."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from phaze.runtime_config import Layer, ReloadOutcome, ReloadSource, RuntimeConfig
 from phaze.schemas.wire_bounds import INT32_MAX
 
 
@@ -33,6 +32,22 @@ QUEUE_DEPTH_MAX = 1_000_000_000_000  # 10**12 per lane; even summed over 1000 la
 #: the tail of a message, never the heartbeat (phaze-mvq8z.19).
 LAST_RELOAD_ERROR_MAX_LENGTH = 500
 
+#: Bound on the free-text labels below (a layer, a reload source or outcome) -- today's longest is 9.
+EFFECTIVE_CONFIG_LABEL_MAX_LENGTH = 64
+
+# phaze-mvq8z.20 -- VERSION TOLERANCE of the ``effective_config`` sub-document (the implementer's
+# mechanism for that bead's finding 1). The reloadable key set, the layers, the reload sources and
+# outcomes all move between versions, and a rolling deploy puts a new agent in front of an old
+# control plane and vice versa. This snapshot is DISPLAY-ONLY -- the server stores it as sent and
+# ``routers/admin_agents._effective_config_view`` renders any mapping -- so its models ignore
+# fields they do not know (``extra="ignore"``), ``values`` is a plain JSON mapping rather than
+# ``RuntimeConfig`` (whose every field is required and whose extras are forbidden, so ANY key
+# added or removed 422'd heartbeats between mismatched versions), and the enum-like labels are
+# bounded strings rather than Literals. ``HeartbeatRequest``'s own core fields keep
+# ``extra="forbid"``. A control plane that predates this field entirely still 422s the whole beat;
+# that half is absorbed on the AGENT, which re-sends the core beat without the snapshot
+# (``phaze.tasks.heartbeat.send_heartbeat``) -- so the snapshot can never cost liveness.
+
 
 class EffectiveConfigLastReload(BaseModel):
     """One reload attempt, as the agent's OWN :class:`~phaze.runtime_config.RuntimeConfigStore` last
@@ -43,10 +58,12 @@ class EffectiveConfigLastReload(BaseModel):
     agent role, so there is nothing yet to report from that map.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    source: ReloadSource
-    outcome: ReloadOutcome
+    source: str = Field(max_length=EFFECTIVE_CONFIG_LABEL_MAX_LENGTH)
+    """A :data:`phaze.runtime_config.ReloadSource` -- a plain string on the wire (version tolerance, above)."""
+    outcome: str = Field(max_length=EFFECTIVE_CONFIG_LABEL_MAX_LENGTH)
+    """A :data:`phaze.runtime_config.ReloadOutcome` -- a plain string on the wire (version tolerance, above)."""
     error: str | None = Field(default=None, max_length=LAST_RELOAD_ERROR_MAX_LENGTH)
     at: float
     """``time.time()`` when this reload attempt completed (``ReloadResult.at``)."""
@@ -61,15 +78,17 @@ class EffectiveConfig(BaseModel):
     panel (``routers/admin_agents.py``) can reuse that rendering rather than inventing a second shape.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    values: RuntimeConfig
-    """Every reloadable key's current value -- ``RuntimeConfig`` is reused directly (not
-    re-declared here) so its own field bounds (``ge``/``gt``/``lt``, the known-log-level check) are
-    the ONE place those constraints live; a wire schema copying them by hand would drift."""
-    sources: dict[str, Layer]
-    """Per reloadable key: which layer resolved its current value (``override``/``file``/``env``/
-    ``default``)."""
+    values: dict[str, JsonValue]
+    """Every reloadable key's current value, as the agent's own ``RuntimeConfig`` dumped it. A plain
+    mapping, NOT ``RuntimeConfig``, so a key this server does not know -- or one it knows that this
+    agent does not send -- is accepted (version tolerance, above). The values were already validated
+    by that ``RuntimeConfig`` on the agent before they could be in force there; this server only
+    stores and displays them."""
+    sources: dict[str, str]
+    """Per reloadable key: which :data:`phaze.runtime_config.Layer` resolved its current value
+    (``override``/``file``/``env``/``default``) -- a plain string on the wire (version tolerance, above)."""
     restart_only_keys: list[str] = Field(default_factory=list)
     """Names only, NEVER values (several restart-only keys carry credentials --
     :data:`phaze.runtime_config.RESTART_ONLY_KEYS`'s own module docstring states this rule; this
@@ -110,5 +129,7 @@ class HeartbeatRequest(BaseModel):
     required field would 422 every one of those beats. ``routers/agent_heartbeat.py`` excludes a
     ``None`` value from storage (mirroring its existing ``exclude={"lane"}`` treatment) so an
     old-shape beat's persisted `last_status` stays byte-identical to before this bead, with no
-    stray `effective_config: null` key.
+    stray `effective_config: null` key. The other direction -- a NEW agent against a control plane
+    that predates this field -- is handled on the agent (phaze-mvq8z.20; see the version-tolerance
+    note above :class:`EffectiveConfigLastReload`).
     """

@@ -58,7 +58,7 @@ from phaze.constants import (
 )
 from phaze.runtime_config import RESTART_ONLY_KEYS
 from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH, EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
-from phaze.services.agent_client import AgentApiError
+from phaze.services.agent_client import AgentApiClientError, AgentApiError
 
 
 logger = structlog.get_logger(__name__)
@@ -217,7 +217,7 @@ def _build_effective_config(store: Any) -> EffectiveConfig:
         else None
     )
     return EffectiveConfig(
-        values=snapshot.config,
+        values=snapshot.config.model_dump(mode="json"),
         sources=dict(snapshot.sources),
         restart_only_keys=sorted(RESTART_ONLY_KEYS),
         last_reload=last_reload,
@@ -295,7 +295,17 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         effective_config=_build_effective_config(runtime_config_store) if runtime_config_store is not None else None,
     )
     try:
-        await client.heartbeat(payload)
+        try:
+            await client.heartbeat(payload)
+        except AgentApiClientError:
+            if payload.effective_config is None:
+                raise
+            # phaze-mvq8z.20: a control plane older than `effective_config` 422s every beat that
+            # carries it, and agents may upgrade first. The snapshot is optional; liveness is not --
+            # so re-send the core beat without it. Tried again with the snapshot on every tick, so
+            # the panel fills in by itself once the control plane catches up.
+            logger.warning("heartbeat: control plane rejected effective_config; re-sending the beat without it")
+            await client.heartbeat(payload.model_copy(update={"effective_config": None}))
         # DEBUG only by design (PR3): the 30s cadence fires constantly, so an INFO
         # here would flood operational logs -- heartbeat liveness lives at DEBUG.
         logger.debug("heartbeat sent", agent=identity.agent_id, queue_depth=queue_depth)
