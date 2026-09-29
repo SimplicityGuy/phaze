@@ -365,6 +365,32 @@ async def _heartbeat_loop(ctx: dict[str, Any]) -> None:
         await asyncio.sleep(AGENT_HEARTBEAT_INTERVAL_SECONDS)
 
 
+async def _config_poll_loop(ctx: dict[str, Any]) -> None:
+    """Background loop: the runtime-config poll alone, for a worker that sends no heartbeat (phaze-mvq8z.21).
+
+    ``PHAZE_AGENT_HEARTBEAT=false`` exists to stop a worker REPORTING liveness (one authoritative
+    ``last_seen`` per agent), not to stop it RECEIVING configuration -- but ``send_heartbeat`` was
+    the only caller of :func:`_poll_runtime_config`, so a heartbeat-disabled worker that still runs
+    jobs (the worker-drain all-mode worker runs ``process_file``) never saw an admin override. This
+    loop runs the SAME single-attempt, individually bounded poll on the SAME cadence, decoupled
+    from the POST. It does not report ``effective_config``: that rides a heartbeat, and this worker
+    sends none.
+
+    Same survival shape as :func:`_heartbeat_loop`: one failed iteration never kills the loop, and
+    ``asyncio.CancelledError`` is re-raised so shutdown can cancel + await it cleanly. The poll
+    bounds its own GET (``CONFIG_POLL_TIMEOUT_SECONDS``) and swallows its own failures.
+    """
+    client = ctx.get("api_client")
+    while True:
+        try:
+            await _poll_runtime_config(ctx, client)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("config poll loop iteration failed; continuing", exc_info=True)
+        await asyncio.sleep(AGENT_HEARTBEAT_INTERVAL_SECONDS)
+
+
 async def heartbeat_tick(ctx: dict[str, Any]) -> None:
     """Back-compat shim: a directly-callable wrapper delegating to send_heartbeat.
 

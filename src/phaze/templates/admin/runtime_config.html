@@ -12,9 +12,11 @@
 {% call ws.workspace(title="RUNTIME CONFIG", subcount=subcount|tojson|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="text-sm text-muted">
-            Live overrides for hot-reloadable process configuration. A key set here takes effect on this and every
-            other control-plane process without a restart (ADR-0019 (runtime config hot-reload)). Restart-only keys
-            below cannot be changed live.
+            Live overrides for hot-reloadable process configuration. A key set here takes effect without a restart on
+            this and every other control-plane process, and on every agent worker at its next config poll (about
+            30&nbsp;s), including workers that send no heartbeat. Kubernetes burst pods are out of scope
+            (ADR-0019 (runtime config hot-reload) §14). Only heartbeating workers report what is in force.
+            Restart-only keys below cannot be changed live.
         </p>
     </div>
     <div class="p-4 sm:p-6">

@@ -15,6 +15,7 @@ module's tests are most concerned with -- see ``test_ctx_without_a_store_skips_t
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 import json
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,7 @@ from phaze.schemas.agent_identity import AgentIdentity
 from phaze.services.agent_client import PhazeAgentClient
 from phaze.tasks import heartbeat
 from phaze.tasks.heartbeat import send_heartbeat
+from tests._async_settle import wait_until
 
 
 if TYPE_CHECKING:
@@ -347,3 +349,49 @@ async def test_a_hanging_config_poll_does_not_prevent_the_heartbeat_post(tmp_pat
     assert client.get_config_calls == 1
     assert len(client.heartbeat_calls) == 1, "a hanging config poll cost the heartbeat POST"
     assert client.heartbeat_calls[0].effective_config is not None  # still reports the last good local state
+
+
+async def _cancel(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_the_config_poll_loop_applies_an_override_without_sending_a_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.21: a heartbeat-disabled worker's own poll loop delivers the override -- and POSTs nothing."""
+    monkeypatch.setattr(heartbeat, "AGENT_HEARTBEAT_INTERVAL_SECONDS", 0)
+    store = _store(tmp_path)
+    await store.reload("startup")
+    assert store.current().worker_max_jobs != 9  # precondition: the override actually changes something
+    client = _StubClient(overrides={"worker_max_jobs": 9})
+    task = asyncio.create_task(heartbeat._config_poll_loop(_ctx(client, store=store)))
+    try:
+        await wait_until(lambda: store.current().worker_max_jobs == 9, description="the polled override being applied")
+        await wait_until(lambda: client.get_config_calls >= 2, description="a second poll tick")
+    finally:
+        await _cancel(task)
+
+    assert store.snapshot().sources["worker_max_jobs"] == "override"
+    assert store.last_result is not None
+    assert store.last_result.source == "poll"
+    assert client.heartbeat_calls == []
+
+
+async def test_a_failed_config_poll_iteration_does_not_kill_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.21: like the heartbeat loop, one raising iteration is logged and the next tick still runs."""
+    monkeypatch.setattr(heartbeat, "AGENT_HEARTBEAT_INTERVAL_SECONDS", 0)
+    calls = 0
+
+    async def _flaky_poll(_ctx: dict[str, Any], _client: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("one bad tick")
+
+    monkeypatch.setattr(heartbeat, "_poll_runtime_config", _flaky_poll)
+    task = asyncio.create_task(heartbeat._config_poll_loop({}))
+    try:
+        await wait_until(lambda: calls >= 2, description="the tick after a raising one")
+    finally:
+        await _cancel(task)
+    assert task.cancelled()

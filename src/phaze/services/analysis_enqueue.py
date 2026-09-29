@@ -11,8 +11,8 @@ collapse a repeat enqueue of an already in-flight file to a clean no-op
 Import boundary (32-RESEARCH §Q4): this module MUST stay FastAPI-free. It imports
 neither ``fastapi`` nor ``phaze.routers`` -- only stdlib ``uuid`` (annotation-only),
 the ``ProcessFilePayload`` schema (a real import because it is constructed),
-``phaze.config`` (for the job's heartbeat policy -- role-agnostic, same import the
-shared ``before_enqueue`` hook already makes), and ``FileRecord`` (annotation-only).
+``phaze.runtime_config`` (for the job's heartbeat policy, live -- role-agnostic, same
+import the shared ``before_enqueue`` hook already makes), and ``FileRecord`` (annotation-only).
 The annotation-only names live under ``TYPE_CHECKING`` so the reboot task and the
 router can both import this without pulling in the web layer.
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from phaze.config import get_settings
+from phaze.runtime_config import current as current_runtime_config
 from phaze.schemas.agent_tasks import ProcessFilePayload
 
 
@@ -148,8 +148,10 @@ async def enqueue_process_file(
         # DERIVED, not equal to the inner stall threshold: this outer deadline watches a strictly
         # narrower signal than the child's own watchdog does, so it needs real slack or it will
         # sweep jobs the watchdog is correctly holding healthy. See
-        # `config.BaseSettings.analysis_job_heartbeat_sec` for the full reasoning.
-        heartbeat=get_settings().analysis_job_heartbeat_sec,
+        # `config.BaseSettings.analysis_job_heartbeat_sec` for the full reasoning. Read from the LIVE
+        # runtime-config snapshot (phaze-mvq8z.21): the stall threshold it derives from is
+        # hot-reloadable, and a start-time read would sit below a live-raised watchdog.
+        heartbeat=current_runtime_config().analysis_job_heartbeat_sec,
         # retries=2 (NOT 1): apply_project_job_defaults (tasks/_shared/queue_defaults.py)
         # only fills jobs still at the SAQ default retries==1, clobbering it to
         # worker_max_retries(4). retries=2 is honored and stays in the locked 1-2 band,
