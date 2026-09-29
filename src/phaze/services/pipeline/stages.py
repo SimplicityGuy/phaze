@@ -32,6 +32,7 @@ from phaze.services.pipeline.buckets import StageBucketSnapshot, _empty_buckets,
 from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count
 from phaze.services.stage_status import (
     done_clause,
+    inflight_clause,
 )
 
 
@@ -174,8 +175,8 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       measured nothing.
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
     - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (metadata
-      DONE AND analysis DONE, mirroring ``get_proposal_pending_batches``'s ``_proposal_pending_clauses``
-      ready-set gate below -- phaze-nuyn, phaze-rhs6m)
+      DONE-AND-NOT-IN-FLIGHT AND analysis DONE-AND-NOT-IN-FLIGHT, mirroring ``get_proposal_pending_batches``'s
+      ``_proposal_pending_clauses`` ready-set gate below -- phaze-nuyn, phaze-rhs6m, phaze-3542b, phaze-mvq8z.17)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
 
     Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
@@ -214,7 +215,24 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # set, ``analysis_completed_at`` NULL) neither of which get_proposal_pending_batches will ever
     # batch. The completion discriminator used to exist only in the ready set; this fixes the drift
     # (phaze-nuyn) by composing from the shared ``done_clause`` builder so the two cannot drift again.
-    convergence_stmt = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA)).where(done_clause(Stage.ANALYZE))
+    #
+    # phaze-mvq8z.17: phaze-3542b later added ``~inflight_clause`` conjuncts to
+    # ``_proposal_pending_clauses`` (closing the enqueue-then-execute TOCTOU) but this sibling
+    # denominator was left on bare ``done_clause`` -- reopening the SAME asymmetry class phaze-nuyn
+    # and phaze-rhs6m already closed once, this time on the in-flight axis instead of the
+    # completion-discriminator axis. A file mid-re-analysis (any ``process_file`` producer; none
+    # clears ``analysis_completed_at``) still satisfies bare ``done_clause(ANALYZE)`` from its PRIOR
+    # completed run, so this denominator counted it "ready for a proposal" while the pending-set
+    # gate correctly excluded it as in-flight -- the same shape that made the Summary overview's
+    # FULLY ENRICHED tile exceed the Analyze "done" bucket (``routers/shell/summary.py``'s
+    # ``_get_summary_aggregates``, fixed alongside this). Add the same two conjuncts so this
+    # denominator agrees with BOTH the pending-set gate above it and the analyze/metadata "done"
+    # buckets it is meant to total.
+    convergence_stmt = (
+        select(func.count(FileRecord.id))
+        .where(done_clause(Stage.METADATA), ~inflight_clause(Stage.METADATA))
+        .where(done_clause(Stage.ANALYZE), ~inflight_clause(Stage.ANALYZE))
+    )
     tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
     proposals_stmt = select(func.count(distinct(RenameProposal.file_id)))
     execute_total_stmt = select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED)

@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.scheduling_ledger import SchedulingLedger
 
 # phaze-bk9el.16: the summary derivation moved from routers/shell.py to the routers/shell
 # PACKAGE's `summary` submodule. Every setattr below substitutes a name `_build_summary_context`
@@ -23,6 +24,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.routers.shell import summary as shell_mod
 from phaze.routers.shell.summary import SummaryOverviewInputs, _derive_summary_overview, _get_summary_aggregates
 from phaze.services.backends import get_analysis_activity_counts
+from phaze.services.pipeline import get_stage_progress
 from phaze.services.proposal_queries import ProposalStats
 
 
@@ -199,6 +201,57 @@ async def test_enriched_count_is_the_same_file_intersection(session: AsyncSessio
 
     assert aggregates["enriched"] == 0
     assert (await get_analysis_activity_counts(session))["lifetime"] == 1
+
+
+@pytest.mark.asyncio
+async def test_enriched_cannot_exceed_the_analyze_done_bucket_when_reanalysis_is_in_flight(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-mvq8z.17: the enriched intersection must never exceed either of its own parts.
+
+    Reproduces the operator-reported "Fully enriched 200 but Analyze 198/751" shape in a SINGLE
+    quiescent snapshot -- no cross-session timing skew required. A file mid-re-analysis (dashboard
+    "Run Analysis", the reanalysis backfill, or a reboot re-enqueue -- every ``process_file``
+    producer funnels through the same enqueue helper, none of which clears
+    ``AnalysisResult.analysis_completed_at``) still carries its STALE completion timestamp from the
+    PRIOR analysis run, alongside a live ``scheduling_ledger`` row for the fresh one.
+
+    Before the fix, ``_get_summary_aggregates``'s "enriched" query was bare ``done_clause(METADATA)
+    AND done_clause(ANALYZE)`` -- it counted the re-analyzing file as done on both stages, while
+    ``get_stage_progress``'s ``analyze`` bucket (``stage_status_case``, whose ladder puts
+    ``in_flight`` ABOVE ``done`` -- services/stage_status.py) correctly excluded it, so the
+    intersection read HIGHER than one of its own parts even read at the identical instant. Two
+    files pin the fix discriminatingly: a genuinely-done file (counted on both sides) and the
+    re-analyzing one (excluded from ``enriched`` the same way it is excluded from ``analyze.done``).
+    """
+    settled = await make_file(original_filename="settled.mp3")
+    session.add(FileMetadata(file_id=settled.id, failed_at=None))
+    session.add(AnalysisResult(file_id=settled.id, analysis_completed_at=datetime.now(UTC)))
+
+    reanalyzing = await make_file(original_filename="reanalyzing.mp3")
+    session.add(FileMetadata(file_id=reanalyzing.id, failed_at=None))
+    session.add(AnalysisResult(file_id=reanalyzing.id, analysis_completed_at=datetime.now(UTC)))
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{reanalyzing.id}",
+            function="process_file",
+            routing="agent",
+            payload={"file_id": str(reanalyzing.id)},
+        )
+    )
+    await session.commit()
+
+    aggregates = await _get_summary_aggregates(session)
+    progress = await get_stage_progress(session)
+    analyze_done = int(progress["analyze"]["done"] or 0)
+    metadata_done = int(progress["metadata"]["done"] or 0)
+
+    assert aggregates["enriched"] == 1, "only the settled file (not the re-analyzing one) is enriched"
+    assert analyze_done == 1, "the analyze bucket must exclude the file whose re-analysis is in flight"
+    assert metadata_done == 2, "metadata is done -- and not in flight -- for BOTH files"
+    assert aggregates["enriched"] <= analyze_done, f"FULLY ENRICHED ({aggregates['enriched']}) must never exceed Analyze done ({analyze_done})"
+    assert aggregates["enriched"] <= metadata_done, f"FULLY ENRICHED ({aggregates['enriched']}) must never exceed Metadata done ({metadata_done})"
 
 
 @pytest.mark.asyncio
