@@ -44,7 +44,6 @@ import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
-import logging
 import os
 from pathlib import Path
 import secrets
@@ -71,6 +70,7 @@ from phaze.scripts.download_models import MANIFEST
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
 from tests._async_settle import wait_until
 from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
+from tests._uvicorn_leaks import contained_uvicorn_logging
 from tests.db_guard import integration_dsns
 
 
@@ -170,27 +170,24 @@ async def control_plane(
     app = create_app()
     app.dependency_overrides[get_session] = _session
 
-    # uvicorn.Config dictConfigs its loggers' process-global levels; put them back afterwards
-    # (phaze-pv3kk, tests/agents/services/test_agent_client_tls.py has the incident).
-    leaked_loggers = ("uvicorn", "uvicorn.error", "uvicorn.access")
-    saved_levels = {name: logging.getLogger(name).level for name in leaked_loggers}
-    server = _NoSignalServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = int(sock.getsockname()[1])
-    serving = asyncio.create_task(server.serve(sockets=[sock]))
-    try:
-        await wait_until(lambda: server.started or serving.done(), timeout=HANG_GUARD, description="uvicorn serving", interval=POLL)
-        assert not serving.done(), serving
-        yield ControlPlane(base_url=f"http://127.0.0.1:{port}", agent_token=raw_token, session_factory=session_factory)
-    finally:
-        server.should_exit = True
-        await asyncio.wait_for(serving, HANG_GUARD)
-        with contextlib.suppress(OSError):
-            sock.close()
-        get_runtime_config_store.cache_clear()
-        for name, level in saved_levels.items():
-            logging.getLogger(name).setLevel(level)
+    # uvicorn.Config leaves process-global logging state behind (logger levels, a TRACE level
+    # name); contained so no later test in this process sees it (tests/_uvicorn_leaks.py).
+    with contained_uvicorn_logging():
+        server = _NoSignalServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+        serving = asyncio.create_task(server.serve(sockets=[sock]))
+        try:
+            await wait_until(lambda: server.started or serving.done(), timeout=HANG_GUARD, description="uvicorn serving", interval=POLL)
+            assert not serving.done(), serving
+            yield ControlPlane(base_url=f"http://127.0.0.1:{port}", agent_token=raw_token, session_factory=session_factory)
+        finally:
+            server.should_exit = True
+            await asyncio.wait_for(serving, HANG_GUARD)
+            with contextlib.suppress(OSError):
+                sock.close()
+            get_runtime_config_store.cache_clear()
 
 
 # The agent: the production worker, as its own process
