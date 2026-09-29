@@ -32,8 +32,24 @@ import logging
 from logging import getLogger as _stdlib_get_logger
 import os
 import sys
+from typing import Final
 
 import structlog
+
+
+#: The log_level names RuntimeConfig validates identically in every process type
+#: (phaze-mvq8z.16). Deliberately NOT ``logging.getLevelNamesMapping()`` -- that mapping is a
+#: process-wide, mutable registry (``logging.addLevelName``), and uvicorn's own
+#: ``configure_logging`` registers a ``TRACE`` level (5) as a side effect of importing/running
+#: uvicorn in the api/control process, but never in an agent process, which never imports
+#: uvicorn. Validating against the live registry therefore accepted ``log_level=TRACE`` in one
+#: process and rejected the identical value in another. These five are the standard levels the
+#: stdlib ``logging`` module registers unconditionally at import, in every process, so checking
+#: membership here is process-independent by construction. Deliberately excludes: the
+#: ``WARN``/``FATAL`` aliases (redundant with ``WARNING``/``ERROR``), ``NOTSET`` (meaningless as
+#: an active application level), and ``TRACE`` (non-standard, uvicorn-only, never guaranteed
+#: present) -- implementer decision, since nothing in this codebase logs at TRACE.
+KNOWN_LOG_LEVELS: Final[tuple[str, ...]] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 # This module is the ONE place that manipulates stdlib loggers directly (the root

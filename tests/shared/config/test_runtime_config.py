@@ -11,6 +11,7 @@ the suite.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from phaze.config import AgentSettings, ControlSettings
+from phaze.logging_config import KNOWN_LOG_LEVELS
 from phaze.runtime_config import (
     RELOADABLE_KEYS,
     RESTART_ONLY_KEYS,
@@ -187,6 +189,78 @@ def test_an_agent_process_reports_the_control_only_key_at_its_default(tmp_path: 
 
 
 def test_an_unknown_start_time_log_level_reports_the_info_configure_logging_falls_back_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHAZE_LOG_LEVEL", "TRACE")
+    assert _store(tmp_path).current().log_level == "INFO"
+
+
+@pytest.fixture
+def uvicorn_trace_registered() -> Iterator[None]:
+    """Register TRACE=5 into the process-wide ``logging`` registry, exactly the side effect
+    uvicorn's own ``configure_logging`` has when it runs in the api/control process (never in an
+    agent process, which never imports uvicorn) -- and restore the registry's prior contents
+    exactly afterward, so this test never leaks TRACE into whatever runs next. Self-contained:
+    does not depend on ``tests/_uvicorn_leaks.contained_uvicorn_logging`` (phaze-mvq8z.11), which
+    may not have landed yet.
+    """
+    name_to_level = logging._nameToLevel
+    level_to_name = logging._levelToName
+    saved_name_to_level = dict(name_to_level)
+    saved_level_to_name = dict(level_to_name)
+    logging.addLevelName(5, "TRACE")
+    try:
+        assert "TRACE" in logging.getLevelNamesMapping()  # sanity: the fixture did what it claims
+        yield
+    finally:
+        name_to_level.clear()
+        name_to_level.update(saved_name_to_level)
+        level_to_name.clear()
+        level_to_name.update(saved_level_to_name)
+
+
+async def _assert_log_level_acceptance_matches_known_levels(tmp_path: Path) -> None:
+    """Every KNOWN_LOG_LEVELS name lands (or is already in force); TRACE and a bogus name are
+    both rejected -- whatever the process-wide logging registry currently holds."""
+    store = _store(tmp_path)
+    for name in (*KNOWN_LOG_LEVELS, "TRACE", "LOUD"):
+        _write_toml(tmp_path, {"log_level": name})
+        result = await store.reload("file")
+        if name in KNOWN_LOG_LEVELS:
+            assert result.successful, f"{name}: unexpectedly rejected ({result.error})"
+            assert store.current().log_level == name
+        else:
+            assert result.outcome == "rejected"
+            assert "unknown log level" in (result.error or "")
+
+
+def test_the_accepted_log_level_set_is_identical_with_trace_unregistered(tmp_path: Path) -> None:
+    """phaze-mvq8z.16 acceptance 1, half A: the baseline -- no process here ever ran uvicorn's
+    own configure_logging, matching a fresh agent process."""
+    asyncio.run(_assert_log_level_acceptance_matches_known_levels(tmp_path))
+
+
+@pytest.mark.usefixtures("uvicorn_trace_registered")
+def test_the_accepted_log_level_set_is_identical_with_trace_registered(tmp_path: Path) -> None:
+    """phaze-mvq8z.16 acceptance 1, half B: identical verdicts with TRACE registered, matching
+    an api/control process where uvicorn's configure_logging has already run. Validation reads
+    the fixed KNOWN_LOG_LEVELS set, never ``logging.getLevelNamesMapping()``, so TRACE being
+    live in the registry here changes nothing -- it is still rejected, same as half A.
+
+    Acceptance 2 (an admin-API override accepted by the api is accepted by an agent reload, or
+    rejected by both) follows from this by construction rather than needing its own process-pair
+    test: ``RuntimeConfig._known_level`` is the ONE validator both the admin API's ``preview()``
+    (phaze-mvq8z.6) and every process's ``reload()`` call -- there is no api/agent branch in it,
+    so a set proven identical under either registry state is identical for both process types.
+    """
+    asyncio.run(_assert_log_level_acceptance_matches_known_levels(tmp_path))
+
+
+def test_an_unknown_start_time_log_level_falls_back_to_info_with_trace_registered_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uvicorn_trace_registered: None
+) -> None:
+    """The startup env-fallback path (.4's decision) is unaffected by TRACE being registered:
+    PHAZE_LOG_LEVEL=TRACE still resolves to INFO, matching the unregistered case above -- the
+    two only diverged before this bead because the old check read the live registry."""
+    del uvicorn_trace_registered
     monkeypatch.setenv("PHAZE_LOG_LEVEL", "TRACE")
     assert _store(tmp_path).current().log_level == "INFO"
 
