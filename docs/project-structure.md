@@ -56,7 +56,7 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Pipeline routing | `routers/pipeline/` package plus `pipeline_scans.py`, `pipeline_stages.py`, and `scan.py` |
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
-| Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py` |
+| Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py`; `live_worker.py` makes SAQ worker concurrency live-resizable |
 | Settings | `config.py` is the public facade over `config_base.py`, `config_control.py`, `config_agent.py`, and the existing settings-policy collaborators |
 | Proposal generation | `services/proposal.py` is the stable facade over context, parsing, provider, and persistence modules |
 | Review workspaces | `services/review.py` is the stable facade over changes, cue, dedupe, and tag-write read models |

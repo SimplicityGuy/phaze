@@ -57,8 +57,9 @@ from sqlalchemy import text
 import structlog
 
 from phaze.config import get_settings
-from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING
+from phaze.runtime_config import current as current_runtime_config
 from phaze.tasks._saq_reap import SAQ_DEFAULT_TIMEOUT_SECONDS
+from phaze.tasks._shared.live_worker import lane_concurrency
 
 
 if TYPE_CHECKING:
@@ -78,13 +79,13 @@ def concurrency_for_queue(queue_name: str) -> int:
     exactly as that worker clamps it (the quick-260707-g84 memory ceiling: an explicit lower cap is
     authoritative). An unlaned/all-mode or unrecognised queue name falls back to ``worker_max_jobs``,
     which is what such a worker actually runs at.
+
+    Read from the LIVE runtime-config snapshot, not the start-time settings (phaze-mvq8z.10): lane
+    concurrency and ``worker_max_jobs`` are reloadable, and the worker resizes itself through the
+    same :func:`~phaze.tasks._shared.live_worker.lane_concurrency` this delegates to, so a bound
+    frozen at process start would alarm on a raised lane or stay silent on a lowered one.
     """
-    settings = get_settings()
-    lane = queue_name.rsplit("-", 1)[-1]
-    attr = LANE_CONCURRENCY_SETTING.get(lane)
-    if attr is None:
-        return int(settings.worker_max_jobs)
-    return min(int(getattr(settings, attr)), int(settings.worker_max_jobs))
+    return lane_concurrency(current_runtime_config(), queue_name.rsplit("-", 1)[-1])
 
 
 @dataclasses.dataclass(frozen=True)

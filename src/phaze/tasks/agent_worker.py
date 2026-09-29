@@ -60,6 +60,7 @@ from phaze.tasks._shared.agent_bootstrap import (
     whoami_with_retry as _whoami_with_retry,
 )
 from phaze.tasks._shared.deterministic_key import increment_completed
+from phaze.tasks._shared.live_worker import install_live_concurrency, lane_concurrency
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
@@ -338,6 +339,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     # provider wired here (agent workers have no Postgres reachability, ADR-0019 (runtime config hot-reload) §14) --
     # the heartbeat loop installs one itself, fed by GET /api/internal/agent/config.
     ctx["runtime_config_store"] = runtime_config_store
+    # phaze-mvq8z.10: this lane's SAQ concurrency -- min(lane knob, worker_max_jobs), exactly the
+    # import-time `_concurrency` below but from the runtime-config snapshot -- becomes live: a
+    # reload grows or shrinks the running worker's job loops (docs/design/0019-runtime-config-hot-reload.md §8).
+    install_live_concurrency(ctx, runtime_config_store, lambda config: lane_concurrency(config, _lane))
 
     # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
     # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
