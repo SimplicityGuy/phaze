@@ -166,11 +166,23 @@ async def clear_override(
 ) -> HTMLResponse:
     """Clear ``key``'s DB override: it falls back to the next layer (``file`` / ``env`` / ``default``).
 
-    Clearing is always a valid operation (there is no way to "clear" into an invalid state -- the
-    layer underneath was already in force before this override existed), so there is no preview
-    gate here, unlike :func:`set_override`.
+    Previewed exactly like :func:`set_override` (phaze-mvq8z.19): clearing is NOT always valid.
+    The layer underneath may hold a value the override was masking -- a ``runtime.toml`` edited
+    after the override was set, say -- and deleting the row would leave every later reload
+    rejected, the snapshot stuck on the stale override, and nothing in the DB explaining it. Such a
+    clear is refused (409, the core's error) with the row left in place.
     """
     _reject_unless_reloadable(key, attempted=None)
+    store = get_runtime_config_store()
+    current_overrides = await get_runtime_config_overrides(session)
+    if key in current_overrides:
+        candidate = {name: value for name, value in current_overrides.items() if name != key}
+        try:
+            await store.preview(candidate)
+        except ReloadRejectedError as exc:
+            detail = f"clearing the {key} override would leave an invalid config: {exc}"
+            logger.warning("phaze.runtime_config_admin override clear rejected", key=key, error=str(exc))
+            raise HTTPException(status_code=409, detail=detail) from exc
     await clear_runtime_config_override(session, key)
-    await get_runtime_config_store().reload("api")
+    await store.reload("api")
     return await _render_table(request, session)

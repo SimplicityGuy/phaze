@@ -230,6 +230,9 @@ def _format_validation_error(exc: ValidationError) -> str:
 class RuntimeConfigStore:
     """The process's reloadable config: one current snapshot, the reload pipeline, and its hooks.
 
+    ``check_sizing`` gates :meth:`_check_sizing`, the core-oversubscription check. It is only
+    meaningful on a host that RUNS analysis children -- an agent; see :func:`get_runtime_config_store`.
+
     Construction resolves the ``env`` / ``default`` layers only and raises ``ValueError`` if
     they fail validation -- a start-time fault, like any other settings error. Call
     ``await store.reload("startup")`` once the process can reach its override source to fold
@@ -245,8 +248,10 @@ class RuntimeConfigStore:
         override_provider: OverrideProvider | None = None,
         env: Mapping[str, str] | None = None,
         physical_cores: Callable[[], int] | None = None,
+        check_sizing: bool = True,
     ) -> None:
         self._runtime_toml = runtime_toml
+        self._check_sizing_enabled = check_sizing
         self._override_provider = override_provider
         self._physical_cores = physical_cores or (lambda: derive_sizing().physical_cores)
         base_values, base_sources = self._resolve_base(settings, os.environ if env is None else env)
@@ -408,7 +413,7 @@ class RuntimeConfigStore:
         move it further away. Env/default sizing alone is never checked here -- it is what the
         process was started with, and rejecting it would reject every reload.
         """
-        if not any(sources[key] in ("file", "override") for key in _SIZING_KEYS):
+        if not self._check_sizing_enabled or not any(sources[key] in ("file", "override") for key in _SIZING_KEYS):
             return
         demand = _thread_demand(config)
         cores = self._physical_cores()
@@ -531,9 +536,22 @@ def _emit(result: ReloadResult, digest: str) -> None:
 
 @lru_cache(maxsize=1)
 def get_runtime_config_store() -> RuntimeConfigStore:
-    """The process-wide store, built from :func:`get_settings` on first use."""
+    """The process-wide store, built from :func:`get_settings` on first use.
+
+    Sizing coherence is checked only in an AGENT process (phaze-mvq8z.19, an IMPLEMENTER decision,
+    not an operator one). The sizing keys bound analysis children, and only an agent worker runs
+    those (``phaze.tasks.agent_worker``), so only an agent's own cores can judge them. The api and
+    control processes skip the check: judged against the API host's cores, the admin preview
+    rejected values that were valid on every agent and accepted values a smaller agent then refused.
+    Each agent still rejects an oversubscribing value on its own reload, keeps last-good, and
+    reports the rejection back through ``effective_config.last_reload`` on its heartbeat. Validating
+    against each agent's reported cores up front was the alternative, rejected here because the
+    override table is fleet-wide (not per-agent) and agents differ, so there is no single verdict.
+    """
     settings = get_settings()
-    return RuntimeConfigStore(settings, runtime_toml=Path(settings.runtime_config_dir) / RUNTIME_TOML_NAME)
+    return RuntimeConfigStore(
+        settings, runtime_toml=Path(settings.runtime_config_dir) / RUNTIME_TOML_NAME, check_sizing=isinstance(settings, AgentSettings)
+    )
 
 
 def current() -> RuntimeConfig:
