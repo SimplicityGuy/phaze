@@ -74,7 +74,6 @@ from functools import lru_cache
 import hashlib
 import inspect
 import json
-import logging
 import os
 from pathlib import Path
 import time
@@ -86,6 +85,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 import structlog
 
 from phaze.config import AgentSettings, BaseSettings, ControlSettings, get_settings
+from phaze.logging_config import KNOWN_LOG_LEVELS
 from phaze.services.analysis_sizing import INTRA_OP_ENV, OMP_ENV, derive_sizing
 from phaze.telemetry.instruments import add, set_gauge
 
@@ -117,7 +117,9 @@ class RuntimeConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    # Same name domain configure_logging resolves through (logging_config._resolve_level).
+    # Validated against phaze.logging_config.KNOWN_LOG_LEVELS -- a fixed set, not the
+    # process-wide logging registry, so the accepted set is identical in every process type
+    # (phaze-mvq8z.16). configure_logging resolves every accepted name to its real stdlib level.
     log_level: str
     worker_max_jobs: int = Field(ge=1)
     lane_analyze_concurrency: int = Field(ge=1)
@@ -137,7 +139,7 @@ class RuntimeConfig(BaseModel):
         if not isinstance(value, str):
             return value
         name = value.strip().upper()
-        if name not in logging.getLevelNamesMapping():
+        if name not in KNOWN_LOG_LEVELS:
             raise ValueError(f"unknown log level {value!r}")
         return name
 
@@ -462,8 +464,12 @@ class RuntimeConfigStore:
                 values[key] = ControlSettings.model_fields[key].default
                 sources[key] = "default"
         # configure_logging falls back to INFO on an unknown name rather than raising, so the
-        # base layer reports the level actually in force instead of refusing to start.
-        if str(values["log_level"]).strip().upper() not in logging.getLevelNamesMapping():
+        # base layer reports the level actually in force instead of refusing to start. Checked
+        # against the fixed KNOWN_LOG_LEVELS set (phaze-mvq8z.16), not the process-wide logging
+        # registry, so a value like PHAZE_LOG_LEVEL=TRACE falls back to INFO identically in
+        # every process type, regardless of whether that process happens to have uvicorn's
+        # TRACE level registered.
+        if str(values["log_level"]).strip().upper() not in KNOWN_LOG_LEVELS:
             logger.warning("phaze.runtime_config unknown log level at start; INFO is in force", log_level=values["log_level"])
             values["log_level"] = "INFO"
         sizing = derive_sizing(self._physical_cores())

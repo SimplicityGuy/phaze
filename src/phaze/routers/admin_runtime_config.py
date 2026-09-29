@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 import structlog
 
 from phaze.database import get_session
+from phaze.logging_config import KNOWN_LOG_LEVELS
 from phaze.runtime_config import RELOADABLE_KEYS, RESTART_ONLY_KEYS, ReloadRejectedError, RuntimeConfig, get_runtime_config_store
 from phaze.services.runtime_config_overrides import clear_runtime_config_override, get_runtime_config_overrides, set_runtime_config_override
 from phaze.web.template_globals import register_set_glyph_globals
@@ -48,9 +49,10 @@ register_set_glyph_globals(templates.env)
 router = APIRouter(prefix="/admin/runtime-config", tags=["admin"])
 
 #: ``log_level``'s operator-facing options. ``RuntimeConfig._known_level`` (phaze.runtime_config)
-#: actually accepts any name ``logging.getLevelNamesMapping()`` carries -- this is the practical
-#: subset a <select> offers, not the full validation boundary.
-_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+#: validates against this exact set (``phaze.logging_config.KNOWN_LOG_LEVELS``, phaze-mvq8z.16) --
+#: fixed and process-independent, so this <select> offers precisely the validation boundary,
+#: not a practical subset of a wider one.
+_LOG_LEVELS: tuple[str, ...] = KNOWN_LOG_LEVELS
 
 #: wire_bounds.py rule 1 -- matches ``RuntimeConfigOverride.key``'s ``String(64)`` column width
 #: exactly (the path segment lands there via ``set_runtime_config_override``/``clear_runtime_config_override``).
