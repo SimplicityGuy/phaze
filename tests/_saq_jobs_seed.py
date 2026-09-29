@@ -11,7 +11,6 @@ are epoch milliseconds. ``DROP ... IF EXISTS`` first, because sibling modules cr
 from __future__ import annotations
 
 import json
-import time
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -40,9 +39,18 @@ _CREATE = text(
 )
 
 
-def now_ms() -> int:
-    """The current time in SAQ's epoch-milliseconds unit."""
-    return int(time.time() * 1000)
+async def now_ms(session: AsyncSession) -> int:
+    """The current time in SAQ's epoch-milliseconds unit, read from the DATABASE's clock (phaze-neo4z).
+
+    Every reader that ages a ``saq_jobs`` row -- the reapers, queue introspection, lane detail's
+    claim-overdue / heartbeat-lost predicates -- does so as ``EXTRACT(EPOCH FROM NOW()) * 1000 -
+    started``, i.e. against the Postgres container's clock. Seeding ``started``/``touched`` from the
+    host's ``time.time()`` put a second clock into every margin a caller asserts: measured 2026-09-28,
+    the container ran 50 ms ahead of the host, and a simulated host-clock skew of the same shape
+    reproduced a real verify-main gate failure (phaze-0vlnp). Reading the reference from the clock the
+    SQL reads leaves each margin exactly as wide as it is written.
+    """
+    return int(await session.scalar(text("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")))
 
 
 async def drop_saq_jobs(session: AsyncSession) -> None:
@@ -68,7 +76,7 @@ async def seed_job(session: AsyncSession, queue: str, *, key: str, status: str, 
 async def seed_saq_jobs(session: AsyncSession, queue: str, *, queued: int = 0, running: int = 0, claimed: int = 0) -> None:
     """Create the table and seed anonymous ``process_file`` rows: ``queued``, started, and claimed-but-unrun."""
     await create_saq_jobs(session)
-    now = now_ms()
+    now = await now_ms(session)
     for _ in range(queued):
         await seed_job(session, queue, key=f"process_file:{uuid.uuid4()}", status="queued")
     for _ in range(running):
