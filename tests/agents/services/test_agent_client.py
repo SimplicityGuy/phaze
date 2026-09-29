@@ -544,3 +544,15 @@ async def test_post_analysis_progress_uses_short_connect_timeout(client):  # typ
 
     assert route.call_count == 1
     assert route.calls.last.request.extensions["timeout"]["connect"] == 2.0, "progress path must use the short 2s connect-timeout"
+
+
+@respx.mock
+async def test_get_config_is_a_single_attempt(client):  # type: ignore[no-untyped-def]
+    """phaze-mvq8z.20 finding 4: the heartbeat polls get_config every tick INSIDE the beat's own
+    deadline, before the POST -- so, unlike the default 3-attempt policy, it never retries: a missed
+    poll is simply retried on the next tick rather than spending the beat's budget."""
+    route = respx.get(f"{_BASE_URL}/api/internal/agent/config").mock(side_effect=httpx.ReadTimeout("simulated"))
+    with pytest.raises(AgentApiServerError):
+        await client.get_config()
+    assert route.call_count == 1
+    assert route.calls.last.request.extensions["timeout"]["read"] == 5.0, "the poll must use its own short timeout, not the client's 30s default"

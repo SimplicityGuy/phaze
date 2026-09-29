@@ -83,6 +83,16 @@ the POST that keeps the agent alive. Kept far below
 ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` so a slow broker cannot eat the whole tick.
 """
 
+CONFIG_POLL_TIMEOUT_SECONDS = 5.0
+"""Hard deadline on the runtime-config poll's ``GET /api/internal/agent/config`` (phaze-mvq8z.20).
+
+Same shape as ``QUEUE_INFO_TIMEOUT_SECONDS`` and for the same reason: the poll runs inside
+``send_heartbeat`` BEFORE the POST, under the one per-beat ``BEAT_TIMEOUT_SECONDS``, so without its
+own bound a GET that hangs had the whole beat cancelled before the POST that keeps the agent alive.
+The client makes this call as a single attempt (``PhazeAgentClient.get_config``); a missed poll is
+simply retried on the next tick.
+"""
+
 HEARTBEAT_INFO_LOG_EVERY = 20
 """Emit one INFO every Nth beat (phaze-kaf2).
 
@@ -162,15 +172,19 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
     "local config unchanged this tick" and is logged at WARNING. It NEVER prevents, and is never
     gated on, the heartbeat POST that keeps the agent alive: this function runs BEFORE that POST is
     built (so a just-applied override is reflected in the SAME beat's ``effective_config``), but a
-    failure here does not stop the POST from being sent.
+    failure here does not stop the POST from being sent -- and neither does a HANG, because the GET
+    is bounded by its own ``CONFIG_POLL_TIMEOUT_SECONDS``, far inside the beat's (phaze-mvq8z.20).
     """
     store = ctx.get("runtime_config_store")
     if store is None:
         return
     try:
-        response = await client.get_config()
+        response = await asyncio.wait_for(client.get_config(), timeout=CONFIG_POLL_TIMEOUT_SECONDS)
         overrides = dict(response.overrides)
         digest = str(response.digest)
+    except TimeoutError:
+        logger.warning("heartbeat: runtime-config poll timed out after %.1fs; local config unchanged", CONFIG_POLL_TIMEOUT_SECONDS)
+        return
     except Exception:
         logger.warning("heartbeat: runtime-config poll failed; local config unchanged", exc_info=True)
         return

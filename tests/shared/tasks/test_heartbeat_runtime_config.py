@@ -14,6 +14,7 @@ module's tests are most concerned with -- see ``test_ctx_without_a_store_skips_t
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import json
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_di
 from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH
 from phaze.schemas.agent_identity import AgentIdentity
 from phaze.services.agent_client import PhazeAgentClient
+from phaze.tasks import heartbeat
 from phaze.tasks.heartbeat import send_heartbeat
 
 
@@ -300,3 +302,30 @@ async def test_a_beat_without_effective_config_omits_the_key_for_an_old_control_
     assert route.call_count == 1
     assert len(accepted) == 1
     assert "effective_config" not in accepted[0]
+
+
+async def test_a_hanging_config_poll_does_not_prevent_the_heartbeat_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.20 finding 4: the poll runs inside ``send_heartbeat`` under the loop's per-beat
+    bound (``BEAT_TIMEOUT_SECONDS``), and the client allowed it 30 s x 3 attempts -- so a GET that
+    hangs had the beat cancelled BEFORE the heartbeat POST. The poll now has its own short bound.
+
+    Deterministic: the GET never returns at all (an Event nobody sets), so no ratio of timeouts
+    decides the outcome -- only whether the poll is bounded separately from the beat. The outer
+    ``wait_for`` is the loop's own production bound, unpatched.
+    """
+    monkeypatch.setattr(heartbeat, "CONFIG_POLL_TIMEOUT_SECONDS", 0.01, raising=False)
+    store = _store(tmp_path)
+    await store.reload("startup")
+
+    class _HangingPollClient(_StubClient):
+        async def get_config(self) -> AgentConfigResponse:
+            self.get_config_calls += 1
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    client = _HangingPollClient()
+    await asyncio.wait_for(send_heartbeat(_ctx(client, store=store)), timeout=heartbeat.BEAT_TIMEOUT_SECONDS)
+
+    assert client.get_config_calls == 1
+    assert len(client.heartbeat_calls) == 1, "a hanging config poll cost the heartbeat POST"
+    assert client.heartbeat_calls[0].effective_config is not None  # still reports the last good local state

@@ -90,6 +90,10 @@ logger = structlog.get_logger(__name__)
 # follow the push_connect_timeout_sec pattern in phaze.config instead.
 _PROGRESS_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 
+# The runtime-config poll's per-request timeout (phaze-mvq8z.20) -- same shape as the progress
+# POST's, for the same reason: best-effort, and fired on every heartbeat tick.
+_CONFIG_POLL_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+
 
 class AgentApiError(Exception):
     """Base for all PhazeAgentClient errors."""
@@ -708,8 +712,13 @@ class PhazeAgentClient:
         return None
 
     async def get_config(self) -> AgentConfigResponse:
-        """GET /api/internal/agent/config -- the DB-override layer for reloadable keys (phaze-mvq8z.9)."""
+        """GET /api/internal/agent/config -- the DB-override layer for reloadable keys (phaze-mvq8z.9).
+
+        A single attempt against the short ``_CONFIG_POLL_TIMEOUT`` rather than the default 30s x 3
+        (phaze-mvq8z.20): the heartbeat polls this every tick inside the beat's own deadline, before
+        the POST that keeps the agent alive, and a missed poll is simply retried on the next tick.
+        """
         from phaze.schemas.agent_config import AgentConfigResponse  # noqa: PLC0415
 
-        response = await self._request("GET", "/api/internal/agent/config")
+        response = await self._request("GET", "/api/internal/agent/config", max_attempts=1, timeout=_CONFIG_POLL_TIMEOUT)
         return AgentConfigResponse.model_validate(response.json())
