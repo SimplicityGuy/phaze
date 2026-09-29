@@ -47,7 +47,7 @@ import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.database import build_async_engine
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
 from phaze.runtime_config import get_runtime_config_store
 from phaze.runtime_config_backends import build_backends_registry_reloader
 from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
@@ -230,7 +230,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # changes log_level, in every process type. Registered BEFORE reload("startup"), matching
     # main.py's lifespan, so that first reload's file/override-layer log_level (folded in below,
     # after the settings-only value the bare configure_logging() call above used) takes effect.
-    runtime_config_store.register_applier("log_level", lambda _old, new: configure_logging(level=new.log_level))
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json))
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)

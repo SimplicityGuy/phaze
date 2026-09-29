@@ -49,7 +49,7 @@ import redis.asyncio as redis_async
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
 from phaze.runtime_config import get_runtime_config_store
 from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING, LANE_TASKS, LANES
@@ -327,7 +327,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # file/override-layer log_level (folded in below, after the settings-only value the bare
     # configure_logging() call above used) takes effect. No backends.toml wiring here: an agent
     # process holds no backend registry to reload (AgentSettings has no backends field).
-    runtime_config_store.register_applier("log_level", lambda _old, new: configure_logging(level=new.log_level))
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json))
     await runtime_config_store.reload("startup")
     install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
     ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
