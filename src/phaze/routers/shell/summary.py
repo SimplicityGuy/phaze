@@ -37,7 +37,7 @@ from phaze.services.pipeline import (
     get_stage_progress,
 )
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
-from phaze.services.stage_status import done_clause
+from phaze.services.stage_status import done_clause, inflight_clause
 
 
 if TYPE_CHECKING:
@@ -468,8 +468,32 @@ def _derive_summary_overview(stage_progress: dict[str, dict[str, int | None]], i
 
 
 async def _get_summary_aggregates(session: AsyncSession) -> dict[str, int | None]:
-    """Read the enriched-file intersection and active file-server count in one statement."""
-    enriched = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA), done_clause(Stage.ANALYZE)).scalar_subquery()
+    """Read the enriched-file intersection and active file-server count in one statement.
+
+    phaze-mvq8z.17: ``enriched`` must be the intersection of the SAME "done" bucket
+    :func:`~phaze.services.pipeline.get_stage_progress` reports for the Analyze/Metadata DAG
+    tiles -- not bare ``done_clause``. ``stage_status_case``'s ladder puts ``in_flight`` ABOVE
+    ``done`` (``services/stage_status.py``), so a file mid-re-analysis (dashboard "Run Analysis",
+    the reanalysis backfill, or a reboot re-enqueue -- no ``process_file`` producer clears
+    ``AnalysisResult.analysis_completed_at``) still carries its STALE completion timestamp
+    alongside a live ``scheduling_ledger`` row: bare ``done_clause(ANALYZE)`` stays True for it,
+    but the analyze bucket's "done" count correctly excludes it. Without the ``~inflight_clause``
+    conjuncts here, FULLY ENRICHED could read HIGHER than the Analyze/Metadata "done" tiles it is
+    supposed to be a subset of, in a single quiescent snapshot -- not merely a cross-session
+    timing artefact. This mirrors the fix phaze-3542b already applied to
+    ``_proposal_pending_clauses`` for the SAME reason; see that predicate's comment for the
+    ledger-leak cost this conjunct accepts (self-clears via ``ledger_reaper`` within ~5 minutes).
+    """
+    enriched = (
+        select(func.count(FileRecord.id))
+        .where(
+            done_clause(Stage.METADATA),
+            ~inflight_clause(Stage.METADATA),
+            done_clause(Stage.ANALYZE),
+            ~inflight_clause(Stage.ANALYZE),
+        )
+        .scalar_subquery()
+    )
     active_fileservers = (
         select(func.count(Agent.id)).where(Agent.kind == "fileserver", Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)).scalar_subquery()
     )

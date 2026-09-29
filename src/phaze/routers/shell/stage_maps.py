@@ -125,6 +125,9 @@ UTILITY_PANES: dict[str, str] = {
     "operations": "shell/partials/operations.html",
     "audit": "execution/audit_log.html",
     "agents": "admin/agents.html",
+    # phaze-mvq8z.6: the DB-override admin panel for hot-reloadable config (ADR-0019 (runtime
+    # config hot-reload) §15's "control plane's own effective config renders on the admin page").
+    "runtime-config": "admin/runtime_config.html",
 }
 
 DOCUMENT_TITLES: dict[str, str] = {
@@ -144,6 +147,7 @@ DOCUMENT_TITLES: dict[str, str] = {
     "operations": "Routing operations",
     "audit": "Audit log",
     "agents": "Agents and compute lanes",
+    "runtime-config": "Runtime config",
 }
 
 

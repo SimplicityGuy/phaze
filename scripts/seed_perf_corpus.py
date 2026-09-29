@@ -45,7 +45,7 @@ import asyncio
 import json
 import uuid
 
-import asyncpg  # type: ignore[import-untyped]
+import asyncpg
 
 
 # Deterministic id namespace so a re-run reproduces the SAME corpus (idempotent ON CONFLICT DO NOTHING).

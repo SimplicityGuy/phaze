@@ -54,6 +54,9 @@ def test_all_tables_defined() -> None:
         # camelot_modal, harmonic_discipline, peak_sec, projection_version, 1:1 with files.
         "set_profile",
         "orphan_companion_diagnostics",
+        # phaze-mvq8z.6 (migration 073): the DB-override layer for hot-reloadable config -- one row
+        # per RELOADABLE key currently overridden through the admin API/UI.
+        "runtime_config_override",
     }
     assert expected == table_names
 

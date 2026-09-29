@@ -1,0 +1,25 @@
+{# phaze-mvq8z.6: the Runtime Config utility pane, hosted at /s/runtime-config
+   (routers/shell/stage_maps.py UTILITY_PANES["runtime-config"]) -- a content-only partial (no
+   {% extends %}, no document-level tags; contract rule 9) composing the shared
+   _workspace_scaffold.html, mirroring admin/agents.html's own conversion (phaze-uvmcr.4).
+
+   Its context comes from admin_runtime_config.build_runtime_config_pane_context, the SAME
+   function GET /admin/runtime-config/_table's own fragment endpoint calls, so this pane and the
+   standalone fragment endpoint cannot independently drift.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount %}{{ reloadable_keys | length }} reloadable key{{ '' if reloadable_keys | length == 1 else 's' }} · {{ restart_only_keys | length }} restart-only{% endset %}
+{% call ws.workspace(title="RUNTIME CONFIG", subcount=subcount|tojson|forceescape) %}
+    <div class="px-4 pt-4 sm:px-6">
+        <p class="text-sm text-muted">
+            Live overrides for hot-reloadable process configuration. A key set here takes effect without a restart on
+            this and every other control-plane process, and on every agent worker at its next config poll (about
+            30&nbsp;s), including workers that send no heartbeat. Kubernetes burst pods are out of scope
+            (ADR-0019 (runtime config hot-reload) §14). Only heartbeating workers report what is in force.
+            Restart-only keys below cannot be changed live.
+        </p>
+    </div>
+    <div class="p-4 sm:p-6">
+        {% include "admin/partials/_runtime_config_table.html" %}
+    </div>
+{% endcall %}

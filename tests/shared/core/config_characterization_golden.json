@@ -49,6 +49,10 @@
     "queue_url": "postgresql://phaze:phaze@app.characterization.invalid:5432/phaze",
     "redis_password": null,
     "redis_url": "redis://redis:6379/0",
+    "runtime_config_dir": "/etc/phaze/runtime",
+    "runtime_config_watch_debounce_seconds": 2.0,
+    "runtime_config_watch_poll_interval_seconds": 1.0,
+    "runtime_config_watch_polling": true,
     "scan_chunk_size": 500,
     "scan_path": "/data/music",
     "scan_roots": [
@@ -264,6 +268,22 @@
       "PHAZE_REDIS_URL",
       "REDIS_URL",
       "redis_url"
+    ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
+    ],
+    "runtime_config_watch_debounce_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+      "runtime_config_watch_debounce_seconds"
+    ],
+    "runtime_config_watch_poll_interval_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+      "runtime_config_watch_poll_interval_seconds"
+    ],
+    "runtime_config_watch_polling": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
+      "runtime_config_watch_polling"
     ],
     "scan_chunk_size": [
       "PHAZE_SCAN_CHUNK_SIZE",
@@ -511,6 +531,22 @@
       "REDIS_URL",
       "redis_url"
     ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
+    ],
+    "runtime_config_watch_debounce_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+      "runtime_config_watch_debounce_seconds"
+    ],
+    "runtime_config_watch_poll_interval_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+      "runtime_config_watch_poll_interval_seconds"
+    ],
+    "runtime_config_watch_polling": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
+      "runtime_config_watch_polling"
+    ],
     "scan_path": [
       "scan_path"
     ],
@@ -658,6 +694,10 @@
     "queue_url": "postgresql://phaze:phaze@postgres:5432/phaze",
     "redis_password": null,
     "redis_url": "redis://redis:6379/0",
+    "runtime_config_dir": "/etc/phaze/runtime",
+    "runtime_config_watch_debounce_seconds": 2.0,
+    "runtime_config_watch_poll_interval_seconds": 1.0,
+    "runtime_config_watch_polling": true,
     "s3_client_timeout_sec": 30,
     "s3_lifecycle_ttl_days": 2,
     "s3_multipart_part_size_bytes": 67108864,
@@ -897,6 +937,22 @@
       "PHAZE_REDIS_URL",
       "REDIS_URL",
       "redis_url"
+    ],
+    "runtime_config_dir": [
+      "PHAZE_RUNTIME_CONFIG_DIR",
+      "runtime_config_dir"
+    ],
+    "runtime_config_watch_debounce_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+      "runtime_config_watch_debounce_seconds"
+    ],
+    "runtime_config_watch_poll_interval_seconds": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+      "runtime_config_watch_poll_interval_seconds"
+    ],
+    "runtime_config_watch_polling": [
+      "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
+      "runtime_config_watch_polling"
     ],
     "s3_client_timeout_sec": [
       "PHAZE_S3_CLIENT_TIMEOUT_SEC",
@@ -1252,6 +1308,14 @@
     "PHAZE_REDIS_URL",
     "PHAZE_REDIS_URL_FILE",
     "PHAZE_ROLE",
+    "PHAZE_RUNTIME_CONFIG_DIR",
+    "PHAZE_RUNTIME_CONFIG_DIR_FILE",
+    "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+    "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS_FILE",
+    "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
+    "PHAZE_RUNTIME_CONFIG_WATCH_POLLING_FILE",
+    "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+    "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS_FILE",
     "PHAZE_S3_CLIENT_TIMEOUT_SEC",
     "PHAZE_S3_CLIENT_TIMEOUT_SEC_FILE",
     "PHAZE_S3_LIFECYCLE_TTL_DAYS",
@@ -1310,6 +1374,14 @@
     "REDIS_PASSWORD_FILE",
     "REDIS_URL",
     "REDIS_URL_FILE",
+    "RUNTIME_CONFIG_DIR",
+    "RUNTIME_CONFIG_DIR_FILE",
+    "RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+    "RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS_FILE",
+    "RUNTIME_CONFIG_WATCH_POLLING",
+    "RUNTIME_CONFIG_WATCH_POLLING_FILE",
+    "RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+    "RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS_FILE",
     "S3_CLIENT_TIMEOUT_SEC",
     "S3_CLIENT_TIMEOUT_SEC_FILE",
     "S3_LIFECYCLE_TTL_DAYS",

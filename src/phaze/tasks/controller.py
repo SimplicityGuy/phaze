@@ -47,12 +47,17 @@ import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.database import build_async_engine
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_backends import build_backends_registry_reloader
+from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
+from phaze.runtime_config_triggers import build_backends_watcher, build_watcher, install_sighup_handler
 from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
+from phaze.tasks._shared.live_worker import install_live_concurrency
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.active_reaper import reap_stranded_active_jobs
@@ -203,6 +208,37 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Off unless an OTLP endpoint is configured; never raises.
     configure_telemetry("controller")
 
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging/telemetry allow -- matching the api lifespan's placement (src/phaze/main.py).
+    # RuntimeConfigStore's constructor VALIDATES the process's start-time reloadable settings
+    # (e.g. WORKER_MAX_JOBS) and raises ValueError on an invalid one. Implementer decision
+    # (phaze-mvq8z.5): let it propagate and refuse controller startup, the same fail-fast contract
+    # `cfg = get_settings()` above already has for every other setting -- unlike the boot-reconcile
+    # calls further down, which are deliberately resilient (D-05), an invalid reloadable setting is
+    # an operator misconfiguration that should stop the process, not run degraded.
+    #
+    # phaze-mvq8z.6 deliberately does NOT install the DB-override provider here (mirrors
+    # src/phaze/main.py's identical note): this process does not run migrations itself and boots
+    # racily against the api's own migration run (phaze-sekvl, above), so the override table may
+    # not exist yet -- reading it this early would work (the reader is degrade-safe) but would log
+    # a spurious "relation does not exist" warning on every fresh-deploy boot race. This first
+    # reload validates the env/file layers only; the DB-override layer is wired in and folded into
+    # a SECOND reload once the boot-reconcile retries below have given the schema a realistic
+    # chance to be there.
+    runtime_config_store = get_runtime_config_store()
+    # phaze-mvq8z.8: re-apply configure_logging (already idempotent) on every reload that
+    # changes log_level, in every process type. Registered BEFORE reload("startup"), matching
+    # main.py's lifespan, so that first reload's file/override-layer log_level (folded in below,
+    # after the settings-only value the bare configure_logging() call above used) takes effect.
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json))
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
+    ctx["runtime_config_watcher"].start()
+    # phaze-mvq8z.10: the control worker's SAQ concurrency (`worker_max_jobs`) becomes live -- a
+    # reload grows or shrinks its job loops (docs/design/0019-runtime-config-hot-reload.md §8).
+    install_live_concurrency(ctx, runtime_config_store, lambda config: config.worker_max_jobs)
+
     # Bug A (June 2026): litellm reads provider creds from os.environ, never from
     # ControlSettings. The LLM keys arrive via the <VAR>_FILE secret convention as
     # SecretStr fields, so bridge them into ANTHROPIC_API_KEY / OPENAI_API_KEY here --
@@ -229,6 +265,14 @@ async def startup(ctx: dict[str, Any]) -> None:
     instrument_engine(task_engine)
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
+
+    # phaze-mvq8z.8: the backends.toml registry hook + its own directory watch, now that
+    # ctx["async_session"] (cloud_job, for the in-flight-removal veto) exists. Registered here
+    # rather than beside the runtime-config store above because it needs task_engine's
+    # sessionmaker, which doesn't exist yet at that point in startup.
+    build_backends_registry_reloader(runtime_config_store, cast("ControlSettings", cfg), ctx["async_session"])
+    ctx["runtime_config_backends_watcher"] = build_backends_watcher(runtime_config_store)
+    ctx["runtime_config_backends_watcher"].start()
 
     # Phase 19: Discogsography client for Discogs release matching
     ctx["discogs_client"] = DiscogsographyClient(base_url=cfg.discogsography_url)
@@ -313,10 +357,33 @@ async def startup(ctx: dict[str, Any]) -> None:
     await _probe_kueue_local_queues(control_cfg)
     await _push_bucket_lifecycle_ttls(control_cfg)
 
+    # phaze-mvq8z.6: wire the DB-override layer into this process's runtime-config store, then
+    # start ITS OWN LISTEN connection + fallback poll (ADR-0019 (runtime config hot-reload)
+    # §3/§14) -- a separate process from the api's, so it needs its own wiring, not a shared one.
+    # The provider is installed BEFORE this reload, and this is a SECOND "startup" reload -- see
+    # the comment above the first one for why it is not simply merged into it.
+    install_runtime_config_overrides(runtime_config_store, ctx["async_session"])
+    ctx["runtime_config_listener"] = await start_runtime_config_listener(store=runtime_config_store, database_url=cfg.database_url)
+    await runtime_config_store.reload("startup")
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (SAQ shutdown hook)."""
     logger.info("phaze.controller shutdown")
+
+    # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
+    # through goes away. Reverse of construction: built LAST in startup (after the backends
+    # watcher below), so it stops FIRST here.
+    runtime_config_listener = ctx.get("runtime_config_listener")
+    if runtime_config_listener is not None:
+        await runtime_config_listener.stop()
+
+    # phaze-mvq8z.8: reverse of construction -- it was built right after ctx["async_session"],
+    # which is bound to task_engine, so it stops before that engine is disposed below (and after
+    # the listener above, built later in startup).
+    runtime_config_backends_watcher = ctx.get("runtime_config_backends_watcher")
+    if runtime_config_backends_watcher is not None:
+        await runtime_config_backends_watcher.stop()
 
     task_engine = ctx.get("task_engine")
     if task_engine is not None:
@@ -343,6 +410,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     task_router = ctx.get("task_router")
     if task_router is not None:
         await task_router.close()
+
+    # phaze-mvq8z.5: reverse of construction -- it was built right after telemetry, before
+    # everything else in startup, so it's stopped last among this process's own resources,
+    # mirroring main.py's lifespan. `.get` guards a startup that failed before reaching it.
+    runtime_config_watcher = ctx.get("runtime_config_watcher")
+    if runtime_config_watcher is not None:
+        await runtime_config_watcher.stop()
 
     # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
     shutdown_telemetry()

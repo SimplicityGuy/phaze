@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 import structlog
 
 from alembic import command
-from phaze.config import settings
+from phaze.config import get_settings
 
 
 if TYPE_CHECKING:
@@ -26,12 +26,13 @@ logger = structlog.get_logger(__name__)
 def build_async_engine(cfg: BaseSettings) -> AsyncEngine:
     """Build an async SQLAlchemy engine from ``cfg``'s pool knobs (quick-260707-ryn).
 
-    Shared (phaze-bk9el.12) by this module's own ``engine`` below (bound to the
-    process-wide ``settings`` singleton) AND the control worker's per-process task engine
-    (``tasks/controller.py::startup``, bound to its own ``get_settings()`` result) -- the
-    two engines are built identically because they read the SAME ``BaseSettings`` db_*
-    knobs, just against two different config instances that can diverge at runtime (api
-    vs. control role). Extracted from a 25-line clone between the two call sites.
+    Shared (phaze-bk9el.12) by this module's own ``engine`` below (bound to this
+    process's ``get_settings()`` result) AND the control worker's per-process task engine
+    (``tasks/controller.py::startup``, bound to its own ``get_settings()`` call) -- both
+    read the SAME ``BaseSettings`` db_* knobs. Since phaze-mvq8z.2 removed the separate
+    import-time ``settings`` singleton, both resolve through the one process-wide
+    ``lru_cache``d instance instead of two independently-constructed objects that could
+    diverge at runtime. Extracted from a 25-line clone between the two call sites.
 
     Every pool kwarg is sourced from config so an operator can re-tune without a code
     change. max_overflow drops from a hardcoded 10 to the config default 5, and the
@@ -56,7 +57,7 @@ def build_async_engine(cfg: BaseSettings) -> AsyncEngine:
     )
 
 
-engine = build_async_engine(settings)
+engine = build_async_engine(get_settings())
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -81,7 +82,7 @@ def _run_upgrade_head_sync() -> None:
     below) sidesteps the nested-event-loop conflict.
     """
     cfg = Config(str(_ALEMBIC_INI_PATH))
-    # alembic/env.py overrides sqlalchemy.url from settings.database_url on every
+    # alembic/env.py overrides sqlalchemy.url from get_settings().database_url on every
     # run, so we don't need to set it here -- but setting it makes the cfg
     # honest for any caller that reads it back. The env-side override remains
     # authoritative.
@@ -92,7 +93,7 @@ def _run_upgrade_head_sync() -> None:
     # env.py is ever imported (command.upgrade below triggers it), so an unescaped '%' here
     # crashes with ValueError('invalid interpolation syntax') before env.py's own escaping
     # is ever reached (phaze-7oya).
-    cfg.set_main_option("sqlalchemy.url", str(settings.database_url).replace("%", "%%"))
+    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url).replace("%", "%%"))
     # This runs in-process inside the api's lifespan (run_migrations below), AFTER
     # configure_logging() has already installed the structlog JSON handler on the root
     # logger. alembic/env.py's module-level fileConfig() call would otherwise strip that
@@ -113,10 +114,10 @@ async def run_migrations() -> None:
     Idempotent -- safe to call when already at head (alembic is a no-op).
 
     Invoked from :mod:`phaze.main` lifespan startup. Gated by
-    ``settings.auto_migrate`` so operators can disable the auto-upgrade in
+    ``get_settings().auto_migrate`` so operators can disable the auto-upgrade in
     environments that prefer a manual migration window.
     """
-    if not settings.auto_migrate:
+    if not get_settings().auto_migrate:
         logger.info("phaze.database.run_migrations skipped: settings.auto_migrate=false")
         return
 

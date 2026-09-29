@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -20,6 +20,7 @@ from phaze.routers.pipeline.analysis import (
     _route_discovered_by_duration,
     _scheduling_ledger_cas_delete_stmt,
 )
+from phaze.runtime_config import current as current_runtime_config
 from phaze.services.analysis_enqueue import process_file_job_key
 from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates, get_live_job_keys
 from phaze.services.route_control import get_route_control
@@ -28,6 +29,8 @@ from phaze.telemetry.pipeline import record_transition
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.config import ControlSettings
 
 
 @router.post("/pipeline/backfill-cloud", response_class=HTMLResponse)
@@ -66,6 +69,7 @@ async def trigger_backfill_cloud(
     selects nothing new (the held files now carry an awaiting ``cloud_job`` row), and short / never-failed
     files are never touched.
     """
+    settings = cast("ControlSettings", get_settings())
     # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud on/off guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
@@ -82,7 +86,7 @@ async def trigger_backfill_cloud(
             context={"request": request, "count": 0, "disabled": True},
         )
 
-    threshold = settings.cloud_route_threshold_sec
+    threshold = current_runtime_config().cloud_route_threshold_sec
     count = await count_backfill_candidates(session, threshold)
     if count == 0:
         return templates.TemplateResponse(

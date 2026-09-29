@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from phaze import config as _config
+from phaze import config as _config, runtime_config as _runtime_config
 
 
 if TYPE_CHECKING:
@@ -176,7 +176,12 @@ async def apply_project_job_defaults(job: Job) -> None:
         # deployment's configuration just as easily as none at all, and both must land on the
         # current policy. See _FUNCTION_HEARTBEAT_POLICY for why an unpinned heartbeat on a
         # timeout=0 job is a permanently un-sweepable row.
-        job.heartbeat = getattr(cfg, heartbeat_field)
+        #
+        # Read from the LIVE runtime-config snapshot, not the start-time `cfg` (phaze-mvq8z.21):
+        # the deadline is derived from `analysis_stall_timeout_sec`, which is hot-reloadable, so a
+        # start-time read would leave it below the watchdog after a live raise. The agent re-stamps
+        # it at dispatch from ITS snapshot (`tasks/functions.py`), which is the value that binds.
+        job.heartbeat = getattr(_runtime_config.current(), heartbeat_field)
 
 
 __all__ = ["apply_project_job_defaults"]

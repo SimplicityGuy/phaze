@@ -18,6 +18,8 @@ from sqlalchemy.sql import func as sa_func
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.agent_heartbeat import router as agent_heartbeat_router
+from phaze.runtime_config import RuntimeConfig
+from phaze.schemas.agent_heartbeat import EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
 
 
 if TYPE_CHECKING:
@@ -25,6 +27,19 @@ if TYPE_CHECKING:
 
 
 _PAYLOAD = {"agent_version": "4.0.0", "worker_pid": 1234, "queue_depth": 5}
+
+_RUNTIME_CONFIG_VALUES = RuntimeConfig(
+    log_level="DEBUG",
+    worker_max_jobs=4,
+    lane_analyze_concurrency=2,
+    lane_meta_concurrency=2,
+    lane_io_concurrency=2,
+    worker_process_pool_size=2,
+    analysis_intra_op_threads=1,
+    analysis_omp_threads=1,
+    analysis_stall_timeout_sec=1800,
+    cloud_route_threshold_sec=3600,
+)
 
 
 def _make_smoke_app(session: AsyncSession) -> FastAPI:
@@ -148,3 +163,95 @@ async def test_heartbeat_revoke_blocks_next_call(seed_test_agent: tuple[Agent, s
 
         r2 = await ac.post("/api/internal/agent/heartbeat", json=_PAYLOAD)
         assert r2.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_with_effective_config_is_accepted_and_persisted(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-mvq8z.9: the NEW shape -- an agent reporting its resolved reloadable-config snapshot
+    on the SAME beat -- is accepted and lands, in full, in `last_status`.
+    """
+    agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    request = HeartbeatRequest(
+        agent_version="5.0.0",
+        worker_pid=1234,
+        queue_depth=5,
+        effective_config=EffectiveConfig(
+            values=_RUNTIME_CONFIG_VALUES.model_dump(mode="json"),
+            sources=dict.fromkeys(RuntimeConfig.model_fields, "env"),
+            restart_only_keys=["database_url"],
+            last_reload=EffectiveConfigLastReload(source="startup", outcome="applied", error=None, at=1234.5),
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post("/api/internal/agent/heartbeat", json=request.model_dump(mode="json"))
+    assert response.status_code == 204
+
+    await session.refresh(agent)
+    assert agent.last_status is not None
+    stored = agent.last_status["effective_config"]
+    assert stored["values"]["worker_max_jobs"] == 4
+    assert stored["sources"]["worker_max_jobs"] == "env"
+    assert stored["restart_only_keys"] == ["database_url"]
+    assert stored["last_reload"] == {"source": "startup", "outcome": "applied", "error": None, "at": 1234.5}
+
+
+@pytest.mark.asyncio
+async def test_an_effective_config_from_a_mismatched_version_is_accepted(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-mvq8z.20 finding 1, server half: the reloadable key set moves between versions, and a
+    rolling deploy runs a new agent against an old control plane and vice versa. A snapshot that
+    names a key this server has never heard of, omits one it knows, and carries a field or value it
+    does not recognize must still be accepted -- the snapshot is display-only, and the beat under
+    it is the agent's liveness. It is stored as sent, so the panel shows what the agent reported.
+    """
+    agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    values = _RUNTIME_CONFIG_VALUES.model_dump(mode="json")
+    del values["cloud_route_threshold_sec"]  # a key a NEWER server has, that this agent does not send
+    values["a_key_from_a_newer_agent"] = 7  # a key an OLDER server has never heard of
+    payload = {
+        **_PAYLOAD,
+        "effective_config": {
+            "values": values,
+            "sources": {**dict.fromkeys(values, "env"), "a_key_from_a_newer_agent": "a_layer_from_a_newer_agent"},
+            "restart_only_keys": ["database_url"],
+            "last_reload": {"source": "a_source_from_a_newer_agent", "outcome": "applied", "error": None, "at": 1234.5, "applier_errors": {}},
+            "a_field_from_a_newer_agent": True,
+        },
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post("/api/internal/agent/heartbeat", json=payload)
+    assert response.status_code == 204, response.text
+
+    await session.refresh(agent)
+    assert agent.last_status is not None
+    stored = agent.last_status["effective_config"]
+    assert stored["values"] == values
+    assert stored["sources"]["a_key_from_a_newer_agent"] == "a_layer_from_a_newer_agent"
+    assert stored["last_reload"]["source"] == "a_source_from_a_newer_agent"
+
+
+@pytest.mark.asyncio
+async def test_old_shape_heartbeat_without_effective_config_omits_the_key_entirely(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-mvq8z.9's own blast-radius proof (bead acceptance: "an old-shape heartbeat is still
+    accepted"): a payload with no `effective_config` at all -- an agent built before this bead --
+    is accepted AND stores no stray `effective_config: null` key, extending the SAME byte-identical
+    guarantee `test_heartbeat_persists_status` above already relies on for `_PAYLOAD`.
+    """
+    agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post("/api/internal/agent/heartbeat", json=_PAYLOAD)
+    assert response.status_code == 204
+
+    await session.refresh(agent)
+    assert agent.last_status == _PAYLOAD
+    assert "effective_config" not in agent.last_status

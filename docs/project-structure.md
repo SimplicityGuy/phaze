@@ -22,11 +22,11 @@ a module makes the inventory fail until this page is reconciled.
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
 | `cli/` | 1 | Operator commands, including agent management and projection backfill |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, and tracklist vocabulary |
-| `models/` | 28 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
-| `routers/` | 53 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 21 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 129 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 45 | SAQ controller/agent jobs and shared queue policy |
+| `models/` | 29 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
+| `routers/` | 55 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 22 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 131 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 46 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -56,7 +56,7 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | Pipeline routing | `routers/pipeline/` package plus `pipeline_scans.py`, `pipeline_stages.py`, and `scan.py` |
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
-| Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py` |
+| Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py`; `live_worker.py` makes SAQ worker concurrency live-resizable |
 | Settings | `config.py` is the public facade over `config_base.py`, `config_control.py`, `config_agent.py`, and the existing settings-policy collaborators |
 | Proposal generation | `services/proposal.py` is the stable facade over context, parsing, provider, and persistence modules |
 | Review workspaces | `services/review.py` is the stable facade over changes, cue, dedupe, and tag-write read models |

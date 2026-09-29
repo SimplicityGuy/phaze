@@ -38,7 +38,7 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
 #: Pinned so a change to the budget is a deliberate edit to this number and shows up in a
 #: diff, rather than drifting a hundred series at a time. Raising it is allowed; doing so
 #: without noticing is what this pin prevents.
-SERIES_CEILING = 8587
+SERIES_CEILING = 8609
 
 #: Names the catalogue doc mentions in order to say phaze does NOT emit them. The reverse
 #: doc-sync check would otherwise flag the very passages that exist to stop someone

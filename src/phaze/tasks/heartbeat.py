@@ -9,6 +9,15 @@ Reads from the SAQ ctx (populated by phaze.tasks.agent_worker.startup):
     - ctx["api_client"]: PhazeAgentClient
     - ctx["agent_identity"]: AgentIdentity
     - ctx["worker"]: SAQ Worker (gives .queue for Queue.info())
+    - ctx["runtime_config_store"]: RuntimeConfigStore (phaze-mvq8z.9; absence degrades to
+      "skip the config poll and omit effective_config" -- see ``_poll_runtime_config``)
+
+phaze-mvq8z.9 -- ADR-0019 (runtime config hot-reload) §14: a remote agent has no Postgres reachability of its own, so it
+cannot install the DB-override layer directly the way the api process and control worker do. Each
+tick, ``send_heartbeat`` polls ``GET /api/internal/agent/config`` (``_poll_runtime_config``) and
+reloads the agent's LOCAL ``RuntimeConfigStore`` only when the returned digest changed, then rides
+that store's resolved snapshot on the SAME beat as ``HeartbeatRequest.effective_config`` (ADR §15)
+so an operator can see, per agent, what is ACTUALLY in force -- not merely what was last intended.
 
 Phase 46 — why a background task, not a SAQ CronJob:
     The previous ``heartbeat_tick`` ran as a SAQ ``CronJob`` and so competed for
@@ -47,8 +56,9 @@ from phaze.constants import (
     AGENT_BROKER_UNHEALTHY_BEATS,
     AGENT_HEARTBEAT_INTERVAL_SECONDS,
 )
-from phaze.schemas.agent_heartbeat import HeartbeatRequest
-from phaze.services.agent_client import AgentApiError
+from phaze.runtime_config import RESTART_ONLY_KEYS, partition_overrides
+from phaze.schemas.agent_heartbeat import LAST_RELOAD_ERROR_MAX_LENGTH, EffectiveConfig, EffectiveConfigLastReload, HeartbeatRequest
+from phaze.services.agent_client import AgentApiClientError, AgentApiError
 
 
 logger = structlog.get_logger(__name__)
@@ -71,6 +81,16 @@ The broker read is a NICE-TO-HAVE enrichment of the heartbeat, not its purpose. 
 psycopg pool acquire that never returns must degrade ``queue_depth`` to 0, never delay
 the POST that keeps the agent alive. Kept far below
 ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` so a slow broker cannot eat the whole tick.
+"""
+
+CONFIG_POLL_TIMEOUT_SECONDS = 5.0
+"""Hard deadline on the runtime-config poll's ``GET /api/internal/agent/config`` (phaze-mvq8z.20).
+
+Same shape as ``QUEUE_INFO_TIMEOUT_SECONDS`` and for the same reason: the poll runs inside
+``send_heartbeat`` BEFORE the POST, under the one per-beat ``BEAT_TIMEOUT_SECONDS``, so without its
+own bound a GET that hangs had the whole beat cancelled before the POST that keeps the agent alive.
+The client makes this call as a single attempt (``PhazeAgentClient.get_config``); a missed poll is
+simply retried on the next tick.
 """
 
 HEARTBEAT_INFO_LOG_EVERY = 20
@@ -138,6 +158,102 @@ async def _probe_broker_for_queued_jobs(ctx: dict[str, Any]) -> int:
     return queue_depth
 
 
+async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
+    """Fetch the DB-override layer and reload the agent's LOCAL store only on a real change.
+
+    phaze-mvq8z.9, ADR-0019 (runtime config hot-reload) §14. ``ctx["runtime_config_store"]`` is populated by
+    ``phaze.tasks.agent_worker.startup`` (phaze-mvq8z.5/.9) -- its absence (an older agent_worker
+    build, or a test ctx that never ran startup) degrades this to a no-op, the same shape every
+    other optional-ctx-key read in this module already takes (``ctx["worker"]`` absent ->
+    queue_depth defaults to 0, see :func:`_probe_broker_for_queued_jobs`).
+
+    Every failure past that point -- a network blip, an auth error, a malformed response, or (in a
+    test with an unconfigured mock client) an attribute that is not really a mapping -- degrades to
+    "local config unchanged this tick" and is logged at WARNING. It NEVER prevents, and is never
+    gated on, the heartbeat POST that keeps the agent alive: this function runs BEFORE that POST is
+    built (so a just-applied override is reflected in the SAME beat's ``effective_config``), but a
+    failure here does not stop the POST from being sent -- and neither does a HANG, because the GET
+    is bounded by its own ``CONFIG_POLL_TIMEOUT_SECONDS``, far inside the beat's (phaze-mvq8z.20).
+    """
+    store = ctx.get("runtime_config_store")
+    if store is None:
+        return
+    try:
+        response = await asyncio.wait_for(client.get_config(), timeout=CONFIG_POLL_TIMEOUT_SECONDS)
+        overrides = dict(response.overrides)
+        digest = str(response.digest)
+    except TimeoutError:
+        logger.warning("heartbeat: runtime-config poll timed out after %.1fs; local config unchanged", CONFIG_POLL_TIMEOUT_SECONDS)
+        return
+    except Exception:
+        logger.warning("heartbeat: runtime-config poll failed; local config unchanged", exc_info=True)
+        return
+    if digest == ctx.get("_runtime_config_digest"):
+        return
+    # phaze-mvq8z.22: the endpoint filters by the SERVER's reloadable keys, and a newer control
+    # plane can know a key this agent's build does not. Rejecting the whole reload for it would
+    # strand every other override (log_level included) until the agent upgrades, so the unknown
+    # key is dropped and named, and the rest applies -- the same version-skew tolerance .20 gave
+    # the heartbeat POST.
+    overrides, ignored = partition_overrides(overrides)
+    if ignored:
+        logger.warning("heartbeat: ignoring runtime-config override keys this agent does not know", ignored=list(ignored))
+    ctx["_runtime_config_overrides"] = overrides
+
+    async def _override_provider() -> dict[str, Any]:
+        # Reads ctx fresh on every call (not the `overrides` closed over above) so a LATER
+        # trigger on the same store -- SIGHUP, a file-watch tick -- also sees whatever this
+        # function last fetched, not a snapshot frozen at registration time.
+        return dict(ctx.get("_runtime_config_overrides") or {})
+
+    store.set_override_provider(_override_provider)
+    # The digest is recorded only once the set it names is IN FORCE (phaze-mvq8z.22). Recorded
+    # before the reload, a rejected set -- a transient validator veto, a failed applier -- was never
+    # retried until the operator changed the set again. A rejection FORGETS the digest instead, so
+    # the next tick reloads whatever the endpoint then serves: the same set again (a retry), or a
+    # withdrawal back to the set already in force, which must still be reloaded -- the provider
+    # above holds the rejected set until it is.
+    if (await store.reload("poll")).successful:
+        ctx["_runtime_config_digest"] = digest
+    else:
+        ctx.pop("_runtime_config_digest", None)
+
+
+def _bounded_error(error: str | None) -> str | None:
+    """Fit a reload error to the wire's ``max_length``, keeping its head (phaze-mvq8z.19).
+
+    A reload error is unbounded -- it names every offending key -- and an over-long one would fail
+    ``HeartbeatRequest`` validation before the POST, so NO beat would be sent and a config typo
+    would become a liveness outage. The full error is still in this agent's own reload log line.
+    """
+    if error is None or len(error) <= LAST_RELOAD_ERROR_MAX_LENGTH:
+        return error
+    marker = "... (truncated)"
+    return error[: LAST_RELOAD_ERROR_MAX_LENGTH - len(marker)] + marker
+
+
+def _build_effective_config(store: Any) -> EffectiveConfig:
+    """Render ``store``'s current snapshot + last reload attempt as the wire shape (phaze-mvq8z.9).
+
+    ``store`` is untyped (``Any``) rather than ``RuntimeConfigStore`` to match how every other
+    ctx-sourced value in this module is read (``api_client``, ``agent_identity``, ``worker``) --
+    a plain duck-typed object handed in via ctx, not a type this module imports for its own sake.
+    """
+    snapshot = store.snapshot()
+    last = store.last_result
+    last_reload = (
+        EffectiveConfigLastReload(source=last.source, outcome=last.outcome, error=_bounded_error(last.error), at=last.at)
+        if last is not None
+        else None
+    )
+    return EffectiveConfig(
+        values=snapshot.config.model_dump(mode="json"),
+        sources=dict(snapshot.sources),
+        restart_only_keys=sorted(RESTART_ONLY_KEYS),
+        last_reload=last_reload,
+    )
+
+
 async def send_heartbeat(ctx: dict[str, Any]) -> None:
     """POST one agent heartbeat from the current worker state.
 
@@ -191,6 +307,11 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
             _terminate_worker_process()
         return
 
+    # phaze-mvq8z.9: poll the DB-override layer BEFORE building the payload, so an override the
+    # operator just set is both applied AND reported on this SAME beat.
+    await _poll_runtime_config(ctx, client)
+    runtime_config_store = ctx.get("runtime_config_store")
+
     payload = HeartbeatRequest(
         agent_version=importlib.metadata.version("phaze"),
         worker_pid=os.getpid(),
@@ -198,9 +319,23 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         # phaze-30fo: tag the beat with THIS worker's lane so the control plane can keep a
         # per-lane breakdown and sum an honest all-lane depth. None in all-mode (no split).
         lane=ctx.get("agent_lane"),
+        # phaze-mvq8z.9: None when ctx carries no store (an older agent_worker build, or a
+        # test ctx built by hand) -- HeartbeatRequest.effective_config is Optional for exactly
+        # this reason (see its docstring).
+        effective_config=_build_effective_config(runtime_config_store) if runtime_config_store is not None else None,
     )
     try:
-        await client.heartbeat(payload)
+        try:
+            await client.heartbeat(payload)
+        except AgentApiClientError:
+            if payload.effective_config is None:
+                raise
+            # phaze-mvq8z.20: a control plane older than `effective_config` 422s every beat that
+            # carries it, and agents may upgrade first. The snapshot is optional; liveness is not --
+            # so re-send the core beat without it. Tried again with the snapshot on every tick, so
+            # the panel fills in by itself once the control plane catches up.
+            logger.warning("heartbeat: control plane rejected effective_config; re-sending the beat without it")
+            await client.heartbeat(payload.model_copy(update={"effective_config": None}))
         # DEBUG only by design (PR3): the 30s cadence fires constantly, so an INFO
         # here would flood operational logs -- heartbeat liveness lives at DEBUG.
         logger.debug("heartbeat sent", agent=identity.agent_id, queue_depth=queue_depth)
@@ -243,6 +378,32 @@ async def _heartbeat_loop(ctx: dict[str, Any]) -> None:
             # "loop dead", which DEBUG-only success logging could not.
             logger.info("heartbeat loop alive", beats=beats, interval_seconds=AGENT_HEARTBEAT_INTERVAL_SECONDS)
 
+        await asyncio.sleep(AGENT_HEARTBEAT_INTERVAL_SECONDS)
+
+
+async def _config_poll_loop(ctx: dict[str, Any]) -> None:
+    """Background loop: the runtime-config poll alone, for a worker that sends no heartbeat (phaze-mvq8z.21).
+
+    ``PHAZE_AGENT_HEARTBEAT=false`` exists to stop a worker REPORTING liveness (one authoritative
+    ``last_seen`` per agent), not to stop it RECEIVING configuration -- but ``send_heartbeat`` was
+    the only caller of :func:`_poll_runtime_config`, so a heartbeat-disabled worker that still runs
+    jobs (the worker-drain all-mode worker runs ``process_file``) never saw an admin override. This
+    loop runs the SAME single-attempt, individually bounded poll on the SAME cadence, decoupled
+    from the POST. It does not report ``effective_config``: that rides a heartbeat, and this worker
+    sends none.
+
+    Same survival shape as :func:`_heartbeat_loop`: one failed iteration never kills the loop, and
+    ``asyncio.CancelledError`` is re-raised so shutdown can cancel + await it cleanly. The poll
+    bounds its own GET (``CONFIG_POLL_TIMEOUT_SECONDS``) and swallows its own failures.
+    """
+    client = ctx.get("api_client")
+    while True:
+        try:
+            await _poll_runtime_config(ctx, client)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("config poll loop iteration failed; continuing", exc_info=True)
         await asyncio.sleep(AGENT_HEARTBEAT_INTERVAL_SECONDS)
 
 

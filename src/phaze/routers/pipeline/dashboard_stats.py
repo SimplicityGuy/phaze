@@ -9,7 +9,7 @@ from fastapi import Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Status
 from phaze.models.agent import Agent
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.config import ControlSettings
     from phaze.services.backends import RunningAnalysis
 
 # D-02/D-03: DB progress is authoritative; maintained completion counters are only a degraded-read
@@ -320,6 +321,7 @@ def _shared_stats_context(
     each caller's own page-only or poll-only extras) stays in the caller; only the assembled dict shape
     that must agree between them lives here.
     """
+    settings = cast("ControlSettings", get_settings())
     # phaze-m1drf.1 acceptance 3: publish the waiting-room depths the operator otherwise
     # counts in psql. POLL-DRIVEN by construction -- this function runs only when the admin
     # UI asks -- so these series go stale with no tab open. Dashboard material, never alert

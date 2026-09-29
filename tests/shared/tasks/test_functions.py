@@ -157,6 +157,18 @@ def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
     return {"api_client": api_client}
 
 
+def _saq_job() -> AsyncMock:
+    """A SAQ job double carrying the deadline the enqueue hook stamps from the default settings.
+
+    A real ``process_file`` job always carries a ``heartbeat`` (``apply_project_job_defaults``
+    pins it). Stamped here so ``process_file``'s dispatch-time deadline re-stamp
+    (phaze-mvq8z.21) is a no-op, and every ``job.update`` a test counts is a liveness touch.
+    """
+    job = AsyncMock()
+    job.heartbeat = 2 * 1800
+    return job
+
+
 def _make_payload_kwargs(file_id: uuid.UUID | None = None, file_type: str = "mp3") -> dict[str, Any]:
     return {
         "file_id": str(file_id or uuid.uuid4()),
@@ -744,7 +756,7 @@ async def test_process_file_extraction_heartbeat_touches_the_saq_job(
 
     mock_extract.side_effect = _extract_with_heartbeat
     mock_pool.return_value = MOCK_ANALYSIS
-    job = AsyncMock()
+    job = _saq_job()
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
     ctx = _make_ctx(api_client=api)
@@ -1133,16 +1145,34 @@ async def test_process_file_cancelled_no_job_in_ctx_cleans_scratch_copy(mock_poo
     assert not scratch_file.exists()
 
 
+@patch("phaze.tasks.functions.current_runtime_config")
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_threads_the_stall_threshold_and_no_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
-    """The success path passes ``stall_timeout`` from AgentSettings -- and no wall clock, no caps.
+async def test_process_file_threads_the_stall_threshold_and_thread_env_and_no_caps(
+    mock_pool: AsyncMock, mock_current_runtime_config: MagicMock, _patch_agent_settings: MagicMock
+) -> None:
+    """The success path passes ``stall_timeout`` AND the TF/OMP thread counts from the SAME
+    ONE read of the RELOADABLE runtime-config snapshot -- not the static ``AgentSettings``,
+    and not a second independent read per value -- and no wall clock, no caps.
+
+    phaze-mvq8z.7: ``analysis_stall_timeout_sec`` moved from ``cfg`` (start-time settings) to
+    ``current_runtime_config()`` (docs/design/0019-runtime-config-hot-reload.md §5/§7's
+    live-reloadable snapshot) so a hot reload applies to the NEXT job without a restart --
+    see ``phaze.services.analysis_exec``/``phaze.tasks.agent_worker`` for the sibling
+    appliers (the resizable semaphore and telemetry slot pool) this same bead wires up.
+    ``analysis_intra_op_threads``/``analysis_omp_threads`` are threaded the same way, as
+    plain ``intra_op_threads=``/``omp_threads=`` kwargs -- ``analysis_exec.py`` itself never
+    reads the config layer (its own docstring, phaze-mvq8z.7): a driver that reached into a
+    config store whose first build can block on host topology detection made an unrelated
+    real-subprocess timing test measurably flakier, caught by a repeated isolated-run
+    comparison against the unmodified container branch (dispatch evidence, 2026-09-28).
 
     The negative half is the load-bearing one (phaze-w55w1): a ``timeout=`` kwarg reaching the
     driver would silently restore the elapsed-time kill this bead removed, and it would not fail
     any other test in this file.
     """
-    stub = _patch_agent_settings.return_value
-    stub.analysis_stall_timeout_sec = 1234
+    mock_current_runtime_config.return_value = MagicMock(
+        analysis_stall_timeout_sec=1234, analysis_job_heartbeat_sec=2468, analysis_intra_op_threads=5, analysis_omp_threads=6
+    )
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -1153,6 +1183,8 @@ async def test_process_file_threads_the_stall_threshold_and_no_caps(mock_pool: A
     mock_pool.assert_awaited_once()
     call = mock_pool.await_args
     assert call.kwargs["stall_timeout"] == 1234
+    assert call.kwargs["intra_op_threads"] == 5
+    assert call.kwargs["omp_threads"] == 6
     for gone in ("timeout", "fine_cap", "coarse_cap"):
         assert gone not in call.kwargs
 
@@ -1169,7 +1201,7 @@ async def test_process_file_touches_the_saq_job_heartbeat_on_analysis_progress(m
     stub = _patch_agent_settings.return_value
     stub.analysis_progress_interval_sec = 0.0
     mock_pool.return_value = MOCK_ANALYSIS
-    job = AsyncMock()
+    job = _saq_job()
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
     ctx = _make_ctx(api_client=api)
@@ -1206,7 +1238,7 @@ async def test_process_file_saq_heartbeat_touch_is_throttled(mock_pool: AsyncMoc
     stub = _patch_agent_settings.return_value
     stub.analysis_progress_interval_sec = 5.0
     stub.analysis_job_heartbeat_sec = 3600
-    job = AsyncMock()
+    job = _saq_job()
 
     async def _burst_then_return(*_args: Any, **kwargs: Any) -> dict[str, Any]:
         for i in range(25):
@@ -1239,7 +1271,7 @@ async def test_saq_touch_cadence_is_capped_by_the_heartbeat_deadline_not_the_dis
     stub = _patch_agent_settings.return_value
     stub.analysis_progress_interval_sec = 86400.0  # absurd, and it must not matter
     stub.analysis_job_heartbeat_sec = 3600
-    job = AsyncMock()
+    job = _saq_job()
     beats = 12
     fake_now = iter(float(i * 601) for i in range(beats + 4))  # 601s apart: past 3600/3, under 86400
 
@@ -1302,6 +1334,127 @@ async def test_process_file_saq_heartbeat_failure_never_fails_the_job(mock_pool:
     result = await process_file(ctx, **_make_payload_kwargs())
 
     assert result["status"] == "analyzed"
+
+
+async def _set_live_stall_timeout(stall_timeout_sec: int) -> int:
+    """Apply a live ``analysis_stall_timeout_sec`` override to this process's store; return the value it replaced.
+
+    Goes through the real ``RuntimeConfigStore`` override layer -- the same path the agent's
+    config poll feeds (``phaze.tasks.heartbeat._poll_runtime_config``) -- so the job under test
+    reads it exactly as a production job would after an admin override.
+    """
+    from phaze.runtime_config import get_runtime_config_store
+
+    store = get_runtime_config_store()
+    startup_stall = store.current().analysis_stall_timeout_sec
+
+    async def _overrides() -> dict[str, Any]:
+        return {"analysis_stall_timeout_sec": stall_timeout_sec}
+
+    store.set_override_provider(_overrides)
+    await store.reload("poll")
+    assert store.current().analysis_stall_timeout_sec == stall_timeout_sec  # precondition: the override landed
+    return startup_stall
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_a_live_stall_timeout_raise_moves_the_saq_deadline_with_the_watchdog(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, _patch_agent_settings: MagicMock
+) -> None:
+    """A live raise past 2x the start-time stall threshold re-stamps the job's SAQ deadline (phaze-mvq8z.21).
+
+    The job arrives carrying the deadline its enqueue stamped -- 2x the threshold in force THEN.
+    Its watchdog is armed from the live snapshot, so without a re-stamp at dispatch a live raise
+    past 2x the old value leaves SAQ's deadline BELOW the watchdog, and a child silent for longer
+    than the old deadline is swept while the watchdog still holds it alive (D-08; phaze-1b39).
+    The extraction touch cadence follows the same live deadline.
+    """
+    from phaze.runtime_config import current
+
+    startup_stall = current().analysis_stall_timeout_sec
+    live_stall = 2 * startup_stall + 1  # past the start-time DEADLINE, not merely the threshold
+    assert await _set_live_stall_timeout(live_stall) == startup_stall
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
+    mock_pool.return_value = MOCK_ANALYSIS
+    job = AsyncMock()
+    job.heartbeat = 2 * startup_stall  # what the enqueue hook stamped before the live change
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    assert mock_pool.await_args.kwargs["stall_timeout"] == live_stall
+    job.update.assert_any_await(heartbeat=2 * live_stall)
+    assert mock_extract.await_args.kwargs["heartbeat_interval_sec"] == 2 * live_stall / 3
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_an_arm64_omp_pin_reaches_the_child_despite_a_fleet_wide_raise(
+    mock_pool: AsyncMock, _patch_agent_settings: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-mvq8z.22 finding 3: a fleet-wide ``analysis_omp_threads`` raise never un-pins ``OMP_NUM_THREADS=1``.
+
+    The arm64 image pins it to 1 as a segfault mitigation (docs/arm64-agent-image.md fix #4), and
+    every analysis child is stamped from the live snapshot, so the snapshot must keep the pin:
+    the child is spawned with 1, whatever the override table says for the x86 fleet.
+    """
+    from phaze.runtime_config import get_runtime_config_store
+    from phaze.services.analysis_sizing import OMP_ENV
+
+    monkeypatch.setenv(OMP_ENV, "1")
+    get_runtime_config_store.cache_clear()  # built from THIS process env, as the agent's store is at startup
+    store = get_runtime_config_store()
+
+    async def _fleet_wide_raise() -> dict[str, Any]:
+        return {"analysis_omp_threads": 4}
+
+    store.set_override_provider(_fleet_wide_raise)
+    assert (await store.reload("poll")).successful
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+
+    await process_file(_make_ctx(api_client=api), **_make_payload_kwargs())
+
+    assert mock_pool.await_args.kwargs["omp_threads"] == 1
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_a_live_stall_timeout_cut_tightens_the_analysis_touch_cadence(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """A live cut of the stall threshold tightens the SAQ touch cadence to fit the new deadline (phaze-mvq8z.21).
+
+    The shorter deadline (2 x 300 s) must still see >=3 touches per window. A cadence left at the
+    start-time third-of-deadline (1,200 s) would touch once per 1,200 s against a 600 s deadline,
+    and SAQ would sweep a healthy analysis between touches.
+    """
+    live_stall = 300
+    await _set_live_stall_timeout(live_stall)
+    stub = _patch_agent_settings.return_value
+    stub.analysis_progress_interval_sec = 0.0
+    job = AsyncMock()
+    job.heartbeat = 2 * live_stall  # already stamped at the live deadline: no re-stamp write
+    beats = 12
+    fake_now = iter(float(i * 201) for i in range(beats + 4))  # 201 s apart: past 600/3, well under 1200
+
+    async def _spaced_beats(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        for i in range(beats):
+            kwargs["heartbeat_cb"]("fine", i, beats)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _spaced_beats
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    with patch("phaze.tasks.functions.time.monotonic", lambda: next(fake_now)):
+        await process_file(ctx, **_make_payload_kwargs())
+
+    assert job.update.await_count == beats, "every beat 201 s apart must touch against a 600 s deadline"
+    assert mock_pool.await_args.kwargs["stall_timeout"] == live_stall
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)

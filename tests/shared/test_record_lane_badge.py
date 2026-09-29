@@ -29,9 +29,8 @@ def _local_only_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     case ambiguous about which signal actually produced "local".
 
     ``routers/record.py`` reads the registry through ``get_settings()`` (the ``@lru_cache``d
-    singleton), NOT the separate module-level ``phaze.config.settings`` instance other router
-    test modules patch for OTHER endpoints -- the two are genuinely different objects, so this
-    module patches the one this route actually reads.
+    singleton every production module now reads -- phaze-mvq8z.2 removed the separate
+    module-level ``phaze.config.settings`` instance that used to diverge from it).
     """
     monkeypatch.setattr(get_settings(), "backends", [])
 

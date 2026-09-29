@@ -32,6 +32,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.runtime_config import current as current_runtime_config
 from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import hold_awaiting_cloud
 from phaze.services.enqueue_router import NoActiveAgentError, resolve_queues_for_owned_files
@@ -350,7 +351,7 @@ async def enqueue_incomplete_reanalysis(
     # BEUI-02/D-08 fold, same as every other duration-router caller: effective
     # cloud_enabled is "registry cloud_enabled AND NOT force_local".
     cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
-    threshold = settings.cloud_route_threshold_sec
+    threshold = current_runtime_config().cloud_route_threshold_sec
 
     long_candidates, local_candidates = _split_by_duration_threshold(routable, cloud_enabled=cloud_enabled, threshold=threshold)
 

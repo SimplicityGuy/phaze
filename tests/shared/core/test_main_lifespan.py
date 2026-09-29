@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.config import get_settings
 from phaze.models.agent import Agent
 from tests._queue_fakes import FakeQueue
 
@@ -270,7 +271,7 @@ async def test_saq_mount_served_in_lifespan(monkeypatch: pytest.MonkeyPatch) -> 
     import phaze.main as main_module
 
     _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
-    monkeypatch.setattr(main_module.settings, "enable_saq_ui", True)
+    monkeypatch.setattr(get_settings(), "enable_saq_ui", True)
 
     app = main_module.create_app()
     _override_health_session(app)
@@ -291,7 +292,7 @@ async def test_saq_queues_assembled_and_reused(monkeypatch: pytest.MonkeyPatch) 
     import phaze.main as main_module
 
     controller_queue, task_router = _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
-    monkeypatch.setattr(main_module.settings, "enable_saq_ui", True)
+    monkeypatch.setattr(get_settings(), "enable_saq_ui", True)
 
     app = main_module.create_app()
     with TestClient(app):
@@ -318,7 +319,7 @@ async def test_saq_disabled_flag_skips_mount(monkeypatch: pytest.MonkeyPatch) ->
     import phaze.main as main_module
 
     _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
-    monkeypatch.setattr(main_module.settings, "enable_saq_ui", False)
+    monkeypatch.setattr(get_settings(), "enable_saq_ui", False)
 
     app = main_module.create_app()
     _override_health_session(app)
@@ -374,7 +375,7 @@ async def test_saq_mount_excludes_compute_agents(session: AsyncSession, _db_conn
     import saq.web.starlette as saq_starlette
 
     controller_queue, task_router = _patch_saq_lifespan(monkeypatch, main_module, agents=None)
-    monkeypatch.setattr(main_module.settings, "enable_saq_ui", True)
+    monkeypatch.setattr(get_settings(), "enable_saq_ui", True)
 
     # Neutralise the HYG-01 background orphan-count refresher (incidental to this test): it opens
     # its OWN session via `phaze.services.pipeline`'s module-level `async_session` against the

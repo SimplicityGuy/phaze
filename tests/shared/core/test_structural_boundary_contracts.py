@@ -56,7 +56,9 @@ _LIVE_CONSUMERS: dict[Path, set[tuple[str, str]]] = {
     Path("src/phaze/tasks/agent_worker.py"): {("phaze.tasks.execution", "execute_approved_batch")},
     Path("src/phaze/services/backends/kueue.py"): {("phaze.tasks.reconcile_cloud_jobs", "_reconcile_one")},
     Path("src/phaze/routers/duplicates.py"): {("phaze.services.review", "get_dedupe_groups")},
-    Path("src/phaze/main.py"): {("phaze.config", "settings")},
+    # phaze-mvq8z.2 removed the module-level `settings` singleton; main.py now reads
+    # `get_settings()` (the same process-wide `lru_cache`d instance every other consumer reads).
+    Path("src/phaze/main.py"): {("phaze.config", "get_settings")},
 }
 
 

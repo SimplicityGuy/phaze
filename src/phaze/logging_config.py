@@ -32,8 +32,28 @@ import logging
 from logging import getLogger as _stdlib_get_logger
 import os
 import sys
+from typing import TYPE_CHECKING, Final, Protocol
 
 import structlog
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+#: The log_level names RuntimeConfig validates identically in every process type
+#: (phaze-mvq8z.16). Deliberately NOT ``logging.getLevelNamesMapping()`` -- that mapping is a
+#: process-wide, mutable registry (``logging.addLevelName``), and uvicorn's own
+#: ``configure_logging`` registers a ``TRACE`` level (5) as a side effect of importing/running
+#: uvicorn in the api/control process, but never in an agent process, which never imports
+#: uvicorn. Validating against the live registry therefore accepted ``log_level=TRACE`` in one
+#: process and rejected the identical value in another. These five are the standard levels the
+#: stdlib ``logging`` module registers unconditionally at import, in every process, so checking
+#: membership here is process-independent by construction. Deliberately excludes: the
+#: ``WARN``/``FATAL`` aliases (redundant with ``WARNING``/``ERROR``), ``NOTSET`` (meaningless as
+#: an active application level), and ``TRACE`` (non-standard, uvicorn-only, never guaranteed
+#: present) -- implementer decision, since nothing in this codebase logs at TRACE.
+KNOWN_LOG_LEVELS: Final[tuple[str, ...]] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 # This module is the ONE place that manipulates stdlib loggers directly (the root
@@ -221,3 +241,25 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
     psycopg_pool_logger = _stdlib_get_logger(_PSYCOPG_POOL_LOGGER_NAME)
     if not any(isinstance(f, _ElevatePsycopgPoolConnectErrors) for f in psycopg_pool_logger.filters):
         psycopg_pool_logger.addFilter(_ElevatePsycopgPoolConnectErrors())
+
+
+class _HasLogLevel(Protocol):
+    @property
+    def log_level(self) -> str: ...
+
+
+def log_level_applier(*, json_logs: bool | None) -> Callable[[_HasLogLevel, _HasLogLevel], None]:
+    """The ``log_level`` runtime-config applier every process registers (phaze-mvq8z.8).
+
+    ``json_logs`` is the process's own ``settings.log_json``, passed through on every re-apply:
+    without it :func:`configure_logging` re-resolves the format from ``os.environ``/``isatty`` alone,
+    ignoring a ``PHAZE_LOG_JSON`` that lives only in ``.env``. And because appliers fire on ANY
+    reloadable change, the re-apply is skipped unless ``log_level`` itself moved -- together these
+    stop a ``worker_max_jobs`` override from flipping the log format (phaze-mvq8z.20).
+    """
+
+    def _apply(old: _HasLogLevel, new: _HasLogLevel) -> None:
+        if old.log_level != new.log_level:
+            configure_logging(level=new.log_level, json_logs=json_logs)
+
+    return _apply

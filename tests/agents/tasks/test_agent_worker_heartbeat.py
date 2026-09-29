@@ -79,6 +79,8 @@ async def test_startup_launches_heartbeat_background_task(monkeypatch: pytest.Mo
         task = ctx["heartbeat_task"]
         assert isinstance(task, asyncio.Task)
         assert not task.done()
+        # phaze-mvq8z.21: the heartbeat carries the config poll here, so no second poller runs.
+        assert "config_poll_task" not in ctx
     finally:
         task = ctx.get("heartbeat_task")
         if task is not None:
@@ -96,6 +98,7 @@ async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyP
     _set_agent_env(monkeypatch)
     monkeypatch.setenv("PHAZE_AGENT_HEARTBEAT", "false")
     from phaze.config import AgentSettings
+    from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_digest
     import phaze.tasks.agent_worker as aw
 
     fake_cfg = AgentSettings()
@@ -105,6 +108,8 @@ async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyP
     fake_identity = MagicMock(agent_id="test-id")
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(return_value=fake_identity)
+    # phaze-mvq8z.21: this worker now runs the config poll on its own loop; give it a real response.
+    fake_client.get_config = AsyncMock(return_value=AgentConfigResponse(overrides={}, digest=compute_overrides_digest({})))
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
     # phaze-xuec1: startup() now probes real broker reachability before "startup complete";
@@ -115,12 +120,63 @@ async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyP
     try:
         await aw.startup(ctx)
         assert "heartbeat_task" not in ctx
+        # phaze-mvq8z.21: ...but it still polls the runtime config, on a loop of its own.
+        assert isinstance(ctx["config_poll_task"], asyncio.Task)
     finally:
-        task = ctx.get("heartbeat_task")
-        if task is not None:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        for key in ("heartbeat_task", "config_poll_task"):
+            task = ctx.get(key)
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+
+async def test_a_heartbeat_disabled_worker_still_applies_an_admin_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mvq8z.21: PHAZE_AGENT_HEARTBEAT=false must not also switch off DB-override delivery.
+
+    The heartbeat loop was the agent's ONLY path to ``GET /api/internal/agent/config``, so the
+    worker-drain all-mode worker (heartbeat off, still running ``process_file``) never saw an
+    admin override. A heartbeat-disabled worker now runs the config poll on its own loop -- and
+    still sends no heartbeat, which is what the flag is for.
+    """
+    _set_agent_env(monkeypatch)
+    monkeypatch.setenv("PHAZE_AGENT_HEARTBEAT", "false")
+    from phaze.config import AgentSettings
+    from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_digest
+    import phaze.tasks.agent_worker as aw
+    from tests._async_settle import wait_until
+
+    fake_cfg = AgentSettings()
+    assert fake_cfg.agent_heartbeat_enabled is False
+    override_stall = fake_cfg.analysis_stall_timeout_sec + 600
+    overrides = {"analysis_stall_timeout_sec": override_stall}
+    monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
+
+    fake_client = AsyncMock()
+    fake_client.whoami = AsyncMock(return_value=MagicMock(agent_id="test-id"))
+    fake_client.get_config = AsyncMock(return_value=AgentConfigResponse(overrides=overrides, digest=compute_overrides_digest(overrides)))
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
+    monkeypatch.setattr(aw, "_wait_for_queue_ready", AsyncMock())
+
+    ctx: dict[str, Any] = {}
+    try:
+        await aw.startup(ctx)
+        store = ctx["runtime_config_store"]
+        await wait_until(
+            lambda: store.current().analysis_stall_timeout_sec == override_stall,
+            description="the admin override reaching a heartbeat-disabled worker",
+        )
+        assert store.snapshot().sources["analysis_stall_timeout_sec"] == "override"
+        assert "heartbeat_task" not in ctx
+        fake_client.heartbeat.assert_not_awaited()
+    finally:
+        for key in ("heartbeat_task", "config_poll_task"):
+            task = ctx.get(key)
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 async def test_shutdown_cancels_heartbeat_task() -> None:
@@ -136,6 +192,22 @@ async def test_shutdown_cancels_heartbeat_task() -> None:
 
     ctx: dict[str, Any] = {"heartbeat_task": task}
     await aw.shutdown(ctx)
+
+    assert task.cancelled()
+
+
+async def test_shutdown_cancels_config_poll_task() -> None:
+    """phaze-mvq8z.21: shutdown() also cancels a heartbeat-disabled worker's ctx['config_poll_task']."""
+    import phaze.tasks.agent_worker as aw
+
+    async def _forever() -> None:
+        while True:
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_forever())
+    await asyncio.sleep(0)
+
+    await aw.shutdown({"config_poll_task": task})
 
     assert task.cancelled()
 

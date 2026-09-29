@@ -289,7 +289,7 @@ async def test_propose_workspace_generate_and_model(
     Model column renders the CONFIGURED ``settings.llm_model`` (A1 -- one model per run, not a per-row
     field). It carries NO per-row Approve/Edit/Skip (approval lives on Rename/Move).
     """
-    from phaze.config import settings
+    from phaze.config import get_settings
 
     p = await seed_pending_proposal(0.95, proposed_filename="Renamed.mp3", original_filename="messy.mp3")
 
@@ -305,7 +305,7 @@ async def test_propose_workspace_generate_and_model(
     assert ':disabled="$store.pipeline.controllerBusy > 0"' in body, "busy-gate binds the seeded controllerBusy key"
     assert "proposalsBusy" not in body, "the never-seeded proposalsBusy key must not gate GENERATE ALL"
     assert 'hx-disabled-elt="this"' in body, "GENERATE ALL disables itself in-flight like its bulk-enqueue siblings"
-    assert settings.llm_model in body, "the Model column renders the configured llm_model (A1)"
+    assert get_settings().llm_model in body, "the Model column renders the configured llm_model (A1)"
     # The generation view lists the proposal + is not a per-row diff-approve surface.
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"

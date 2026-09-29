@@ -177,7 +177,7 @@ async def test_kueue_registry_resolves_to_cloud_on(session: AsyncSession) -> Non
     the long file is held in AWAITING_CLOUD, not routed local. (A single compute backend resolves
     identically -- covered by the cloud_enabled=True case above.)
     """
-    from phaze.config import settings
+    from phaze.config import get_settings
     from phaze.config_backends import KubeConfig, KueueBackend
 
     await seed_active_agent(session, "cloud", kind="compute")
@@ -187,7 +187,7 @@ async def test_kueue_registry_resolves_to_cloud_on(session: AsyncSession) -> Non
     await session.commit()
 
     # The exact registry-derived read pipeline.py performs: a non-local registry -> cloud_enabled True.
-    kueue_settings = settings.model_copy(update={"backends": [KueueBackend(kind="kueue", id="k8s", rank=10, cap=2, kube=KubeConfig())]})
+    kueue_settings = get_settings().model_copy(update={"backends": [KueueBackend(kind="kueue", id="k8s", rank=10, cap=2, kube=KubeConfig())]})
     cloud_enabled = kueue_settings.cloud_enabled
     assert cloud_enabled is True
 

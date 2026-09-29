@@ -2,7 +2,7 @@
 
 **Metrics cannot tell you how far along one file is. That is by construction, not an
 oversight.** File identity, window index and chunk index are span attributes and are
-deliberately never metric labels — the constraint that holds an 11,428-file corpus at 8,587
+deliberately never metric labels — the constraint that holds an 11,428-file corpus at 8,609
 series ([`metric-catalogue.md`](metric-catalogue.md) §1). `phaze_analysis_windows_total{tier}`
 is a monotonic counter with **no file dimension**; Prometheus can give you fleet-level rate and
 nothing per-file.

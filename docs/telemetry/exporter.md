@@ -106,7 +106,7 @@ the host is also pinned. A burst pod reports `phaze-analysis-burst-<n>` (see bel
 | | series |
 | --- | ---: |
 | analysis-role block × (4 host-lane + 4 burst-lane slots), one agent host | 18,320 |
-| whole-catalogue ceiling, one agent host | 8,587 → **24,617** |
+| whole-catalogue ceiling, one agent host | 8,609 → **24,639** |
 
 Each additional agent host that runs analysis adds its own pool: another 2,290 × its
 `worker_process_pool_size`.

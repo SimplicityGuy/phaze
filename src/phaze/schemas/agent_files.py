@@ -12,14 +12,16 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.schemas.wire_bounds import INT64_MAX
 
 
-_CHUNK_MAX: int = settings.agent_file_chunk_max
+_CHUNK_MAX: int = get_settings().agent_file_chunk_max
 """Server-side cap on chunk size. Configurable via ``AGENT_FILE_CHUNK_MAX`` env var.
 
-Resolved at module-import time; env override at runtime requires a process restart.
+Resolved at module-import time (``get_settings()`` is itself process-wide ``lru_cache``d,
+so this is still exactly one construction); env override at runtime requires a process
+restart.
 """
 
 

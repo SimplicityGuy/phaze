@@ -92,7 +92,11 @@ def test_public_settings_types_keep_their_facade_identity_and_metaclass() -> Non
     assert issubclass(ControlSettings, BaseSettings)
     assert issubclass(AgentSettings, BaseSettings)
     assert config.Settings is ControlSettings
-    assert type(config.settings) is ControlSettings
+    # phaze-mvq8z.2 removed the `settings` module singleton (it could diverge from
+    # `get_settings()`'s own cached instance under a runtime reload); the default-role
+    # invariant it used to pin -- `PHAZE_ROLE` unset resolves to `ControlSettings` -- now
+    # characterizes `get_settings()` itself, per-test cache cleared by the autouse fixture.
+    assert type(config.get_settings()) is ControlSettings
 
 
 def test_pydantic_validator_registration_order_is_unchanged() -> None:

@@ -20,17 +20,18 @@ to them.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 import uuid
 
 from sqlalchemy import func, select
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.admin_agents import build_agents_pane_context
+from phaze.routers.admin_runtime_config import build_runtime_config_pane_context
 from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT, build_dashboard_context
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
@@ -76,6 +77,8 @@ if TYPE_CHECKING:
     from fastapi import Request
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.config import ControlSettings
+
 
 async def _analyze_file_count(session: AsyncSession) -> int:
     """Return the total ``FileRecord`` count, degrade-safe (RECORD-04).
@@ -109,8 +112,9 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
 
     Phase 60 (60-03, D-01): the Propose generation view over the shared RenameProposal source (NOT a
     diff). The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a
-    per-row value); a plain str off the module-level ControlSettings singleton (no DB, no enqueue).
-    oob_counts stays False (Pitfall 5); the live sub-count rides the single chrome poll's OOB seeds.
+    per-row value); a plain str off ``get_settings()``'s process-wide ``ControlSettings`` instance (no
+    DB, no enqueue). oob_counts stays False (Pitfall 5); the live sub-count rides the single chrome
+    poll's OOB seeds.
 
     phaze-a6hm.2 / .9: the row read is the FILTERED + SEARCHED + PAGINATED
     ``get_proposal_workspace_page``, not the flat pending-only ``get_pending_proposal_rows``. Both
@@ -133,6 +137,7 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     The returned mapping is merged into the caller's base context; it is never a whole context on
     its own (it carries no ``request``/chrome keys).
     """
+    settings = cast("ControlSettings", get_settings())
     view = ListViewState.from_request(request)
     # phaze-a6hm.10: the ONE resolution of this table's sort. `view.sort`/`view.order` are still
     # untrusted here -- ListViewState is a total PARSER, not a validator, so it will happily hand
@@ -535,4 +540,7 @@ _STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession, str], Awaita
     "apply": lambda _request, session, _stage: _apply_stage_context(session),
     "audit": lambda request, session, _stage: _audit_stage_context(request, session),
     "agents": _agents_stage_context,
+    # phaze-mvq8z.6: shares build_runtime_config_pane_context with GET /admin/runtime-config/_table
+    # so the pane and the standalone fragment endpoint cannot independently drift (mirrors "agents").
+    "runtime-config": lambda _request, session, _stage: build_runtime_config_pane_context(session),
 }

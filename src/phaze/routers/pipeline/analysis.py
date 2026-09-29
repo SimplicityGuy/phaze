@@ -19,13 +19,14 @@ from sqlalchemy import ARRAY, DateTime, String, bindparam, delete, func, select,
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _files_retry_oob, logger, router, templates
+from phaze.runtime_config import current as current_runtime_config
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import hold_awaiting_cloud
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.config import ControlSettings
 
 
 def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
@@ -380,6 +383,7 @@ async def trigger_analysis(
     (nothing can route locally) -- any long files are still committed to ``AWAITING_CLOUD``
     regardless.
     """
+    settings = cast("ControlSettings", get_settings())
     files_with_duration = await get_discovered_files_with_duration(session)
     if not files_with_duration:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
@@ -393,7 +397,7 @@ async def trigger_analysis(
         request.app.state,
         session,
         files_with_duration,
-        settings.cloud_route_threshold_sec,
+        current_runtime_config().cloud_route_threshold_sec,
         effective_cloud_enabled,
         settings.models_path,
     )
@@ -438,6 +442,7 @@ async def trigger_analysis_ui(
     (+ a skipped bucket); ``cloud`` is always 0. The no-active-agent fragment is rendered when NO
     fileserver agent is online (nothing can route locally).
     """
+    settings = cast("ControlSettings", get_settings())
     files_with_duration = await get_discovered_files_with_duration(session)
     count = len(files_with_duration)
 
@@ -455,7 +460,7 @@ async def trigger_analysis_ui(
         request.app.state,
         session,
         files_with_duration,
-        settings.cloud_route_threshold_sec,
+        current_runtime_config().cloud_route_threshold_sec,
         effective_cloud_enabled,
         settings.models_path,
     )
@@ -521,6 +526,7 @@ async def retry_analysis_failed(
       restores the marker for any file whose enqueue failed, so a transient queue error can no longer
       silently drop a file off the red bucket with no job and no trace that it ever failed.
     """
+    settings = cast("ControlSettings", get_settings())
     files = await get_analysis_failed_files(session)
     if not files:
         return templates.TemplateResponse(
@@ -632,6 +638,7 @@ async def retry_analysis_failed_file(
     dedups a live in-flight job to a no-op (T-87-26). The ack is count/bool-only — no operator
     free-text crosses into Jinja (T-d79-04).
     """
+    settings = cast("ControlSettings", get_settings())
     file = (
         # Phase 90 (PR-A, D-09): scope on the DERIVED terminal analyze-failure marker
         # (``failed_clause(Stage.ANALYZE)`` -- an analysis row with ``failed_at`` set), no longer the

@@ -49,14 +49,18 @@ import redis.asyncio as redis_async
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_triggers import build_watcher, install_sighup_handler
 from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING, LANE_TASKS, LANES
+from phaze.services.resizable_limiter import ResizableLimiter
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
     construct_agent_client,
     whoami_with_retry as _whoami_with_retry,
 )
 from phaze.tasks._shared.deterministic_key import increment_completed
+from phaze.tasks._shared.live_worker import install_live_concurrency, lane_concurrency
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
@@ -64,7 +68,7 @@ from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
-from phaze.tasks.heartbeat import _heartbeat_loop
+from phaze.tasks.heartbeat import _config_poll_loop, _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
@@ -307,6 +311,39 @@ async def startup(ctx: dict[str, Any]) -> None:
     # its environment and configures its own -- see phaze/telemetry/context.py.
     configure_telemetry("agent")
 
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging/telemetry allow -- matching the api lifespan's and control worker's
+    # placement (src/phaze/main.py, src/phaze/tasks/controller.py). RuntimeConfigStore's
+    # constructor VALIDATES the process's start-time reloadable settings (e.g. WORKER_MAX_JOBS)
+    # and raises ValueError on an invalid one. Implementer decision (phaze-mvq8z.5): let it
+    # propagate and refuse agent-worker startup, the same fail-fast contract the
+    # `isinstance(cfg, AgentSettings)` check just above already applies to a role mismatch --
+    # an invalid reloadable setting is an operator misconfiguration that should stop the
+    # process, not run degraded.
+    runtime_config_store = get_runtime_config_store()
+    # phaze-mvq8z.8: re-apply configure_logging (already idempotent) on every reload that
+    # changes log_level, in every process type -- matching main.py's lifespan and the control
+    # worker's startup. Registered BEFORE reload("startup") so that first reload's
+    # file/override-layer log_level (folded in below, after the settings-only value the bare
+    # configure_logging() call above used) takes effect. No backends.toml wiring here: an agent
+    # process holds no backend registry to reload (AgentSettings has no backends field).
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json))
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    ctx["runtime_config_watcher"] = build_watcher(runtime_config_store)
+    ctx["runtime_config_watcher"].start()
+    # phaze-mvq8z.9: hand the store to the heartbeat loop via ctx, the SAME way `worker`/
+    # `api_client`/`agent_identity` are already handed to it -- `phaze.tasks.heartbeat` reads
+    # only ctx, never builds its own settings-derived singleton (its IMPORT-BOUNDARY INVARIANT
+    # keeps it free of anything that could pull in phaze.database). The DB-override layer has no
+    # provider wired here (agent workers have no Postgres reachability, ADR-0019 (runtime config hot-reload) §14) --
+    # the heartbeat loop installs one itself, fed by GET /api/internal/agent/config.
+    ctx["runtime_config_store"] = runtime_config_store
+    # phaze-mvq8z.10: this lane's SAQ concurrency -- min(lane knob, worker_max_jobs), exactly the
+    # import-time `_concurrency` below but from the runtime-config snapshot -- becomes live: a
+    # reload grows or shrinks the running worker's job loops (docs/design/0019-runtime-config-hot-reload.md §8).
+    install_live_concurrency(ctx, runtime_config_store, lambda config: lane_concurrency(config, _lane))
+
     # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
     # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
     # per-lane knob (concurrency = min(lane knob, worker_max_jobs)); logging it here (AFTER
@@ -378,11 +415,28 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["agent_lane"] = _lane
     if cfg.agent_heartbeat_enabled:
         ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
+    else:
+        # phaze-mvq8z.21: the heartbeat loop is also the DB-override delivery path. A worker with
+        # heartbeats off still runs jobs (worker-drain runs process_file), so it polls the config
+        # on its own loop -- or an admin override would never reach it.
+        ctx["config_poll_task"] = asyncio.create_task(_config_poll_loop(ctx))
 
     # Bound concurrent essentia analysis children. The exec'd
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
-    # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
-    ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
+    # this limiter preserves the pool's worker_process_pool_size concurrency bound.
+    #
+    # phaze-mvq8z.7: sized from the runtime-config snapshot (already reloaded above), not the
+    # static `cfg`, and LIVE-resizable: registering "analysis_semaphore" wires a live reload
+    # of `worker_process_pool_size` (docs/design/0019-runtime-config-hot-reload.md §5/§7) straight into it. Grow wakes waiters
+    # immediately; shrink only lowers the ceiling and drains by attrition -- an in-flight
+    # analysis is never cancelled. See phaze.services.resizable_limiter's module docstring.
+    runtime_cfg = runtime_config_store.current()
+    analysis_limiter = ResizableLimiter(runtime_cfg.worker_process_pool_size)
+    ctx["analysis_semaphore"] = analysis_limiter
+    runtime_config_store.register_applier(
+        "analysis_semaphore",
+        lambda _old, new: analysis_limiter.resize(new.worker_process_pool_size),
+    )
 
     # ONE knob, read TWICE, on purpose. Every child this semaphore admits exports its own
     # cumulative counters, so the number of concurrent children is also the number of
@@ -392,7 +446,17 @@ async def startup(ctx: dict[str, Any]) -> None:
     # itself is what stops the bound from becoming a second, drifting copy of the
     # concurrency limit: raise the pool and the identities follow. See
     # phaze.telemetry.slots and docs/design/0017-telemetry-export-topology.md section 8.
-    telemetry_slots.set_default_pool_size(cfg.worker_process_pool_size)
+    #
+    # phaze-mvq8z.7: also a registered applier -- a live pool-size reload calls
+    # `set_default_pool_size` again, which resizes the pool IN PLACE with the limiter's own
+    # semantics (grow now, shrink by attrition) and never reissues a slot that is currently
+    # held, so the slot pool tracks the limiter even while children are in flight
+    # (phaze-mvq8z.19; phaze.telemetry.slots.SlotPool.resize).
+    telemetry_slots.set_default_pool_size(runtime_cfg.worker_process_pool_size)
+    runtime_config_store.register_applier(
+        "telemetry_slot_pool",
+        lambda _old, new: telemetry_slots.set_default_pool_size(new.worker_process_pool_size),
+    )
 
     # phaze-w15ju: this process ALLOCATES its children's slots, so it disowns any slot it was
     # handed. `slots.assign` now passes an inherited slot through untouched -- which is correct for
@@ -427,11 +491,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     # Phase 46: cancel the background heartbeat FIRST, before closing api_client, so an
     # in-flight heartbeat POST never hits a closed client. Guarded: the key may be absent
     # if startup never reached the launch point.
-    heartbeat_task = ctx.get("heartbeat_task")
-    if heartbeat_task is not None:
-        heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
+    # phaze-mvq8z.21: the heartbeat-disabled worker's config poll uses the same client, so it goes too.
+    for key in ("heartbeat_task", "config_poll_task"):
+        task = ctx.get(key)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     # Phase 101: no process pool to tear down — analysis children are per-file
     # subprocesses owned and reaped by services.analysis_exec; the semaphore needs
@@ -452,6 +518,14 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     queue_cache_redis = getattr(queue, "cache_redis", None)
     if queue_cache_redis is not None:
         await queue_cache_redis.aclose()
+
+    # phaze-mvq8z.5: reverse of construction -- it was built right after telemetry, before
+    # everything else in startup, so it's stopped last among this process's own resources,
+    # mirroring main.py's lifespan and the control worker's shutdown. `.get` guards a startup
+    # that failed before reaching it.
+    runtime_config_watcher = ctx.get("runtime_config_watcher")
+    if runtime_config_watcher is not None:
+        await runtime_config_watcher.stop()
 
     # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
     shutdown_telemetry()

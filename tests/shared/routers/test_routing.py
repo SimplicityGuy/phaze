@@ -16,7 +16,7 @@ import uuid
 
 import pytest
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.config_backends import ComputeBackend
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
@@ -164,7 +164,7 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
     False, so the duration router treats nothing as "long" -- the file routes to the fileserver queue
     exactly like the all-local path, and is never parked in AWAITING_CLOUD.
     """
-    monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
+    monkeypatch.setattr(get_settings(), "backends", [_COMPUTE_BACKEND])
     await _seed_route_control(session, force_local=True)
 
     uid = uuid.uuid4()

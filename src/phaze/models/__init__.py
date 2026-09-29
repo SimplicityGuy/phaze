@@ -17,6 +17,7 @@ from phaze.models.orphan_companion_diagnostic import OrphanCompanionDiagnostic
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.route_control import RouteControl
+from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.set_profile import SetProfile
@@ -50,6 +51,7 @@ __all__ = [
     "ProposalStatus",
     "RenameProposal",
     "RouteControl",
+    "RuntimeConfigOverride",
     "ScanBatch",
     "ScanStatus",
     "SchedulingLedger",

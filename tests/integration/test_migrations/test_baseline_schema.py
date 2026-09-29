@@ -100,6 +100,10 @@ _EXPECTED_TABLES = frozenset(
         "pipeline_stage_control",
         "proposals",
         "route_control",
+        # phaze-mvq8z.6 (migration 073): the DB-override layer for hot-reloadable config
+        # (docs/design/0019-runtime-config-hot-reload.md) -- one row per RELOADABLE key currently
+        # overridden through the admin API/UI.
+        "runtime_config_override",
         "scan_batches",
         "scheduling_ledger",
         # phaze-x1qr3.1 (migration 063): the per-file half of the set projection -- one summary row
@@ -292,8 +296,10 @@ def test_baseline_is_the_only_migration() -> None:
     metadata and cloud_job so filter columns added by ALTER carry planner statistics; 069
     (phaze-1xngw) adds cloud_job's last-failure record (exit code, reason, time); 070
     (phaze-o71bf) creates tracklist_file_lookups, the per-file record of the tracklist drain; 071
-    (phaze-j0ixx) adds the backend_breaker table and ANALYZEs cloud_job for its trip rule; 072 (phaze-d28sn)
-    adds cloud_job.redrive_after, the charged re-drive's backoff deadline.
+    (phaze-j0ixx) adds the backend_breaker table and ANALYZEs cloud_job for its trip rule; 072
+    (phaze-d28sn) adds cloud_job.redrive_after, the charged re-drive's backoff deadline; 073
+    (phaze-mvq8z.6) creates runtime_config_override, the DB-override layer for hot-reloadable
+    config (docs/design/0019-runtime-config-hot-reload.md).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -332,6 +338,7 @@ def test_baseline_is_the_only_migration() -> None:
         "070_tracklist_file_lookups.py",
         "071_backend_breaker.py",
         "072_cloud_job_redrive_after.py",
+        "073_runtime_config_override.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -360,10 +367,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (072: cloud_job.redrive_after)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (073: runtime_config_override)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "072"
+    assert version == "073"
 
 
 @pytest.mark.asyncio
@@ -689,7 +696,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "072"
+        assert version == "073"
     finally:
         if engine is not None:
             await engine.dispose()

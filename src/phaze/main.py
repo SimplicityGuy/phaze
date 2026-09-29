@@ -4,19 +4,22 @@ import asyncio
 from collections.abc import AsyncGenerator
 import contextlib
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, FastAPI
 import redis.asyncio as redis_async
 from sqlalchemy import select, text
 import structlog
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.database import async_session, engine, run_migrations
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
 from phaze.models.agent import Agent
 from phaze.routers import (
     admin_agents,
+    admin_runtime_config,
     agent_analysis,
+    agent_config,
     agent_exec_batches,
     agent_execution,
     agent_files,
@@ -48,6 +51,10 @@ from phaze.routers import (
     tags,
     tracklists,
 )
+from phaze.runtime_config import get_runtime_config_store
+from phaze.runtime_config_backends import build_backends_registry_reloader
+from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
+from phaze.runtime_config_triggers import build_backends_watcher, build_watcher, install_sighup_handler
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
@@ -57,6 +64,10 @@ from phaze.telemetry.db import instrument_engine
 from phaze.telemetry.http import TelemetryMiddleware
 from phaze.web.saq_mount import build_saq_app
 from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -77,8 +88,39 @@ async def _orphan_refresh_loop() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Construct application resources in dependency order and close them in reverse."""
+    settings = get_settings()
+
     # Configure logging before migrations so startup failures use the normal pipeline.
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
+
+    # phaze-mvq8z.5: the reloadable-config store and its SIGHUP + directory-watch triggers, as
+    # early as logging allows. RuntimeConfigStore's constructor VALIDATES the process's start-time
+    # reloadable settings (e.g. WORKER_MAX_JOBS) and raises ValueError on an invalid one -- the
+    # same fail-fast contract as a pydantic settings ValidationError elsewhere in this function,
+    # and an implementer decision (phaze-mvq8z.5): an invalid reloadable setting refuses api
+    # startup entirely rather than degrading silently, exactly like AgentSettings/ControlSettings
+    # already do for every other setting. Doing this before telemetry/migrations means that
+    # failure is reported through the just-configured logging pipeline.
+    #
+    # phaze-mvq8z.6 deliberately does NOT install the DB-override provider here: the override
+    # table only exists once `run_migrations()` below has run, and this reload happens BEFORE
+    # that -- before the database is even confirmed reachable (the `SELECT 1` check further
+    # down). Reading the override table this early would fail on every fresh-DB first boot (the
+    # reader raises on a DB error, phaze-mvq8z.19), rejecting this reload for no benefit, since
+    # there is nothing yet to override. This first reload validates the env/file
+    # layers only; a SECOND reload once the DB-override layer is wired in (below) folds in
+    # anything an operator already set, so it takes effect immediately rather than waiting for
+    # this process's first NOTIFY/poll tick or a SIGHUP.
+    runtime_config_store = get_runtime_config_store()
+    # phaze-mvq8z.8: re-apply configure_logging (already idempotent) on every reload that
+    # changes log_level, in every process type. Registered BEFORE reload("startup") so that
+    # first reload's file/override-layer log_level (folded in below, after the settings-only
+    # value the bare configure_logging() call above used) is what actually takes effect.
+    runtime_config_store.register_applier("log_level", log_level_applier(json_logs=settings.log_json))
+    await runtime_config_store.reload("startup")
+    install_sighup_handler(asyncio.get_running_loop(), runtime_config_store)
+    _app.state.runtime_config_watcher = build_watcher(runtime_config_store)
+    _app.state.runtime_config_watcher.start()
 
     # Telemetry is opt-in and failure-isolated; configure it before migrations for startup traces.
     configure_telemetry("api")
@@ -91,8 +133,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
 
+    # phaze-mvq8z.8: the backends.toml registry hook + its own directory watch, now that the
+    # database (cloud_job, for the in-flight-removal veto) is confirmed reachable. Registered
+    # AFTER the SELECT 1 check above, unlike log_level, because a SIGHUP racing startup must
+    # never query cloud_job before migrations have run.
+    build_backends_registry_reloader(runtime_config_store, cast("ControlSettings", settings), async_session)
+    _app.state.runtime_config_backends_watcher = build_backends_watcher(runtime_config_store)
+    _app.state.runtime_config_backends_watcher.start()
+
     async with async_session() as bootstrap_session:
         await ensure_dev_agent(bootstrap_session)
+
+    # phaze-mvq8z.6: wire the DB-override layer into the process-wide runtime-config store (the
+    # migration above has now run, so the table exists), then start this process's LISTEN
+    # connection + fallback poll so an admin-API/UI write (this process's own or another's)
+    # reaches the store without a restart (ADR-0019 (runtime config hot-reload) §3/§14). The
+    # provider is installed BEFORE this reload, and this is a SECOND "startup" reload -- see the
+    # comment above the first one for why it is not simply merged into it.
+    install_runtime_config_overrides(runtime_config_store, async_session)
+    _app.state.runtime_config_listener = await start_runtime_config_listener(store=runtime_config_store, database_url=settings.database_url)
+    await runtime_config_store.reload("startup")
 
     # The named controller queue has a real worker. Factory hooks apply project defaults,
     # deterministic keys, and durable ledger writes to both manual and recovery paths.
@@ -131,6 +191,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     yield
     # Shutdown in reverse construction order.
+    # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
+    # through goes away.
+    await _app.state.runtime_config_listener.stop()
     # Stop the refresher before disposing its engine.
     _app.state.orphan_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -143,7 +206,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     if controller_cache_redis is not None:
         await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
+    # Reverse of construction: the backends.toml watcher was built right after the DB
+    # reachability check, so it stops before the engine it depends on is disposed.
+    await _app.state.runtime_config_backends_watcher.stop()
     await engine.dispose()
+    # Reverse of construction: the runtime-config watcher/SIGHUP trigger was built right after
+    # logging, before everything else -- stop it last among the app's own resources (it may be
+    # mid-debounce-sleep; stop() bounds the observer-thread join to 10s).
+    await _app.state.runtime_config_watcher.stop()
     # LAST, after every resource that could still emit. Bounded by
     # PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS (default 3,000 ms) and never raises, so a collector
     # that is down cannot hold a container restart open.
@@ -187,6 +257,10 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_execution.router,
     agent_heartbeat.router,
     agent_identity.router,
+    # phaze-mvq8z.9: agent-authenticated GET for the DB-override layer (RELOADABLE_KEYS only) --
+    # the remote-agent half of ADR-0019 (runtime config hot-reload) §14's propagation story. Polled by
+    # tasks/heartbeat.py on the heartbeat cadence.
+    agent_config.router,
     agent_analysis.router,
     agent_push.router,
     agent_s3.router,
@@ -215,6 +289,10 @@ _ROUTERS: tuple[APIRouter, ...] = (
     # router is read-only and does NOT use get_authenticated_agent (consistent
     # with other admin-UI routers on the private LAN).
     admin_agents.router,
+    # phaze-mvq8z.6: DB-override admin API for hot-reloadable config (GET/POST/DELETE
+    # /admin/runtime-config/*). Also reachable at /s/runtime-config (shell.router above,
+    # UTILITY_PANES["runtime-config"]) -- both share build_runtime_config_pane_context.
+    admin_runtime_config.router,
 )
 
 

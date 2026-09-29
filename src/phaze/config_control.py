@@ -2,10 +2,10 @@
 
 from pathlib import Path
 import tomllib
-from typing import Annotated, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import NoDecode
 import structlog
 
@@ -21,7 +21,57 @@ from phaze.config_registry_policies import (
 from phaze.config_secrets import _resolution_env
 
 
+if TYPE_CHECKING:
+    from pydantic_settings import SettingsConfigDict
+
+
 logger = structlog.get_logger("phaze.config")
+
+# The TOML-only registry's config-file location. Shared by the two entry points that must
+# agree on it byte-for-byte: ControlSettings construction (below) and the runtime-config
+# hot-reload path (phaze.runtime_config_backends, phaze-mvq8z.8), which re-validates the SAME
+# file on a trigger without reconstructing the rest of ControlSettings.
+_DEFAULT_BACKENDS_CONFIG_PATH = "/etc/phaze/backends.toml"
+
+_BACKENDS_ADAPTER: TypeAdapter[list[BackendConfig]] = TypeAdapter(list[BackendConfig])
+_BUCKETS_ADAPTER: TypeAdapter[list[BucketConfig]] = TypeAdapter(list[BucketConfig])
+
+
+def backends_config_path(model_config: "SettingsConfigDict") -> Path:
+    """Resolve ``PHAZE_BACKENDS_CONFIG_FILE`` exactly as :meth:`ControlSettings._load_backend_registry` does."""
+    return Path(_resolution_env(model_config).get("PHAZE_BACKENDS_CONFIG_FILE", _DEFAULT_BACKENDS_CONFIG_PATH))
+
+
+def load_backend_registry(model_config: "SettingsConfigDict") -> tuple[list[BackendConfig], list[BucketConfig]]:
+    """Parse + fully validate ``backends.toml``, independent of the rest of ``ControlSettings``.
+
+    Runs the IDENTICAL steps ``ControlSettings`` runs at construction --
+    :meth:`ControlSettings._load_backend_registry`'s file load (including the absent-file
+    implicit-local default) and :meth:`ControlSettings._validate_registry`'s cross-entry
+    invariants, in the same order -- but standalone, so the runtime-config hot-reload path
+    (``phaze-mvq8z.8``) can re-run just the registry validation on a trigger without
+    reconstructing every other ``ControlSettings`` field. Each ``BackendConfig``/``BucketConfig``
+    variant's own model validators fire during ``TypeAdapter`` validation exactly as they do
+    during normal field assignment -- including eager ``*_file`` secret resolution
+    (``config_backends.py``'s ``_resolve_inline_secret_files``) -- so an unreadable secret path
+    fails this call the same way it fails process startup.
+    """
+    path = backends_config_path(model_config)
+    if not path.exists():
+        backends = _default_local_registry()
+        buckets: list[BucketConfig] = []
+    else:
+        with path.open("rb") as handle:
+            parsed = tomllib.load(handle)
+        # A present file is authoritative, including an empty backends list -- validated below.
+        backends = _BACKENDS_ADAPTER.validate_python(parsed.get("backends", []))
+        buckets = _BUCKETS_ADAPTER.validate_python(parsed.get("buckets", []))
+    validate_non_empty_registry(backends)
+    validate_unique_registry_ids(backends, buckets)
+    validate_unique_compute_agent_refs(backends)
+    cluster_specific_refs = validate_backend_bucket_lists(backends, buckets)
+    validate_cluster_specific_sharing(cluster_specific_refs)
+    return backends, buckets
 
 
 class ControlSettings(BaseSettings):
@@ -45,9 +95,7 @@ class ControlSettings(BaseSettings):
         """Load the TOML-only registries, preserving the absent-file local default."""
         if not isinstance(data, dict):
             return data
-        # Resolve through the shared environment map so process env keeps precedence over ``.env``.
-        path = _resolution_env(cls.model_config).get("PHAZE_BACKENDS_CONFIG_FILE", "/etc/phaze/backends.toml")
-        toml_path = Path(path)
+        toml_path = backends_config_path(cls.model_config)
         if not toml_path.exists():
             return data
         with toml_path.open("rb") as handle:

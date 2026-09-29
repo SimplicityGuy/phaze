@@ -1333,8 +1333,33 @@ cluster:
       candidate spills to the next-rank Kueue lane, then staleness-gated to local after
       `cloud_spill_to_local_after_seconds` when every cloud lane is online-but-full.
 - [ ] **All-local reverts cleanly.** Remove the non-local `[[backends]]` entries (or set the
-      Phase 71 force-local override) + restart; `cloud_enabled` is False, a new long file routes
-      **local**, and no kube Job is submitted.
+      Phase 71 force-local override), then either a restart or a hot reload (see below);
+      `cloud_enabled` is False, a new long file routes **local**, and no kube Job is submitted.
+
+## Hot-reload and burst Jobs
+
+Since `phaze-mvq8z` (2026-09) the **control plane's** `backends.toml` — including the
+`[[backends]] kind="kueue"` entries and `[[buckets]]` this page's registry example declares — is
+hot-reloadable without a control-plane restart: an edit via the watched config directory, a
+`docker compose kill -s HUP worker api`, or the admin API/UI all re-validate and swap the
+registry live, subject to the same in-flight-removal safety rule as any other reload (a reload
+that would remove a backend still referenced by an in-flight `cloud_job` row is rejected
+outright). See [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)
+and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload)
+for the full mechanism, mount requirements, and trigger reference.
+
+**A Kueue burst pod itself is explicitly out of scope for this mechanism, and deliberately so
+(ADR-0019 (runtime config hot-reload) §14).** Each burst pod is a one-shot `batch/v1` Job that
+runs a single file's analysis and exits — there is no long-lived process inside it for "live
+reload" to mean anything. A pod already in flight when the control plane's registry or the
+cluster's `ConfigMap`/`Secret` objects change keeps running with whatever it was submitted with;
+it **picks up any change on its next Job**, exactly as it always has, the same way any other
+Kubernetes workload driven by a fresh Job per unit of work does. There is nothing here for the
+operator to configure or verify beyond what the rest of this runbook already covers — no watched
+directory, no SIGHUP handler, and no admin-API surface exists *inside* the pod, because none of
+this page's Kueue objects (the ResourceFlavor, ClusterQueue, LocalQueue, RBAC, agent-env
+ConfigMap, or Secrets) are themselves part of the reloadable-key set; they remain
+operator-applied, cluster-admin-owned objects exactly as documented above.
 
 ## See also
 
@@ -1348,3 +1373,7 @@ cluster:
   (remove the non-local backends, or the Phase 71 force-local override).
 - [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (a `kind="compute"`
   backend in the same registry).
+- [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)
+  and [deployment.md → Runtime config hot-reload](deployment.md#runtime-config-hot-reload)
+  — the hot-reload mechanism `backends.toml` now participates in (control plane only; burst pods
+  are out of scope, see above).

@@ -108,6 +108,13 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
     # per-bucket CI jobs. Clearing the cache per test makes settings resolution always reflect
     # the test's own env, never a leaked singleton.
     get_settings.cache_clear()
+    # phaze-mvq8z.5: `get_runtime_config_store()` is likewise `@lru_cache(maxsize=1)` (built
+    # from `get_settings()` on first call, now reached via `phaze.main`'s lifespan) -- the exact
+    # same leaked-singleton hazard the comment above documents for `get_settings` itself, so it
+    # gets the identical per-test clear.
+    from phaze.runtime_config import get_runtime_config_store
+
+    get_runtime_config_store.cache_clear()
     # Also clear non-infrastructure env vars that the project's docker .env
     # defines, so the OS env layer cannot leak into tests. We deliberately
     # leave DATABASE_URL and REDIS_URL alone — integration-test fixtures
@@ -130,6 +137,17 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
         "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
         "PHAZE_WATCHER_POLLING_MODE",
         "PHAZE_SCAN_CHUNK_SIZE",
+        "PHAZE_RUNTIME_CONFIG_DIR",
+        "PHAZE_RUNTIME_CONFIG_WATCH_POLLING",
+        "PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS",
+        "PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS",
+        # phaze-mvq8z.22: a thread env var is now a CEILING for the runtime-config store's thread
+        # keys, not merely a layer an override beats. Importing `phaze.services.analysis` stamps the
+        # derived values into this process's os.environ (apply_thread_env), which no api or agent
+        # worker parent process does -- so, left alone, whichever test imported it first would cap
+        # every later test's thread overrides at this machine's derived value.
+        "TF_NUM_INTRAOP_THREADS",
+        "OMP_NUM_THREADS",
     ):
         monkeypatch.delenv(var, raising=False)
 

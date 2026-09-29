@@ -154,6 +154,160 @@ These size the SQLAlchemy engine pool shared by the api and control-worker engin
 | `PHAZE_DISPATCH_QUEUE_MIN_SIZE` (or `dispatch_queue_min_size`) | No | `0` | psycopg3 `min_size` for each control-side per-(agent,lane) dispatch queue. `0` keeps zero idle server connections pinned. |
 | `PHAZE_DISPATCH_QUEUE_MAX_SIZE` (or `dispatch_queue_max_size`) | No | `2` | psycopg3 `max_size` for each control-side per-(agent,lane) dispatch queue, capping the enqueue burst. |
 
+## Runtime config hot-reload
+
+Since `phaze-mvq8z` (2026-09), a **subset** of settings can be changed on a running `api` /
+control-worker / agent-worker process — no restart, no dropped in-flight jobs. Everything else
+keeps today's static, read-once-at-start path (the tables throughout this document). Design
+rationale, layering, trigger decisions and the SAQ-subclass mechanics:
+[`docs/design/0019-runtime-config-hot-reload.md`](design/0019-runtime-config-hot-reload.md)
+(ADR-0019 (runtime config hot-reload)). This section is the operator how-to plus the key list.
+
+### How to change a reloadable key
+
+Three triggers, all converging on the same validate → atomic swap → apply pipeline
+(`src/phaze/runtime_config.py`) — a trigger only decides *when* to rebuild, never what the
+rebuilt snapshot contains:
+
+1. **Admin UI/API** (writes the top, DB-override layer) — the "Runtime config" pane in the admin
+   shell (`/s/runtime-config`), backed by `POST`/`DELETE /admin/runtime-config/<key>`. Carries
+   **no authentication of its own** — it sits behind the same private-LAN trust boundary as every
+   other operator admin surface in this repo (ADR-0019 (runtime config hot-reload) §10); every attempt, accepted or rejected,
+   is audit-logged as the compensating control. An invalid value is rejected (400, with the
+   validation error) with **nothing stored** — it is previewed through the same validation path a
+   real reload uses before the DB write happens, never written-then-rolled-back.
+2. **Watched `runtime.toml`** — edit the file inside the **directory** named by
+   `PHAZE_RUNTIME_CONFIG_DIR` (default `/etc/phaze/runtime`); a flat top-level `key = value` TOML
+   file, e.g. `worker_max_jobs = 12`. See
+   [deployment.md → Mounting `runtime.toml` and `backends.toml`](deployment.md#mounting-runtimetoml-and-backendstoml)
+   for the mount requirement — **mount the directory, never the file itself**.
+3. **SIGHUP** — `docker compose kill -s HUP <service>` (api, control worker, or an agent lane
+   worker) re-reads the `file` and `override` layers on that one process. It is a plain reload
+   trigger; it never stops the process, and does not disturb SAQ's own `SIGINT`/`SIGTERM`
+   handling.
+
+A reload builds a fresh, immutable snapshot **off** the event loop (file IO, TOML parse, pydantic
+validation, the core-oversubscription check), and only then **atomically swaps** the reference
+every reader sees — one attribute assignment, so a reader never sees a partially-applied config.
+A candidate that fails validation, or that a registered validator vetoes (e.g. `phaze-mvq8z.8`'s
+"a `backends.toml` removal cannot drop a backend with in-flight `cloud_job` rows"), **rejects the
+whole reload** and keeps the last-good snapshot in force — reported as a structured error, never
+a crash and never a partial apply. Every reload attempt, successful or not, logs one structured
+line (`phaze.runtime_config reload`) with the trigger source, every changed key's old/new value,
+and the outcome, and emits `phaze_config_reloads_total` / `phaze_config_last_reload_successful` /
+`phaze_config_last_reload_success_timestamp_seconds` (see
+[`docs/telemetry/metric-catalogue.md`](telemetry/metric-catalogue.md), the authoritative source
+for these names).
+
+### Layer precedence (highest wins)
+
+For a reloadable key only:
+
+1. **override** — the DB override table, set via the admin API/UI
+2. **file** — the watched `runtime.toml`
+3. **env** — `*_FILE` / `.env`, resolved once when the process starts (this layer is fixed for
+   the life of the process — a container's environment does not change under it)
+4. **default** — the code defaults (`derive_sizing()` for the two thread-count keys; the plain
+   pydantic-settings default for everything else)
+
+A **restart-only** key never participates in this ladder: an attempt to set one through the
+`file` or `override` layer **rejects the whole reload**, reporting "requires restart" and the
+key's *name only* (several restart-only keys carry credentials, so only the name is ever logged
+or returned). That includes the admin API's own rejection line: a POST to a restart-only or unknown
+key logs the key, never the submitted value (`phaze-mvq8z.22`).
+
+**The override table is shared, so its readers filter it** (`phaze-mvq8z.22`). A row whose key a
+later build renamed or made restart-only (a *stale* row), or a key only a newer control plane knows,
+is **ignored and reported by name** by both readers — the api/control-worker override provider
+and each agent's config poll — and every other override still applies. The admin pane lists stale
+rows under "Stale overrides (ignored)" with a Remove control; `DELETE /admin/runtime-config/<key>`
+removes one even though the key is not reloadable. The local `runtime.toml` is **not** filtered:
+an unknown key there is this host's own typo and still rejects the reload.
+
+**A thread env var is a ceiling** (`phaze-mvq8z.22`, an implementer decision). When an agent's
+process environment sets `TF_NUM_INTRAOP_THREADS` or `OMP_NUM_THREADS`, the `file` and `override`
+layers may **lower** that key on that agent but never raise it: a higher value is capped at the env
+value, logged, and reported with source `env` in the agent's effective config. The override table is
+fleet-wide, and the arm64 agent image's `OMP_NUM_THREADS=1` is a correctness pin
+([`arm64-agent-image.md`](arm64-agent-image.md) fix #4), so an `analysis_omp_threads` raise meant for
+x86 agents never reaches an arm64 agent's analysis children. To make a thread key fully live-tunable
+on a host, leave its env var unset there.
+
+### Reloadable keys
+
+| Key | Env var (unchanged meaning) | Applies |
+|-----|------------------------------|---------|
+| `log_level` | `PHAZE_LOG_LEVEL` | Immediately — `configure_logging` is re-applied (already idempotent). Accepted values: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL`, fixed and identical across every process type (api, control worker, every agent lane worker) — see the note below the table. |
+| `worker_max_jobs` | `WORKER_MAX_JOBS` | Grow: immediately — the phaze SAQ `Worker` subclass (ADR-0019 (runtime config hot-reload) §8) spawns the extra job loops right away. Shrink: by attrition — a loop parked idle in dequeue is trimmed at once, but a loop mid-job finishes that job first; never a forced kill. |
+| `lane_analyze_concurrency` | `PHAZE_LANE_ANALYZE_CONCURRENCY` | Same grow/shrink shape as `worker_max_jobs`, on the analyze-lane agent worker only (effective concurrency is `min(lane knob, worker_max_jobs)`). |
+| `lane_meta_concurrency` | `PHAZE_LANE_META_CONCURRENCY` | Same, on the meta-lane agent worker. |
+| `lane_io_concurrency` | `PHAZE_LANE_IO_CONCURRENCY` | Same, on the io-lane agent worker. |
+| `worker_process_pool_size` | `WORKER_PROCESS_POOL_SIZE` | Grow: wakes any analysis call already waiting on the semaphore immediately. Shrink: lowers the ceiling and drains by attrition — an in-flight essentia `analysis_child` subprocess is never cancelled. Also resizes the per-agent telemetry worker-slot pool to match (see [`docs/design/0017-telemetry-export-topology.md`](design/0017-telemetry-export-topology.md) §8), so the two can never drift apart. |
+| `analysis_intra_op_threads` | `TF_NUM_INTRAOP_THREADS` — an env override read directly, not a settings field; defaults from `derive_sizing()` | New analysis children only. Stamped into a child's environment at spawn time; a child already running keeps whatever thread counts it was `exec`'d with, unaffected. |
+| `analysis_omp_threads` | `OMP_NUM_THREADS`, same shape as above | New analysis children only, same as above. For both thread keys, a value set in the agent's env is a ceiling the reloadable layers cannot raise (above). |
+| `analysis_stall_timeout_sec` | `PHAZE_ANALYSIS_STALL_TIMEOUT_SEC` | The **next** job's liveness window. A job already in flight keeps the stall timeout it started with. |
+| `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` | The next routing decision — read fresh from the live snapshot per file, never cached. |
+
+**`log_level`'s accepted set is fixed, not "whatever this process's logging registry happens to
+know about".** `RuntimeConfig`'s validator originally resolved a candidate level name through
+`logging.getLevelNamesMapping()`, which is process-dependent: uvicorn registers an extra `TRACE`
+level (5) in the api/control process only, so `log_level=TRACE` validated in the api and was then
+rejected as unknown by every agent process reloading the identical override — found by the
+end-to-end retune demo (`phaze-mvq8z.11`) and fixed by `phaze-mvq8z.16`, which pins the validator
+to the explicit five-value set in the table above, independent of which levels a given process
+happens to have registered. `configure_logging`'s own unknown-level fallback (INFO, logged) is
+unchanged for the separate env-at-start path.
+
+Everything else — every other field on `ControlSettings`/`AgentSettings`, documented in its own
+section throughout the rest of this page (DB/queue/Redis connection URLs, auth tokens and
+credentials, `PHAZE_AGENT_ID`/`PHAZE_AGENT_LANE`, TLS/CA material, `SCAN_PATH`/scan roots, and so
+on) — is **restart-only**: today's static, read-once-at-boot path, unchanged by this feature. An
+attempt to set one of these through `runtime.toml` or the admin API is rejected outright, naming
+the key.
+
+`RELOADABLE_KEYS` in [`src/phaze/runtime_config.py`](../src/phaze/runtime_config.py) is the
+code's authoritative set for the table above;
+[`test_configuration_reloadable_keys_table_matches_the_code_exactly`](../tests/shared/core/test_docs_ia_current.py)
+parses this table out of this file and fails the build the moment the two disagree in either
+direction — a key added to the code without a doc row, or a doc row for a key the code no longer
+reloads.
+
+### `backends.toml` reloads too, with its own removal rule
+
+The [Backend registry](#backend-registry-backendstoml) (`backends.toml`) is reloadable through
+its **own** watched directory (the directory `PHAZE_BACKENDS_CONFIG_FILE` lives in — independent
+of `runtime_config_dir`; the two default to two entirely separate directories) and the same
+SIGHUP/admin-reload pipeline, but it is not one of the `runtime.toml` keys above: it is validated
+and swapped as a whole registry, and a reload that would **remove** a backend still referenced by
+an in-flight `cloud_job` row is **rejected outright** — the whole reload fails closed rather than
+partially dropping that one backend. This is an operator decision (2026-09-27, epic `phaze-mvq8z`;
+full citation in [ADR-0019 (runtime config hot-reload) §9](design/0019-runtime-config-hot-reload.md#9-backendstoml-reload-and-the-backend-removal-policy)):
+*"Reject while in-flight"*. The backend becomes removable once no `cloud_job` row references it
+any longer.
+
+### Effective config visibility
+
+- **Control plane** (api, control worker): the admin "Runtime config" pane renders the live
+  snapshot's resolved value **and** source layer (`override`/`file`/`env`/`default`) per key,
+  plus every restart-only key shown read-only as "requires restart" — `GET
+  /admin/runtime-config/_table`.
+- **Remote agents**: a control-plane process shares Postgres, so `api`/the control worker learn
+  of a DB-override reload via Postgres `NOTIFY` (with a fallback poll for a missed notify). A
+  remote agent has no Postgres reachability of its own, so it instead polls the
+  agent-authenticated `GET /api/internal/agent/config` on the **same ~30s cadence as its own
+  liveness heartbeat** (ADR-0019 (runtime config hot-reload) §14, an accepted latency — *"~30s is fine"*) and reloads its
+  local store only when the returned digest changes. The resolved effective config (value, source
+  layer, restart-required keys, last reload result) rides an optional `effective_config` field on
+  the heartbeat request into `agents.last_status`, rendered in the per-agent activity panel on
+  `/admin/agents`.
+
+### Kubernetes burst pods are out of scope
+
+A Kueue burst pod runs one Job per file with no long-lived process inside it, so "live reload"
+does not mean anything there — it already picks up a `ConfigMap` change (and a `backends.toml`
+change) on its **next** Job, the same way it always has. See
+[k8s-burst.md](k8s-burst.md#hot-reload-and-burst-jobs) for the full statement.
+
 ## Backend registry (`backends.toml`)
 
 **As of 2026.7.1 (Phase 67, REG-01/04/05, D-11/D-12) the typed backend registry is the SOLE cloud config surface.** It replaces the flat `PHAZE_CLOUD_TARGET` selector and the flat `PHAZE_S3_*` / `PHAZE_KUBE_*` / compute-scratch env vars, which were **removed with no back-compat shim**. Instead of one global cloud target, you declare a *registry* of backends (and their staging buckets) in a TOML file.

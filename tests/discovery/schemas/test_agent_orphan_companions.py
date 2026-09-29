@@ -3,7 +3,7 @@
 from pydantic import ValidationError
 import pytest
 
-from phaze.config import settings
+from phaze.config import get_settings
 from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk
 
 
@@ -19,7 +19,7 @@ def test_chunk_and_nested_records_forbid_extra_fields() -> None:
 
 
 def test_chunk_is_bounded_by_existing_agent_file_ceiling() -> None:
-    diagnostics = [_record(path=f"/archive/orphans/{index}.nfo") for index in range(settings.agent_file_chunk_max + 1)]
+    diagnostics = [_record(path=f"/archive/orphans/{index}.nfo") for index in range(get_settings().agent_file_chunk_max + 1)]
     with pytest.raises(ValidationError, match="too_long"):
         OrphanCompanionChunk(diagnostics=diagnostics)
 

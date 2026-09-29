@@ -15,6 +15,15 @@ from phaze.services.analysis_sizing import derive_sizing
 _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2
 
 
+def derive_analysis_job_heartbeat_sec(stall_timeout_sec: int) -> int:
+    """The SAQ ``process_file`` heartbeat deadline for a given inner stall threshold.
+
+    The ONE derivation, shared by the start-time settings and the live runtime-config snapshot
+    (phaze-mvq8z.21), so a live stall-timeout change moves the outer deadline with it.
+    """
+    return stall_timeout_sec * _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER
+
+
 class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     """Fields shared by both roles.
 
@@ -135,7 +144,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         throttled touches. A derived ``2x`` deadline gives the inner layer one full stall window
         to diagnose and report before the broker aborts work.
         """
-        return self.analysis_stall_timeout_sec * _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER
+        return derive_analysis_job_heartbeat_sec(self.analysis_stall_timeout_sec)
 
     # Session-mode PgBouncer pins upstream connections, so both control engines and the per-lane
     # dispatch queues share conservative pool defaults. See docs/configuration.md.
@@ -293,6 +302,60 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         default=None,
         validation_alias=AliasChoices("PHAZE_LOG_JSON", "log_json"),
         description="True=JSON, False=console, None=auto (JSON when stdout is not a TTY).",
+    )
+
+    # The hot-reload file layer (phaze.runtime_config) reads runtime.toml from this DIRECTORY.
+    # Mount the directory, never the file: a single-file bind mount pins the inode, so an
+    # atomic-rename edit never reaches the container, and a k8s subPath ConfigMap never updates
+    # (docs/design/0019-runtime-config-hot-reload.md §12). The path itself is restart-only.
+    runtime_config_dir: str = Field(
+        default="/etc/phaze/runtime",
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_DIR", "runtime_config_dir"),
+        description="Directory holding runtime.toml, the watched hot-reload layer for reloadable keys (ADR-0019 (runtime config hot-reload)).",
+    )
+    # phaze-mvq8z.5 (the trigger bead) measured, inside a real container, that the native
+    # watchdog Observer sees ZERO host-side edits through a Colima/virtiofs bind mount -- for
+    # EITHER edit pattern (in-place rewrite or the atomic-rename safe-write convention) -- and
+    # produces no error of any kind when it happens: the process boots clean, the watch appears
+    # to be running, and a config edit simply never reloads. PollingObserver catches both edit
+    # patterns within about one poll interval. Docker Desktop and the Linux home server (the
+    # production target) are UNVERIFIED for native -- Linux-native-host-mount inotify is a much
+    # more standard claim than the macOS VM-boundary case, but per CLAUDE.md's transferred-model
+    # rule an untested claim is not knowledge. Dispatcher decision (phaze-mvq8z dispatch,
+    # reviewing this bead before submit): default to POLLING, not native -- a silently-inert
+    # trigger is a strictly worse failure than the modest, bounded cost of polling one small
+    # directory every second, and an operator who has verified native inotify on their own
+    # deployment can opt back out. Mirrors AgentSettings.watcher_polling_mode's existing knob for
+    # the unrelated media-file watcher, which cannot be reused here: this directory is watched by
+    # three DIFFERENT roles (api, control worker, agent worker), not just the agent-only watcher.
+    runtime_config_watch_polling: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "runtime_config_watch_polling"),
+        description=(
+            "Use watchdog's PollingObserver instead of the native inotify/FSEvents backend to watch "
+            "runtime_config_dir. Defaults to true: phaze-mvq8z.3 measured the native backend "
+            "silently seeing ZERO host edits through a Colima/virtiofs bind mount (no error, just "
+            "no reload), and Docker Desktop / a native Linux host mount are unverified either way -- "
+            "a silent miss is worse than polling's modest, bounded cost. Set false only once native "
+            "delivery is verified for the target deployment."
+        ),
+    )
+    runtime_config_watch_poll_interval_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS", "runtime_config_watch_poll_interval_seconds"),
+        description="PollingObserver's poll interval when runtime_config_watch_polling is set; directly bounds detection latency (measured ~1s).",
+    )
+    runtime_config_watch_debounce_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_DEBOUNCE_SECONDS", "runtime_config_watch_debounce_seconds"),
+        description=(
+            "Quiet period after the last filesystem event on runtime.toml before its content is "
+            "re-hashed and, if changed, reload('file') runs. Coalesces the delete+create pair a "
+            "rename-into-place edit produces (both the native and the polling backend report a "
+            "rename this way, never a single moved event -- phaze-mvq8z.3) into one reload."
+        ),
     )
 
 

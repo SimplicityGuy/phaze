@@ -23,6 +23,8 @@ from sqlalchemy import update
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.agent_heartbeat import router as agent_heartbeat_router
+from phaze.runtime_config import RuntimeConfig
+from phaze.schemas.agent_heartbeat import EffectiveConfig
 from phaze.services.agent_liveness import classify
 
 
@@ -135,3 +137,41 @@ async def test_unlaned_beat_is_still_accepted_and_stored_verbatim(
     # Byte-identical to the pre-phaze-30fo shape -- no stray `lane: null` key.
     assert agent.last_status == {"agent_version": "4.0.0", "worker_pid": 1234, "queue_depth": 5}
     assert agent.last_seen_at is not None
+
+
+@pytest.mark.asyncio
+async def test_laned_beat_with_effective_config_persists_it_per_lane(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-mvq8z.9: a laned beat carrying `effective_config` stores it inside that lane's own
+    entry (the SAME per-lane-body treatment every other new HeartbeatRequest field already gets --
+    `_LANE_MERGE_SQL` merges the whole `lane_status` object, not a hand-picked subset of keys).
+    """
+    agent, token = seed_test_agent
+    values = RuntimeConfig(
+        log_level="INFO",
+        worker_max_jobs=4,
+        lane_analyze_concurrency=2,
+        lane_meta_concurrency=2,
+        lane_io_concurrency=2,
+        worker_process_pool_size=2,
+        analysis_intra_op_threads=1,
+        analysis_omp_threads=1,
+        analysis_stall_timeout_sec=1800,
+        cloud_route_threshold_sec=3600,
+    )
+    effective_config = EffectiveConfig(
+        values=values.model_dump(mode="json"), sources=dict.fromkeys(RuntimeConfig.model_fields, "default"), restart_only_keys=[]
+    )
+    payload = _beat("analyze", 42)
+    payload["effective_config"] = effective_config.model_dump(mode="json")
+
+    assert await _post(session, token, payload) == 204
+
+    await session.refresh(agent)
+    assert agent.last_status is not None
+    lane_entry = agent.last_status["lanes"]["analyze"]
+    assert lane_entry["effective_config"]["values"]["worker_max_jobs"] == 4
+    # The unlaned old-shape guarantee has a laned counterpart: a beat with NO effective_config
+    # stores no stray key in ITS lane entry either.
+    assert await _post(session, token, _beat("io", 1)) == 204
+    await session.refresh(agent)
+    assert "effective_config" not in agent.last_status["lanes"]["io"]

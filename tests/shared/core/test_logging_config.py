@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 import structlog
 
-from phaze.logging_config import configure_logging
+from phaze.logging_config import KNOWN_LOG_LEVELS, configure_logging
 
 
 if TYPE_CHECKING:
@@ -170,6 +170,18 @@ def test_reconfigure_changes_level_for_already_used_logger(capsys: pytest.Captur
     configure_logging(level="DEBUG", json_logs=True)
     log.debug("kept at debug")
     assert _last_json_line(capsys.readouterr().out)["event"] == "kept at debug"
+
+
+@pytest.mark.usefixtures("reset_logging")
+@pytest.mark.parametrize("level_name", KNOWN_LOG_LEVELS)
+def test_every_known_log_level_resolves_to_its_real_stdlib_level(level_name: str) -> None:
+    """phaze-mvq8z.16 acceptance 3: every value RuntimeConfig's fixed log_level set accepts
+    resolves to its REAL stdlib level here -- never the INFO fallback ``_resolve_level`` uses
+    for a name genuinely unknown to this process. These five are registered unconditionally by
+    the stdlib ``logging`` module at import, so this holds in every process type without relying
+    on anything (like uvicorn) having run first."""
+    configure_logging(level=level_name, json_logs=True)
+    assert logging.getLogger().level == getattr(logging, level_name)
 
 
 @pytest.mark.usefixtures("reset_logging")
