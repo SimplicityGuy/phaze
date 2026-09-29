@@ -14,11 +14,13 @@ from itertools import chain
 from pathlib import Path
 import re
 
+from phaze.runtime_config import RELOADABLE_KEYS
 from scripts.check_documentation_integrity import migration_heads
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _README = _REPO_ROOT / "README.md"
+_CONFIGURATION = _REPO_ROOT / "docs" / "configuration.md"
 _ARCHITECTURE = _REPO_ROOT / "docs" / "architecture.md"
 _DATABASE = _REPO_ROOT / "docs" / "database.md"
 _API = _REPO_ROOT / "docs" / "api.md"
@@ -42,6 +44,12 @@ _BOX_DRAWING = frozenset("┌┐└┘├┤┬┴┼│─")
 _MERMAID_BLOCK = re.compile(r"```mermaid\n(?P<body>.*?)\n```", re.DOTALL)
 _MERMAID_EDGE = re.compile(r"(?m)^(?!\s*%%)(?P<edge>\s*[^\n]*--[^\n]*)$")
 _EVIDENCED_MERMAID_EDGE = re.compile(r"(?m)^\s*%% evidence:\s*(?P<paths>[^\n]+)\n(?P<edge>\s*(?!%%)[^\n]*--[^\n]*)$")
+# phaze-mvq8z.12: the "### Reloadable keys" table in docs/configuration.md, up to the next
+# heading. A markdown table row whose first cell is a backtick-quoted key, e.g.
+# "| `log_level` | ... |".
+_RELOADABLE_KEYS_HEADING = "### Reloadable keys"
+_NEXT_HEADING = re.compile(r"^#{2,3} ", re.MULTILINE)
+_TABLE_KEY_ROW = re.compile(r"^\|\s*`([a-z0-9_]+)`\s*\|", re.MULTILINE)
 
 # Full-page, browser-visit URLs to the legacy tab pages the v7.0 shell superseded. Their
 # router wrappers are deleted in CUT-02 and the routes now 302-redirect into the shell, so
@@ -163,6 +171,37 @@ def test_project_structure_generated_inventory_matches_live_packages() -> None:
     for area in _PACKAGE_AREAS:
         count = sum(1 for _ in (package_root / area).rglob("*.py"))
         assert f"| `{area}/` | {count} |" in text, f"project inventory is stale for src/phaze/{area}: expected {count} Python files"
+
+
+def _reloadable_keys_section() -> str:
+    text = _read_text(_CONFIGURATION)
+    start = text.index(_RELOADABLE_KEYS_HEADING) + len(_RELOADABLE_KEYS_HEADING)
+    next_heading = _NEXT_HEADING.search(text, start)
+    end = next_heading.start() if next_heading is not None else len(text)
+    return text[start:end]
+
+
+def test_configuration_reloadable_keys_table_matches_the_code_exactly() -> None:
+    """docs/configuration.md's "Reloadable keys" table is exactly phaze.runtime_config.RELOADABLE_KEYS.
+
+    phaze-mvq8z.12's acceptance criteria required a test or generated table tying the doc's
+    reloadable-key list to the code's set so they cannot drift -- this parses the table's first
+    column out of the doc and diffs it against RELOADABLE_KEYS in both directions, so a key added
+    to the code with no doc row, or a doc row for a key the code no longer reloads, both fail.
+    """
+    assert _RELOADABLE_KEYS_HEADING in _read_text(_CONFIGURATION)
+    documented = set(_TABLE_KEY_ROW.findall(_reloadable_keys_section()))
+    assert documented, "no `key` rows found under '### Reloadable keys' in docs/configuration.md -- table format changed?"
+    missing_from_docs = RELOADABLE_KEYS - documented
+    stale_in_docs = documented - RELOADABLE_KEYS
+    assert not missing_from_docs, (
+        f"RELOADABLE_KEYS has keys with no row in docs/configuration.md's 'Reloadable keys' table: "
+        f"{sorted(missing_from_docs)} -- document how each applies (immediately / next job / new children / drain by attrition)."
+    )
+    assert not stale_in_docs, (
+        f"docs/configuration.md documents keys as reloadable that RELOADABLE_KEYS no longer contains: "
+        f"{sorted(stale_in_docs)} -- update or remove the stale row(s)."
+    )
 
 
 def test_documented_mermaid_claims_have_resolvable_live_evidence() -> None:

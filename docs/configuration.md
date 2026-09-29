@@ -239,7 +239,7 @@ the key.
 
 `RELOADABLE_KEYS` in [`src/phaze/runtime_config.py`](../src/phaze/runtime_config.py) is the
 code's authoritative set for the table above;
-[`tests/shared/core/test_runtime_config_docs_sync.py`](../tests/shared/core/test_runtime_config_docs_sync.py)
+[`test_configuration_reloadable_keys_table_matches_the_code_exactly`](../tests/shared/core/test_docs_ia_current.py)
 parses this table out of this file and fails the build the moment the two disagree in either
 direction — a key added to the code without a doc row, or a doc row for a key the code no longer
 reloads.
