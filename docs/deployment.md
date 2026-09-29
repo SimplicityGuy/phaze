@@ -192,19 +192,141 @@ where they differ:
 
 Because on/off is derived from the registry, disabling cloud offload means **removing the non-`local`
 entries from `backends.toml`** (or unmounting the file entirely, which resolves the implicit
-local-only registry), then restarting the control services:
+local-only registry).
 
-```bash
-docker compose up -d --force-recreate worker api
-```
+**Since `phaze-mvq8z` (2026-09), `backends.toml` is hot-reloadable** — see
+[Runtime config hot-reload](#runtime-config-hot-reload-adr-0019) below. A restart is no longer
+required: an edit that lands via the watched directory, or a `docker compose kill -s HUP worker
+api`, re-validates and swaps the registry live. A **restart still works** too
+(`docker compose up -d --force-recreate worker api`) and is the only option pre-`phaze-mvq8z`
+images. Either way, the change is subject to the same removal-safety rule as any other hot
+reload: a `backends.toml` edit that would remove a backend still referenced by an in-flight
+`cloud_job` row is **rejected outright** — the reload fails closed with the blocked backend(s)
+named, and the previous registry stays in force until no `cloud_job` row references that backend
+any more.
 
-The registry is read from the import-time settings singleton, so the change takes effect only after a
-restart — like every other knob. After the restart, **every** file routes to the local file-server
+Once the registry swaps (live or via restart), **every** file routes to the local file-server
 queues exactly as it did before any cloud backend existed; in-flight work drains rather than aborting
 (files already dispatched finish on their current backend). You do **not** need to tear down the kube
 API, LocalQueues, S3 buckets, mounted Secrets, or the OCI A1 host to disable — they can all be left in
 place, inert. Re-enabling later is just re-adding the `[[backends]]`/`[[buckets]]` entries plus a
-restart, with no re-provisioning.
+reload (or a restart), with no re-provisioning.
+
+## Runtime config hot-reload (ADR-0019)
+
+Since `phaze-mvq8z` (2026-09) a subset of settings — worker/lane concurrency, the analysis
+process-pool size, analysis thread counts for new children, the analysis stall timeout, the
+cloud route threshold, log level, and `backends.toml` — can be changed on a **running**
+deployment without a restart and without dropping in-flight jobs. Design rationale and the full
+reloadable-key list with what each key's live update actually does:
+[docs/configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload-adr-0019)
+(ADR-0019 (runtime config hot-reload), [docs/design/0019-runtime-config-hot-reload.md](design/0019-runtime-config-hot-reload.md)). This
+section is the deployment-side mount/trigger reference.
+
+### Mounting `runtime.toml` and `backends.toml`
+
+**Mount the DIRECTORY, never a single file — for both `runtime.toml` and `backends.toml`.**
+
+- `runtime.toml` lives in the directory named by `PHAZE_RUNTIME_CONFIG_DIR` (default
+  `/etc/phaze/runtime`), read by `api`, the control worker, **and** every agent lane worker (all
+  three roles hold a `RuntimeConfigStore`).
+- `backends.toml` lives in the directory containing the path named by
+  `PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`), watched **only** on the
+  control-plane processes (`api`, the control worker) — an agent process holds no backend
+  registry.
+- The two default to **different directories entirely**; mount them as two separate volumes
+  unless your deployment has deliberately colocated them.
+
+**Why a single-file bind mount or a k8s `subPath` mount does not work here.** A single-file
+Docker bind mount pins the container's view to the **inode** that existed at mount time. The
+conventional *safe* way to update a config file — write to a temp file, then atomically `mv` it
+into place — replaces that inode at the host path, so the container keeps looking at the OLD
+(now-unlinked) inode and never observes the edit. It is not merely stale: `phaze-mvq8z.3`
+measured a single-file-mounted path go from "reads fine" to `cat: ...: No such file or
+directory` after exactly this rename, because the bind-mount reference broke outright. A
+Kubernetes `subPath` ConfigMap mount has the equivalent failure shape for a different reason:
+`subPath` is specifically the case kubelet's ConfigMap-refresh mechanism does not cover, so a
+`subPath`-mounted file never updates after the pod starts, however the ConfigMap itself changes.
+Mounting the **directory** the file lives in (and letting phaze watch inside it) sidesteps both
+failure shapes.
+
+```yaml
+# docker-compose.yml (app server) -- directory mount, not a single-file mount
+services:
+  api:
+    volumes:
+      - ./runtime-config:/etc/phaze/runtime:ro
+      - ./backends-config:/etc/phaze/backends:ro
+    environment:
+      PHAZE_RUNTIME_CONFIG_DIR: /etc/phaze/runtime
+      PHAZE_BACKENDS_CONFIG_FILE: /etc/phaze/backends/backends.toml
+```
+
+Editing `./runtime-config/runtime.toml` or `./backends-config/backends.toml` on the host with the
+conventional atomic-rename safe-write pattern (write a temp file, `mv -f` it into place) is what
+the directory mount is *for* — both the native watcher backend and the polling fallback observe a
+rename-into-place as a delete+create pair (never a single "moved" event) and coalesce it into one
+debounced reload.
+
+**Polling default, and why.** `phaze-mvq8z.3` measured, inside a real container on this
+project's macOS/Colima development setup, that the native `watchdog` backend sees **zero** host
+edits through a Colima/virtiofs directory bind mount — for either the atomic-rename or the
+in-place edit pattern — with no error of any kind: the process boots clean, the watch appears to
+be running, and a config edit simply never triggers a reload. `PollingObserver` catches both edit
+patterns reliably, at roughly its poll-interval latency. Docker Desktop and a native Linux host
+mount (the production target) were **not verified** either way in that measurement — a
+native-Linux-host-mount inotify is a much more standard claim than the macOS VM-boundary case,
+but an unverified claim is not knowledge. **The shipped default is therefore polling**
+(`PHAZE_RUNTIME_CONFIG_WATCH_POLLING=true`, `PHAZE_RUNTIME_CONFIG_WATCH_POLL_INTERVAL_SECONDS=1`)
+on all three roles — a silently-inert trigger is a strictly worse failure than the modest,
+bounded cost of polling one small directory once a second. If you have verified native inotify
+delivery on your specific deployment (a real Linux host with a native bind mount, not a VM-backed
+Docker runtime), you can set `PHAZE_RUNTIME_CONFIG_WATCH_POLLING=false` to use the native backend
+instead. This is unrelated to `AgentSettings.watcher_polling_mode` — that knob governs the
+separate, agent-only media-file watcher; the runtime-config watch is a different mechanism
+covering all three roles and has its own knob.
+
+### SIGHUP
+
+Every process that holds a `RuntimeConfigStore` (`api`, the control worker, and every agent lane
+worker) installs a phaze-owned `SIGHUP` handler. Sending it triggers exactly one reload on that
+process and does **not** stop it (today's un-handled default, which every image before this
+feature had, is the opposite — SIGHUP kills the process; installing a handler is the fix):
+
+```bash
+# Reload one service's runtime.toml + backends.toml + DB-override layers immediately,
+# without waiting for the watched-directory debounce or restarting anything:
+docker compose kill -s HUP api
+docker compose -f docker-compose.agent.yml kill -s HUP worker-analyze
+```
+
+`docker compose kill -s HUP <service>` delivers the signal to the container's PID 1. Every
+container here runs `uv run ...`, and `uv` **forks** rather than `exec`-replacing itself for a
+single-hop command (the worker and watcher services), or execs into a second `uv run` for the
+api's double-hop entrypoint chain — `phaze-mvq8z.3` verified, against the real `uv` image and
+both process shapes, that `SIGHUP` sent to the container reaches the innermost phaze process
+either way, so the plain `docker compose kill -s HUP` form above is sufficient; no extra
+`--signal`/exec-form plumbing is needed in any compose file here.
+
+### The admin panel
+
+The "Runtime config" pane in the admin shell (`/s/runtime-config`, also reachable standalone at
+`GET /admin/runtime-config/_table`) lists every reloadable key with its live effective value and
+source layer (`override`/`file`/`env`/`default`), plus every restart-only key shown read-only as
+"requires restart". Setting or clearing a key there writes the DB-override layer
+(`POST`/`DELETE /admin/runtime-config/<key>`) and triggers an immediate in-process reload — like
+every other operator admin surface in this repo (`route_control`, `/admin/agents`, …), it carries
+**no authentication of its own** and sits behind the same private-LAN reverse-proxy trust
+boundary; every set/clear attempt, accepted or rejected, is audit-logged as the compensating
+control (see [docs/configuration.md](configuration.md#runtime-config-hot-reload-adr-0019)). An
+invalid value is rejected with nothing written to the database.
+
+The DB-override table is created by Alembic migration `072_runtime_config_override` (chained
+after main's `069_cloud_job_last_failure`, current head `072` — see
+[database.md](database.md) for the full migration chain); its downgrade drops the table, which is
+why the whole `phaze-mvq8z` molecule was deliberately landed as a single `--no-ff` merge to
+`main` (operator decision, epic `phaze-mvq8z`) — a single `git revert -m 1` cleanly removes both
+the code and the migration together.
 
 ## Controller vs Agent roles
 

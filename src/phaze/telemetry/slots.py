@@ -32,8 +32,8 @@ establish, is ``docs/telemetry/concurrent-identity.md``.
 2,290 series, so a fresh identity per analyzed file is 2,290 x 11,428 = **26,170,120**
 series in a Prometheus phaze does not own. A slot index is instead REUSED by the next
 child, so the identity set is bounded by the CONCURRENCY rather than by the corpus:
-2,290 x 4 = 9,160 series for the analysis role, and the catalogue ceiling moves 8,587 ->
-15,457. **That figure does not grow with the archive**, which is the property that makes
+2,290 x 4 = 9,160 series for the analysis role, and the catalogue ceiling moves 8,609 ->
+15,479. **That figure does not grow with the archive**, which is the property that makes
 this affordable and the per-pod id unaffordable.
 
 **A slot is NOT a host, and the two labels stack deliberately.** ``PHAZE_TELEMETRY_INSTANCE``
