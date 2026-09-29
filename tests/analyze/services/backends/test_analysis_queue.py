@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import re
-import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 import uuid
 
 import pytest
@@ -62,49 +61,23 @@ async def _queue(session: AsyncSession) -> tuple[SimpleNamespace, str]:
     return app_state, resolved[1]
 
 
-_Clock = Literal["db", "host"]
+async def _running_blob(session: AsyncSession, *, started_ago_s: int = 60, touched_ago_s: int = 5, heartbeat: int = _HEARTBEAT) -> dict[str, int]:
+    """A running job's blob, aged from the DATABASE's clock (phaze-neo4z, phaze-jz0fm).
 
-
-async def _clock_now_ms(session: AsyncSession, clock: _Clock) -> int:
-    """The reference time this blob is aged against, matching whichever reader will consume it (phaze-neo4z).
-
-    Two DIFFERENT readers age a ``saq_jobs`` row, and they read two different clocks -- this is a
-    production asymmetry this test-only bead does not touch (CLAUDE.md: no production timing
-    semantics change):
-
-    * ``clock="db"`` (Postgres ``clock_timestamp()``) -- what ``_QUEUE_EXTRAS_SQL``
-      (``lane_detail.py`` ~514-519) and ``queue_introspection``'s ``stuck_past_timeout`` /
-      ``stranded`` FILTERs read via ``EXTRACT(EPOCH FROM NOW())``, consumed through
-      ``read_local_analyze_queue`` / ``summarize_active_jobs``.
-    * ``clock="host"`` (``time.time()``) -- what ``get_running_analyses`` / ``_local_running`` and
-      ``get_waiting_page`` read via their own ``datetime.now(UTC)`` (``lane_detail.py:708,738``),
-      in PYTHON, never in SQL.
-
-    Seeding the wrong one puts a second clock into the margin: measured 2026-09-28, a simulated
-    +/-120s host-clock skew turned the "15m ago" render red when a row consumed only by
-    ``get_running_analyses`` was seeded from the database clock instead of matching its own reader.
-    Each call site below picks the clock its OWN assertions actually depend on.
+    Every reader that ages a ``saq_jobs`` row -- ``_QUEUE_EXTRAS_SQL``'s claim-overdue /
+    heartbeat-lost SQL FILTERs (``lane_detail.py`` ~514-519), ``queue_introspection``'s
+    ``stuck_past_timeout`` / ``stranded``, and (since phaze-jz0fm) ``get_running_analyses`` /
+    ``get_waiting_page``'s own :func:`~phaze.services.backends.lane_detail._db_now` -- now reads
+    the same Postgres clock, so one seed satisfies all of them. ``touched_ago_s``'s default of 5 s
+    is the tightest margin in this module against the heartbeat-lost predicate.
     """
-    if clock == "db":
-        return await now_ms(session)
-    return int(time.time() * 1000)
-
-
-async def _running_blob(
-    session: AsyncSession, *, started_ago_s: int = 60, touched_ago_s: int = 5, heartbeat: int = _HEARTBEAT, clock: _Clock = "db"
-) -> dict[str, int]:
-    """A running job's blob, aged from whichever clock ``clock`` names -- see :func:`_clock_now_ms`.
-
-    ``touched_ago_s``'s default of 5 s is the tightest margin in this module against the
-    ``clock="db"`` heartbeat-lost/claimed-overdue SQL predicates.
-    """
-    now = await _clock_now_ms(session, clock)
+    now = await now_ms(session)
     return {"attempts": 1, "started": now - started_ago_s * 1000, "touched": now - touched_ago_s * 1000, "timeout": 0, "heartbeat": heartbeat}
 
 
-async def _claimed_blob(session: AsyncSession, *, claimed_ago_s: int = 1, clock: _Clock = "db") -> dict[str, int]:
-    """A claimed-but-unrun job's blob, aged from whichever clock ``clock`` names -- see :func:`_clock_now_ms`."""
-    now = await _clock_now_ms(session, clock)
+async def _claimed_blob(session: AsyncSession, *, claimed_ago_s: int = 1) -> dict[str, int]:
+    """A claimed-but-unrun job's blob, aged from the DATABASE's clock -- see :func:`_running_blob`."""
+    now = await now_ms(session)
     return {"started": now - claimed_ago_s * 1000, "touched": now - claimed_ago_s * 1000, "timeout": 0, "heartbeat": _HEARTBEAT}
 
 
@@ -176,16 +149,14 @@ async def test_running_list_shows_file_lane_start_windows_and_heartbeat(session:
         AnalysisResult(file_id=running_file.id, fine_windows_analyzed=12, fine_windows_total=40, coarse_windows_analyzed=3, coarse_windows_total=10)
     )
     session.add(CloudJob(file_id=cloud_file.id, s3_key="staging/x", status=CloudJobStatus.RUNNING.value, backend_id="k8s"))
-    # get_running_analyses ages this row via its OWN datetime.now(UTC) (lane_detail.py:708), never
-    # SQL NOW() -- clock="host" matches that reader (phaze-neo4z; see _clock_now_ms).
     await seed_job(
         session,
         queue,
         key=f"process_file:{running_file.id}",
         status="active",
-        blob=await _running_blob(session, started_ago_s=600, touched_ago_s=30, clock="host"),
+        blob=await _running_blob(session, started_ago_s=600, touched_ago_s=30),
     )
-    await seed_job(session, queue, key=f"process_file:{claimed_file.id}", status="active", blob=await _claimed_blob(session, clock="host"))
+    await seed_job(session, queue, key=f"process_file:{claimed_file.id}", status="active", blob=await _claimed_blob(session))
     await session.flush()
 
     lanes = [{"id": "local", "kind": "local"}, {"id": "k8s", "kind": "kueue"}]
@@ -197,8 +168,11 @@ async def test_running_list_shows_file_lane_start_windows_and_heartbeat(session:
     local = by_label["set-01.mp3"]
     assert (local.file_id, local.lane, local.lane_kind) == (running_file.id, "local", "local")
     assert (local.windows_done, local.windows_total, local.percent) == (15, 50, 30)
-    assert local.started_at is not None and 590 <= (datetime.now(UTC) - local.started_at).total_seconds() <= 620
-    assert local.heartbeat_at is not None and 20 <= (datetime.now(UTC) - local.heartbeat_at).total_seconds() <= 60
+    # get_running_analyses now ages this row on the DATABASE's clock (phaze-jz0fm); the assertion
+    # reads the same clock rather than the host's datetime.now(UTC), so it stays exact under skew.
+    db_now = datetime.fromtimestamp(await now_ms(session) / 1000, tz=UTC)
+    assert local.started_at is not None and 590 <= (db_now - local.started_at).total_seconds() <= 620
+    assert local.heartbeat_at is not None and 20 <= (db_now - local.heartbeat_at).total_seconds() <= 60
     assert local.heartbeat_lost is False
     cloud = by_label["set-03.mp3"]
     assert (cloud.lane, cloud.lane_kind, cloud.started_at, cloud.heartbeat_at, cloud.windows_total) == ("k8s", "kueue", None, None, None)
@@ -209,13 +183,12 @@ async def test_running_list_marks_a_lost_heartbeat(session: AsyncSession) -> Non
     """A started job silent past its OWN serialized heartbeat is SAQ's ``Job.stuck`` -- flagged per row."""
     app_state, queue = await _queue(session)
     silent = await _file(session, "set-04.mp3")
-    # get_running_analyses's heartbeat_lost is computed against its own host clock (lane_detail.py:708).
     await seed_job(
         session,
         queue,
         key=f"process_file:{silent.id}",
         status="active",
-        blob=await _running_blob(session, touched_ago_s=_HEARTBEAT + 120, clock="host"),
+        blob=await _running_blob(session, touched_ago_s=_HEARTBEAT + 120),
     )
 
     running = await get_running_analyses(session, app_state, [{"id": "local", "kind": "local"}])
@@ -242,13 +215,12 @@ async def test_waiting_page_lists_claimed_first_then_queued_and_pages(session: A
     files = [await _file(session, name) for name in names]
     await seed_job(session, queue, key=f"process_file:{files[0].id}", status="queued", scheduled=2)
     await seed_job(session, queue, key=f"process_file:{files[1].id}", status="queued", scheduled=1)
-    # get_waiting_page's own "overdue" flag is computed against its own host clock (lane_detail.py:738).
     await seed_job(
         session,
         queue,
         key=f"process_file:{files[2].id}",
         status="active",
-        blob=await _claimed_blob(session, claimed_ago_s=claim_overdue_seconds() + 60, clock="host"),
+        blob=await _claimed_blob(session, claimed_ago_s=claim_overdue_seconds() + 60),
     )
     await seed_job(session, queue, key=f"process_file:{files[3].id}", status="active", blob=await _running_blob(session))
     enqueued = datetime.now(UTC) - timedelta(hours=2)
@@ -300,12 +272,11 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     # A running local job has its scheduling-ledger row (written at enqueue), so it is routed, not "unrouted".
     session.add(SchedulingLedger(key=f"process_file:{running_file.id}", function="process_file", routing="local", payload={}))
     await seed_bulk_queued(session, queue, 679)
-    # The rendered "15m ago" comes from get_running_analyses's own host clock (lane_detail.py:708);
-    # the claimed rows below feed only the SQL claimed_overdue count (default clock="db") -- one page,
-    # two readers, two clocks (phaze-neo4z; see _clock_now_ms).
-    await seed_job(
-        session, queue, key=f"process_file:{running_file.id}", status="active", blob=await _running_blob(session, started_ago_s=900, clock="host")
-    )
+    # 905s, not 900 -- clear of the "15m" bucket's own lower edge (phaze-jz0fm). now_ms/db_now share one
+    # NOW() for the whole test, so at exactly 900s the ::bigint ms rounding on the seed can round UP by a
+    # fraction of a millisecond and read back a hair UNDER 900.000s elapsed, flipping int(d // 60) to 14.
+    # See tests/_saq_jobs_seed.py::now_ms's docstring for the measured mechanism.
+    await seed_job(session, queue, key=f"process_file:{running_file.id}", status="active", blob=await _running_blob(session, started_ago_s=905))
     for i in range(15):
         await seed_job(session, queue, key=f"process_file:claim-{i}", status="active", blob=await _claimed_blob(session, claimed_ago_s=20))
     await session.commit()

@@ -43,14 +43,36 @@ async def now_ms(session: AsyncSession) -> int:
     """The current time in SAQ's epoch-milliseconds unit, read from the DATABASE's clock (phaze-neo4z).
 
     Every reader that ages a ``saq_jobs`` row -- the reapers, queue introspection, lane detail's
-    claim-overdue / heartbeat-lost predicates -- does so as ``EXTRACT(EPOCH FROM NOW()) * 1000 -
-    started``, i.e. against the Postgres container's clock. Seeding ``started``/``touched`` from the
-    host's ``time.time()`` put a second clock into every margin a caller asserts: measured 2026-09-28,
-    the container ran 50 ms ahead of the host, and a simulated host-clock skew of the same shape
-    reproduced a real verify-main gate failure (phaze-0vlnp). Reading the reference from the clock the
-    SQL reads leaves each margin exactly as wide as it is written.
+    claim-overdue / heartbeat-lost predicates, and (since phaze-jz0fm) ``get_running_analyses`` /
+    ``get_waiting_page``'s own ``db_now`` -- does so as ``EXTRACT(EPOCH FROM NOW())`` /
+    ``func.now()``, i.e. Postgres's bare ``NOW()``, never ``clock_timestamp()``. Seeding
+    ``started``/``touched`` from the host's ``time.time()`` put a second clock into every margin a
+    caller asserts: measured 2026-09-28, the container ran 50 ms ahead of the host, and a simulated
+    host-clock skew of the same shape reproduced a real verify-main gate failure (phaze-0vlnp).
+
+    **Read ``NOW()``, not ``clock_timestamp()``** (phaze-jz0fm correction). ``NOW()``/
+    ``CURRENT_TIMESTAMP`` is fixed to the CURRENT TRANSACTION's start and stays constant for its
+    whole duration; ``clock_timestamp()`` advances with real wall-clock time even mid-transaction.
+    This suite runs each test inside one shared transaction (D-07), so within one test ``NOW()`` here
+    and ``db_now``'s own ``NOW()`` read the IDENTICAL value, however much real time separates the two
+    calls -- ``clock_timestamp()`` would drift between them by that real elapsed time instead.
+
+    **A caller still owes its OWN margin** (phaze-jz0fm, measured): with both ends pinned to the same
+    ``NOW()``, an assertion engineered to land EXACTLY on a humanize-format bucket boundary (e.g.
+    ``started_ago_s=900`` expecting the "15m" bucket, where ``900 // 60 == 15`` with zero slack) is at
+    the mercy of ``::bigint``'s ROUND-to-nearest-millisecond on this cast: it rounds up roughly half
+    the time, and a millisecond rounded up out of ``started`` reads back as ``elapsed`` a fraction of
+    a millisecond SHORT of 900.000s -- enough for ``int(899.9996 // 60) == 14`` to flip the bucket.
+    Observed: ~2/3 of runs red with no simulated skew at all. This is not a defect in ``now_ms`` or
+    ``db_now`` -- SAQ's own wire format is integer epoch-ms, so real production ``started`` values are
+    rounded exactly the same way, and a real request's ``NOW()`` is never pinned to the same instant
+    as the write it is aging, so real elapsed time always swamps this sub-millisecond artifact. It is
+    visible here only because the exact-boundary assertion removed every other source of slack; the
+    fix is the caller's margin, not this function -- pick a value that is not a multiple of the next
+    humanize threshold up to rounding error (e.g. 900 + a few seconds), never adjust this clock choice
+    back to ``clock_timestamp()`` to paper over it.
     """
-    return int(await session.scalar(text("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")))
+    return int(await session.scalar(text("SELECT (EXTRACT(EPOCH FROM NOW()) * 1000)::bigint")))
 
 
 async def drop_saq_jobs(session: AsyncSession) -> None:
