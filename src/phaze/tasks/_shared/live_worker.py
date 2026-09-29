@@ -1,7 +1,6 @@
 """A SAQ ``Worker`` whose concurrency can change while it runs (``phaze-mvq8z.10``).
 
-The design and the operator decision behind it are
-``docs/design/0019-runtime-config-hot-reload.md`` §8. SAQ 0.26.4 has no supported way to change a
+The design is ``docs/design/0019-runtime-config-hot-reload.md`` §8. SAQ 0.26.4 has no supported way to change a
 running worker's concurrency: ``Worker.start()`` spawns ``concurrency`` self-perpetuating
 ``_process()`` loops ONCE (``saq/worker.py:200-201``), each loop's ``process()`` task relaunches
 itself from its own done-callback (``saq/worker.py:440-453``), and nothing reads ``concurrency``

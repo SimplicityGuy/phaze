@@ -7,8 +7,9 @@ would prove nothing (CLAUDE.md, verification-fidelity rule 3). Everything here r
 
 Timing is gated, never slept on. Each job blocks on its own :class:`asyncio.Event` until the test
 releases it, and "no more than N jobs ran" is asserted STRUCTURALLY -- the worker has exactly N job
-loops, the broker shows N rows ``active`` and the rest ``queued`` -- rather than by waiting a while
-to see whether another job starts. The acceptance items, one test each:
+loops, N jobs are running, and every other ``active`` row is a claim still sitting in the buffer
+(see ``_assert_claims_are_running_or_buffered``) -- rather than by waiting a while to see whether
+another job starts. The acceptance items, one test each:
 
 * raising the target runs more jobs concurrently, immediately (nothing released first);
 * lowering it lets the running jobs finish, then holds concurrency at the new target -- including
@@ -130,6 +131,24 @@ async def _statuses(queue: PostgresQueue) -> dict[str, int]:
         return {str(status): int(count) for status, count in await cursor.fetchall()}
 
 
+async def _assert_claims_are_running_or_buffered(queue: PostgresQueue, jobs: _GatedJobs, *, total: int) -> None:
+    """Every ``active`` row is a job a loop is running, or one claimed into the buffer awaiting a loop.
+
+    Not simply ``active == running``. Observed in a full-suite gate at concurrency 1: two rows
+    ``active`` while one job ran. SAQ can do this on its own: the once-a-second schedule upkeep
+    claims up to ``_waiting`` rows (``PostgresQueue.schedule`` -> ``_dequeue``), and a claim can land
+    after a listening loop's claim but before that loop's ``dequeue()`` returns and stops being
+    counted. The extra row goes to the buffer. That mechanism is read from the installed source,
+    not caught in the act -- which is why this asserts the general property (every active row is
+    running or buffered) rather than a count that assumes the mechanism never fires. A buffered row
+    cannot start until a loop frees up, so the concurrency claims these tests make are unaffected.
+    """
+    statuses = await _statuses(queue)
+    active = statuses.get("active", 0)
+    assert active == len(jobs.running) + queue._job_queue.qsize(), (statuses, jobs.running, queue._job_queue.qsize())
+    assert active + statuses.get("queued", 0) + statuses.get("complete", 0) == total, statuses
+
+
 def _worker(queue: PostgresQueue, jobs: _GatedJobs, *, concurrency: int, **kwargs: Any) -> LiveConcurrencyWorker:
     return LiveConcurrencyWorker(queue, functions=[("gated", jobs.run)], concurrency=concurrency, after_process=jobs.after_process, **kwargs)
 
@@ -152,7 +171,8 @@ async def test_raising_the_target_runs_more_jobs_at_once_immediately(pg_queue: P
     async with _running(worker, jobs):
         await _enqueue(pg_queue, "a", "b", "c")
         await wait_until(lambda: len(jobs.running) == 1, timeout=SETTLE, description="one job running at concurrency 1")
-        assert await _statuses(pg_queue) == {"active": 1, "queued": 2}
+        assert worker.live_loops == 1
+        await _assert_claims_are_running_or_buffered(pg_queue, jobs, total=3)
 
         worker.set_concurrency(3)
 
@@ -185,8 +205,7 @@ async def test_lowering_the_target_lets_running_jobs_finish_then_holds_it(pg_que
         # Held at the target, structurally: one loop exists, so one row can be active.
         for remaining in (3, 2, 1):
             assert worker.live_loops == 1
-            statuses = await _statuses(pg_queue)
-            assert (statuses.get("active"), statuses.get("queued", 0)) == (1, remaining - 1), statuses
+            await _assert_claims_are_running_or_buffered(pg_queue, jobs, total=6)
             (current,) = jobs.running
             jobs.release(current)
             await wait_until(lambda current=current: current in jobs.settled, timeout=SETTLE, description=f"{current} finishes")
@@ -214,7 +233,7 @@ async def test_lowering_the_target_trims_idle_loops_before_they_claim_work(pg_qu
         await _enqueue(pg_queue, "a", "b", "c")
         await wait_until(lambda: len(jobs.running) == 1, timeout=SETTLE, description="one job running")
         assert worker.live_loops == 1
-        assert await _statuses(pg_queue) == {"active": 1, "queued": 2}
+        await _assert_claims_are_running_or_buffered(pg_queue, jobs, total=3)
 
         for _ in range(3):
             (current,) = jobs.running
