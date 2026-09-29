@@ -367,3 +367,33 @@ async def test_heartbeat_pin_does_not_leak_onto_other_functions(monkeypatch: pyt
 
     assert job.heartbeat == 0
     assert job.timeout == 600
+
+
+@pytest.mark.asyncio
+async def test_process_file_heartbeat_follows_a_live_stall_timeout_raise() -> None:
+    """The pinned heartbeat is derived from the LIVE stall threshold, not the start-time one (phaze-mvq8z.21).
+
+    ``analysis_stall_timeout_sec`` is hot-reloadable, and the agent arms each job's watchdog from
+    the live snapshot. A deadline still derived from the start-time settings would, after a live
+    raise past 2x the start-time value, sit BELOW the watchdog it backstops -- SAQ would sweep a
+    job the watchdog is correctly holding alive, the kill-for-silence D-08 exists to prevent.
+    """
+    from phaze.runtime_config import get_runtime_config_store
+
+    store = get_runtime_config_store()
+    startup_stall = store.current().analysis_stall_timeout_sec
+    live_stall = 2 * startup_stall + 1  # past the start-time DEADLINE, not merely the threshold
+
+    async def _overrides() -> dict[str, Any]:
+        return {"analysis_stall_timeout_sec": live_stall}
+
+    store.set_override_provider(_overrides)
+    await store.reload("api")
+    assert store.current().analysis_stall_timeout_sec == live_stall  # precondition: the override landed
+
+    job = Job(function="process_file", timeout=0, retries=2)
+
+    await apply_project_job_defaults(job)
+
+    assert job.heartbeat == 2 * live_stall
+    assert job.heartbeat > 2 * startup_stall

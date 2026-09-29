@@ -15,6 +15,15 @@ from phaze.services.analysis_sizing import derive_sizing
 _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2
 
 
+def derive_analysis_job_heartbeat_sec(stall_timeout_sec: int) -> int:
+    """The SAQ ``process_file`` heartbeat deadline for a given inner stall threshold.
+
+    The ONE derivation, shared by the start-time settings and the live runtime-config snapshot
+    (phaze-mvq8z.21), so a live stall-timeout change moves the outer deadline with it.
+    """
+    return stall_timeout_sec * _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER
+
+
 class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     """Fields shared by both roles.
 
@@ -135,7 +144,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         throttled touches. A derived ``2x`` deadline gives the inner layer one full stall window
         to diagnose and report before the broker aborts work.
         """
-        return self.analysis_stall_timeout_sec * _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER
+        return derive_analysis_job_heartbeat_sec(self.analysis_stall_timeout_sec)
 
     # Session-mode PgBouncer pins upstream connections, so both control engines and the per-lane
     # dispatch queues share conservative pool defaults. See docs/configuration.md.

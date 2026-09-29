@@ -85,6 +85,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 import structlog
 
 from phaze.config import AgentSettings, BaseSettings, ControlSettings, get_settings
+from phaze.config_base import derive_analysis_job_heartbeat_sec
 from phaze.logging_config import KNOWN_LOG_LEVELS
 from phaze.services.analysis_sizing import INTRA_OP_ENV, OMP_ENV, derive_sizing
 from phaze.telemetry.instruments import add, set_gauge
@@ -142,6 +143,17 @@ class RuntimeConfig(BaseModel):
         if name not in KNOWN_LOG_LEVELS:
             raise ValueError(f"unknown log level {value!r}")
         return name
+
+    @property
+    def analysis_job_heartbeat_sec(self) -> int:
+        """The SAQ ``process_file`` heartbeat deadline derived from THIS snapshot's stall threshold.
+
+        The live twin of ``BaseSettings.analysis_job_heartbeat_sec`` (phaze-mvq8z.21): the outer
+        deadline must follow the stall threshold a job's watchdog is actually armed with, so every
+        reader that arms or backstops that watchdog derives it from the same snapshot. A property,
+        not a field: it is not a key an operator sets, and it stays out of ``digest()``.
+        """
+        return derive_analysis_job_heartbeat_sec(self.analysis_stall_timeout_sec)
 
     def digest(self) -> str:
         """Content hash of the VALUES -- equal digests mean nothing an applier reads changed."""

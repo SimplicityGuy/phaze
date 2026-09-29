@@ -180,7 +180,7 @@ def test_process_file_policy_docs_match_runtime_and_replay_sources() -> None:
 
     producer = re.search(
         r'return await queue\.enqueue\(\s*"process_file".*?timeout=(\d+),.*?'
-        r"heartbeat=get_settings\(\)\.analysis_job_heartbeat_sec,.*?retries=(\d+),",
+        r"heartbeat=current_runtime_config\(\)\.analysis_job_heartbeat_sec,.*?retries=(\d+),",
         enqueue,
         re.DOTALL,
     )

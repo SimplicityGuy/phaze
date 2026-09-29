@@ -34,7 +34,7 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.runtime_config import current as current_runtime_config
+from phaze.runtime_config import RuntimeConfig, current as current_runtime_config
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
@@ -121,7 +121,7 @@ async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count:
         logger.debug("process_file: progress POST dropped (best-effort)", file_id=str(file_id))
 
 
-async def _touch_job_heartbeat(job: Any) -> None:
+async def _touch_job_heartbeat(job: Any, **fields: Any) -> None:
     """Best-effort SAQ heartbeat touch (phaze-w55w1).
 
     ``process_file`` runs ``timeout=0`` with a ``heartbeat`` instead (see
@@ -129,11 +129,36 @@ async def _touch_job_heartbeat(job: Any) -> None:
     ``classify_process_file_collision`` — reads ``touched``. This is what keeps ``touched``
     fresh while a legitimately multi-hour analysis runs. Swallows every error for the same
     reason the progress POST does: a broker hiccup must not fail an analysis that is working.
+
+    ``fields`` are set on the job by the same write (``Queue.update`` sets them on the job,
+    then persists the whole serialized job) -- how :func:`_stamp_job_heartbeat_deadline`
+    moves the stored ``heartbeat`` deadline.
     """
     try:
-        await job.update()
+        await job.update(**fields)
     except Exception:  # best-effort liveness; never fail the job
         logger.debug("process_file: SAQ heartbeat touch dropped (best-effort)")
+
+
+async def _stamp_job_heartbeat_deadline(job: Any, deadline_sec: int) -> None:
+    """Re-stamp the job's SAQ ``heartbeat`` deadline to the one THIS job's watchdog needs (phaze-mvq8z.21).
+
+    The enqueue stamped ``2 x`` the stall threshold in force at enqueue time, on whichever
+    process enqueued it. ``analysis_stall_timeout_sec`` is hot-reloadable, and this job's
+    watchdog is armed from the agent's live snapshot -- so after a live raise past 2x the old
+    value the stored deadline would sit BELOW the watchdog, and SAQ's sweep would kill a job the
+    watchdog is correctly holding alive (D-08; phaze-1b39). ``Job.stuck`` reads the deadline out
+    of the stored job, and SAQ's sweep deserializes it per row, so one write moves it.
+
+    Written only when it differs: the common case (no live change) costs no broker write. Pinned
+    to the threshold this job was ARMED with, never re-read mid-job -- the watchdog does not
+    re-read it either, so a later live CUT must not shrink this job's deadline below 2x its own
+    watchdog. Best-effort like every touch: ``Queue.update`` sets the field on the job BEFORE the
+    write, so a dropped stamp is still carried by the next successful touch. No wall-clock bound
+    is added -- this moves a SILENCE deadline, never an elapsed one.
+    """
+    if job.heartbeat != deadline_sec:
+        await _touch_job_heartbeat(job, heartbeat=deadline_sec)
 
 
 async def _run_analysis_with_progress(
@@ -143,6 +168,8 @@ async def _run_analysis_with_progress(
     read_path: str,
     models_path: str,
     job: Any = None,
+    *,
+    runtime_cfg: RuntimeConfig,
 ) -> object:
     """Run exhaustive analysis in the child subprocess while relaying throttled progress.
 
@@ -173,6 +200,17 @@ async def _run_analysis_with_progress(
     (child crash/nonzero exit — the ``ProcessExpired`` replacement) for ``process_file``'s
     terminal handlers; the progress bridge itself never alters the terminal mapping.
     """
+    # phaze-mvq8z.7: ONE read of the RELOADABLE snapshot for this job -- not `cfg` (the
+    # static, start-time settings) -- so a live `analysis_stall_timeout_sec` /
+    # `analysis_intra_op_threads` / `analysis_omp_threads` reload
+    # (docs/design/0019-runtime-config-hot-reload.md §5/§7) applies to the NEXT job without a
+    # restart. A job already inside `run_analysis_subprocess`'s stall watchdog keeps the
+    # threshold and thread env it was called with; only a job that has not yet started sees
+    # a new value. Read once, by the caller, so the SAQ deadline it stamped and the watchdog
+    # armed here come from the SAME snapshot (phaze-mvq8z.21) -- and passed down as plain
+    # params: `analysis_exec.py` stays config-source-agnostic (its own module docstring) and
+    # never itself triggers the runtime-config store's first-build cost (host topology
+    # detection) on this hot path.
     interval_sec = cfg.analysis_progress_interval_sec
     # The SAQ liveness touch gets its OWN cadence, deliberately NOT the UI progress throttle
     # (phaze-w55w1). `analysis_progress_interval_sec` is a DISPLAY knob -- an operator raising it
@@ -181,8 +219,10 @@ async def _run_analysis_with_progress(
     # analysis stops touching in time and gets swept. Coupling a correctness bound to a cosmetic
     # knob is a trap regardless of the default, so the touch cadence is capped at a third of the
     # deadline (>=3 touches per window, so two may be dropped -- the touch is best-effort -- and
-    # the job still stays live) and only tightened, never loosened, by the display knob.
-    touch_interval_sec = cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE
+    # the job still stays live) and only tightened, never loosened, by the display knob. The
+    # deadline is the LIVE one this job's watchdog was armed against (phaze-mvq8z.21): a
+    # start-time cadence would miss a live-cut deadline outright.
+    touch_interval_sec = runtime_cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE
     if interval_sec > 0.0:
         touch_interval_sec = min(interval_sec, touch_interval_sec)
     last_post: float | None = None
@@ -219,16 +259,6 @@ async def _run_analysis_with_progress(
         last_touch = now
         _spawn(_touch_job_heartbeat(job))
 
-    # phaze-mvq8z.7: ONE read of the RELOADABLE snapshot for this job -- not `cfg` (the
-    # static, start-time settings) -- so a live `analysis_stall_timeout_sec` /
-    # `analysis_intra_op_threads` / `analysis_omp_threads` reload
-    # (docs/design/0019-runtime-config-hot-reload.md §5/§7) applies to the NEXT job without a
-    # restart. A job already inside `run_analysis_subprocess`'s stall watchdog keeps the
-    # threshold and thread env it was called with; only a job that has not yet started sees
-    # a new value. Read here, once, and passed down as plain params -- `analysis_exec.py`
-    # stays config-source-agnostic (its own module docstring) and never itself triggers the
-    # runtime-config store's first-build cost (host topology detection) on this hot path.
-    runtime_cfg = current_runtime_config()
     try:
         return await run_analysis_subprocess(
             read_path,
@@ -383,6 +413,13 @@ async def _extract_and_analyze(
     """
     semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
     job = ctx.get("job")
+    # phaze-mvq8z.21: the ONE live snapshot read for this job. The watchdog it arms, the SAQ
+    # deadline stamped below and both touch cadences all derive from it, so the 2x invariant
+    # (`BaseSettings.analysis_job_heartbeat_sec`) holds for this job under any live change.
+    runtime_cfg = current_runtime_config()
+    job_heartbeat_sec = runtime_cfg.analysis_job_heartbeat_sec
+    if job is not None:
+        await _stamp_job_heartbeat_deadline(job, job_heartbeat_sec)
 
     async def _extraction_heartbeat() -> None:
         # Extraction runs BEFORE run_analysis_subprocess spawns the analysis child, so the
@@ -405,7 +442,7 @@ async def _extract_and_analyze(
                 # falls back to tempfile.gettempdir() inside extract_audio_track itself.
                 scratch_dir=cfg.cloud_scratch_dir,
                 heartbeat_cb=_extraction_heartbeat if job is not None else None,
-                heartbeat_interval_sec=cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
+                heartbeat_interval_sec=job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
             )
             # Register the scratch file for cleanup BEFORE the analysis that can fail.
             scratch_state["extracted_audio_path"] = audio_source.cleanup_path
@@ -416,6 +453,7 @@ async def _extract_and_analyze(
                 audio_source.analysis_path,
                 payload.models_path,
                 job=job,
+                runtime_cfg=runtime_cfg,
             )
         return _ExtractionOutcome(analysis=analysis)
     except NoAudioTrackError as exc:
