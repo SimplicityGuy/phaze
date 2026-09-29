@@ -219,7 +219,7 @@ or returned).
 
 | Key | Env var (unchanged meaning) | Applies |
 |-----|------------------------------|---------|
-| `log_level` | `PHAZE_LOG_LEVEL` | Immediately — `configure_logging` is re-applied (already idempotent). |
+| `log_level` | `PHAZE_LOG_LEVEL` | Immediately — `configure_logging` is re-applied (already idempotent). Accepted values: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL`, fixed and identical across every process type (api, control worker, every agent lane worker) — see the note below the table. |
 | `worker_max_jobs` | `WORKER_MAX_JOBS` | Grow: immediately — the phaze SAQ `Worker` subclass (ADR-0019 (runtime config hot-reload) §8) spawns the extra job loops right away. Shrink: by attrition — a loop parked idle in dequeue is trimmed at once, but a loop mid-job finishes that job first; never a forced kill. |
 | `lane_analyze_concurrency` | `PHAZE_LANE_ANALYZE_CONCURRENCY` | Same grow/shrink shape as `worker_max_jobs`, on the analyze-lane agent worker only (effective concurrency is `min(lane knob, worker_max_jobs)`). |
 | `lane_meta_concurrency` | `PHAZE_LANE_META_CONCURRENCY` | Same, on the meta-lane agent worker. |
@@ -229,6 +229,16 @@ or returned).
 | `analysis_omp_threads` | `OMP_NUM_THREADS`, same shape as above | New analysis children only, same as above. |
 | `analysis_stall_timeout_sec` | `PHAZE_ANALYSIS_STALL_TIMEOUT_SEC` | The **next** job's liveness window. A job already in flight keeps the stall timeout it started with. |
 | `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` | The next routing decision — read fresh from the live snapshot per file, never cached. |
+
+**`log_level`'s accepted set is fixed, not "whatever this process's logging registry happens to
+know about".** `RuntimeConfig`'s validator originally resolved a candidate level name through
+`logging.getLevelNamesMapping()`, which is process-dependent: uvicorn registers an extra `TRACE`
+level (5) in the api/control process only, so `log_level=TRACE` validated in the api and was then
+rejected as unknown by every agent process reloading the identical override — found by the
+end-to-end retune demo (`phaze-mvq8z.11`) and fixed by `phaze-mvq8z.16`, which pins the validator
+to the explicit five-value set in the table above, independent of which levels a given process
+happens to have registered. `configure_logging`'s own unknown-level fallback (INFO, logged) is
+unchanged for the separate env-at-start path.
 
 Everything else — every other field on `ControlSettings`/`AgentSettings`, documented in its own
 section throughout the rest of this page (DB/queue/Redis connection URLs, auth tokens and
