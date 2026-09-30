@@ -32,6 +32,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.services.analysis_sizing import CLOUD_HEARTBEAT_LOST_INTERVALS, HEARTBEAT_SURFACE_INTERVAL_SEC
 from phaze.services.backends.registry import resolve_compute_backend
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import MUSIC_VIDEO_TYPES
@@ -678,8 +679,31 @@ async def _local_running(session: AsyncSession, queue_name: str, lane_id: str, n
     return running
 
 
-async def _kueue_running(session: AsyncSession, backend_ids: list[str]) -> list[RunningAnalysis]:
-    """Kueue pods running now (``cloud_job.status == RUNNING``). Start time and heartbeat are not observable."""
+def cloud_heartbeat_lost_after_seconds() -> float:
+    """Seconds of silence after which a Kueue row reads "lost", derived from the pod's surface cadence.
+
+    Not the SAQ ``heartbeat_s``: a pod re-POSTs its counts about once per
+    :data:`HEARTBEAT_SURFACE_INTERVAL_SEC`, so that cadence is the only honest yardstick. Display only;
+    no kill, requeue or wall-clock bound hangs off this (D-08, phaze-1b39).
+    """
+    return HEARTBEAT_SURFACE_INTERVAL_SEC * CLOUD_HEARTBEAT_LOST_INTERVALS
+
+
+async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: datetime) -> list[RunningAnalysis]:
+    """Kueue pods running now (``cloud_job.status == RUNNING``). Start time is not observable.
+
+    The heartbeat is ``analysis.updated_at``, which the pod's progress POSTs move. A pod with no counts
+    posted yet (no analysis row, or one not yet sized) has no heartbeat to age, so it shows none and is
+    never "lost": job_runner only logs before its first window, which is silence, not death.
+
+    The analysis row must also belong to THIS attempt. A re-driven file keeps its prior attempt's counts,
+    so its ``analysis.updated_at`` is old while the new pod is still starting; aging that would flag a
+    healthy pod lost on its first render. ``cloud_job.updated_at`` is stamped when reconcile flips the
+    row to RUNNING (``tasks/reconcile_cloud_jobs``), so an analysis row older than it carries no beat
+    from this attempt and shows none. Any later write to the cloud_job row (a phase or inadmissible
+    flip) moves that stamp forward, which errs toward SUPPRESSING the heartbeat until the next POST
+    (about a minute) -- never toward a false "lost".
+    """
     if not backend_ids:
         return []
     stmt = (
@@ -691,6 +715,8 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str]) -> list[
             AnalysisResult.fine_windows_total,
             AnalysisResult.coarse_windows_analyzed,
             AnalysisResult.coarse_windows_total,
+            AnalysisResult.updated_at.label("analysis_updated_at"),
+            CloudJob.updated_at.label("job_updated_at"),
         )
         .select_from(CloudJob)
         .join(FileRecord, FileRecord.id == CloudJob.file_id)
@@ -699,22 +725,28 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str]) -> list[
         .order_by(CloudJob.backend_id, CloudJob.updated_at, CloudJob.file_id)
         .limit(RUNNING_LIMIT)
     )
-    return [
-        RunningAnalysis(
-            file_id=row.file_id,
-            label=_label(row.label, str(row.file_id)),
-            lane=str(row.backend_id),
-            lane_kind="kueue",
-            started_at=None,
-            heartbeat_at=None,
-            heartbeat_lost=False,
-            fine_done=row.fine_windows_analyzed,
-            fine_total=row.fine_windows_total,
-            coarse_done=row.coarse_windows_analyzed,
-            coarse_total=row.coarse_windows_total,
+    lost_after = cloud_heartbeat_lost_after_seconds()
+    running: list[RunningAnalysis] = []
+    for row in (await session.execute(stmt)).all():
+        has_counts = row.fine_windows_total is not None or row.coarse_windows_total is not None
+        this_attempt = has_counts and row.analysis_updated_at >= row.job_updated_at
+        heartbeat_at = row.analysis_updated_at if this_attempt else None
+        running.append(
+            RunningAnalysis(
+                file_id=row.file_id,
+                label=_label(row.label, str(row.file_id)),
+                lane=str(row.backend_id),
+                lane_kind="kueue",
+                started_at=None,
+                heartbeat_at=heartbeat_at,
+                heartbeat_lost=heartbeat_at is not None and (now - heartbeat_at).total_seconds() > lost_after,
+                fine_done=row.fine_windows_analyzed,
+                fine_total=row.fine_windows_total,
+                coarse_done=row.coarse_windows_analyzed,
+                coarse_total=row.coarse_windows_total,
+            )
         )
-        for row in (await session.execute(stmt)).all()
-    ]
+    return running
 
 
 async def get_running_analyses(
@@ -744,7 +776,7 @@ async def get_running_analyses(
                 async with session.begin_nested():
                     running.extend(await _local_running(session, resolved[1], local_ids[0], now))
         async with session.begin_nested():
-            running.extend(await _kueue_running(session, kueue_ids))
+            running.extend(await _kueue_running(session, kueue_ids, now))
     except Exception:
         logger.warning("running_analyses_degraded", exc_info=True)
         return None
