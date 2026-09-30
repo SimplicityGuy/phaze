@@ -107,6 +107,12 @@ _DOWNLOAD_READ_TIMEOUT_S = 300.0
 # Mirrors the SAQ lane's cap (tasks/functions.py::_ERROR_DETAIL_MAX): bound the stored error
 # text before it crosses the HTTP boundary (AnalysisFailurePayload.error is max_length=2000).
 _ERROR_DETAIL_MAX = 2000
+# How often the child's liveness heartbeats are surfaced to the pod log and the progress API
+# (phaze-x85mi). A coarse chunk completes no window until it is decoded and swept by all 34 models,
+# so the window-driven progress channel can be silent for hours; the beats already reset the D-08
+# watchdog, and this only makes them visible. The decode beats every 60 s and each model sweep
+# beats once, so a 60 s floor keeps traffic at about one line and one POST a minute.
+_HEARTBEAT_SURFACE_INTERVAL_SEC = 60.0
 
 
 class PresignedDownloadError(RuntimeError):
@@ -319,8 +325,10 @@ async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: Analysis
         log.debug("job_runner_progress_dropped", file_id=str(file_id))
 
 
-def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> tuple[Any, set[asyncio.Task[None]]]:
-    """Build the sync ``progress_cb`` the analysis-child driver invokes per fine OR coarse window.
+def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> tuple[Any, Any, set[asyncio.Task[None]]]:
+    """Build the sync ``progress_cb`` and ``heartbeat_cb`` the analysis-child driver invokes.
+
+    ``progress_cb`` fires per fine OR coarse window.
 
     ``analyze_file`` runs in a real child process, so this callback fires ON the
     event loop (from the driver's protocol pump) — the POST is a fire-and-forget loop task
@@ -344,29 +352,45 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
     doing that would corrupt the documented denominator invariant (the in-flight
     ``fine_windows_total`` must equal the completion PUT's), so ``percent`` is a DERIVED
     display value computed here, never a wire field.
+
+    ``heartbeat_cb(stage, done, total)`` is the liveness relay (phaze-x85mi). The driver
+    already resets its D-08 stall watchdog on every heartbeat line; this callback changes
+    nothing about that and only makes the beat VISIBLE. At most once per
+    :data:`_HEARTBEAT_SURFACE_INTERVAL_SEC` it logs ``job_runner_heartbeat`` and re-POSTs the
+    most recent window counts, which moves ``analysis.updated_at`` and also delivers counts
+    the progress throttle swallowed -- the fine tier's final count lands inside the throttle
+    window of the coarse START, so without this the row reads fine N-1/N for the whole
+    coarse phase. No counts have arrived yet means there is nothing honest to POST, so that
+    beat only logs.
     """
     # Seed to negative infinity so boot-relative monotonic time never suppresses the first post.
-    state = {"last_post": float("-inf")}
+    state = {"last_post": float("-inf"), "last_beat": float("-inf")}
+    latest: list[tuple[int, int, int, int]] = []
     pending: set[asyncio.Task[None]] = set()
+
+    def _post(counts: tuple[int, int, int, int]) -> None:
+        fine_analyzed, fine_total, coarse_analyzed, coarse_total = counts
+        payload = AnalysisProgressPayload(
+            fine_windows_analyzed=fine_analyzed,
+            fine_windows_total=fine_total,
+            coarse_windows_analyzed=coarse_analyzed,
+            coarse_windows_total=coarse_total,
+        )
+        # Keep a strong reference to the fire-and-forget task until it finishes.
+        task = asyncio.get_running_loop().create_task(_safe_post_progress(client, file_id, payload))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     def _cb(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         try:
+            latest[:] = [(fine_analyzed, fine_total, coarse_analyzed, coarse_total)]
             now = time.monotonic()
             # A zero-window tier is trivially done; the tier with work still gates completion.
             is_final = fine_analyzed >= fine_total and coarse_analyzed >= coarse_total
             if interval_sec > 0.0 and not is_final and (now - state["last_post"]) < interval_sec:
                 return
             state["last_post"] = now
-            payload = AnalysisProgressPayload(
-                fine_windows_analyzed=fine_analyzed,
-                fine_windows_total=fine_total,
-                coarse_windows_analyzed=coarse_analyzed,
-                coarse_windows_total=coarse_total,
-            )
-            # Keep a strong reference to the fire-and-forget task until it finishes.
-            task = asyncio.get_running_loop().create_task(_safe_post_progress(client, file_id, payload))
-            pending.add(task)
-            task.add_done_callback(pending.discard)
+            _post(latest[0])
             # Console and UI progress share one throttle and counter; the final value bypasses it.
             combined_total = fine_total + coarse_total
             combined_analyzed = fine_analyzed + coarse_analyzed
@@ -383,7 +407,19 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
         except Exception:  # a progress-cb error must never escape into the analysis outcome
             log.debug("job_runner_progress_cb_error", file_id=str(file_id))
 
-    return _cb, pending
+    def _heartbeat(stage: str, done: int, total: int) -> None:
+        try:
+            now = time.monotonic()
+            if (now - state["last_beat"]) < _HEARTBEAT_SURFACE_INTERVAL_SEC:
+                return
+            state["last_beat"] = now
+            log.info("job_runner_heartbeat", file_id=str(file_id), stage=stage, done=done, total=total)
+            if latest:
+                _post(latest[0])
+        except Exception:  # same contract as progress: liveness reporting never fails the job
+            log.debug("job_runner_heartbeat_cb_error", file_id=str(file_id))
+
+    return _cb, _heartbeat, pending
 
 
 def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
@@ -621,7 +657,7 @@ async def _analyze_step(
     Every failure reports first and then exits ``EXIT_ANALYSIS`` (12).
     """
     t_analyze = time.monotonic()
-    progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
+    progress_cb, heartbeat_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
     # Begin/end markers bracket child fd 1/2 output framed as ``analysis_child_output``.
     log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- framed essentia output follows")
     # Phase 101 subprocess contract: analysis runs in the child so the parent event loop remains
@@ -634,6 +670,7 @@ async def _analyze_step(
             read_path,
             models_dir,
             progress_cb=progress_cb,
+            heartbeat_cb=heartbeat_cb,
             stall_timeout=cfg.analysis_stall_timeout_sec,
         )
     except Exception as exc:

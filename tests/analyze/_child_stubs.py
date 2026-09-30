@@ -435,3 +435,37 @@ def telemetry_identity_analyze(
     result = _result(file_path, models_dir, **windowing)
     result["echo"].update(payload)
     return result
+
+
+def real_decode_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """The REAL ``analyze_file`` over a real file, with ONLY the TF graph call faked (phaze-x85mi).
+
+    Every decode, both chunk loops, the model-major sweep and every heartbeat/progress call
+    site are the production code running on real essentia -- so the heartbeats this child emits
+    are the ones a cloud pod's child emits at the fine->coarse handover, not a stub's idea of
+    them. ``_predict_single`` / ``_get_labels`` are replaced because CI carries no ``.pb``
+    graphs (the same seam ``test_analysis_long_file.py::test_real_decode_short_no_overflow``
+    uses); the sweep that calls them, and the ``coarse_model`` beat after each one, are real.
+    """
+    import numpy as np  # child-side imports: essentia loads here, in the exec'd child only
+
+    import phaze.services.analysis as analysis_mod
+
+    def _predict(_audio: Any, _model: Any, _models_dir: str) -> Any:
+        return np.array([0.7, 0.3], dtype=np.float32)
+
+    def _labels(model_filename: str, _models_dir: str) -> list[str]:
+        if "discogs" in model_filename:
+            return [f"Genre{i}" for i in range(400)]
+        return ["positive_class", "negative_class"]
+
+    analysis_mod._predict_single = _predict  # type: ignore[assignment]
+    analysis_mod._get_labels = _labels  # type: ignore[assignment]
+    return analysis_mod.analyze_file(file_path, models_dir, progress_cb=progress_cb, heartbeat_cb=heartbeat_cb, **windowing)

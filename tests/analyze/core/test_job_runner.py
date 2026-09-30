@@ -1939,3 +1939,69 @@ def test_unwrapped_connect_error_classifies_as_unreachable() -> None:
     wrapped_5xx = AgentApiServerError("POST /x -> 503 after retries")
     wrapped_5xx.__cause__ = httpx.HTTPStatusError("503", request=httpx.Request("POST", "http://x"), response=httpx.Response(503))
     assert not jr._control_plane_unreachable(wrapped_5xx)
+
+
+# phaze-x85mi: the liveness relay. The driver resets its D-08 watchdog on every heartbeat line;
+# job_runner used to wire no heartbeat_cb, so a coarse chunk's hours of decode + model sweeps were
+# invisible to the pod log and the progress API. The end-to-end proof over real essentia is
+# test_job_runner_coarse_heartbeat.py; these pin the relay's throttle and failure contract.
+
+
+class _ProgressRecorder:
+    def __init__(self) -> None:
+        self.bodies: list[tuple[int, int, int | None, int | None]] = []
+
+    async def post_analysis_progress(self, _file_id, payload):  # type: ignore[no-untyped-def]
+        self.bodies.append((payload.fine_windows_analyzed, payload.fine_windows_total, payload.coarse_windows_analyzed, payload.coarse_windows_total))
+
+
+async def test_heartbeat_relay_logs_throttles_and_reposts_the_latest_counts(monkeypatch):  # type: ignore[no-untyped-def]
+    """A beat logs ``job_runner_heartbeat`` and re-POSTs the newest counts, including ones the progress
+    throttle swallowed; beats inside the surface interval are dropped; a beat before any count only logs."""
+    import uuid
+
+    import structlog
+
+    import phaze.job_runner as jr
+
+    # A surface interval far longer than the test, then none at all: the throttle is exercised without
+    # patching the clock, which the event loop shares.
+    monkeypatch.setattr(jr, "_HEARTBEAT_SURFACE_INTERVAL_SEC", 3600.0)
+    client = _ProgressRecorder()
+    progress_cb, heartbeat_cb, pending = jr._make_progress_cb(client, uuid.uuid4(), 3600.0)
+
+    with structlog.testing.capture_logs() as logs:
+        heartbeat_cb("fine_decode", 0, 4)  # no counts yet: log only, nothing honest to POST
+        progress_cb(0, 4, 0, 2)  # START passes the progress throttle
+        progress_cb(4, 4, 0, 2)  # fine tier done -- swallowed by the 3600 s progress throttle
+        heartbeat_cb("coarse_decode", 0, 2)  # inside the surface interval: dropped
+        monkeypatch.setattr(jr, "_HEARTBEAT_SURFACE_INTERVAL_SEC", 0.0)
+        heartbeat_cb("coarse_model", 0, 2)  # surfaces, and re-posts the swallowed handover count
+        await asyncio.gather(*pending)
+
+    beats = [(e["stage"], e["done"], e["total"]) for e in logs if e["event"] == "job_runner_heartbeat"]
+    assert beats == [("fine_decode", 0, 4), ("coarse_model", 0, 2)]
+    assert client.bodies == [(0, 4, 0, 2), (4, 4, 0, 2)]
+
+
+async def test_heartbeat_relay_failure_never_escapes(monkeypatch):  # type: ignore[no-untyped-def]
+    """A failure inside the relay is swallowed: liveness reporting never fails the analysis."""
+    import uuid
+
+    import phaze.job_runner as jr
+
+    class _BoomOnHeartbeat:
+        def __init__(self, real):  # type: ignore[no-untyped-def]
+            self._real = real
+
+        def info(self, event, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if event == "job_runner_heartbeat":
+                raise RuntimeError("render failure")
+            return self._real.info(event, *args, **kwargs)
+
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(jr, "log", _BoomOnHeartbeat(jr.log))
+    _progress_cb, heartbeat_cb, _pending = jr._make_progress_cb(_ProgressRecorder(), uuid.uuid4(), 0.0)
+    heartbeat_cb("coarse_model", 0, 1)  # must not raise
