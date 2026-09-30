@@ -2,15 +2,20 @@
 # On the UpCloud host: run a staged neutral-protocol candidate and finish reports.
 set -euo pipefail
 
-run_id=${1:?usage: run-candidate-v2.sh RUN_ID COMMAND_JSON IMAGE_DIGEST MODEL_DIR CONTEXT_JSON}
+run_id=${1:?usage: run-candidate-v2.sh RUN_ID COMMAND_JSON IMAGE_DIGEST MODEL_DIR CONTEXT_JSON [smoke]}
 command_name=${2:?missing command JSON basename}
 image=${3:?missing digest-pinned candidate image}
 model_dir=${4:?missing absolute host model directory}
 context_name=${5:?missing run-context JSON basename}
+mode=${6:-full}
 root=/home/datum/phaze-iq64v
 baseline_image=ghcr.io/simplicityguy/phaze@sha256:7a98190739c83bfc224d6bc4b8688d34907eae1db6dea8052c752093d10be8fe
 
 [[ $run_id =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
+[[ $mode == full || $mode == smoke ]] || {
+  echo 'mode must be full or smoke' >&2
+  exit 2
+}
 [[ $command_name =~ ^[A-Za-z0-9_.-]+\.json$ && $context_name =~ ^[A-Za-z0-9_.-]+\.json$ ]] || exit 2
 [[ $image =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]] || {
   echo 'image must be pinned by sha256 digest' >&2
@@ -44,6 +49,11 @@ flock -n 9 || {
   exit 1
 }
 
+manifest=/app/docs/evaluation-phaze-iq64v-corpus.json
+if [[ $mode == smoke ]]; then
+  manifest=/app/docs/evaluation-phaze-iq64v-smoke.json
+fi
+
 sudo -n docker run --rm --network none --cpus=4 --memory=7g --pids-limit=512 \
   --security-opt=no-new-privileges --cap-drop=ALL \
   -e PYTHONPATH=/app/src:/app:/candidate -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp \
@@ -51,10 +61,15 @@ sudo -n docker run --rm --network none --cpus=4 --memory=7g --pids-limit=512 \
   -v "$root/code/docs:/app/docs:ro" -v "$root/candidate:/candidate:ro" \
   -v "$root/samples:/samples:ro" -v "$model_dir:/models:ro" -v "$root/results:/results" \
   -w /app "$image" /app/.venv/bin/python /app/scripts/analysis_eval.py \
-  --manifest /app/docs/evaluation-phaze-iq64v-corpus.json \
+  --manifest "$manifest" \
   --audio-dir /samples --models-dir /models --output-dir "/results/$run_id" \
   --workers 1 --phase cold --protocol neutral \
   --command-json "/app/docs/$command_name" --run-context-json "/app/docs/$context_name"
+
+if [[ $mode == smoke ]]; then
+  echo "Smoke run complete; inspect $root/results/$run_id/summary.json before the full run"
+  exit 0
+fi
 
 sudo -n docker run --rm --network none --cpus=1 --memory=1g \
   -e PYTHONPATH=/app/src:/app \

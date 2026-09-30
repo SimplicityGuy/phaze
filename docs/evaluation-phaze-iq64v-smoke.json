@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "available_on_nox": true,
+      "band": "short",
+      "codec": "mp3",
+      "duration_sec": 199.96,
+      "file_id": "bac7ccb1-597e-49fc-aefb-e24e95d74ce6",
+      "format": "mp3",
+      "sample_rate_hz": 44100,
+      "sha256": "1fa9b195a67209fbe13677719653199d81e8e724afb87977b21c27f5083a15aa"
+    }
+  ],
+  "schema_version": 1,
+  "selection": "shortest of the eight frozen benchmark files; preflight only",
+  "source": "docs/evaluation-phaze-iq64v-corpus.json"
+}

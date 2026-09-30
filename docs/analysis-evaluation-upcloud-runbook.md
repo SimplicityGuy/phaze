@@ -18,10 +18,25 @@ The first and repeat incumbent passes finished on the same UpCloud host, each wi
 3. Copy `code/docs/analysis-evaluation-candidate-command.example.json` to `code/docs/candidate-command.json` and replace the argv with the real candidate entrypoint. The JSON array must include `{audio}`; `{models}` is optional. Copy `code/docs/analysis-evaluation-candidate-context.example.json` to `code/docs/candidate-run-context.json` and fill in the image digest and candidate source commit. Keep the host, CPU, and memory values unchanged.
 4. Predeclare the candidate's acceptable disagreement tolerances and its source-tag taxonomy behavior before running it. The current DB values are an incumbent reference, and equality is not required. Source-tag scoring is exploratory because only four tags have unambiguous broad mappings.
 
-## Run once the candidate is staged
+## Smoke check, then run once the candidate is staged
+
+Run the shortest SHA-selected file first. This uses the same image, limits, protocol, and model mount but writes only `results/candidate-smoke-1`. It does not produce a verdict:
 
 ```bash
 ssh datum@209.50.61.190
+/home/datum/phaze-iq64v/code/run-candidate-v2.sh \
+  candidate-smoke-1 candidate-command.json \
+  'ghcr.io/OWNER/CANDIDATE@sha256:REPLACE_WITH_DIGEST' \
+  /home/datum/phaze-iq64v/candidate-models \
+  candidate-run-context.json smoke
+python3 -c 'import json; p="/home/datum/phaze-iq64v/results/candidate-smoke-1/summary.json"; d=json.load(open(p)); print(d["runs"], d["failed_runs"], d["protocol"])'
+```
+
+Proceed only if this prints `1 0 neutral`. The smoke result checks the output protocol and semantic contract on one file; it does not predict full-corpus performance.
+
+Then run the complete paired candidate batch:
+
+```bash
 /home/datum/phaze-iq64v/code/run-candidate-v2.sh \
   candidate-1 candidate-command.json \
   'ghcr.io/OWNER/CANDIDATE@sha256:REPLACE_WITH_DIGEST' \
