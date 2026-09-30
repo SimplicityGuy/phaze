@@ -26,6 +26,7 @@ from structlog.testing import capture_logs
 
 from phaze import runtime_config
 from phaze.models.runtime_config_override import RuntimeConfigOverride
+from phaze.routers import admin_runtime_config
 from phaze.runtime_config import RUNTIME_TOML_NAME, get_runtime_config_store
 from phaze.runtime_config_notify import install_runtime_config_overrides
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
@@ -289,3 +290,22 @@ async def test_a_rejected_non_reloadable_post_logs_the_key_name_but_never_the_va
     rejected = [entry for entry in logs if entry.get("event") == "phaze.runtime_config_admin override rejected"]
     assert [entry["key"] for entry in rejected] == [key], "the rejection is still audited, by name"
     assert "posted-s3cr3t" not in repr(logs)
+
+
+@pytest.mark.asyncio
+async def test_the_pane_renders_from_the_snapshot_when_the_stale_row_read_fails(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-dhycx: the stale-row list is a DB read the snapshot does not need; its failure must not 500 the pane."""
+
+    async def _db_down(_session: AsyncSession) -> dict[str, Any]:
+        raise ConnectionError("the database is unreachable")
+
+    monkeypatch.setattr(admin_runtime_config, "get_runtime_config_overrides", _db_down)
+
+    with capture_logs() as logs:
+        response = await client.get("/admin/runtime-config/_table")
+
+    assert response.status_code == 200, response.text
+    assert "worker_max_jobs" in response.text, "the snapshot's reloadable keys still render"
+    assert [entry["event"] for entry in logs if entry["log_level"] == "warning"] == [
+        "phaze.runtime_config_admin stale override read failed; rendering from the snapshot"
+    ]

@@ -716,6 +716,56 @@ def test_analysis_child_stays_essentia_and_postgres_free() -> None:
     assert result.returncode == 0, f"analysis_child import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_agent_worker_parent_never_imports_analysis_and_captures_no_thread_pins() -> None:
+    """phaze-dhycx: the x86 env thread CEILING (``RuntimeConfigStore._thread_pins``) reads ``os.environ`` when the
+    store is built in ``agent_worker.startup``. ``phaze.services.analysis`` stamps ``TF_NUM_INTRAOP_THREADS`` /
+    ``OMP_NUM_THREADS`` at import (``apply_thread_env``), so importing it into the parent first would turn
+    every derived default into an operator "pin" and cap every fleet override at it. Imports the worker module
+    (and its functions) on an UNPINNED env, then builds the store exactly as startup does.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        for name, value in {
+            "PHAZE_ROLE": "agent",
+            "PHAZE_AGENT_API_URL": "http://localhost:8000",
+            "PHAZE_AGENT_TOKEN": "phaze_agent_test-token-1234567890abcdef",
+            "PHAZE_AGENT_SCAN_ROOTS": "/tmp",
+            "PHAZE_AGENT_QUEUE": "phaze-agent-test-analyze",
+            "PHAZE_REDIS_URL": "redis://localhost:6379/0",
+            "PHAZE_QUEUE_URL": "postgresql://phaze:phaze@localhost:5432/phaze",
+        }.items():
+            os.environ[name] = value
+        os.environ.pop("TF_NUM_INTRAOP_THREADS", None)
+        os.environ.pop("OMP_NUM_THREADS", None)
+        import phaze.tasks.agent_worker  # noqa: F401
+        import phaze.tasks.functions  # noqa: F401
+        from phaze.runtime_config import get_runtime_config_store
+
+        problems = []
+        if "phaze.services.analysis" in sys.modules:
+            problems.append("phaze.services.analysis is in sys.modules")
+        for var in ("TF_NUM_INTRAOP_THREADS", "OMP_NUM_THREADS"):
+            if var in os.environ:
+                problems.append(f"{var} was stamped into os.environ")
+        store = get_runtime_config_store()
+        if store._thread_pins:
+            problems.append(f"thread pins captured on an unpinned env: {store._thread_pins}")
+        if problems:
+            sys.stderr.write("; ".join(problems) + "\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
+        check=False,
+    )
+    assert result.returncode == 0, f"the agent worker parent broke the thread-ceiling invariant:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_analysis_exec_driver_stays_essentia_and_postgres_free() -> None:
     """Phase 101 (phaze-bo3p.2) extension of D-25: the shared subprocess driver
     (``phaze.services.analysis_exec``) is essentia-free AND Postgres-free.

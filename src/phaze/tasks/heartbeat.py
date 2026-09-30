@@ -93,6 +93,10 @@ The client makes this call as a single attempt (``PhazeAgentClient.get_config``)
 simply retried on the next tick.
 """
 
+#: Ceiling on the ticks skipped between retries of one permanently rejected override set (phaze-dhycx);
+#: x ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` it is ~10 minutes.
+RUNTIME_CONFIG_REJECT_BACKOFF_MAX_TICKS = 20
+
 HEARTBEAT_INFO_LOG_EVERY = 20
 """Emit one INFO every Nth beat (phaze-kaf2).
 
@@ -190,6 +194,13 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
         return
     if digest == ctx.get("_runtime_config_digest"):
         return
+    rejection: _RejectedSet | None = ctx.get("_runtime_config_rejected")
+    if rejection is not None and rejection.digest == digest and rejection.ticks_to_skip > 0:
+        # The SAME set the store already rejected, still inside its backoff: re-running the reload
+        # would re-read the file, repeat every warning and metric, and overwrite
+        # ``last_reload.at`` with "now", hiding when the rejection began (phaze-dhycx).
+        rejection.ticks_to_skip -= 1
+        return
     # phaze-mvq8z.22: the endpoint filters by the SERVER's reloadable keys, and a newer control
     # plane can know a key this agent's build does not. Rejecting the whole reload for it would
     # strand every other override (log_level included) until the agent upgrades, so the unknown
@@ -215,8 +226,33 @@ async def _poll_runtime_config(ctx: dict[str, Any], client: Any) -> None:
     # above holds the rejected set until it is.
     if (await store.reload("poll")).successful:
         ctx["_runtime_config_digest"] = digest
-    else:
-        ctx.pop("_runtime_config_digest", None)
+        ctx.pop("_runtime_config_rejected", None)
+        return
+    ctx.pop("_runtime_config_digest", None)
+    # Retry a rejected set with exponential backoff (phaze-dhycx): the first retry is on the very
+    # next tick (a transient veto clears at once), then every 1, 2, 4 ... ticks up to the cap. A
+    # DIFFERENT digest -- including a withdrawal back to the set in force -- never matches the
+    # remembered one, so it reloads immediately.
+    attempts = rejection.attempts + 1 if rejection is not None and rejection.digest == digest else 1
+    ctx["_runtime_config_rejected"] = _RejectedSet(digest, attempts, _rejection_backoff_ticks(attempts))
+
+
+class _RejectedSet:
+    """A poll-delivered override set the store rejected, and how many ticks to leave it alone."""
+
+    __slots__ = ("attempts", "digest", "ticks_to_skip")
+
+    def __init__(self, digest: str, attempts: int, ticks_to_skip: int) -> None:
+        self.digest = digest
+        self.attempts = attempts
+        self.ticks_to_skip = ticks_to_skip
+
+
+def _rejection_backoff_ticks(attempts: int) -> int:
+    """Ticks to skip after the ``attempts``-th consecutive rejection of one set: 0, 1, 2, 4 ... capped."""
+    if attempts < 2:
+        return 0
+    return min(1 << (attempts - 2), RUNTIME_CONFIG_REJECT_BACKOFF_MAX_TICKS)
 
 
 def _bounded_error(error: str | None) -> str | None:
