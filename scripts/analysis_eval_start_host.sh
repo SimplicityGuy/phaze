@@ -16,8 +16,24 @@ log=$root/results/candidate-launcher.log
   exit 2
 }
 
+if [[ ${1:-} == --check-only ]]; then
+  /usr/bin/python3 - "$context" "$root/results/candidate-smoke-1/summary.json" <<'PY'
+import json, sys
+context=json.load(open(sys.argv[1]))
+smoke=json.load(open(sys.argv[2]))
+assert context['image_digest'].startswith('ghcr.io/simplicityguy/phaze@sha256:')
+assert smoke['runs'] == 1 and smoke['failed_runs'] == 0 and smoke['protocol'] == 'neutral'
+print('candidate image, code, context, and smoke result are ready')
+PY
+  [[ ! -e $root/results/candidate-1 ]] || {
+    echo 'candidate-1 already exists' >&2
+    exit 2
+  }
+  exit 0
+fi
+
 if [[ ${1:-} != --internal ]]; then
-  nohup "$0" --internal >>"$log" 2>&1 </dev/null &
+  nohup "$root/code/start-analysis.sh" --internal >>"$log" 2>&1 </dev/null &
   echo "Started candidate evaluation as PID $!. Follow it with: tail -f $log"
   exit 0
 fi
