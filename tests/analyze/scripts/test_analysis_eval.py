@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from scripts.analysis_eval import _run_one, normalize_current, normalize_neutral, verify_staged_audio
+from scripts.analysis_eval import _run_one, model_tree_digest, normalize_current, normalize_neutral, verify_staged_audio
 from scripts.analysis_eval_score import key_score, score_one, tempo_scores
 from scripts.analysis_eval_stage import _scratch_path
 from tests.analyze._real_result import real_analysis_result
@@ -65,6 +65,12 @@ def test_neutral_contract_allows_semantic_scores_without_essentia_variant_arrays
     result, problems = normalize_neutral(_neutral_result(), 30.0)
     assert problems == []
     assert result["windows"][1]["mood_scores"]["tonality"] == 0.9
+
+
+def test_model_free_candidate_records_empty_model_tree_without_weakening_current_baseline(tmp_path: Path) -> None:
+    assert model_tree_digest(tmp_path, allow_empty=True) == (hashlib.sha256(b"").hexdigest(), 0)
+    with pytest.raises(ValueError, match="models directory is empty"):
+        model_tree_digest(tmp_path)
 
 
 def test_neutral_contract_catches_missing_time_coverage_and_score_dimension() -> None:

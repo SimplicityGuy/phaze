@@ -71,10 +71,10 @@ def verify_staged_audio(items: list[dict[str, Any]], audio_dir: Path) -> None:
             raise ValueError(f"staged copy SHA256 mismatch for {item['file_id']}")
 
 
-def model_tree_digest(models_dir: Path) -> tuple[str, int]:
-    """Fingerprint the exact model bytes before timing, including relative names."""
+def model_tree_digest(models_dir: Path, *, allow_empty: bool = False) -> tuple[str, int]:
+    """Fingerprint exact model bytes; a model-free neutral candidate has an empty digest."""
     files = sorted(path for path in models_dir.rglob("*") if path.is_file())
-    if not files:
+    if not files and not allow_empty:
         raise ValueError("models directory is empty")
     digest = hashlib.sha256()
     for path in files:
@@ -353,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     verify_staged_audio(items, args.audio_dir)
     if not args.models_dir.is_dir():
         parser.error("models directory is missing")
-    model_sha, model_count = model_tree_digest(args.models_dir)
+    model_sha, model_count = model_tree_digest(args.models_dir, allow_empty=args.protocol == "neutral")
     context = json.loads(args.run_context_json.read_text(encoding="utf-8"))
     if any(not context.get(key) or context[key] == "FILL_AT_RUN_TIME" for key in ("node", "image_digest", "cpu_limit", "memory_limit")):
         parser.error("run context needs node, image_digest, cpu_limit, and memory_limit")
