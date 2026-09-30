@@ -41,7 +41,7 @@ dependent fine/coarse wall-clock split (phaze-zaf2l §3b / phaze-bg115).
 ``heartbeat`` is the LIVENESS line (phaze-w55w1). It is deliberately a SECOND line type
 rather than a widening of ``progress`` (WORK-04's original reasoning for a separate
 channel still holds even though ``progress`` itself is no longer fine-tier-only): liveness
-must also cover the per-chunk decodes and the 34 model sweeps — every stage of an
+must also cover the per-chunk decodes and every selected model sweep — every stage of an
 exhaustive analysis that can run for many minutes without completing a WINDOW, whereas
 ``progress`` only fires on a completed window in either tier. The parent resets its stall
 watchdog on either line and forwards only ``progress`` to the bar, so the two channels

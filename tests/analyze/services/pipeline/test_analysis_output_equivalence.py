@@ -29,7 +29,8 @@ per-window failure isolation that lets a file complete when the coarse sweep can
 the exact key set and ordering of the returned dict.
 
 NOT COVERED, stated plainly rather than papered over: the coarse tier's TENSORFLOW MODEL SWEEP.
-The 34-graph model set is not in this repository and is not present in CI, so
+The real model set (12 active graphs by default, 34 in rollback mode) is not in this
+repository and is not present in CI, so
 ``_get_classifier`` raises and every coarse window is skipped -- which is why
 ``coarse_windows_analyzed`` is 0 and ``mood``/``style``/``danceability``/``features`` are empty
 in the recordings. Supplying a fake models_dir or mocking ``TensorflowPredict*`` would produce a

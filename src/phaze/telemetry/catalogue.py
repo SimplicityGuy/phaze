@@ -24,7 +24,7 @@ chunk index are SPAN ATTRIBUTES -- spans are sampled, dropped and aged out, and 
 downstream indexes them into a time series.
 
 MODEL IDENTITY IS THE ONE UNBOUNDED-LOOKING LABEL THAT IS ACTUALLY BOUNDED. There are
-exactly 34 models (11 characteristic sets x 3 variants + 1 genre model), enumerated in
+at most 34 models in ensemble rollback mode (12 in the default MSD-only mode), enumerated in
 ``services/analysis_models.py`` and pinned here by
 ``tests/shared/telemetry/test_metric_catalogue.py::test_model_label_bound_matches_the_registry``.
 It is also the dimension the whole epic exists to expose, because
@@ -170,7 +170,7 @@ WINDOW_OUTCOME = LabelSpec(
     values=("analyzed", "skipped"),
 )
 
-# The 34-model dimension. Three labels rather than one composite, so a dashboard can
+# The bounded model dimension. Three labels rather than one composite, so a dashboard can
 # aggregate by classifier_type (the phaze-8ifq8 question) without string surgery in PromQL.
 MODEL_NAME = LabelSpec(
     name="model_name",
@@ -205,7 +205,8 @@ CLASSIFIER_TYPE = LabelSpec(
 )
 MODEL_LABELS: tuple[LabelSpec, ...] = (MODEL_NAME, MODEL_VARIANT, CLASSIFIER_TYPE)
 
-#: 11 sets x 3 variants + 1 genre model. Pinned against ``analysis_models.MODEL_SETS``.
+#: Rollback ceiling: 11 sets x 3 variants + 1 genre model. Default is 12.
+#: Pinned against ``analysis_models.FULL_MODEL_SETS``.
 MODEL_COMBINATIONS = 34
 
 

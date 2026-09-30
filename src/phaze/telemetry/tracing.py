@@ -5,7 +5,7 @@ Three primitives, and the split between them is the cardinality rule in code for
 * :func:`span` opens a span. Span attributes are FREE-FORM: file id, window index and
   chunk index belong here, because a span is stored per-occurrence and aged out.
 * :func:`timed_metric` times a block into a catalogued histogram and opens no span. This
-  is what the hot loops use -- 34 models x 30 windows per coarse chunk is 1,020
+  is what the hot loops use -- 12 models by default x 30 windows per coarse chunk is 360
   observations, which is a fine number of histogram records and an absurd number of spans.
 * :func:`timed` does both, for the coarser phases where a span is worth having.
 

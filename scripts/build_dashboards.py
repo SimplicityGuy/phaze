@@ -395,7 +395,7 @@ def analysis_cost() -> dict[str, Any]:
             ],
             (0, 12, 14, 12),
             description=(
-                "34 models: 11 characteristic sets x 3 variants, plus the genre model. musicnn, vggish and "
+                "12 active models by default (34 with the ensemble rollback setting). musicnn, vggish and "
                 "effnet_discogs do not cost the same, and this is where that becomes a number rather than a belief. "
                 "The WINDOW is not a label here -- it would be unbounded across a corpus whose longest file has 241 "
                 "coarse windows -- so this is the mean over every window the range covers."

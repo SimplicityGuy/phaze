@@ -109,7 +109,7 @@ _DOWNLOAD_READ_TIMEOUT_S = 300.0
 # text before it crosses the HTTP boundary (AnalysisFailurePayload.error is max_length=2000).
 _ERROR_DETAIL_MAX = 2000
 # How often the child's liveness heartbeats are surfaced to the pod log and the progress API
-# (phaze-x85mi). A coarse chunk completes no window until it is decoded and swept by all 34 models,
+# (phaze-x85mi). A coarse chunk completes no window until it is decoded and swept by all selected models,
 # so the window-driven progress channel can be silent for hours; the beats already reset the D-08
 # watchdog, and this only makes them visible. The decode beats every 60 s and each model sweep
 # beats once, so a 60 s floor keeps traffic at about one line and one POST a minute.

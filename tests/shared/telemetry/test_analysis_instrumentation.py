@@ -21,11 +21,11 @@ discharged by ``test_analysis_with_real_models`` below, which SKIPS unless
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from phaze.services.analysis import analyze_file
+from phaze.services.analysis import MODEL_SETS, analyze_file
 from phaze.telemetry.catalogue import FORBIDDEN_LABEL_SUBSTRINGS
 from tests.shared.telemetry.conftest import write_two_tone_wav
 
@@ -159,21 +159,31 @@ def test_a_failing_run_is_still_measured(telemetry_sink: TelemetrySink, tmp_path
 
 @pytest.mark.skipif(not os.environ.get("PHAZE_TEST_MODELS_DIR"), reason="needs the real 3.26 GB essentia model set; set PHAZE_TEST_MODELS_DIR")
 def test_analysis_with_real_models(telemetry_sink: TelemetrySink, audio: str) -> None:
-    """The per-model claims, against the REAL 34-graph sweep (acceptance 2 and 8).
+    """The per-model claims, against the REAL selected model sweep (acceptance 2 and 8).
 
     Skipped in CI because the weights are 3.26 GB. When it runs, it is the test that shows
     the coarse tier resolving per phase AND per model by classifier_type -- which is the
     question phaze-8ifq8 asks and the cost-breakdown dashboard is built for.
     """
     models_dir = os.environ["PHAZE_TEST_MODELS_DIR"]
-    _run(audio, models_dir)
+    result = _run(audio, models_dir)
+    assert result["coarse_windows_analyzed"] == result["coarse_windows_total"]
+    windows = cast("list[dict[str, object]]", result["windows"])
+    coarse = [window for window in windows if window["tier"] == "coarse"]
+    assert coarse
+    for window in coarse:
+        features = cast("dict[str, object]", window["features"])
+        for group in MODEL_SETS:
+            assert set(cast("dict[str, object]", features[group.name])) == {model.variant for model in group.models}
+        assert "genre" in features
 
     inference = telemetry_sink.attribute_sets("phaze.analysis.model.inference.duration")
     assert inference, "no per-model inference observations"
     assert {tuple(sorted(attrs)) for attrs in inference} == {("classifier_type", "model_name", "model_variant")}
     classifier_types = {attrs["classifier_type"] for attrs in inference}
     assert classifier_types <= {"musicnn", "vggish", "effnet_discogs"}
-    assert len(inference) <= 34, "one attribute set per model, never per window"
+    assert len(inference) == sum(len(group.models) for group in MODEL_SETS) + 1, "one attribute set per selected model, never per window"
+    assert classifier_types == {model.classifier_type for group in MODEL_SETS for model in group.models} | {"effnet_discogs"}
 
     assert telemetry_sink.count("phaze.analysis.model.graph.build.duration") >= 1
     assert telemetry_sink.count("phaze.analysis.model.graph.release.duration") >= 1

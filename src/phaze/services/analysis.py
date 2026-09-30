@@ -7,7 +7,7 @@ DISCONNECTED, not merely dropped). All three, and every function that implements
 here through the phaze-bk9el.15 split; what left were declarations and pure reductions that
 import no essentia and carry no invariant logic:
 
-* :mod:`phaze.services.analysis_models` -- the 34-model registry and the TF batch-size policy;
+* :mod:`phaze.services.analysis_models` -- the selected model registry and the TF batch-size policy;
 * :mod:`phaze.services.analysis_derive` -- mood / style / danceability derivation;
 * :mod:`phaze.services.analysis_windows` -- window geometry, the two per-window records, and
   the aggregate reductions;
@@ -260,11 +260,11 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
 
 
 def _model_labels(model: ModelConfig) -> dict[str, str]:
-    """The bounded 34-combination metric label set for one model.
+    """The bounded model identity metric label set for one model.
 
     The ONLY dimension the analysis metrics carry beyond ``tier``. Model identity is
-    bounded by the registry in ``analysis_models.py`` (11 sets x 3 variants + the genre
-    model); file, window and chunk identity are span attributes and never reach a metric.
+    bounded by the registry in ``analysis_models.py`` (12 active models by default, 34
+    in rollback mode); file, window and chunk identity are span attributes and never reach a metric.
     See ``phaze/telemetry/catalogue.py`` for the budget this label set is costed in.
     """
     return {"model_name": model.name, "model_variant": model.variant, "classifier_type": model.classifier_type}
@@ -890,7 +890,7 @@ def _run_model_sets_over_windows(
 
     ``on_failure(window_index)`` fires once, in-handler, for each window an inference
     fails on; that window is excluded from every later model. ``on_model_done()`` fires
-    after each of the 34 sweeps completes -- the liveness heartbeat for a chunk that can
+    after each selected model sweep completes -- the liveness heartbeat for a chunk that can
     otherwise spend many minutes inside C++ without emitting a window completion.
 
     Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
@@ -1206,8 +1206,9 @@ def _analyze_coarse_windows(
     1. **derive + assemble** in window order, then release the chunk.
 
     The model-major sweep is why the coarse chunk cannot be 1: it needs every buffer of its
-    unit in hand before the first graph is built. Chunking therefore costs 34 graph
-    constructions per chunk instead of per file -- the deliberate price for a peak that does
+    unit in hand before the first graph is built. Chunking therefore costs one graph
+    construction per selected model per chunk (12 by default, 34 in rollback mode)
+    instead of per file -- the deliberate price for a peak that does
     not scale with duration. It does NOT weaken the phaze-15sw invariant: exactly one
     ``TensorflowPredict*`` graph is resident at any instant, within a chunk and across chunk
     boundaries alike (``_sweep_one_model``'s ``finally`` releases before the next is built).
@@ -1220,7 +1221,7 @@ def _analyze_coarse_windows(
 
     ``signals.beat(stage, done, total)`` is the liveness channel (phaze-w55w1). The coarse
     tier is the part of a long analysis that goes longest without completing a window, so it
-    beats at chunk-decode start, after EVERY one of the 34 model sweeps, and at chunk
+    beats at chunk-decode start, after EVERY selected model sweep, and at chunk
     assembly -- enough that a live multi-hour analysis is never mistaken for a hang.
 
     Phase (3) for one window lives in :func:`_derive_coarse_window` (phaze-48ghg.3). The D-07
@@ -1342,7 +1343,8 @@ def analyze_file(
       * FINE (44.1 kHz): ``RhythmExtractor2013`` + ``KeyExtractor`` per
         ``fine_window_sec`` window; trailing windows shorter than
         ``fine_min_sec`` are dropped (except window 0).
-      * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
+      * COARSE (16 kHz): the 12 selected TF models per ``coarse_window_sec`` window
+        (34 with the ensemble rollback setting);
         every window with audio is analyzed (no minimum-length floor).
 
     **Coverage is EXHAUSTIVE (phaze-w55w1 / ADR-0007 (windowed analysis) §7).** Every natural window of both

@@ -1,6 +1,45 @@
 # 🔬 Essentia Usage & Replacement Analysis
 
-**Status:** Analysis / decision record — no code changes. Authored 2026-07-13.
+**Status:** Historical analysis / decision record. Authored 2026-07-13; implementation update below.
+
+**2026-09-30 implementation update (phaze-0sec0):** The review branch selects one
+`musicnn_msd` model for each of the 11 characteristic families plus the unchanged
+Discogs400 genre model. The July cost ranking below is historical. On an isolated
+4-vCPU UpCloud host, the incumbent analyzed eight files in 195.3 and 209.0 minutes;
+the one-variant candidate took 96.4 and 92.7 minutes (2.025× and 2.108× faster
+than the faster incumbent pass), with all result families and windows present.
+The candidate changed 65 of 208 coarse mood labels. Only four broad source genre
+tags were independently scorable, so mood and characteristic quality remain
+unverified. This is an Essentia optimization, not a clean-room replacement.
+
+The model selection is a **restart-time setting**: the default
+`PHAZE_ANALYSIS_MODEL_VARIANTS=msd` uses the measured 12-model path;
+`PHAZE_ANALYSIS_MODEL_VARIANTS=all` restores the previous 34-model ensemble.
+The full model manifest and worker bootstrap remain in place so rollback does not
+require downloading models. This branch does not reanalyze existing database rows.
+
+The changed coarse-window scores, pooled across 208 windows, are review evidence:
+
+| Attribute | Incumbent mean | One-variant mean | Delta |
+| --- | ---: | ---: | ---: |
+| Energy | 0.499 | 0.427 | -0.071 |
+| Danceability | 0.906 | 0.903 | -0.003 |
+| Gender | 0.531 | 0.542 | +0.011 |
+| Tonality | 0.901 | 0.971 | +0.070 |
+| Voice/instrumental | 0.550 | 0.437 | -0.113 |
+| Acoustic | 0.067 | 0.091 | +0.024 |
+| Aggressive | 0.541 | 0.637 | +0.096 |
+| Electronic | 0.842 | 0.836 | -0.006 |
+| Happy | 0.264 | 0.377 | +0.113 |
+| Party | 0.729 | 0.612 | -0.117 |
+| Relaxed | 0.301 | 0.475 | +0.174 |
+| Sad | 0.181 | 0.301 | +0.120 |
+
+File/fine-window BPM, key, and Discogs style remain on the same algorithms; the
+candidate's predictions for those attributes matched the incumbent runs. Mood
+label agreement with the incumbent was 143/208 windows (68.75%). The shifts are
+known behavior changes, not measured improvements in accuracy. The companion
+real-model coverage gap is tracked by phaze-28883.
 
 This document answers a standing question: **can we replace `essentia-tensorflow`
 with something less compute-intensive without losing any features?** It maps where
@@ -41,7 +80,7 @@ run once — rather than one `EasyLoader` call per window:
 | Pass | Sample rate | Window | Chunk | essentia algorithms | Features produced |
 | ---- | ----------- | ------ | ----- | ------------------- | ----------------- |
 | **FINE** | 44.1 kHz | 30 s | 60 windows | `RhythmExtractor2013(method="multifeature")` + `KeyExtractor(profileType="edma")` | `bpm`, `musical_key` (+ per-window time series) |
-| **COARSE** | 16 kHz | 180 s | 30 windows | 34 TensorFlow graphs (11 sets × 3 variants + `discogs-effnet` genre) | `mood`, `style`, `danceability`, full `features` JSONB |
+| **COARSE** | 16 kHz | 180 s | 30 windows | 12 TensorFlow graphs by default (11 `musicnn_msd` + `discogs-effnet` genre); 34 in rollback mode | `mood`, `style`, `danceability`, full `features` JSONB |
 
 ### Coverage is exhaustive; memory is bounded by the CHUNK
 
@@ -215,9 +254,9 @@ Stored on `AnalysisResult` (`models/analysis.py`) and per-window on `AnalysisWin
 | ------- | ---------------- | ----------- |
 | `bpm` | `RhythmExtractor2013` (fine) | column + LLM prompt + per-window time series |
 | `musical_key` | `KeyExtractor` (fine) | column + LLM prompt + per-window time series |
-| `mood` | 7 mood model sets × 3 variants (coarse) | column + LLM prompt |
+| `mood` | 7 mood model sets × 1 active variant by default (coarse) | column + LLM prompt |
 | `style` | `discogs-effnet` genre (coarse) | column + LLM prompt |
-| `danceability` | danceability set × 3 variants | inside `features` / per-window |
+| `danceability` | danceability set × 1 active variant by default | inside `features` / per-window |
 | `features` (full JSONB) | all 11 sets + genre — incl. `gender`, `tonality`, `voice_instrumental` | fed verbatim to the LLM |
 | progress counts | `fine/coarse_windows_analyzed/total` | the in-flight progress bar + the completion PUT (equal on a healthy file since phaze-w55w1) |
 

@@ -37,6 +37,7 @@ import pytest
 
 import phaze.services.analysis as analysis_mod
 from phaze.services.analysis import GENRE_MODEL, MODEL_SETS, analyze_file
+from phaze.services.analysis_models import FULL_MODEL_SETS
 
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
 
 _ALL_MODELS = [m for ms in MODEL_SETS for m in ms.models] + [GENRE_MODEL]
-_N_MODELS = 34
+_N_MODELS = len(_ALL_MODELS)
 _DURATION_SEC = 900.0  # 5 coarse (180s) windows -- enough for window/model mix-ups to show
 
 
@@ -197,7 +198,7 @@ def _instrumented_analyze(mock_es: MagicMock, duration_sec: float = _DURATION_SE
 
 
 def test_every_model_constructed_exactly_once_per_file() -> None:
-    """34 graphs, 34 constructions -- the cache's wall-clock benefit is fully preserved."""
+    """Every selected graph is built once; the cache's wall-clock benefit remains."""
     mock_es = _build_mock_es()
     result, built, _ = _instrumented_analyze(mock_es)
 
@@ -207,8 +208,21 @@ def test_every_model_constructed_exactly_once_per_file() -> None:
     assert len(set(built)) == len(built), f"a model was rebuilt: {[f for f in set(built) if built.count(f) > 1]}"
 
 
+def test_ensemble_rollback_retains_all_three_variants() -> None:
+    """The rollback registry still traverses every graph and preserves feature shape."""
+    with patch.object(analysis_mod, "MODEL_SETS", FULL_MODEL_SETS):
+        result, built, _ = _instrumented_analyze(_build_mock_es())
+
+    assert len(built) == 34
+    assert result["coarse_windows_analyzed"] == 5
+    for window in result["windows"]:
+        if window["tier"] == "coarse":
+            for group in FULL_MODEL_SETS:
+                assert set(window["features"][group.name]) == {"musicnn_msd", "musicnn_mtt", "vggish"}
+
+
 def test_at_most_one_graph_is_resident() -> None:
-    """The whole point: residency is 1, not 34, at every instant of the coarse pass."""
+    """The whole point: at most one graph is resident during the coarse pass."""
     mock_es = _build_mock_es()
     result, built, resident_at_build = _instrumented_analyze(mock_es)
 
@@ -221,18 +235,18 @@ def test_at_most_one_graph_is_resident() -> None:
 
 
 def test_construction_count_scales_with_chunks_not_with_windows() -> None:
-    """34 constructions per COARSE CHUNK -- not per window, and not once per file (phaze-w55w1).
+    """One construction per selected model per COARSE CHUNK (phaze-w55w1).
 
     This assertion changed with the chunked rework and the change is a real, deliberate cost,
     so it is stated exactly rather than loosened. Under the caps a file cost 34 constructions
     FULL STOP, because the whole tier was one model-major sweep. Chunking means one sweep per
-    chunk, so the cost is ``34 x ceil(coarse_windows / _COARSE_CHUNK_WINDOWS)``: that is the
+    chunk, so the cost is ``_N_MODELS x ceil(coarse_windows / _COARSE_CHUNK_WINDOWS)``: that is the
     price paid to keep PCM residency independent of duration (D-07).
 
     What did NOT change is the invariant that actually bought the memory (phaze-15sw): still one
     graph at a time, still no per-WINDOW reload. The 900 s file (5 coarse windows, 1 chunk) and
     the 7 200 s file (40 coarse windows, 2 chunks) differ 8x in windows and only 2x in
-    constructions -- if graphs were rebuilt per window the second figure would be 34 x 40.
+    constructions -- if graphs were rebuilt per window the second figure would be ``_N_MODELS x 40``.
     """
     result_5, built_5, _ = _instrumented_analyze(_build_mock_es(), duration_sec=900.0)
     result_40, built_40, resident_40 = _instrumented_analyze(_build_mock_es(), duration_sec=7200.0)
@@ -240,7 +254,7 @@ def test_construction_count_scales_with_chunks_not_with_windows() -> None:
     assert result_5["coarse_windows_analyzed"] == 5  # 1 chunk
     assert result_40["coarse_windows_analyzed"] == 40  # 2 chunks (30 + 10)
     assert len(built_5) == _N_MODELS
-    assert len(built_40) == _N_MODELS * 2, "constructions must track CHUNKS; 34 x n_windows would mean a per-window reload"
+    assert len(built_40) == _N_MODELS * 2, "constructions must track CHUNKS; per-window reloads would multiply by n_windows"
     # The load-bearing half: chunking must not have reintroduced co-residency.
     assert max(resident_40) == 1
 
@@ -316,7 +330,7 @@ def test_inference_failure_kills_exactly_one_window() -> None:
     real_predict = analysis_mod._predict_single
 
     def flaky(audio: Any, model: Any, models_dir: str) -> Any:
-        if model.filename == "mood_happy-vggish-audioset-1" and _marker(audio) == victim_start:
+        if model.filename == "mood_happy-musicnn-msd-2" and _marker(audio) == victim_start:
             msg = "simulated inference failure"
             raise RuntimeError(msg)
         return real_predict(audio, model, models_dir)
@@ -356,7 +370,7 @@ def test_failed_window_is_not_retried_by_later_models() -> None:
     ):
         analyze_file("/fake/audio.mp3", "/fake/models")
 
-    assert calls.count(0.0) == 1, "window 0 failed on the first of 34 models and must never be fed to another"
+    assert calls.count(0.0) == 1, "window 0 failed on the first model and must never be fed to another"
 
 
 def test_failures_are_reported_without_retaining_the_exception() -> None:

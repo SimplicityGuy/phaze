@@ -1,7 +1,7 @@
 """Analysis model registry and TensorFlow inference batch-size policy.
 
-Extracted VERBATIM from ``services/analysis.py`` (phaze-bk9el.15) -- declarations and
-one pure env-parsing function, with no essentia import and no dependency on the analysis
+Extracted from ``services/analysis.py`` (phaze-bk9el.15) -- declarations and
+pure env-parsing functions, with no essentia import and no dependency on the analysis
 pipeline. Nothing here touches D-07 (chunk-bounded exhaustive analysis), D-08
 (progress-based liveness) or D-09 (the streaming network must be DISCONNECTED, not
 dropped); those surfaces stay whole in ``analysis.py``.
@@ -14,7 +14,7 @@ pipeline's own call sites.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import os
 
@@ -43,7 +43,8 @@ class ModelSetConfig:
     models: tuple[ModelConfig, ...]
 
 
-# Model registry: 11 characteristic model sets (33 models) per D-02
+# Full model registry: 11 characteristic model sets (33 models) per D-02.
+# Retained for the explicit rollback mode; the measured default uses 11 of these.
 
 
 def _make_standard_set(name: str, filename_prefix: str) -> ModelSetConfig:
@@ -58,7 +59,7 @@ def _make_standard_set(name: str, filename_prefix: str) -> ModelSetConfig:
     )
 
 
-MODEL_SETS: tuple[ModelSetConfig, ...] = (
+FULL_MODEL_SETS: tuple[ModelSetConfig, ...] = (
     _make_standard_set("mood_acoustic", "mood_acoustic"),
     _make_standard_set("mood_electronic", "mood_electronic"),
     _make_standard_set("mood_aggressive", "mood_aggressive"),
@@ -79,6 +80,27 @@ MODEL_SETS: tuple[ModelSetConfig, ...] = (
         ),
     ),
 )
+
+
+_MODEL_VARIANTS_ENV = "PHAZE_ANALYSIS_MODEL_VARIANTS"
+
+
+def _select_model_sets(mode: str | None = None) -> tuple[ModelSetConfig, ...]:
+    """Select the measured MSD-only sweep, or the previous ensemble for rollback.
+
+    This is a restart-only process setting. The default exactly matches the eight-file
+    UpCloud candidate: one ``musicnn_msd`` head per characteristic, in registry order.
+    ``all`` restores the previous 33-head ensemble without changing stored data.
+    """
+    selected = mode if mode is not None else os.environ.get(_MODEL_VARIANTS_ENV, "msd")
+    if selected == "all":
+        return FULL_MODEL_SETS
+    if selected != "msd":
+        log.warning("%s=%r is not msd or all; using msd", _MODEL_VARIANTS_ENV, selected)
+    return tuple(replace(group, models=(next(model for model in group.models if model.variant == "musicnn_msd"),)) for group in FULL_MODEL_SETS)
+
+
+MODEL_SETS: tuple[ModelSetConfig, ...] = _select_model_sets()
 
 GENRE_MODEL = ModelConfig(
     name="discogs_genre",
