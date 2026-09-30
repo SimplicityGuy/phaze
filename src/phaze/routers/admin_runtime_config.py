@@ -106,7 +106,13 @@ async def build_runtime_config_pane_context(session: AsyncSession) -> dict[str, 
     override rows -- keys a later build renamed or made restart-only, which every reader ignores --
     so an operator can see them and clear them here. Names only; a stale value may be a credential.
     """
-    _, stale = partition_overrides(await get_runtime_config_overrides(session))
+    try:
+        _, stale = partition_overrides(await get_runtime_config_overrides(session))
+    except Exception:
+        # The stale-row list is a convenience over the snapshot, which needs no DB: a failed read
+        # degrades the pane to the snapshot instead of erroring the whole page (phaze-dhycx).
+        logger.warning("phaze.runtime_config_admin stale override read failed; rendering from the snapshot", exc_info=True)
+        stale = ()
     snapshot = get_runtime_config_store().snapshot()
     reloadable = [
         {"key": key, "value": getattr(snapshot.config, key), "source": snapshot.sources.get(key, "default")} for key in sorted(RELOADABLE_KEYS)

@@ -226,7 +226,7 @@ class Observed:
 class AgentProcess:
     """One real agent worker process, and the test's view of it."""
 
-    def __init__(self, tmp_path: Path, control: ControlPlane, *, debounce_seconds: float) -> None:
+    def __init__(self, tmp_path: Path, control: ControlPlane, *, debounce_seconds: float, pin_threads: bool = True) -> None:
         self.control = control
         self.runtime_dir = tmp_path / "runtime"
         self.stage_dir = tmp_path / "stage"
@@ -264,12 +264,13 @@ class AgentProcess:
             "WORKER_PROCESS_POOL_SIZE": str(START["worker_process_pool_size"]),
             "WORKER_MAX_JOBS": "8",
             "PHAZE_ANALYSIS_PHYSICAL_CORES": str(AGENT_CORES),
-            "TF_NUM_INTRAOP_THREADS": str(AGENT_THREADS),
-            "OMP_NUM_THREADS": str(AGENT_THREADS),
             # Read by _retune_agent_harness (not imported here: importing it builds the agent's queue).
             "PHAZE_RETUNE_PROBE_DIR": str(self.probe_dir),
             "PHAZE_RETUNE_HEARTBEAT_INTERVAL_SEC": str(HEARTBEAT_INTERVAL),
         }
+        if pin_threads:
+            self.env["TF_NUM_INTRAOP_THREADS"] = str(AGENT_THREADS)
+            self.env["OMP_NUM_THREADS"] = str(AGENT_THREADS)
         self.proc: subprocess.Popen[bytes] | None = None
         self.queue = PostgresQueue.from_url(BROKER_DSN, name=QUEUE_NAME)
         self.observed = Observed(events=[], lane_status=None, statuses={})
@@ -387,8 +388,8 @@ class AgentProcess:
 async def launch_agent(control_plane: ControlPlane, tmp_path: Path) -> AsyncIterator[Callable[..., Awaitable[AgentProcess]]]:
     agents: list[AgentProcess] = []
 
-    async def _launch(*, debounce_seconds: float = 0.1) -> AgentProcess:
-        agent = AgentProcess(tmp_path, control_plane, debounce_seconds=debounce_seconds)
+    async def _launch(*, debounce_seconds: float = 0.1, pin_threads: bool = True) -> AgentProcess:
+        agent = AgentProcess(tmp_path, control_plane, debounce_seconds=debounce_seconds, pin_threads=pin_threads)
         agents.append(agent)
         await agent.start()
         return agent
@@ -649,7 +650,7 @@ async def test_retune_through_an_admin_api_override(launch_agent: Callable[..., 
             assert restart_only.json()["detail"] == "requires restart"
             assert await control_plane.overrides() == stored
             # Valid on the 16-core control plane, so it IS stored -- but 4 children x 2 threads
-            # oversubscribes the 4-core agent, which must refuse it when the poll delivers it.
+            # oversubscribes the 6-core agent, which must refuse it when the poll delivers it.
             pool = await client.post("/admin/runtime-config/worker_process_pool_size", data={"value": "4"})
             assert pool.status_code == 200, pool.text
             await agent.until(
@@ -670,3 +671,30 @@ async def test_retune_through_an_admin_api_override(launch_agent: Callable[..., 
         )
 
     await _retune(agent, trigger, reject_invalid)
+
+
+async def test_a_thread_key_is_raised_live_on_an_agent_with_no_env_pin(launch_agent: Callable[..., Awaitable[AgentProcess]]) -> None:
+    """phaze-dhycx: every other scenario here pins both thread vars, so a thread key can only ever be lowered.
+    With no pin the derived default is the base and there is no ceiling: a raise must land, from the override
+    layer, and the agent's own audit log must record it old -> new.
+    """
+    agent = await launch_agent(pin_threads=False)
+    derived = min(4, AGENT_CORES)  # derive_sizing's intra-op knee, on the PHAZE_ANALYSIS_PHYSICAL_CORES this harness sets
+    raised = {"analysis_intra_op_threads": derived + 1, "analysis_omp_threads": derived + 1}
+    effective = agent.observed.effective
+    assert effective is not None
+    assert {key: effective["sources"][key] for key in raised} == dict.fromkeys(raised, "default"), "the agent must start unpinned"
+    assert {key: effective["values"][key] for key in raised} == dict.fromkeys(raised, derived)
+
+    # One child (the START pool size) x 5 threads fits the agent's 6 cores.
+    await api_trigger(agent.control).apply(raised)
+
+    await agent.until(
+        lambda o: _in_force(o, raised, layer="override", reload_source="poll"),
+        f"the heartbeat reports {raised} in force from the override layer, uncapped",
+    )
+    audit = [line for line in agent.reload_log_lines() if line["source"] == "poll" and line["outcome"] == "applied"]
+    changes = {key: (change["old"], change["new"]) for line in audit for key, change in line["changes"].items() if key in raised}
+    assert changes == {key: (derived, value) for key, value in raised.items()}, changes
+    assert agent.proc is not None
+    assert agent.proc.poll() is None

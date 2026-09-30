@@ -502,3 +502,66 @@ async def test_withdrawing_a_rejected_set_back_to_the_one_in_force_is_still_relo
     assert (store.last_result.source, store.last_result.outcome) == ("poll", "unchanged")
     assert (await store.reload("sighup")).outcome == "unchanged", "the provider still held the withdrawn, rejected set"
     assert store.current().worker_max_jobs == 9
+
+
+# phaze-dhycx: a PERMANENTLY rejected set is retried with backoff, not every tick forever.
+
+
+async def test_a_permanently_rejected_set_is_retried_with_bounded_attempts_and_keeps_last_reload_at(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.reload("startup")
+    attempts: list[int] = []
+
+    def _always_refuse(config: Any) -> None:
+        attempts.append(config.worker_max_jobs)
+        raise RuntimeError("permanently refused")
+
+    store.register_validator("always_refuse", _always_refuse)
+    client = _StubClient(overrides={"worker_max_jobs": 9, _KEY_FROM_A_NEWER_CONTROL_PLANE: 3})
+    ctx = _ctx(client, store=store)
+
+    with capture_logs() as logs:
+        await send_heartbeat(ctx)
+        assert store.last_result is not None
+        first_at = store.last_result.at
+        ticks = 200
+        for _ in range(ticks - 1):
+            await send_heartbeat(ctx)
+
+    # Attempt 1, then attempt 2 on the next tick, then gaps of 1, 2, 4, ... up to the cap.
+    assert 2 < len(attempts) < ticks // 5
+    ignored = [entry for entry in logs if entry.get("event") == "heartbeat: ignoring runtime-config override keys this agent does not know"]
+    assert len(ignored) == len(attempts), "the ignored-keys warning is repeated per real attempt, not per tick"
+    assert heartbeat._rejection_backoff_ticks(1) == 0
+    assert [heartbeat._rejection_backoff_ticks(n) for n in (2, 3, 4, 5)] == [1, 2, 4, 8]
+    assert heartbeat._rejection_backoff_ticks(50) == heartbeat.RUNTIME_CONFIG_REJECT_BACKOFF_MAX_TICKS
+    # Every beat still went out, and the rejection's timestamp is from the attempt, not the last tick.
+    assert len(client.heartbeat_calls) == ticks
+    last_reload = client.heartbeat_calls[-1].effective_config.last_reload  # type: ignore[union-attr]
+    assert last_reload is not None
+    assert last_reload.outcome == "rejected"
+    assert first_at <= last_reload.at
+    assert store.last_result.at == last_reload.at
+
+
+async def test_a_changed_set_is_applied_promptly_while_another_is_backing_off(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.reload("startup")
+
+    def _refuse_nine(config: Any) -> None:
+        if config.worker_max_jobs == 9:
+            raise RuntimeError("nine is refused")
+
+    store.register_validator("refuse_nine", _refuse_nine)
+    ctx = _ctx(_StubClient(overrides={"worker_max_jobs": 9}), store=store)
+    for _ in range(10):  # deep into the backoff
+        await send_heartbeat(ctx)
+    assert store.last_result is not None
+    assert store.last_result.outcome == "rejected"
+
+    ctx["api_client"] = _StubClient(overrides={"worker_max_jobs": 11})
+    await send_heartbeat(ctx)  # the very next tick: a different digest never waits out another's backoff
+
+    assert store.last_result.outcome == "applied"
+    assert store.current().worker_max_jobs == 11
+    assert "_runtime_config_rejected" not in ctx
