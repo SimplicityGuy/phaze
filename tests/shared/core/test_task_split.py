@@ -639,7 +639,20 @@ def test_job_runner_does_not_run_heartbeat_loop() -> None:
     Verified by subprocess (mirroring the D-25 import-boundary style) so a contaminated
     import in the test process cannot poison downstream tests via sys.modules caching. We
     assert BOTH that the heartbeat module stays out of the import graph AND that no
-    ``_heartbeat_loop`` / ``heartbeat`` symbol appears in the module source/namespace.
+    agent-liveness symbol appears in the module source/namespace.
+
+    The source check names the agent-liveness TOKENS rather than banning the bare word
+    "heartbeat" (phaze-x85mi). When this guard was written the word meant only agent liveness;
+    it has since also come to name the analysis child's liveness channel (phaze-w55w1 -- the
+    driver's ``heartbeat_cb``, which resets the D-08 stall watchdog and never touches
+    ``Agent.last_seen_at``) and the SAQ job heartbeat. The pod must relay the child's channel
+    so a slow coarse tier is distinguishable from a hang, which the bare word forbade. The
+    tokens still catch every way to set ``last_seen_at`` from here: the loop, the client's
+    ``.heartbeat(`` call to ``POST /api/internal/agent/heartbeat``, its ``HeartbeatRequest``
+    payload, and ``phaze.tasks.heartbeat``'s entrypoints. Operator decision 2026-09-30, asked
+    through AskUserQuestion in the dispatch session. Question: "phaze-x85mi: the fix ... is
+    blocked by one guard test ... How should this be resolved?" Answer (selected option):
+    "A: narrow the text check (Recommended)". Durable record: a comment on bead phaze-x85mi.
     """
     script = textwrap.dedent("""
         import inspect
@@ -666,8 +679,10 @@ def test_job_runner_does_not_run_heartbeat_loop() -> None:
             sys.stderr.write("_heartbeat_loop must NOT be a name in phaze.job_runner\\n")
             sys.exit(2)
         source = inspect.getsource(jr)
-        if "_heartbeat_loop" in source or "heartbeat" in source:
-            sys.stderr.write("phaze.job_runner source must not reference the heartbeat loop\\n")
+        agent_liveness = ("_heartbeat_loop", ".heartbeat(", "HeartbeatRequest", "send_heartbeat", "heartbeat_tick", "tasks.heartbeat")
+        found = [token for token in agent_liveness if token in source]
+        if found:
+            sys.stderr.write(f"phaze.job_runner source must not reference agent liveness: {found}\\n")
             sys.exit(3)
         sys.exit(0)
     """)
