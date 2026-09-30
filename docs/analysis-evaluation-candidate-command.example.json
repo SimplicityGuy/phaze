@@ -1,0 +1,7 @@
+[
+  "/app/.venv/bin/python",
+  "/candidate/analyze.py",
+  "{audio}",
+  "--models-dir",
+  "{models}"
+]
