@@ -132,6 +132,19 @@ OMP_ENV = "OMP_NUM_THREADS"
 # outputs in the relationship this module exists to preserve.
 PHYSICAL_CORES_ENV = "PHAZE_ANALYSIS_PHYSICAL_CORES"
 
+# Cadence at which a Kueue pod surfaces its analysis child's heartbeats (phaze-x85mi, phaze-rvpym): at
+# most one progress re-POST and one ``job_runner_heartbeat`` line per this many seconds. It lives here,
+# in an import-light module both the Postgres-less pod (``job_runner``) and the control plane
+# (``services/backends/lane_detail``) already reach, so the Analyze page's liveness threshold for a
+# cloud pod is derived from ONE number and cannot drift from the pod's real cadence.
+HEARTBEAT_SURFACE_INTERVAL_SEC = 60.0
+
+# A surfaced beat is only sent when the NEXT child beat arrives after the interval has elapsed. The
+# decode beats every 60 s and each model sweep beats once, so the real gap between two POSTs can reach
+# about twice the interval; with poll and clock slack, 5x is the smallest multiple that does not flag a
+# healthy pod. DISPLAY ONLY: nothing is killed or requeued on this (D-08, phaze-1b39).
+CLOUD_HEARTBEAT_LOST_INTERVALS = 5
+
 
 @dataclass(frozen=True)
 class AnalysisSizing:

@@ -72,6 +72,7 @@ from phaze.schemas.agent_analysis import (
 )
 from phaze.services.agent_client import AgentApiServerError
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
+from phaze.services.analysis_sizing import HEARTBEAT_SURFACE_INTERVAL_SEC
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
 from phaze.services.video_audio import AudioSource, NoAudioTrackError, extract_audio_track
@@ -112,7 +113,7 @@ _ERROR_DETAIL_MAX = 2000
 # so the window-driven progress channel can be silent for hours; the beats already reset the D-08
 # watchdog, and this only makes them visible. The decode beats every 60 s and each model sweep
 # beats once, so a 60 s floor keeps traffic at about one line and one POST a minute.
-_HEARTBEAT_SURFACE_INTERVAL_SEC = 60.0
+_HEARTBEAT_SURFACE_INTERVAL_SEC = HEARTBEAT_SURFACE_INTERVAL_SEC
 
 
 class PresignedDownloadError(RuntimeError):
