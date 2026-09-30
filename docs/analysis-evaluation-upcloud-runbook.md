@@ -2,6 +2,15 @@
 
 The first and repeat incumbent passes finished on the same UpCloud host, each with eight complete files and zero contract failures. Their measured playback speeds were 3.156× and 2.950×. The one-time local completion monitor has been removed. No candidate analysis has run.
 
+**Ready candidate, 2026-09-30:** The first performance experiment runs one MusiCNN-MSD model per characteristic family, retains the Discogs400 genre model and the existing fine-tier DSP, and keeps every natural window. It is an Essentia-based ablation, not a clean-room implementation. It has the pinned incumbent image, the selected model pairs, a configured command/context, and a one-command launcher staged on the host. To start the smoke check followed by the full batch in the background, run:
+
+```bash
+ssh datum@209.50.61.190
+/home/datum/phaze-iq64v/code/start-analysis.sh
+```
+
+The command prints a log path and returns. The launcher stops if the smoke check fails; it never starts the full batch after a contract failure. The generic staging and manual commands below remain available for later candidates.
+
 ## Frozen inputs and baseline evidence
 
 - Host: `datum@209.50.61.190`, UUID `0068802d-f350-4a44-9ca9-b79c960b749d`, 4 vCPU / 8 GiB plan. The Docker analysis limit is 4 CPUs and 7 GiB.
