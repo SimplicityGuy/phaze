@@ -1,0 +1,13 @@
+{
+  "excluded": {
+    "Hardcore": "Ambiguous between electronic and rock style families without source review"
+  },
+  "interpretation": "Broad source-tag agreement with ranked Discogs400 styles; exploratory, not independent listening ground truth",
+  "patterns": {
+    "Electronic": "^Electronic/",
+    "House": "^Electronic/[^/]*House$",
+    "Punk Rock": "^Rock/Punk"
+  },
+  "schema_version": 1,
+  "source": "homelab metadata.genre extracted from embedded audio tags"
+}

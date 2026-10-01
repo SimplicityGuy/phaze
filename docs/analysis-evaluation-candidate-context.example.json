@@ -1,0 +1,8 @@
+{
+  "cpu_limit": "4 vCPU Docker --cpus=4",
+  "image_digest": "FILL_AT_RUN_TIME",
+  "memory_limit": "7 GiB Docker --memory=7g",
+  "node": "upcloud-us-sjo1-0068802d-f350-4a44-9ca9-b79c960b749d",
+  "notes": "Record candidate code and model provenance. The image is digest-pinned and runs with the same host limits as both baselines.",
+  "source_commit": "FILL_AT_RUN_TIME"
+}

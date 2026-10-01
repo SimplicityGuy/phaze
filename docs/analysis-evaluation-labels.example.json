@@ -1,0 +1,20 @@
+{
+  "annotations": [
+    {
+      "ambiguity": "RECORD_DISAGREEMENT_OR_NONE",
+      "annotators": 1,
+      "binary": {
+        "danceability": 1,
+        "mood_happy": 1
+      },
+      "bpm": 120.0,
+      "genre": [
+        "Electronic/House"
+      ],
+      "key": "A minor",
+      "sha256": "REPLACE_WITH_STAGED_AUDIO_SHA256",
+      "source": "REPLACE_WITH_INDEPENDENT_ANNOTATION_SOURCE"
+    }
+  ],
+  "schema_version": 1
+}

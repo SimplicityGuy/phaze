@@ -1,0 +1,7 @@
+{
+  "cpu_limit": "FILL_AT_RUN_TIME",
+  "image_digest": "FILL_AT_RUN_TIME",
+  "memory_limit": "FILL_AT_RUN_TIME",
+  "node": "upcloud-phaze-iq64v",
+  "notes": "Record the exact host UUID, plan, image digest, and resource limits observed during the paired UpCloud run."
+}

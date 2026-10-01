@@ -46,6 +46,10 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
+| **[Analysis Evaluation](analysis-evaluation.md)** | 📊 Result contract, quality and performance criteria, and paired UpCloud corpus |
+| **[UpCloud Evaluation Handoff](analysis-evaluation-upcloud-runbook.md)** | 🧪 Completed baselines, frozen DB reference, staged candidate launcher, and exact remaining steps |
+| **[One-Variant Analysis Candidate](analysis-evaluation-one-variant-candidate.md)** | ⚡ Essentia-based single-variant experiment, output coverage, and measured speed |
+| **[Analysis Evaluation Report Template](analysis-evaluation-report-template.md)** | 📝 Comparable baseline and candidate measurements, coverage, and quality evidence |
 | **[Pipeline Stats Performance](pipeline-stats-performance.md)** | ⏱️ Current poll baseline, skip-probe diagnosis, and post-deployment verification |
 | **[Postgres JIT](postgres-jit.md)** | 🧮 Measured JIT cost vs benefit across every admin and worker statement, the 500,000-cost cliff, and the read-only host-prod confirmation script |
 | **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |

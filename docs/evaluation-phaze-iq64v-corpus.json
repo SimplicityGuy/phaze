@@ -1,0 +1,87 @@
+{
+  "items": [
+    {
+      "available_on_nox": true,
+      "band": "long",
+      "codec": "aac",
+      "duration_sec": 3722.065850340136,
+      "file_id": "1b645c54-7f4e-45e5-932d-6e05c5006c24",
+      "format": "m4a",
+      "sample_rate_hz": 44100,
+      "sha256": "78a401cc151b238334c498286ded9ad0337209ca30dc8b9d216568249987286d"
+    },
+    {
+      "available_on_nox": true,
+      "band": "long",
+      "codec": "mp3",
+      "duration_sec": 3630.464,
+      "file_id": "4ed6aa14-142c-4f45-936f-3d690f565444",
+      "format": "mp3",
+      "sample_rate_hz": 48000,
+      "sha256": "cd6d3fcc45659215f24b3bdcfcf41328597916fac1839fa8c645d954d7eb3f6d"
+    },
+    {
+      "available_on_nox": true,
+      "band": "medium",
+      "codec": "aac",
+      "duration_sec": 3362.4816326530613,
+      "file_id": "4db7dec9-804f-4a82-b793-810b3b3ec1a2",
+      "format": "m4a",
+      "sample_rate_hz": 44100,
+      "sha256": "23bc936d01c64acdaa27877f79a7348cd772b80660ff385d309e27d59962d59d"
+    },
+    {
+      "available_on_nox": true,
+      "band": "medium",
+      "codec": "mp3",
+      "duration_sec": 3598.027755102041,
+      "file_id": "95c93287-0b17-46be-8930-0dd3ce19ccf1",
+      "format": "mp3",
+      "sample_rate_hz": 44100,
+      "sha256": "d8b7af2b17e2de7b102508f46deff25ad78fee09b407a1bb3981ec91f3fbe8dc"
+    },
+    {
+      "available_on_nox": true,
+      "band": "short",
+      "codec": "flac",
+      "duration_sec": 531.3425850340136,
+      "file_id": "a96fb547-32c5-4f5f-9d6a-0fec21fef3db",
+      "format": "flac",
+      "sample_rate_hz": 44100,
+      "sha256": "afcc22d5e2fb6f2f5289a8d9e6b7666aa7e00e51380e495d3e94648c235b533b"
+    },
+    {
+      "available_on_nox": true,
+      "band": "short",
+      "codec": "mp3",
+      "duration_sec": 199.96,
+      "file_id": "bac7ccb1-597e-49fc-aefb-e24e95d74ce6",
+      "format": "mp3",
+      "sample_rate_hz": 44100,
+      "sha256": "1fa9b195a67209fbe13677719653199d81e8e724afb87977b21c27f5083a15aa"
+    },
+    {
+      "available_on_nox": true,
+      "band": "very_long",
+      "codec": "aac",
+      "duration_sec": 10970.267573696145,
+      "file_id": "ea077f39-99dd-4737-9afc-51690cf1f252",
+      "format": "m4a",
+      "sample_rate_hz": 44100,
+      "sha256": "fd54ce7e755a0f1aa93acb64fd561574cd0dab8b0a006619c0ca82273fb97b93"
+    },
+    {
+      "available_on_nox": true,
+      "band": "very_long",
+      "codec": "mp3",
+      "duration_sec": 10970.409795918367,
+      "file_id": "36ea066b-11ae-45e9-b7c5-4cdddc3a603b",
+      "format": "mp3",
+      "sample_rate_hz": 44100,
+      "sha256": "0e672472b50b9dd9c9b9c56cf742ab392d3a3cdb3f82cef1788b3c20350c2990"
+    }
+  ],
+  "schema_version": 1,
+  "selection": "one completed analyzed nox file per format/duration stratum, ordered by md5(sha256 || phaze-iq64v-v1)",
+  "source": "Phaze production database, read-only selection, 2026-09-29"
+}
