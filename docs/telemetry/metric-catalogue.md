@@ -186,9 +186,9 @@ Three metrics are budgeted below their cartesian product, and each has a reason 
 fact about this repo rather than an optimistic guess:
 
 - **the four model histograms** — `model_name` × `model_variant` × `classifier_type` is
-  12 × 4 × 3 = **144** on paper. The registry declares exactly **34** combinations, and no
-  other combination can be constructed: the labels are read off a `ModelConfig` that only
-  exists for those 34.
+  12 × 4 × 3 = **144** on paper. The full rollback registry declares **34** combinations,
+  while the measured MSD-only default emits **12**. No other combination can be constructed:
+  the labels are read off a `ModelConfig` from that bounded registry.
 - **`phaze_http_server_request_duration_seconds`** — 8 × 160 × 6 = **7,680** on paper. A
   series exists only for a `(method, route, status_class)` actually observed, and a route
   serves the one or two methods it declares, not eight. Measured against

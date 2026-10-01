@@ -36,6 +36,7 @@ from phaze.services.analysis import (
     derive_mood,
     derive_style,
 )
+from phaze.services.analysis_models import FULL_MODEL_SETS, _select_model_sets
 
 
 def test_model_sets_count() -> None:
@@ -77,13 +78,27 @@ def test_streaming_decode_longer_than_stall_threshold_keeps_beating(monkeypatch:
     assert len(beats) >= 3, "the blocking decode must report repeated liveness, not just boundary progress"
 
 
-def test_model_sets_have_three_variants() -> None:
-    """Each ModelSetConfig in MODEL_SETS has exactly 3 ModelConfig entries."""
+def test_model_sets_have_the_measured_single_variant() -> None:
+    """The active default uses the exact classifier family measured on UpCloud."""
     for model_set in MODEL_SETS:
         assert isinstance(model_set, ModelSetConfig), f"{model_set.name} is not ModelSetConfig"
-        assert len(model_set.models) == 3, f"{model_set.name} has {len(model_set.models)} models, expected 3"
+        assert len(model_set.models) == 1, f"{model_set.name} has {len(model_set.models)} models, expected 1"
         for model in model_set.models:
             assert isinstance(model, ModelConfig), f"{model} is not ModelConfig"
+            assert model.variant == "musicnn_msd"
+
+
+def test_model_variant_selection_preserves_order_and_full_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default matches the measured candidate; all restores the old ensemble."""
+    expected = tuple((group.name, group.models[0].filename) for group in FULL_MODEL_SETS)
+    assert tuple((group.name, group.models[0].filename) for group in _select_model_sets("msd")) == expected
+    assert all(len(group.models) == 1 for group in _select_model_sets("msd"))
+    assert _select_model_sets("all") == FULL_MODEL_SETS
+
+    monkeypatch.setenv("PHAZE_ANALYSIS_MODEL_VARIANTS", "all")
+    assert _select_model_sets() == FULL_MODEL_SETS
+    monkeypatch.setenv("PHAZE_ANALYSIS_MODEL_VARIANTS", "invalid")
+    assert _select_model_sets() == MODEL_SETS
 
 
 def test_genre_model_exists() -> None:

@@ -20,7 +20,7 @@ import re
 
 import pytest
 
-from phaze.services.analysis_models import GENRE_MODEL, MODEL_SETS
+from phaze.services.analysis_models import FULL_MODEL_SETS, GENRE_MODEL, MODEL_SETS
 from phaze.telemetry import instruments
 from phaze.telemetry.catalogue import (
     BY_NAME,
@@ -114,13 +114,14 @@ def test_a_dimensionless_gauge_never_uses_the_bare_unit_one() -> None:
 
 
 def test_model_label_bound_matches_the_registry() -> None:
-    """34 is not a magic number: it is ``len(MODEL_SETS) * 3 + 1``, read from the registry.
+    """34 is the rollback ceiling; the measured default uses 12 combinations.
 
     If a twelfth characteristic set is added, this fails and the budget is recomputed --
     which is the only way the documented arithmetic in the metric catalogue stays true.
     """
-    registry_models = [model for model_set in MODEL_SETS for model in model_set.models] + [GENRE_MODEL]
+    registry_models = [model for model_set in FULL_MODEL_SETS for model in model_set.models] + [GENRE_MODEL]
     assert len(registry_models) == MODEL_COMBINATIONS
+    assert sum(len(group.models) for group in MODEL_SETS) + 1 == 12
 
     spec = BY_NAME["phaze.analysis.model.inference.duration"]
     declared = {label.name: set(label.values or ()) for label in spec.labels}

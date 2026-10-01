@@ -57,7 +57,7 @@ def derive_mood(features: dict[str, Any]) -> str:
     """Derive dominant mood from feature predictions.
 
     For each mood model set, average the positive-class prediction (selected by
-    label, not list position) across the 3 variants. Return the mood name (without
+    label, not list position) across the active variants. Return the mood name (without
     'mood_' prefix) with the highest averaged confidence.
     """
     best_mood = ""
@@ -99,7 +99,7 @@ def derive_style(genre_features: dict[str, Any]) -> str:
 def derive_danceability(features: dict[str, Any]) -> float | None:
     """Derive a scalar danceability from the danceability model set.
 
-    Averages the positive-class ('danceable') prediction across the 3 variants,
+    Averages the positive-class ('danceable') prediction across the active variants,
     selected by label (robust to class order) rather than list position. Returns
     None if the danceability set is absent/empty.
     """

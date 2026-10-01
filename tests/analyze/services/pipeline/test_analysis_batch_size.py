@@ -146,7 +146,7 @@ def test_genre_model_is_pinned_at_64() -> None:
 @patch("phaze.services.analysis._get_labels", side_effect=_mock_labels)
 @patch("phaze.services.analysis.es", new_callable=_build_mock_es)
 def test_every_construction_passes_an_explicit_batch_size(mock_es: MagicMock, _labels: MagicMock) -> None:
-    """A full `analyze_file` run: all 34 graphs built, 33 at 32 and the genre one at 64.
+    """A full default run: 11 MusiCNN graphs at 32 and the genre graph at 64.
 
     Asserted at the essentia boundary rather than at `_get_classifier`, because passing
     NOTHING is exactly the pre-phaze-0582 bug and only the boundary can see the difference
@@ -155,7 +155,7 @@ def test_every_construction_passes_an_explicit_batch_size(mock_es: MagicMock, _l
     analyze_file("/fake/audio.mp3", "/fake/models")
 
     kwargs_by_graph = _ctor_kwargs(mock_es)
-    assert len(kwargs_by_graph) == 34
+    assert len(kwargs_by_graph) == len(_TUNABLE_MODELS) + 1
 
     for model in _TUNABLE_MODELS:
         assert kwargs_by_graph[model.filename]["batchSize"] == 32, model.filename

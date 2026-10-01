@@ -15,7 +15,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 Wire-format conversion (D-26):
 - ``analyze_file`` returns ``mood``/``style`` as strings (dominant label).
 - ``AnalysisWritePayload.mood`` carries ``dict[str, float]`` rebuilt from the
-  positive-class predictions across the 3 variants.
+  positive-class predictions across the active model variants.
 - ``style`` carries a ranked array of duration-weighted genre scores from coarse
   windows; ``dominant_style`` carries ``analyze_file``'s aggregate label.
 """
