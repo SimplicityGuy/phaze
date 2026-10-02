@@ -35,13 +35,6 @@ def test_settings_debug_default_is_false(monkeypatch: pytest.MonkeyPatch) -> Non
     assert s.debug is False
 
 
-def test_settings_api_port_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Settings.api_port defaults to 8000."""
-    monkeypatch.delenv("API_PORT", raising=False)
-    s = Settings(_env_file=None)
-    assert s.api_port == 8000
-
-
 def test_settings_openai_api_key_default_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings.openai_api_key defaults to None (optional credential)."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

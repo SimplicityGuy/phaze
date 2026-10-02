@@ -1,0 +1,34 @@
+<div class="rounded-lg border border-gray-200 p-4 dark:border-phaze-border" aria-labelledby="deployments-heading">
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="deployments-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Deployments</h2>
+        <p class="text-xs text-muted">Phaze containers reported by each Docker host</p>
+    </div>
+    {% if not deployments_by_host | default({}) %}
+    <p class="text-sm text-muted">No host reports yet. Host, app version, and running image are unknown.</p>
+    {% endif %}
+    {% for host, containers in (deployments_by_host | default({})).items() %}
+    <div class="mb-4 last:mb-0">
+        <h3 class="mb-2 font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ host }}</h3>
+        <div class="relative overflow-x-auto">
+            <table class="min-w-full text-left text-xs">
+                <thead class="text-muted"><tr><th class="px-2 py-1">Container</th><th class="px-2 py-1">App</th><th class="px-2 py-1">Image</th><th class="px-2 py-1">Running digest</th><th class="px-2 py-1">Observed</th></tr></thead>
+                <tbody>
+                    {% for deployment, stale in containers %}
+                    <tr class="border-t border-gray-200 dark:border-phaze-border">
+                        <td class="px-2 py-2 font-mono">{{ deployment.service }}<span class="block text-muted">{{ deployment.role or "Unknown role" }}{% if deployment.lane %} · {{ deployment.lane }}{% endif %}</span><span class="block text-muted" title="{{ deployment.container_id }}">{{ deployment.container_id[:12] }}</span></td>
+                        <td class="px-2 py-2 font-mono">{{ deployment.app_version or "Unknown" }}</td>
+                        <td class="px-2 py-2 font-mono break-all">{{ deployment.image_ref or "Unknown" }}</td>
+                        <td class="px-2 py-2 font-mono">
+                            {% if deployment.image_digest %}
+                            <details><summary class="cursor-pointer">{{ deployment.image_digest[:19] }}…</summary><code class="break-all text-muted">{{ deployment.image_digest }}</code></details>
+                            {% else %}Unknown{% endif %}
+                        </td>
+                        <td class="px-2 py-2"><time datetime="{{ deployment.observed_at.isoformat() }}">{{ deployment.observed_at.strftime("%Y-%m-%d %H:%M UTC") }}</time><span class="block {{ 'text-warn' if stale else 'text-ok' }}">{{ "Stale" if stale else "Current" }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+</div>

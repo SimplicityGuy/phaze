@@ -19,6 +19,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | -------- | ------- |
 | **[Quick Start Guide](quick-start.md)** | 🚀 Get Phaze running in minutes |
 | **[Configuration](configuration.md)** | ⚙️ Environment variables and settings reference |
+| **[Runtime Setting Audit](runtime-config-settings-audit.md)** | 🔎 Reader evidence and keep/remove verdict for every Runtime Config key |
 | **[Agentic Git Flow](AGF.md)** | 🐝 Beadhive roles, lifecycle, review, integration, and test isolation |
 
 ## 🧰 Development and Validation
