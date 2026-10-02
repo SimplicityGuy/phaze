@@ -101,22 +101,6 @@ class AgentSettings(BaseSettings):
         description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
     )
 
-    analysis_fine_window_sec: int = Field(
-        default=30,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_WINDOW_SEC", "analysis_fine_window_sec"),
-        description="Fine-tier (BPM/key) window length in seconds for windowed analysis (Phase 31).",
-    )
-    analysis_coarse_window_sec: int = Field(
-        default=180,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_COARSE_WINDOW_SEC", "analysis_coarse_window_sec"),
-        description="Coarse-tier (mood/style/danceability) window length in seconds for windowed analysis (Phase 31).",
-    )
-    analysis_fine_min_sec: int = Field(
-        default=15,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_MIN_SEC", "analysis_fine_min_sec"),
-        description="Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31).",
-    )
-
     # The monotonic throttle collapses per-window progress bursts but always flushes the final count.
     analysis_progress_interval_sec: float = Field(
         default=5.0,
@@ -131,11 +115,6 @@ class AgentSettings(BaseSettings):
         description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint (Phase 29 D-03).",
     )
 
-    push_ssh_host: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_PUSH_SSH_HOST", "push_ssh_host"),
-        description="Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51 (Phase 50, D-05).",
-    )
     push_ssh_user: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_PUSH_SSH_USER", "push_ssh_user"),

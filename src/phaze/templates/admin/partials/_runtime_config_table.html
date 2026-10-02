@@ -44,7 +44,13 @@
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in reloadable_keys %}
                 <tr>
-                    <th scope="row" class="px-4 py-2 text-left font-mono text-xs font-normal text-gray-700 dark:text-gray-300">{{ row.key }}</th>
+                    <th scope="row" class="px-4 py-2 text-left text-xs font-normal text-gray-700 dark:text-gray-300">
+                        <span class="font-mono">{{ row.key }}</span>
+                        <details class="mt-1 font-sans text-muted">
+                            <summary class="cursor-pointer text-info focus-visible:ring-2 focus-visible:ring-blue-500">What this changes</summary>
+                            <p class="mt-1 max-w-xl leading-relaxed">{{ row.description }}</p>
+                        </details>
+                    </th>
                     <td class="px-4 py-2 font-mono">{{ row.value }}</td>
                     <td class="px-4 py-2">
                         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
@@ -129,15 +135,23 @@
     </div>
     {% endif %}
 
-    <div class="rounded-lg border border-gray-200 dark:border-phaze-border">
-        <h3 class="px-4 py-2 text-xs uppercase tracking-wider text-muted border-b border-gray-200 dark:border-phaze-border">Restart-only keys</h3>
-        <ul class="divide-y divide-gray-100 dark:divide-phaze-border">
-            {% for key in restart_only_keys %}
-            <li class="px-4 py-2 flex items-center justify-between text-sm">
-                <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ key }}</span>
-                <span class="text-xs text-muted" role="status">requires restart</span>
-            </li>
-            {% endfor %}
-        </ul>
+    <div class="rounded-lg border border-gray-200 dark:border-phaze-border p-4">
+        <h3 class="text-xs uppercase tracking-wider text-muted">Restart-only keys</h3>
+        <p class="mt-1 text-xs text-muted">These values are read at startup. Edit the deployment environment and restart the affected process to apply a change. Values are never displayed here.</p>
+        {% for group in restart_only_groups %}
+        <details class="mt-3 rounded-md border border-gray-200 dark:border-phaze-border">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-blue-500">{{ group.name }} ({{ group["items"] | length }})</summary>
+            <ul class="divide-y divide-gray-100 dark:divide-phaze-border">
+                {% for item in group["items"] %}
+                <li class="px-3 py-2 text-sm">
+                    <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ item.key }}</span>
+                    <span class="ml-2 text-xs text-muted">requires restart</span>
+                    <p class="mt-1 text-xs text-muted leading-relaxed">{{ item.description }}</p>
+                </li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% endfor %}
+        <p class="mt-3 text-xs text-muted">See the <a href="https://github.com/SimplicityGuy/phaze/blob/main/docs/configuration.md" class="text-info underline">configuration guide</a> for environment variable names and deployment details.</p>
     </div>
 </section>

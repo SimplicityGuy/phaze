@@ -30,12 +30,6 @@ def test_worker_process_pool_size_default() -> None:
     assert s.worker_process_pool_size == 4
 
 
-def test_worker_health_check_interval_default() -> None:
-    """Worker health_check_interval defaults to 60 seconds."""
-    s = Settings()
-    assert s.worker_health_check_interval == 60
-
-
 def test_worker_keep_result_default() -> None:
     """Worker keep_result defaults to 3600 seconds."""
     s = Settings()

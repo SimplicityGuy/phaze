@@ -28,6 +28,7 @@ from phaze import runtime_config
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.routers import admin_runtime_config
 from phaze.runtime_config import RUNTIME_TOML_NAME, get_runtime_config_store
+from phaze.runtime_config_catalog import LIVE_HELP, restart_only_groups
 from phaze.runtime_config_notify import install_runtime_config_overrides
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
 
@@ -68,6 +69,28 @@ async def test_table_lists_reloadable_keys_with_default_source(client: AsyncClie
     # A restart-only key is listed read-only, labeled, and gets no form.
     assert "database_url" in response.text
     assert "requires restart" in response.text
+
+
+@pytest.mark.asyncio
+async def test_every_setting_has_help_and_restart_values_stay_hidden(client: AsyncClient) -> None:
+    """The standalone/HTMX fragment includes a native disclosure for each live control."""
+    from bs4 import BeautifulSoup
+
+    response = await client.get("/admin/runtime-config/_table")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.text, "html.parser")
+    live_rows = soup.select("#runtime-config-table table tbody tr")
+    assert len(live_rows) == len(runtime_config.RELOADABLE_KEYS)
+    for row in live_rows:
+        key = row.select_one("th span.font-mono").get_text(strip=True)
+        details = row.select_one("details")
+        assert details is not None and details.summary.get_text(strip=True) == "What this changes"
+        assert LIVE_HELP[key] in details.get_text(" ", strip=True)
+    assert {item["key"] for group in restart_only_groups() for item in group["items"]} == runtime_config.RESTART_ONLY_KEYS
+    for key in runtime_config.RESTART_ONLY_KEYS:
+        assert key in response.text
+    assert "postgresql+asyncpg://phaze:phaze@postgres:5432/phaze" not in response.text
+    assert "phaze_agent_" not in response.text
 
 
 @pytest.mark.asyncio

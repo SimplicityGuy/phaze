@@ -59,8 +59,6 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
 
     # Application
     debug: bool = False
-    api_host: str = "0.0.0.0"  # noqa: S104  # nosec B104
-    api_port: int = 8000
 
     # File discovery
     scan_path: str = "/data/music"
@@ -75,9 +73,6 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
 
     # Audio analysis models
     models_path: str = "/models"
-
-    # File execution output
-    output_path: str = "/data/output"
 
     worker_max_jobs: int = 8
     # Derive analyze concurrency and TensorFlow intra-op threads together so their product
@@ -107,7 +102,6 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     worker_job_timeout: int = 600
     worker_max_retries: int = 4
     worker_process_pool_size: int = 4
-    worker_health_check_interval: int = 60
     worker_keep_result: int = 3600
     # Reaping uses each row's frozen ``started`` time and serialized timeout, not ``touched``;
     # timeout-free heartbeat jobs are excluded. See docs/configuration.md for the measured bounds.
@@ -272,13 +266,6 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         default=True,
         validation_alias=AliasChoices("PHAZE_ENABLE_SAQ_UI", "enable_saq_ui"),
         description="Mount the SAQ monitoring dashboard at /saq in the API (Phase 33).",
-    )
-
-    # The default SANs cover local development and Compose service-name DNS.
-    api_tls_sans: str = Field(
-        default="localhost,127.0.0.1,api",
-        validation_alias=AliasChoices("PHAZE_API_TLS_SANS", "api_tls_sans"),
-        description="Comma-separated SAN list for the auto-generated leaf cert (Phase 29 D-02).",
     )
 
     # An explicit token makes a development seed reproducible; otherwise startup generates one.

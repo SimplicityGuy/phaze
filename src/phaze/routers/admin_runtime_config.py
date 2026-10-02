@@ -39,6 +39,7 @@ from phaze.runtime_config import (
     get_runtime_config_store,
     partition_overrides,
 )
+from phaze.runtime_config_catalog import LIVE_HELP, restart_only_groups
 from phaze.services.runtime_config_overrides import clear_runtime_config_override, get_runtime_config_overrides, set_runtime_config_override
 from phaze.web.template_globals import register_set_glyph_globals
 
@@ -115,11 +116,13 @@ async def build_runtime_config_pane_context(session: AsyncSession) -> dict[str, 
         stale = ()
     snapshot = get_runtime_config_store().snapshot()
     reloadable = [
-        {"key": key, "value": getattr(snapshot.config, key), "source": snapshot.sources.get(key, "default")} for key in sorted(RELOADABLE_KEYS)
+        {"key": key, "value": getattr(snapshot.config, key), "source": snapshot.sources.get(key, "default"), "description": LIVE_HELP[key]}
+        for key in sorted(RELOADABLE_KEYS)
     ]
     return {
         "reloadable_keys": reloadable,
         "restart_only_keys": sorted(RESTART_ONLY_KEYS),
+        "restart_only_groups": restart_only_groups(),
         "stale_override_keys": list(stale),
         "log_levels": _LOG_LEVELS,
     }

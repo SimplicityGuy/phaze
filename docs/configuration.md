@@ -116,7 +116,6 @@ silently unreachable.
 | `WORKER_JOB_TIMEOUT`          | No       | `600`   | Per-job timeout in seconds.                          |
 | `WORKER_MAX_RETRIES`          | No       | `4`     | Max attempts per job (1 initial + 3 retries).        |
 | `WORKER_PROCESS_POOL_SIZE`    | No       | `4`     | Concurrency bound (`asyncio.Semaphore`) on in-flight essentia analysis subprocesses per agent worker. |
-| `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
 | `PHAZE_ABORTING_REAP_SLACK_SECONDS` (or `aborting_reap_slack_seconds`) | No | `300` | Seconds of grace ADDED ON TOP OF a finite-timeout job's own `timeout` before a `saq_jobs` row stuck in `status='aborting'` is reaped (deleted, releasing its deterministic key). The bound is PER-ROW (`job_timeout + this`, phaze-lqkz), not one fixed value — under the retired policy, a 7200s `process_file` job received a 7200s+slack window rather than the same window as a 600s default job. The bound is on `started`, not `touched` — SAQ's sweeper bumps `touched` on every abort pass, so a touched-based bound would never trigger (phaze-qmc2.1). A row whose blob carries no explicit `timeout` falls back to the bare SAQ default (10s) plus this slack. Explicit `timeout=0` rows are excluded; current `process_file` liveness is heartbeat-owned. |
 | `PHAZE_ACTIVE_REAP_SLACK_SECONDS` (or `active_reap_slack_seconds`) | No | `900` | The sibling of the knob above, for `status='active'` — the OTHER status outside SAQ's `_enqueue` overwrite allowlist (phaze-o0n6). `PostgresQueue._dequeue` marks rows `active` in bulk and buffers them in-process, so any worker death strands every buffered row with nothing alive to finalize it; under the retired finite-timeout policy, each row held `process_file:<file_id>` hostage and made its file un-requeueable by every path, including the recovery CLI (2,413 such rows / 2,411 un-analyzed files measured on the live deployment). Same three guards as the `aborting` reaper (per-row `job_timeout + this`, measured on the frozen `started`, with a status CAS in the DELETE). **Wider default than the 300s `aborting` slack on purpose:** `aborting` is a post-give-up status while `active` is a live one. The current `process_file` policy is different: `timeout=0`, a heartbeat derived from `analysis_stall_timeout_sec`, and `retries=2`; both generic reapers exclude it. The reaper deletes an eligible finite-timeout `saq_jobs` row ONLY; the file's `scheduling_ledger` row is the recovery source and is deliberately kept. |
@@ -383,7 +382,6 @@ Descriptions are sourced from the `Field(...)` text in `config_base.py`, `config
 | `cloud_submitted_stale_after_sec` | `PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC` (or `cloud_submitted_stale_after_sec`) | Control | `21600` | no | **Live (phaze-j7m18) — lost-push reaper.** Seconds a compute `cloud_job` may sit `SUBMITTED` with no live `push_file` broker key before the reconcile reaper spills it back to awaiting. Default 6h, the same as the `UPLOADING` bound it mirrors; MUST exceed the largest `push_file` SAQ net. Bounded `gt=0, lt=604800`. |
 | `compute_scratch_dir` | ~~`PHAZE_COMPUTE_SCRATCH_DIR`~~ (removed) | Control | *n/a* | no | **REMOVED in Phase 67 (superseded), accessor retired in Phase 73/MCOMP-03.** This flat control-side scratch-dir mirror no longer exists as a settings field; the control plane now reads each compute backend's `scratch_dir` from [`backends.toml`](#backend-registry-backendstoml) directly. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
 | `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in Phase 67**); it is also the cloud-agent compose's named-volume mount path. |
-| `push_ssh_host` | `PHAZE_PUSH_SSH_HOST` (or `push_ssh_host`) | Agent | `None` | no | Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51. |
 | `push_ssh_user` | `PHAZE_PUSH_SSH_USER` (or `push_ssh_user`) | Agent | `None` | no | SSH username for the rsync push target. |
 | `push_timeout_sec` | `PHAZE_PUSH_TIMEOUT_SEC` (or `push_timeout_sec`) | Agent | `600` | no | rsync I/O-stall timeout (seconds) for a single `push_file` transfer; MUST stay below the SAQ `push_file` job timeout so the kill is deterministic. Bounded `gt=0, lt=86400`. |
 | `push_connect_timeout_sec` | `PHAZE_PUSH_CONNECT_TIMEOUT_SEC` (or `push_connect_timeout_sec`) | Agent | `30` | no | SSH connect-handshake timeout (seconds) for the rsync push. Bounded `gt=0, lt=3600`. |
@@ -515,7 +513,7 @@ The application server generates a self-signed CA + leaf certificate pair into t
 | `PHAZE_API_HOST`     | No       | `localhost`                   | CN baked into the auto-generated leaf certificate.                          |
 | `PHAZE_API_TLS_SANS` | No       | `localhost,127.0.0.1,api`     | Comma-separated SAN list for the leaf cert. Production should add the app server's LAN hostname / IP. |
 
-`PHAZE_API_TLS_SANS` is also a `BaseSettings` field (`api_tls_sans`) so other parts of the app can read the same value.
+`PHAZE_API_HOST` and `PHAZE_API_TLS_SANS` are read directly by the certificate entrypoint. `API_PORT` controls the Compose host port; the API process binds to port 8000 inside its container.
 
 ## Control role settings (`PHAZE_ROLE=control`)
 
@@ -586,17 +584,18 @@ These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=a
 
 ### Agent analysis tuning (windowed analysis — Phase 31/43/57.1)
 
-The agent worker reads these to size the per-window decode loop in `services/analysis.py::analyze_file` (windowed time-series audio analysis).
+The agent worker uses these settings for windowed time-series audio analysis.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PHAZE_ANALYSIS_FINE_WINDOW_SEC` (or `analysis_fine_window_sec`) | No | `30` | Fine-tier (BPM/key) window length in seconds (Phase 31). |
-| `PHAZE_ANALYSIS_COARSE_WINDOW_SEC` (or `analysis_coarse_window_sec`) | No | `180` | Coarse-tier (mood/style/danceability) window length in seconds (Phase 31). |
-| `PHAZE_ANALYSIS_FINE_MIN_SEC` (or `analysis_fine_min_sec`) | No | `15` | Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31). |
 | `PHAZE_ANALYSIS_STALL_TIMEOUT_SEC` (or `analysis_stall_timeout_sec`) | No | `1800` | Seconds of **no reported analysis progress** before the analysis child is killed as stalled (phaze-w55w1). This bounds SILENCE, never runtime: a file that keeps completing windows runs to completion however long it takes, which is the point — analysis is exhaustive, so a concert set legitimately runs for hours. The child heartbeats window completions, chunk decodes and model sweeps; the parent driver (`services/analysis_exec.py`) kills only on total silence past this bound. The SAQ `process_file` job's own `heartbeat` is DERIVED from this (2x, `config.BaseSettings.analysis_job_heartbeat_sec`) rather than equal to it — the outer net watches a narrower signal, so it needs slack or it sweeps jobs the inner watchdog is correctly holding healthy — and the job carries `timeout=0`, i.e. no wall clock at all. Bounded `gt=0, lt=86400`. Raising this raises the outer net with it, by construction. |
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
 | `PHAZE_ANALYSIS_TF_BATCH_SIZE` | No | `32` | `TensorflowPredict*` `batchSize` for the 33 tunable model graphs (phaze-0582). **Not** a `phaze.config` field: read straight from the process environment by `services/analysis.py::_resolve_tf_batch_size` at classifier construction, so a value set only in a `.env` file (and never exported into the environment) does not apply. Essentia's own default is `64`; `32` is the measured knee — `-33.7%` peak analysis RSS for `+0.36%` wall end to end, with lower values flat on memory and batch 1 costing `+55.7%` wall. A malformed or non-positive value logs a warning and falls back to `32`. `discogs-effnet-bs64-1` ignores this entirely and always uses `64`: its graph Placeholder is `[64, 128, 96]`. |
 
+> **Removed:** `PHAZE_ANALYSIS_FINE_WINDOW_SEC`, `PHAZE_ANALYSIS_COARSE_WINDOW_SEC`, and
+> `PHAZE_ANALYSIS_FINE_MIN_SEC` were settings fields with no runtime reader. Analysis uses its own
+> fixed window defaults. Setting these environment variables had no effect.
+>
 > **Removed (phaze-w55w1):** `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (the 6600 s wall-clock SIGKILL of
 > the analysis child) and `PHAZE_ANALYSIS_FINE_CAP` / `PHAZE_ANALYSIS_COARSE_CAP` (the 60/30 window
 > caps). Every file now receives every natural window of both tiers; per-file memory is bounded by
@@ -707,8 +706,7 @@ Defaults are defined in `src/phaze/config_base.py`, `src/phaze/config_control.py
 - `database_url` → `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`
 - `queue_url` → `postgresql://phaze:phaze@postgres:5432/phaze` (libpq form for the SAQ Postgres broker)
 - `redis_url` → `redis://redis:6379/0`
-- `api_host` → `0.0.0.0`, `api_port` → `8000`
-- `scan_path` → `/data/music`, `output_path` → `/data/output`, `models_path` → `/models`
+- `scan_path` → `/data/music`, `models_path` → `/models`
 - `worker_max_jobs` → `8`, `worker_job_timeout` → `600`, `worker_max_retries` → `4`
 - `llm_model` → `claude-sonnet-5`, `llm_max_rpm` → `30`, `llm_batch_size` → `10`
 - `agent_env` → `dev`, `agent_ca_file` → `/certs/phaze-ca.crt`
