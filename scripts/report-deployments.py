@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -37,6 +38,24 @@ def _app_version(container_id: str) -> str | None:
     return None
 
 
+def _role_and_lane(entry: dict[str, Any], service: str) -> tuple[str | None, str | None]:
+    """Read only role/lane names from Docker env; never forward env values or secrets."""
+    selected: dict[str, str] = {}
+    for assignment in entry.get("Config", {}).get("Env") or []:
+        key, _separator, value = assignment.partition("=")
+        if key in {"PHAZE_ROLE", "PHAZE_AGENT_LANE"}:
+            selected[key] = value
+    if service == "api":
+        return "api", None
+    if service == "worker":
+        role = selected.get("PHAZE_ROLE")
+        lane = selected.get("PHAZE_AGENT_LANE")
+        return (role if role in {"agent", "control"} else None), (lane if role == "agent" and lane in {"analyze", "meta", "io", "drain"} else None)
+    if service.startswith("worker-"):
+        return "agent", service.removeprefix("worker-")
+    return "agent", None
+
+
 def collect(working_dir: Path) -> list[dict[str, str | None]]:
     """Collect only allowlisted services in the Compose project at ``working_dir``."""
     ids = _docker("ps", "-q", "--no-trunc").splitlines()
@@ -52,10 +71,13 @@ def collect(working_dir: Path) -> list[dict[str, str | None]]:
             continue
         container_id = entry["Id"]
         image_id = entry.get("Image")
+        role, lane = _role_and_lane(entry, service)
         containers.append(
             {
                 "container_id": container_id,
                 "service": service,
+                "role": role,
+                "lane": lane,
                 "app_version": _app_version(container_id),
                 "image_ref": entry.get("Config", {}).get("Image"),
                 "image_digest": image_id if isinstance(image_id, str) and image_id.startswith("sha256:") else None,

@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("container_id", sa.String(64), primary_key=True),
         sa.Column("host", sa.String(128), nullable=False),
         sa.Column("service", sa.String(32), nullable=False),
+        sa.Column("role", sa.String(16)),
         sa.Column("lane", sa.String(32)),
         sa.Column("app_version", sa.String(64)),
         sa.Column("image_ref", sa.String(256)),

@@ -17,6 +17,7 @@ _API_ID = "a" * 64
 _WORKER_ID = "b" * 64
 _ANALYZE_ID = "c" * 64
 _META_ID = "d" * 64
+_CLOUD_ID = "f" * 64
 _DIGEST = "sha256:" + "e" * 64
 
 
@@ -38,17 +39,21 @@ async def test_mixed_versions_and_unknown_metadata_survive_refresh(session: Asyn
                 "host": "host-prod",
                 "containers": [
                     {"container_id": _API_ID, "service": "api", "app_version": "2026.9.7", "image_ref": "phaze:current", "image_digest": _DIGEST},
-                    {"container_id": _WORKER_ID, "service": "worker", "app_version": "2026.9.7"},
+                    {"container_id": _WORKER_ID, "service": "worker", "role": "control", "app_version": "2026.9.7"},
                     {"container_id": _ANALYZE_ID, "service": "worker-analyze", "app_version": "2026.9.6", "future_field": "ignored"},
                     {"container_id": _META_ID, "service": "worker-meta", "app_version": "2026.9.7", "image_digest": _DIGEST},
+                    {"container_id": _CLOUD_ID, "service": "worker", "role": "agent", "lane": "analyze", "app_version": "2026.9.6"},
                 ],
             },
         )
         assert first.status_code == 204
         rows = (await session.execute(select(Deployment).order_by(Deployment.container_id))).scalars().all()
-        assert len(rows) == 4
+        assert len(rows) == 5
         assert {row.app_version for row in rows} == {"2026.9.6", "2026.9.7"}
         assert next(row for row in rows if row.container_id == _ANALYZE_ID).lane == "analyze"
+        assert next(row for row in rows if row.container_id == _ANALYZE_ID).role == "agent"
+        assert next(row for row in rows if row.container_id == _CLOUD_ID).role == "agent"
+        assert next(row for row in rows if row.container_id == _WORKER_ID).role == "control"
         assert next(row for row in rows if row.container_id == _WORKER_ID).image_digest is None
 
         html = (await client.get("/admin/agents/_table")).text
@@ -58,6 +63,8 @@ async def test_mixed_versions_and_unknown_metadata_survive_refresh(session: Asyn
         assert "Unknown" in html
         assert _DIGEST in html
         assert "Current" in html
+        assert "control" in html
+        assert "agent · analyze" in html
 
         await session.execute(
             Deployment.__table__.update().where(Deployment.host == "host-prod").values(observed_at=datetime.now(UTC) - timedelta(minutes=3))

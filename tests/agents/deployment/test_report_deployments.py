@@ -29,6 +29,25 @@ def test_collect_selects_only_phaze_containers_and_running_digest(monkeypatch: p
             "Config": {
                 "Image": "ghcr.io/simplicityguy/phaze:latest",
                 "Labels": {"com.docker.compose.service": "worker-analyze", "com.docker.compose.project.working_dir": str(working_dir)},
+                "Env": ["PHAZE_ROLE=agent", "PHAZE_AGENT_LANE=analyze", "PHAZE_AGENT_TOKEN=never-send-this"],
+            },
+        },
+        {
+            "Id": "1" * 64,
+            "Image": "sha256:" + "2" * 64,
+            "Config": {
+                "Image": "ghcr.io/simplicityguy/phaze:latest-arm64",
+                "Labels": {"com.docker.compose.service": "worker", "com.docker.compose.project.working_dir": str(working_dir)},
+                "Env": ["PHAZE_ROLE=agent", "PHAZE_AGENT_LANE=analyze"],
+            },
+        },
+        {
+            "Id": "3" * 64,
+            "Image": "sha256:" + "4" * 64,
+            "Config": {
+                "Image": "phaze-worker:latest",
+                "Labels": {"com.docker.compose.service": "worker", "com.docker.compose.project.working_dir": str(working_dir)},
+                "Env": ["PHAZE_ROLE=control"],
             },
         },
         {
@@ -61,8 +80,28 @@ def test_collect_selects_only_phaze_containers_and_running_digest(monkeypatch: p
         {
             "container_id": "a" * 64,
             "service": "worker-analyze",
+            "role": "agent",
+            "lane": "analyze",
             "app_version": "2026.9.7",
             "image_ref": "ghcr.io/simplicityguy/phaze:latest",
             "image_digest": "sha256:" + "b" * 64,
-        }
+        },
+        {
+            "container_id": "1" * 64,
+            "service": "worker",
+            "role": "agent",
+            "lane": "analyze",
+            "app_version": "2026.9.7",
+            "image_ref": "ghcr.io/simplicityguy/phaze:latest-arm64",
+            "image_digest": "sha256:" + "2" * 64,
+        },
+        {
+            "container_id": "3" * 64,
+            "service": "worker",
+            "role": "control",
+            "lane": None,
+            "app_version": "2026.9.7",
+            "image_ref": "phaze-worker:latest",
+            "image_digest": "sha256:" + "4" * 64,
+        },
     ]

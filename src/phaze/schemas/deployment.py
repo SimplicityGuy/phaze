@@ -17,6 +17,8 @@ class ContainerReport(BaseModel):
 
     container_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     service: Literal["api", "worker", "worker-analyze", "worker-meta", "worker-io", "worker-drain", "watcher"]
+    role: Literal["api", "control", "agent"] | None = None
+    lane: Literal["analyze", "meta", "io", "drain"] | None = None
     app_version: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
     image_ref: str | None = Field(default=None, max_length=256, pattern=IMAGE_REF_PATTERN)
     image_digest: str | None = Field(default=None, max_length=71, pattern=DIGEST_PATTERN)

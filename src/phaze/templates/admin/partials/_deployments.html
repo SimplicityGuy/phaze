@@ -15,7 +15,7 @@
                 <tbody>
                     {% for deployment, stale in containers %}
                     <tr class="border-t border-gray-200 dark:border-phaze-border">
-                        <td class="px-2 py-2 font-mono">{{ deployment.service }}{% if deployment.lane %} · {{ deployment.lane }}{% endif %}<span class="block text-muted" title="{{ deployment.container_id }}">{{ deployment.container_id[:12] }}</span></td>
+                        <td class="px-2 py-2 font-mono">{{ deployment.service }}<span class="block text-muted">{{ deployment.role or "Unknown role" }}{% if deployment.lane %} · {{ deployment.lane }}{% endif %}</span><span class="block text-muted" title="{{ deployment.container_id }}">{{ deployment.container_id[:12] }}</span></td>
                         <td class="px-2 py-2 font-mono">{{ deployment.app_version or "Unknown" }}</td>
                         <td class="px-2 py-2 font-mono break-all">{{ deployment.image_ref or "Unknown" }}</td>
                         <td class="px-2 py-2 font-mono">

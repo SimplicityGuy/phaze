@@ -16,6 +16,7 @@ class Deployment(Base):
     container_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     host: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     service: Mapped[str] = mapped_column(String(32), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(16))
     lane: Mapped[str | None] = mapped_column(String(32))
     app_version: Mapped[str | None] = mapped_column(String(64))
     image_ref: Mapped[str | None] = mapped_column(String(256))
