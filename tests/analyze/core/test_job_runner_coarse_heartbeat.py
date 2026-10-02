@@ -112,3 +112,4 @@ async def test_coarse_heartbeats_reach_the_pod_log_and_progress_api(tmp_path: Pa
     handover = [p for p in client.progress if p.fine_windows_analyzed == fine_total and p.coarse_windows_analyzed == 0]
     assert handover, f"no progress POST carried the handover state; got {[p.model_dump() for p in client.progress]}"
     assert all(p.fine_windows_total == fine_total and p.coarse_windows_total == coarse_total for p in handover)
+    assert any(p.coarse_work_percent is not None and 0 < p.coarse_work_percent < 100 for p in handover)

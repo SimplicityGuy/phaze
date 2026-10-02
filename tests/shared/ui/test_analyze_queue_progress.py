@@ -10,7 +10,15 @@ from jinja2 import Environment, FileSystemLoader
 TEMPLATES = Path(__file__).resolve().parents[3] / "src/phaze/templates"
 
 
-def _render(*, fine_done: int | None, fine_total: int | None, coarse_done: int | None, coarse_total: int | None, oob: bool = False) -> BeautifulSoup:
+def _render(
+    *,
+    fine_done: int | None,
+    fine_total: int | None,
+    coarse_done: int | None,
+    coarse_total: int | None,
+    coarse_work_percent: int | None = None,
+    oob: bool = False,
+) -> BeautifulSoup:
     run = SimpleNamespace(
         label="<set-01>",
         lane_kind="local",
@@ -22,6 +30,7 @@ def _render(*, fine_done: int | None, fine_total: int | None, coarse_done: int |
         fine_total=fine_total,
         coarse_done=coarse_done,
         coarse_total=coarse_total,
+        coarse_work_percent=coarse_work_percent,
     )
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
     html = environment.get_template("pipeline/partials/_analyze_queue.html").render(

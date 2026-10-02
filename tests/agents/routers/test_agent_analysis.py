@@ -961,21 +961,72 @@ async def test_progress_post_upserts_coarse_counts_when_present(
     async with _make_client(session, raw_token) as ac:
         r_start = await ac.post(
             f"/api/internal/agent/analysis/{file_id}/progress",
-            json={"fine_windows_analyzed": 40, "fine_windows_total": 40, "coarse_windows_analyzed": 0, "coarse_windows_total": 8},
+            json={
+                "fine_windows_analyzed": 40,
+                "fine_windows_total": 40,
+                "coarse_windows_analyzed": 0,
+                "coarse_windows_total": 8,
+                "coarse_work_percent": 0,
+            },
         )
         assert r_start.status_code == 200, r_start.text
 
         r_bump = await ac.post(
             f"/api/internal/agent/analysis/{file_id}/progress",
-            json={"fine_windows_analyzed": 40, "fine_windows_total": 40, "coarse_windows_analyzed": 3, "coarse_windows_total": 8},
+            json={
+                "fine_windows_analyzed": 40,
+                "fine_windows_total": 40,
+                "coarse_windows_analyzed": 3,
+                "coarse_windows_total": 8,
+                "coarse_work_percent": 37,
+            },
         )
         assert r_bump.status_code == 200, r_bump.text
+
+        r_stale = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={
+                "fine_windows_analyzed": 40,
+                "fine_windows_total": 40,
+                "coarse_windows_analyzed": 3,
+                "coarse_windows_total": 8,
+                "coarse_work_percent": 22,
+            },
+        )
+        assert r_stale.status_code == 200, r_stale.text
 
     session.expire_all()
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert row.coarse_windows_analyzed == 3, "the coarse counter must advance to the latest bump"
     assert row.coarse_windows_total == 8
+    assert row.coarse_work_percent == 37
     assert row.fine_windows_analyzed == 40
+
+
+@pytest.mark.asyncio
+async def test_coarse_work_advances_when_no_fine_window_succeeded(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """Zero analyzed windows cannot be mistaken for a new attempt after model work begins."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        for percent in (0, 20, 10):
+            response = await ac.post(
+                f"/api/internal/agent/analysis/{file_id}/progress",
+                json={
+                    "fine_windows_analyzed": 0,
+                    "fine_windows_total": 0,
+                    "coarse_windows_analyzed": 0,
+                    "coarse_windows_total": 20,
+                    "coarse_work_percent": percent,
+                },
+            )
+            assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.coarse_windows_analyzed == 0
+    assert row.coarse_work_percent == 20
 
 
 @pytest.mark.asyncio

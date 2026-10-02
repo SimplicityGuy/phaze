@@ -1603,6 +1603,27 @@ async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: 
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess")
+async def test_local_coarse_work_is_flushed_with_completed_window_count(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """A one-chunk model sweep advances work while the analyzed-window count stays zero."""
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 10_000.0
+
+    async def _fake(_path: str, _models: str, *, progress_cb: Any, heartbeat_cb: Any, **_kwargs: Any) -> dict[str, Any]:
+        progress_cb(3, 3, 0, 1)
+        heartbeat_cb("coarse_work", 5, 10)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _fake
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    await process_file(_make_ctx(api_client=api), **_make_payload_kwargs(file_id=uuid.uuid4()))
+
+    posted = [call.args[1] for call in api.post_analysis_progress.await_args_list]
+    assert posted[-1].coarse_windows_analyzed == 0
+    assert posted[-1].coarse_work_percent == 50
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess")
 async def test_process_file_progress_throttle_collapses_bursts(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
     """A long throttle interval collapses a burst to the first post + the final flush."""
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 10_000.0  # effectively never re-post
