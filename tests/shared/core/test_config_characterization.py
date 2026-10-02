@@ -370,7 +370,7 @@ def test_agent_settings_resolve_to_recorded_defaults(monkeypatch: pytest.MonkeyP
         # int coerced from text, a bool coerced from text, a float, a Literal-constrained str,
         # and the DSNs whose before-validators rewrite the value they were given rather than
         # storing it verbatim. Note the env NAMES are deliberately not uniform: only some fields
-        # carry a `PHAZE_`-prefixed alias, and the bare-name ones (`API_PORT`, `DEBUG`,
+        # carry a `PHAZE_`-prefixed alias, and the bare-name ones (`DEBUG`,
         # `SCAN_PATH`, `LLM_MODEL`, `DISCOGS_MATCH_CONCURRENCY`) read the UNPREFIXED variable.
         # That asymmetry is today's behaviour and is pinned here on purpose.
         (
@@ -393,7 +393,6 @@ def test_agent_settings_resolve_to_recorded_defaults(monkeypatch: pytest.MonkeyP
             "queue_url",
             "postgresql://u:p@q.characterization.invalid:5432/x",
         ),
-        ("API_PORT", "9123", "api_port", 9123),
         ("DEBUG", "true", "debug", True),
         ("PHAZE_LOG_LEVEL", "DEBUG", "log_level", "DEBUG"),
         ("SCAN_PATH", "/somewhere/else", "scan_path", "/somewhere/else"),

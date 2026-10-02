@@ -75,7 +75,6 @@ def test_push_max_attempts_rejects_too_large() -> None:
 def test_agent_push_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _agent_env(monkeypatch)
     s = AgentSettings()
-    assert s.push_ssh_host is None
     assert s.push_ssh_user is None
     assert s.cloud_scratch_dir is None
     assert s.push_timeout_sec == 600
@@ -86,13 +85,11 @@ def test_agent_push_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_agent_push_knob_env_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     _agent_env(monkeypatch)
-    monkeypatch.setenv("PHAZE_PUSH_SSH_HOST", "compute.internal")
     monkeypatch.setenv("PHAZE_PUSH_SSH_USER", "phaze")
     monkeypatch.setenv("PHAZE_CLOUD_SCRATCH_DIR", "/scratch/cloud")
     monkeypatch.setenv("PHAZE_PUSH_TIMEOUT_SEC", "900")
     monkeypatch.setenv("PHAZE_PUSH_CONNECT_TIMEOUT_SEC", "45")
     s = AgentSettings()
-    assert s.push_ssh_host == "compute.internal"
     assert s.push_ssh_user == "phaze"
     assert s.cloud_scratch_dir == "/scratch/cloud"
     assert s.push_timeout_sec == 900
