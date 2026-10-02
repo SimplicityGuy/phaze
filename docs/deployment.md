@@ -71,6 +71,18 @@ The repo ships three deployment compose files plus a dev overlay:
 | `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, host-bound scratch directory. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
 | `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
+### Deployment version inventory
+
+The **Deployments** section of **Agents & Compute Lanes** shows each reported Phaze container by Docker host. It shows the package version read from that running container, its configured image reference, and Docker's immutable `.Image` SHA-256 image ID. The latter identifies the image the container actually runs even if a mutable tag has since moved. A missing value appears as **Unknown**; reports older than two minutes appear as **Stale**. Compute backends without a reported Phaze container do not appear in this section.
+
+Run the collector on **each Docker host**, from that host's Phaze Compose directory, once per minute (for example with a host systemd timer). It reads Docker through the host CLI and sends only allowlisted Phaze service names, container IDs, image identity, and package version to the private-LAN control API. Do not mount the Docker socket into an application container. On the API host use its local URL; on an agent host use the same reachable control-plane URL and CA certificate configured for agent access:
+
+```bash
+uv run python scripts/report-deployments.py --api-url https://<control-host>:8000 --ca-file certs/phaze-ca.crt
+```
+
+The collector uses Docker Compose's `com.docker.compose.project.working_dir` label to select only containers belonging to the directory where it runs. A stopped container disappears after the next successful host report. If reporting stops, its last observation remains visible as stale. Inventory reporting is independent of agent heartbeats, so mixed application versions continue to exchange the existing liveness protocol during a rolling deploy.
+
 ### Application-server services (`docker-compose.yml`)
 
 | Service | Image / build | Command | Ports | Role |

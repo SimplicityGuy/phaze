@@ -46,7 +46,7 @@ precedent; CONTEXT.md D-discretion).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -61,6 +61,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
+from phaze.models.deployment import Deployment
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
 from phaze.services.pg_text import contains_pg_invalid_chars
@@ -525,6 +526,16 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
     return rows, now
 
 
+async def _load_deployments(session: AsyncSession) -> dict[str, list[tuple[Deployment, bool]]]:
+    """Group reported containers by host, retaining stale observations visibly."""
+    now = datetime.now(UTC)
+    result = await session.execute(select(Deployment).order_by(Deployment.host, Deployment.service, Deployment.container_id))
+    grouped: dict[str, list[tuple[Deployment, bool]]] = {}
+    for deployment in result.scalars():
+        grouped.setdefault(deployment.host, []).append((deployment, now - deployment.observed_at > timedelta(minutes=2)))
+    return grouped
+
+
 async def build_agents_pane_context(request: Request, session: AsyncSession) -> dict[str, Any]:
     """Build every context key ``admin/agents.html`` needs, from ``request.query_params`` alone (phaze-uvmcr.4).
 
@@ -549,6 +560,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     order = request.query_params.get("order")
     sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
+    deployments_by_host = await _load_deployments(session)
     # phaze-rdxfu (was Section 2 / RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity
     # PER non-local registry backend, synthesized read-only from the Phase-67 registry + in-flight
     # CloudJob counts. Merged into the SAME row list as heartbeating agents below, so the existing 5s
@@ -561,6 +573,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     rows = _build_table_rows(agents, compute_lanes, sort_state, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane)
     return {
         "rows": rows,
+        "deployments_by_host": deployments_by_host,
         "agent_count": len(agents),
         "compute_lane_count": len(compute_lanes),
         "selection_kind": selection_kind,
@@ -644,6 +657,7 @@ async def table_partial(
     """
     sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
+    deployments_by_host = await _load_deployments(session)
     compute_lanes = await derive_compute_lane_identities(session)
     selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
     canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
@@ -656,6 +670,7 @@ async def table_partial(
         context={
             "request": request,
             "rows": rows,
+            "deployments_by_host": deployments_by_host,
             "agent_count": len(agents),
             "compute_lane_count": len(compute_lanes),
             "selection_kind": selection_kind,
