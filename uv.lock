@@ -1521,7 +1521,7 @@ wheels = [
 
 [[package]]
 name = "phaze"
-version = "2026.9.7"
+version = "2026.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiobotocore" },
