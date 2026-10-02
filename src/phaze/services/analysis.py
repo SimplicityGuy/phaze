@@ -1242,6 +1242,9 @@ def _analyze_coarse_windows(
     coarse_windows: list[CoarseWindow] = []
 
     chunks = _chunked(natural, _COARSE_CHUNK_WINDOWS)
+    models_per_chunk = sum(len(model_set.models) for model_set in MODEL_SETS) + 1
+    work_per_chunk = models_per_chunk + 1  # model sweeps, then assembly
+    work_total = len(chunks) * work_per_chunk
     # THE COARSE-TIER BLIND SPOT (phaze-zaf2l section 3b, and its 2026-08-28 forward note).
     # 94.69% of wall clock on the 4,761.835 s file that spike measured -- a DURATION-DEPENDENT
     # share, 50.7% on a 10 h 03 m file -- but blind at any length. Everything below was, until
@@ -1289,9 +1292,15 @@ def _analyze_coarse_windows(
                 # closed over the loop variable, so each chunk's callback holds ITS OWN geometry map
                 # instead of whatever the last iteration left behind (ruff B023). The per-model
                 # build / inference / release timings are taken INSIDE the sweep, one level down.
-                features_by_window, failed = _run_model_sets_over_windows(
-                    buffers, models_dir, _make_span_reporter(spans, _skip), lambda: signals.beat("coarse_model", len(coarse_windows), total)
-                )
+                models_done = 0
+
+                def _model_done(_chunk_start: int = position * work_per_chunk) -> None:
+                    nonlocal models_done
+                    models_done += 1
+                    signals.beat("coarse_model", len(coarse_windows), total)
+                    signals.beat("coarse_work", _chunk_start + models_done, work_total)
+
+                features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, _make_span_reporter(spans, _skip), _model_done)
                 buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
                 _malloc_trim()
 
@@ -1313,6 +1322,7 @@ def _analyze_coarse_windows(
                         # values (passed in by the caller) for every call in this tier.
                         signals.progress(fine_analyzed, fine_total, len(coarse_windows), total)
                 signals.beat("coarse", len(coarse_windows), total)
+                signals.beat("coarse_work", (position + 1) * work_per_chunk, work_total)
                 _record_chunk_peak_rss("coarse")
                 telemetry.add("phaze.analysis.chunks", 1, tier="coarse")
     return coarse_windows, total

@@ -248,10 +248,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-074)
+### Post-baseline chain (040-075)
 
-`alembic/versions/` holds **36** files: the `039` baseline plus a linear chain to the current
-head, **`074`**.
+`alembic/versions/` holds **37** files: the `039` baseline plus a linear chain to the current
+head, **`075`**.
 
 | Rev | Change |
 |-----|--------|
@@ -289,7 +289,8 @@ head, **`074`**.
 | `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) |
 | `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting (phaze-d28sn) |
 | `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table |
-| `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table — **head** |
+| `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table |
+| `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

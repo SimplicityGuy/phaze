@@ -301,7 +301,7 @@ def test_baseline_is_the_only_migration() -> None:
     (phaze-d28sn) adds cloud_job.redrive_after, the charged re-drive's backoff deadline; 073
     (phaze-mvq8z.6) creates runtime_config_override, the DB-override layer for hot-reloadable
     config (docs/design/0019-runtime-config-hot-reload.md); 074 adds the host-observed
-    deployment inventory.
+    deployment inventory; 075 adds display-only coarse work progress.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -342,6 +342,7 @@ def test_baseline_is_the_only_migration() -> None:
         "072_cloud_job_redrive_after.py",
         "073_runtime_config_override.py",
         "074_deployments.py",
+        "075_coarse_work_progress.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -370,10 +371,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (074: deployments)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (075: coarse work progress)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "074"
+    assert version == "075"
 
 
 @pytest.mark.asyncio
@@ -699,7 +700,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "074"
+        assert version == "075"
     finally:
         if engine is not None:
             await engine.dispose()

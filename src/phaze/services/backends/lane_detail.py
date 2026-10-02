@@ -430,6 +430,7 @@ class RunningAnalysis:
     fine_total: int | None
     coarse_done: int | None
     coarse_total: int | None
+    coarse_work_percent: int | None = None
 
     @property
     def windows_done(self) -> int | None:
@@ -643,6 +644,7 @@ async def _file_facts(session: AsyncSession, file_ids: Iterable[uuid.UUID]) -> d
             AnalysisResult.fine_windows_total,
             AnalysisResult.coarse_windows_analyzed,
             AnalysisResult.coarse_windows_total,
+            AnalysisResult.coarse_work_percent,
         )
         .select_from(FileRecord)
         .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
@@ -674,6 +676,7 @@ async def _local_running(session: AsyncSession, queue_name: str, lane_id: str, n
                 fine_total=fact.fine_windows_total if fact is not None else None,
                 coarse_done=fact.coarse_windows_analyzed if fact is not None else None,
                 coarse_total=fact.coarse_windows_total if fact is not None else None,
+                coarse_work_percent=fact.coarse_work_percent if fact is not None else None,
             )
         )
     return running
@@ -715,6 +718,7 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
             AnalysisResult.fine_windows_total,
             AnalysisResult.coarse_windows_analyzed,
             AnalysisResult.coarse_windows_total,
+            AnalysisResult.coarse_work_percent,
             AnalysisResult.updated_at.label("analysis_updated_at"),
             CloudJob.updated_at.label("job_updated_at"),
         )
@@ -744,6 +748,7 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
                 fine_total=row.fine_windows_total,
                 coarse_done=row.coarse_windows_analyzed,
                 coarse_total=row.coarse_windows_total,
+                coarse_work_percent=row.coarse_work_percent,
             )
         )
     return running

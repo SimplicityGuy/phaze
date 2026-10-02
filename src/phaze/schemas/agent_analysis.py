@@ -245,6 +245,7 @@ class AnalysisProgressPayload(BaseModel):
     fine_windows_total: int = Field(ge=0, le=50000)
     coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
     coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
+    coarse_work_percent: int | None = Field(default=None, ge=0, le=99)
 
 
 class AnalysisProgressResponse(BaseModel):

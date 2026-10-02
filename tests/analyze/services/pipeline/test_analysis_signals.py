@@ -170,11 +170,11 @@ def test_analyze_file_heartbeat_default_none_is_inert(_mock_es: MagicMock, mock_
 def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
     _mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock
 ) -> None:
-    """`analyze_file`'s heartbeat emits exactly the five-name stage vocabulary the watchdog reads.
+    """`analyze_file`'s heartbeat emits the stage vocabulary the watchdog reads.
 
     `services/analysis_exec.py`'s stall watchdog and `tasks/functions.py`'s terminal error
-    text both key off these five strings verbatim: "fine_decode", "fine", "coarse_decode",
-    "coarse_model", "coarse". Its failure mode is the phaze-1b39 incident class -- a watchdog
+    text key off these strings verbatim: "fine_decode", "fine", "coarse_decode",
+    "coarse_model", "coarse_work", "coarse". Its failure mode is the phaze-1b39 incident class -- a watchdog
     SIGTERMing a legitimate multi-hour analysis -- so this asserts the full contract: the
     vocabulary is exactly that set, a `*_decode` beat precedes every chunk's window beats
     (never the reverse), `total` is constant per tier and equals the natural window count,
@@ -190,7 +190,7 @@ def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
 
     result = analyze_file("/fake/audio.mp3", "/fake/models", heartbeat_cb=lambda stage, done, total: beats.append((stage, done, total)))
 
-    assert {b[0] for b in beats} == {"fine_decode", "fine", "coarse_decode", "coarse_model", "coarse"}
+    assert {b[0] for b in beats} == {"fine_decode", "fine", "coarse_decode", "coarse_model", "coarse_work", "coarse"}
 
     fine_total = result["fine_windows_total"]
     coarse_total = result["coarse_windows_total"]
@@ -198,17 +198,20 @@ def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
     assert coarse_total == 34
 
     fine_beats = [b for b in beats if b[0] in ("fine_decode", "fine")]
-    coarse_beats = [b for b in beats if b[0] in ("coarse_decode", "coarse_model", "coarse")]
+    coarse_beats = [b for b in beats if b[0] in ("coarse_decode", "coarse_model", "coarse_work", "coarse")]
     # The fine tier runs to completion before the coarse tier starts even one beat.
     assert beats == fine_beats + coarse_beats
 
     # `total` is constant per tier and equals the natural (pre-skip) window count.
     assert all(total == fine_total for _s, _d, total in fine_beats)
-    assert all(total == coarse_total for _s, _d, total in coarse_beats)
+    assert all(total == coarse_total for stage, _d, total in coarse_beats if stage != "coarse_work")
 
     # `done` is non-decreasing within each tier.
     assert [d for _s, d, _t in fine_beats] == sorted(d for _s, d, _t in fine_beats)
-    assert [d for _s, d, _t in coarse_beats] == sorted(d for _s, d, _t in coarse_beats)
+    coarse_window_beats = [d for stage, d, _t in coarse_beats if stage != "coarse_work"]
+    coarse_work_beats = [d for stage, d, _t in coarse_beats if stage == "coarse_work"]
+    assert coarse_window_beats == sorted(coarse_window_beats)
+    assert coarse_work_beats == sorted(coarse_work_beats)
 
     # A `*_decode` beat precedes every chunk's window beats: reconstruct the exact expected
     # stage sequence from the real chunk boundaries (`_chunked`, not a hardcoded 60/60/60/20)
@@ -226,8 +229,10 @@ def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
     expected_coarse_stages: list[str] = []
     for _size in coarse_chunk_sizes:
         expected_coarse_stages.append("coarse_decode")
-        expected_coarse_stages.extend(["coarse_model"] * model_ticks_per_chunk)
+        for _ in range(model_ticks_per_chunk):
+            expected_coarse_stages.extend(["coarse_model", "coarse_work"])
         expected_coarse_stages.append("coarse")
+        expected_coarse_stages.append("coarse_work")
     assert [b[0] for b in coarse_beats] == expected_coarse_stages
 
 

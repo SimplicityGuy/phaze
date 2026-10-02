@@ -470,7 +470,9 @@ async def put_analysis(
         # wire payload + _ANALYSIS_COLUMN_FIELDS, so a client cannot forge completion (T-57.1-12).
         # An in-flight/partial row (D-03 START upsert) skips this branch -> stays NULL, so the
         # proposal convergence gate (analysis_completed_at IS NOT NULL) can never batch it.
-        await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(analysis_completed_at=func.now()))
+        await session.execute(
+            update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(analysis_completed_at=func.now(), coarse_work_percent=100)
+        )
 
     # Ledger clear, awaiting-cloud-job reap, commit, best-effort staged-object delete --
     # the shared tail with `report_analysis_failed`'s terminal-failure path (D-14, phaze-uoiw,
@@ -530,6 +532,8 @@ async def post_analysis_progress(
     if include_coarse:
         payload["coarse_windows_analyzed"] = body.coarse_windows_analyzed
         payload["coarse_windows_total"] = body.coarse_windows_total
+    if body.coarse_work_percent is not None:
+        payload["coarse_work_percent"] = body.coarse_work_percent
     stmt = pg_insert(AnalysisResult).values([payload])
     set_: dict[str, Any] = {
         "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
@@ -542,6 +546,13 @@ async def post_analysis_progress(
     if include_coarse:
         set_["coarse_windows_analyzed"] = stmt.excluded.coarse_windows_analyzed
         set_["coarse_windows_total"] = stmt.excluded.coarse_windows_total
+    if body.coarse_work_percent is not None:
+        # A new run's initial zero clears stale progress; all later posts are monotonic.
+        set_["coarse_work_percent"] = (
+            0
+            if body.coarse_work_percent == 0 and body.fine_windows_analyzed == 0 and body.coarse_windows_analyzed == 0
+            else func.greatest(AnalysisResult.coarse_work_percent, stmt.excluded.coarse_work_percent)
+        )
     stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=set_)
     # phaze-wn1l: same concurrently-deleted-FileRecord race as put_analysis (module
     # docstring) -- this is the START-of-analysis progress POST, so it fires at the

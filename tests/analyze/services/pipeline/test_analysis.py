@@ -814,6 +814,31 @@ def test_analyze_file_coverage_is_complete(_mock_es: MagicMock, mock_get_labels:
 @patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_one_chunk_coarse_sweep_reports_work_before_windows_complete(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Model milestones move the coarse bar while completed-window counts remain truthful."""
+    mock_get_labels.side_effect = _mock_labels_file
+    events: list[tuple[str, int, int]] = []
+
+    result = analyze_file(
+        "/fake/audio.mp3",
+        "/fake/models",
+        progress_cb=lambda _fa, _ft, ca, _ct: events.append(("windows", ca, 0)),
+        heartbeat_cb=lambda stage, done, total: events.append((stage, done, total)),
+    )
+
+    work = [(done, total) for stage, done, total in events if stage == "coarse_work"]
+    assert len(work) > 2
+    assert all(total == work[0][1] for _, total in work)
+    assert [done for done, _ in work] == sorted(done for done, _ in work)
+    assert work[-1] == (work[-1][1], work[-1][1])
+    first_window = next(i for i, (stage, done, _) in enumerate(events) if stage == "windows" and done > 0)
+    assert any(stage == "coarse_work" and done > 0 for stage, done, _ in events[:first_window])
+    assert result["coarse_windows_analyzed"] == result["coarse_windows_total"] == 4
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_no_longer_emits_sampled(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
     """The `sampled` flag is GONE from the result contract (ADR-0007 (windowed analysis) §7).
 

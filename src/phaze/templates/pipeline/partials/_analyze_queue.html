@@ -58,15 +58,16 @@
                 <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(run.started_at, now=_now) if run.started_at else "—" }}</td>
                 <td class="min-w-64 px-4 py-2">
                     <div class="grid grid-cols-2 gap-3">
-                        {% for tier, done, total, fill in [("Fine", run.fine_done, run.fine_total, "bg-blue-500"), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500")] %}
+                        {% for tier, done, total, fill, work in [("Fine", run.fine_done, run.fine_total, "bg-blue-500", none), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500", run.coarse_work_percent)] %}
                         {% set known = done is not none and total is not none and total > 0 %}
-                        {% set pct = ([0, [100, done * 100 // total]|min]|max) if known else 0 %}
+                        {% set window_pct = ([0, [100, done * 100 // total]|min]|max) if known else 0 %}
+                        {% set pct = work if work is not none and total is not none and total > 0 else window_pct %}
                         <div class="min-w-0">
                             <div class="mb-1 text-[10px] font-jura font-medium uppercase tracking-wider text-muted">{{ tier }}</div>
-                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} windows analyzed for {{ run.label }}" aria-valuemin="0"{% if total is not none %} aria-valuemax="{{ total }}"{% endif %}{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ [done, total]|min }}"{% else %} aria-valuetext="{{ 'Sizing windows' if total is none else 'Progress unavailable' }}"{% endif %}>
+                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} {{ 'work' if work is not none else 'windows analyzed' }} for {{ run.label }}" aria-valuemin="0"{% if work is not none %} aria-valuemax="100" aria-valuenow="{{ pct }}"{% elif total is not none %} aria-valuemax="{{ total }}"{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ [done, total]|min }}"{% else %} aria-valuetext="Progress unavailable"{% endif %}{% else %} aria-valuetext="Sizing windows"{% endif %}>
                                 <div class="h-full rounded-full {{ fill }}" style="width: {{ pct }}%"></div>
                             </div>
-                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done if done is not none else "—" }}/{{ total if total is not none else "—" }}{% if known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
+                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done if done is not none else "—" }}/{{ total if total is not none else "—" }}{% if work is not none and known %} · {{ pct }}% work{% elif known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
                         </div>
                         {% endfor %}
                     </div>

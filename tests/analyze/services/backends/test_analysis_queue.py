@@ -268,7 +268,16 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     queue = resolved[1]
     await create_saq_jobs(session)
     running_file = await _file(session, "set-20.mp3")
-    session.add(AnalysisResult(file_id=running_file.id, fine_windows_analyzed=5, fine_windows_total=20))
+    session.add(
+        AnalysisResult(
+            file_id=running_file.id,
+            fine_windows_analyzed=5,
+            fine_windows_total=20,
+            coarse_windows_analyzed=0,
+            coarse_windows_total=20,
+            coarse_work_percent=37,
+        )
+    )
     # A running local job has its scheduling-ledger row (written at enqueue), so it is routed, not "unrouted".
     session.add(SchedulingLedger(key=f"process_file:{running_file.id}", function="process_file", routing="local", payload={}))
     await seed_bulk_queued(session, queue, 679)
@@ -292,7 +301,9 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     assert "set-20.mp3" in queue_view
     assert "5/20 · 25%" in queue_view
     assert 'aria-label="Fine windows analyzed for set-20.mp3"' in queue_view
-    assert 'aria-label="Coarse windows analyzed for set-20.mp3"' in queue_view
+    assert 'aria-label="Coarse work for set-20.mp3"' in queue_view
+    assert "0/20 · 37% work" in queue_view
+    assert 'aria-valuemax="100" aria-valuenow="37"' in queue_view
     assert "15m ago" in queue_view
     assert re.search(r">1</span> running · <span[^>]*>694</span> waiting", queue_view)
     # The header: running + waiting, labelled, seeded on the initial render for the store-bound subtitle.
