@@ -66,6 +66,7 @@
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
          class="space-y-6">
+    {% include "admin/partials/_deployments.html" %}
     <div class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; compute lanes</h2>

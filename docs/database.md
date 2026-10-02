@@ -11,6 +11,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | Table                 | Description                                                            |
 |-----------------------|-----------------------------------------------------------------------|
 | `agents`              | Distributed worker (file-server) identities that own files and scans  |
+| `deployments`         | Host-observed Phaze container, package, and immutable running-image identity |
 | `files`               | Central file records; per-stage status is derived on read (no `state` column) |
 | `scan_batches`        | Scan operation progress and status (`ScanStatus`)                     |
 | `orphan_companion_diagnostics` | Metadata-only accepted companion paths skipped because their directory had no media; owned by a scan batch |
@@ -247,10 +248,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-073)
+### Post-baseline chain (040-074)
 
-`alembic/versions/` holds **35** files: the `039` baseline plus a linear chain to the current
-head, **`073`**.
+`alembic/versions/` holds **36** files: the `039` baseline plus a linear chain to the current
+head, **`074`**.
 
 | Rev | Change |
 |-----|--------|
@@ -287,7 +288,8 @@ head, **`073`**.
 | `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) |
 | `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) |
 | `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting (phaze-d28sn) |
-| `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table — **head** |
+| `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table |
+| `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

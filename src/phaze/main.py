@@ -35,6 +35,7 @@ from phaze.routers import (
     agent_tag_writes,
     companion,
     cue,
+    deployments,
     duplicates,
     execution,
     health,
@@ -256,6 +257,7 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_metadata.router,
     agent_execution.router,
     agent_heartbeat.router,
+    deployments.router,
     agent_identity.router,
     # phaze-mvq8z.9: agent-authenticated GET for the DB-override layer (RELOADABLE_KEYS only) --
     # the remote-agent half of ADR-0019 (runtime config hot-reload) §14's propagation story. Polled by

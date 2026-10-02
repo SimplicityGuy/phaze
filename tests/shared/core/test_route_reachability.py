@@ -145,6 +145,7 @@ _NON_UI_PREFIXES: dict[str, str] = {
 _NON_UI_ROUTES: dict[str, str] = {
     # Container liveness probe (docker-compose / k8s). Its caller is an orchestrator.
     "GET /health": "liveness probe -- called by the container orchestrator",
+    "POST /api/internal/deployments": "host-side Docker inventory reporter -- called by scripts/report-deployments.py",
 }
 
 # Legacy bookmark redirects (SHELL-05 / D-03): a plain GET resolves an operator's saved

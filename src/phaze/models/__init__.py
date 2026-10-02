@@ -7,6 +7,7 @@ from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.dedup_review_plan import DedupReviewPlan
+from phaze.models.deployment import Deployment
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
@@ -39,6 +40,7 @@ __all__ = [
     "CloudJobStatus",
     "DedupResolution",
     "DedupReviewPlan",
+    "Deployment",
     "DiscogsLink",
     "ExecutionLog",
     "ExecutionStatus",
