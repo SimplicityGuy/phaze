@@ -290,7 +290,9 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     queue_view = body[body.index('id="analyze-queue"') :]
     queue_view = queue_view[: queue_view.index("</section>")]
     assert "set-20.mp3" in queue_view
-    assert "5/20 windows" in queue_view
+    assert "5/20 · 25%" in queue_view
+    assert 'aria-label="Fine windows analyzed for set-20.mp3"' in queue_view
+    assert 'aria-label="Coarse windows analyzed for set-20.mp3"' in queue_view
     assert "15m ago" in queue_view
     assert re.search(r">1</span> running · <span[^>]*>694</span> waiting", queue_view)
     # The header: running + waiting, labelled, seeded on the initial render for the store-bound subtitle.
