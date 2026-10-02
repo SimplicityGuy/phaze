@@ -9,6 +9,7 @@ import pytest
 
 from phaze.config import Settings
 from phaze.main import create_app
+from phaze.version import APP_VERSION
 from tests._route_introspection import effective_route_paths
 
 
@@ -54,6 +55,7 @@ def test_create_app_title_is_phaze() -> None:
     """create_app() sets title to 'Phaze'."""
     app = create_app()
     assert app.title == "Phaze"
+    assert app.version == APP_VERSION
 
 
 def test_create_app_has_health_route() -> None:

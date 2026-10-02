@@ -85,9 +85,9 @@
             {% include "pipeline/partials/localqueue_card.html" %}
             <section aria-labelledby="cloud-diagnostics-heading" class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
                 <h3 id="cloud-diagnostics-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Cloud progression</h3>
-                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {% include "pipeline/partials/admission_state_card.html" %}
-                    {# awaiting-cloud-card's live OOB host is in the metric strip; do not duplicate its id here. #}
+                {% include "pipeline/partials/admission_state_card.html" %}
+                {# awaiting-cloud-card's live OOB host is in the metric strip; do not duplicate its id here. #}
+                <div class="flex flex-wrap gap-x-5 gap-y-1 border-t border-gray-200 pt-3 text-xs text-muted dark:border-phaze-border" aria-label="Cloud lane slots">
                     {% include "pipeline/partials/staged_pushing_card.html" %}
                     {% include "pipeline/partials/analyzing_cloud_card.html" %}
                 </div>

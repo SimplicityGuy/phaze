@@ -1,81 +1,33 @@
-{# Phase 55 (55-05, D-04, KROUTE-06; re-split phaze-zyoag): Cloud admission-state card — per-cloud_phase counts.
-
-   Four counts (queued_behind_quota / admitted / running / finished) read from cloud_job.cloud_phase
-   by the degrade-safe service read (get_cloud_phase_counts), surfacing how far the k8s Kueue cloud
-   bursts have progressed through admission. A REUSE/EXTENSION of the Phase 54 inadmissible_card.html
-   pattern (55-UI-SPEC, D-04): same carrier-always / body-conditional split + OOB contract — but this
-   is HEALTHY progression, so the alert role and the warning hue are DELIBERATELY OMITTED (they stay
-   exclusive to the genuine inadmissible fault). finished uses GREEN (the dashboard's done/approved
-   hue), not a second neutral gray, so it reads as terminal success at a glance.
-
-   Each count arrives from a _safe_count-backed read (get_cloud_phase_counts); a degraded read
-   surfaces as 0, so the card renders the quiet empty carrier and NEVER raises into the hot 5s poll
-   (T-55-CARD-01). Every value is a plain int + STATIC autoescaped string — no operator free-text or
-   PII is interpolated (T-55-CARD-02). Each tile carries a text label + sub-label so phase identity
-   never depends on hue alone (WCAG 1.4.1).
-
-   cloud_phase is NULL for a1/local deploys (admission is a k8s-only concept), so all four counts are
-   0 and only the empty <section> carrier renders — no four-always-zero clutter for non-k8s operators.
-
-   The Running tile reads "admitted — pod running" (not the former "pod analyzing"): this is a
-   ``cloud_phase`` reconcile-cron reflection, not a live probe, so the card-level freshness hint
-   below the heading ("per reconcile, updates ~5 min") tells the operator how stale the LIVE three
-   tiles can be -- the same staleness class every Kueue-row status carries.
-
-   phaze-zyoag (THIRD FINDING): ``finished`` counts cloud_phase == FINISHED with no time bound and no
-   deletion -- only ``awaiting`` rows are ever pruned, so this is a LIFETIME CUMULATIVE total, not a
-   live snapshot like its three siblings. It is deliberately pulled OUT of the "per reconcile, updates
-   ~5 min" grid into its own row below a divider, with its OWN "lifetime total" caption, so it can
-   never be misread as a fourth instantaneous count on the same clock.
-
-   Rendered inline in dashboard.html on first load (#admission-state-card lives OUTSIDE the
-   #pipeline-stats poll target and outside #pipeline-stages so the OOB swap never re-renders the DAG
-   trigger buttons — T-55-CARD-03), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
-   every 5s poll (oob=True). Same id on both renders is the OOB contract (mirrors inadmissible_card).
-   The empty carrier is always emitted so a previously-shown grid CLEARS the moment k8s drains. #}
-{# Heading removed (operator request 2026-08-10): the card renders inside analyze_workspace.html's
-   single "Cloud" pane, and "Cloud · Admission" duplicated the tile labels. aria-label replaces the
-   old aria-labelledby; the "live — per reconcile" caption is now also the rendered-body
-   discriminator the admission tests assert on. #}
+{# Kueue admission phases are live reconcile snapshots; Finished is a separate lifetime total.
+   Keep this carrier mounted even when empty so the five-second stats poll can swap it OOB. #}
 <section id="admission-state-card"
          aria-label="Cloud admission state"
          {% if oob %}hx-swap-oob="true"{% endif %}
          class="space-y-3">
     {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
-    {% if queued_behind_quota_count or admitted_count or running_count %}
-    <p class="text-xs text-muted ">live — per reconcile, updates ~5 min</p>
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {% if queued_behind_quota_count %}
-        <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ queued_behind_quota_count }}</p>
-            <p class="text-sm text-muted ">Queued (quota)</p>
-            <p class="text-xs text-muted mt-1">waiting for cluster quota</p>
+        {% if queued_behind_quota_count or admitted_count or running_count %}
+        <p class="text-xs text-muted">Kueue admission · updates about every 5 min</p>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-3" aria-label="Cloud admission stages">
+            <div class="rounded-lg bg-gray-50 px-4 py-3 dark:bg-phaze-panel">
+                <p class="font-mono text-xl font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ queued_behind_quota_count }}</p>
+                <p class="text-sm text-muted">Waiting for quota</p>
+            </div>
+            <div class="rounded-lg bg-blue-50 px-4 py-3 dark:bg-blue-950">
+                <p class="font-mono text-xl font-semibold tabular-nums text-info">{{ admitted_count }}</p>
+                <p class="text-sm text-info">Admitted</p>
+            </div>
+            <div class="rounded-lg bg-violet-50 px-4 py-3 dark:bg-violet-950">
+                <p class="font-mono text-xl font-semibold tabular-nums text-violet-700 dark:text-violet-400">{{ running_count }}</p>
+                <p class="text-sm text-violet-600 dark:text-violet-400">Running</p>
+            </div>
         </div>
         {% endif %}
-        {% if admitted_count %}
-        <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-info ">{{ admitted_count }}</p>
-            <p class="text-sm text-info ">Admitted</p>
-            <p class="text-xs text-info mt-1">quota granted — starting</p>
-        </div>
+        {% if finished_count %}
+        <p class="border-t border-gray-200 pt-3 text-sm text-muted dark:border-phaze-border">
+            <span class="font-mono font-semibold tabular-nums text-ok">{{ finished_count }}</span>
+            <span class="font-medium text-ok">Finished overall</span>
+            <span>· lifetime total</span>
+        </p>
         {% endif %}
-        {% if running_count %}
-        <div class="bg-violet-50 dark:bg-violet-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-violet-700 dark:text-violet-400">{{ running_count }}</p>
-            <p class="text-sm text-violet-600 dark:text-violet-400">Running</p>
-            <p class="text-xs text-violet-500 dark:text-violet-400 mt-1">admitted — pod running</p>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-    {% if finished_count %}
-    <div class="border-t border-gray-200 dark:border-phaze-border pt-3">
-        <div class="bg-green-50 dark:bg-green-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-ok ">{{ finished_count }}</p>
-            <p class="text-sm text-ok ">Finished</p>
-            <p class="text-xs text-green-500 dark:text-green-500 mt-1">result returned — lifetime total, not a live snapshot</p>
-        </div>
-    </div>
-    {% endif %}
     {% endif %}
 </section>

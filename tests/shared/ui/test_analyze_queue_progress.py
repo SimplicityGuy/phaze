@@ -1,10 +1,13 @@
 """The Running now progress cell shows each analysis tier independently."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader
+
+from phaze.utils.humanize import relative_time
 
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "src/phaze/templates"
@@ -17,15 +20,17 @@ def _render(
     coarse_done: int | None,
     coarse_total: int | None,
     coarse_work_percent: int | None = None,
+    heartbeat_lost: bool = False,
     oob: bool = False,
 ) -> BeautifulSoup:
+    now = datetime(2026, 10, 2, 12, tzinfo=UTC)
     run = SimpleNamespace(
         label="<set-01>",
         lane_kind="local",
         lane="Local",
         started_at=None,
-        heartbeat_at=None,
-        heartbeat_lost=False,
+        heartbeat_at=now - timedelta(minutes=14) if heartbeat_lost else None,
+        heartbeat_lost=heartbeat_lost,
         fine_done=fine_done,
         fine_total=fine_total,
         coarse_done=coarse_done,
@@ -33,8 +38,9 @@ def _render(
         coarse_work_percent=coarse_work_percent,
     )
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    environment.globals["humanize_relative_time"] = relative_time
     html = environment.get_template("pipeline/partials/_analyze_queue.html").render(
-        running_analyses=[run], analyze_running_total=1, total_queued_analyze=0, queue_now=None, oob=oob
+        running_analyses=[run], analyze_running_total=1, total_queued_analyze=0, queue_now=now, oob=oob
     )
     return BeautifulSoup(html, "html.parser")
 
@@ -53,6 +59,16 @@ def test_fine_and_coarse_bars_advance_independently() -> None:
     assert [bar.select_one("div")["style"] for bar in bars] == ["width: 71%", "width: 15%"]
     assert "101/141 · 71%" in soup.get_text(" ", strip=True)
     assert "3/20 · 15%" in soup.get_text(" ", strip=True)
+
+
+def test_overdue_heartbeat_names_the_missing_progress_update() -> None:
+    soup = _render(fine_done=1029, fine_total=1033, coarse_done=0, coarse_total=173, heartbeat_lost=True)
+    status = soup.select_one("#analyze-running-table tbody td:last-child")
+
+    assert status is not None
+    assert "No progress update" in status.get_text(" ", strip=True)
+    assert "Last update 14m ago" in status.get_text(" ", strip=True)
+    assert "LOST" not in status.get_text(" ", strip=True)
 
 
 def test_unknown_and_zero_totals_do_not_claim_completion() -> None:

@@ -104,7 +104,7 @@
             {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
             {% set state_color = 'text-ok ' %}
         {% elif f.awaiting_cloud %}
-            {% set state_text = 'pending (quota)' %}
+            {% set state_text = 'pending' %}
             {% set state_color = 'text-warn ' %}
         {% elif f.analysis_failed %}
             {% set state_text = 'failed' %}

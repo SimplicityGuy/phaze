@@ -73,7 +73,7 @@
                     </div>
                 </td>
                 <td class="whitespace-nowrap px-4 py-2 text-xs {% if run.heartbeat_lost %}text-danger {% else %}text-muted {% endif %}">
-                    {% if run.heartbeat_lost %}{{ ui.status_badge("Heartbeat", "LOST", "danger", "✕") }} {% endif %}{{ humanize_relative_time(run.heartbeat_at, now=_now) if run.heartbeat_at else "—" }}
+                    {% if run.heartbeat_lost %}<span class="font-medium text-danger">No progress update</span><span class="block text-xs">Last update {{ humanize_relative_time(run.heartbeat_at, now=_now) }}</span>{% else %}{{ humanize_relative_time(run.heartbeat_at, now=_now) if run.heartbeat_at else "—" }}{% endif %}
                 </td>
             </tr>
             {% endfor %}

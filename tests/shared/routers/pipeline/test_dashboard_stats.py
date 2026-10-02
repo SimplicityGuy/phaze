@@ -420,8 +420,8 @@ async def test_dashboard_admission_card_carrier_always_renders(client: AsyncClie
     # All-zero (no k8s activity) → empty carrier: no caption, no tiles. (The per-card "Cloud ·
     # Admission" heading is gone — the single Cloud pane owns the heading — so the live-snapshot
     # caption is the rendered-body discriminator now.)
-    assert "live — per reconcile" not in response.text
-    assert "Queued (quota)" not in response.text
+    assert "Kueue admission · updates about every 5 min" not in response.text
+    assert "Waiting for quota" not in response.text
 
 
 @pytest.mark.asyncio
@@ -433,11 +433,11 @@ async def test_dashboard_admission_card_renders_matching_tile(client: AsyncClien
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
-    assert "live — per reconcile" in response.text
+    assert "Kueue admission · updates about every 5 min" in response.text
     assert "Admitted" in response.text
-    assert "quota granted" in response.text
-    # Phases with 0 files stay invisible — their tiles are not rendered.
-    assert "Queued (quota)" not in response.text
+    # The selected stage-row layout keeps all live phases visible, including zero counts.
+    assert "Waiting for quota" in response.text
+    assert "Running" in response.text
     assert "Finished" not in response.text
 
 
@@ -455,8 +455,8 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
     assert card is not None
     card_html = card.group(0)
     assert "Finished" in card_html
-    assert "result returned" in card_html
-    assert "bg-green-50" in card_html
+    assert "Finished overall" in card_html
+    assert "text-ok" in card_html
     # Healthy progression — alert role + amber stay exclusive to inadmissible_card.
     assert 'role="alert"' not in card_html
     assert "amber" not in card_html
@@ -483,7 +483,7 @@ async def test_dashboard_admission_card_finished_is_a_lifetime_total_not_a_live_
     card_html = card.group(0)
     assert "lifetime total" in card_html, "the Finished tile must say it is cumulative, not live"
     # The live-grid caption must not sit above a lone Finished tile implying it shares that clock.
-    live_caption_pos = card_html.find("live — per reconcile")
+    live_caption_pos = card_html.find("Kueue admission · updates about every 5 min")
     finished_pos = card_html.find("Finished")
     assert live_caption_pos == -1, "with only Finished non-zero, the live-snapshot caption must not render"
     assert finished_pos != -1
@@ -498,8 +498,8 @@ async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: Async
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
-    assert "live — per reconcile" not in response.text
-    assert "Queued (quota)" not in response.text
+    assert "Kueue admission · updates about every 5 min" not in response.text
+    assert "Waiting for quota" not in response.text
 
 
 @pytest.mark.asyncio
@@ -517,7 +517,7 @@ async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, sessi
     card_html = card.group(0)
     assert 'hx-swap-oob="true"' in card_html
     assert "Running" in card_html
-    assert "admitted — pod running" in card_html
+    assert "Waiting for quota" in card_html
     assert "bg-violet-50" in card_html
 
 
@@ -601,15 +601,14 @@ async def test_staged_analyzing_and_admission_agree_per_row(client: AsyncClient,
 
     # Staged counts EXACTLY the two pre-submit rows (uploading + uploaded); the submitted row must
     # NEVER inflate it -- the exact bug this bead fixes.
-    assert re.search(r"text-2xl[^>]*>\s*2\s*<", staged_card), staged_card
+    assert re.search(r"font-semibold[^>]*>\s*2\s*<", staged_card), staged_card
 
     # Analyzing counts EXACTLY the two post-submit rows (submitted-on-kueue + running).
-    assert re.search(r"text-2xl[^>]*>\s*2\s*<", analyzing_card), analyzing_card
+    assert re.search(r"font-semibold[^>]*>\s*2\s*<", analyzing_card), analyzing_card
 
-    # Admission agrees: the SAME submitted row is "Queued (quota)" 1, the SAME running row is "Running" 1.
-    assert "Queued (quota)" in admission_card
+    # Admission agrees: the SAME submitted row waits for quota; the other is running.
+    assert "Waiting for quota" in admission_card
     assert "Running" in admission_card
-    assert re.search(r"Queued \(quota\)", admission_card)
 
 
 @pytest.mark.asyncio
