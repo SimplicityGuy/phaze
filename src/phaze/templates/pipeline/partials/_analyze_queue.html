@@ -52,22 +52,24 @@
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
             {% for run in _rows %}
-            {% set _pct = run.percent %}
             <tr{% if run.heartbeat_lost %} class="bg-red-50 dark:bg-red-950"{% endif %}>
                 <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" title="{{ run.label }}">{{ run.label }}</td>
                 <td class="whitespace-nowrap px-4 py-2 text-xs">{% if run.lane_kind == "local" %}🖥️{% elif run.lane_kind == "kueue" %}⎈{% else %}▪{% endif %} {{ run.lane }}</td>
                 <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(run.started_at, now=_now) if run.started_at else "—" }}</td>
-                <td class="min-w-40 px-4 py-2">
-                    {% if run.windows_total %}
-                    <div class="flex items-center gap-2">
-                        <div class="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="Windows analyzed for {{ run.label }}" aria-valuemin="0" aria-valuemax="{{ run.windows_total }}" aria-valuenow="{{ run.windows_done }}">
-                            <div class="h-full rounded-full bg-blue-500" style="width: {{ _pct }}%"></div>
+                <td class="min-w-64 px-4 py-2">
+                    <div class="grid grid-cols-2 gap-3">
+                        {% for tier, done, total, fill in [("Fine", run.fine_done, run.fine_total, "bg-blue-500"), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500")] %}
+                        {% set known = done is not none and total is not none and total > 0 %}
+                        {% set pct = ([0, [100, done * 100 // total]|min]|max) if known else 0 %}
+                        <div class="min-w-0">
+                            <div class="mb-1 text-[10px] font-jura font-medium uppercase tracking-wider text-muted">{{ tier }}</div>
+                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} windows analyzed for {{ run.label }}" aria-valuemin="0"{% if total is not none %} aria-valuemax="{{ total }}"{% endif %}{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ [done, total]|min }}"{% else %} aria-valuetext="{{ 'Sizing windows' if total is none else 'Progress unavailable' }}"{% endif %}>
+                                <div class="h-full rounded-full {{ fill }}" style="width: {{ pct }}%"></div>
+                            </div>
+                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done if done is not none else "—" }}/{{ total if total is not none else "—" }}{% if known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
                         </div>
-                        <span class="whitespace-nowrap font-mono text-xs tabular-nums">{{ run.windows_done }}/{{ run.windows_total }} windows</span>
+                        {% endfor %}
                     </div>
-                    {% else %}
-                    <span class="text-xs text-muted ">sizing…</span>
-                    {% endif %}
                 </td>
                 <td class="whitespace-nowrap px-4 py-2 text-xs {% if run.heartbeat_lost %}text-danger {% else %}text-muted {% endif %}">
                     {% if run.heartbeat_lost %}{{ ui.status_badge("Heartbeat", "LOST", "danger", "✕") }} {% endif %}{{ humanize_relative_time(run.heartbeat_at, now=_now) if run.heartbeat_at else "—" }}
