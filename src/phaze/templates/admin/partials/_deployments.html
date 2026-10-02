@@ -9,7 +9,7 @@
     {% for host, containers in (deployments_by_host | default({})).items() %}
     <div class="mb-4 last:mb-0">
         <h3 class="mb-2 font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ host }}</h3>
-        <div class="overflow-x-auto">
+        <div class="relative overflow-x-auto">
             <table class="min-w-full text-left text-xs">
                 <thead class="text-muted"><tr><th class="px-2 py-1">Container</th><th class="px-2 py-1">App</th><th class="px-2 py-1">Image</th><th class="px-2 py-1">Running digest</th><th class="px-2 py-1">Observed</th></tr></thead>
                 <tbody>
@@ -23,7 +23,7 @@
                             <details><summary class="cursor-pointer">{{ deployment.image_digest[:19] }}…</summary><code class="break-all text-muted">{{ deployment.image_digest }}</code></details>
                             {% else %}Unknown{% endif %}
                         </td>
-                        <td class="px-2 py-2"><time datetime="{{ deployment.observed_at.isoformat() }}">{{ deployment.observed_at.strftime("%Y-%m-%d %H:%M UTC") }}</time><span class="block {{ 'text-amber-600 dark:text-amber-400' if stale else 'text-emerald-700 dark:text-emerald-400' }}">{{ "Stale" if stale else "Current" }}</span></td>
+                        <td class="px-2 py-2"><time datetime="{{ deployment.observed_at.isoformat() }}">{{ deployment.observed_at.strftime("%Y-%m-%d %H:%M UTC") }}</time><span class="block {{ 'text-warn' if stale else 'text-ok' }}">{{ "Stale" if stale else "Current" }}</span></td>
                     </tr>
                     {% endfor %}
                 </tbody>

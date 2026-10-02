@@ -72,6 +72,7 @@
     "POST /api/internal/agent/s3/{file_id}/uploaded",
     "POST /api/internal/agent/scan-batches/{batch_id}/orphan-companions",
     "POST /api/internal/agent/scratch/live",
+    "POST /api/internal/deployments",
     "POST /api/v1/analyze",
     "POST /api/v1/associate",
     "POST /api/v1/extract-metadata",

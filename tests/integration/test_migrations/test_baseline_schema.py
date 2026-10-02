@@ -89,6 +89,7 @@ _EXPECTED_TABLES = frozenset(
         "cloud_job",
         "dedup_resolution",
         "dedup_review_plan",
+        "deployments",
         "discogs_links",
         "execution_log",
         "file_companions",
@@ -299,7 +300,8 @@ def test_baseline_is_the_only_migration() -> None:
     (phaze-j0ixx) adds the backend_breaker table and ANALYZEs cloud_job for its trip rule; 072
     (phaze-d28sn) adds cloud_job.redrive_after, the charged re-drive's backoff deadline; 073
     (phaze-mvq8z.6) creates runtime_config_override, the DB-override layer for hot-reloadable
-    config (docs/design/0019-runtime-config-hot-reload.md).
+    config (docs/design/0019-runtime-config-hot-reload.md); 074 adds the host-observed
+    deployment inventory.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -339,6 +341,7 @@ def test_baseline_is_the_only_migration() -> None:
         "071_backend_breaker.py",
         "072_cloud_job_redrive_after.py",
         "073_runtime_config_override.py",
+        "074_deployments.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -367,10 +370,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (073: runtime_config_override)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (074: deployments)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "073"
+    assert version == "074"
 
 
 @pytest.mark.asyncio
@@ -696,7 +699,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "073"
+        assert version == "074"
     finally:
         if engine is not None:
             await engine.dispose()
