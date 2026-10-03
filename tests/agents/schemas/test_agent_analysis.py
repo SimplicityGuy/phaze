@@ -31,6 +31,11 @@ def test_analysis_write_payload_accepts_empty_body() -> None:
     assert payload.energy is None
 
 
+def test_legacy_style_label_rejects_column_overflow() -> None:
+    with pytest.raises(pydantic.ValidationError, match="50-character storage limit"):
+        AnalysisWritePayload(style="x" * 51)
+
+
 def test_analysis_write_payload_accepts_full_body() -> None:
     """Full essentia analysis body validates."""
     payload = AnalysisWritePayload(

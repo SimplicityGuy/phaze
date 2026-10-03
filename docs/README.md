@@ -27,6 +27,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | Document | Purpose |
 | -------- | ------- |
 | **[Gates and Isolation](gates-and-isolation.md)** | 🧪 Validation-boundary evidence, PostgreSQL/Redis seat isolation, and trustworthy gate output |
+| **[Coverage Baseline Refresh](coverage-baseline-refresh.md)** | 📏 Full-suite coverage provenance, every changed module, and repaired boundary gaps |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |

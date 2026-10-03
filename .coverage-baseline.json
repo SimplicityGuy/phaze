@@ -1,7 +1,7 @@
 {
   "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
   "base_ref": "main",
-  "commit": "65e5af46e5812969445b1d6c4aaf09a8b1a4b5d7",
+  "commit": "59bef0afbe3bde51664f8fc3a2c93e034684f83e",
   "files": {
     "src/phaze/__init__.py": {
       "covered_branches": 0,
@@ -23,12 +23,12 @@
     },
     "src/phaze/agent_watcher/__main__.py": {
       "covered_branches": 25,
-      "covered_lines": 96,
+      "covered_lines": 105,
       "num_branches": 26,
-      "num_statements": 97,
+      "num_statements": 106,
       "percent_branches_covered": 96.15384615384616,
-      "percent_covered_combined": 98.3739837398374,
-      "percent_statements_covered": 98.96907216494846
+      "percent_covered_combined": 98.48484848484848,
+      "percent_statements_covered": 99.05660377358491
     },
     "src/phaze/agent_watcher/debouncer.py": {
       "covered_branches": 10,
@@ -41,9 +41,9 @@
     },
     "src/phaze/agent_watcher/observer.py": {
       "covered_branches": 12,
-      "covered_lines": 41,
+      "covered_lines": 42,
       "num_branches": 12,
-      "num_statements": 41,
+      "num_statements": 42,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -59,9 +59,9 @@
     },
     "src/phaze/analysis_child.py": {
       "covered_branches": 8,
-      "covered_lines": 61,
+      "covered_lines": 69,
       "num_branches": 8,
-      "num_statements": 61,
+      "num_statements": 69,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -76,31 +76,67 @@
       "percent_statements_covered": 96.85039370078741
     },
     "src/phaze/cli/__init__.py": {
-      "covered_branches": 21,
-      "covered_lines": 140,
-      "num_branches": 22,
-      "num_statements": 143,
-      "percent_branches_covered": 95.45454545454545,
-      "percent_covered_combined": 97.57575757575758,
-      "percent_statements_covered": 97.9020979020979
+      "covered_branches": 43,
+      "covered_lines": 228,
+      "num_branches": 44,
+      "num_statements": 231,
+      "percent_branches_covered": 97.72727272727273,
+      "percent_covered_combined": 98.54545454545455,
+      "percent_statements_covered": 98.7012987012987
     },
     "src/phaze/config.py": {
-      "covered_branches": 67,
-      "covered_lines": 284,
-      "num_branches": 68,
-      "num_statements": 284,
-      "percent_branches_covered": 98.52941176470588,
-      "percent_covered_combined": 99.7159090909091,
+      "covered_branches": 6,
+      "covered_lines": 22,
+      "num_branches": 6,
+      "num_statements": 22,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/config_agent.py": {
+      "covered_branches": 16,
+      "covered_lines": 56,
+      "num_branches": 16,
+      "num_statements": 56,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/config_backends.py": {
-      "covered_branches": 25,
-      "covered_lines": 103,
-      "num_branches": 28,
+      "covered_branches": 27,
+      "covered_lines": 110,
+      "num_branches": 30,
+      "num_statements": 113,
+      "percent_branches_covered": 90.0,
+      "percent_covered_combined": 95.8041958041958,
+      "percent_statements_covered": 97.34513274336283
+    },
+    "src/phaze/config_base.py": {
+      "covered_branches": 6,
+      "covered_lines": 68,
+      "num_branches": 6,
+      "num_statements": 68,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/config_control.py": {
+      "covered_branches": 11,
+      "covered_lines": 104,
+      "num_branches": 12,
       "num_statements": 106,
-      "percent_branches_covered": 89.28571428571429,
-      "percent_covered_combined": 95.5223880597015,
-      "percent_statements_covered": 97.16981132075472
+      "percent_branches_covered": 91.66666666666667,
+      "percent_covered_combined": 97.45762711864407,
+      "percent_statements_covered": 98.11320754716981
+    },
+    "src/phaze/config_redis.py": {
+      "covered_branches": 5,
+      "covered_lines": 20,
+      "num_branches": 6,
+      "num_statements": 20,
+      "percent_branches_covered": 83.33333333333333,
+      "percent_covered_combined": 96.15384615384616,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/config_registry_policies.py": {
       "covered_branches": 26,
@@ -111,20 +147,29 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/config_secrets.py": {
+      "covered_branches": 24,
+      "covered_lines": 60,
+      "num_branches": 24,
+      "num_statements": 60,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/constants.py": {
       "covered_branches": 0,
-      "covered_lines": 19,
+      "covered_lines": 21,
       "num_branches": 0,
-      "num_statements": 19,
+      "num_statements": 21,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/database.py": {
       "covered_branches": 2,
-      "covered_lines": 29,
+      "covered_lines": 31,
       "num_branches": 2,
-      "num_statements": 29,
+      "num_statements": 31,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -157,10 +202,10 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/enums/stage.py": {
-      "covered_branches": 38,
-      "covered_lines": 86,
-      "num_branches": 38,
-      "num_statements": 86,
+      "covered_branches": 46,
+      "covered_lines": 103,
+      "num_branches": 46,
+      "num_statements": 103,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -175,46 +220,46 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/enums/tracklist_candidate.py": {
-      "covered_branches": 0,
-      "covered_lines": 64,
-      "num_branches": 0,
-      "num_statements": 64,
-      "percent_branches_covered": null,
+      "covered_branches": 8,
+      "covered_lines": 102,
+      "num_branches": 8,
+      "num_statements": 102,
+      "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/job_runner.py": {
-      "covered_branches": 41,
-      "covered_lines": 229,
-      "num_branches": 46,
-      "num_statements": 232,
-      "percent_branches_covered": 89.1304347826087,
-      "percent_covered_combined": 97.12230215827338,
-      "percent_statements_covered": 98.70689655172414
+      "covered_branches": 52,
+      "covered_lines": 291,
+      "num_branches": 58,
+      "num_statements": 294,
+      "percent_branches_covered": 89.65517241379311,
+      "percent_covered_combined": 97.44318181818181,
+      "percent_statements_covered": 98.9795918367347
     },
     "src/phaze/logging_config.py": {
-      "covered_branches": 18,
-      "covered_lines": 65,
-      "num_branches": 18,
-      "num_statements": 65,
+      "covered_branches": 20,
+      "covered_lines": 73,
+      "num_branches": 20,
+      "num_statements": 73,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/main.py": {
-      "covered_branches": 5,
-      "covered_lines": 96,
-      "num_branches": 6,
-      "num_statements": 96,
-      "percent_branches_covered": 83.33333333333333,
-      "percent_covered_combined": 99.01960784313725,
+      "covered_branches": 7,
+      "covered_lines": 98,
+      "num_branches": 8,
+      "num_statements": 98,
+      "percent_branches_covered": 87.5,
+      "percent_covered_combined": 99.05660377358491,
       "percent_statements_covered": 100.0
     },
     "src/phaze/models/__init__.py": {
       "covered_branches": 0,
-      "covered_lines": 24,
+      "covered_lines": 29,
       "num_branches": 0,
-      "num_statements": 24,
+      "num_statements": 29,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -230,9 +275,18 @@
     },
     "src/phaze/models/analysis.py": {
       "covered_branches": 0,
-      "covered_lines": 37,
+      "covered_lines": 45,
       "num_branches": 0,
-      "num_statements": 37,
+      "num_statements": 45,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/models/backend_breaker.py": {
+      "covered_branches": 0,
+      "covered_lines": 11,
+      "num_branches": 0,
+      "num_statements": 11,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -257,9 +311,9 @@
     },
     "src/phaze/models/cloud_job.py": {
       "covered_branches": 0,
-      "covered_lines": 35,
+      "covered_lines": 42,
       "num_branches": 0,
-      "num_statements": 35,
+      "num_statements": 42,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -278,6 +332,15 @@
       "covered_lines": 13,
       "num_branches": 0,
       "num_statements": 13,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/models/deployment.py": {
+      "covered_branches": 0,
+      "covered_lines": 15,
+      "num_branches": 0,
+      "num_statements": 15,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -302,9 +365,9 @@
     },
     "src/phaze/models/file.py": {
       "covered_branches": 0,
-      "covered_lines": 21,
+      "covered_lines": 22,
       "num_branches": 0,
-      "num_statements": 21,
+      "num_statements": 22,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -336,6 +399,15 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/models/orphan_companion_diagnostic.py": {
+      "covered_branches": 0,
+      "covered_lines": 12,
+      "num_branches": 0,
+      "num_statements": 12,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/models/pipeline_stage_control.py": {
       "covered_branches": 0,
       "covered_lines": 10,
@@ -363,11 +435,20 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/models/runtime_config_override.py": {
+      "covered_branches": 0,
+      "covered_lines": 10,
+      "num_branches": 0,
+      "num_statements": 10,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/models/scan_batch.py": {
       "covered_branches": 0,
-      "covered_lines": 24,
+      "covered_lines": 28,
       "num_branches": 0,
-      "num_statements": 24,
+      "num_statements": 28,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -377,6 +458,15 @@
       "covered_lines": 18,
       "num_branches": 0,
       "num_statements": 18,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/models/set_profile.py": {
+      "covered_branches": 0,
+      "covered_lines": 15,
+      "num_branches": 0,
+      "num_statements": 15,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -419,9 +509,9 @@
     },
     "src/phaze/models/tracklist_lookup_cache.py": {
       "covered_branches": 0,
-      "covered_lines": 30,
+      "covered_lines": 41,
       "num_branches": 0,
-      "num_statements": 30,
+      "num_statements": 41,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -454,19 +544,28 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/admin_agents.py": {
-      "covered_branches": 34,
-      "covered_lines": 177,
-      "num_branches": 34,
-      "num_statements": 177,
+      "covered_branches": 44,
+      "covered_lines": 208,
+      "num_branches": 44,
+      "num_statements": 208,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/routers/admin_runtime_config.py": {
+      "covered_branches": 8,
+      "covered_lines": 87,
+      "num_branches": 8,
+      "num_statements": 87,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_analysis.py": {
-      "covered_branches": 22,
-      "covered_lines": 114,
-      "num_branches": 22,
-      "num_statements": 114,
+      "covered_branches": 54,
+      "covered_lines": 155,
+      "num_branches": 54,
+      "num_statements": 155,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -480,14 +579,23 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/routers/agent_config.py": {
+      "covered_branches": 0,
+      "covered_lines": 16,
+      "num_branches": 0,
+      "num_statements": 16,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/routers/agent_exec_batches.py": {
-      "covered_branches": 25,
-      "covered_lines": 72,
+      "covered_branches": 27,
+      "covered_lines": 75,
       "num_branches": 28,
       "num_statements": 75,
-      "percent_branches_covered": 89.28571428571429,
-      "percent_covered_combined": 94.1747572815534,
-      "percent_statements_covered": 96.0
+      "percent_branches_covered": 96.42857142857143,
+      "percent_covered_combined": 99.02912621359224,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_execution.py": {
       "covered_branches": 12,
@@ -499,19 +607,19 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_files.py": {
-      "covered_branches": 16,
-      "covered_lines": 68,
-      "num_branches": 16,
-      "num_statements": 68,
+      "covered_branches": 22,
+      "covered_lines": 87,
+      "num_branches": 22,
+      "num_statements": 87,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_heartbeat.py": {
       "covered_branches": 2,
-      "covered_lines": 23,
+      "covered_lines": 24,
       "num_branches": 2,
-      "num_statements": 23,
+      "num_statements": 24,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -526,13 +634,22 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_metadata.py": {
-      "covered_branches": 2,
-      "covered_lines": 51,
-      "num_branches": 2,
-      "num_statements": 51,
+      "covered_branches": 6,
+      "covered_lines": 44,
+      "num_branches": 6,
+      "num_statements": 44,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
+    },
+    "src/phaze/routers/agent_orphan_companions.py": {
+      "covered_branches": 12,
+      "covered_lines": 44,
+      "num_branches": 12,
+      "num_statements": 46,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 96.55172413793103,
+      "percent_statements_covered": 95.65217391304348
     },
     "src/phaze/routers/agent_proposals.py": {
       "covered_branches": 14,
@@ -562,13 +679,13 @@
       "percent_statements_covered": 98.50746268656717
     },
     "src/phaze/routers/agent_scan_batches.py": {
-      "covered_branches": 21,
-      "covered_lines": 46,
-      "num_branches": 22,
-      "num_statements": 47,
-      "percent_branches_covered": 95.45454545454545,
-      "percent_covered_combined": 97.10144927536231,
-      "percent_statements_covered": 97.87234042553192
+      "covered_branches": 23,
+      "covered_lines": 51,
+      "num_branches": 24,
+      "num_statements": 52,
+      "percent_branches_covered": 95.83333333333333,
+      "percent_covered_combined": 97.36842105263158,
+      "percent_statements_covered": 98.07692307692308
     },
     "src/phaze/routers/agent_scratch.py": {
       "covered_branches": 0,
@@ -580,10 +697,10 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/agent_tag_writes.py": {
-      "covered_branches": 12,
-      "covered_lines": 44,
-      "num_branches": 12,
-      "num_statements": 44,
+      "covered_branches": 14,
+      "covered_lines": 48,
+      "num_branches": 14,
+      "num_statements": 48,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -608,30 +725,39 @@
     },
     "src/phaze/routers/cue.py": {
       "covered_branches": 28,
-      "covered_lines": 120,
+      "covered_lines": 122,
       "num_branches": 32,
-      "num_statements": 124,
+      "num_statements": 126,
       "percent_branches_covered": 87.5,
-      "percent_covered_combined": 94.87179487179488,
-      "percent_statements_covered": 96.7741935483871
+      "percent_covered_combined": 94.9367088607595,
+      "percent_statements_covered": 96.82539682539682
+    },
+    "src/phaze/routers/deployments.py": {
+      "covered_branches": 7,
+      "covered_lines": 27,
+      "num_branches": 8,
+      "num_statements": 28,
+      "percent_branches_covered": 87.5,
+      "percent_covered_combined": 94.44444444444444,
+      "percent_statements_covered": 96.42857142857143
     },
     "src/phaze/routers/duplicates.py": {
       "covered_branches": 18,
-      "covered_lines": 114,
+      "covered_lines": 116,
       "num_branches": 24,
-      "num_statements": 125,
+      "num_statements": 127,
       "percent_branches_covered": 75.0,
-      "percent_covered_combined": 88.59060402684564,
-      "percent_statements_covered": 91.2
+      "percent_covered_combined": 88.74172185430463,
+      "percent_statements_covered": 91.33858267716535
     },
     "src/phaze/routers/execution.py": {
       "covered_branches": 37,
-      "covered_lines": 201,
+      "covered_lines": 203,
       "num_branches": 38,
-      "num_statements": 205,
+      "num_statements": 207,
       "percent_branches_covered": 97.36842105263158,
-      "percent_covered_combined": 97.94238683127573,
-      "percent_statements_covered": 98.04878048780488
+      "percent_covered_combined": 97.95918367346938,
+      "percent_statements_covered": 98.06763285024155
     },
     "src/phaze/routers/health.py": {
       "covered_branches": 0,
@@ -653,36 +779,36 @@
     },
     "src/phaze/routers/pipeline/_common.py": {
       "covered_branches": 0,
-      "covered_lines": 26,
+      "covered_lines": 30,
       "num_branches": 0,
-      "num_statements": 26,
+      "num_statements": 30,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/pipeline/analysis.py": {
       "covered_branches": 35,
-      "covered_lines": 173,
+      "covered_lines": 178,
       "num_branches": 36,
-      "num_statements": 176,
+      "num_statements": 181,
       "percent_branches_covered": 97.22222222222223,
-      "percent_covered_combined": 98.11320754716981,
-      "percent_statements_covered": 98.29545454545455
+      "percent_covered_combined": 98.15668202764977,
+      "percent_statements_covered": 98.34254143646409
     },
     "src/phaze/routers/pipeline/backfill.py": {
-      "covered_branches": 11,
-      "covered_lines": 41,
-      "num_branches": 14,
-      "num_statements": 41,
-      "percent_branches_covered": 78.57142857142857,
-      "percent_covered_combined": 94.54545454545455,
+      "covered_branches": 13,
+      "covered_lines": 48,
+      "num_branches": 16,
+      "num_statements": 48,
+      "percent_branches_covered": 81.25,
+      "percent_covered_combined": 95.3125,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/pipeline/dashboard_stats.py": {
-      "covered_branches": 8,
-      "covered_lines": 107,
-      "num_branches": 8,
-      "num_statements": 107,
+      "covered_branches": 10,
+      "covered_lines": 122,
+      "num_branches": 10,
+      "num_statements": 122,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -707,18 +833,18 @@
     },
     "src/phaze/routers/pipeline/lanes.py": {
       "covered_branches": 2,
-      "covered_lines": 17,
+      "covered_lines": 25,
       "num_branches": 2,
-      "num_statements": 17,
+      "num_statements": 25,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/pipeline/proposals.py": {
       "covered_branches": 12,
-      "covered_lines": 49,
+      "covered_lines": 51,
       "num_branches": 12,
-      "num_statements": 49,
+      "num_statements": 51,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -733,28 +859,28 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/pipeline/skip.py": {
-      "covered_branches": 37,
-      "covered_lines": 133,
+      "covered_branches": 41,
+      "covered_lines": 143,
       "num_branches": 42,
-      "num_statements": 137,
-      "percent_branches_covered": 88.0952380952381,
-      "percent_covered_combined": 94.97206703910615,
-      "percent_statements_covered": 97.08029197080292
+      "num_statements": 144,
+      "percent_branches_covered": 97.61904761904762,
+      "percent_covered_combined": 98.9247311827957,
+      "percent_statements_covered": 99.30555555555556
     },
     "src/phaze/routers/pipeline/tracklists.py": {
-      "covered_branches": 17,
-      "covered_lines": 108,
-      "num_branches": 18,
-      "num_statements": 108,
-      "percent_branches_covered": 94.44444444444444,
-      "percent_covered_combined": 99.2063492063492,
+      "covered_branches": 21,
+      "covered_lines": 127,
+      "num_branches": 22,
+      "num_statements": 127,
+      "percent_branches_covered": 95.45454545454545,
+      "percent_covered_combined": 99.32885906040268,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/pipeline_scans.py": {
-      "covered_branches": 42,
-      "covered_lines": 169,
-      "num_branches": 42,
-      "num_statements": 169,
+      "covered_branches": 46,
+      "covered_lines": 204,
+      "num_branches": 46,
+      "num_statements": 204,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -787,28 +913,28 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/proposals.py": {
-      "covered_branches": 48,
-      "covered_lines": 174,
+      "covered_branches": 53,
+      "covered_lines": 198,
       "num_branches": 54,
-      "num_statements": 186,
-      "percent_branches_covered": 88.88888888888889,
-      "percent_covered_combined": 92.5,
-      "percent_statements_covered": 93.54838709677419
+      "num_statements": 198,
+      "percent_branches_covered": 98.14814814814815,
+      "percent_covered_combined": 99.60317460317461,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/routers/record.py": {
-      "covered_branches": 10,
-      "covered_lines": 81,
-      "num_branches": 10,
-      "num_statements": 81,
+      "covered_branches": 14,
+      "covered_lines": 112,
+      "num_branches": 14,
+      "num_statements": 112,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/request_guards.py": {
       "covered_branches": 4,
-      "covered_lines": 22,
+      "covered_lines": 34,
       "num_branches": 4,
-      "num_statements": 22,
+      "num_statements": 34,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -824,39 +950,75 @@
     },
     "src/phaze/routers/routing.py": {
       "covered_branches": 2,
-      "covered_lines": 22,
+      "covered_lines": 24,
       "num_branches": 2,
-      "num_statements": 22,
+      "num_statements": 24,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/routers/scan.py": {
+      "covered_branches": 18,
+      "covered_lines": 90,
+      "num_branches": 18,
+      "num_statements": 90,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/search.py": {
       "covered_branches": 6,
-      "covered_lines": 29,
+      "covered_lines": 31,
       "num_branches": 6,
-      "num_statements": 29,
+      "num_statements": 31,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
-    "src/phaze/routers/shell.py": {
-      "covered_branches": 66,
-      "covered_lines": 324,
-      "num_branches": 72,
-      "num_statements": 336,
-      "percent_branches_covered": 91.66666666666667,
-      "percent_covered_combined": 95.58823529411765,
-      "percent_statements_covered": 96.42857142857143
+    "src/phaze/routers/shell/__init__.py": {
+      "covered_branches": 12,
+      "covered_lines": 38,
+      "num_branches": 12,
+      "num_statements": 38,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/routers/shell/stage_context.py": {
+      "covered_branches": 6,
+      "covered_lines": 130,
+      "num_branches": 8,
+      "num_statements": 136,
+      "percent_branches_covered": 75.0,
+      "percent_covered_combined": 94.44444444444444,
+      "percent_statements_covered": 95.58823529411765
+    },
+    "src/phaze/routers/shell/stage_maps.py": {
+      "covered_branches": 0,
+      "covered_lines": 19,
+      "num_branches": 0,
+      "num_statements": 19,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/routers/shell/summary.py": {
+      "covered_branches": 49,
+      "covered_lines": 159,
+      "num_branches": 52,
+      "num_statements": 164,
+      "percent_branches_covered": 94.23076923076923,
+      "percent_covered_combined": 96.29629629629629,
+      "percent_statements_covered": 96.95121951219512
     },
     "src/phaze/routers/tags.py": {
-      "covered_branches": 57,
-      "covered_lines": 285,
+      "covered_branches": 65,
+      "covered_lines": 308,
       "num_branches": 66,
-      "num_statements": 307,
-      "percent_branches_covered": 86.36363636363636,
-      "percent_covered_combined": 91.68900804289544,
-      "percent_statements_covered": 92.83387622149837
+      "num_statements": 309,
+      "percent_branches_covered": 98.48484848484848,
+      "percent_covered_combined": 99.46666666666667,
+      "percent_statements_covered": 99.67637540453075
     },
     "src/phaze/routers/tracklists.py": {
       "covered_branches": 0,
@@ -868,13 +1030,58 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/routers/view_state.py": {
-      "covered_branches": 6,
-      "covered_lines": 54,
-      "num_branches": 6,
-      "num_statements": 54,
+      "covered_branches": 4,
+      "covered_lines": 55,
+      "num_branches": 4,
+      "num_statements": 55,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
+    },
+    "src/phaze/runtime_config.py": {
+      "covered_branches": 71,
+      "covered_lines": 289,
+      "num_branches": 72,
+      "num_statements": 290,
+      "percent_branches_covered": 98.61111111111111,
+      "percent_covered_combined": 99.4475138121547,
+      "percent_statements_covered": 99.65517241379311
+    },
+    "src/phaze/runtime_config_backends.py": {
+      "covered_branches": 6,
+      "covered_lines": 52,
+      "num_branches": 6,
+      "num_statements": 55,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 95.08196721311475,
+      "percent_statements_covered": 94.54545454545455
+    },
+    "src/phaze/runtime_config_catalog.py": {
+      "covered_branches": 12,
+      "covered_lines": 23,
+      "num_branches": 14,
+      "num_statements": 25,
+      "percent_branches_covered": 85.71428571428571,
+      "percent_covered_combined": 89.74358974358974,
+      "percent_statements_covered": 92.0
+    },
+    "src/phaze/runtime_config_notify.py": {
+      "covered_branches": 8,
+      "covered_lines": 56,
+      "num_branches": 10,
+      "num_statements": 61,
+      "percent_branches_covered": 80.0,
+      "percent_covered_combined": 90.14084507042253,
+      "percent_statements_covered": 91.80327868852459
+    },
+    "src/phaze/runtime_config_triggers.py": {
+      "covered_branches": 17,
+      "covered_lines": 107,
+      "num_branches": 20,
+      "num_statements": 111,
+      "percent_branches_covered": 85.0,
+      "percent_covered_combined": 94.65648854961832,
+      "percent_statements_covered": 96.3963963963964
     },
     "src/phaze/schemas/__init__.py": {
       "covered_branches": 0,
@@ -886,11 +1093,20 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/schemas/agent_analysis.py": {
-      "covered_branches": 4,
-      "covered_lines": 66,
-      "num_branches": 4,
-      "num_statements": 66,
+      "covered_branches": 14,
+      "covered_lines": 90,
+      "num_branches": 14,
+      "num_statements": 90,
       "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/schemas/agent_config.py": {
+      "covered_branches": 0,
+      "covered_lines": 9,
+      "num_branches": 0,
+      "num_statements": 9,
+      "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -905,9 +1121,9 @@
     },
     "src/phaze/schemas/agent_execution.py": {
       "covered_branches": 4,
-      "covered_lines": 35,
+      "covered_lines": 26,
       "num_branches": 4,
-      "num_statements": 35,
+      "num_statements": 26,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -923,9 +1139,9 @@
     },
     "src/phaze/schemas/agent_heartbeat.py": {
       "covered_branches": 0,
-      "covered_lines": 10,
+      "covered_lines": 30,
       "num_branches": 0,
-      "num_statements": 10,
+      "num_statements": 30,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -948,11 +1164,20 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/schemas/agent_orphan_companions.py": {
+      "covered_branches": 4,
+      "covered_lines": 29,
+      "num_branches": 4,
+      "num_statements": 29,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/schemas/agent_proposals.py": {
       "covered_branches": 2,
-      "covered_lines": 16,
+      "covered_lines": 21,
       "num_branches": 2,
-      "num_statements": 16,
+      "num_statements": 21,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -968,18 +1193,18 @@
     },
     "src/phaze/schemas/agent_s3.py": {
       "covered_branches": 6,
-      "covered_lines": 37,
+      "covered_lines": 38,
       "num_branches": 6,
-      "num_statements": 37,
+      "num_statements": 38,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/schemas/agent_scan_batches.py": {
       "covered_branches": 2,
-      "covered_lines": 24,
+      "covered_lines": 19,
       "num_branches": 2,
-      "num_statements": 24,
+      "num_statements": 19,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -995,21 +1220,21 @@
     },
     "src/phaze/schemas/agent_tag_writes.py": {
       "covered_branches": 2,
-      "covered_lines": 33,
+      "covered_lines": 34,
       "num_branches": 2,
-      "num_statements": 33,
+      "num_statements": 34,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/schemas/agent_tasks.py": {
       "covered_branches": 12,
-      "covered_lines": 70,
+      "covered_lines": 71,
       "num_branches": 16,
-      "num_statements": 73,
+      "num_statements": 74,
       "percent_branches_covered": 75.0,
-      "percent_covered_combined": 92.13483146067416,
-      "percent_statements_covered": 95.89041095890411
+      "percent_covered_combined": 92.22222222222223,
+      "percent_statements_covered": 95.94594594594595
     },
     "src/phaze/schemas/companion.py": {
       "covered_branches": 0,
@@ -1018,6 +1243,15 @@
       "num_statements": 6,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/schemas/deployment.py": {
+      "covered_branches": 3,
+      "covered_lines": 25,
+      "num_branches": 4,
+      "num_statements": 25,
+      "percent_branches_covered": 75.0,
+      "percent_covered_combined": 96.55172413793103,
       "percent_statements_covered": 100.0
     },
     "src/phaze/schemas/pipeline_scans.py": {
@@ -1035,6 +1269,24 @@
       "num_branches": 0,
       "num_statements": 6,
       "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/schemas/wire_mixins.py": {
+      "covered_branches": 0,
+      "covered_lines": 9,
+      "num_branches": 0,
+      "num_statements": 9,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/schemas/wire_payload.py": {
+      "covered_branches": 2,
+      "covered_lines": 10,
+      "num_branches": 2,
+      "num_statements": 10,
+      "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -1067,66 +1319,84 @@
     },
     "src/phaze/services/agent_bootstrap.py": {
       "covered_branches": 8,
-      "covered_lines": 44,
+      "covered_lines": 42,
       "num_branches": 8,
-      "num_statements": 44,
+      "num_statements": 42,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/agent_client.py": {
-      "covered_branches": 9,
-      "covered_lines": 130,
-      "num_branches": 10,
-      "num_statements": 131,
-      "percent_branches_covered": 90.0,
-      "percent_covered_combined": 98.58156028368795,
-      "percent_statements_covered": 99.23664122137404
+      "covered_branches": 15,
+      "covered_lines": 151,
+      "num_branches": 16,
+      "num_statements": 152,
+      "percent_branches_covered": 93.75,
+      "percent_covered_combined": 98.80952380952381,
+      "percent_statements_covered": 99.34210526315789
     },
     "src/phaze/services/agent_liveness.py": {
       "covered_branches": 16,
-      "covered_lines": 98,
+      "covered_lines": 100,
       "num_branches": 16,
-      "num_statements": 98,
+      "num_statements": 100,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/agent_s3_reports.py": {
-      "covered_branches": 19,
-      "covered_lines": 140,
-      "num_branches": 22,
-      "num_statements": 141,
-      "percent_branches_covered": 86.36363636363636,
-      "percent_covered_combined": 97.54601226993866,
-      "percent_statements_covered": 99.29078014184397
-    },
-    "src/phaze/services/agent_task_router.py": {
-      "covered_branches": 9,
-      "covered_lines": 57,
-      "num_branches": 10,
-      "num_statements": 59,
-      "percent_branches_covered": 90.0,
-      "percent_covered_combined": 95.65217391304348,
-      "percent_statements_covered": 96.61016949152543
-    },
-    "src/phaze/services/analysis.py": {
-      "covered_branches": 109,
-      "covered_lines": 411,
-      "num_branches": 116,
-      "num_statements": 411,
-      "percent_branches_covered": 93.96551724137932,
-      "percent_covered_combined": 98.67172675521822,
+      "covered_branches": 28,
+      "covered_lines": 165,
+      "num_branches": 28,
+      "num_statements": 165,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
-    "src/phaze/services/analysis_decoder.py": {
-      "covered_branches": 34,
-      "covered_lines": 157,
-      "num_branches": 34,
-      "num_statements": 159,
+    "src/phaze/services/agent_task_router.py": {
+      "covered_branches": 10,
+      "covered_lines": 60,
+      "num_branches": 10,
+      "num_statements": 62,
       "percent_branches_covered": 100.0,
-      "percent_covered_combined": 98.96373056994818,
-      "percent_statements_covered": 98.74213836477988
+      "percent_covered_combined": 97.22222222222223,
+      "percent_statements_covered": 96.7741935483871
+    },
+    "src/phaze/services/agent_upsert.py": {
+      "covered_branches": 0,
+      "covered_lines": 4,
+      "num_branches": 0,
+      "num_statements": 4,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/analysis.py": {
+      "covered_branches": 67,
+      "covered_lines": 324,
+      "num_branches": 68,
+      "num_statements": 325,
+      "percent_branches_covered": 98.52941176470588,
+      "percent_covered_combined": 99.4910941475827,
+      "percent_statements_covered": 99.6923076923077
+    },
+    "src/phaze/services/analysis_decoder.py": {
+      "covered_branches": 36,
+      "covered_lines": 190,
+      "num_branches": 36,
+      "num_statements": 190,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/analysis_derive.py": {
+      "covered_branches": 26,
+      "covered_lines": 43,
+      "num_branches": 26,
+      "num_statements": 43,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/analysis_enqueue.py": {
       "covered_branches": 6,
@@ -1138,39 +1408,75 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/analysis_exec.py": {
-      "covered_branches": 41,
-      "covered_lines": 149,
-      "num_branches": 42,
-      "num_statements": 149,
-      "percent_branches_covered": 97.61904761904762,
-      "percent_covered_combined": 99.47643979057591,
+      "covered_branches": 45,
+      "covered_lines": 163,
+      "num_branches": 46,
+      "num_statements": 163,
+      "percent_branches_covered": 97.82608695652173,
+      "percent_covered_combined": 99.52153110047847,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/analysis_models.py": {
+      "covered_branches": 10,
+      "covered_lines": 47,
+      "num_branches": 10,
+      "num_statements": 47,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/analysis_probe.py": {
+      "covered_branches": 11,
+      "covered_lines": 46,
+      "num_branches": 12,
+      "num_statements": 46,
+      "percent_branches_covered": 91.66666666666667,
+      "percent_covered_combined": 98.27586206896552,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/analysis_sizing.py": {
       "covered_branches": 50,
-      "covered_lines": 167,
+      "covered_lines": 172,
       "num_branches": 50,
-      "num_statements": 167,
+      "num_statements": 172,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/analysis_timeline.py": {
-      "covered_branches": 34,
-      "covered_lines": 117,
-      "num_branches": 38,
-      "num_statements": 122,
-      "percent_branches_covered": 89.47368421052632,
-      "percent_covered_combined": 94.375,
-      "percent_statements_covered": 95.90163934426229
+      "covered_branches": 99,
+      "covered_lines": 274,
+      "num_branches": 102,
+      "num_statements": 278,
+      "percent_branches_covered": 97.05882352941177,
+      "percent_covered_combined": 98.15789473684211,
+      "percent_statements_covered": 98.56115107913669
+    },
+    "src/phaze/services/analysis_windows.py": {
+      "covered_branches": 14,
+      "covered_lines": 65,
+      "num_branches": 16,
+      "num_statements": 65,
+      "percent_branches_covered": 87.5,
+      "percent_covered_combined": 97.53086419753086,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/analysis_wire.py": {
-      "covered_branches": 34,
-      "covered_lines": 57,
-      "num_branches": 36,
-      "num_statements": 57,
-      "percent_branches_covered": 94.44444444444444,
-      "percent_covered_combined": 97.84946236559139,
+      "covered_branches": 42,
+      "covered_lines": 87,
+      "num_branches": 42,
+      "num_statements": 87,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/backend_breaker.py": {
+      "covered_branches": 16,
+      "covered_lines": 78,
+      "num_branches": 16,
+      "num_statements": 78,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/backend_selection.py": {
@@ -1220,46 +1526,46 @@
     },
     "src/phaze/services/backends/kueue.py": {
       "covered_branches": 26,
-      "covered_lines": 121,
+      "covered_lines": 125,
       "num_branches": 30,
-      "num_statements": 124,
+      "num_statements": 128,
       "percent_branches_covered": 86.66666666666667,
-      "percent_covered_combined": 95.45454545454545,
-      "percent_statements_covered": 97.58064516129032
+      "percent_covered_combined": 95.56962025316456,
+      "percent_statements_covered": 97.65625
     },
     "src/phaze/services/backends/lane_detail.py": {
-      "covered_branches": 15,
-      "covered_lines": 79,
-      "num_branches": 16,
-      "num_statements": 87,
-      "percent_branches_covered": 93.75,
-      "percent_covered_combined": 91.2621359223301,
-      "percent_statements_covered": 90.80459770114942
+      "covered_branches": 54,
+      "covered_lines": 273,
+      "num_branches": 54,
+      "num_statements": 283,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 97.0326409495549,
+      "percent_statements_covered": 96.46643109540636
     },
     "src/phaze/services/backends/lane_metrics.py": {
       "covered_branches": 10,
-      "covered_lines": 77,
+      "covered_lines": 68,
       "num_branches": 10,
-      "num_statements": 80,
+      "num_statements": 71,
       "percent_branches_covered": 100.0,
-      "percent_covered_combined": 96.66666666666667,
-      "percent_statements_covered": 96.25
+      "percent_covered_combined": 96.29629629629629,
+      "percent_statements_covered": 95.77464788732394
     },
     "src/phaze/services/backends/lane_snapshot.py": {
-      "covered_branches": 29,
-      "covered_lines": 129,
-      "num_branches": 30,
-      "num_statements": 140,
-      "percent_branches_covered": 96.66666666666667,
-      "percent_covered_combined": 92.94117647058823,
-      "percent_statements_covered": 92.14285714285714
+      "covered_branches": 33,
+      "covered_lines": 141,
+      "num_branches": 34,
+      "num_statements": 149,
+      "percent_branches_covered": 97.05882352941177,
+      "percent_covered_combined": 95.08196721311475,
+      "percent_statements_covered": 94.63087248322148
     },
     "src/phaze/services/backends/local.py": {
-      "covered_branches": 0,
-      "covered_lines": 32,
-      "num_branches": 0,
-      "num_statements": 32,
-      "percent_branches_covered": null,
+      "covered_branches": 2,
+      "covered_lines": 41,
+      "num_branches": 2,
+      "num_statements": 41,
+      "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -1281,6 +1587,24 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/services/burst_telemetry_slots.py": {
+      "covered_branches": 5,
+      "covered_lines": 26,
+      "num_branches": 6,
+      "num_statements": 28,
+      "percent_branches_covered": 83.33333333333333,
+      "percent_covered_combined": 91.17647058823529,
+      "percent_statements_covered": 92.85714285714286
+    },
+    "src/phaze/services/cloud_attempts_reset.py": {
+      "covered_branches": 34,
+      "covered_lines": 137,
+      "num_branches": 34,
+      "num_statements": 137,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/services/cloud_budget.py": {
       "covered_branches": 14,
       "covered_lines": 39,
@@ -1291,13 +1615,13 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/cloud_staging.py": {
-      "covered_branches": 21,
-      "covered_lines": 102,
-      "num_branches": 24,
-      "num_statements": 103,
-      "percent_branches_covered": 87.5,
-      "percent_covered_combined": 96.85039370078741,
-      "percent_statements_covered": 99.02912621359224
+      "covered_branches": 24,
+      "covered_lines": 116,
+      "num_branches": 26,
+      "num_statements": 117,
+      "percent_branches_covered": 92.3076923076923,
+      "percent_covered_combined": 97.9020979020979,
+      "percent_statements_covered": 99.14529914529915
     },
     "src/phaze/services/collision.py": {
       "covered_branches": 10,
@@ -1309,20 +1633,20 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/companion.py": {
-      "covered_branches": 22,
-      "covered_lines": 58,
-      "num_branches": 22,
-      "num_statements": 58,
+      "covered_branches": 20,
+      "covered_lines": 68,
+      "num_branches": 20,
+      "num_statements": 68,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/companion_read.py": {
-      "covered_branches": 0,
-      "covered_lines": 6,
-      "num_branches": 0,
-      "num_statements": 6,
-      "percent_branches_covered": null,
+      "covered_branches": 2,
+      "covered_lines": 16,
+      "num_branches": 2,
+      "num_statements": 16,
+      "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -1336,10 +1660,10 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/cue_generator.py": {
-      "covered_branches": 24,
-      "covered_lines": 84,
-      "num_branches": 24,
-      "num_statements": 84,
+      "covered_branches": 26,
+      "covered_lines": 95,
+      "num_branches": 26,
+      "num_statements": 95,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -1354,19 +1678,19 @@
       "percent_statements_covered": 98.14814814814815
     },
     "src/phaze/services/date_convention.py": {
-      "covered_branches": 24,
-      "covered_lines": 89,
-      "num_branches": 24,
-      "num_statements": 89,
+      "covered_branches": 32,
+      "covered_lines": 112,
+      "num_branches": 32,
+      "num_statements": 112,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/dedup.py": {
-      "covered_branches": 44,
-      "covered_lines": 165,
-      "num_branches": 44,
-      "num_statements": 165,
+      "covered_branches": 46,
+      "covered_lines": 192,
+      "num_branches": 46,
+      "num_statements": 192,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -1409,11 +1733,11 @@
     },
     "src/phaze/services/execution_dispatch_protocol.py": {
       "covered_branches": 23,
-      "covered_lines": 135,
+      "covered_lines": 160,
       "num_branches": 24,
-      "num_statements": 135,
+      "num_statements": 160,
       "percent_branches_covered": 95.83333333333333,
-      "percent_covered_combined": 99.37106918238993,
+      "percent_covered_combined": 99.45652173913044,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/execution_preflight.py": {
@@ -1443,6 +1767,15 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/services/harmonic_journey.py": {
+      "covered_branches": 14,
+      "covered_lines": 147,
+      "num_branches": 14,
+      "num_statements": 147,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/services/hashing.py": {
       "covered_branches": 2,
       "covered_lines": 9,
@@ -1452,14 +1785,23 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/services/k8s_quantity.py": {
+      "covered_branches": 4,
+      "covered_lines": 11,
+      "num_branches": 4,
+      "num_statements": 11,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/services/kube_staging.py": {
-      "covered_branches": 57,
-      "covered_lines": 184,
+      "covered_branches": 60,
+      "covered_lines": 196,
       "num_branches": 60,
-      "num_statements": 186,
-      "percent_branches_covered": 95.0,
-      "percent_covered_combined": 97.96747967479675,
-      "percent_statements_covered": 98.9247311827957
+      "num_statements": 198,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 99.2248062015504,
+      "percent_statements_covered": 98.98989898989899
     },
     "src/phaze/services/like_escape.py": {
       "covered_branches": 0,
@@ -1469,6 +1811,24 @@
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/live_sentinel.py": {
+      "covered_branches": 0,
+      "covered_lines": 13,
+      "num_branches": 0,
+      "num_statements": 13,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/media_path_resolve.py": {
+      "covered_branches": 16,
+      "covered_lines": 39,
+      "num_branches": 18,
+      "num_statements": 42,
+      "percent_branches_covered": 88.88888888888889,
+      "percent_covered_combined": 91.66666666666667,
+      "percent_statements_covered": 92.85714285714286
     },
     "src/phaze/services/metadata.py": {
       "covered_branches": 25,
@@ -1481,12 +1841,12 @@
     },
     "src/phaze/services/metadata_parsing.py": {
       "covered_branches": 40,
-      "covered_lines": 119,
-      "num_branches": 44,
-      "num_statements": 123,
-      "percent_branches_covered": 90.9090909090909,
-      "percent_covered_combined": 95.20958083832335,
-      "percent_statements_covered": 96.7479674796748
+      "covered_lines": 130,
+      "num_branches": 40,
+      "num_statements": 132,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 98.83720930232558,
+      "percent_statements_covered": 98.48484848484848
     },
     "src/phaze/services/pagination.py": {
       "covered_branches": 2,
@@ -1526,12 +1886,12 @@
     },
     "src/phaze/services/pipeline/analyze.py": {
       "covered_branches": 14,
-      "covered_lines": 90,
+      "covered_lines": 91,
       "num_branches": 14,
-      "num_statements": 96,
+      "num_statements": 97,
       "percent_branches_covered": 100.0,
-      "percent_covered_combined": 94.54545454545455,
-      "percent_statements_covered": 93.75
+      "percent_covered_combined": 94.5945945945946,
+      "percent_statements_covered": 93.81443298969072
     },
     "src/phaze/services/pipeline/buckets.py": {
       "covered_branches": 10,
@@ -1544,9 +1904,9 @@
     },
     "src/phaze/services/pipeline/cloud.py": {
       "covered_branches": 2,
-      "covered_lines": 56,
+      "covered_lines": 58,
       "num_branches": 2,
-      "num_statements": 56,
+      "num_statements": 58,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -1570,13 +1930,13 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline/files.py": {
-      "covered_branches": 13,
-      "covered_lines": 70,
-      "num_branches": 14,
-      "num_statements": 74,
-      "percent_branches_covered": 92.85714285714286,
-      "percent_covered_combined": 94.31818181818181,
-      "percent_statements_covered": 94.5945945945946
+      "covered_branches": 19,
+      "covered_lines": 87,
+      "num_branches": 20,
+      "num_statements": 91,
+      "percent_branches_covered": 95.0,
+      "percent_covered_combined": 95.49549549549549,
+      "percent_statements_covered": 95.6043956043956
     },
     "src/phaze/services/pipeline/jobs.py": {
       "covered_branches": 8,
@@ -1606,58 +1966,103 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline/proposals.py": {
-      "covered_branches": 2,
-      "covered_lines": 23,
-      "num_branches": 2,
-      "num_statements": 23,
+      "covered_branches": 14,
+      "covered_lines": 40,
+      "num_branches": 14,
+      "num_statements": 40,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline/reconciliation.py": {
       "covered_branches": 6,
-      "covered_lines": 43,
+      "covered_lines": 54,
       "num_branches": 6,
-      "num_statements": 43,
+      "num_statements": 54,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline/stages.py": {
       "covered_branches": 11,
-      "covered_lines": 89,
+      "covered_lines": 88,
       "num_branches": 12,
-      "num_statements": 89,
+      "num_statements": 88,
       "percent_branches_covered": 91.66666666666667,
-      "percent_covered_combined": 99.00990099009901,
+      "percent_covered_combined": 99.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline/tracklists.py": {
       "covered_branches": 2,
-      "covered_lines": 39,
+      "covered_lines": 41,
       "num_branches": 2,
-      "num_statements": 39,
+      "num_statements": 41,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/pipeline_counters.py": {
       "covered_branches": 4,
-      "covered_lines": 25,
+      "covered_lines": 26,
       "num_branches": 4,
-      "num_statements": 25,
+      "num_statements": 26,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/poster.py": {
+      "covered_branches": 4,
+      "covered_lines": 53,
+      "num_branches": 4,
+      "num_statements": 53,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/proposal.py": {
-      "covered_branches": 45,
-      "covered_lines": 167,
-      "num_branches": 46,
-      "num_statements": 168,
-      "percent_branches_covered": 97.82608695652173,
-      "percent_covered_combined": 99.06542056074767,
-      "percent_statements_covered": 99.4047619047619
+      "covered_branches": 0,
+      "covered_lines": 27,
+      "num_branches": 0,
+      "num_statements": 27,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/proposal_context.py": {
+      "covered_branches": 25,
+      "covered_lines": 89,
+      "num_branches": 26,
+      "num_statements": 90,
+      "percent_branches_covered": 96.15384615384616,
+      "percent_covered_combined": 98.27586206896552,
+      "percent_statements_covered": 98.88888888888889
+    },
+    "src/phaze/services/proposal_parsing.py": {
+      "covered_branches": 30,
+      "covered_lines": 114,
+      "num_branches": 30,
+      "num_statements": 114,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/proposal_persistence.py": {
+      "covered_branches": 16,
+      "covered_lines": 42,
+      "num_branches": 16,
+      "num_statements": 42,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/proposal_provider.py": {
+      "covered_branches": 2,
+      "covered_lines": 24,
+      "num_branches": 2,
+      "num_statements": 24,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/proposal_queries.py": {
       "covered_branches": 45,
@@ -1669,19 +2074,37 @@
       "percent_statements_covered": 98.05825242718447
     },
     "src/phaze/services/queue_introspection.py": {
-      "covered_branches": 10,
-      "covered_lines": 53,
-      "num_branches": 10,
-      "num_statements": 53,
+      "covered_branches": 8,
+      "covered_lines": 49,
+      "num_branches": 8,
+      "num_statements": 49,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/reanalysis_backfill.py": {
       "covered_branches": 30,
-      "covered_lines": 113,
+      "covered_lines": 123,
       "num_branches": 30,
-      "num_statements": 113,
+      "num_statements": 123,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/record_facts.py": {
+      "covered_branches": 10,
+      "covered_lines": 64,
+      "num_branches": 10,
+      "num_statements": 64,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/record_metadata.py": {
+      "covered_branches": 4,
+      "covered_lines": 28,
+      "num_branches": 4,
+      "num_statements": 28,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -1695,14 +2118,59 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/services/resizable_limiter.py": {
+      "covered_branches": 19,
+      "covered_lines": 74,
+      "num_branches": 20,
+      "num_statements": 74,
+      "percent_branches_covered": 95.0,
+      "percent_covered_combined": 98.93617021276596,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/services/review.py": {
-      "covered_branches": 44,
-      "covered_lines": 236,
-      "num_branches": 46,
-      "num_statements": 242,
-      "percent_branches_covered": 95.65217391304348,
-      "percent_covered_combined": 97.22222222222223,
-      "percent_statements_covered": 97.52066115702479
+      "covered_branches": 0,
+      "covered_lines": 41,
+      "num_branches": 0,
+      "num_statements": 41,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/review_changes.py": {
+      "covered_branches": 10,
+      "covered_lines": 101,
+      "num_branches": 10,
+      "num_statements": 101,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/review_cue.py": {
+      "covered_branches": 1,
+      "covered_lines": 53,
+      "num_branches": 2,
+      "num_statements": 53,
+      "percent_branches_covered": 50.0,
+      "percent_covered_combined": 98.18181818181819,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/review_dedupe.py": {
+      "covered_branches": 12,
+      "covered_lines": 46,
+      "num_branches": 12,
+      "num_statements": 46,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/review_tagwrite.py": {
+      "covered_branches": 19,
+      "covered_lines": 87,
+      "num_branches": 20,
+      "num_statements": 87,
+      "percent_branches_covered": 95.0,
+      "percent_covered_combined": 99.06542056074767,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/route_control.py": {
       "covered_branches": 0,
@@ -1710,6 +2178,15 @@
       "num_branches": 0,
       "num_statements": 13,
       "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/runtime_config_overrides.py": {
+      "covered_branches": 4,
+      "covered_lines": 27,
+      "num_branches": 4,
+      "num_statements": 27,
+      "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -1723,31 +2200,76 @@
       "percent_statements_covered": 99.1304347826087
     },
     "src/phaze/services/scan_deletion.py": {
-      "covered_branches": 2,
-      "covered_lines": 35,
-      "num_branches": 2,
-      "num_statements": 35,
+      "covered_branches": 6,
+      "covered_lines": 44,
+      "num_branches": 6,
+      "num_statements": 44,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/scheduling_ledger.py": {
-      "covered_branches": 7,
-      "covered_lines": 47,
-      "num_branches": 8,
-      "num_statements": 48,
-      "percent_branches_covered": 87.5,
-      "percent_covered_combined": 96.42857142857143,
-      "percent_statements_covered": 97.91666666666667
-    },
-    "src/phaze/services/search_queries.py": {
-      "covered_branches": 20,
-      "covered_lines": 79,
-      "num_branches": 20,
-      "num_statements": 79,
+      "covered_branches": 16,
+      "covered_lines": 63,
+      "num_branches": 16,
+      "num_statements": 63,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/search_queries.py": {
+      "covered_branches": 20,
+      "covered_lines": 95,
+      "num_branches": 20,
+      "num_statements": 95,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/set_glyph_colors.py": {
+      "covered_branches": 9,
+      "covered_lines": 28,
+      "num_branches": 10,
+      "num_statements": 29,
+      "percent_branches_covered": 90.0,
+      "percent_covered_combined": 94.87179487179488,
+      "percent_statements_covered": 96.55172413793103
+    },
+    "src/phaze/services/set_projection.py": {
+      "covered_branches": 85,
+      "covered_lines": 204,
+      "num_branches": 90,
+      "num_statements": 207,
+      "percent_branches_covered": 94.44444444444444,
+      "percent_covered_combined": 97.3063973063973,
+      "percent_statements_covered": 98.55072463768116
+    },
+    "src/phaze/services/set_projection_backfill.py": {
+      "covered_branches": 7,
+      "covered_lines": 50,
+      "num_branches": 8,
+      "num_statements": 51,
+      "percent_branches_covered": 87.5,
+      "percent_covered_combined": 96.61016949152543,
+      "percent_statements_covered": 98.03921568627452
+    },
+    "src/phaze/services/set_projection_writer.py": {
+      "covered_branches": 18,
+      "covered_lines": 77,
+      "num_branches": 18,
+      "num_statements": 77,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/services/set_similarity.py": {
+      "covered_branches": 23,
+      "covered_lines": 97,
+      "num_branches": 26,
+      "num_statements": 98,
+      "percent_branches_covered": 88.46153846153847,
+      "percent_covered_combined": 96.7741935483871,
+      "percent_statements_covered": 98.9795918367347
     },
     "src/phaze/services/stage_control.py": {
       "covered_branches": 1,
@@ -1759,13 +2281,22 @@
       "percent_statements_covered": 95.45454545454545
     },
     "src/phaze/services/stage_status.py": {
-      "covered_branches": 36,
-      "covered_lines": 133,
-      "num_branches": 40,
-      "num_statements": 136,
-      "percent_branches_covered": 90.0,
-      "percent_covered_combined": 96.02272727272727,
-      "percent_statements_covered": 97.79411764705883
+      "covered_branches": 42,
+      "covered_lines": 147,
+      "num_branches": 46,
+      "num_statements": 150,
+      "percent_branches_covered": 91.30434782608695,
+      "percent_covered_combined": 96.42857142857143,
+      "percent_statements_covered": 98.0
+    },
+    "src/phaze/services/stranded_analysis_recovery.py": {
+      "covered_branches": 0,
+      "covered_lines": 6,
+      "num_branches": 0,
+      "num_statements": 6,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/tag_comparison.py": {
       "covered_branches": 10,
@@ -1776,23 +2307,32 @@
       "percent_covered_combined": 95.06172839506173,
       "percent_statements_covered": 97.10144927536231
     },
+    "src/phaze/services/tag_formats.py": {
+      "covered_branches": 8,
+      "covered_lines": 24,
+      "num_branches": 8,
+      "num_statements": 24,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
     "src/phaze/services/tag_proposal.py": {
-      "covered_branches": 31,
-      "covered_lines": 53,
-      "num_branches": 32,
-      "num_statements": 53,
-      "percent_branches_covered": 96.875,
-      "percent_covered_combined": 98.82352941176471,
+      "covered_branches": 14,
+      "covered_lines": 46,
+      "num_branches": 14,
+      "num_statements": 46,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tag_write_disk.py": {
-      "covered_branches": 58,
-      "covered_lines": 115,
-      "num_branches": 62,
-      "num_statements": 119,
-      "percent_branches_covered": 93.54838709677419,
-      "percent_covered_combined": 95.58011049723757,
-      "percent_statements_covered": 96.63865546218487
+      "covered_branches": 70,
+      "covered_lines": 139,
+      "num_branches": 70,
+      "num_statements": 139,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/services/tag_writer.py": {
       "covered_branches": 4,
@@ -1821,56 +2361,65 @@
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
+    "src/phaze/services/track_segments.py": {
+      "covered_branches": 23,
+      "covered_lines": 103,
+      "num_branches": 24,
+      "num_statements": 104,
+      "percent_branches_covered": 95.83333333333333,
+      "percent_covered_combined": 98.4375,
+      "percent_statements_covered": 99.03846153846153
+    },
     "src/phaze/services/tracklist_candidate_queue.py": {
-      "covered_branches": 29,
-      "covered_lines": 146,
-      "num_branches": 30,
-      "num_statements": 146,
-      "percent_branches_covered": 96.66666666666667,
-      "percent_covered_combined": 99.43181818181819,
+      "covered_branches": 31,
+      "covered_lines": 152,
+      "num_branches": 32,
+      "num_statements": 152,
+      "percent_branches_covered": 96.875,
+      "percent_covered_combined": 99.45652173913044,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_candidates.py": {
-      "covered_branches": 136,
-      "covered_lines": 374,
-      "num_branches": 138,
-      "num_statements": 374,
-      "percent_branches_covered": 98.55072463768116,
-      "percent_covered_combined": 99.609375,
+      "covered_branches": 138,
+      "covered_lines": 376,
+      "num_branches": 140,
+      "num_statements": 376,
+      "percent_branches_covered": 98.57142857142857,
+      "percent_covered_combined": 99.6124031007752,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_drain.py": {
-      "covered_branches": 59,
-      "covered_lines": 285,
-      "num_branches": 60,
-      "num_statements": 285,
-      "percent_branches_covered": 98.33333333333333,
-      "percent_covered_combined": 99.71014492753623,
+      "covered_branches": 77,
+      "covered_lines": 326,
+      "num_branches": 78,
+      "num_statements": 326,
+      "percent_branches_covered": 98.71794871794872,
+      "percent_covered_combined": 99.75247524752476,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_drain_arm.py": {
-      "covered_branches": 8,
-      "covered_lines": 57,
-      "num_branches": 8,
-      "num_statements": 57,
+      "covered_branches": 10,
+      "covered_lines": 68,
+      "num_branches": 10,
+      "num_statements": 68,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_lookup_cache.py": {
-      "covered_branches": 34,
-      "covered_lines": 110,
-      "num_branches": 34,
-      "num_statements": 110,
+      "covered_branches": 46,
+      "covered_lines": 155,
+      "num_branches": 46,
+      "num_statements": 155,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_matcher.py": {
       "covered_branches": 20,
-      "covered_lines": 58,
+      "covered_lines": 59,
       "num_branches": 20,
-      "num_statements": 58,
+      "num_statements": 59,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -1886,57 +2435,57 @@
     },
     "src/phaze/services/tracklist_priority.py": {
       "covered_branches": 25,
-      "covered_lines": 111,
+      "covered_lines": 112,
       "num_branches": 26,
-      "num_statements": 112,
+      "num_statements": 113,
       "percent_branches_covered": 96.15384615384616,
-      "percent_covered_combined": 98.55072463768116,
-      "percent_statements_covered": 99.10714285714286
+      "percent_covered_combined": 98.56115107913669,
+      "percent_statements_covered": 99.11504424778761
     },
     "src/phaze/services/tracklist_query.py": {
-      "covered_branches": 40,
-      "covered_lines": 155,
-      "num_branches": 40,
-      "num_statements": 155,
+      "covered_branches": 46,
+      "covered_lines": 182,
+      "num_branches": 46,
+      "num_statements": 182,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_render.py": {
       "covered_branches": 52,
-      "covered_lines": 287,
+      "covered_lines": 281,
       "num_branches": 54,
-      "num_statements": 287,
+      "num_statements": 281,
       "percent_branches_covered": 96.29629629629629,
-      "percent_covered_combined": 99.41348973607037,
+      "percent_covered_combined": 99.40298507462687,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_result_scorer.py": {
       "covered_branches": 32,
-      "covered_lines": 113,
+      "covered_lines": 116,
       "num_branches": 32,
-      "num_statements": 113,
+      "num_statements": 116,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/tracklist_scraper.py": {
-      "covered_branches": 35,
-      "covered_lines": 182,
-      "num_branches": 36,
-      "num_statements": 182,
-      "percent_branches_covered": 97.22222222222223,
-      "percent_covered_combined": 99.54128440366972,
+      "covered_branches": 39,
+      "covered_lines": 191,
+      "num_branches": 40,
+      "num_statements": 191,
+      "percent_branches_covered": 97.5,
+      "percent_covered_combined": 99.56709956709956,
       "percent_statements_covered": 100.0
     },
     "src/phaze/services/video_audio.py": {
-      "covered_branches": 42,
-      "covered_lines": 134,
-      "num_branches": 48,
-      "num_statements": 138,
-      "percent_branches_covered": 87.5,
-      "percent_covered_combined": 94.6236559139785,
-      "percent_statements_covered": 97.10144927536231
+      "covered_branches": 53,
+      "covered_lines": 180,
+      "num_branches": 60,
+      "num_statements": 188,
+      "percent_branches_covered": 88.33333333333333,
+      "percent_covered_combined": 93.95161290322581,
+      "percent_statements_covered": 95.74468085106383
     },
     "src/phaze/tasks/__init__.py": {
       "covered_branches": 0,
@@ -1976,18 +2525,27 @@
     },
     "src/phaze/tasks/_shared/deterministic_key.py": {
       "covered_branches": 19,
-      "covered_lines": 63,
+      "covered_lines": 67,
       "num_branches": 20,
-      "num_statements": 63,
+      "num_statements": 67,
       "percent_branches_covered": 95.0,
-      "percent_covered_combined": 98.79518072289157,
+      "percent_covered_combined": 98.85057471264368,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/tasks/_shared/live_worker.py": {
+      "covered_branches": 38,
+      "covered_lines": 119,
+      "num_branches": 38,
+      "num_statements": 119,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/_shared/model_bootstrap.py": {
-      "covered_branches": 4,
-      "covered_lines": 34,
-      "num_branches": 4,
-      "num_statements": 34,
+      "covered_branches": 8,
+      "covered_lines": 39,
+      "num_branches": 8,
+      "num_statements": 39,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -2056,58 +2614,76 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/agent_worker.py": {
-      "covered_branches": 39,
-      "covered_lines": 161,
-      "num_branches": 42,
-      "num_statements": 166,
-      "percent_branches_covered": 92.85714285714286,
-      "percent_covered_combined": 96.15384615384616,
-      "percent_statements_covered": 96.98795180722891
+      "covered_branches": 43,
+      "covered_lines": 198,
+      "num_branches": 46,
+      "num_statements": 203,
+      "percent_branches_covered": 93.47826086956522,
+      "percent_covered_combined": 96.78714859437751,
+      "percent_statements_covered": 97.53694581280789
+    },
+    "src/phaze/tasks/cloud_reconcile_observation.py": {
+      "covered_branches": 47,
+      "covered_lines": 144,
+      "num_branches": 48,
+      "num_statements": 147,
+      "percent_branches_covered": 97.91666666666667,
+      "percent_covered_combined": 97.94871794871794,
+      "percent_statements_covered": 97.95918367346938
     },
     "src/phaze/tasks/companion_read.py": {
       "covered_branches": 2,
-      "covered_lines": 31,
+      "covered_lines": 33,
       "num_branches": 2,
-      "num_statements": 31,
+      "num_statements": 33,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/controller.py": {
-      "covered_branches": 21,
-      "covered_lines": 114,
-      "num_branches": 22,
-      "num_statements": 114,
-      "percent_branches_covered": 95.45454545454545,
-      "percent_covered_combined": 99.26470588235294,
+      "covered_branches": 29,
+      "covered_lines": 154,
+      "num_branches": 30,
+      "num_statements": 154,
+      "percent_branches_covered": 96.66666666666667,
+      "percent_covered_combined": 99.45652173913044,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/cue_write.py": {
       "covered_branches": 0,
-      "covered_lines": 21,
+      "covered_lines": 23,
       "num_branches": 0,
-      "num_statements": 21,
+      "num_statements": 23,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/discogs.py": {
       "covered_branches": 7,
-      "covered_lines": 43,
+      "covered_lines": 44,
       "num_branches": 8,
-      "num_statements": 43,
+      "num_statements": 44,
       "percent_branches_covered": 87.5,
-      "percent_covered_combined": 98.03921568627452,
+      "percent_covered_combined": 98.07692307692308,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/execution.py": {
-      "covered_branches": 56,
-      "covered_lines": 279,
-      "num_branches": 58,
-      "num_statements": 281,
-      "percent_branches_covered": 96.55172413793103,
-      "percent_covered_combined": 98.82005899705015,
-      "percent_statements_covered": 99.28825622775801
+      "covered_branches": 24,
+      "covered_lines": 226,
+      "num_branches": 24,
+      "num_statements": 227,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 99.60159362549801,
+      "percent_statements_covered": 99.55947136563877
+    },
+    "src/phaze/tasks/execution_filesystem.py": {
+      "covered_branches": 34,
+      "covered_lines": 183,
+      "num_branches": 36,
+      "num_statements": 185,
+      "percent_branches_covered": 94.44444444444444,
+      "percent_covered_combined": 98.19004524886878,
+      "percent_statements_covered": 98.91891891891892
     },
     "src/phaze/tasks/filename_convention.py": {
       "covered_branches": 0,
@@ -2119,100 +2695,145 @@
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/functions.py": {
-      "covered_branches": 36,
-      "covered_lines": 177,
-      "num_branches": 36,
-      "num_statements": 177,
+      "covered_branches": 46,
+      "covered_lines": 198,
+      "num_branches": 46,
+      "num_statements": 198,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/heartbeat.py": {
-      "covered_branches": 10,
-      "covered_lines": 68,
-      "num_branches": 10,
-      "num_statements": 69,
+      "covered_branches": 26,
+      "covered_lines": 146,
+      "num_branches": 26,
+      "num_statements": 148,
       "percent_branches_covered": 100.0,
-      "percent_covered_combined": 98.73417721518987,
-      "percent_statements_covered": 98.55072463768116
+      "percent_covered_combined": 98.85057471264368,
+      "percent_statements_covered": 98.64864864864865
     },
     "src/phaze/tasks/ledger_reaper.py": {
-      "covered_branches": 6,
-      "covered_lines": 36,
-      "num_branches": 6,
-      "num_statements": 36,
+      "covered_branches": 8,
+      "covered_lines": 40,
+      "num_branches": 8,
+      "num_statements": 40,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/metadata_extraction.py": {
       "covered_branches": 4,
-      "covered_lines": 35,
+      "covered_lines": 40,
       "num_branches": 4,
-      "num_statements": 35,
+      "num_statements": 40,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/proposal.py": {
-      "covered_branches": 8,
-      "covered_lines": 44,
-      "num_branches": 8,
-      "num_statements": 44,
+      "covered_branches": 14,
+      "covered_lines": 57,
+      "num_branches": 14,
+      "num_statements": 57,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/push.py": {
       "covered_branches": 12,
-      "covered_lines": 87,
+      "covered_lines": 91,
       "num_branches": 12,
-      "num_statements": 87,
+      "num_statements": 91,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/tasks/reap_orphaned_backend_cloud_jobs.py": {
+      "covered_branches": 22,
+      "covered_lines": 85,
+      "num_branches": 22,
+      "num_statements": 85,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/reconcile_cloud_jobs.py": {
-      "covered_branches": 73,
-      "covered_lines": 234,
-      "num_branches": 80,
-      "num_statements": 243,
-      "percent_branches_covered": 91.25,
-      "percent_covered_combined": 95.04643962848297,
-      "percent_statements_covered": 96.29629629629629
+      "covered_branches": 77,
+      "covered_lines": 290,
+      "num_branches": 82,
+      "num_statements": 292,
+      "percent_branches_covered": 93.90243902439025,
+      "percent_covered_combined": 98.1283422459893,
+      "percent_statements_covered": 99.31506849315069
+    },
+    "src/phaze/tasks/recovery_backfill.py": {
+      "covered_branches": 8,
+      "covered_lines": 50,
+      "num_branches": 8,
+      "num_statements": 50,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/tasks/recovery_policy.py": {
+      "covered_branches": 28,
+      "covered_lines": 108,
+      "num_branches": 28,
+      "num_statements": 108,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/tasks/recovery_queries.py": {
+      "covered_branches": 2,
+      "covered_lines": 30,
+      "num_branches": 2,
+      "num_statements": 30,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/tasks/recovery_replay.py": {
+      "covered_branches": 25,
+      "covered_lines": 107,
+      "num_branches": 26,
+      "num_statements": 108,
+      "percent_branches_covered": 96.15384615384616,
+      "percent_covered_combined": 98.50746268656717,
+      "percent_statements_covered": 99.07407407407408
     },
     "src/phaze/tasks/reenqueue.py": {
-      "covered_branches": 73,
-      "covered_lines": 312,
-      "num_branches": 74,
-      "num_statements": 313,
-      "percent_branches_covered": 98.64864864864865,
-      "percent_covered_combined": 99.48320413436693,
-      "percent_statements_covered": 99.68051118210863
+      "covered_branches": 8,
+      "covered_lines": 42,
+      "num_branches": 8,
+      "num_statements": 42,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/release_awaiting_cloud.py": {
-      "covered_branches": 25,
-      "covered_lines": 145,
-      "num_branches": 28,
-      "num_statements": 148,
-      "percent_branches_covered": 89.28571428571429,
-      "percent_covered_combined": 96.5909090909091,
-      "percent_statements_covered": 97.97297297297297
+      "covered_branches": 35,
+      "covered_lines": 184,
+      "num_branches": 38,
+      "num_statements": 187,
+      "percent_branches_covered": 92.10526315789474,
+      "percent_covered_combined": 97.33333333333333,
+      "percent_statements_covered": 98.39572192513369
     },
     "src/phaze/tasks/s3_upload.py": {
       "covered_branches": 5,
-      "covered_lines": 63,
+      "covered_lines": 64,
       "num_branches": 6,
-      "num_statements": 64,
+      "num_statements": 65,
       "percent_branches_covered": 83.33333333333333,
-      "percent_covered_combined": 97.14285714285714,
-      "percent_statements_covered": 98.4375
+      "percent_covered_combined": 97.1830985915493,
+      "percent_statements_covered": 98.46153846153847
     },
     "src/phaze/tasks/scan.py": {
-      "covered_branches": 32,
-      "covered_lines": 134,
-      "num_branches": 32,
-      "num_statements": 134,
+      "covered_branches": 28,
+      "covered_lines": 145,
+      "num_branches": 28,
+      "num_statements": 145,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -2237,18 +2858,18 @@
     },
     "src/phaze/tasks/submit_cloud_job.py": {
       "covered_branches": 8,
-      "covered_lines": 40,
+      "covered_lines": 43,
       "num_branches": 10,
-      "num_statements": 40,
+      "num_statements": 43,
       "percent_branches_covered": 80.0,
-      "percent_covered_combined": 96.0,
+      "percent_covered_combined": 96.22641509433963,
       "percent_statements_covered": 100.0
     },
     "src/phaze/tasks/tag_write.py": {
       "covered_branches": 0,
-      "covered_lines": 36,
+      "covered_lines": 47,
       "num_branches": 0,
-      "num_statements": 36,
+      "num_statements": 47,
       "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -2273,9 +2894,117 @@
     },
     "src/phaze/tasks/tracklist_drain_control.py": {
       "covered_branches": 16,
-      "covered_lines": 59,
+      "covered_lines": 61,
       "num_branches": 16,
-      "num_statements": 59,
+      "num_statements": 61,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/__init__.py": {
+      "covered_branches": 0,
+      "covered_lines": 6,
+      "num_branches": 0,
+      "num_statements": 6,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/_env.py": {
+      "covered_branches": 6,
+      "covered_lines": 34,
+      "num_branches": 6,
+      "num_statements": 34,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/bootstrap.py": {
+      "covered_branches": 26,
+      "covered_lines": 133,
+      "num_branches": 26,
+      "num_statements": 133,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/catalogue.py": {
+      "covered_branches": 2,
+      "covered_lines": 66,
+      "num_branches": 2,
+      "num_statements": 66,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/context.py": {
+      "covered_branches": 9,
+      "covered_lines": 37,
+      "num_branches": 10,
+      "num_statements": 37,
+      "percent_branches_covered": 90.0,
+      "percent_covered_combined": 97.87234042553192,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/db.py": {
+      "covered_branches": 9,
+      "covered_lines": 42,
+      "num_branches": 10,
+      "num_statements": 42,
+      "percent_branches_covered": 90.0,
+      "percent_covered_combined": 98.07692307692308,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/http.py": {
+      "covered_branches": 24,
+      "covered_lines": 65,
+      "num_branches": 30,
+      "num_statements": 70,
+      "percent_branches_covered": 80.0,
+      "percent_covered_combined": 89.0,
+      "percent_statements_covered": 92.85714285714286
+    },
+    "src/phaze/telemetry/instruments.py": {
+      "covered_branches": 20,
+      "covered_lines": 67,
+      "num_branches": 20,
+      "num_statements": 67,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/pipeline.py": {
+      "covered_branches": 8,
+      "covered_lines": 17,
+      "num_branches": 8,
+      "num_statements": 17,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/telemetry/saq.py": {
+      "covered_branches": 14,
+      "covered_lines": 59,
+      "num_branches": 14,
+      "num_statements": 61,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 97.33333333333333,
+      "percent_statements_covered": 96.72131147540983
+    },
+    "src/phaze/telemetry/slots.py": {
+      "covered_branches": 32,
+      "covered_lines": 127,
+      "num_branches": 32,
+      "num_statements": 130,
+      "percent_branches_covered": 100.0,
+      "percent_covered_combined": 98.14814814814815,
+      "percent_statements_covered": 97.6923076923077
+    },
+    "src/phaze/telemetry/tracing.py": {
+      "covered_branches": 4,
+      "covered_lines": 56,
+      "num_branches": 4,
+      "num_statements": 56,
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
@@ -2295,6 +3024,15 @@
       "num_branches": 10,
       "num_statements": 19,
       "percent_branches_covered": 100.0,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
+    },
+    "src/phaze/version.py": {
+      "covered_branches": 0,
+      "covered_lines": 2,
+      "num_branches": 0,
+      "num_statements": 2,
+      "percent_branches_covered": null,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
     },
@@ -2324,15 +3062,24 @@
       "percent_branches_covered": 100.0,
       "percent_covered_combined": 100.0,
       "percent_statements_covered": 100.0
+    },
+    "src/phaze/web/template_globals.py": {
+      "covered_branches": 0,
+      "covered_lines": 9,
+      "num_branches": 0,
+      "num_statements": 9,
+      "percent_branches_covered": null,
+      "percent_covered_combined": 100.0,
+      "percent_statements_covered": 100.0
     }
   },
   "totals": {
-    "covered_branches": 3684,
-    "covered_lines": 17554,
-    "num_branches": 3866,
-    "num_statements": 17771,
-    "percent_branches_covered": 95.29229177444387,
-    "percent_covered_combined": 98.1559365901003,
-    "percent_statements_covered": 98.77890945923133
+    "covered_branches": 4922,
+    "covered_lines": 23321,
+    "num_branches": 5094,
+    "num_statements": 23525,
+    "percent_branches_covered": 96.62347860227719,
+    "percent_covered_combined": 98.68618749781614,
+    "percent_statements_covered": 99.13283740701381
   }
 }
