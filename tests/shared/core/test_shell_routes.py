@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
+from phaze.version import APP_VERSION
 
 
 if TYPE_CHECKING:
@@ -83,6 +84,7 @@ async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
     # overview body renders inside it.
     assert 'data-stage="summary"' in body
     assert "data-summary-overview" in body
+    assert f"v{APP_VERSION}" in body
     # The Analyze dashboard is NOT what rendered. Careful: the shared scaffold's hidden seed host
     # emits an EMPTY <div id="analyze-lanes"></div> on every non-analyze workspace, so a bare
     # 'id="analyze-lanes"' substring check would be a false positive. The stage marker is the

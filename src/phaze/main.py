@@ -63,6 +63,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
 from phaze.telemetry.http import TelemetryMiddleware
+from phaze.version import APP_VERSION
 from phaze.web.saq_mount import build_saq_app
 from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
 
@@ -300,7 +301,7 @@ _ROUTERS: tuple[APIRouter, ...] = (
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Phaze", version=APP_VERSION, lifespan=lifespan)
     # Install before routers so all requests use bounded-cardinality route labels.
     app.add_middleware(TelemetryMiddleware)
     for router in _ROUTERS:

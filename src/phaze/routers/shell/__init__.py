@@ -88,6 +88,7 @@ from phaze.routers.shell.summary import (
     _summary_stage_status,
 )
 from phaze.services.route_control import get_route_control
+from phaze.version import APP_VERSION
 
 
 if TYPE_CHECKING:
@@ -192,6 +193,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         "stage": stage,
         "stage_partial": _stage_partial(stage),
         "document_title": DOCUMENT_TITLES[stage],
+        "app_version": APP_VERSION,
         "oob_counts": False,
         # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
         # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB
