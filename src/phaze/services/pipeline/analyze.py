@@ -177,7 +177,7 @@ def _analyze_status_where(status: str | None) -> Any:
             inflight_clause(Stage.ANALYZE),
         )
     if status == ANALYZE_FILTER_AWAITING:
-        return CloudJob.status.in_(_ANALYZE_ACTIVE_CLOUD_STATUSES)
+        return CloudJob.status == CloudJobStatus.AWAITING.value
     if status == ANALYZE_FILTER_FAILED:
         return AnalysisResult.failed_at.is_not(None)
     if status == ANALYZE_FILTER_COMPLETED:

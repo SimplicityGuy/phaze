@@ -62,7 +62,8 @@
           class="flex flex-wrap items-center gap-2 pb-3">
         <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-muted ">Show</span>
         <label class="sr-only" for="analyze-filter-status">Status</label>
-        <select id="analyze-filter-status" name="status" aria-label="Filter analyze files by status" class="{{ _select }}">
+        {# Visible before HTMX's settle task wires the form; release only on htmx:load. #}
+        <select id="analyze-filter-status" name="status" disabled data-hx-guard aria-label="Filter analyze files by status" class="{{ _select }}">
             {% for val, label in _analyze_filters %}
             <option value="{{ val }}"{% if (active_status or '') == val %} selected{% endif %}>{{ label }}</option>
             {% endfor %}
@@ -101,27 +102,27 @@
         {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
         {% if f.completed %}
             {# Completed (ANALYZED): full window coverage from the aggregate. #}
-            {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
-            {% set state_color = 'text-ok ' %}
-        {% elif f.awaiting_cloud %}
-            {% set state_text = 'pending' %}
-            {% set state_color = 'text-warn ' %}
+            {% set state_text = ('%s/%s windows' % (f.fine_done, f.fine_total)) if f.fine_total else '' %}
+            {% set state_bucket = 'done' %}
         {% elif f.analysis_failed %}
-            {% set state_text = 'failed' %}
-            {% set state_color = 'text-danger ' %}
+            {% set state_text = '' %}
+            {% set state_bucket = 'failed' %}
+        {% elif f.awaiting_cloud %}
+            {% set state_text = 'awaiting cloud' %}
+            {% set state_bucket = 'in_flight' %}
         {% elif f.fine_total %}
             {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04). #}
-            {% set state_text = 'running · %s/%s windows' % (f.fine_done, f.fine_total) %}
-            {% set state_color = 'text-info ' %}
+            {% set state_text = '%s/%s windows' % (f.fine_done, f.fine_total) %}
+            {% set state_bucket = 'in_flight' %}
         {% else %}
-            {% set state_text = 'running' %}
-            {% set state_color = 'text-info ' %}
+            {% set state_text = '' %}
+            {% set state_bucket = 'in_flight' %}
         {% endif %}
         {% set _ = ns.rows.append([
             {'text': f.filename, 'mono': True, 'title': f.path},
             {'text': duration_cell, 'mono': True},
             {'text': badge_text, 'color': badge_color},
-            {'text': state_text, 'color': state_color},
+            {'text': state_text, 'bucket': state_bucket, 'stage_label': 'Analyze'},
         ]) %}
         {# Phase 61 (RECORD-01): parallel file-id list backing ns.rows — each Analyze row opens the
            full-record slide-in (hx-get="/record/{file_id}"). #}

@@ -60,10 +60,14 @@ _COUNTS = {"fine_windows_analyzed": 4, "fine_windows_total": 40, "coarse_windows
 async def test_kueue_row_renders_heartbeat_from_analysis_updated_at(session: AsyncSession) -> None:
     """AC1: heartbeat_at is analysis.updated_at, not the hard-coded None."""
     now = await db_now(session)
-    await _running_pod(session, "set-01.mp3", analysis=_COUNTS, updated_ago_s=20, now=now)
+    record = await _running_pod(session, "set-01.mp3", analysis=_COUNTS, updated_ago_s=20, now=now)
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == record.id))).scalar_one()
+    job.started_at = now - timedelta(minutes=26)
+    await session.flush()
     running = await get_running_analyses(session, None, _LANES, now=now)
     assert running is not None and len(running) == 1
     assert running[0].heartbeat_at == now - timedelta(seconds=20)
+    assert running[0].started_at == now - timedelta(minutes=26)
 
 
 def test_cloud_threshold_is_derived_from_the_job_runner_surface_interval(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,6 +113,7 @@ async def test_kueue_redriven_pod_does_not_inherit_the_prior_attempts_heartbeat(
     record = await _running_pod(session, "redriven.mp3", analysis=_COUNTS, updated_ago_s=3 * 3600, now=now)
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == record.id))).scalar_one()
     job.updated_at = now - timedelta(seconds=threshold * 3)  # flipped to RUNNING long after the prior attempt's last beat
+    job.started_at = now - timedelta(seconds=threshold * 3)
     await session.flush()
     running = await get_running_analyses(session, None, _LANES, now=now)
     assert running is not None and len(running) == 1

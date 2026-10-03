@@ -693,7 +693,7 @@ def cloud_heartbeat_lost_after_seconds() -> float:
 
 
 async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: datetime) -> list[RunningAnalysis]:
-    """Kueue pods running now (``cloud_job.status == RUNNING``). Start time is not observable.
+    """Kueue pods running now, with the current Job start time persisted by reconcile.
 
     The heartbeat is ``analysis.updated_at``, which the pod's progress POSTs move. A pod with no counts
     posted yet (no analysis row, or one not yet sized) has no heartbeat to age, so it shows none and is
@@ -701,11 +701,9 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
 
     The analysis row must also belong to THIS attempt. A re-driven file keeps its prior attempt's counts,
     so its ``analysis.updated_at`` is old while the new pod is still starting; aging that would flag a
-    healthy pod lost on its first render. ``cloud_job.updated_at`` is stamped when reconcile flips the
-    row to RUNNING (``tasks/reconcile_cloud_jobs``), so an analysis row older than it carries no beat
-    from this attempt and shows none. Any later write to the cloud_job row (a phase or inadmissible
-    flip) moves that stamp forward, which errs toward SUPPRESSING the heartbeat until the next POST
-    (about a minute) -- never toward a false "lost".
+    healthy pod lost on its first render. Compare against the persisted current Job start time, which
+    stays stable across phase updates. Older rows without a start time fall back to ``cloud_job.updated_at``,
+    stamped when reconcile flips the row to RUNNING.
     """
     if not backend_ids:
         return []
@@ -721,6 +719,7 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
             AnalysisResult.coarse_work_percent,
             AnalysisResult.updated_at.label("analysis_updated_at"),
             CloudJob.updated_at.label("job_updated_at"),
+            CloudJob.started_at,
         )
         .select_from(CloudJob)
         .join(FileRecord, FileRecord.id == CloudJob.file_id)
@@ -733,7 +732,8 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
     running: list[RunningAnalysis] = []
     for row in (await session.execute(stmt)).all():
         has_counts = row.fine_windows_total is not None or row.coarse_windows_total is not None
-        this_attempt = has_counts and row.analysis_updated_at >= row.job_updated_at
+        attempt_started_at = row.started_at or row.job_updated_at
+        this_attempt = has_counts and row.analysis_updated_at >= attempt_started_at
         heartbeat_at = row.analysis_updated_at if this_attempt else None
         running.append(
             RunningAnalysis(
@@ -741,7 +741,7 @@ async def _kueue_running(session: AsyncSession, backend_ids: list[str], now: dat
                 label=_label(row.label, str(row.file_id)),
                 lane=str(row.backend_id),
                 lane_kind="kueue",
-                started_at=None,
+                started_at=row.started_at,
                 heartbeat_at=heartbeat_at,
                 heartbeat_lost=heartbeat_at is not None and (now - heartbeat_at).total_seconds() > lost_after,
                 fine_done=row.fine_windows_analyzed,

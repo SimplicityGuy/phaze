@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -398,13 +399,22 @@ async def test_admitted_sets_cloud_phase_running(session: AsyncSession, monkeypa
     """An Admitted=True Workload advances cloud_phase to running alongside the SUBMITTED->RUNNING status write (D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
-    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+    started = "2026-10-02T20:00:00Z"
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, start_time=started)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod(phase="Running")),
+    )
 
     await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.cloud_phase == CloudPhase.RUNNING.value
     assert cj.status == CloudJobStatus.RUNNING.value
+    assert cj.started_at == datetime.fromisoformat(started)
+    await reconcile_cloud_jobs(_make_ctx())
+    assert (await _read_cloud_job(session, fid)).started_at == datetime.fromisoformat(started)
 
 
 @pytest.mark.asyncio

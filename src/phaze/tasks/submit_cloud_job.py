@@ -171,6 +171,7 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
                 "status": stmt.excluded.status,
                 "kueue_workload": stmt.excluded.kueue_workload,
                 "cloud_phase": stmt.excluded.cloud_phase,
+                "started_at": None,
                 # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
                 # CONFLICT DO UPDATE path -- stamp it explicitly so a re-submit bumps updated_at
                 # instead of freezing it at first write (phaze-c8nz). created_at stays pinned. The
