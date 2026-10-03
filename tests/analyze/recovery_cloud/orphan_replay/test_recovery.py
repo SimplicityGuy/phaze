@@ -132,7 +132,7 @@ async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed
             id=uuid.uuid4(),
             file_id=file_id,
             # Production stamps completion with the same database clock as ledger enqueue.
-            analysis_completed_at=func.now() if completed else None,
+            analysis_completed_at=func.clock_timestamp() if completed else None,
             failed_at=datetime.now(UTC) if failed else None,
         )
     )
@@ -351,10 +351,10 @@ async def test_analyze_done_row_is_excluded(
     f_failed = _make_file()
     session.add_all([f_done, f_failed])
     await session.commit()
-    await _seed_analysis(session, f_done.id, completed=True)
-    await _seed_analysis(session, f_failed.id, failed=True)
     await _seed_ledger(session, function="process_file", file_id=f_done.id)
     await _seed_ledger(session, function="process_file", file_id=f_failed.id)
+    await _seed_analysis(session, f_done.id, completed=True)
+    await _seed_analysis(session, f_failed.id, failed=True)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")

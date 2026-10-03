@@ -22,7 +22,10 @@ Columns:
   - ``payload``    : JSONB, the FULL original ``job.kwargs`` so agent stages get the complete
                      ``ProcessFilePayload`` / ``ExtractMetadataPayload`` / etc. on replay -- not
                      just the natural id (the ``extra="forbid"`` schemas would otherwise reject).
-  - ``enqueued_at``: server-default timestamp of the (re)enqueue.
+  - ``enqueued_at``: server-default timestamp of the (re)enqueue. Analysis producers carry this
+                     DB-clock attempt identity in broker meta; observed live duplicates preserve it.
+  - ``terminal_at``: nullable terminal outcome acknowledged for exactly ``enqueued_at``. A fresh
+                     attempt resets it. An old successful analysis remains intact on a failed rerun.
   - ``timeout``    : nullable SAQ Job ``timeout`` (seconds) captured at enqueue time so recovery
                      replays the SAME bound. NULL means "the producer did not set an explicit
                      timeout" -- replay omits it and the queue's ``before_enqueue`` default applies.
@@ -75,6 +78,8 @@ class SchedulingLedger(TimestampMixin, Base):
     routing: Mapped[str] = mapped_column(String(16), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Terminal outcome for exactly enqueued_at; preserves an older successful analysis.
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Nullable SAQ Job policy captured at enqueue time so recovery replays the SAME bound (NULL =>
     # producer set no explicit value; replay falls back to the queue before_enqueue default).
     timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)

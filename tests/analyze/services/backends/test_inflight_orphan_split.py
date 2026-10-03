@@ -161,7 +161,7 @@ async def test_completed_stage_is_not_orphaned(session: AsyncSession, make_file)
     await _saq_table(session)
     file = await make_file()
     await _ledger(session, file)
-    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=func.now()))
+    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=func.clock_timestamp()))
     await session.commit()
 
     buckets = await _safe_bucket_counts(session, Stage.ANALYZE)
@@ -176,7 +176,7 @@ async def test_split_preserves_the_total(session: AsyncSession, make_file) -> No
     await _ledger(session, await make_file())
     await make_file()
     done = await make_file()
-    session.add(AnalysisResult(file_id=done.id, analysis_completed_at=func.now()))
+    session.add(AnalysisResult(file_id=done.id, analysis_completed_at=func.clock_timestamp()))
     await session.commit()
     total = int((await session.execute(select(FileRecord.id))).scalars().all().__len__())
 

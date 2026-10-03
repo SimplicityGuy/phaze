@@ -96,7 +96,7 @@ async def _ledger_keys(session: AsyncSession) -> set[str]:
 
 async def _analyze_done(session: AsyncSession, file: FileRecord) -> None:
     # Match the production writer's database-clock completion, rather than the test host's clock.
-    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=func.now()))
+    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=func.clock_timestamp()))
     await session.commit()
 
 

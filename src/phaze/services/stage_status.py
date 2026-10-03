@@ -635,6 +635,7 @@ def _analyze_orphaned_backfill_clause() -> ColumnElement[bool]:
             AnalysisResult.file_id == FileRecord.id,
             AnalysisResult.analysis_completed_at.isnot(None),
             SchedulingLedger.enqueued_at > AnalysisResult.analysis_completed_at,
+            SchedulingLedger.terminal_at.is_(None),
         )
     )
 

@@ -613,6 +613,12 @@ async def report_analysis_failed(
     (a benign no-op, not an error). The ledger clear, staged-object delete, and awaiting-row reap stay
     UNCONDITIONAL either way -- the run did terminate.
     """
+    if body.attempt_enqueued_at is not None:
+        from phaze.services.analysis_attempt import analysis_failure_ack_matches  # noqa: PLC0415
+
+        if not await analysis_failure_ack_matches(session, f"process_file:{file_id}", body.attempt_enqueued_at):
+            logger.info("analysis_failure_stale_attempt_ignored", file_id=str(file_id), agent_id=agent.id)
+            return AnalysisFailureResponse(agent_id=agent.id, file_id=file_id)
     # FAIL-01 / D-07: compose + defensively truncate the persisted detail (the column is unbounded Text;
     # `error` is already max_length=2000 at the wire). Mirrors report_metadata_failed's `reason: error`.
     # T-81-05-03 PG-invalid limb: NUL clears pydantic but Postgres rejects it
@@ -682,6 +688,10 @@ async def report_analysis_failed(
     # NOT recovery-re-queue. Ledger clear, awaiting-cloud-job reap, commit, best-effort
     # staged-object delete -- the shared tail with `put_analysis`'s success path (D-14,
     # phaze-uoiw, phaze-2mwyo; see `_finalize_analysis_outcome`'s docstring).
+    if body.attempt_enqueued_at is not None:
+        from phaze.services.scheduling_ledger import mark_analysis_attempt_terminal  # noqa: PLC0415
+
+        await mark_analysis_attempt_terminal(session, f"process_file:{file_id}", body.attempt_enqueued_at)
     await _finalize_analysis_outcome(session, file_id)
     logger.warning(
         "analysis_failed reported",
