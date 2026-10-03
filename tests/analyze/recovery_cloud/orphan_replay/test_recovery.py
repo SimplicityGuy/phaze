@@ -131,7 +131,8 @@ async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed
         AnalysisResult(
             id=uuid.uuid4(),
             file_id=file_id,
-            analysis_completed_at=datetime.now(UTC) if completed else None,
+            # Production stamps completion with the same database clock as ledger enqueue.
+            analysis_completed_at=func.now() if completed else None,
             failed_at=datetime.now(UTC) if failed else None,
         )
     )
