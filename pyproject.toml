@@ -58,7 +58,7 @@ dependencies = [
     # Re-measure its verdicts and update that constant in the SAME commit as the bump. This comment
     # is a pointer, not a coupling -- nothing enforces it, and the cost of forgetting lands on
     # whoever gates next, ~23 minutes into a suite, in a file they did not touch (phaze-85zxu).
-    "litellm>=1.100.4,<1.101.0",
+    "litellm>=1.103.1,<1.104.0",
     "lxml>=6.1.3",
     "mutagen>=1.48.1",
     "numpy>=2.5.3",
@@ -94,7 +94,7 @@ dependencies = [
     # Raised 1.61.x -> 1.62.x on 2026-08-18. The lockstep holds automatically: Dockerfile's
     # `python -m patchright install --with-deps chrome` runs from the venv this pin resolves,
     # so CI's docker-validate / docker-publish rebuild is what re-pairs image and client.
-    "patchright>=1.62.3,<1.63.0",
+    "patchright>=1.63.0,<1.64.0",
 
     # v4.1.1 hotfix: saq[postgres] pulls bare `psycopg` (pure-Python), which needs a
     # libpq backend at import. The v4.1.0 slim image had none (no C ext, no binary
