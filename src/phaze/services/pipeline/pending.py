@@ -220,7 +220,7 @@ class PendingFilesPage(Page[FileRecord]):
     available: bool = True
 
 
-def _metadata_activity_stmt(cutoff: datetime) -> Select[Any]:
+def _metadata_activity_stmt(cutoff: datetime) -> Select[int, datetime | None]:
     """Build the successful-write measurement query for the supplied rolling cutoff."""
     return select(
         func.count(distinct(FileMetadata.file_id)).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),

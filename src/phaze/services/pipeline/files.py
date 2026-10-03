@@ -6,7 +6,7 @@ single-file stage matrix and orphan diagnostics behind the record slide-in.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, false, or_, select
 from sqlalchemy.orm import selectinload
@@ -146,7 +146,7 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     # bounded page (selectinload, not a join on the correlated derivation above) -- never one
     # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
     # every `row.file.set_profile` the template reads would raise, not silently N+1.
-    stmt = select(FileRecord, *cols).options(selectinload(FileRecord.set_profile))
+    stmt = cast("Select[Any]", select(FileRecord, *cols).options(selectinload(FileRecord.set_profile)))
     # phaze-7sdwt: `bucket is not None` is the WHOLE gate -- `stage` alone ("any status") stays a
     # deliberate no-op, matching the caller contract stated above.
     if bucket is not None:

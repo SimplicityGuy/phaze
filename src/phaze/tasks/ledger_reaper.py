@@ -103,7 +103,7 @@ logger = structlog.get_logger(__name__)
 _REAPABLE_STAGES: tuple[Stage, ...] = tuple(sorted(ELIGIBLE_AFTER_FAILURE, key=lambda s: s.value))
 
 
-def _resolved_keys_subquery(stage: Stage) -> Select[tuple[str]]:
+def _resolved_keys_subquery(stage: Stage) -> Select[str]:
     """Return a SELECT of the ledger keys for ``stage`` that are RESOLVED (finished, running nowhere).
 
     Correlated ``exists`` clauses inside :func:`resolved_ledger_clause` resolve against
@@ -116,7 +116,7 @@ def _resolved_keys_subquery(stage: Stage) -> Select[tuple[str]]:
     return select(ledger_key_for_function(func_name)).where(resolved_ledger_clause(stage))
 
 
-def _resolved_cloud_keys_subquery(func_name: str) -> Select[tuple[str]]:
+def _resolved_cloud_keys_subquery(func_name: str) -> Select[str]:
     """Return a SELECT of ``func_name``'s CLOUD-LANE ledger keys that are RESOLVED (phaze-k95r7).
 
     The function-keyed twin of :func:`_resolved_keys_subquery`, identical in shape -- drive off
@@ -127,7 +127,7 @@ def _resolved_cloud_keys_subquery(func_name: str) -> Select[tuple[str]]:
     return select(ledger_key_for_function(func_name)).where(resolved_cloud_ledger_clause(func_name))
 
 
-async def _reap_keys(session: AsyncSession, label: str, function: str, keys: Select[tuple[str]]) -> int:
+async def _reap_keys(session: AsyncSession, label: str, function: str, keys: Select[str]) -> int:
     """Delete the ledger rows named by ``keys``; return the count. Degrade-safe (returns 0 on any error).
 
     ``label`` names the lane in the degrade log ONLY (a stage value or a keyed-function name); the

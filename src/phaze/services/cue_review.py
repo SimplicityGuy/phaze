@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (Tracklist.artist, Tracklist.event)
 
 
-def _approved_applied_tracklist_base() -> tuple[Select[Any], Select[Any]]:
+def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], Select[uuid.UUID]]:
     """Shared join+filter core for approved, applied tracklists (cue eligibility + review gating).
 
     Returns ``(base_stmt, has_timestamp_subq)`` -- ``base_stmt`` already carries every predicate
@@ -64,7 +64,7 @@ def _approved_applied_tracklist_base() -> tuple[Select[Any], Select[Any]]:
     return base_stmt, has_timestamp_subq
 
 
-def eligible_tracklist_stmt() -> Select[Any]:
+def eligible_tracklist_stmt() -> Select[Tracklist, FileRecord]:
     """Build the base (UNORDERED) SELECT for approved tracklists with EXECUTED files that have >=1 timestamped track.
 
     Shared by every eligible-tracklist reader so the join/filter logic lives in exactly one place.
@@ -76,7 +76,7 @@ def eligible_tracklist_stmt() -> Select[Any]:
     return base_stmt.where(Tracklist.latest_version_id.in_(has_timestamp_subq))
 
 
-def gated_tracklist_stmt() -> Select[Any]:
+def gated_tracklist_stmt() -> Select[Tracklist, FileRecord]:
     """Build the base (UNORDERED, UNBOUNDED) SELECT for GATED cue sets -- approved + applied, no timestamped track.
 
     The sibling of :func:`eligible_tracklist_stmt` and, like it, deliberately carries no

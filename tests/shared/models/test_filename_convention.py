@@ -163,8 +163,9 @@ class TestFilenameConventionPersistence:
         row = _make_convention(scope_value="hand-set-attempt", supporting_count=232, contradicting_count=0)
         row.confidence = 0.01  # deliberately disagrees with the derived value (1.0)
         session.add(row)
-        with pytest.raises(ProgrammingError, match=r"[Gg]enerated column"):
+        with pytest.raises(ProgrammingError) as error:
             await session.commit()
+        assert error.value.orig.sqlstate == "428C9"  # generated_always, independent of driver error wording
 
     async def test_unique_scope_triple_violation(self, session) -> None:  # type: ignore[no-untyped-def]
         session.add(_make_convention(scope_value="dupe-group", convention_kind="date_order"))

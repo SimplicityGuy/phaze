@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import aliased
@@ -168,27 +168,30 @@ def candidate_signals_query(*, agent_id: str | None = None) -> Select[Any]:
     )
     has_tracklist = exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id, Tracklist.status.in_(sorted(TRACKLIST_SKIP_STATUSES))))
 
-    statement = (
-        select(
-            FileRecord.id,
-            func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename).label("filename"),
-            FileRecord.sha256_hash,
-            FileRecord.original_path,
-            FileRecord.file_type,
-            FileRecord.file_size,
-            FileMetadata.duration,
-            FileMetadata.bitrate,
-            FileMetadata.track_number,
-            FileMetadata.artist,
-            FileMetadata.title,
-            FileMetadata.album,
-            FileMetadata.raw_tags,
-            has_cue.label("has_cue"),
-            has_tracklist.label("has_tracklist"),
-        )
-        .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
-        .where(FileRecord.file_type.in_(sorted(MEDIA_FILE_TYPES)))
-        .order_by(FileRecord.id)
+    statement = cast(
+        "Select[Any]",
+        (
+            select(
+                FileRecord.id,
+                func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename).label("filename"),
+                FileRecord.sha256_hash,
+                FileRecord.original_path,
+                FileRecord.file_type,
+                FileRecord.file_size,
+                FileMetadata.duration,
+                FileMetadata.bitrate,
+                FileMetadata.track_number,
+                FileMetadata.artist,
+                FileMetadata.title,
+                FileMetadata.album,
+                FileMetadata.raw_tags,
+                has_cue.label("has_cue"),
+                has_tracklist.label("has_tracklist"),
+            )
+            .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+            .where(FileRecord.file_type.in_(sorted(MEDIA_FILE_TYPES)))
+            .order_by(FileRecord.id)
+        ),
     )
     if agent_id is not None:
         statement = statement.where(FileRecord.agent_id == agent_id)

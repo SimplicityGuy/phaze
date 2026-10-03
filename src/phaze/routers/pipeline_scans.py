@@ -156,7 +156,7 @@ def _resolve_orphan_view(
 def _orphan_companion_rows_stmt(
     batch_id: uuid.UUID,
     view: OrphanCompanionViewState,
-) -> Select[tuple[OrphanCompanionDiagnostic]]:
+) -> Select[OrphanCompanionDiagnostic]:
     """Build the batch-scoped, composably-filtered diagnostic rows statement."""
     stmt = select(OrphanCompanionDiagnostic).where(OrphanCompanionDiagnostic.batch_id == batch_id)
     if view.root is not None:
@@ -185,7 +185,7 @@ async def _orphan_companion_page(
 
 async def _stream_orphan_companion_csv(
     session: AsyncSession,
-    stmt: Select[tuple[OrphanCompanionDiagnostic]],
+    stmt: Select[OrphanCompanionDiagnostic],
 ) -> AsyncIterator[str]:
     """Stream one CSV row at a time from a server-side cursor."""
     buffer = io.StringIO(newline="")
