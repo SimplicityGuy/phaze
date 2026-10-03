@@ -17,7 +17,9 @@ of that option's description, not a separately authored answer. The recovered ev
 exact incident measurements are in
 ``docs/design/0012-verification-fidelity-and-operator-attribution.md``.
 
-Plain mono/stereo audio is still probed but bypasses remuxing. Extracted intermediates remain compressed,
+Plain mono/stereo audio with usable stream parameters bypasses remuxing. An unusable header gets
+one deeper probe and, if recovered, a scratch remux before analysis. Extracted intermediates
+remain compressed,
 so scratch use is O(concurrent extracted files), not O(archive size); D-07's chunk-bounded PCM
 contract remains in ``docs/design/0007-windowed-analysis.md``. Extraction runs before the
 analysis child's D-08 stall watchdog, so progress lines feed only the caller's outer heartbeat.
@@ -57,6 +59,8 @@ logger = structlog.get_logger(__name__)
 # instead need a stereo decode for Essentia, stored as compressed FLAC rather than raw PCM.
 _EXTRACTED_AUDIO_SUFFIX = ".mka"
 _DOWNMIXED_AUDIO_SUFFIX = ".flac"
+_RECOVERY_PROBE_BYTES = 10_000_000
+_RECOVERY_ANALYZE_MICROSECONDS = 60_000_000
 
 # How often (seconds) an in-progress extraction may invoke heartbeat_cb. Independent of the
 # analysis-side cadence constant in tasks/functions.py -- this module has no AgentSettings
@@ -125,7 +129,7 @@ class AudioExtractionError(RuntimeError):
     """
 
 
-async def probe_container_streams(file_path: str) -> list[dict[str, Any]]:
+async def probe_container_streams(file_path: str, *, deep: bool = False) -> list[dict[str, Any]]:
     """Return ffprobe's stream list for ``file_path`` -- EVERY stream, not just the audio ones.
 
     Reads container/stream headers only -- never decodes PCM, mirroring
@@ -154,8 +158,10 @@ async def probe_container_streams(file_path: str) -> list[dict[str, Any]]:
         "json",
         "-show_entries",
         "stream=index,codec_name,codec_type,channels,sample_rate:stream_disposition=default,attached_pic",
-        file_path,
     ]
+    if deep:
+        argv.extend(("-probesize", str(_RECOVERY_PROBE_BYTES), "-analyzeduration", str(_RECOVERY_ANALYZE_MICROSECONDS)))
+    argv.append(file_path)
     try:
         # Fixed list argv, never a shell (push.py / analysis_exec.py convention: S603/B603-clean).
         proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -180,12 +186,20 @@ def _audio_streams(streams: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [s for s in streams if s.get("codec_type") == "audio"]
 
 
+def _has_audio_parameters(stream: dict[str, Any]) -> bool:
+    """Whether ffprobe found the parameters needed for a decodable audio stream."""
+    try:
+        return int(stream.get("sample_rate") or 0) > 0 and int(stream.get("channels") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_already_plain_audio(streams: list[dict[str, Any]]) -> bool:
     """True when the container is ALREADY nothing but one audio track (phaze-l832u).
 
     The container-shape part of the remux-skip predicate for decision 2 of the phaze-l832u epic:
-    a single-audio-stream container can be analyzed DIRECTLY unless its selected track needs
-    stereo downmixing. This removes a full remux of the ordinary audio files in
+    a single-audio-stream container is analyzed DIRECTLY when its initial audio parameters are
+    usable and it needs no stereo downmix. This removes a full remux of the ordinary audio files in
     the corpus from the hot path -- correctness is decision 1's job (the ffprobe duration probe,
     ``services/analysis.py`` D-10), this is cost.
 
@@ -284,7 +298,9 @@ def _resolve_dest_path(scratch_dir: str | Path | None, *, downmix: bool = False)
     return dest_dir / f"{uuid.uuid4().hex}{suffix}"
 
 
-def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, want_progress: bool, downmix: bool = False) -> list[str]:
+def _build_ffmpeg_argv(
+    file_path: str, selected_index: Any, dest_path: Path, *, want_progress: bool, downmix: bool = False, deep_probe: bool = False
+) -> list[str]:
     """Build stream-copy extraction or compressed stereo downmix argv.
 
     Review correction (phaze-3ea41): ``-progress pipe:1`` is requested ONLY when
@@ -299,14 +315,20 @@ def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, 
         "-loglevel",
         "error",
         "-nostats",
-        "-i",
-        file_path,
-        "-map",
-        f"0:{selected_index}",
-        "-vn",
-        "-sn",
-        "-dn",
     ]
+    if deep_probe:
+        argv.extend(("-probesize", str(_RECOVERY_PROBE_BYTES), "-analyzeduration", str(_RECOVERY_ANALYZE_MICROSECONDS)))
+    argv.extend(
+        (
+            "-i",
+            file_path,
+            "-map",
+            f"0:{selected_index}",
+            "-vn",
+            "-sn",
+            "-dn",
+        )
+    )
     if downmix:
         argv.extend(("-ac", "2", "-c:a", "flac"))
     else:
@@ -446,15 +468,16 @@ async def extract_audio_track(
     heartbeat_interval_sec: float = _DEFAULT_HEARTBEAT_INTERVAL_SEC,
 ) -> AudioSource:
     """Demux the container's DEFAULT-flagged audio stream (or the first, as fallback) to a
-    scratch file -- unless the file is already plain mono/stereo audio, in which case nothing is copied.
+    scratch file -- unless the file is already plain mono/stereo audio with usable stream
+    parameters, in which case nothing is copied.
 
     Returns an :class:`AudioSource`; read its docstring before touching either field. Raises
     :class:`NoAudioTrackError` when the container has no audio stream, or
     :class:`AudioExtractionError` for any other ffprobe/ffmpeg failure.
 
     **The skip branch (phaze-l832u, epic decision 2).** When :func:`_is_already_plain_audio`
-    holds and the selected track has at most two channels, this returns
-    ``AudioSource(analysis_path=file_path, cleanup_path=None)``: the
+    holds, the selected track has at most two channels, and the initial probe has usable
+    stream parameters, this returns ``AudioSource(analysis_path=file_path, cleanup_path=None)``: the
     analyzer reads the ORIGINAL file and the caller has nothing to delete. ``cleanup_path`` is
     ``None`` -- NOT the input path -- because both lanes unlink ``cleanup_path`` in an outer
     ``finally`` and on the local lane the input is the operator's REAL ARCHIVE FILE. Returning
@@ -486,8 +509,20 @@ async def extract_audio_track(
         raise NoAudioTrackError(msg)
 
     selected, others = _select_track(streams)
+    recovered_probe = not _has_audio_parameters(selected)
+    if recovered_probe:
+        container = await probe_container_streams(file_path, deep=True)
+        streams = _audio_streams(container)
+        if not streams:
+            msg = f"no audio stream found after deep probe in {file_path!r}"
+            raise NoAudioTrackError(msg)
+        selected, others = _select_track(streams)
+        if not _has_audio_parameters(selected):
+            msg = f"audio stream parameters unavailable after deep probe in {file_path!r}"
+            raise AudioExtractionError(msg)
     downmix = isinstance(selected.get("channels"), int) and selected["channels"] > 2
-    if _is_already_plain_audio(container) and not downmix:
+
+    if _is_already_plain_audio(container) and not recovered_probe and not downmix:
         # phaze-l832u decision 2: nothing to demux and nothing to disambiguate -- analyze the
         # file where it lies. cleanup_path is None precisely so the caller's unconditional
         # unlink cannot reach this path (see AudioSource's docstring).
@@ -511,7 +546,7 @@ async def extract_audio_track(
     # retry-preserving cleanup (see each lane's own comment on why that copy differs).
     dest_path = _resolve_dest_path(scratch_dir, downmix=downmix)
     want_progress = heartbeat_cb is not None
-    argv = _build_ffmpeg_argv(file_path, selected["index"], dest_path, want_progress=want_progress, downmix=downmix)
+    argv = _build_ffmpeg_argv(file_path, selected["index"], dest_path, want_progress=want_progress, downmix=downmix, deep_probe=recovered_probe)
     proc = await _spawn_ffmpeg(argv, want_progress=want_progress)
 
     # Review correction (phaze-3ea41): heartbeat_cb is FIRE-AND-FORGET (spawned, never awaited

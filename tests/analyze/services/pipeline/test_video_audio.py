@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+import phaze.services.video_audio as video_audio
 from phaze.services.video_audio import (
     AudioExtractionError,
     AudioSource,
@@ -119,7 +120,7 @@ def _video_container_json(audio_streams: list[dict[str, Any]]) -> bytes:
     branch state the video track explicitly -- via ``make_fake_exec``'s ``other_streams``
     default, or via this helper where the test builds its own subprocess double.
     """
-    return _probe_json([_VIDEO_TRACK, *({"codec_type": "audio", **s} for s in audio_streams)])
+    return _probe_json([_VIDEO_TRACK, *({"codec_type": "audio", "sample_rate": "48000", "channels": 2, **s} for s in audio_streams)])
 
 
 def _make_fake_exec(procs: list[Any]) -> Any:
@@ -165,7 +166,7 @@ def make_fake_exec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
         # it describes a VIDEO CONTAINER -- the shape these tests have always been about, and
         # the one that must still be extracted. Pass ``other_streams=[]`` for a bare audio file.
         others = [_VIDEO_TRACK] if other_streams is None else other_streams
-        container = [*others, *({"codec_type": "audio", **s} for s in streams)]
+        container = [*others, *({"codec_type": "audio", "sample_rate": "48000", "channels": 2, **s} for s in streams)]
         probe_proc = _FakeCommunicateProc(0, stdout=_probe_json(container))
         extract_proc = (
             ffmpeg_proc
@@ -312,6 +313,53 @@ async def test_extract_audio_track_falls_back_to_first_stream_when_none_default(
     argv = _ffmpeg_argv(make_fake_exec)
     assert argv[argv.index("-map") + 1] == "0:2"
     assert argv[argv.index("-c:a") + 1] == "copy"
+
+
+async def test_extract_audio_track_recovers_incomplete_audio_header(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    initial = [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 0, "sample_rate": "0"}]
+    recovered = [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 2, "sample_rate": "44100"}]
+    calls: list[tuple[Any, ...]] = []
+
+    async def _fake_exec(*args: Any, **_kwargs: Any) -> Any:
+        calls.append(args)
+        if args[0] == "ffprobe":
+            return _FakeCommunicateProc(0, stdout=_probe_json(recovered if "-probesize" in args else initial))
+        Path(args[-1]).write_bytes(b"normalized audio")
+        return _FakeStreamProc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    source = tmp_path / "damaged_opening.mp3"
+    source.write_bytes(b"archive bytes")
+
+    result = await extract_audio_track(str(source), scratch_dir=tmp_path)
+
+    assert len(calls) == 3
+    assert "-probesize" not in calls[0]
+    assert calls[1][calls[1].index("-probesize") + 1] == "10000000"
+    assert calls[2][calls[2].index("-analyzeduration") + 1] == "60000000"
+    assert calls[2][calls[2].index("-c:a") + 1] == "copy"
+    assert result.cleanup_path == result.analysis_path
+    assert result.analysis_path != str(source)
+    assert source.read_bytes() == b"archive bytes"
+
+
+async def test_extract_audio_track_unrecoverable_header_stays_terminal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    invalid = [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 0, "sample_rate": "0"}]
+    calls: list[tuple[Any, ...]] = []
+
+    async def _fake_exec(*args: Any, **_kwargs: Any) -> Any:
+        calls.append(args)
+        return _FakeCommunicateProc(0, stdout=_probe_json(invalid))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    source = tmp_path / "unreadable.mp3"
+    source.write_bytes(b"archive bytes")
+
+    with pytest.raises(AudioExtractionError, match="parameters unavailable after deep probe"):
+        await extract_audio_track(str(source), scratch_dir=tmp_path)
+
+    assert len(calls) == 2
+    assert list(tmp_path.iterdir()) == [source]
 
 
 async def test_extract_audio_track_downmixes_selected_multichannel_stream(make_fake_exec: Any) -> None:
@@ -731,6 +779,34 @@ async def test_real_multichannel_video_downmix_is_readable_by_essentia(tmp_path:
     streams = await probe_container_streams(result.analysis_path)
     assert len(streams) == 1
     assert streams[0]["channels"] == 2
+    assert len(es.EasyLoader(filename=result.analysis_path, sampleRate=16000, startTime=0, endTime=1)()) == 16000
+    assert src.read_bytes() == before
+    Path(result.cleanup_path).unlink()
+    assert not Path(result.analysis_path).exists()
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
+async def test_real_recovery_remux_is_readable_by_essentia(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import essentia.standard as es
+
+    src = tmp_path / "synthetic.mp3"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libmp3lame", str(src)
+    )
+    assert await proc.wait() == 0
+    before = src.read_bytes()
+    real_probe = video_audio.probe_container_streams
+
+    async def _initial_header_is_unusable(file_path: str, *, deep: bool = False) -> list[dict[str, Any]]:
+        if not deep:
+            return [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 0, "sample_rate": "0"}]
+        return await real_probe(file_path, deep=True)
+
+    monkeypatch.setattr(video_audio, "probe_container_streams", _initial_header_is_unusable)
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path)
+
+    assert result.cleanup_path == result.analysis_path
     assert len(es.EasyLoader(filename=result.analysis_path, sampleRate=16000, startTime=0, endTime=1)()) == 16000
     assert src.read_bytes() == before
     Path(result.cleanup_path).unlink()
