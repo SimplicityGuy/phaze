@@ -26,6 +26,7 @@ from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, MUSIC_VIDEO_T
 from phaze.services.stage_status import (
     dedup_resolved_clause,
     eligible_clause,
+    skipped_clause,
 )
 
 
@@ -168,20 +169,25 @@ async def get_pending_files_page(
 
 
 async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
-    """Return every FileRecord carrying a terminal metadata failure row (FAIL-03 retry set).
+    """Return terminal metadata failures that the operator has not force-skipped (FAIL-03 retry set).
 
     A metadata failure is persisted by the 81-03 writer as a ``metadata`` row with
     ``failed_at`` set and the payload columns NULL, so ``done(metadata)`` derives FAILED rather
     than DONE. This reuses the ``failed_clause(Stage.METADATA)`` shape (services/stage_status.py)
     -- a correlated ``exists(select(FileMetadata.id).where(file_id == FileRecord.id,
     FileMetadata.failed_at IS NOT NULL))`` -- so the operator bulk-retry endpoint re-enqueues
-    EXACTLY the set the derivation reports as terminally failed. Pure ORM / bound params, NO
+    the failed set excluding metadata skip markers. Skipped files may already have moved after
+    proposal/execution; retrying their original path would also undo the operator's choice. Pure ORM / bound params, NO
     f-string SQL (T-42-03).
 
     D-11: this returns the files; the retry LEAVES the failure row in place and re-enqueues --
     ``put_metadata``'s clear-on-success (81-03) wipes ``failed_at`` only when real metadata lands.
     """
-    stmt = select(FileRecord).where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))))
+    # Respect the operator's skip rather than resolving a moved file's path and undoing that choice.
+    stmt = select(FileRecord).where(
+        exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))),
+        ~skipped_clause(Stage.METADATA),
+    )
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
