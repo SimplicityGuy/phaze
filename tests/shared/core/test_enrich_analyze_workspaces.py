@@ -492,6 +492,11 @@ async def test_analyze_run_trigger_wired(client: AsyncClient, session: AsyncSess
     assert "RUN ANALYSIS" in az_body
     # Trigger-response landing target present, a SIBLING of the trigger (phaze-thd6 shape).
     assert 'id="analyze-trigger-response"' in az_body
+    # Orphan recovery is reachable on Analyze with its own sink and an explained global busy guard.
+    assert 'hx-post="/pipeline/recover" hx-target="#analyze-recover-response"' in az_body
+    assert 'id="analyze-recover-response"' in az_body
+    assert 'aria-describedby="analyze-recover-gate-copy"' in az_body
+    assert "Recovery is gated while agent jobs are active" in az_body
     # R-4 bulk-enqueue guard: confirm + hx-disabled-elt + busy-disable on the SEEDED analyzeBusy key.
     assert "hx-confirm" in az_body
     assert 'hx-disabled-elt="this"' in az_body

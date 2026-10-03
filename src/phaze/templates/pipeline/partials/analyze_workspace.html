@@ -28,6 +28,24 @@
 
     <div class="space-y-4 px-4 pt-4 sm:px-6">
         {% include "pipeline/partials/_analyze_queue.html" %}
+        {# Recovery is global across stages, so retain the R-4 agent-busy guard rather than
+           allowing a lane-local control to start a global replay during agent churn.
+           Keep the explanation beside the disabled action, outside its response sink. #}
+        <section x-show="$store.pipeline.analyzeOrphan > 0" x-cloak aria-labelledby="analyze-recovery-heading"
+                 class="rounded-lg border border-amber-400 p-4 dark:border-amber-700">
+            <h2 id="analyze-recovery-heading" class="text-sm font-semibold text-warn">Orphaned analysis work</h2>
+            <p class="mt-1 text-sm text-muted"><span x-text="$store.pipeline.analyzeOrphan"></span> file(s) awaiting recovery. Recover re-enqueues lost scheduled work across all pipeline stages.</p>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+                <button type="button" hx-post="/pipeline/recover" hx-target="#analyze-recover-response" hx-swap="innerHTML"
+                        hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
+                        hx-disabled-elt="this" hx-indicator="#analyze-recover-spinner"
+                        :disabled="$store.pipeline.agentBusy > 0" aria-describedby="analyze-recover-gate-copy"
+                        class="{{ _btn }}">Recover orphaned work</button>
+                <span id="analyze-recover-spinner" class="htmx-indicator text-xs text-muted">Recovering…</span>
+            </div>
+            <p id="analyze-recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="mt-2 text-xs text-warn">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</p>
+            <div id="analyze-recover-response" class="mt-3 text-sm empty:hidden" aria-live="polite"></div>
+        </section>
         {# The waiting list is loaded on demand (first open) and never by the 5s poll, so a backlog of
            thousands costs nothing until the operator asks to see it. It lives OUTSIDE #analyze-queue so
            the poll's OOB swap cannot collapse it or reset its page. #}
