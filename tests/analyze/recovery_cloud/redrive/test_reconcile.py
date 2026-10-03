@@ -248,6 +248,9 @@ async def test_eviction_triggers_redrive(session: AsyncSession, monkeypatch: pyt
     """An Evicted Workload is a no-callback terminal: delete the Job, confirm gone, re-drive submit."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=0)
+    prior_job = await _read_cloud_job(session, fid)
+    prior_job.started_at = datetime.now(UTC)
+    await session.commit()
     queue = DedupFakeQueue("controller")
     ctx = _make_ctx(queue)
     # get_job: initial read (non-terminal), then confirm-gone returns None.
@@ -262,6 +265,7 @@ async def test_eviction_triggers_redrive(session: AsyncSession, monkeypatch: pyt
     cj = await _read_cloud_job(session, fid)
     assert cj.attempts == 1
     assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert cj.started_at is None
     assert dj.calls == [name]
     assert len(get_job.calls) == 2  # terminal read + confirm-gone
     # A fresh submit_cloud_job enqueued onto the controller queue with the deterministic dedup key.

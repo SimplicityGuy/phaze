@@ -2,10 +2,10 @@
     <nav class="relative -mb-px flex gap-4 overflow-x-auto" aria-label="Audit log status filter">
         {% set tabs = [
             ("all", "All", stats.total),
-            ("pending", "Pending", stats.pending),
+            ("pending", "In flight · queued", stats.pending),
             ("completed", "Completed", stats.completed),
             ("failed", "Failed", stats.failed),
-            ("in_progress", "In Progress", stats.in_progress),
+            ("in_progress", "In flight · running", stats.in_progress),
         ] %}
         {% for value, label, count in tabs %}
         {# phaze-a6hm.5 / column_sort.py contract rule 4, the easy-to-forget direction: a filter-tab

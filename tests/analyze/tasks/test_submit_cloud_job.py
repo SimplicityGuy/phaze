@@ -527,6 +527,7 @@ async def test_resubmit_resets_cloud_phase_to_queued_behind_quota(
     # Simulate reconcile having advanced the admission phase to running.
     row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     row.cloud_phase = CloudPhase.RUNNING.value
+    row.started_at = datetime.now(UTC)
     await session.commit()
 
     # A re-submit (on_conflict_do_update) resets the progression back to queued_behind_quota.
@@ -534,6 +535,7 @@ async def test_resubmit_resets_cloud_phase_to_queued_behind_quota(
     session.expire_all()
     row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     assert row.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
+    assert row.started_at is None, "a re-submit must not inherit the prior Job's start time"
 
 
 def test_submit_cloud_job_key_is_deterministic() -> None:

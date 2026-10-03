@@ -14,8 +14,7 @@
      - total (int)
 
    Status pill ladder (UI-SPEC C2):
-     - PENDING  (completed + failed == 0)
-     - RUNNING  (completed + failed <  total)
+     - IN FLIGHT (completed + failed < total)
      - COMPLETE (completed + failed == total AND failed == 0)
      - ERRORS   (completed + failed == total AND failed > 0)
 
@@ -27,6 +26,7 @@
    why that rides view_state instead of the contract's endpoint. Both keys are Undefined (falsy) on
    any render path that has not passed them, so the plain header is what renders by default.
 #}
+{% import "ui/primitives.html" as ui %}
 {% if not agents %}
 <p class="text-sm text-muted italic">No active sub-jobs.</p>
 {% else %}
@@ -64,9 +64,9 @@
                 </td>
                 <td class="px-4 py-3">
                     {% if agent.completed + agent.failed == 0 %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-muted " aria-label="Status: pending">PENDING</span>
+                    {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
                     {% elif agent.completed + agent.failed < agent.total %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Status: running">RUNNING</span>
+                    {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
                     {% elif agent.failed == 0 %}
                     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: complete">COMPLETE</span>
                     {% else %}

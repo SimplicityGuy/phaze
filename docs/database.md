@@ -248,10 +248,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-075)
+### Post-baseline chain (040-076)
 
-`alembic/versions/` holds **37** files: the `039` baseline plus a linear chain to the current
-head, **`075`**.
+`alembic/versions/` holds **38** files: the `039` baseline plus a linear chain to the current
+head, **`076`**.
 
 | Rev | Change |
 |-----|--------|
@@ -290,7 +290,8 @@ head, **`075`**.
 | `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting (phaze-d28sn) |
 | `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table |
 | `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table |
-| `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts — **head** |
+| `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
+| `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

@@ -1111,10 +1111,10 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     assert "inflight.mp3" in tbl
 
     # Completed row: full window coverage from the aggregate.
-    assert "window 41/41" in tbl
+    assert "41/41 windows" in tbl
 
     # In-flight row: the mid-flight N/M signal AND running -- NOT a bare "running" (B2 / D-04).
-    assert "running" in tbl
+    assert "in flight" in tbl
     assert "14/41" in tbl
 
     # Per-file lane badge derivation (COMPUTE-03): no cloud_job -> local; backend_id='vox' (kueue) ->

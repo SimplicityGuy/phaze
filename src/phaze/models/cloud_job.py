@@ -176,6 +176,9 @@ class CloudJob(TimestampMixin, Base):
     # Cleared when the resubmit is enqueued and whenever the row leaves in-flight. It is what tells a
     # waiting row from a pending-confirmation one: both have no Job, but only the latter has a submit queued.
     redrive_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Kubernetes Job startTime for the current attempt, independent of mutable updated_at.
+    # Cleared on re-submit so a retry cannot inherit its predecessor's elapsed time.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         # Bare name "status_enum"; the ck_%(table_name)s_%(constraint_name)s convention re-prefixes it.

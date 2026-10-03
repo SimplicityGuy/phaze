@@ -329,8 +329,8 @@ async def test_audit_log_empty_state_tab_counts_stay_truthful(client: AsyncClien
     assert "All (1)" in response.text
     assert "Completed (1)" in response.text
     assert "Failed (0)" in response.text
-    assert "In Progress (0)" in response.text
-    assert "Pending (0)" in response.text
+    assert "In flight · running (0)" in response.text
+    assert "In flight · queued (0)" in response.text
 
 
 @pytest.mark.asyncio
@@ -338,12 +338,14 @@ async def test_audit_pending_filter_is_complete_and_invalid_status_normalizes_to
     await create_test_execution_log(session, status=ExecutionStatus.PENDING, source_path="/music/pending.mp3")
 
     pending = await client.get("/audit/?status=pending", headers={"HX-Request": "true"})
-    assert "Pending (1)" in pending.text
-    assert 'aria-pressed="true"' in pending.text[pending.text.index("Pending (1)") - 500 : pending.text.index("Pending (1)") + 100]
+    assert "In flight · queued (1)" in pending.text
+    assert (
+        'aria-pressed="true"' in pending.text[pending.text.index("In flight · queued (1)") - 500 : pending.text.index("In flight · queued (1)") + 100]
+    )
 
     invalid = await client.get("/audit/?status=not-a-status", headers={"HX-Request": "true"})
     assert invalid.status_code == 200
-    assert "Pending (1)" in invalid.text
+    assert "In flight · queued (1)" in invalid.text
     assert "No entries match this filter" not in invalid.text
 
 
@@ -375,7 +377,7 @@ async def test_audit_degraded_stats_do_not_render_fabricated_zero_tab_totals(cli
 
     assert response.status_code == 200
     assert "Audit history unavailable" in response.text
-    for label in ("All", "Pending", "Completed", "Failed", "In Progress"):
+    for label in ("All", "In flight · queued", "Completed", "Failed", "In flight · running"):
         assert label in response.text
         assert f"{label} (0)" not in response.text
 

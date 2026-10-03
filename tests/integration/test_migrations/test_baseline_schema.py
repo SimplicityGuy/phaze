@@ -343,6 +343,7 @@ def test_baseline_is_the_only_migration() -> None:
         "073_runtime_config_override.py",
         "074_deployments.py",
         "075_coarse_work_progress.py",
+        "076_cloud_job_started_at.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -371,10 +372,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (075: coarse work progress)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (076: cloud Job start time)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "075"
+    assert version == "076"
 
 
 @pytest.mark.asyncio
@@ -700,7 +701,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "075"
+        assert version == "076"
     finally:
         if engine is not None:
             await engine.dispose()

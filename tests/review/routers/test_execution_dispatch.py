@@ -683,7 +683,7 @@ async def test_sse_emits_agents_table(
     # Rendered HTML carries the agent row + the RUNNING pill.
     html = agents_events[0]["data"]
     assert "agent-a" in html
-    assert "RUNNING" in html
+    assert "in flight" in html
 
 
 @pytest.mark.asyncio

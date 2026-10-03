@@ -577,6 +577,7 @@ async def _redrive_under_ceiling(
     else:
         cloud_job.attempts = next_attempt
     cloud_job.status = CloudJobStatus.SUBMITTED.value
+    cloud_job.started_at = None
     cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
     cloud_job.node_loss_pending = None  # phaze-mwbz3: verdict spent -- the NEXT Job under this name starts fresh.
     # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
@@ -1032,6 +1033,9 @@ async def _advance_admitted(row: _RowReconcile, job: Any, name: str, *, admitted
     # is the intermediate ADMITTED phase. The cloud_job ``status`` axis still advances to RUNNING
     # in both cases (unchanged).
     next_phase = CloudPhase.RUNNING.value if admitted_true else CloudPhase.ADMITTED.value
+    started_at = kube_staging.job_started_at(job)
+    if started_at is not None:
+        cloud_job.started_at = started_at
     if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible or cloud_job.cloud_phase != next_phase:
         cloud_job.status = CloudJobStatus.RUNNING.value
         cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.

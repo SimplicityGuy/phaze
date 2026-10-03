@@ -32,9 +32,9 @@
         {% elif log.status == "failed" %}
             {{ ui.status_badge('Status', 'Failed', 'danger', '✗') }}
         {% elif log.status == "in_progress" %}
-            {{ ui.status_badge('Status', 'In progress', 'accent', '●', true) }}
+            {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
         {% else %}
-            {{ ui.status_badge('Status', 'Pending', 'attention', '…') }}
+            {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
         {% endif %}
     </td>
     <td class="px-4 py-3 text-muted ">

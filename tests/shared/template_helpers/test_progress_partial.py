@@ -97,11 +97,11 @@ def test_empty_dispatch_summary_renders_italic_paragraph() -> None:
     assert "<tr" not in html or "<tbody" not in html
 
 
-# agents_table.html — Single-agent RUNNING
+# agents_table.html — Single-agent in flight
 
 
 def test_single_agent_renders_one_row_with_running_pill() -> None:
-    """One agent with completed=2, failed=0, total=5 -> RUNNING pill + 1 row."""
+    """One agent with completed=2, failed=0, total=5 -> in flight pill + 1 row."""
     html = _render_agents_table(
         agents=[
             {
@@ -115,8 +115,8 @@ def test_single_agent_renders_one_row_with_running_pill() -> None:
     )
     # One body row (the header <tr> + one body <tr> = 2 total).
     assert html.count("<tr") == 2
-    # RUNNING pill with blue surface (UI-SPEC pill rules).
-    assert "RUNNING" in html
+    # Shared active status pill with an accessible label and blue surface.
+    assert 'aria-label="Status: in flight"' in html
     assert "bg-blue-100" in html
     # Two-line agent cell.
     assert "Agent Alpha" in html
@@ -175,18 +175,18 @@ def test_completed_with_errors_pill_red_classes() -> None:
     assert "font-semibold" in html
 
 
-# agents_table.html — PENDING state
+# agents_table.html — Queued work is also in flight
 
 
 def test_pending_pill_when_no_progress() -> None:
-    """completed=0, failed=0, total=5 -> PENDING pill bg-gray-100."""
+    """completed=0, failed=0, total=5 -> the shared in flight pill."""
     html = _render_agents_table(
         agents=[
             {"agent_id": "agent-aaa", "name": "Alpha", "completed": 0, "failed": 0, "total": 5},
         ],
     )
-    assert "PENDING" in html
-    assert "bg-gray-100" in html
+    assert 'aria-label="Status: in flight"' in html
+    assert "bg-blue-100" in html
 
 
 # agents_table.html — Caption / accessibility
