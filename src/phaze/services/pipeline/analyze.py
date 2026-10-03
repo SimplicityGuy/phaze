@@ -124,25 +124,29 @@ def _analyze_files_select() -> Select[Any]:
     (windowed coverage / the 57.1 mid-flight signal + the done/failed markers), and ``metadata``
     (duration). No WHERE / ORDER here -- each caller composes its own bounded predicate + order.
     """
-    return (
-        select(
-            FileRecord.id,
-            FileRecord.original_filename,
-            FileRecord.original_path,
-            CloudJob.id,
-            CloudJob.status,
-            CloudJob.backend_id,
-            AnalysisResult.fine_windows_analyzed,
-            AnalysisResult.fine_windows_total,
-            AnalysisResult.analysis_completed_at,
-            AnalysisResult.failed_at,
-            FileMetadata.duration,
-        )
-        .select_from(FileRecord)
-        .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
-        .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
-        .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+    stmt = type_cast(
+        "Select[Any]",
+        (
+            select(
+                FileRecord.id,
+                FileRecord.original_filename,
+                FileRecord.original_path,
+                CloudJob.id,
+                CloudJob.status,
+                CloudJob.backend_id,
+                AnalysisResult.fine_windows_analyzed,
+                AnalysisResult.fine_windows_total,
+                AnalysisResult.analysis_completed_at,
+                AnalysisResult.failed_at,
+                FileMetadata.duration,
+            )
+            .select_from(FileRecord)
+            .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
+            .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
+            .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+        ),
     )
+    return stmt
 
 
 def _analyze_active_where() -> Any:

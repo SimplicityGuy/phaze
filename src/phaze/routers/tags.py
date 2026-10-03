@@ -140,6 +140,8 @@ async def _bulk_tagwrite_lock_connection(session: AsyncSession) -> tuple[AsyncCo
     bind = session.bind
     if isinstance(bind, AsyncConnection):
         return bind, False
+    if bind is None:
+        raise RuntimeError("bulk tag write session has no database bind")
     conn = await bind.connect()
     return conn, True
 

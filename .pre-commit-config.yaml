@@ -58,14 +58,14 @@ repos:
         exclude: ^(\.planning/|graphify-out/|tests/vendor/|tests/analyze/fixtures/real_analyze_file_result\.json$)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb  # frozen: v0.16.8
+    rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # frozen: v0.16.10
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: c4654a7e007c9619a5eb63c39a456572a0fa1851  # frozen: 0.38.0
+    rev: 4f85d46a92dc17713078e5de73f8a13190edf6fc  # frozen: 0.38.2
     hooks:
       - id: check-github-workflows
       - id: check-github-actions

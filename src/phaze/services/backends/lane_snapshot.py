@@ -117,7 +117,11 @@ async def _admission_by_backend_id(session: AsyncSession) -> dict[str, dict[str,
         logger.warning("backend_lane_admission_degraded", exc_info=True)
         await _rollback_and_log(session, "backend_lane_admission_rollback_failed")
         return {}
-    return {backend_id: {"quota_wait": int(quota_wait or 0), "inadmissible": int(inadmissible or 0)} for backend_id, quota_wait, inadmissible in rows}
+    return {
+        backend_id: {"quota_wait": int(quota_wait or 0), "inadmissible": int(inadmissible or 0)}
+        for backend_id, quota_wait, inadmissible in rows
+        if backend_id is not None
+    }
 
 
 async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool]:

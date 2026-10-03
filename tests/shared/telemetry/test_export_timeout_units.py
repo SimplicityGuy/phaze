@@ -23,28 +23,41 @@ units -- the fix everyone wants -- phaze finds out from a red test rather than f
 from __future__ import annotations
 
 import os
+from unittest.mock import Mock
 
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import SpanExportResult
+import pytest
+from urllib3 import HTTPResponse, PoolManager
 
 from phaze.telemetry import _env
 
 
-def test_the_otlp_timeout_is_still_read_in_seconds(monkeypatch) -> None:
+def test_the_otlp_timeout_is_still_read_in_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole point: phaze's default must be interpreted the way phaze means it.
 
     Constructs the REAL exporter -- the artifact's real consumer of this variable -- and
-    reads back the timeout it resolved. A test against the environment string alone would
+    observes the timeout passed to its HTTP transport. A test against the environment string alone would
     prove phaze can set a variable and nothing about what the SDK does with it.
     """
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://192.0.2.1:4318")
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_TIMEOUT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", raising=False)
     _env.apply_export_defaults()
 
+    request = Mock(return_value=HTTPResponse(status=200, body=b""))
+    monkeypatch.setattr(PoolManager, "request", request)
     exporter = OTLPSpanExporter()
-    resolved = exporter._timeout  # the resolved value is not otherwise exposed
+    try:
+        assert exporter.export([]) is SpanExportResult.SUCCESS
+    finally:
+        exporter.shutdown()
+    request.assert_called_once()
+    resolved = request.call_args.kwargs["timeout"].total
 
     assert os.environ["OTEL_EXPORTER_OTLP_TIMEOUT"] == "5"
-    assert resolved == 5, (
+    # The exporter's deadline budget spends a little time encoding the batch before the request.
+    assert resolved == pytest.approx(5, abs=0.1), (
         f"the OTLP exporter resolved a timeout of {resolved}; phaze's default of '5' assumes SECONDS. "
         "If the installed SDK now reads this variable in MILLISECONDS (as the OTel specification says), "
         "phaze's default is 1000x too short -- change it in telemetry/_env.py in the same commit as this test."

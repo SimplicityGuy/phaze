@@ -13,13 +13,13 @@ dependencies = [
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
     # aioboto3 stopped at aiobotocore 2.x, so use aiobotocore's native session API directly.
-    "aiobotocore>=3.9.1",
+    "aiobotocore>=3.9.2",
     "alembic>=1.20.0",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
-    "cryptography>=50.0.1",
+    "cryptography>=50.0.2",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.141.1",
+    "fastapi>=0.142.2",
     "httpx>=0.28.1",
 
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
@@ -58,7 +58,7 @@ dependencies = [
     # Re-measure its verdicts and update that constant in the SAME commit as the bump. This comment
     # is a pointer, not a coupling -- nothing enforces it, and the cost of forgetting lands on
     # whoever gates next, ~23 minutes into a suite, in a file they did not touch (phaze-85zxu).
-    "litellm>=1.100.1,<1.101.0",
+    "litellm>=1.100.4,<1.101.0",
     "lxml>=6.1.3",
     "mutagen>=1.48.1",
     "numpy>=2.5.3",
@@ -75,9 +75,9 @@ dependencies = [
     # heavy binary wheel that must build for every platform in the essentia/TF matrix)
     # and its channel keeps its own retry state across a shutdown, which is exactly the
     # blocking-at-exit shape phaze-m1drf.2 §2 has to bound for a k8s analyze Job.
-    "opentelemetry-api>=1.44.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
-    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-api>=1.45.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
 
     # phaze-fq9h.1: 1001Tracklists detail pages deliver their track listing via JS behind a
     # Cloudflare Turnstile widget, and spike phaze-dmvs proved a HEADFUL Patchright (a
@@ -108,7 +108,7 @@ dependencies = [
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.4",
     "python-multipart>=0.0.32",
 
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
@@ -128,11 +128,11 @@ dependencies = [
     # release may change without calling it breaking; tests/shared/tasks/test_saq_worker_contract.py
     # fails on any version it was not verified against, so a bump is a compatibility review.
     "saq[postgres]>=0.26.4,<0.27.0",
-    "sqlalchemy>=2.0.54",
-    "sse-starlette>=3.4.11",
+    "sqlalchemy>=2.1.3",
+    "sse-starlette>=3.5.0",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
-    "uvicorn>=0.53.0",
+    "uvicorn>=0.54.0",
     "watchdog>=6.0.0",
 ]
 
@@ -494,7 +494,7 @@ dev = [
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
     "moto[server]>=5.2.3",
-    "mypy>=2.3.1",
+    "mypy>=2.4.0",
     "pip-audit>=2.10.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
@@ -502,7 +502,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.8",
+    "ruff>=0.16.10",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]

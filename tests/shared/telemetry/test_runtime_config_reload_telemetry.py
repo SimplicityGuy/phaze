@@ -38,8 +38,8 @@ def _store(tmp_path: Path) -> RuntimeConfigStore:
 def _collect(sink: TelemetrySink) -> tuple[list[dict[str, Any]], float, dict[str, float]]:
     """Counter attribute sets, counter total, and gauge values -- from ONE collection.
 
-    One collection because a synchronous gauge is reported only if it was set since the last
-    one (``TelemetrySink.collect``); a gauge absent here was not set by the reload under test.
+    Read all instruments together so counters and the gauges' retained last values come from
+    the same snapshot (``TelemetrySink.collect``).
     """
     points = sink.collect()
     reloads = points.get("phaze.config.reloads", [])
@@ -74,8 +74,8 @@ def test_a_successful_reload_logs_its_changes_and_sets_the_success_metrics(tmp_p
 
 def test_a_rejected_reload_logs_the_error_and_clears_the_success_gauge(tmp_path: Path, telemetry_sink: TelemetrySink) -> None:
     store = _store(tmp_path)
-    asyncio.run(store.reload("startup"))
-    assert "phaze.config.last_reload.success_timestamp" in _collect(telemetry_sink)[2]
+    startup = asyncio.run(store.reload("startup"))
+    assert _collect(telemetry_sink)[2]["phaze.config.last_reload.success_timestamp"] == pytest.approx(startup.at)
     (tmp_path / RUNTIME_TOML_NAME).write_text('worker_max_jobs = 0\nredis_url = "redis://:secret@r:6379/0"\n', encoding="utf-8")
 
     with capture_logs() as logs:
@@ -91,7 +91,7 @@ def test_a_rejected_reload_logs_the_error_and_clears_the_success_gauge(tmp_path:
     attribute_sets, _total, gauges = _collect(telemetry_sink)
     assert {"source": "file", "outcome": "rejected"} in attribute_sets
     # The success gauge drops to 0, and the success timestamp is not set: it keeps the startup value.
-    assert gauges == {"phaze.config.last_reload.successful": 0.0}
+    assert gauges == {"phaze.config.last_reload.successful": 0.0, "phaze.config.last_reload.success_timestamp": pytest.approx(startup.at)}
 
 
 def test_a_failing_applier_logs_it_and_reports_partial(tmp_path: Path, telemetry_sink: TelemetrySink) -> None:

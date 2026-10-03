@@ -245,9 +245,9 @@ class TelemetrySink:
     def collect(self) -> dict[str, list[Any]]:
         """Every data point, by metric name, from ONE collection.
 
-        Use this when a test reads a synchronous GAUGE alongside anything else: the SDK's
-        last-value aggregation reports a gauge only if it was set since the PREVIOUS collection,
-        so a second ``points()`` call returns nothing for a gauge the first call already read.
+        Use this when a test reads a synchronous GAUGE alongside anything else so all values
+        come from the same snapshot. The SDK retains a cumulative gauge's last value across
+        collections until the instrument records another value.
         """
         data = self._reader.get_metrics_data()
         found: dict[str, list[Any]] = {}

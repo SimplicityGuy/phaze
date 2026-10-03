@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _local_in_flight_stmt(*, require_live_job: bool) -> Select[tuple[int]]:
+def _local_in_flight_stmt(*, require_live_job: bool) -> Select[int]:
     """Build :meth:`LocalBackend.in_flight_count`'s COUNT -- with the ``saq_jobs`` liveness conjunct, or without it.
 
     ``require_live_job=False`` is the pre-phaze-1kowg ledger-only count, kept ONLY as the degrade path for

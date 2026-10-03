@@ -27,12 +27,12 @@ def _fids_scope(fids: list[uuid.UUID], name: str) -> Any:
     return FileRecord.id == func.any(bindparam(name, value=fids, type_=ARRAY(PGUUID(as_uuid=True))))
 
 
-def _select_done_analyze_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
+def _select_done_analyze_ids(fids: list[uuid.UUID]) -> Select[uuid.UUID]:
     """Select ledger-scoped file ids whose analyze domain is terminal."""
     return select(FileRecord.id).where(_fids_scope(fids, "a_ids"), domain_completed_clause(Stage.ANALYZE))
 
 
-def _select_cloud_lane_done_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
+def _select_cloud_lane_done_ids(fids: list[uuid.UUID]) -> Select[uuid.UUID]:
     """Select ledger-scoped file ids whose cloud lane has completed."""
     return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), cloud_lane_completed_clause())
 
@@ -57,6 +57,7 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
                 )
             )
         ).all()
+        if failed_at is not None
     }
     metadata_skipped = {
         str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "ms_ids"), skipped_clause(Stage.METADATA)))).all()

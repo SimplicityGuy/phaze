@@ -5,7 +5,7 @@ analyzing window split, the drain's candidate SELECT, and the long-failure backf
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast as type_cast
+from typing import TYPE_CHECKING, cast as type_cast
 
 from sqlalchemy import String, and_, cast, exists, false, func, literal, or_, select, tuple_
 import structlog
@@ -343,7 +343,7 @@ async def get_cloud_staging_candidates(
     return [(file, updated_at) for file, updated_at in (await session.execute(stmt)).all()]
 
 
-def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
+def _backfill_candidates_stmt(threshold_sec: int) -> Select[FileRecord, float | None]:
     """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` + ledger-scoped candidate predicate.
 
     INNER JOIN ``FileMetadata`` so a null-duration ANALYSIS_FAILED file is structurally

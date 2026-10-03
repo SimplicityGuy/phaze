@@ -502,7 +502,7 @@ async def db_now(session: AsyncSession) -> datetime:
     now = await session.scalar(select(func.now()))
     if now is None:  # pragma: no cover -- NOW() is never NULL; a bare `assert` here trips bandit B101 in src/
         raise RuntimeError("SELECT now() returned NULL")
-    return now
+    return cast("datetime", now)
 
 
 def _file_id_from_key(key: str) -> uuid.UUID | None:
