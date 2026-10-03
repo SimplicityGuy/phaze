@@ -4,8 +4,8 @@
 :class:`NoAudioTrackError`; other probe/extraction failures raise
 :class:`AudioExtractionError`, so callers can persist terminal failures without retrying a
 deterministically unusable file. Multiple streams select the default-flagged stream, falling
-back to the lowest index, and ``ffmpeg -c:a copy`` writes an ``.mka`` scratch file without
-decoding or re-encoding.
+back to the lowest index. Mono/stereo tracks use ``ffmpeg -c:a copy`` into an ``.mka`` scratch
+file. Tracks with more than two channels are downmixed into compressed stereo FLAC for Essentia.
 
 Operator decision, 2026-08-12, ``phaze-3ea41``: asked "which video containers should the
 analyze lane accept?", the operator selected "Probe-based, any container". This removes a
@@ -17,7 +17,7 @@ of that option's description, not a separately authored answer. The recovered ev
 exact incident measurements are in
 ``docs/design/0012-verification-fidelity-and-operator-attribution.md``.
 
-Plain audio is still probed but bypasses remuxing. Extracted intermediates remain compressed,
+Plain mono/stereo audio is still probed but bypasses remuxing. Extracted intermediates remain compressed,
 so scratch use is O(concurrent extracted files), not O(archive size); D-07's chunk-bounded PCM
 contract remains in ``docs/design/0007-windowed-analysis.md``. Extraction runs before the
 analysis child's D-08 stall watchdog, so progress lines feed only the caller's outer heartbeat.
@@ -53,9 +53,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# Matroska audio: accepts arbitrary audio codecs without forcing a re-encode, so `-c:a copy`
-# (the disk-headroom decision above) is always a legal mux target regardless of source codec.
+# Matroska audio accepts arbitrary codecs for the usual stream-copy path. Multichannel tracks
+# instead need a stereo decode for Essentia, stored as compressed FLAC rather than raw PCM.
 _EXTRACTED_AUDIO_SUFFIX = ".mka"
+_DOWNMIXED_AUDIO_SUFFIX = ".flac"
 
 # How often (seconds) an in-progress extraction may invoke heartbeat_cb. Independent of the
 # analysis-side cadence constant in tasks/functions.py -- this module has no AgentSettings
@@ -182,9 +183,9 @@ def _audio_streams(streams: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _is_already_plain_audio(streams: list[dict[str, Any]]) -> bool:
     """True when the container is ALREADY nothing but one audio track (phaze-l832u).
 
-    The remux-skip predicate for decision 2 of the phaze-l832u epic: a file that is already a
-    single-audio-stream container is analyzed DIRECTLY, instead of being copied through ffmpeg
-    into a ``.mka`` first. That removes a full remux of every one of the ~11,428 audio files in
+    The container-shape part of the remux-skip predicate for decision 2 of the phaze-l832u epic:
+    a single-audio-stream container can be analyzed DIRECTLY unless its selected track needs
+    stereo downmixing. This removes a full remux of the ordinary audio files in
     the corpus from the hot path -- correctness is decision 1's job (the ffprobe duration probe,
     ``services/analysis.py`` D-10), this is cost.
 
@@ -254,7 +255,7 @@ def _log_multi_track_selection(file_path: str, file_id: str | None, selected: di
     )
 
 
-def _resolve_dest_path(scratch_dir: str | Path | None) -> Path:
+def _resolve_dest_path(scratch_dir: str | Path | None, *, downmix: bool = False) -> Path:
     """Where the extracted-audio scratch file lands (review correction, phaze-3ea41 -- naming
     the exact mechanism here since a prior report described it only in prose elsewhere):
     ``scratch_dir``, when the caller passes one, else ``tempfile.gettempdir()``. Both real
@@ -279,11 +280,12 @@ def _resolve_dest_path(scratch_dir: str | Path | None) -> Path:
     """
     dest_dir = Path(scratch_dir) if scratch_dir is not None else Path(tempfile.gettempdir())
     dest_dir.mkdir(parents=True, exist_ok=True)
-    return dest_dir / f"{uuid.uuid4().hex}{_EXTRACTED_AUDIO_SUFFIX}"
+    suffix = _DOWNMIXED_AUDIO_SUFFIX if downmix else _EXTRACTED_AUDIO_SUFFIX
+    return dest_dir / f"{uuid.uuid4().hex}{suffix}"
 
 
-def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, want_progress: bool) -> list[str]:
-    """The ``-c:a copy`` extraction argv (disk-headroom decision, this module's docstring).
+def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, want_progress: bool, downmix: bool = False) -> list[str]:
+    """Build stream-copy extraction or compressed stereo downmix argv.
 
     Review correction (phaze-3ea41): ``-progress pipe:1`` is requested ONLY when
     ``want_progress`` holds -- with no consumer for it, the extra pipe/pump is pure overhead,
@@ -304,9 +306,11 @@ def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, 
         "-vn",
         "-sn",
         "-dn",
-        "-c:a",
-        "copy",
     ]
+    if downmix:
+        argv.extend(("-ac", "2", "-c:a", "flac"))
+    else:
+        argv.extend(("-c:a", "copy"))
     if want_progress:
         argv.extend(("-progress", "pipe:1"))
     argv.append(str(dest_path))
@@ -442,14 +446,15 @@ async def extract_audio_track(
     heartbeat_interval_sec: float = _DEFAULT_HEARTBEAT_INTERVAL_SEC,
 ) -> AudioSource:
     """Demux the container's DEFAULT-flagged audio stream (or the first, as fallback) to a
-    scratch file -- unless the file is ALREADY just that audio, in which case nothing is copied.
+    scratch file -- unless the file is already plain mono/stereo audio, in which case nothing is copied.
 
     Returns an :class:`AudioSource`; read its docstring before touching either field. Raises
     :class:`NoAudioTrackError` when the container has no audio stream, or
     :class:`AudioExtractionError` for any other ffprobe/ffmpeg failure.
 
     **The skip branch (phaze-l832u, epic decision 2).** When :func:`_is_already_plain_audio`
-    holds, this returns ``AudioSource(analysis_path=file_path, cleanup_path=None)``: the
+    holds and the selected track has at most two channels, this returns
+    ``AudioSource(analysis_path=file_path, cleanup_path=None)``: the
     analyzer reads the ORIGINAL file and the caller has nothing to delete. ``cleanup_path`` is
     ``None`` -- NOT the input path -- because both lanes unlink ``cleanup_path`` in an outer
     ``finally`` and on the local lane the input is the operator's REAL ARCHIVE FILE. Returning
@@ -480,7 +485,9 @@ async def extract_audio_track(
         msg = f"no audio stream found in {file_path!r}"
         raise NoAudioTrackError(msg)
 
-    if _is_already_plain_audio(container):
+    selected, others = _select_track(streams)
+    downmix = isinstance(selected.get("channels"), int) and selected["channels"] > 2
+    if _is_already_plain_audio(container) and not downmix:
         # phaze-l832u decision 2: nothing to demux and nothing to disambiguate -- analyze the
         # file where it lies. cleanup_path is None precisely so the caller's unconditional
         # unlink cannot reach this path (see AudioSource's docstring).
@@ -492,7 +499,6 @@ async def extract_audio_track(
         )
         return AudioSource(analysis_path=file_path, cleanup_path=None)
 
-    selected, others = _select_track(streams)
     if others:
         _log_multi_track_selection(file_path, file_id, selected, others)
 
@@ -503,9 +509,9 @@ async def extract_audio_track(
     # returned path in their own outer ``finally`` on every terminal exit (success or later
     # failure), unconditionally and independent of the pushed-original scratch copy's
     # retry-preserving cleanup (see each lane's own comment on why that copy differs).
-    dest_path = _resolve_dest_path(scratch_dir)
+    dest_path = _resolve_dest_path(scratch_dir, downmix=downmix)
     want_progress = heartbeat_cb is not None
-    argv = _build_ffmpeg_argv(file_path, selected["index"], dest_path, want_progress=want_progress)
+    argv = _build_ffmpeg_argv(file_path, selected["index"], dest_path, want_progress=want_progress, downmix=downmix)
     proc = await _spawn_ffmpeg(argv, want_progress=want_progress)
 
     # Review correction (phaze-3ea41): heartbeat_cb is FIRE-AND-FORGET (spawned, never awaited

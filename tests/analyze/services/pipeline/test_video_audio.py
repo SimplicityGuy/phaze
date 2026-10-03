@@ -314,6 +314,23 @@ async def test_extract_audio_track_falls_back_to_first_stream_when_none_default(
     assert argv[argv.index("-c:a") + 1] == "copy"
 
 
+async def test_extract_audio_track_downmixes_selected_multichannel_stream(make_fake_exec: Any) -> None:
+    streams = [
+        {"index": 2, "codec_name": "aac", "channels": 2, "disposition": {"default": 0}},
+        {"index": 3, "codec_name": "ac3", "channels": 6, "disposition": {"default": 1}},
+    ]
+    make_fake_exec(streams)
+
+    result = await extract_audio_track("/video/concert.mkv")
+
+    argv = _ffmpeg_argv(make_fake_exec)
+    assert argv[argv.index("-map") + 1] == "0:3"
+    assert argv[argv.index("-ac") + 1] == "2"
+    assert argv[argv.index("-c:a") + 1] == "flac"
+    assert result.cleanup_path == result.analysis_path
+    assert result.analysis_path.endswith(".flac")
+
+
 async def test_extract_audio_track_prefers_default_flagged_stream_over_first(make_fake_exec: Any) -> None:
     """The container's DEFAULT-flagged stream wins even when it is NOT the first-listed one.
 
@@ -676,6 +693,48 @@ async def test_real_extract_audio_track_from_synthetic_video(tmp_path: Path) -> 
     assert Path(result.analysis_path).stat().st_size > 0
     extracted_streams = await probe_container_streams(result.analysis_path)
     assert len(extracted_streams) == 1
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
+async def test_real_multichannel_video_downmix_is_readable_by_essentia(tmp_path: Path) -> None:
+    import essentia.standard as es
+
+    src = tmp_path / "surround.mkv"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:size=64x64:rate=1:duration=2",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=5.1:sample_rate=48000",
+        "-t",
+        "2",
+        "-c:v",
+        "ffv1",
+        "-c:a",
+        "ac3",
+        str(src),
+    )
+    assert await proc.wait() == 0
+    before = src.read_bytes()
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path)
+
+    assert result.analysis_path != str(src)
+    assert result.cleanup_path == result.analysis_path
+    streams = await probe_container_streams(result.analysis_path)
+    assert len(streams) == 1
+    assert streams[0]["channels"] == 2
+    assert len(es.EasyLoader(filename=result.analysis_path, sampleRate=16000, startTime=0, endTime=1)()) == 16000
+    assert src.read_bytes() == before
+    Path(result.cleanup_path).unlink()
+    assert not Path(result.analysis_path).exists()
 
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
