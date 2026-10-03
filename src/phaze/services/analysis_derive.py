@@ -53,7 +53,7 @@ def _positive_class_prediction(predictions: list[dict[str, Any]]) -> float:
     return float(positive["prediction"])
 
 
-def derive_mood(features: dict[str, Any]) -> str:
+def derive_mood(features: dict[str, Any]) -> str | None:
     """Derive dominant mood from feature predictions.
 
     For each mood model set, average the positive-class prediction (selected by
@@ -79,10 +79,10 @@ def derive_mood(features: dict[str, Any]) -> str:
                 best_mood = set_name
 
     # Strip "mood_" prefix
-    return best_mood.removeprefix("mood_")
+    return best_mood.removeprefix("mood_") or None
 
 
-def derive_style(genre_features: dict[str, Any]) -> str:
+def derive_style(genre_features: dict[str, Any]) -> str | None:
     """Derive top style/genre from genre model predictions.
 
     Returns the label of the highest-confidence genre prediction.
@@ -90,7 +90,7 @@ def derive_style(genre_features: dict[str, Any]) -> str:
     """
     predictions = genre_features.get("predictions", [])
     if not predictions:
-        return "unknown"
+        return None
 
     top = max(predictions, key=lambda p: p["confidence"])
     return str(top["label"]).replace("---", "/")

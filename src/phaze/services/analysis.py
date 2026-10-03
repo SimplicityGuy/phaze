@@ -900,16 +900,23 @@ def _run_model_sets_over_windows(
     """
     features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
     failed: set[int] = set()
+    audible_buffers = []
+    for key, buf in buffers:
+        if _has_analyzable_signal(buf):
+            audible_buffers.append((key, buf))
+        else:
+            # Keep a completed window with absent measurements, never a failed/skipped one.
+            features[key]["genre"] = {"predictions": []}
 
     for model_set in MODEL_SETS:
         for model in model_set.models:
-            for key, (predictions, labels) in _sweep_one_model(model, buffers, models_dir, failed, on_failure).items():
+            for key, (predictions, labels) in _sweep_one_model(model, audible_buffers, models_dir, failed, on_failure).items():
                 features[key][model_set.name][model.variant] = [
                     {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
                 ]
             on_model_done()
 
-    for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure).items():
+    for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, audible_buffers, models_dir, failed, on_failure).items():
         genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
         genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
         features[key]["genre"] = {
@@ -950,6 +957,17 @@ def _chunk_stop_sec(chunks: list[list[tuple[int, float, float]]], position: int)
     return chunks[position][-1][2]
 
 
+def _has_analyzable_signal(audio: Any) -> bool:
+    """Reject empty PCM and signal whose peak does not exceed -100 dBFS.
+
+    The conservative 1e-5 amplitude floor is below one 16-bit PCM quantization step;
+    it catches digital silence and negligible decoder noise without using the rhythm
+    extractor's misleading confidence (30 s silence scored 4.6929). This checks one
+    already-decoded window, so temporary PCM remains bounded by the existing chunk.
+    """
+    return bool(np.max(np.abs(audio), initial=0.0) > 1e-5)
+
+
 def _measure_fine_window(
     rhythm_extractor: Any,
     key_extractor: Any,
@@ -981,14 +999,16 @@ def _measure_fine_window(
     if buf is None:
         return None  # no audio for this window; already reported by the decode
     try:
+        if not _has_analyzable_signal(buf):
+            return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=None, musical_key=None)
         bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
         key, scale, _strength = key_extractor(buf)
         return FineWindow(
             window_index=idx,
             start_sec=start,
             end_sec=end,
-            bpm=round(float(bpm), 1),
-            musical_key=f"{key} {scale}",
+            bpm=round(float(bpm), 1) if confidence > 0.0 else None,
+            musical_key=f"{key} {scale}" if _strength > 0.0 else None,
             confidence=float(confidence),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file

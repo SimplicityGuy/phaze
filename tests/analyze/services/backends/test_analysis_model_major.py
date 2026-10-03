@@ -88,6 +88,12 @@ def _predictions_for(graph_filename: str, audio: np.ndarray) -> np.ndarray:
     return np.tile(row, (10, 1))
 
 
+def _audible_buffer(marker: float) -> np.ndarray:
+    audio = np.full(1024, marker, dtype=np.float32)
+    audio[-1] = 1.0  # Marker zero still represents a non-silent test window.
+    return audio
+
+
 def _build_mock_es() -> MagicMock:
     """Mock essentia. NOT the source of the file's duration any more (phaze-l832u D-10): that
     comes from ``_instrumented_analyze(duration_sec=...)``, which stubs the ffprobe probe."""
@@ -96,7 +102,7 @@ def _build_mock_es() -> MagicMock:
     def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> MagicMock:
         loader = MagicMock()
         # Marker == the window's start second, so a buffer identifies its window.
-        loader.return_value = np.full(1024, startTime, dtype=np.float32)
+        loader.return_value = _audible_buffer(startTime)
         return loader
 
     mock_es.EasyLoader.side_effect = _easyloader
@@ -284,7 +290,7 @@ def _window_major_features(audio_16k: Any, models_dir: str) -> dict[str, Any]:
 def test_model_major_features_are_byte_identical_to_window_major() -> None:
     """Same buffers, both nestings, compared as JSON bytes -- values AND key order."""
     mock_es = _build_mock_es()
-    buffers = [(i, np.full(1024, float(i * 180), dtype=np.float32)) for i in range(4)]
+    buffers = [(i, _audible_buffer(float(i * 180))) for i in range(4)]
 
     with patch.object(analysis_mod, "es", mock_es), patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels):
         expected = {key: json.dumps(_window_major_features(buf, "/fake/models"), sort_keys=False) for key, buf in buffers}
@@ -409,7 +415,7 @@ def test_failures_are_reported_without_retaining_the_exception() -> None:
     expects ``MemoryError`` and so goes red outright.
     """
     mock_es = _build_flaky_mock_es()
-    buffers = [(i, np.full(1024, float(i * 180), dtype=np.float32)) for i in range(3)]
+    buffers = [(i, _audible_buffer(float(i * 180))) for i in range(3)]
     reported: list[int] = []
 
     built_refs: list[weakref.ReferenceType[Any]] = []
@@ -464,7 +470,7 @@ def test_single_buffer_wrapper_still_propagates() -> None:
         patch.object(analysis_mod, "_predict_single", side_effect=boom),
         pytest.raises(RuntimeError, match="graph is broken"),
     ):
-        analysis_mod._run_model_sets(np.zeros(1024, dtype=np.float32), "/fake/models")
+        analysis_mod._run_model_sets(_audible_buffer(0.0), "/fake/models")
 
 
 def test_single_buffer_wrapper_matches_window_major() -> None:
@@ -540,7 +546,7 @@ def test_single_frame_activations_do_not_crash_the_sweep() -> None:
     terminal error line, verbatim.
     """
     mock_es = _build_mock_es_single_frame()
-    buffers = [(0, np.full(1024, 0.0, dtype=np.float32))]
+    buffers = [(0, _audible_buffer(0.0))]
 
     with patch.object(analysis_mod, "es", mock_es), patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels):
         features, failed = analysis_mod._run_model_sets_over_windows(buffers, "/fake/models", lambda _i: None)

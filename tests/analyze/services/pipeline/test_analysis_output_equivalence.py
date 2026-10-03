@@ -297,20 +297,20 @@ def test_positive_class_prediction_selection_is_unchanged(predictions: list[dict
     assert _positive_class_prediction(predictions) == pytest.approx(expected)
 
 
-def test_derive_mood_is_unchanged() -> None:
+def test_derive_mood_preserves_predictions_and_nulls_absent_evidence() -> None:
     """Highest mean positive-class score across variants wins, with the `mood_` prefix stripped."""
     assert derive_mood(_MOOD_FEATURES) == "happy"
-    assert derive_mood({}) == ""
+    assert derive_mood({}) is None
     # A set present but with no predictions contributes nothing rather than scoring 0.
-    assert derive_mood({"mood_happy": {"a": []}}) == ""
+    assert derive_mood({"mood_happy": {"a": []}}) is None
 
 
-def test_derive_style_is_unchanged() -> None:
+def test_derive_style_preserves_predictions_and_nulls_absent_evidence() -> None:
     """Top-confidence genre label, with the `---` hierarchy separator rewritten to `/`."""
     predictions = {"predictions": [{"label": "Electronic---House", "confidence": 0.8}, {"label": "Rock", "confidence": 0.2}]}
     assert derive_style(predictions) == "Electronic/House"
-    assert derive_style({}) == "unknown"
-    assert derive_style({"predictions": []}) == "unknown"
+    assert derive_style({}) is None
+    assert derive_style({"predictions": []}) is None
 
 
 def test_derive_danceability_is_unchanged() -> None:

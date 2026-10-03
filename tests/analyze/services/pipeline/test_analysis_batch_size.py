@@ -93,7 +93,7 @@ def _build_mock_es(duration_sec: float = _DURATION_SEC) -> MagicMock:
     mock_es.MetadataReader.return_value = mock_metadata
 
     loader = MagicMock()
-    loader.return_value = np.zeros(16000, dtype=np.float32)
+    loader.return_value = np.ones(16000, dtype=np.float32)
     mock_es.EasyLoader.return_value = loader
     mock_es.MonoLoader.return_value = loader
 

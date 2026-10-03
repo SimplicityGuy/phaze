@@ -1,7 +1,27 @@
 # Degenerate audio investigation (phaze-nkucu)
 
-Measured 2026-10-03. Product behavior remains pending the operator decision required by
-the bead; this investigation changes no analysis code or payload bounds.
+Measured 2026-10-03. The operator selected NULL values for unusable measurements.
+
+## Operator decision (2026-10-03)
+
+Question as put:
+
+> For phaze-nkucu — “Handle degenerate audio values,” what should analysis return when a window has no analyzable signal? The bead explicitly requires your product decision before implementation. Measurements found 55 implausible BPM values among 643,789 windows, and silence can have higher rhythm confidence than valid audio.
+
+Answer as given (selected option label, verbatim):
+
+> Return NULL values for unusable measurements (Recommended)
+
+Completed windows remain present and count as analyzed even when their measurements are
+NULL. A missing value therefore means this completed window yielded no usable measurement;
+job lifecycle and window counts continue to distinguish completion from pending analysis.
+Existing stored rows are not rewritten by this change.
+
+Implementation uses a conservative peak-amplitude cutoff of 1e-5 (-100 dBFS), below one
+16-bit PCM quantization step. This catches silence and negligible near-silence without
+claiming to classify all non-musical audio. Zero rhythm confidence also makes that window's
+BPM absent; zero key strength makes its key absent. Empty classifier evidence yields NULL
+mood/style rather than value-column sentinels. Wire bounds stay unchanged.
 
 ## Stored population
 
@@ -58,3 +78,19 @@ with `best_mood = ""` and returns that empty string when no populated mood set i
 
 D-07 chunking, D-08 stall liveness, D-09 streaming teardown, and payload bounds remain
 untouched. No wall-clock bound was added.
+
+## Implementation verification
+
+A real 200 s mono silence WAV at 44100 Hz completed `analyze_file` with 7/7 fine and
+2/2 coarse natural windows, all 9 window records retained, and NULL aggregate BPM,
+musical key, mood, style and danceability. No classifier weights were needed: absence of
+signal is identified from decoded PCM rather than guessed from model output. The real
+decode, window geometry, chunk loops and Essentia fine-extractor construction executed;
+classifier inference is intentionally avoided for unusable PCM.
+
+The focused degeneracy suite passed 10 tests, including this real reproduction, zero PCM,
+near-silence, signal just above the floor, and individually unusable extractor results.
+The broader pipeline and model-major regression population passed 562 tests before the
+real reproduction was added. Ordinary model predictions and model-major graph release
+semantics remain covered. Mock buffers representing valid test windows now carry signal;
+their first-sample identity markers remain unchanged.

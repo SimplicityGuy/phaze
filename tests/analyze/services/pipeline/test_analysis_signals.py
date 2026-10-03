@@ -39,7 +39,7 @@ def _build_mock_essentia(duration_sec: float = _MOCK_DURATION_SEC) -> MagicMock:
     mock_es = MagicMock()
 
     mock_loader_instance = MagicMock()
-    mock_loader_instance.return_value = np.zeros(16000, dtype=np.float32)
+    mock_loader_instance.return_value = np.ones(16000, dtype=np.float32)
     mock_es.MonoLoader.return_value = mock_loader_instance
     mock_es.EasyLoader.return_value = mock_loader_instance
 
