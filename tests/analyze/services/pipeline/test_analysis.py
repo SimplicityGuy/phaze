@@ -1028,6 +1028,11 @@ def test_aggregates_are_order_and_gap_independent_reductions() -> None:
 # phaze-7qfd -- job-peak-RSS observability: platform unit handling + the log line
 
 
+def test_vm_hwm_from_status_lines_without_vmhwm_returns_none() -> None:
+    status_lines = ["VmData:\t123 kB\n", "VmRSS:\t8000 kB\n"]
+    assert analysis_mod._vm_hwm_from_status_lines(status_lines) is None
+
+
 def test_peak_rss_gib_linux_reads_vmhwm_in_kb(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Linux: VmHWM is read from /proc/self/status, which proc(5) documents as ALWAYS kB.
 
