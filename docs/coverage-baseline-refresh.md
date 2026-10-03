@@ -29,7 +29,7 @@ without changing production code:
 | `tasks/functions.py` | 36/36 | 45/46 | Coarse-work heartbeat arrives before the first progress count |
 
 These focused cases passed **6 tests in 0.39 s**, on the isolated exclusive database.
-A second full-suite measurement is required before recording the repaired baseline.
+The repaired full measurement below verifies all four module branches at 100%.
 
 Two percentage improvements also have increased uncovered counts: `job_runner.py`
 moves from 41/46 to 52/58 (5 to 6 uncovered), and `services/video_audio.py` moves from
@@ -40,6 +40,46 @@ The historical review-service 42/44 acceptance number is obsolete: the current
 `services/review.py` facade has **41/41 lines and no branches**. Its old 44/46 baseline
 cannot be compared as a current denominator. The moved implementation modules appear
 in the new-path rows below.
+
+## Repaired full measurement and baseline provenance, 2026-10-03
+
+The second isolated serial full default non-browser suite measured commit
+`59bef0afbe3bde51664f8fc3a2c93e034684f83e`, with greenlet tracing and per-test coverage
+contexts. It completed **9968 passed, 1 failed, 6 skipped, 195 deselected, 314 warnings
+in 1686.75 s**. The sole failure was the new audit document being placed in the frozen
+historical `docs/spikes` population. This was a failed validation run, not a green gate.
+Moving this current audit to maintained `docs/coverage-baseline-refresh.md` restored the
+unchanged historical corpus: its two checks passed in **23.61 s**.
+
+The complete measurement is still authentic coverage evidence: **99.13% lines**,
+**96.62% branches**, and **98.69% combined**. The standalone floor check passed 95%
+repo-wide lines and 90% for every tracked module. Its binary coverage artifact retains
+**17986 test contexts**. The regenerated baseline records the actual measured
+`59bef0af` provenance, **341 modules**, and **250 branch-bearing modules**; it does not
+claim a later main commit produced this measurement. All **216** entries that changed
+against the old baseline remain accounted for in the initial table below, with exactly
+these five subsequent measurement differences:
+
+| Module | Initial full covered/total branches | Repaired full covered/total branches | Repaired lines covered/total | Uncovered branch change against old baseline |
+| --- | ---: | ---: | ---: | ---: |
+| `routers/agent_analysis.py` | 53/54 | 54/54 | 155/155 | 0 |
+| `schemas/agent_analysis.py` | 13/14 | 14/14 | 90/90 | 0 |
+| `services/analysis_wire.py` | 38/42 | 42/42 | 87/87 | -2 |
+| `tasks/functions.py` | 45/46 | 46/46 | 198/198 | 0 |
+| `services/agent_client.py` | 16/16 | 15/16 | 151/152 | 0 |
+
+The context-traced measurement of `agent_client.py` misses the defensive
+`AsyncRetrying` loop-exhaustion tripwire `[273,303]`, documented in the source as
+unreachable when tenacity returns or reraises normally. The old baseline was 9/10
+branches with one uncovered branch; the repaired full report is 15/16, also with one
+uncovered branch. Its ratio improves from 90% to 93.75%. This measurement difference
+is reported explicitly rather than recording the earlier 16/16 figure.
+
+The repaired report has **zero** modules whose branch percentage decreased while their
+uncovered branch count increased. The two improved-ratio modules with increased
+uncovered counts described above remain visible; no existing gap was silently relabeled
+as covered. No production code changed. The final clean-tree submit must separately
+attest the corrected document placement and regenerated baseline with a green full gate.
 
 ## Every mover in the initial audit
 
