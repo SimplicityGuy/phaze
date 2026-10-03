@@ -85,6 +85,26 @@ def test_aggregate_style_scores_weights_all_coarse_windows() -> None:
     ]
 
 
+def test_style_aggregation_ignores_invalid_geometry_and_prediction_entries() -> None:
+    valid = {
+        "tier": "coarse",
+        "start_sec": 0.0,
+        "end_sec": 60.0,
+        "features": {"genre": {"predictions": [None, {"label": "Rock", "confidence": 0.75}]}},
+    }
+    malformed = {"tier": "coarse", "start_sec": "invalid", "end_sec": 60.0}
+    zero_duration = {"tier": "coarse", "start_sec": 60.0, "end_sec": 60.0}
+    assert aggregate_style_scores([malformed, zero_duration, valid]) == [{"name": "Rock", "score": 0.75}]
+
+
+def test_mood_conversion_ignores_empty_and_invalid_variant_scores() -> None:
+    features = {
+        "mood_happy": {"empty": [], "invalid": [{"label": "happy", "prediction": "invalid"}]},
+        "mood_sad": {"valid": [{"label": "sad", "prediction": 0.25}]},
+    }
+    assert _features_to_mood_dict(features) == {"sad": 0.25}
+
+
 @pytest.fixture(autouse=True)
 def _patch_agent_settings() -> Any:
     """Patch ``get_settings`` so ``process_file`` resolves AgentSettings-shaped config.
@@ -1603,11 +1623,16 @@ async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: 
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess")
-async def test_local_coarse_work_is_flushed_with_completed_window_count(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+@pytest.mark.parametrize("work_before_progress", [False, True])
+async def test_local_coarse_work_is_flushed_with_completed_window_count(
+    mock_pool: MagicMock, _patch_agent_settings: MagicMock, work_before_progress: bool
+) -> None:
     """A one-chunk model sweep advances work while the analyzed-window count stays zero."""
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 10_000.0
 
     async def _fake(_path: str, _models: str, *, progress_cb: Any, heartbeat_cb: Any, **_kwargs: Any) -> dict[str, Any]:
+        if work_before_progress:
+            heartbeat_cb("coarse_work", 1, 10)
         progress_cb(3, 3, 0, 1)
         heartbeat_cb("coarse_work", 5, 10)
         return MOCK_ANALYSIS

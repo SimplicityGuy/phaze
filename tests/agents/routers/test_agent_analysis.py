@@ -33,6 +33,13 @@ from phaze.services import s3_staging
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
+def test_typed_style_without_dominant_label_derives_storage_label() -> None:
+    dumped = {"style": [{"name": "Electronic/House", "score": 0.8}, {"name": "Rock", "score": 0.2}]}
+    agent_analysis_module._fold_wire_fields(dumped)
+    assert dumped["dominant_style"] == "Electronic/House"
+    assert dumped["style"][0] == {"name": "Electronic/House", "score": 0.8}
+
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
