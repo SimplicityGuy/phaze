@@ -78,8 +78,14 @@ is reported explicitly rather than recording the earlier 16/16 figure.
 The repaired report has **zero** modules whose branch percentage decreased while their
 uncovered branch count increased. The two improved-ratio modules with increased
 uncovered counts described above remain visible; no existing gap was silently relabeled
-as covered. No production code changed. The final clean-tree submit must separately
-attest the corrected document placement and regenerated baseline with a green full gate.
+as covered. No production code changed. The first final clean-tree submit at `d3999882` completed **9967 passed, 2 failed,
+6 skipped, 195 deselected, 314 warnings in 1101.39 s**. Both failures required the new
+maintained document to be indexed in `docs/README.md`; its missing index entry is now
+added. Both complete affected documentation test modules then passed **20 tests in
+2.26 s**. That attempt was also a failed validation gate. Its authentic full report confirmed
+all four repaired modules at 100% branches. Explicit branch-check against that report
+passed for these modules and the zero-branch review facade, without another test run.
+The corrected final tree still requires its own green clean-tree submit.
 
 ## Every mover in the initial audit
 
