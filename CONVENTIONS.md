@@ -93,6 +93,17 @@ must never be grouped — the `02` belongs to the identifier `PERF-02`, not to `
 this rule has no mechanical guard: a check that grouped numbers on pattern match would reproduce
 exactly this false positive.
 
+The identifier case means "these digits are not a quantity"; separated components mean "these
+digits are several quantities, not one grouped one". In
+`docs/design/0009-responsive-accessibility-baseline.md:281`, `oklch(0.21 0.034 264.665)` contains
+separate colour components: grouping the space-separated digits would corrupt valid CSS. This is
+another reason to review meaning rather than add a mechanical guard.
+
+This section's five existing space-grouped strings are deliberate demonstrations, permanently
+exempt from conversion: the two numbers in the Bad example, the full identifier example and its
+matching substring, and the operator's quoted European-number example below. The colour-component
+example above is likewise exempt; its spaces separate quantities rather than group thousands.
+
 ### Where this applies
 
 Tracked prose: `docs/**`, root-level `*.md`, spike and design docs, planning notes, commit messages
