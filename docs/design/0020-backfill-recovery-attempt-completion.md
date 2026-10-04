@@ -1,4 +1,4 @@
-# Backfill completion belongs to the queued attempt
+# ADR-0020: Backfill completion belongs to the queued attempt
 
 Date: 2026-10-03. Bead: phaze-za41v. Status: accepted.
 
@@ -6,14 +6,14 @@ Date: 2026-10-03. Bead: phaze-za41v. Status: accepted.
 
 Question as put:
 
-> For phaze-za41v — “Recover lost backfill jobs,” which mechanism should distinguish an old completed analysis from completion of the newly queued backfill? The bead explicitly requires your decision under ADR-0012 before a fix; reachability is confirmed by inspection, with reproduction still pending.
+> For phaze-za41v — “Recover lost backfill jobs,” which mechanism should distinguish an old completed analysis from completion of the newly queued backfill? The bead explicitly requires your decision under ADR-0012 before a fix; reachability is confirmed by inspection, with reproduction still pending. <!-- Citation: 0012-verification-fidelity-and-operator-attribution.md; quoted question remains verbatim. -->
 
 Answer as given, quoting only the selected option label:
 
 > Compare completion time with ledger enqueue time (Recommended)
 
 The operator selected this option in the dispatch conversation on 2026-10-03. This document
-is the durable record of that exchange under ADR-0012 rule 2. The implementation details below
+is the durable record of that exchange under [ADR-0012](0012-verification-fidelity-and-operator-attribution.md) rule 2. The implementation details below
 are engineering choices implementing that decision, not additional operator statements.
 
 ## Reproduction
@@ -84,7 +84,7 @@ recovery then re-enqueues **1**, while the terminal-attempt safety assertion exp
 earlier `failed` boundary case covers a persisted analysis failure marker, not this completed-file
 failure path. It cannot establish that this second case is safe.
 
-The operator authorized the durable outcome extension on **2026-10-03** under ADR-0012.
+The operator authorized the durable outcome extension on **2026-10-03** under [ADR-0012](0012-verification-fidelity-and-operator-attribution.md).
 
 Exact question:
 

@@ -39,6 +39,7 @@ from phaze.routers.pipeline.extraction import _enqueue_extraction_jobs
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.reanalysis_backfill import select_incomplete_analyses
 from phaze.services.scheduling_ledger import clear_ledger_entry
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from tests._queue_fakes import FakeQueue
 from tests.shared.services.pipeline._shared import (
@@ -81,9 +82,11 @@ class _RealHookQueue(FakeQueue):
             key=kwargs.get("key"),
             timeout=kwargs.get("timeout"),
             retries=kwargs.get("retries"),
+            meta={},
             queue=self,
         )
         await apply_deterministic_key(job)
+        self.last_hook_job = job
         return await super().enqueue(task_name, **kwargs)
 
 
@@ -149,7 +152,8 @@ async def test_proposal_gate_excludes_a_file_whose_reanalysis_is_in_flight(sessi
     assert str(file.id) in await _pending_ids(session), "precondition: the file is proposable before the enqueue"
 
     # The real producer enqueues, and the real before_enqueue hook writes process_file:<id>.
-    await enqueue_process_file(_hook_queue(_db_connection), file, "test-fileserver", "/models")
+    queue = _hook_queue(_db_connection)
+    await enqueue_process_file(queue, file, "test-fileserver", "/models")
 
     # THE DOOR: the file is no longer proposable, so no move can be scheduled underneath the job.
     assert str(file.id) not in await _pending_ids(session), "a file with process_file in flight must NOT be proposable"
@@ -160,6 +164,7 @@ async def test_proposal_gate_excludes_a_file_whose_reanalysis_is_in_flight(sessi
     # consumer (and any recovery replay) would later open -- not the producer's return value.
     stored = await session.get(SchedulingLedger, f"process_file:{file.id}")
     assert stored is not None, "the real before_enqueue hook must have written the ledger row"
+    assert queue.last_hook_job.meta[ATTEMPT_META_KEY] == stored.enqueued_at.isoformat()
     assert stored.payload["original_path"] == original_path
 
     # Had the gate let this through, the proposal would execute and unlink exactly that path while
