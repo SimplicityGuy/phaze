@@ -29,10 +29,10 @@ from typing import TYPE_CHECKING, Any
 from saq import Job
 from saq.job import Status
 
-from phaze.config import get_settings
 from phaze.services.enqueue_router import CONTROLLER_TASKS
 from phaze.services.tracklist_drain_arm import arm_drain, disarm_drain, get_arm_state, mark_slice_enqueued
 from phaze.tasks import tracklist_drain_control as control_module
+from phaze.tasks._shared.queue_defaults import TRACKLIST_DRAIN_JOB_POLICY
 from phaze.tasks.controller import settings as controller_settings
 from phaze.tasks.tracklist_drain_control import (
     MAX_CONSECUTIVE_SLICE_FAILURES,
@@ -225,6 +225,22 @@ class TestArmedEnqueuing:
 
 
 class TestStaleInFlightSelfHeal:
+    async def test_a_long_slice_and_its_retry_envelope_are_not_recovered_early(self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The old generic retry envelope expires while a valid drain can still run."""
+        await arm_drain(session, now=NOW)
+        await mark_slice_enqueued(session, now=NOW)
+        await session.commit()
+        timeout, retries = TRACKLIST_DRAIN_JOB_POLICY
+        for elapsed in (40 * 60, timeout + 60, timeout * (retries + 1) + 299):
+            monkeypatch.setattr(control_module, "datetime", _FixedDatetime(NOW + timedelta(seconds=elapsed)))
+            queue = FakeQueue()
+            await continue_armed_tracklist_drain(ctx_for(session, queue=queue))
+            state = await get_arm_state(session)
+            assert state.in_flight is True
+            assert state.slice_enqueued_at == NOW
+            assert state.consecutive_failures == 0
+            assert queue.enqueued == []
+
     async def test_a_slice_enqueued_long_ago_self_heals_instead_of_wedging_forever(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -232,8 +248,8 @@ class TestStaleInFlightSelfHeal:
         await mark_slice_enqueued(session, now=NOW)
         await session.commit()
 
-        cfg = get_settings()
-        stale_after_seconds = cfg.worker_job_timeout * (cfg.worker_max_retries + 1) + 300
+        timeout, retries = TRACKLIST_DRAIN_JOB_POLICY
+        stale_after_seconds = timeout * (retries + 1) + 300
         far_future = NOW + timedelta(seconds=stale_after_seconds + 60)
         monkeypatch.setattr(control_module, "datetime", _FixedDatetime(far_future))
 

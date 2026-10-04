@@ -17,6 +17,7 @@ operator actually pushes buttons on:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -98,6 +99,19 @@ class TestArgumentParsing:
 
 
 class TestTaskShell:
+    async def test_cancellation_closes_browser_and_client_without_swallowing_cancel(
+        self, session: AsyncSession, fake_clients: tuple[RecordingScraper, RecordingRenderer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scraper, renderer = fake_clients
+
+        async def cancelled(*args: Any, **kwargs: Any) -> Any:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(task_module, "drain_once", cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            await drain_tracklists(ctx_for(session))
+        assert (scraper.closed, renderer.closed) == (True, True)
+
     async def test_an_empty_corpus_returns_a_zero_report_and_closes_both_clients(
         self, session: AsyncSession, fake_clients: tuple[RecordingScraper, RecordingRenderer]
     ) -> None:

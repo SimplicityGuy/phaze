@@ -64,6 +64,7 @@ from phaze.services.tracklist_drain_arm import (
     mark_slice_enqueued,
     mark_slice_finished,
 )
+from phaze.tasks._shared.queue_defaults import TRACKLIST_DRAIN_JOB_POLICY
 from phaze.tasks.tracklist_drain import tracklist_drain_status
 
 
@@ -84,7 +85,7 @@ logger = structlog.get_logger(__name__)
 MAX_CONSECUTIVE_SLICE_FAILURES = 3
 
 # Extra headroom (seconds) added on top of the role's worst-case retry envelope
-# (worker_job_timeout * (worker_max_retries + 1)) before an ``in_flight`` slice is treated as
+# (drain timeout * (maximum drain retries + 1)) before an ``in_flight`` slice is treated as
 # abandoned by clear_stale_in_flight below -- covers scheduling/backoff overhead between retries,
 # not just the raw per-attempt timeouts.
 _STALE_IN_FLIGHT_BUFFER_SECONDS = 300
@@ -113,7 +114,8 @@ async def continue_armed_tracklist_drain(ctx: dict[str, Any]) -> None:
         return
 
     if in_flight:
-        stale_after_seconds = cfg.worker_job_timeout * (cfg.worker_max_retries + 1) + _STALE_IN_FLIGHT_BUFFER_SECONDS
+        drain_timeout, drain_max_retries = TRACKLIST_DRAIN_JOB_POLICY
+        stale_after_seconds = drain_timeout * (drain_max_retries + 1) + _STALE_IN_FLIGHT_BUFFER_SECONDS
         if slice_enqueued_at is None or (moment - slice_enqueued_at).total_seconds() < stale_after_seconds:
             # An ordinary in-progress slice -- record_drain_slice_completion will clear this.
             return
