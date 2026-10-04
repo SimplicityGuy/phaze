@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.stage_skip import StageSkip
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
 from tests._background_drain import drain_router_background_tasks
@@ -69,6 +70,28 @@ async def _seed_failed_file(session: AsyncSession) -> FileRecord:
     session.add(_make_failed_metadata(file.id))
     await session.commit()
     return file
+
+
+@pytest.mark.asyncio
+async def test_bulk_retry_excludes_metadata_skipped_files(client: AsyncClient, session: AsyncSession) -> None:
+    """A metadata skip survives bulk retry, even when a failed row remains after a file moves."""
+    skipped = await _seed_failed_file(session)
+    failed = await _seed_failed_file(session)
+    skipped.current_path = "/organized/song.mp3"
+    session.add(StageSkip(file_id=skipped.id, stage="metadata", reason="Proceed without metadata"))
+    # A skip on another stage must not suppress this metadata failure.
+    session.add(StageSkip(file_id=failed.id, stage="analyze", reason="Proceed without analysis"))
+    await session.commit()
+    assert {file.id for file in await get_metadata_failed_files(session)} == {failed.id}
+    await make_agent_live(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/pipeline/metadata-failed/retry")
+    assert response.status_code == 200
+    await drain_router_background_tasks()
+    jobs = task_router.queues["test-fileserver-meta"].captured
+    assert len(jobs) == 1
+    assert jobs[0][1]["file_id"] == str(failed.id)
 
 
 @pytest.mark.asyncio
