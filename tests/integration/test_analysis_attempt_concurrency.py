@@ -7,13 +7,27 @@ import uuid
 
 import pytest
 from saq import Status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import mark_analysis_attempt_terminal
 from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, ledger_enqueue_session
 from phaze.tasks.recovery_backfill import backfill_ledger_from_saq_jobs
+
+
+@pytest.mark.parametrize("key", ["process_file:synthetic", "process_file:quote'\";--", "process_file:音楽"])
+async def test_parameterized_attempt_lock_retains_database_scoped_hash(committed_db: Any, key: str) -> None:
+    """SQLAlchemy expressions preserve the original hash even for nonliteral keys."""
+    from sqlalchemy import text
+
+    from phaze.services.analysis_attempt import _LOCK_KEY
+
+    _, maker = committed_db
+    async with maker() as session:
+        original = await session.scalar(text("SELECT hashtextextended(current_database() || ':phaze_analysis_attempt:' || :key, 0)"), {"key": key})
+        parameterized = await session.scalar(select(_LOCK_KEY), {"key": key})
+        assert original is not None and parameterized == original
 
 
 @pytest.mark.parametrize("pool_size", [1, 2])
@@ -428,7 +442,7 @@ async def test_cancelled_enqueue_releases_session_lock_and_context(
             # Hold the key using a different pool, so even pool_size=1 reaches a real
             # blocked advisory-lock query rather than waiting for a pool checkout.
             holder = await default_maker.kw["bind"].connect()
-            await holder.execute(text(f"SELECT pg_advisory_lock({_LOCK_KEY})"), {"key": key})
+            await holder.execute(select(func.pg_advisory_lock(_LOCK_KEY)), {"key": key})
             await holder.commit()
         task = asyncio.create_task(producer())
         if cancel_at == "blocked_acquisition":
@@ -447,7 +461,7 @@ async def test_cancelled_enqueue_releases_session_lock_and_context(
             assert driver_invalidations == [True], "record the actual asyncpg/SQLAlchemy cancellation behavior"
         assert pids
         if holder is not None:
-            await holder.execute(text(f"SELECT pg_advisory_unlock({_LOCK_KEY})"), {"key": key})
+            await holder.execute(select(func.pg_advisory_unlock(_LOCK_KEY)), {"key": key})
             await holder.commit()
             await holder.close()
             holder = None
@@ -466,7 +480,7 @@ async def test_cancelled_enqueue_releases_session_lock_and_context(
         assert sum(job is not None for job in outcomes) == 1
     finally:
         if holder is not None:
-            await holder.execute(text(f"SELECT pg_advisory_unlock({_LOCK_KEY})"), {"key": key})
+            await holder.execute(select(func.pg_advisory_unlock(_LOCK_KEY)), {"key": key})
             await holder.commit()
             await holder.close()
         await engine.dispose()

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import sys
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import BigInteger, String, bindparam, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 import structlog
 
@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_LOCK_KEY = "hashtextextended(current_database() || ':phaze_analysis_attempt:' || :key, 0)"
+_LOCK_KEY = func.hashtextextended(
+    func.current_database(type_=String).concat(literal(":phaze_analysis_attempt:", String)).concat(bindparam("key", type_=String)),
+    literal(0, BigInteger),
+)
 
 
 @asynccontextmanager
@@ -31,7 +34,7 @@ async def _on_connection(maker: Any, connection: Any, key: str, *, owned: bool =
     # An explicitly bound connection stays checked out when the borrowed session commits.
     # Thus the session-level lock survives the ledger commit until SAQ commits its insert.
     try:
-        await connection.execute(text(f"SELECT pg_advisory_lock({_LOCK_KEY})"), {"key": key})
+        await connection.execute(select(func.pg_advisory_lock(_LOCK_KEY)), {"key": key})
         if owned:
             # Lock acquisition autobegins a Connection transaction. End it before binding the
             # Session, otherwise Session.commit joins that outer transaction without committing
@@ -51,7 +54,7 @@ async def _on_connection(maker: Any, connection: Any, key: str, *, owned: bool =
         pending = sys.exception()
         if not connection.invalidated:
             try:
-                await connection.execute(text(f"SELECT pg_advisory_unlock({_LOCK_KEY})"), {"key": key})
+                await connection.execute(select(func.pg_advisory_unlock(_LOCK_KEY)), {"key": key})
             except BaseException:
                 await connection.invalidate()
                 if pending is None:
@@ -86,6 +89,6 @@ async def analysis_failure_ack_matches(session: AsyncSession, key: str, enqueued
     never authorize mutation, and the HTTP client's existing 5xx policy can retry the ACK.
     The transaction lock uses the caller's existing connection and releases at finalize commit.
     """
-    await session.execute(text(f"SELECT pg_advisory_xact_lock({_LOCK_KEY})"), {"key": key})
+    await session.execute(select(func.pg_advisory_xact_lock(_LOCK_KEY)), {"key": key})
     epoch = await session.scalar(select(SchedulingLedger.enqueued_at).where(SchedulingLedger.key == key))
     return epoch is None or epoch == enqueued_at
