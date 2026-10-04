@@ -95,6 +95,121 @@ async def test_concurrent_producers_keep_winning_attempt_and_release_on_failure(
         await engine.dispose()
 
 
+@pytest.mark.parametrize("pool_size", [1, 2])
+@pytest.mark.parametrize("broker_fails", [False, True])
+async def test_unlock_failure_invalidates_real_connection_and_preserves_broker_error(
+    committed_db: Any, stage_env: Any, pool_size: int, broker_fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncertain unlock closes its real backend; the original insert error wins."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    _, default_maker = committed_db
+    engine = create_async_engine(default_maker.kw["bind"].url, pool_size=pool_size, max_overflow=0, pool_timeout=1)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    queue, _ = stage_env
+    queue.ledger_sessionmaker = maker
+    fid = str(uuid.uuid4())
+    pids: list[int] = []
+    invalidated: list[bool] = []
+    actual_execute = AsyncConnection.execute
+    actual_invalidate = AsyncConnection.invalidate
+    actual_insert = queue._enqueue
+
+    async def failed_unlock(connection: Any, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if connection.engine is engine and str(statement).startswith("SELECT pg_advisory_unlock("):
+            pids.append((await actual_execute(connection, text("SELECT pg_backend_pid()"))).scalar_one())
+            raise RuntimeError("synthetic uncertain unlock")
+        return await actual_execute(connection, statement, *args, **kwargs)
+
+    async def observed_invalidation(connection: Any, *args: Any, **kwargs: Any) -> None:
+        await actual_invalidate(connection, *args, **kwargs)
+        if connection.engine is engine:
+            invalidated.append(connection.invalidated)
+
+    async def failed_insert(_job: Any) -> Any:
+        raise RuntimeError("original broker failure")
+
+    monkeypatch.setattr(AsyncConnection, "execute", failed_unlock)
+    monkeypatch.setattr(AsyncConnection, "invalidate", observed_invalidation)
+    if broker_fails:
+        monkeypatch.setattr(queue, "_enqueue", failed_insert)
+    try:
+        expected = "original broker failure" if broker_fails else "synthetic uncertain unlock"
+        with pytest.raises(RuntimeError, match=expected):
+            await asyncio.wait_for(queue.enqueue("process_file", file_id=fid), 5)
+        assert ledger_enqueue_session.get() is None
+        assert invalidated == [True] and len(pids) == 1
+        async with default_maker() as observer:
+            assert (
+                await observer.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND pid=:pid "
+                        "AND database=(SELECT oid FROM pg_database WHERE datname=current_database())"
+                    ),
+                    {"pid": pids[0]},
+                )
+                == 0
+            )
+        monkeypatch.setattr(AsyncConnection, "execute", actual_execute)
+        monkeypatch.setattr(queue, "_enqueue", actual_insert)
+        if not broker_fails:
+            accepted = await queue.job(f"process_file:{fid}")
+            assert accepted is not None
+            await queue.finish(accepted, Status.FAILED)
+        assert await asyncio.wait_for(queue.enqueue("process_file", file_id=fid), 5) is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_analysis_queue_rejects_foreign_registration_and_survives_lock_outage(
+    committed_db: Any, stage_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrong queues are rejected before writes; lock bookkeeping failure still enqueues."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from saq import Job
+
+    from phaze.services import analysis_attempt
+
+    _, maker = committed_db
+    queue, _ = stage_env
+    queue.ledger_sessionmaker = maker
+    fid = str(uuid.uuid4())
+    foreign = Job(function="process_file", kwargs={"file_id": fid}, queue=SimpleNamespace(name="foreign"))
+    with pytest.raises(ValueError, match="different queue"):
+        await queue.enqueue(foreign)
+    async with maker() as session:
+        assert await session.get(SchedulingLedger, f"process_file:{fid}") is None
+
+    @asynccontextmanager
+    async def unavailable_lock(*_args: Any) -> Any:
+        raise RuntimeError("synthetic lock acquisition outage")
+        yield
+
+    monkeypatch.setattr(analysis_attempt, "serialize_analysis_enqueue", unavailable_lock)
+    accepted = await queue.enqueue("process_file", file_id=fid)
+    assert accepted is not None and ledger_enqueue_session.get() is None
+    assert await queue.job(accepted.key) is not None
+    async with maker() as session:
+        row = await session.get(SchedulingLedger, accepted.key)
+        assert row is not None and accepted.meta[ATTEMPT_META_KEY] == row.enqueued_at.isoformat()
+
+
+def test_backfill_rejects_naive_attempt_epoch_in_broker_payload() -> None:
+    """A timezone-less broker token cannot be mistaken for an attempt identity."""
+    import json
+
+    from phaze.tasks.recovery_backfill import _classify_saq_job_row
+
+    fid = str(uuid.uuid4())
+    key = f"process_file:{fid}"
+    blob = json.dumps({"function": "process_file", "kwargs": {"file_id": fid}, "meta": {ATTEMPT_META_KEY: "2026-10-03T12:00:00"}})
+    candidate = _classify_saq_job_row((blob, key))
+    assert candidate is not None and candidate["enqueued_at"] is None
+
+
 @pytest.mark.parametrize("terminal", ["finish", "abort", "delete"])
 async def test_terminal_transition_after_live_read_remains_a_dedup(
     committed_db: Any, stage_env: Any, terminal: str, monkeypatch: pytest.MonkeyPatch
