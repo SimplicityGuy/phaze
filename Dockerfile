@@ -118,7 +118,7 @@ RUN apt-get update \
     && ffmpeg -version | head -1 \
     && ffprobe -version | head -1
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.22 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
 
 # Keep dependency resolution ahead of source copies so application edits reuse this layer.
 COPY pyproject.toml uv.lock ./
