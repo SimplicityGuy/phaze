@@ -2,7 +2,7 @@
 
 Measured 2026-10-03. The operator selected NULL values for unusable measurements.
 
-## Operator decision (2026-10-03)
+## Operator decision (phaze-nkucu, 2026-10-03)
 
 Question as put:
 

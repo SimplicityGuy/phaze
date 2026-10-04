@@ -48,7 +48,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
-| **[Degenerate Audio](degenerate-audio.md)** | 🔇 Measured signal-quality failure, operator decision, and absent measurement semantics |
+| **[Degenerate Audio](degenerate-audio.md)** | 🔇 Measured signal-quality failure, operator decision (phaze-nkucu, 2026-10-03), and absent measurement semantics |
 | **[Analysis Evaluation](analysis-evaluation.md)** | 📊 Result contract, quality and performance criteria, and paired UpCloud corpus |
 | **[UpCloud Evaluation Handoff](analysis-evaluation-upcloud-runbook.md)** | 🧪 Completed baselines, frozen DB reference, staged candidate launcher, and exact remaining steps |
 | **[One-Variant Analysis Candidate](analysis-evaluation-one-variant-candidate.md)** | ⚡ Essentia-based single-variant experiment, output coverage, and measured speed |
