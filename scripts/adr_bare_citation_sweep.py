@@ -106,9 +106,9 @@ DIR_EXEMPT_PREFIXES = tuple(boundary for boundary in ARCHIVE_BOUNDARIES if bound
 
 LINE_GRANDFATHER = frozenset(
     {
-        ("CONVENTIONS.md", 219),
-        ("CONVENTIONS.md", 223),
-        ("CONVENTIONS.md", 245),
+        ("CONVENTIONS.md", 230),
+        ("CONVENTIONS.md", 234),
+        ("CONVENTIONS.md", 256),
         ("scripts/select_impacted_tests.py", 75),
         # Line 622 until phaze-eaf3y inserted two comment lines above it, re-measuring
         # MAX_DOCS_FLOOR_MODULES (2026-09-23); then 624 until phaze-1t3e1 inserted the failure-mode-H
