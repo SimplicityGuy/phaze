@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -333,8 +334,9 @@ async def test_write_hook_still_writes_the_ledger_row_on_a_violation(
 
     async def _capture(
         session: object, *, key: str, function: str, kwargs: dict[str, Any], timeout: int | None = None, retries: int | None = None
-    ) -> None:
+    ) -> datetime:
         captured.append({"key": key, "function": function, "kwargs": kwargs})
+        return datetime(2026, 10, 3, tzinfo=UTC)
 
     monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _capture)
 
@@ -350,6 +352,6 @@ async def test_write_hook_still_writes_the_ledger_row_on_a_violation(
     assert captured[0]["kwargs"]["sneaky_url"] == url
 
 
-async def _noop_upsert(*_a: object, **_k: object) -> None:
+async def _noop_upsert(*_a: object, **_k: object) -> datetime:
     """Stand-in for the ledger upsert -- these tests assert on the hook, not on Postgres."""
-    return None
+    return datetime(2026, 10, 3, tzinfo=UTC)
