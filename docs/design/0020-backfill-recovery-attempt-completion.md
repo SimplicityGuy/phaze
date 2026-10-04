@@ -2,7 +2,7 @@
 
 Date: 2026-10-03. Bead: phaze-za41v. Status: accepted.
 
-## Operator decision
+## Operator decision (phaze-za41v, 2026-10-03)
 
 Question as put:
 
