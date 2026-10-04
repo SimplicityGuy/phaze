@@ -238,7 +238,7 @@ def _build_mock_essentia(duration_sec: float = _MOCK_DURATION_SEC) -> MagicMock:
 
     # MonoLoader / EasyLoader return a callable that returns a numpy array.
     mock_loader_instance = MagicMock()
-    mock_loader_instance.return_value = np.zeros(16000, dtype=np.float32)
+    mock_loader_instance.return_value = np.ones(16000, dtype=np.float32)
     mock_es.MonoLoader.return_value = mock_loader_instance
     mock_es.EasyLoader.return_value = mock_loader_instance
 
@@ -695,7 +695,7 @@ def test_analyze_file_coarse_failure_isolation(mock_es: MagicMock, mock_get_labe
     mock_get_labels.side_effect = _mock_labels_file
 
     fine_loader = MagicMock()
-    fine_loader.return_value = np.zeros(16000, dtype=np.float32)
+    fine_loader.return_value = np.ones(16000, dtype=np.float32)
 
     def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> MagicMock:
         if sampleRate == 16000:  # coarse pass
@@ -1161,10 +1161,10 @@ def test_positive_class_prediction_falls_back_to_first_entry_when_no_label_quali
     assert result == pytest.approx(0.2)  # entry 0, the defensive fallback -- not the higher score
 
 
-def test_derive_style_returns_unknown_when_no_predictions() -> None:
-    """An empty/absent genre predictions list derives the sentinel 'unknown' style, not a crash."""
-    assert derive_style({"predictions": []}) == "unknown"
-    assert derive_style({}) == "unknown"
+def test_derive_style_returns_none_when_no_predictions() -> None:
+    """Absent classifier evidence remains absent instead of becoming a genre label."""
+    assert derive_style({"predictions": []}) is None
+    assert derive_style({}) is None
 
 
 def test_resolve_malloc_trim_returns_none_off_glibc(monkeypatch: pytest.MonkeyPatch) -> None:
