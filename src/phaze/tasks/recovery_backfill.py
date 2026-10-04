@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -9,6 +10,7 @@ from sqlalchemy import text
 import structlog
 
 from phaze.services.scheduling_ledger import insert_ledger_rows_if_absent
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
@@ -53,7 +55,16 @@ def _classify_saq_job_row(row: Any) -> dict[str, Any] | None:
     if function is None:
         return None
     kwargs = data.get("kwargs")
+    meta = data.get("meta")
+    epoch = meta.get(ATTEMPT_META_KEY) if isinstance(meta, dict) else None
+    try:
+        timestamp = datetime.fromisoformat(epoch) if isinstance(epoch, str) else None
+        if timestamp is not None and timestamp.utcoffset() is None:
+            timestamp = None
+    except ValueError:
+        timestamp = None
     return {
+        "enqueued_at": timestamp,
         "key": key,
         "function": function,
         "kwargs": dict(kwargs) if isinstance(kwargs, dict) else {},

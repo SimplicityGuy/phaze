@@ -550,6 +550,10 @@ async def test_process_file_video_with_no_audio_track_fails_cleanly(mock_pool: A
     api.report_analysis_failed = AsyncMock()
     api.put_analysis = AsyncMock()
     ctx = _make_ctx(api_client=api)
+    from saq import Job
+
+    epoch = "2026-10-03T12:34:56.123456+00:00"
+    ctx["job"] = Job(function="process_file", meta={"phaze_attempt_enqueued_at": epoch})
 
     result = await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
 
@@ -559,6 +563,7 @@ async def test_process_file_video_with_no_audio_track_fails_cleanly(mock_pool: A
     api.report_analysis_failed.assert_awaited_once()
     failure = api.report_analysis_failed.await_args.args[1]
     assert failure.reason == "error"
+    assert failure.attempt_enqueued_at.isoformat() == epoch
     assert "no audio stream" in failure.error
 
 

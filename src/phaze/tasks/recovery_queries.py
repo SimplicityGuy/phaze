@@ -12,7 +12,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.backends import IN_FLIGHT
-from phaze.services.stage_status import cloud_lane_completed_clause, domain_completed_clause, skipped_clause
+from phaze.services.stage_status import _recovery_domain_completed_clause, cloud_lane_completed_clause, domain_completed_clause, skipped_clause
 from phaze.tasks.recovery_policy import _DoneSets
 
 
@@ -28,8 +28,8 @@ def _fids_scope(fids: list[uuid.UUID], name: str) -> Any:
 
 
 def _select_done_analyze_ids(fids: list[uuid.UUID]) -> Select[uuid.UUID]:
-    """Select ledger-scoped file ids whose analyze domain is terminal."""
-    return select(FileRecord.id).where(_fids_scope(fids, "a_ids"), domain_completed_clause(Stage.ANALYZE))
+    """Select analyze ids terminal for their current ledger attempt, sharing the reaper predicate."""
+    return select(FileRecord.id).where(_fids_scope(fids, "a_ids"), _recovery_domain_completed_clause(Stage.ANALYZE))
 
 
 def _select_cloud_lane_done_ids(fids: list[uuid.UUID]) -> Select[uuid.UUID]:

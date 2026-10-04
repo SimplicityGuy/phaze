@@ -32,12 +32,11 @@ updated to keep supporting the new ``RETURNING`` read (see their own diffs).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
@@ -291,8 +290,13 @@ async def _reaper_ledger_keys(session: AsyncSession) -> set[str]:
     return set((await session.execute(select(SchedulingLedger.key))).scalars().all())
 
 
-async def _analyze_done(session: AsyncSession, file: FileRecord) -> None:
-    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC)))
+async def _analyze_done(session: AsyncSession, file: FileRecord, *, scheduled: bool = False) -> None:
+    completed_at = await session.scalar(select(func.clock_timestamp()))
+    enqueued_at = await session.scalar(select(SchedulingLedger.enqueued_at).where(SchedulingLedger.key == _reaper_key(Stage.ANALYZE, file)))
+    assert completed_at is not None
+    if scheduled:
+        assert enqueued_at is not None and completed_at >= enqueued_at
+    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=completed_at))
     await session.commit()
 
 
@@ -305,7 +309,7 @@ async def test_resolved_row_reap_counts_one_resolved_transition(session: AsyncSe
     await _saq_table(session)
     file = await make_file()
     key = await _seed_reaper_ledger(session, Stage.ANALYZE, file)
-    await _analyze_done(session, file)
+    await _analyze_done(session, file, scheduled=True)
 
     outcome = await reap_resolved_ledger_rows(_make_ctx())
 
@@ -324,8 +328,8 @@ async def test_reap_counts_resolved_once_per_row_not_once_per_lane(session: Asyn
     file_b = await make_file()
     key_a = await _seed_reaper_ledger(session, Stage.ANALYZE, file_a)
     key_b = await _seed_reaper_ledger(session, Stage.ANALYZE, file_b)
-    await _analyze_done(session, file_a)
-    await _analyze_done(session, file_b)
+    await _analyze_done(session, file_a, scheduled=True)
+    await _analyze_done(session, file_b, scheduled=True)
 
     outcome = await reap_resolved_ledger_rows(_make_ctx())
 

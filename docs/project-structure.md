@@ -25,8 +25,8 @@ a module makes the inventory fail until this page is reconciled.
 | `models/` | 30 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
 | `routers/` | 56 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 23 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 131 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 46 | SAQ controller/agent jobs and shared queue policy |
+| `services/` | 132 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 47 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 38 migrations (`039` baseline through head
-`076`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 39 migrations (`039` baseline through head
+`077`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

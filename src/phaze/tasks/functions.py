@@ -286,7 +286,7 @@ async def _run_analysis_with_progress(
                 await _post_progress_count(api, file_id, last_count)
 
 
-async def _report_terminal_failure(api: PhazeAgentClient, file_id: uuid.UUID, failure: AnalysisFailurePayload) -> None:
+async def _report_terminal_failure(api: PhazeAgentClient, file_id: uuid.UUID, failure: AnalysisFailurePayload, job: Any = None) -> None:
     """Deliver a TERMINAL failure report without letting delivery failure escape (phaze-x3dg).
 
     The inner-timeout and child-crash outcomes are terminal by design (T-43-08: no blind
@@ -299,6 +299,13 @@ async def _report_terminal_failure(api: PhazeAgentClient, file_id: uuid.UUID, fa
     reconcile/Recover delivers the file's state later.
     """
     try:
+        epoch = (getattr(job, "meta", None) or {}).get("phaze_attempt_enqueued_at")
+        if isinstance(epoch, str):
+            try:
+                failure = AnalysisFailurePayload.model_validate({**failure.model_dump(), "attempt_enqueued_at": epoch})
+            except ValueError:
+                # A malformed legacy broker meta must not suppress the domain failure report.
+                logger.warning("process_file: invalid attempt timestamp", file_id=str(file_id))
         await api.report_analysis_failed(file_id, failure)
     except Exception:
         logger.warning(
@@ -465,26 +472,26 @@ async def _extract_and_analyze(
     except NoAudioTrackError as exc:
         # The container has no audio stream at all -- deterministic and TERMINAL (retrying
         # ffprobe against the same bytes reports the same absence every time).
-        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]), job)
         return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
     except AudioExtractionError as exc:
         # ffprobe/ffmpeg failed for a reason OTHER than "no audio track" -- dominantly a
         # corrupt/truncated container, just as deterministic as an essentia child crash.
-        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]), job)
         return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
     except TimeoutError as exc:
         # STALL kill (phaze-w55w1): the driver killed a child that reported no progress for
         # analysis_stall_timeout_sec. RESEARCH §Q5: reason stays "timeout" -- the stored
         # vocabulary and every consumer of it are unchanged -- while error carries the stall
         # detail, so the durable marker says "stopped making progress", not merely "ran too long".
-        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout", error=str(exc)[:_ERROR_DETAIL_MAX]), job)
         return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
     except AnalysisSubprocessError as exc:
         # essentia OOM/segfault/raise crashed the child (nonzero exit); the child's terminal
         # error line rides along as detail so the durable failure marker names the actual
         # cause -- e.g. phaze-zibn's AnalysisDecodeError is distinguishable from an essentia
         # segfault without re-running anything.
-        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]), job)
         return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
 
 
@@ -638,6 +645,7 @@ async def _analyze_and_publish(
             api,
             payload.file_id,
             AnalysisFailurePayload(reason="crashed", error="zero natural analysis windows (undecodable or zero-length audio)"),
+            ctx.get("job"),
         )
         return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 
@@ -725,6 +733,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 api,
                 payload.file_id,
                 AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
+                ctx.get("job"),
             )
         else:
             # Retryable: do NOT delete the pushed scratch copy -- the in-place SAQ retry needs it

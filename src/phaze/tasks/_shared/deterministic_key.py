@@ -60,6 +60,7 @@ per D-03); it is a deliberate reconcile/backstop cache, NOT dead code. 35-04 doc
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,7 @@ from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
 from phaze.services.pipeline_counters import incr_completed, incr_enqueued
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, ledger_enqueue_session
 from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
 
@@ -217,7 +219,8 @@ async def apply_deterministic_key(job: Job) -> None:
 
             kwargs = dict(job.kwargs or {})
             _warn_if_payload_is_time_limited(job.function, job.key, kwargs)
-            async with sm() as session:
+            borrowed = ledger_enqueue_session.get()
+            async with nullcontext(borrowed) if borrowed is not None else sm() as session:
                 # apply_project_job_defaults is registered BEFORE this hook (queue_factory), so
                 # job.timeout / job.retries are the FINAL effective policy here -- capture them so
                 # recovery replays the SAME bound, else a recovered long job falls back to the 600s
@@ -225,7 +228,7 @@ async def apply_deterministic_key(job: Job) -> None:
                 # and process_file's liveness now depends on it (it runs timeout=0). That gap is
                 # closed at the other end -- apply_project_job_defaults PINS the heartbeat on every
                 # enqueue, replays included -- rather than by widening this table.
-                await upsert_ledger_entry(
+                epoch = await upsert_ledger_entry(
                     session,
                     key=job.key,
                     function=job.function,
@@ -233,6 +236,8 @@ async def apply_deterministic_key(job: Job) -> None:
                     timeout=job.timeout,
                     retries=job.retries,
                 )
+                if job.function == "process_file":
+                    job.meta[ATTEMPT_META_KEY] = epoch.isoformat()
                 await session.commit()
     except Exception:
         # The ledger is best-effort here; a hiccup degrades to "row not written" (recovered by the
@@ -273,7 +278,8 @@ async def _clear_ledger_entry_for(job: Job) -> None:
             # graph; runs only when a control-side ledger_sessionmaker is present.
             from phaze.services.scheduling_ledger import clear_ledger_entry  # noqa: PLC0415
 
-            async with sm() as session:
+            borrowed = ledger_enqueue_session.get()
+            async with nullcontext(borrowed) if borrowed is not None else sm() as session:
                 await clear_ledger_entry(session, job.key)
                 await session.commit()
     except Exception:

@@ -626,28 +626,45 @@ def _metadata_orphaned_retry_clause() -> ColumnElement[bool]:
     )
 
 
+def _analyze_orphaned_backfill_clause() -> ColumnElement[bool]:
+    """True when the completed analysis predates the ledger's newly owed attempt (phaze-za41v)."""
+    ledger_key = ledger_key_for_function(STAGE_TO_FUNCTION[Stage.ANALYZE.value])
+    return exists(
+        select(SchedulingLedger.key).where(
+            SchedulingLedger.key == ledger_key,
+            AnalysisResult.file_id == FileRecord.id,
+            AnalysisResult.analysis_completed_at.isnot(None),
+            SchedulingLedger.enqueued_at > AnalysisResult.analysis_completed_at,
+            SchedulingLedger.terminal_at.is_(None),
+        )
+    )
+
+
 def _recovery_domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
-    """``domain_completed_clause(stage)``, refined by recovery's D-10 gate for METADATA (phaze-hr627).
+    """Domain completion refined by each recovery attempt's enqueue time.
 
     The shared, call-site-independent :func:`domain_completed_clause` stays untouched (D-11). This
-    wrapper is for the two RECOVERY-ADJACENT consumers only -- :func:`orphaned_clause` and
-    :func:`resolved_ledger_clause` -- which must agree with ``recover_orphaned_work``'s own
-    ``is_domain_completed`` about which METADATA rows are genuinely finished vs. a lost operator
-    retry, exactly mirroring how ``is_domain_completed`` applies the SAME gate at ITS call site rather
-    than inside the shared predicate. A no-op for every stage but METADATA (analyze's retry clears
-    ``failed_at`` first, CR-01, so it has no such ambiguous cell -- D-10).
+    wrapper is shared by recovery's completion query, :func:`orphaned_clause` and
+    :func:`resolved_ledger_clause`. Metadata retains its D-10 failed-retry gate (phaze-hr627).
+    Analyze backfill deliberately retains an older successful result: completion BEFORE its
+    ledger enqueue does not satisfy the new attempt. A completion at or after enqueue does.
+    Force skips and terminal failures retain their completion semantics. The raw domain predicate,
+    automatic enqueue eligibility and cloud-lane completion remain unchanged.
+
+    Operator decision 2026-10-03, phaze-za41v: "Compare completion time with ledger enqueue time (Recommended)".
+    Question, exact answer, reproduction and measured population: docs/design/0020-backfill-recovery-attempt-completion.md.
     """
     complete = domain_completed_clause(stage)
-    if stage is not Stage.METADATA:
-        return complete
+    if stage is Stage.ANALYZE:
+        return and_(complete, or_(skipped_clause(stage), not_(_analyze_orphaned_backfill_clause())))
     return and_(complete, not_(_metadata_orphaned_retry_clause()))
 
 
 def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the ORPHANED predicate (D-01a): previously scheduled, running nowhere, not domain-complete.
 
-    ``inflight_clause ∧ ¬running_clause ∧ ¬domain_completed_clause`` (METADATA: D-10-refined via
-    :func:`_recovery_domain_completed_clause`, phaze-hr627) -- the per-file twin of the ledger-set
+    ``inflight_clause ∧ ¬running_clause ∧ ¬recovery_domain_completed`` (metadata's failed-retry gate
+    and analyze's completion-time gate via :func:`_recovery_domain_completed_clause`) -- the per-file twin of the ledger-set
     arithmetic ``_compute_stage_orphan_counts`` performs in Python, and therefore of exactly the set
     :func:`~phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for the stage. Composed
     ENTIRELY from LOCKED builders plus the one new broker probe, so it can never re-derive a predicate
@@ -665,8 +682,8 @@ def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
 def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the RESOLVED-but-uncleared ledger predicate (D-01a) -- the reaper's target set.
 
-    ``inflight_clause ∧ ¬running_clause ∧ domain_completed_clause`` (METADATA: D-10-refined via
-    :func:`_recovery_domain_completed_clause`, phaze-hr627): the stage reached a terminal domain state,
+    ``inflight_clause ∧ ¬running_clause ∧ recovery_domain_completed`` (via
+    :func:`_recovery_domain_completed_clause`): the stage reached a terminal state for the queued attempt,
     nothing is running it, yet the ledger row is still standing -- i.e. its terminal clear was lost (a
     reaped ``aborting`` row, a crashed callback, ``clear_ledger_entry``'s documented residual window, a
     broker truncate). Pure stale state: the row is invisible to recovery (which excludes

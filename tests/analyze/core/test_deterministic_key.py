@@ -13,12 +13,14 @@ Two concerns:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 import uuid
 
 from saq.job import Job, Status
 
 from phaze.services.enqueue_router import AGENT_TASKS, CONTROLLER_TASKS
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY
 from phaze.tasks._shared.deterministic_key import (
     _KEY_BUILDERS,
     apply_deterministic_key,
@@ -302,6 +304,7 @@ class _FakeSessionmaker:
 
 async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: list[dict[str, object]] = []
+    epoch = datetime(2026, 10, 3, tzinfo=UTC)
 
     async def _fake_upsert(
         session: object,
@@ -311,8 +314,9 @@ async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) 
         kwargs: dict[str, object],
         timeout: int | None = None,
         retries: int | None = None,
-    ) -> None:
+    ) -> datetime:
         captured.append({"key": key, "function": function, "kwargs": kwargs, "timeout": timeout, "retries": retries})
+        return epoch
 
     monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _fake_upsert)
 
@@ -334,6 +338,7 @@ async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) 
     assert captured[0]["kwargs"] == {"file_id": fid}
     assert captured[0]["timeout"] == 7200
     assert captured[0]["retries"] == 2
+    assert job.meta[ATTEMPT_META_KEY] == epoch.isoformat()
     assert sm.sessions[0].committed is True
 
 

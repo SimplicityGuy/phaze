@@ -393,7 +393,7 @@ class PhazeAgentClient:
         response = await self._request(
             "POST",
             f"/api/internal/agent/analysis/{file_id}/failed",
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(mode="json", exclude_none=True),
         )
         return AnalysisFailureResponse.model_validate(response.json())
 

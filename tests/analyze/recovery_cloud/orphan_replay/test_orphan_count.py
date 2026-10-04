@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.agent import Agent
@@ -227,7 +227,7 @@ async def test_orphan_count_matches_recovery_candidate_set(db_session: AsyncSess
         await _ledger(db_session, "analyze", a)
     a_done = await _file(db_session)
     await _ledger(db_session, "analyze", a_done)
-    db_session.add(AnalysisResult(file_id=a_done.id, analysis_completed_at=datetime.now(UTC)))
+    db_session.add(AnalysisResult(file_id=a_done.id, analysis_completed_at=func.clock_timestamp()))
 
     # metadata: one more force-skipped (behavior 5 -> excluded).
     m_skip = await _file(db_session)
@@ -247,7 +247,7 @@ async def test_domain_completed_file_is_not_orphaned(db_session: AsyncSession) -
     """A done analyze file (ledger row + completed analysis) is domain-complete -> excluded (recovery parity)."""
     f = await _file(db_session)
     await _ledger(db_session, "analyze", f)
-    db_session.add(AnalysisResult(file_id=f.id, analysis_completed_at=datetime.now(UTC)))
+    db_session.add(AnalysisResult(file_id=f.id, analysis_completed_at=func.clock_timestamp()))
     await db_session.flush()
 
     counts = await get_stage_orphan_counts(db_session)

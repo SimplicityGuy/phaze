@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
@@ -95,7 +95,8 @@ async def _ledger_keys(session: AsyncSession) -> set[str]:
 
 
 async def _analyze_done(session: AsyncSession, file: FileRecord) -> None:
-    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC)))
+    # Match the production writer's database-clock completion, rather than the test host's clock.
+    session.add(AnalysisResult(file_id=file.id, analysis_completed_at=func.clock_timestamp()))
     await session.commit()
 
 

@@ -48,7 +48,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import TYPE_CHECKING, Any, cast as type_cast
 
-from sqlalchemy import delete, func, literal_column, select, text
+from sqlalchemy import delete, func, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ProgrammingError
 import structlog
@@ -60,6 +60,7 @@ from phaze.telemetry.pipeline import record_transition
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
 
     from sqlalchemy import CursorResult
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,6 +85,15 @@ def routing_for_function(function: str) -> str:
     raise ValueError(f"{function!r} is not a routable task (absent from AGENT_TASKS and CONTROLLER_TASKS)")
 
 
+async def mark_analysis_attempt_terminal(session: AsyncSession, key: str, enqueued_at: datetime) -> None:
+    """A stale acknowledgement must never terminate a newer deterministic-key attempt."""
+    await session.execute(
+        update(SchedulingLedger)
+        .where(SchedulingLedger.key == key, SchedulingLedger.enqueued_at == enqueued_at)
+        .values(terminal_at=func.now(), updated_at=func.now())
+    )
+
+
 async def upsert_ledger_entry(
     session: AsyncSession,
     *,
@@ -92,12 +102,13 @@ async def upsert_ledger_entry(
     kwargs: dict[str, Any],
     timeout: int | None = None,
     retries: int | None = None,
-) -> None:
+) -> datetime:
     """Upsert one ledger row (idempotent ON CONFLICT DO UPDATE) -- the WRITE hook primitive.
 
     A re-enqueue of a still-scheduled key refreshes ``payload`` / ``enqueued_at`` /
     ``function`` / ``routing`` / ``timeout`` / ``retries`` instead of erroring on the duplicate
-    PK. ``timeout`` / ``retries`` are the SAQ Job policy captured at enqueue time so recovery can
+    PK. Control analysis queues return early on observed-live duplicates, so this hook runs only
+    for a fresh analysis obligation and resets its terminal outcome. ``timeout`` / ``retries`` are the SAQ Job policy captured at enqueue time so recovery can
     replay the SAME bound (None => producer set no explicit value; replay omits it). The caller
     commits.
 
@@ -111,7 +122,9 @@ async def upsert_ledger_entry(
     periodic no-op the stall alert's arming term must NOT read as fresh scheduling activity.
     """
     routing = routing_for_function(function)
-    values = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
+    values: dict[str, Any] = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
+    if function == "process_file":
+        values["enqueued_at"] = func.clock_timestamp()
     stmt = pg_insert(SchedulingLedger).values([values])
     stmt = stmt.on_conflict_do_update(
         index_elements=["key"],
@@ -121,7 +134,8 @@ async def upsert_ledger_entry(
             "payload": stmt.excluded.payload,
             "timeout": stmt.excluded.timeout,
             "retries": stmt.excluded.retries,
-            "enqueued_at": func.now(),
+            "enqueued_at": stmt.excluded.enqueued_at,
+            "terminal_at": None,
             # phaze-7634: SchedulingLedger also carries TimestampMixin's updated_at (distinct from
             # the business-facing enqueued_at stamped above). SQLAlchemy's ORM onupdate=func.now()
             # never fires on this Core ON CONFLICT DO UPDATE path, so without this a re-enqueue
@@ -130,11 +144,12 @@ async def upsert_ledger_entry(
             "updated_at": func.now(),
         },
     )
-    returning_stmt: Any = stmt.returning(literal_column("(xmax = 0)").label("inserted"))
+    returning_stmt: Any = stmt.returning(literal_column("(xmax = 0)").label("inserted"), SchedulingLedger.enqueued_at)
     result = await session.execute(returning_stmt)
-    was_inserted = bool(result.scalar_one())
+    was_inserted, enqueued_at = result.one()
     if was_inserted:
         record_transition(function, "scheduled")
+    return type_cast("datetime", enqueued_at)
 
 
 async def insert_ledger_if_absent(
@@ -205,6 +220,7 @@ async def insert_ledger_rows_if_absent(session: AsyncSession, rows: Sequence[dic
             "payload": row["kwargs"],
             "timeout": row.get("timeout"),
             "retries": row.get("retries"),
+            "enqueued_at": row.get("enqueued_at") or func.now(),
         }
         for row in rows
     ]

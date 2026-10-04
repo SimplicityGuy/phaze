@@ -9,7 +9,7 @@ for rolling-upgrade agents.
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
 from phaze.services.pg_text import find_pg_unsafe_json_reason
@@ -271,6 +271,7 @@ class AnalysisFailurePayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    attempt_enqueued_at: AwareDatetime | None = None
     reason: Literal["timeout", "crashed", "error"]
     error: str | None = Field(default=None, max_length=2000)
 

@@ -181,6 +181,11 @@ from its output tables (`metadata`, `analysis`, `proposals`,
   `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`. The durable `scheduling_ledger` is the
   authoritative `in_flight` source. The DB-free resolver `resolve_status` and its SQL twin
   `services/stage_status.py` (`stage_status_case`) are locked 1:1 by an equivalence test.
+  For `process_file` analysis attempts, the ledger's `enqueued_at` identifies the current
+  attempt and nullable `terminal_at` records its acknowledged terminal outcome. A fresh
+  enqueue clears that outcome. Recovery compares completion against the current enqueue
+  time and retains terminal failures without replacing an older successful analysis;
+  see [backfill attempt completion](design/0020-backfill-recovery-attempt-completion.md).
 - `CloudJobStatus` (`cloud_job.py`): `awaiting`, `uploading`, `uploaded`, `submitted`,
   `running`, `succeeded`, `failed` — tracks the long-file cloud-burst / tiered-drain detour
   off `analyze` on the standalone `cloud_job` sidecar row (not a file state).
@@ -248,10 +253,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-076)
+### Post-baseline chain (040-077)
 
-`alembic/versions/` holds **38** files: the `039` baseline plus a linear chain to the current
-head, **`076`**.
+`alembic/versions/` holds **39** files: the `039` baseline plus a linear chain to the current
+head, **`077`**.
 
 | Rev | Change |
 |-----|--------|
@@ -291,7 +296,8 @@ head, **`076`**.
 | `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table |
 | `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table |
 | `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
-| `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt — **head** |
+| `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt |
+| `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
