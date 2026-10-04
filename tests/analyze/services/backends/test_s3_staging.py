@@ -499,6 +499,34 @@ async def test_ensure_bucket_lifecycle_ttl_wraps_client_error(bucket: BucketConf
         await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
 
 
+@pytest.mark.parametrize("unsupported_operation", ["get", "put"])
+async def test_unsupported_lifecycle_selects_fallback_without_overwriting_unreadable_rules(
+    bucket: BucketConfig, monkeypatch: pytest.MonkeyPatch, unsupported_operation: str
+) -> None:
+    calls: list[str] = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get_bucket_lifecycle_configuration(self, **_kwargs):
+            calls.append("get")
+            if unsupported_operation == "get":
+                raise ClientError({"Error": {"Code": "NotImplemented"}}, "GetBucketLifecycleConfiguration")
+            return {"Rules": []}
+
+        async def put_bucket_lifecycle_configuration(self, **_kwargs):
+            calls.append("put")
+            raise ClientError({"Error": {"Code": "NotImplemented"}}, "PutBucketLifecycleConfiguration")
+
+    monkeypatch.setattr(s3_staging, "_client", lambda _bucket: Client())
+    assert await s3_staging.ensure_bucket_lifecycle_ttl(bucket) is False
+    assert calls == (["get"] if unsupported_operation == "get" else ["get", "put"])
+
+
 @pytest.fixture
 def two_buckets(
     moto_s3_server: str, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Callable[[str], object]

@@ -20,18 +20,22 @@ and addressing style (KSTAGE-05), not just AWS.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 from typing import TYPE_CHECKING, Any, cast
+import uuid
 
 from aiobotocore.config import AioConfig
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
+import structlog
 
 from phaze.config import get_settings
 
 
 if TYPE_CHECKING:
-    import uuid
+    from collections.abc import AsyncGenerator
 
     from phaze.config import ControlSettings
     from phaze.config_backends import BucketConfig
@@ -50,6 +54,8 @@ _ABORT_ABSENT_CODES = frozenset({"NoSuchUpload", "404"})
 # configuration at all -- treated as an empty rule list so the read-modify-write in
 # ensure_bucket_lifecycle_ttl works on a bucket that never had one configured.
 _NO_LIFECYCLE_CODES = frozenset({"NoSuchLifecycleConfiguration", "404"})
+_UNSUPPORTED_LIFECYCLE_CODES = frozenset({"NotImplemented", "NotImplementedException", "501"})
+logger = structlog.get_logger(__name__)
 
 # phaze-wz1q: S3's hard multipart-upload ceiling (PartNumber 1..10000). Public (no leading
 # underscore) so callers that derive part_count -- ``cloud_staging._stage_file_to_s3`` -- can size
@@ -327,7 +333,7 @@ async def delete_staged_object(file_id: uuid.UUID, bucket: BucketConfig) -> None
             raise S3StagingError(f"failed to delete staged object for {file_id}") from exc
 
 
-async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
+async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> bool:
     """Configure ``bucket``'s lifecycle so staged objects expire after ``s3_lifecycle_ttl_days``.
 
     The TTL backstop (KSTAGE-04, D-02) reaps any object the inline delete missed -- e.g. a
@@ -346,6 +352,9 @@ async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
 
     WR-02: wraps the raw ``ClientError`` from either the GET or the PUT in ``S3StagingError`` so
     this verb matches the module's fail-loud error surface (see :func:`create_multipart_upload`).
+    Returns False only for explicitly unsupported lifecycle APIs, selecting the guarded
+    controller fallback. Unknown/auth/network failures still raise. An unsupported GET
+    never permits a blind PUT that could overwrite unreadable operator rules.
     """
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     phaze_rule = {
@@ -370,4 +379,75 @@ async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
                 LifecycleConfiguration={"Rules": [phaze_rule, *foreign_rules]},
             )
     except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in _UNSUPPORTED_LIFECYCLE_CODES:
+            logger.warning(
+                "native staging lifecycle unsupported; guarded expiration fallback required",
+                bucket_id=bucket.id,
+                operation=exc.operation_name,
+                error_code=exc.response.get("Error", {}).get("Code"),
+            )
+            return False
         raise S3StagingError(f"failed to configure bucket lifecycle TTL on {bucket.bucket}") from exc
+    return True
+
+
+@dataclass(frozen=True)
+class StagingCleanupCandidate:
+    """An aged, canonical Phaze key; membership alone never authorizes deletion."""
+
+    file_id: uuid.UUID
+    modified_at: datetime
+    upload_id: str | None = None
+
+
+def _cleanup_candidate(key: str, modified: datetime | None, cutoff: datetime, upload_id: str | None = None) -> StagingCleanupCandidate | None:
+    prefix = f"{_STAGING_PREFIX}/"
+    if not key.startswith(prefix) or modified is None:
+        return None
+    try:
+        file_id = uuid.UUID(key.removeprefix(prefix))
+    except ValueError:
+        return None
+    if key != staged_object_key(file_id):
+        return None
+    moment = modified.replace(tzinfo=UTC) if modified.tzinfo is None else modified
+    return StagingCleanupCandidate(file_id, moment, upload_id) if moment < cutoff else None
+
+
+async def expired_staging_candidates(bucket: BucketConfig, cutoff: datetime) -> AsyncGenerator[StagingCleanupCandidate]:
+    """Read all pages, filtering foreign keys and recent objects/uploads before any DB lock."""
+    async with _client(bucket) as client:
+        for operation, rows_key, time_key in (
+            ("list_objects_v2", "Contents", "LastModified"),
+            ("list_multipart_uploads", "Uploads", "Initiated"),
+        ):
+            paginator = client.get_paginator(operation)
+            async for page in paginator.paginate(Bucket=bucket.bucket, Prefix=f"{_STAGING_PREFIX}/"):
+                for row in page.get(rows_key, []):
+                    if rows_key == "Uploads" and not row.get("UploadId"):
+                        continue
+                    candidate = _cleanup_candidate(row.get("Key", ""), row.get(time_key), cutoff, row.get("UploadId"))
+                    if candidate is not None:
+                        yield candidate
+
+
+async def cleanup_expired_staging(candidate: StagingCleanupCandidate, bucket: BucketConfig, cutoff: datetime) -> bool:
+    """Clean an authorized candidate under the caller's staging/row locks.
+
+    Recheck object age after locks: a replacement written since listing must survive.
+    Multipart abortion uses the captured upload identity, never the current row's identity.
+    """
+    if candidate.upload_id is not None:
+        await abort_multipart_upload(candidate.file_id, candidate.upload_id, bucket)
+        return True
+    async with _client(bucket) as client:
+        try:
+            head = await client.head_object(Bucket=bucket.bucket, Key=staged_object_key(candidate.file_id))
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in _DELETE_ABSENT_CODES:
+                return False
+            raise
+    if _cleanup_candidate(staged_object_key(candidate.file_id), head.get("LastModified"), cutoff) is None:
+        return False
+    await delete_staged_object(candidate.file_id, bucket)
+    return True
