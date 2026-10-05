@@ -918,37 +918,25 @@ class TestImplausibleBitrate:
 
         Pins the mechanism behind the production values: both observed bitrates fall out of a
         synthetic ASF whose video stream (BITMAPINFOHEADER of 44 / 45 bytes) follows its audio
-        stream. If a mutagen upgrade fixes the misread this test fails, and the sanitizer below
-        becomes a backstop rather than the fix.
+        stream. If a mutagen upgrade fixes the misread this test fails, and phaze's own ASF
+        audio-stream read (phaze-7e1xl, ``TestAsfAudioBitrate``) can be retired in its favour.
         """
         path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(format_data_size=format_data_size))
 
         assert mutagen.File(str(path)).info.bitrate == observed
 
-    def test_asf_bogus_bitrate_dropped_and_other_fields_kept(self, tmp_path: Path) -> None:
-        path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(), title="Live Set", author="Some DJ", duration_s=90.0)
+    def test_asf_implausible_audio_rate_still_dropped(self, tmp_path: Path) -> None:
+        """The backstop still holds on the ASF path: an audio stream claiming ~34 Gbps is dropped."""
+        path = write_asf(tmp_path / "track.wma", audio_stream(avg_bytes_per_sec=0xFFFFFFFF), title="Live Set", duration_s=90.0)
 
         with capture_logs() as logs:
             result = extract_tags(str(path))
 
         assert result.bitrate is None
-        assert result.title == "Live Set"
-        assert result.artist == "Some DJ"
-        assert result.duration == 90.0
+        assert (result.title, result.duration) == ("Live Set", 90.0)
         dropped = [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
         assert len(dropped) == 1
-        assert dropped[0]["log_level"] == "warning"
-        assert dropped[0]["bitrate"] == 5_905_670_160
-
-    def test_asf_real_audio_bitrate_kept(self, tmp_path: Path) -> None:
-        """Negative control: the same reader on an audio-only ASF yields its real rate untouched."""
-        path = write_asf(tmp_path / "track.wma", audio_stream(avg_bytes_per_sec=16_000))
-
-        with capture_logs() as logs:
-            result = extract_tags(str(path))
-
-        assert result.bitrate == 128_000
-        assert not [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
+        assert dropped[0]["bitrate"] == 0xFFFFFFFF * 8
 
     @pytest.mark.parametrize(
         ("raw", "expected"), [(82_344_942, 82_344_942), (MAX_BITRATE_BPS, MAX_BITRATE_BPS), (0, 0), (MAX_BITRATE_BPS + 1, None), (-1, None)]
@@ -963,3 +951,64 @@ class TestImplausibleBitrate:
         mock_file.return_value = mock_audio
 
         assert extract_tags("/music/clip.mp4").bitrate == expected
+
+
+class TestAsfAudioBitrate:
+    """phaze-7e1xl: an ASF file's bitrate is its first AUDIO stream's, whatever the stream order.
+
+    Real mutagen reads each synthetic header; nothing here is mocked.
+    """
+
+    @pytest.mark.parametrize("format_data_size", [44, 45])
+    def test_audio_then_video_yields_the_audio_rate(self, tmp_path: Path, format_data_size: int) -> None:
+        """The production shape: mutagen alone reports 5.9 / 6.0 Gbps here (see TestImplausibleBitrate)."""
+        path = write_asf(
+            tmp_path / "clip.wmv",
+            audio_stream(avg_bytes_per_sec=16_000),
+            video_stream(format_data_size=format_data_size),
+            title="Live Set",
+            author="Some DJ",
+            duration_s=90.0,
+        )
+
+        with capture_logs() as logs:
+            result = extract_tags(str(path))
+
+        assert result.bitrate == 128_000
+        assert (result.title, result.artist, result.duration) == ("Live Set", "Some DJ", 90.0)
+        assert not [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
+
+    def test_video_then_audio_yields_the_audio_rate(self, tmp_path: Path) -> None:
+        path = write_asf(tmp_path / "clip.wmv", video_stream(stream_number=1), audio_stream(avg_bytes_per_sec=24_000, stream_number=2))
+
+        assert extract_tags(str(path)).bitrate == 192_000
+
+    def test_audio_only_yields_the_audio_rate(self, tmp_path: Path) -> None:
+        path = write_asf(tmp_path / "track.wma", audio_stream(avg_bytes_per_sec=16_000))
+
+        with capture_logs() as logs:
+            result = extract_tags(str(path))
+
+        assert result.bitrate == 128_000
+        assert not [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
+
+    def test_first_audio_stream_wins(self, tmp_path: Path) -> None:
+        """mutagen keeps the LAST stream; phaze takes the first audio stream, as the bead specifies."""
+        path = write_asf(
+            tmp_path / "track.wma",
+            audio_stream(avg_bytes_per_sec=16_000, stream_number=1),
+            audio_stream(avg_bytes_per_sec=8_000, stream_number=2),
+        )
+
+        assert mutagen.File(str(path)).info.bitrate == 64_000
+        assert extract_tags(str(path)).bitrate == 128_000
+
+    def test_no_audio_stream_yields_none_and_keeps_the_rest(self, tmp_path: Path) -> None:
+        path = write_asf(tmp_path / "clip.wmv", video_stream(stream_number=1), title="Live Set", author="Some DJ", duration_s=90.0)
+
+        with capture_logs() as logs:
+            result = extract_tags(str(path))
+
+        assert result.bitrate is None
+        assert (result.title, result.artist, result.duration) == ("Live Set", "Some DJ", 90.0)
+        assert not [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]

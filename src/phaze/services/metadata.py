@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import struct
 from typing import Any
+import uuid
 
 import mutagen
+from mutagen.asf import ASF
 import structlog
 
 from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
@@ -166,6 +169,7 @@ def _plausible_bitrate(file_path: str, value: Any) -> int | None:
     audio stream the value is bytes of the video stream's BITMAPINFOHEADER prefix -- billions of
     bps, past the int4 column (phaze-3p82d). Dropping it here, rather than letting
     ``MetadataWriteRequest`` reject the whole body, keeps every other field of the extraction.
+    ASF bitrates now come from :func:`_asf_audio_bitrate` (phaze-7e1xl); this stays the backstop.
     """
     if value is None:
         return None
@@ -173,6 +177,33 @@ def _plausible_bitrate(file_path: str, value: Any) -> int | None:
     if 0 <= bitrate <= MAX_BITRATE_BPS:
         return bitrate
     logger.warning("implausible container bitrate dropped", file_path=file_path, bitrate=bitrate, max_bitrate=MAX_BITRATE_BPS)
+    return None
+
+
+# ASF spec GUIDs, in the on-disk (little-endian) byte order mutagen keeps them in.
+_ASF_STREAM_PROPERTIES = uuid.UUID("B7DC0791-A9B7-11CF-8EE6-00C00C205365").bytes_le
+_ASF_AUDIO_MEDIA = uuid.UUID("F8699E40-5B4D-11CF-A8FD-00805F5C442B").bytes_le
+# A Stream Properties payload opens with its 16-byte stream-type GUID; its type-specific data
+# starts at byte 54, and for an audio stream that is a WAVEFORMATEX whose nAvgBytesPerSec
+# (DWORD) sits 8 bytes in.
+_ASF_AVG_BYTES_PER_SEC = slice(62, 66)
+
+
+def _asf_audio_bitrate(audio: ASF) -> int | None:
+    """Return the first AUDIO stream's bitrate in bps from an ASF header, or ``None`` if it has none.
+
+    mutagen 1.48.1 decodes EVERY stream-properties object as WAVEFORMATEX and keeps the last one,
+    without checking the stream type, so on a .wmv whose video stream follows its audio stream
+    ``info.bitrate`` is bytes of the video stream's BITMAPINFOHEADER (phaze-3p82d). The header
+    objects mutagen already parsed still carry each stream's raw payload, so the audio stream is
+    re-read here by its stream-type GUID (phaze-7e1xl). Read-only: the tag WRITE path still goes
+    through stock mutagen, untouched.
+    """
+    for obj in audio._header.objects:
+        data = obj.data
+        if obj.GUID == _ASF_STREAM_PROPERTIES and data[:16] == _ASF_AUDIO_MEDIA and len(data) >= _ASF_AVG_BYTES_PER_SEC.stop:
+            (avg_bytes_per_sec,) = struct.unpack("<I", data[_ASF_AVG_BYTES_PER_SEC])
+            return int(avg_bytes_per_sec) * 8
     return None
 
 
@@ -216,7 +247,8 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     info = getattr(audio, "info", None)
     length = getattr(info, "length", None)
     duration = float(length) if length is not None and length > 0 else None
-    bitrate = _plausible_bitrate(file_path, getattr(info, "bitrate", None))
+    raw_bitrate = _asf_audio_bitrate(audio) if isinstance(audio, ASF) else getattr(info, "bitrate", None)
+    bitrate = _plausible_bitrate(file_path, raw_bitrate)
 
     tags = audio.tags
     raw_tags = _serialize_tags(tags)
