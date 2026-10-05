@@ -71,6 +71,7 @@ from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphane
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
+from phaze.tasks.staging_cleanup import reap_expired_staging
 from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
@@ -171,7 +172,7 @@ async def _probe_kueue_local_queues(control_cfg: ControlSettings) -> None:
             )
 
 
-async def _push_bucket_lifecycle_ttls(control_cfg: ControlSettings) -> None:
+async def _push_bucket_lifecycle_ttls(control_cfg: ControlSettings) -> set[str]:
     """Push the KSTAGE-04/D-02 lifecycle-TTL backstop onto every configured staging bucket (phaze-cws5)."""
     # phaze-cws5: wire the KSTAGE-04/D-02 lifecycle backstop into production. Every comment in the S3
     # staging pipeline (stage_file_to_s3's phaze-bbwx compensation, the reaper's post-commit cleanup,
@@ -181,14 +182,22 @@ async def _push_bucket_lifecycle_ttls(control_cfg: ControlSettings) -> None:
     # at boot. Best-effort PER BUCKET (mirrors the LocalQueue probe above, D-05): a transient S3
     # auth/network hiccup must never abort control-plane startup -- a failure here just means this
     # boot's TTL push did not land, and the next restart retries the same idempotent upsert.
+    fallback_ids: set[str] = set()
     for bucket in control_cfg.buckets:
         try:
-            await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
-        except Exception:
+            if await s3_staging.ensure_bucket_lifecycle_ttl(bucket) is False:
+                fallback_ids.add(bucket.id)
+                logger.warning("staging gateway lacks lifecycle API; hourly guarded expiration fallback enabled", bucket_id=bucket.id)
+        except Exception as exc:
+            cause = exc.__cause__ or exc
             logger.warning(
                 "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
                 bucket_id=bucket.id,
+                error_type=type(cause).__name__,
+                operation=getattr(cause, "operation_name", None),
+                error_code=getattr(cause, "response", {}).get("Error", {}).get("Code"),
             )
+    return fallback_ids
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -355,7 +364,7 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     control_cfg = cast("ControlSettings", cfg)
     await _probe_kueue_local_queues(control_cfg)
-    await _push_bucket_lifecycle_ttls(control_cfg)
+    ctx["staging_lifecycle_fallback_buckets"] = await _push_bucket_lifecycle_ttls(control_cfg)
 
     # phaze-mvq8z.6: wire the DB-override layer into this process's runtime-config store, then
     # start ITS OWN LISTEN connection + fallback poll (ADR-0019 (runtime config hot-reload)
@@ -474,6 +483,7 @@ settings = {
         # general auto-advance cron pattern warned about elsewhere in this file: it only ever
         # CONTINUES a pass the operator explicitly armed, never starts one on its own.
         continue_armed_tracklist_drain,
+        reap_expired_staging,
         # phaze-5fta.3: one full refresh of the corpus-learned release-group date-order
         # conventions. Operator-enqueueable with NO CronJob, deliberately (see the task module):
         # it sweeps the whole corpus and its output gates rename proposals, so recompute timing is
@@ -594,6 +604,7 @@ settings = {
         # cron only drives cleanup, re-drive, and alerting. NARROW: in-flight K8s reconcile ONLY -- DO
         # NOT re-add a general auto-advance / recover_orphaned_work cron here (same guard as above).
         CronJob(reconcile_cloud_jobs, cron="* * * * *"),  # type: ignore[type-var]
+        CronJob(reap_expired_staging, cron="17 * * * *"),  # type: ignore[type-var]
         # phaze-pnt12: deliberately NO reap_orphaned_backend_cloud_jobs CronJob here. It is a gated
         # BOOT-ONLY reconcile (see `startup` below), mirroring recover_orphaned_work exactly -- a
         # backend can only become orphaned via a config edit that takes effect on THIS restart, so

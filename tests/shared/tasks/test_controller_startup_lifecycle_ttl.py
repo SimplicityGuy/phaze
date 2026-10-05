@@ -89,6 +89,19 @@ async def test_startup_skips_lifecycle_ttl_when_no_buckets_configured(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_startup_records_only_explicitly_unsupported_buckets_for_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from phaze.tasks import controller
+
+    unsupported = SimpleNamespace(id="unsupported")
+    native = SimpleNamespace(id="native")
+    _stub_controller(monkeypatch, buckets=[unsupported, native])
+    monkeypatch.setattr(controller.s3_staging, "ensure_bucket_lifecycle_ttl", AsyncMock(side_effect=[False, True]))
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+    assert ctx["staging_lifecycle_fallback_buckets"] == {unsupported.id}
+
+
+@pytest.mark.asyncio
 async def test_startup_lifecycle_ttl_failure_on_one_bucket_does_not_abort_boot_or_skip_others(monkeypatch: pytest.MonkeyPatch) -> None:
     """D-05: a failing lifecycle-TTL push on one bucket must not abort boot, nor block the rest.
 
