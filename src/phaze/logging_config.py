@@ -1,7 +1,7 @@
 """Central structlog configuration for every Phaze process.
 
 A single :func:`configure_logging` entry point routes structlog-native logs AND
-foreign stdlib / uvicorn / SAQ logs through one consistent pipeline -- JSON when
+foreign stdlib / uvicorn / SAQ logs AND Python warnings through one consistent pipeline -- JSON when
 stdout is not a TTY (production / Docker), human-friendly console otherwise. It is
 called once per OS process: the FastAPI lifespan, each SAQ worker ``startup`` hook,
 the watcher ``main()``, and the CLI / script entry points.
@@ -32,7 +32,8 @@ import logging
 from logging import getLogger as _stdlib_get_logger
 import os
 import sys
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, TextIO
+import warnings
 
 import structlog
 
@@ -67,6 +68,9 @@ _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 _PSYCOPG_POOL_LOGGER_NAME = "psycopg.pool"
+# The stdlib's own name for captured warnings (``logging.captureWarnings``), kept so a log query written
+# against the conventional name still matches.
+_WARNINGS_LOGGER_NAME = "py.warnings"
 _PSYCOPG_POOL_CONNECT_ERROR_PREFIX = "error connecting in"
 
 
@@ -91,6 +95,33 @@ class _ElevatePsycopgPoolConnectErrors(logging.Filter):
             record.levelno = logging.ERROR
             record.levelname = "ERROR"
         return True
+
+
+def _log_warning(
+    message: Warning | str,
+    category: type[Warning],
+    filename: str,
+    lineno: int,
+    file: TextIO | None = None,
+    line: str | None = None,
+) -> None:
+    """``warnings.showwarning`` replacement: one structured WARNING record instead of raw stderr text (phaze-lhunw).
+
+    Python's default writes a warning to stderr unformatted, so in a JSON-logging process it lands
+    beside the structlog records on stdout and the two streams interleave mid-line -- kr8s's
+    unsupported-version warning was observed spliced into phaze-api JSON records, leaving them
+    unparseable. Routed here it renders through the same pipeline as every other record, with the
+    category and source location as fields rather than a free-text prefix. Python's own filters and
+    once-per-location dedupe still decide WHETHER a warning is shown; this only decides WHERE.
+
+    An explicit ``file`` is a caller asking for that stream specifically (``warnings.showwarning`` called
+    directly, not via ``warn``), so it is honoured with the stdlib formatting, as
+    ``logging.captureWarnings`` does.
+    """
+    if file is not None:
+        file.write(warnings.formatwarning(message, category, filename, lineno, line))
+        return
+    structlog.get_logger(_WARNINGS_LOGGER_NAME).warning(str(message), category=category.__name__, filename=filename, lineno=lineno)
 
 
 def _parse_bool(value: str) -> bool:
@@ -234,6 +265,10 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
         uvicorn_logger = _stdlib_get_logger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+
+    # phaze-lhunw: Python warnings join the pipeline instead of writing raw text to stderr. A plain
+    # assignment, so re-calling configure_logging() stays idempotent.
+    warnings.showwarning = _log_warning
 
     # phaze-xuec1: elevate psycopg_pool's dead-broker-connection WARNING to ERROR. Idempotent
     # guard (mirrors the handler-reset discipline above) so re-calling configure_logging()
