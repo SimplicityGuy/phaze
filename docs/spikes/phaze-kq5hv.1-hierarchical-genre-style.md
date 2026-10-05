@@ -1,7 +1,7 @@
 # Genre level (max over styles) on real `effnet_discogs` output
 
 - **Bead:** `phaze-kq5hv.1` (epic `phaze-kq5hv` — hierarchical genre/style from `Genre---Style` labels)
-- **Date:** 2026-10-05
+- **Date:** 2026-10-05 (bead-comment timestamps are UTC; the operator exchange that cited this spike was 2026-10-04 US Pacific)
 - **Tree:** branch `wt/bead/issue/phaze-kq5hv.1`, forked at `110b7f98`
 - **Status:** investigation only. No product code, test code or build config changed. Every measurement
   script lives in the session scratchpad and is untracked. Archive identifiers (paths, filenames, file ids)
@@ -82,10 +82,10 @@ for the file-level view, and every coarse window of 1,000 random completed files
 - style separation = top style / runner-up style, both over all 400 (*flat*) and within the winning genre
   (*in-genre*). Both are undefined when there is no runner-up, which is what truncation to a top 10 causes.
 
-**Label hazard found on the way.** Stored labels have `---` rewritten to `/` (`derive_style`, `_style_entry`),
+**Label hazard found on the way.** Stored labels have `---` rewritten to `/` (at load time in `_get_labels`, `src/phaze/services/analysis.py`),
 and one genre is itself named `Funk / Soul`, so a stored label cannot be split on `/` to recover its genre.
 All genre assignments here come from the model's 400-entry `classes` list (15 genres; Electronic 106
-styles, Rock 91, Latin 35, Folk/World/Country 27, Hip Hop 26, Jazz 25, Pop 16, Funk / Soul 15,
+styles, Rock 91, Latin 35, Folk, World, & Country 27, Hip Hop 26, Jazz 25, Pop 16, Funk / Soul 15,
 Classical 13, Non-Music 13, Blues 12, Reggae 11, Stage & Screen 4, Brass & Military 3, Children's 3).
 
 ## Evidence
@@ -127,9 +127,9 @@ Quantiles are p5 / p25 / p50 / p75 / p95.
   separation is ever persisted, a margin or the runner-up score itself is the safer form.
 - A runner-up genre at or above 0.1 occurs in 5 of 210 windows, at or above 0.2 in 1, at or above 0.3 in 0.
   In this archive the second genre is almost never a real contender.
-- Top genre in the sample: Electronic 199, Rock 8, Non-Music 1, Hip Hop 1, Folk/World/Country 1.
+- Top genre in the sample: Electronic 199, Rock 8, Non-Music 1, Hip Hop 1, Folk, World, & Country 1.
   Over all 6,966 stored file-level style arrays the top genre is Electronic in 6,182 (88.7 %), Rock 484,
-  Hip Hop 78, Folk/World/Country 76, Latin 64, Pop 36, Funk / Soul 20, Reggae 11, Jazz 5, Non-Music 4,
+  Hip Hop 78, Folk, World, & Country 76, Latin 64, Pop 36, Funk / Soul 20, Reggae 11, Jazz 5, Non-Music 4,
   Stage & Screen 2, Classical 2, Brass & Military 1, Blues 1.
 
 ### 3. Top-style genre vs. max-over-styles top genre
@@ -186,7 +186,8 @@ Real `analyze_file` on the deployed image, plus the genre rule applied to the sa
   the input is shortest. The reliable signal for those is window duration or absolute top score, which the
   flat path already has.
 - The legacy defect is still present in stored data: **125** coarse windows carry `style = 'unknown'`
-  (129 coarse windows have an empty prediction list), though **0** analysis rows have
+  (129 coarse windows have an empty prediction list in this query; section 6 counts 128 from a different query, and the
+  difference was not re-measured, so the two are reported as found), though **0** analysis rows have
   `dominant_style = 'unknown'`. In Sample A the one trailing window (0.12 s) is such a case. A genre level
   would inherit these as "no genre", which is correct.
 
