@@ -1,10 +1,14 @@
 """Tests for the tag extraction service (src/phaze/services/metadata.py)."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import mutagen
 from mutagen._vorbis import VCommentDict
 import pytest
+from structlog.testing import capture_logs
 
+from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
 from phaze.services.metadata import (
     ExtractedTags,
     TagReadError,
@@ -16,6 +20,7 @@ from phaze.services.metadata import (
     _serialize_tags,
     extract_tags,
 )
+from tests.metadata._asf_fixture import audio_stream, video_stream, write_asf
 
 
 def _has_surrogate(s: str) -> bool:
@@ -902,3 +907,59 @@ class TestStripsLoneSurrogates:
             for item in items:
                 assert not _has_surrogate(item)
                 assert "\x00" not in item
+
+
+class TestImplausibleBitrate:
+    """phaze-3p82d: a reader bitrate past MAX_BITRATE_BPS is dropped to None, never handed on."""
+
+    @pytest.mark.parametrize(("format_data_size", "observed"), [(44, 5_905_670_160), (45, 6_039_889_936)])
+    def test_asf_video_stream_misread_reproduces_the_observed_value(self, tmp_path: Path, format_data_size: int, observed: int) -> None:
+        """The installed mutagen reads a trailing video stream's header bytes as WAVEFORMATEX.
+
+        Pins the mechanism behind the production values: both observed bitrates fall out of a
+        synthetic ASF whose video stream (BITMAPINFOHEADER of 44 / 45 bytes) follows its audio
+        stream. If a mutagen upgrade fixes the misread this test fails, and the sanitizer below
+        becomes a backstop rather than the fix.
+        """
+        path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(format_data_size=format_data_size))
+
+        assert mutagen.File(str(path)).info.bitrate == observed
+
+    def test_asf_bogus_bitrate_dropped_and_other_fields_kept(self, tmp_path: Path) -> None:
+        path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(), title="Live Set", author="Some DJ", duration_s=90.0)
+
+        with capture_logs() as logs:
+            result = extract_tags(str(path))
+
+        assert result.bitrate is None
+        assert result.title == "Live Set"
+        assert result.artist == "Some DJ"
+        assert result.duration == 90.0
+        dropped = [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
+        assert len(dropped) == 1
+        assert dropped[0]["log_level"] == "warning"
+        assert dropped[0]["bitrate"] == 5_905_670_160
+
+    def test_asf_real_audio_bitrate_kept(self, tmp_path: Path) -> None:
+        """Negative control: the same reader on an audio-only ASF yields its real rate untouched."""
+        path = write_asf(tmp_path / "track.wma", audio_stream(avg_bytes_per_sec=16_000))
+
+        with capture_logs() as logs:
+            result = extract_tags(str(path))
+
+        assert result.bitrate == 128_000
+        assert not [entry for entry in logs if entry.get("event") == "implausible container bitrate dropped"]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [(82_344_942, 82_344_942), (MAX_BITRATE_BPS, MAX_BITRATE_BPS), (0, 0), (MAX_BITRATE_BPS + 1, None), (-1, None)]
+    )
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_bound(self, mock_file: MagicMock, raw: int, expected: int | None) -> None:
+        """A real high video bitrate (82.3 Mbps mp4) survives; only out-of-range values are dropped."""
+        mock_audio = MagicMock()
+        mock_audio.info.length = 10.0
+        mock_audio.info.bitrate = raw
+        mock_audio.tags = None
+        mock_file.return_value = mock_audio
+
+        assert extract_tags("/music/clip.mp4").bitrate == expected

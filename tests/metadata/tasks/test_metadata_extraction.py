@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from pydantic import ValidationError
 import pytest
+from saq.job import Job
 
+from phaze.schemas.agent_metadata import MetadataFailurePayload
 from phaze.services.metadata import ExtractedTags
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from tests._media_path_fakes import byte_exact_exists
+from tests.metadata._asf_fixture import audio_stream, video_stream, write_asf
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
@@ -334,3 +341,102 @@ async def test_nfd_on_disk_file_is_readable_via_stored_nfc_path(tmp_path) -> Non
 
     assert result["status"] == "extracted"
     api.put_metadata.assert_awaited_once()
+
+
+# phaze-3p82d: bogus / high container bitrates, and no SAQ retries on a deterministic body failure
+
+
+async def test_asf_bogus_bitrate_writes_the_rest_of_the_metadata(tmp_path: Path) -> None:
+    """End to end through the real mutagen + extract_tags: the misread ASF bitrate is dropped and
+    the PUT still carries every other field, instead of the whole extraction failing validation."""
+    path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(), title="Live Set", author="Some DJ", duration_s=90.0)
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = Job(function="extract_file_metadata", retries=4, attempts=1)
+    file_id = uuid.uuid4()
+    kwargs = _make_payload_kwargs(file_id=file_id, file_type="wmv")
+    kwargs["original_path"] = str(path)
+
+    result = await extract_file_metadata(ctx, **kwargs)
+
+    assert result["status"] == "extracted"
+    body = api.put_metadata.await_args.args[1]
+    assert (body.bitrate, body.title, body.artist, body.duration) == (None, "Live Set", "Some DJ", 90.0)
+    api.report_metadata_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_high_video_bitrate_is_written(mock_extract: MagicMock) -> None:
+    """A real 82.3 Mbps mp4 bitrate passes MetadataWriteRequest (the 50 Mbps audio-only cap rejected it)."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    mock_extract.return_value = ExtractedTags(title="Clip", bitrate=82_344_942)
+
+    result = await extract_file_metadata(ctx, **_make_payload_kwargs(file_type="mp4"))
+
+    assert result["status"] == "extracted"
+    assert api.put_metadata.await_args.args[1].bitrate == 82_344_942
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_body_validation_failure_is_terminal_on_first_attempt(mock_extract: MagicMock) -> None:
+    """A MetadataWriteRequest ValidationError fails identically every attempt, so the FIRST attempt is
+    made terminal: a real SAQ Job reads not-retryable afterwards and the durable failure is acked now."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock()
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    job = Job(function="extract_file_metadata", retries=4, attempts=1)
+    assert job.retryable
+    ctx["job"] = job
+    file_id = uuid.uuid4()
+    # Bypasses extract_tags' sanitizer on purpose: stands in for any future out-of-domain field.
+    mock_extract.return_value = ExtractedTags(title="Clip", bitrate=5_905_670_160)
+
+    with pytest.raises(ValidationError, match="bitrate"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert not job.retryable
+    api.put_metadata.assert_not_awaited()
+    api.report_metadata_failed.assert_awaited_once()
+    assert api.report_metadata_failed.await_args.args[0] == file_id
+    failure = api.report_metadata_failed.await_args.args[1]
+    assert isinstance(failure, MetadataFailurePayload)
+    assert "bitrate" in (failure.error or "")
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_put_failure_stays_retryable(mock_extract: MagicMock) -> None:
+    """Only the deterministic body failure is made terminal: a transient PUT error keeps its retries."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("transient"))
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    job = Job(function="extract_file_metadata", retries=4, attempts=1)
+    ctx["job"] = job
+    mock_extract.return_value = ExtractedTags(title="Clip")
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    assert job.retryable
+    api.report_metadata_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_body_validation_failure_without_job_still_raises(mock_extract: MagicMock) -> None:
+    """No job in ctx (pure unit context): nothing to make terminal, no ack, the ValidationError propagates."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock()
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    mock_extract.return_value = ExtractedTags(title="Clip", bitrate=5_905_670_160)
+
+    with pytest.raises(ValidationError, match="bitrate"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    api.put_metadata.assert_not_awaited()
+    api.report_metadata_failed.assert_not_awaited()

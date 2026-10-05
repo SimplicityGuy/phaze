@@ -22,6 +22,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_metadata import router as agent_metadata_router
+from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
@@ -296,8 +297,9 @@ async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], sess
         ("track_number", -1),
         ("track_number", 10000),
         ("bitrate", -1),
-        ("bitrate", 50_000_001),
-        ("bitrate", 5_000_000_000),
+        ("bitrate", MAX_BITRATE_BPS + 1),
+        # phaze-3p82d: mutagen's ASF misread of a video stream -- also past the int4 column.
+        ("bitrate", 5_905_670_160),
     ],
 )
 async def test_metadata_put_rejects_out_of_domain_integer_tag_and_persists_no_row(
@@ -334,7 +336,16 @@ async def test_metadata_put_rejects_out_of_domain_integer_tag_and_persists_no_ro
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("year", 0), ("year", 9999), ("track_number", 0), ("track_number", 9999), ("bitrate", 0), ("bitrate", 50_000_000)],
+    [
+        ("year", 0),
+        ("year", 9999),
+        ("track_number", 0),
+        ("track_number", 9999),
+        ("bitrate", 0),
+        # phaze-3p82d: a real 82.3 Mbps mp4 -- past the old audio-only 50 Mbps cap -- persists.
+        ("bitrate", 82_344_942),
+        ("bitrate", MAX_BITRATE_BPS),
+    ],
 )
 async def test_metadata_put_accepts_integer_tag_at_the_domain_boundary(
     seed_test_agent: tuple[Agent, str],

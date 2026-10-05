@@ -8,6 +8,7 @@ from typing import Any
 import mutagen
 import structlog
 
+from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
 from phaze.services.metadata_parsing import (
     _first_str,
     _parse_track,
@@ -157,6 +158,24 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
     return result
 
 
+def _plausible_bitrate(file_path: str, value: Any) -> int | None:
+    """Return the reader's container bitrate in bps, or ``None`` with a warning when implausible.
+
+    mutagen's ASF reader takes the bitrate from WHICHEVER stream-properties object it parses
+    last and always decodes it as WAVEFORMATEX, so on a .wmv whose video stream follows its
+    audio stream the value is bytes of the video stream's BITMAPINFOHEADER prefix -- billions of
+    bps, past the int4 column (phaze-3p82d). Dropping it here, rather than letting
+    ``MetadataWriteRequest`` reject the whole body, keeps every other field of the extraction.
+    """
+    if value is None:
+        return None
+    bitrate = int(value)
+    if 0 <= bitrate <= MAX_BITRATE_BPS:
+        return bitrate
+    logger.warning("implausible container bitrate dropped", file_path=file_path, bitrate=bitrate, max_bitrate=MAX_BITRATE_BPS)
+    return None
+
+
 def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     """Extract audio tags from a file using mutagen.
 
@@ -197,8 +216,7 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     info = getattr(audio, "info", None)
     length = getattr(info, "length", None)
     duration = float(length) if length is not None and length > 0 else None
-    bitrate_value = getattr(info, "bitrate", None)
-    bitrate = int(bitrate_value) if bitrate_value is not None else None
+    bitrate = _plausible_bitrate(file_path, getattr(info, "bitrate", None))
 
     tags = audio.tags
     raw_tags = _serialize_tags(tags)
