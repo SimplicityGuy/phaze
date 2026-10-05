@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import uuid
 
+import pytest
+
 from phaze.models.metadata import FileMetadata
 from phaze.services.record_metadata import MetadataField, build_metadata_card
 
@@ -67,7 +69,7 @@ def test_every_non_null_field_is_present_formatted_and_in_the_fixed_order() -> N
             year=2024,
             genre="Techno",
             track_number=3,
-            bitrate=320,
+            bitrate=320_000,
             duration=125.0,
         )
     )
@@ -83,6 +85,17 @@ def test_every_non_null_field_is_present_formatted_and_in_the_fixed_order() -> N
         MetadataField(label="Bitrate", value="320 kbps"),
         MetadataField(label="Duration", value="2:05"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("stored_bps", "shown"),
+    [(128_000, "128 kbps"), (64_040, "64 kbps"), (127_999, "127 kbps"), (999, "0 kbps")],
+)
+def test_bitrate_is_stored_bps_and_shown_as_whole_kbps_rounded_down(stored_bps: int, shown: str) -> None:
+    """phaze-3aia5: ``FileMetadata.bitrate`` is BITS per second, so 128000 must read "128 kbps", not "128000 kbps"."""
+    card = build_metadata_card(_metadata(bitrate=stored_bps))
+
+    assert card.fields == [MetadataField(label="Bitrate", value=shown)]
 
 
 def test_a_half_populated_row_shows_only_the_fields_it_has() -> None:

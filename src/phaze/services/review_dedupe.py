@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from phaze.services.bitrate import bps_to_kbps
+
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -38,7 +40,7 @@ def _format_quality(file_dict: dict[str, Any]) -> str:
     size = _format_size(file_dict.get("file_size"))
     bitrate = file_dict.get("bitrate")
     if bitrate:
-        return f"{bitrate // 1000} kbps · {size}"
+        return f"{bps_to_kbps(bitrate)} kbps · {size}"
     return size
 
 
