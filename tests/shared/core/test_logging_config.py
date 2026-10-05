@@ -9,9 +9,11 @@ assert exact full log strings.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 from typing import TYPE_CHECKING
+import warnings
 
 import pytest
 import structlog
@@ -30,6 +32,7 @@ def reset_logging() -> Iterator[None]:
     Logging config is process-global; without this teardown one test's
     configure_logging() would leak its handler/level into the next.
     """
+    original_showwarning = warnings.showwarning
     yield
     structlog.reset_defaults()
     root = logging.getLogger()
@@ -45,6 +48,7 @@ def reset_logging() -> Iterator[None]:
     psycopg_pool_logger = logging.getLogger("psycopg.pool")
     for log_filter in psycopg_pool_logger.filters[:]:
         psycopg_pool_logger.removeFilter(log_filter)
+    warnings.showwarning = original_showwarning
 
 
 def _last_json_line(text: str) -> dict[str, object]:
@@ -327,3 +331,53 @@ def test_friendly_foreign_stdlib_record_also_dual_rendered(capsys: pytest.Captur
     assert len(lines) == 2
     assert json.loads(lines[0])["event"] == "foreign dual record"
     assert "foreign dual record" in lines[1]
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_python_warning_renders_as_a_json_record(capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-lhunw: a ``warnings.warn`` comes out as one JSON record on stdout, and nothing reaches stderr.
+
+    Unrouted, the warning is written raw to stderr, which in production interleaved mid-line with the
+    JSON records on stdout and left them unparseable. Every captured line is parsed, not just the last.
+    """
+    configure_logging(level="INFO", json_logs=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        warnings.warn("Kubernetes version v1.99.0 is not supported.", UserWarning, stacklevel=1)
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    records = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    assert len(records) == 1
+    payload = records[0]
+    assert payload["event"] == "Kubernetes version v1.99.0 is not supported."
+    assert payload["level"] == "warning"
+    assert payload["logger"] == "py.warnings"
+    assert payload["category"] == "UserWarning"
+    assert payload["filename"] == __file__
+    assert isinstance(payload["lineno"], int)
+    assert "timestamp" in payload
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_python_warning_is_not_duplicated_on_reconfigure(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging(level="INFO", json_logs=True)
+    configure_logging(level="INFO", json_logs=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        warnings.warn("once only", UserWarning, stacklevel=1)
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_showwarning_with_explicit_file_writes_to_that_file(capsys: pytest.CaptureFixture[str]) -> None:
+    """A direct ``showwarning(..., file=f)`` call names its stream, so it is honoured rather than logged."""
+    configure_logging(level="INFO", json_logs=True)
+    stream = io.StringIO()
+
+    warnings.showwarning("explicit stream", UserWarning, "somewhere.py", 7, file=stream)
+
+    assert "somewhere.py:7: UserWarning: explicit stream" in stream.getvalue()
+    assert capsys.readouterr().out == ""

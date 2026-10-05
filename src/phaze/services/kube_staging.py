@@ -15,9 +15,13 @@ running pod is never a wedge solely because of age. The classifier stays pure an
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from enum import StrEnum
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any, cast
+import weakref
 
 import kr8s
 import kr8s.asyncio
@@ -352,22 +356,61 @@ def _kubeconfig_dict_from(kube: KubeConfig) -> dict[str, Any]:
     }
 
 
+# phaze-lhunw: the kr8s clients this process has built, one per (event loop, kube connection). Awaiting
+# ``kr8s.asyncio.api()`` -- even when kr8s hands back its own cached instance -- re-runs
+# ``Api._check_version``: a ``GET /version`` round trip plus kr8s's unsupported-version ``UserWarning``.
+# Re-awaiting it on every verb made the 5s dashboard poll do both on every tick, and in phaze-api the
+# warning then printed every time too (3,201 lines in ~5 h on 2026-10-05): FastAPI's request telemetry
+# calls ``trace.get_tracer`` per request, and the OTel SDK's ``get_tracer`` calls
+# ``warnings.filterwarnings``, which resets every module's once-per-location warning registry. Holding
+# the client here runs the version check once per client instead. Keyed by loop because an httpx client
+# is bound to the loop it was created on; the loop weakref guards against ``id()`` reuse.
+_CLIENTS: dict[tuple[int, str], tuple[weakref.ref[asyncio.AbstractEventLoop], Any]] = {}
+
+
+def _client_key(kubeconfig: dict[str, Any], namespace: str | None, context: str | None) -> str:
+    """Digest the full connection identity, secrets included, so a rotated token builds a fresh client.
+
+    A digest rather than the dict itself keeps the bearer token out of anything that might print the
+    cache key (T-54-07).
+    """
+    material = json.dumps([kubeconfig, namespace, context], sort_keys=True, default=str)
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _drop_clients_of_closed_loops() -> None:
+    """Forget clients whose event loop has been closed or collected; they can never be used again."""
+    for key, (loop_ref, _client) in list(_CLIENTS.items()):
+        loop = loop_ref()
+        if loop is None or loop.is_closed():
+            del _CLIENTS[key]
+
+
 async def _api(kube: KubeConfig) -> Any:
-    """Build the async kr8s client for THIS backend via constructor-time auth (D-04, MKUE-01).
+    """Return the async kr8s client for THIS backend, built once per event loop via constructor-time auth (D-04, MKUE-01).
 
     The control plane runs OUTSIDE the cluster (home server, reaching the API over
     Tailscale/WireGuard). It authenticates from a synthesized in-memory kubeconfig dict
     (:func:`_kubeconfig_dict_from`) -- kr8s ``KubeAuth`` loads the server, bearer token, and namespace
     from the dict with NO network call and NO post-construction session rebuild (the retired hack).
     NEVER call ``kr8s.asyncio.api()`` with no args -- that returns an arbitrary cached client (wrong
-    cluster in N-cluster mode). The token/dict are never logged (T-54-07).
+    cluster in N-cluster mode). The token/dict are never logged (T-54-07). Built clients are reused
+    from ``_CLIENTS`` (phaze-lhunw), so the per-client version check runs once, not once per call.
     """
     _require_kube(kube)
     kc = _kubeconfig_dict_from(kube)
     context = kube.context if kube.context else None
+    loop = asyncio.get_running_loop()
+    key = (id(loop), _client_key(kc, kube.namespace, context))
+    cached = _CLIENTS.get(key)
+    if cached is not None and cached[0]() is loop:
+        return cached[1]
     # kr8s.asyncio.api types ``kubeconfig`` as ``str | None`` (a path), but ``KubeConfigSet`` accepts a
     # dict at runtime (``Union[PathType, dict]``); pass the in-memory dict (cast past the narrow stub).
-    return await kr8s.asyncio.api(kubeconfig=cast("Any", kc), namespace=kube.namespace, context=context)
+    client = await kr8s.asyncio.api(kubeconfig=cast("Any", kc), namespace=kube.namespace, context=context)
+    _drop_clients_of_closed_loops()
+    _CLIENTS[key] = (weakref.ref(loop), client)
+    return client
 
 
 def build_job_manifest(
