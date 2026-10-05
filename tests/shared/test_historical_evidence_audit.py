@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from scripts import audit_historical_evidence as audit
 
 
@@ -39,3 +43,53 @@ def test_complete_historical_corpus_matches_the_approved_transform() -> None:
     assert result["mermaid_blocks_invalid"] == []
     assert result["graph_files_valid"] == 2
     assert result["graph_reference_errors"] == []
+
+
+def test_post_baseline_addition_is_not_a_population_error() -> None:
+    assert audit._population_error({"docs/spikes/a.md", "docs/spikes/new.md"}, {"docs/spikes/a.md"}) is None
+
+
+def test_removing_a_baseline_path_is_still_a_population_error() -> None:
+    error = audit._population_error({"docs/spikes/a.md"}, {"docs/spikes/a.md", "docs/spikes/gone.md"})
+
+    assert error is not None
+    assert "docs/spikes/gone.md" in error
+
+
+def _scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, content: bytes) -> audit.CorpusAudit:
+    (tmp_path / name).write_bytes(content)
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    state = audit.CorpusAudit()
+    audit._scan_post_baseline_additions(state, [name])
+    return state
+
+
+def test_clean_new_spike_file_passes_the_scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state = _scan(monkeypatch, tmp_path, "new.md", b"# Spike\n\nMeasured on <archive-mount>/<set-01> at 12.5 h.\n")
+
+    assert state.forbidden_occurrences_after == 0
+    assert state.mermaid_blocks_invalid == []
+    assert audit._assemble_errors(state, [], [], False, None) == []
+
+
+@pytest.mark.parametrize(
+    "leak",
+    ["/Users/someone/work", "/Volumes/Archive/set", "/media/disk1/set", "users_someone_code_public_phaze"],
+)
+def test_new_spike_file_with_a_local_identifier_fails_the_audit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, leak: str) -> None:
+    state = _scan(monkeypatch, tmp_path, "new.md", f"# Spike\n\nSee {leak}.\n".encode())
+
+    assert state.forbidden_occurrences_after == 1
+    assert audit._assemble_errors(state, [], [], False, None) == ["1 prohibited identifier occurrence(s) remain"]
+
+
+def test_new_binary_file_with_a_local_identifier_fails_the_audit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state = _scan(monkeypatch, tmp_path, "new.bin", b"\xff\xfe/Users/someone/x")
+
+    assert state.forbidden_occurrences_after == 1
+
+
+def test_new_spike_file_with_a_broken_mermaid_block_fails_the_audit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state = _scan(monkeypatch, tmp_path, "new.md", b"```mermaid\nnot a diagram\n```\n")
+
+    assert state.mermaid_blocks_invalid == ["new.md:1: missing or unsupported diagram declaration"]

@@ -27,7 +27,7 @@ from urllib.parse import unquote, urlsplit
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -447,11 +447,28 @@ def _validate_boundaries() -> tuple[dict[str, str], list[str]]:
 
 
 def _population_error(current_paths: set[str], expected_paths: set[str]) -> str | None:
-    if current_paths == expected_paths:
-        return None
-    added = sorted(current_paths - expected_paths)
+    """Fail on baseline paths that vanished; post-baseline additions are scanned, not counted."""
     removed = sorted(expected_paths - current_paths)
-    return f"historical population changed (added={added}, removed={removed})"
+    if not removed:
+        return None
+    return f"historical population changed (removed={removed})"
+
+
+def _scan_post_baseline_additions(state: CorpusAudit, added_paths: Iterable[str]) -> None:
+    """Hold files added after the baseline to the forbidden-identifier and Mermaid checks.
+
+    They have no baseline bytes to transform-compare against, so they stay out of the baseline-pinned
+    counts (files, tokens, links) and only contribute failures.
+    """
+    for path in sorted(added_paths):
+        raw = (REPO_ROOT / path).read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            state.forbidden_occurrences_after += _forbidden_occurrences(raw.decode("latin-1"))
+            continue
+        state.forbidden_occurrences_after += _forbidden_occurrences(text)
+        state.mermaid_blocks_invalid.extend(f"{path}:{lineno}: {status}" for lineno, status in _mermaid_blocks(text) if status != "valid")
 
 
 def _assemble_errors(
@@ -523,6 +540,7 @@ def audit(base: str) -> AuditResult:
     for old_path in historical:
         _accumulate_historical_file(state, old_path, renamed.get(old_path, old_path), baseline[old_path])
     state.forbidden_occurrences_after += _count_source_identifier_occurrences(state.source_identifiers, state.current_texts)
+    _scan_post_baseline_additions(state, current_paths - expected_paths)
 
     boundaries, missing_boundaries = _validate_boundaries()
     graph_files = (REPO_ROOT / ".planning/graphs/graph.json", REPO_ROOT / ".planning/graphs/.last-build-snapshot.json")
