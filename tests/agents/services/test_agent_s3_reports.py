@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.config import ControlSettings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services import agent_s3_reports, cloud_staging, s3_staging
 from phaze.services.agent_s3_reports import (
     ProtocolOutcome,
@@ -23,10 +24,12 @@ from phaze.services.agent_s3_reports import (
     process_uploaded,
 )
 from tests._queue_fakes import FakeTaskRouter
+from tests._saq_jobs_seed import create_saq_jobs, seed_job
 from tests.agents.routers.test_agent_s3 import (
     _COMPUTE_REGISTRY,
     _KUEUE_REGISTRY,
     _cloud_job,
+    _ledger_row,
     _seed_cloud_job,
     _seed_file,
     _seed_ledger,
@@ -383,3 +386,99 @@ async def test_uploaded_protocol_absent_cloud_job_is_noop_without_network(
     assert result.outcome is ProtocolOutcome.NOOP
     assert result.reason is UploadedReason.ABSENT_OR_LATE
     complete.assert_not_awaited()
+
+
+# phaze-9z49b: the agent posts /uploaded and /failed from INSIDE its still-active s3_upload job, so the
+# key's saq_jobs row is the caller's own and reads `active`. Before this the success path never cleared
+# the row at all, and the failure-path clears were blocked by that active row -- every s3_upload row
+# survived until the ledger reaper found the file's analysis complete (101 on the live deployment in one
+# day).
+
+
+async def _seed_running_s3_upload(session: AsyncSession, file_id: uuid.UUID) -> str:
+    key = f"s3_upload:{file_id}"
+    await _seed_ledger(session, file_id)
+    await create_saq_jobs(session)
+    await seed_job(session, "phaze-agent-test-io", key=key, status="active", blob={"function": "s3_upload", "attempts": 1})
+    await session.commit()
+    return key
+
+
+@pytest.mark.parametrize(
+    ("registry", "reason"),
+    [(_COMPUTE_REGISTRY, UploadedReason.MULTIPART_COMPLETED), (_KUEUE_REGISTRY, UploadedReason.SUBMIT_ROUTED)],
+    ids=["compute", "kueue"],
+)
+async def test_uploaded_protocol_clears_ledger_while_its_own_job_is_still_active(
+    registry: str,
+    reason: UploadedReason,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """A normal upload completion leaves no s3_upload ledger row behind, on either target."""
+    agent, _token = seed_test_agent
+    backends_toml_env(registry)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    key = await _seed_running_s3_upload(session, file_id)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+    queue = SimpleNamespace(enqueue=AsyncMock())
+
+    result = await process_uploaded(
+        session, file_id, [(1, '"etag"')], settings, SimpleNamespace(), AsyncMock(return_value=SimpleNamespace(queue=queue))
+    )
+
+    assert result.reason is reason
+    assert await _ledger_row(session, key) is None, "the running job's own active saq_jobs row must not block its completion clear"
+
+
+async def test_uploaded_protocol_cas_miss_keeps_the_ledger_row(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """The clear rides the CAS: a callback for a superseded upload generation clears nothing."""
+    agent, _token = seed_test_agent
+    backends_toml_env(_COMPUTE_REGISTRY)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    key = await _seed_running_s3_upload(session, file_id)
+
+    async def _swap_generation(*_args: Any, **_kwargs: Any) -> None:
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(upload_id="fresh-upload"))
+
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", _swap_generation)
+
+    result = await process_uploaded(session, file_id, [(1, '"etag"')], settings, SimpleNamespace(), AsyncMock())
+
+    assert result.reason is UploadedReason.UPLOAD_ID_CAS_MISS
+    assert await _ledger_row(session, key) is not None
+
+
+async def test_failure_protocol_spill_clears_ledger_while_its_own_job_is_still_active(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """An at-cap failure report from the running job spills AND clears its own ledger row."""
+    agent, _token = seed_test_agent
+    backends_toml_env(_KUEUE_REGISTRY)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    key = await _seed_running_s3_upload(session, file_id)
+    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == key).values(redrive_attempt=settings.push_max_attempts))
+    await session.commit()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", AsyncMock())
+    monkeypatch.setattr(s3_staging, "delete_staged_object", AsyncMock())
+
+    result = await process_upload_failed(session, file_id, settings, FakeTaskRouter())
+
+    assert result.reason is UploadFailedReason.SPILLED
+    assert await _ledger_row(session, key) is None, "the running job's own active saq_jobs row must not block its spill clear"

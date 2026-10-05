@@ -291,6 +291,41 @@ async def test_clear_entry_survives_when_saq_job_is_active(session) -> None:  # 
 
 
 @pytest.mark.asyncio
+async def test_clear_from_running_job_clears_through_the_callers_own_active_row(session) -> None:  # type: ignore[no-untyped-def]
+    """phaze-9z49b: an agent callback runs INSIDE the job that owns the key, so the ``active`` row is the
+    caller itself. SAQ's enqueue only replaces a terminal row, so no other attempt can hold the key while
+    it is active -- the clear must land, or every normal completion is left for the ledger reaper."""
+    key = "extract_file_metadata:own-active"
+    await _seed_saq_jobs_table(session)
+    await upsert_ledger_entry(session, key=key, function="extract_file_metadata", kwargs={"file_id": "own-active"})
+    await _seed_saq_job_row(session, key=key, status="active")
+    await session.commit()
+
+    await clear_ledger_entry(session, key, from_running_job=True)
+    await session.commit()
+
+    assert (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_clear_from_running_job_still_yields_to_a_queued_re_enqueue(session) -> None:  # type: ignore[no-untyped-def]
+    """The narrowing drops ``active`` only: a ``queued`` row is an attempt enqueued after the caller went
+    terminal (a late callback), and the phaze-3yln guard still protects its ledger row."""
+    key = "process_file:late-callback"
+    await _seed_saq_jobs_table(session)
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": "late-callback", "generation": "new"})
+    await _seed_saq_job_row(session, key=key, status="queued")
+    await session.commit()
+
+    await clear_ledger_entry(session, key, from_running_job=True)
+    await session.commit()
+
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    assert row is not None
+    assert row.payload["generation"] == "new"
+
+
+@pytest.mark.asyncio
 async def test_clear_entry_clears_when_saq_job_is_terminal(session) -> None:  # type: ignore[no-untyped-def]
     """The normal (no race) case: the finishing job's OWN saq_jobs row is already terminal
     (``complete``), so no live row exists for the key and the clear proceeds exactly as before."""

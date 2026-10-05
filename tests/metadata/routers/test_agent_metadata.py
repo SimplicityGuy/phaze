@@ -24,6 +24,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_metadata import router as agent_metadata_router
 from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
 from phaze.services.scheduling_ledger import upsert_ledger_entry
+from tests._saq_jobs_seed import create_saq_jobs, seed_job
 
 
 if TYPE_CHECKING:
@@ -1082,3 +1083,51 @@ async def test_metadata_failed_bodyless_vanished_file_holds_200_not_500(seed_tes
     session.expire_all()
     row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == vanished_file_id))).scalar_one_or_none()
     assert row is None
+
+
+# phaze-9z49b: the agent calls back from INSIDE its still-active extract_file_metadata job. Every test
+# above runs with no saq_jobs row for the key at all -- a shape production never has -- which is why
+# they stayed green while every real completion left its ledger row for the reaper (79,911 rows in one
+# day on the live deployment). These seed the caller's own `active` row, as the real agent call has.
+
+
+async def _seed_running_metadata_job(session: AsyncSession, key: str) -> None:
+    await create_saq_jobs(session)
+    await seed_job(session, "phaze-agent-test-meta", key=key, status="active", blob={"function": "extract_file_metadata", "attempts": 1})
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_clears_ledger_while_its_own_job_is_still_active(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A normal completion -- PUT from the running job -- leaves no ledger row behind."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    await _seed_running_metadata_job(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "the running job's own active saq_jobs row must not block its completion clear"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_clears_ledger_while_its_own_job_is_still_active(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The terminal-failure ack is sent from the job's last attempt before it raises -- same shape."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    await _seed_running_metadata_job(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "the running job's own active saq_jobs row must not block its failure clear"

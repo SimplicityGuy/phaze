@@ -331,9 +331,10 @@ class KueueBackend(_BaseBackend):
                     # UPLOADED. The lost job here is submit_cloud_job's, and its before_enqueue-written
                     # ledger row survives this reap untouched unless cleared too: recover_orphaned_work
                     # would otherwise replay it against an already-spilled/terminal file and guarantee-fail
-                    # with KubeStagingError. Clearing s3_upload:<file_id> stays -- it is unconditionally
-                    # load-bearing (the control side never clears it on the success path) -- this ADDS the
-                    # second key rather than swapping it.
+                    # with KubeStagingError. Clearing s3_upload:<file_id> stays -- load-bearing for an
+                    # UPLOADING row, whose callback never landed; for an UPLOADED row the success callback
+                    # has cleared it since phaze-9z49b, so it is a no-op there -- this ADDS the second key
+                    # rather than swapping it.
                     await clear_ledger_entry(session, f"submit_cloud_job:{file_id}")
                 await session.commit()
                 tally["staging_reaped"] += 1

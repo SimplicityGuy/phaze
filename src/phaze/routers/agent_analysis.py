@@ -188,7 +188,10 @@ async def _finalize_analysis_outcome(session: AsyncSession, file_id: uuid.UUID) 
     from ``file_id`` alone -- the PATH value only, never a body field (AUTH-01 / T-45-05).
     ``clear_ledger_entry`` carries its own ownership guard (phaze-3yln), so a re-analysis
     re-enqueue that lands a fresh ledger + saq_jobs row for this key before this callback runs is
-    not deleted here.
+    not deleted here. phaze-9z49b: a local agent sends both callbacks from INSIDE its still-active
+    ``process_file`` job, so the clear passes ``from_running_job`` -- otherwise that ``active`` row
+    blocks it and every local analysis left its row for the ledger reaper. A compute-pod callback has
+    no ``saq_jobs`` row for the key at all, so the flag changes nothing for it.
 
     D-14 reaper: the DELETE against the file's ``awaiting`` cloud_job row (D-05's conjunct, chosen
     over row deletion) joins the same transaction (no new commit) and is scoped to
@@ -205,7 +208,7 @@ async def _finalize_analysis_outcome(session: AsyncSession, file_id: uuid.UUID) 
     file's row locks. Best-effort: a miss is backstopped by the lifecycle TTL. No-op (zero S3
     calls) when no cloud_job row exists (all-local).
     """
-    await clear_ledger_entry(session, f"process_file:{file_id}")
+    await clear_ledger_entry(session, f"process_file:{file_id}", from_running_job=True)
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
     await session.commit()
     await _delete_staged_object_if_cloud(session, file_id)

@@ -126,7 +126,10 @@ async def put_metadata(
     # ON CONFLICT upsert already makes a duplicate callback a safe no-op without a state guard.
     # Phase 45 (L-02): clear the extract_file_metadata:<file_id> ledger row in the SAME
     # transaction as the metadata upsert. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
-    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
+    # phaze-9z49b: the agent PUTs from inside its still-active extract_file_metadata job, so its own
+    # saq_jobs row is `active` here -- from_running_job lets the clear land instead of leaving every
+    # completed row for the ledger reaper.
+    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}", from_running_job=True)
     await session.commit()
     return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)
 
@@ -222,6 +225,7 @@ async def report_metadata_failed(
     ):
         return MetadataFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)
     # CR-02: clear the ledger row in the SAME transaction. Key from the PATH file_id ONLY (T-45-05).
-    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
+    # phaze-9z49b: sent from inside the job's last attempt, before it raises -- see put_metadata.
+    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}", from_running_job=True)
     await session.commit()
     return MetadataFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)
