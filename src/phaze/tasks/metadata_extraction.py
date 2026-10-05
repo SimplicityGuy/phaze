@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -58,6 +59,20 @@ async def _ack_terminal_failure(api: PhazeAgentClient, file_id: Any, exc: Except
         logger.warning("extract_file_metadata terminal-ack failed", file_id=str(file_id), exc_info=True)
 
 
+def _exhaust_retries(ctx: dict[str, Any]) -> None:
+    """Make the current SAQ attempt terminal: a deterministic failure must not burn the retry budget.
+
+    A ``MetadataWriteRequest`` that fails validation fails identically on every attempt (same file,
+    same tags), so SAQ's retries only repeat the error and hold a slot (phaze-3p82d: 4 attempts
+    per round). Capping ``retries`` at the attempts already spent flips ``job.retryable`` to
+    ``False``, so ``_ack_terminal_failure`` records the durable failure now and SAQ finishes the
+    job FAILED instead of re-queueing it.
+    """
+    job = ctx.get("job")
+    if job is not None:
+        job.retries = job.attempts
+
+
 async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Extract audio tags from a file on disk and PUT them via HTTP."""
     payload = ExtractMetadataPayload.model_validate(kwargs)
@@ -88,17 +103,21 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
 
         # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
-        body = MetadataWriteRequest(
-            artist=tags.artist,
-            title=tags.title,
-            album=tags.album,
-            year=tags.year,
-            genre=tags.genre,
-            track_number=tags.track_number,
-            duration=tags.duration,
-            bitrate=tags.bitrate,
-            raw_tags=tags.raw_tags,
-        )
+        try:
+            body = MetadataWriteRequest(
+                artist=tags.artist,
+                title=tags.title,
+                album=tags.album,
+                year=tags.year,
+                genre=tags.genre,
+                track_number=tags.track_number,
+                duration=tags.duration,
+                bitrate=tags.bitrate,
+                raw_tags=tags.raw_tags,
+            )
+        except ValidationError:
+            _exhaust_retries(ctx)
+            raise
         await api.put_metadata(payload.file_id, body)
     except Exception as exc:
         # Phase 45 (L-02 / CR-02): ack the terminal attempt only, then re-raise so SAQ records the

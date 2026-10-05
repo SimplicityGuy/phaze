@@ -6,6 +6,12 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# Upper bound on a stored container bitrate, in BITS per second -- see the `bitrate` comment in
+# MetadataWriteRequest. Shared with services/metadata.py, which drops a reading past it to None
+# BEFORE the request is built, so an implausible reader value can never fail extraction.
+MAX_BITRATE_BPS = 1_000_000_000
+
+
 class MetadataWriteRequest(BaseModel):
     """Tag-metadata write body. Mirrors FileMetadata column shape 1:1 (no agent_id, no file_id -- both come from path/auth).
 
@@ -29,9 +35,15 @@ class MetadataWriteRequest(BaseModel):
     #     `flac.py`, `mp4.py`, `mp3.py`, ...) actually reports (phaze-iw2k -- this comment
     #     previously said "kbps", which was the bug: a kbps-sized bound rejected every
     #     stereo CD-quality-or-better WAV/AIFF and 24-bit hi-res FLAC/ALAC, which extract_tags
-    #     has always stored in bps). 0-50,000,000 comfortably covers even absurd multichannel
-    #     hi-res PCM (e.g. 8ch/24-bit/192kHz = 36,864,000 bps) while still rejecting nonsense,
-    #     well inside the int4 column ceiling. Display call sites (services/review.py,
+    #     has always stored in bps). The original 0-50,000,000 bound covered even absurd multichannel
+    #     hi-res PCM (e.g. 8ch/24-bit/192kHz = 36,864,000 bps) -- but it was sized for audio
+    #     only, and video containers are extracted too (phaze-3p82d: a real 82.3 Mbps mp4 failed
+    #     extraction). MAX_BITRATE_BPS (1 Gbps) covers high-bitrate video (UHD Blu-ray tops out at
+    #     128 Mbps; mezzanine codecs such as ProRes run to hundreds of Mbps) while staying well inside the int4
+    #     column ceiling (2,147,483,647). It also sits below every value mutagen's ASF reader
+    #     emits when it misreads a VIDEO stream's type-specific data as WAVEFORMATEX: that value
+    #     is (0x02 | N << 8 | N << 24) * 8 for a BITMAPINFOHEADER of N >= 40 bytes, i.e. at
+    #     least 5,368,791,056 bps. Display call sites (services/review.py,
     #     services/dedup.py) divide by 1000 to render kbps -- the STORED unit is bps, not kbps.
     #     (templates/duplicates/partials/comparison_table.html was a third such site until
     #     phaze-ur8o3 deleted it as unreachable; the stored unit is unchanged by that.)
@@ -39,7 +51,7 @@ class MetadataWriteRequest(BaseModel):
     genre: str | None = None
     track_number: int | None = Field(default=None, ge=0, le=9999)
     duration: float | None = Field(default=None, ge=0.0)
-    bitrate: int | None = Field(default=None, ge=0, le=50_000_000)
+    bitrate: int | None = Field(default=None, ge=0, le=MAX_BITRATE_BPS)
     raw_tags: dict | None = None
 
 
