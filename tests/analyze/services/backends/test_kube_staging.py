@@ -22,16 +22,19 @@ A final import-boundary test asserts the module is a pure kr8s seam with NO ORM 
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
+import warnings
 
 from httpx import Response
 import kr8s
 from pydantic import SecretStr, ValidationError
 import pytest
+import respx
 import structlog
 import yaml
 
@@ -513,6 +516,88 @@ async def test_kubeconfig_form_applies_bearer(kube_respx: MockRouter) -> None:
 
     assert route.called
     assert route.calls.last.request.headers.get("Authorization") == "Bearer KUBECONFIG-BEARER"
+
+
+async def test_api_builds_one_client_per_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-lhunw: repeat calls for the same connection on one loop reuse the client the first call built.
+
+    Awaiting ``kr8s.asyncio.api`` re-runs kr8s's version check every time, so the factory must be
+    reached once per connection, not once per verb.
+    """
+    built: list[object] = []
+
+    async def fake_api(**_kwargs: object) -> object:
+        built.append(object())
+        return built[-1]
+
+    monkeypatch.setattr(kube_staging.kr8s.asyncio, "api", fake_api)
+
+    first = await kube_staging._api(_kube())
+    second = await kube_staging._api(_kube())
+
+    assert first is second
+    assert len(built) == 1
+
+
+async def test_api_rotated_token_builds_a_fresh_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache key covers the credentials themselves, so a rotated token never reuses the old client.
+
+    ``SecretStr`` renders every token as the same mask, so a key built from the config's dump would
+    collide here and keep authenticating with the revoked token.
+    """
+
+    async def fake_api(**_kwargs: object) -> object:
+        return object()
+
+    monkeypatch.setattr(kube_staging.kr8s.asyncio, "api", fake_api)
+
+    old = await kube_staging._api(_kube(sa_token=SecretStr("token-before-rotation")))
+    new = await kube_staging._api(_kube(sa_token=SecretStr("token-after-rotation")))
+
+    assert old is not new
+
+
+def test_api_client_is_per_event_loop_and_closed_loops_are_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An httpx client belongs to the loop that built it: a second loop builds its own, and a closed loop's is forgotten."""
+
+    async def fake_api(**_kwargs: object) -> object:
+        return object()
+
+    monkeypatch.setattr(kube_staging.kr8s.asyncio, "api", fake_api)
+    monkeypatch.setattr(kube_staging, "_CLIENTS", {})
+
+    first = asyncio.run(kube_staging._api(_kube()))
+    second = asyncio.run(kube_staging._api(_kube()))
+
+    assert first is not second
+    # asyncio.run closed the first loop before the second call cached its client, so only the live entry remains.
+    assert [client for _ref, client in kube_staging._CLIENTS.values()] == [second]
+
+
+async def test_version_warning_fires_once_although_the_filter_registry_resets() -> None:
+    """phaze-lhunw, against real kr8s: the unsupported-version warning is emitted once, not once per probe.
+
+    In phaze-api the OTel SDK's ``get_tracer`` (called by FastAPI's per-request telemetry) runs
+    ``warnings.filterwarnings`` on every request, and every filter change resets Python's
+    once-per-location dedupe. The ``filterwarnings`` between probes reproduces that. Before the client
+    was cached, each probe re-ran kr8s's ``_check_version`` and this recorded one warning per probe.
+    """
+    base = KUBE_TEST_API_URL
+    with respx.mock(base_url=base, assert_all_called=False) as router:
+        version = router.get(url__regex=rf"^{base}/version/?$").mock(
+            return_value=Response(200, json={"major": "1", "minor": "99", "gitVersion": "v1.99.0+k0s"})
+        )
+        router.get(_LQ_PATH).mock(return_value=Response(200, json=_local_queue_json()))
+        kube = _kube(namespace=_NS, sa_token=SecretStr("phaze-lhunw-probe"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")
+            for _ in range(3):
+                await kube_staging.get_local_queue(kube)
+                warnings.filterwarnings("ignore", message="phaze-lhunw unrelated filter")
+
+    unsupported = [w for w in caught if "is not supported" in str(w.message)]
+    assert len(unsupported) == 1
+    assert version.call_count == 1
 
 
 def test_source_has_no_token_hack() -> None:
