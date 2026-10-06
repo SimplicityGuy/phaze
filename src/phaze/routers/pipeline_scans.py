@@ -40,7 +40,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, paged_stmt, split_sentinel
-from phaze.services.pipeline import get_agent_reconciliations, get_agent_watcher_counts
+from phaze.services.pipeline import get_agent_reconciliations, get_scan_watcher_counts
 from phaze.services.scan_deletion import delete_scan_cascade
 from phaze.web.template_globals import register_set_glyph_globals
 
@@ -529,7 +529,8 @@ async def build_recent_scans(session: AsyncSession, sort: SortState | None = Non
     (avoids N+1). The LIVE sentinel batches are excluded (UI-SPEC line 401) -- but a batch's
     OWN agent may still have files sitting on its (hidden) LIVE batch, which
     ``_watcher_added`` (phaze-3sgw0) surfaces as an exact, on-read count rather than leaving
-    them unexplained against the sidebar's COUNT(files).
+    them unexplained against the sidebar's COUNT(files) -- per row since phaze-eeqd0: only the
+    watcher files under that row's ``scan_path`` added after that scan finished.
 
     phaze-a6hm.6: ``sort`` is a resolved :class:`~phaze.routers.column_sort.SortState` (never a raw
     request string -- it has already passed the whitelist, so no key from the wire reaches a column
@@ -563,11 +564,12 @@ async def build_recent_scans(session: AsyncSession, sort: SortState | None = Non
     # the SHARED helper keeps dashboard() and delete_scan() in lockstep automatically.
     recon_by_agent = await get_agent_reconciliations(session)
 
-    # phaze-3sgw0: exact per-agent "added via watcher" count, fetched ONCE alongside the
-    # dedup reconciliation above so this shared helper is the single place both annotations
-    # are computed for every caller. get_agent_watcher_counts owns the never-500 degrade
-    # (returns {} on any DB error -> no annotations), so no try/except here either.
-    watcher_added_by_agent = await get_agent_watcher_counts(session)
+    # phaze-3sgw0 / phaze-eeqd0: exact per-ROW "added via watcher" count -- the watcher files
+    # under this row's scan_path added since this row's scan finished -- fetched in ONE query for
+    # the whole page alongside the dedup reconciliation above, so this shared helper is the single
+    # place both annotations are computed for every caller. get_scan_watcher_counts owns the
+    # never-500 degrade (returns {} on any DB error -> no annotations), so no try/except here either.
+    watcher_added_by_batch = await get_scan_watcher_counts(session, [batch.id for batch in rows])
 
     diagnostic_count_by_batch: dict[uuid.UUID, int] = {}
     if rows:
@@ -584,7 +586,7 @@ async def build_recent_scans(session: AsyncSession, sort: SortState | None = Non
         batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
         batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
         batch._reconciliation = recon_by_agent.get(batch.agent_id)  # type: ignore[attr-defined]
-        batch._watcher_added = watcher_added_by_agent.get(batch.agent_id, 0)  # type: ignore[attr-defined]
+        batch._watcher_added = watcher_added_by_batch.get(batch.id, 0)  # type: ignore[attr-defined]
         batch._orphan_companion_count = diagnostic_count_by_batch.get(batch.id, 0)  # type: ignore[attr-defined]
     return rows
 

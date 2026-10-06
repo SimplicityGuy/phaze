@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.models.file import FileRecord
@@ -16,6 +17,9 @@ from phaze.services.pipeline.common import _safe_count
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -172,37 +176,68 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
 # total_files/processed_files counters stay pinned at 0 forever -- nothing in the reconcile-
 # deduped arithmetic above accounts for them, so a watcher-fed archive shows a Discover count
 # strictly larger than every visible scan total with no explanation. These two helpers close
-# that gap by counting the LIVE batch's rows directly ON READ (never a stored counter), so a
-# watcher upsert that reassigns an already-scanned file's `batch_id` onto the LIVE batch
-# (the same upsert path) is reflected exactly on the very next read -- no write-path change,
-# no counter to keep in sync, no counter to go stale.
+# that gap by counting the LIVE batch's rows directly ON READ (never a stored counter) -- no
+# write-path change, no counter to keep in sync, no counter to go stale. The per-scan read
+# attributes each LIVE file to the scan rows it was added under and after (phaze-eeqd0); the
+# global read is the plain total across every agent's LIVE batch.
 
 
-async def get_agent_watcher_counts(session: AsyncSession) -> dict[str, int]:
-    """Exact per-agent "added via watcher" count: COUNT(FileRecord) whose ``batch_id`` is
-    that agent's LIVE sentinel batch, joined and grouped in one query.
+async def get_scan_watcher_counts(session: AsyncSession, batch_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, int]:
+    """Exact per-SCAN "added via watcher" count (phaze-eeqd0), one query for every row asked for.
 
-    An agent with no LIVE batch, or whose LIVE batch owns zero files, is simply ABSENT from
-    the returned map -- the inner join drops it, mirroring :func:`get_agent_reconciliations`'s
-    "an empty map means no annotations" contract (the template hides the hint for any agent
-    not present here). Degrades to ``{}`` on any error, the same never-500 discipline as every
-    other reconciliation read, and runs inside its own SAVEPOINT (CR-01) so a failure never
-    expires ORM rows a caller already loaded on this shared session.
+    For each scan batch in ``batch_ids``, counts the FileRecords on that scan's agent's LIVE
+    sentinel batch that (a) sit at or under the scan's ``scan_path`` and (b) were ADDED after
+    the scan finished. Operator decision 2026-10-05 (AskUserQuestion; durable record: the
+    description of bead phaze-eeqd0), question as put, in part: "the same path is often scanned
+    more than once, and a subpath scan sits inside its root's scan. Which rows should show a
+    path's count?"; answer as given (selected option label): "Since that scan only". So an older
+    scan of a path reads larger than a newer scan of the same path, and a root scan counts
+    everything its subpath scans count. The rules below are the implementer's, all in the one
+    statement:
+
+    * **Per agent.** The files come from the scan's OWN agent's LIVE batch, and the file's
+      ``agent_id`` must match too -- the same path on two agents never cross-counts.
+    * **Path.** Component containment, never a bare string prefix: equal to ``scan_path``, or
+      ``starts_with`` ``scan_path`` plus ``/`` (a trailing slash trimmed first, so ``/`` works),
+      so ``/a/b`` never claims ``/a/bc``.
+      ``starts_with`` rather than ``LIKE`` so a ``%`` or ``_`` in a real path is literal.
+    * **Added means first discovered.** ``FileRecord.created_at`` is stamped once at first
+      insert and the upsert never moves it (routers/agent_files.py pins it, bumping only
+      ``updated_at``), so a file the watcher merely RE-TOUCHED -- its ``batch_id`` reassigned
+      onto LIVE although a walk found it before this scan finished -- is not counted here.
+    * **Finished means** ``completed_at``; a terminal (completed/failed) row that never got
+      one falls back to ``updated_at``, the same end the elapsed timer freezes at
+      (``routers/pipeline_scans.elapsed_seconds``). A RUNNING scan has not finished, so
+      nothing has been added "since" it: the cutoff is NULL and the row counts nothing.
+
+    A scan with no matching file is ABSENT from the map (the template hides the hint for it).
+    Degrades to ``{}`` on any error inside its own SAVEPOINT (CR-01), the never-500 discipline
+    every reconciliation read follows.
     """
+    if not batch_ids:
+        return {}
+    scan = aliased(ScanBatch)
+    live = aliased(ScanBatch)
+    finished_at = func.coalesce(
+        scan.completed_at,
+        case((scan.status.in_((ScanStatus.COMPLETED.value, ScanStatus.FAILED.value)), scan.updated_at)),
+    )
+    scan_dir = func.rtrim(scan.scan_path, "/")
+    under_scan_path = or_(FileRecord.original_path == scan_dir, func.starts_with(FileRecord.original_path, scan_dir + "/"))
+    stmt = (
+        select(scan.id, func.count(FileRecord.id))
+        .select_from(scan)
+        .join(live, and_(live.agent_id == scan.agent_id, live.status == ScanStatus.LIVE.value))
+        .join(FileRecord, and_(FileRecord.batch_id == live.id, FileRecord.agent_id == scan.agent_id))
+        .where(scan.id.in_(list(batch_ids)), FileRecord.created_at > finished_at, under_scan_path)
+        .group_by(scan.id)
+    )
     try:
         async with session.begin_nested():
-            rows = (
-                await session.execute(
-                    select(ScanBatch.agent_id, func.count(FileRecord.id))
-                    .select_from(ScanBatch)
-                    .join(FileRecord, FileRecord.batch_id == ScanBatch.id)
-                    .where(ScanBatch.status == ScanStatus.LIVE.value)
-                    .group_by(ScanBatch.agent_id)
-                )
-            ).all()
-        return {agent_id: int(count) for agent_id, count in rows}
+            rows = (await session.execute(stmt)).all()
+        return {batch_id: int(count) for batch_id, count in rows}
     except Exception:
-        logger.warning("agent_watcher_counts_degraded", exc_info=True)
+        logger.warning("scan_watcher_counts_degraded", exc_info=True)
         return {}
 
 

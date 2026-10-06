@@ -12,6 +12,7 @@ workspace mount of the Recent Scans table (phaze-8f9j).
 from __future__ import annotations
 
 import csv
+from datetime import UTC, datetime, timedelta
 import io
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -456,6 +457,35 @@ async def test_get_recent_scans_partial_excludes_live_batches(
     assert "No scans yet" in response.text
 
 
+_WATCH_T0 = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _live(agent_id: str = "test-agent") -> ScanBatch:
+    return ScanBatch(id=uuid.uuid4(), agent_id=agent_id, scan_path="<watcher>", status=ScanStatus.LIVE.value, total_files=0, processed_files=0)
+
+
+def _finished_scan(scan_path: str, finished_hour: int, total: int = 0) -> ScanBatch:
+    return ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path=scan_path,
+        status=ScanStatus.COMPLETED.value,
+        total_files=total,
+        processed_files=total,
+        created_at=_WATCH_T0,
+        completed_at=_WATCH_T0 + timedelta(hours=finished_hour),
+    )
+
+
+def _watched(live_id: uuid.UUID, path: str, added_hour: int) -> FileRecord:
+    """A watcher-ingested FileRecord at ``path`` on the LIVE batch, first discovered at ``added_hour``."""
+    record = _make_batch_file(live_id, "watched")
+    record.agent_id = "test-agent"
+    record.original_path = record.current_path = path
+    record.created_at = _WATCH_T0 + timedelta(hours=added_hour)
+    return record
+
+
 @pytest.mark.asyncio
 async def test_recent_scans_row_shows_exact_watcher_added_count(
     smoke: tuple[AsyncClient, AsyncMock],
@@ -466,26 +496,12 @@ async def test_recent_scans_row_shows_exact_watcher_added_count(
     the watcher-ingested files are not lost or unexplained, just not on a visible scan row.
     """
     ac, _ = smoke
-    completed = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/data/music",
-        status=ScanStatus.COMPLETED.value,
-        total_files=4,
-        processed_files=4,
-    )
-    live = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="<watcher>",
-        status=ScanStatus.LIVE.value,
-        total_files=0,
-        processed_files=0,
-    )
+    completed = _finished_scan("/data/music", 1, total=4)
+    live = _live()
     session.add_all([completed, live])
     await session.flush()
     session.add_all([_make_batch_file(completed.id, f"scanned{i}") for i in range(4)])
-    session.add_all([_make_batch_file(live.id, f"watcher{i}") for i in range(3)])
+    session.add_all([_watched(live.id, f"/data/music/watcher{i}.mp3", 2) for i in range(3)])
     await session.commit()
 
     response = await ac.get("/pipeline/scans/recent")
@@ -499,6 +515,38 @@ async def test_recent_scans_row_shows_exact_watcher_added_count(
     # 4 rows plus the 3 watcher-ingested rows sitting on the (hidden) LIVE batch: 7, not 4.
     total_files = (await session.execute(select(FileRecord))).scalars().all()
     assert len(total_files) == 4 + 3
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_watcher_hint_is_per_row_not_agent_wide(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """phaze-eeqd0, the operator's screenshot: every row of one agent read the same agent-wide
+    "+55 via watcher", including empty "0 / —" rows. Each row now counts only the watcher files
+    under ITS path added after IT finished: the root's older scan sees all three, the newer
+    subpath scan one, and a scan of an unrelated path none (no hint at all)."""
+    ac, _ = smoke
+    live = _live()
+    root = _finished_scan("/data/music", 1)
+    sub = _finished_scan("/data/music/sets", 3)
+    unrelated = _finished_scan("/data/videos", 1)
+    session.add_all([live, root, sub, unrelated])
+    await session.flush()
+    session.add_all(
+        [
+            _watched(live.id, "/data/music/sets/a.mp3", 4),
+            _watched(live.id, "/data/music/sets/b.mp3", 2),
+            _watched(live.id, "/data/music/c.mp3", 4),
+        ]
+    )
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert response.text.count("via watcher") == 2
+    assert "+3 via watcher" in response.text
+    assert "+1 via watcher" in response.text
 
 
 @pytest.mark.asyncio
@@ -525,34 +573,24 @@ async def test_recent_scans_row_hides_watcher_hint_when_nothing_watcher_ingested
 
 
 @pytest.mark.asyncio
-async def test_recent_scans_watcher_added_exact_after_watcher_reingests_scanned_file(
+async def test_recent_scans_watcher_hint_ignores_a_retouched_scanned_file(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """The completed batch's stored '3 / 3' stays frozen even after the watcher moves one of
-    its files onto the LIVE batch -- but the watcher hint reflects the move exactly (on read),
-    per the bead's second acceptance criterion.
+    """The completed batch's stored '3 / 3' stays frozen when the watcher re-touches one of its
+    files (the upsert reassigns its batch_id onto LIVE). That file was not ADDED since the scan
+    (phaze-eeqd0: its first-discovery ``created_at`` predates the scan's finish), so it adds no
+    hint; a genuinely new file the watcher finds afterwards does.
     """
     ac, _ = smoke
-    completed = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/data/music",
-        status=ScanStatus.COMPLETED.value,
-        total_files=3,
-        processed_files=3,
-    )
-    live = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="<watcher>",
-        status=ScanStatus.LIVE.value,
-        total_files=0,
-        processed_files=0,
-    )
+    completed = _finished_scan("/data/music", 1, total=3)
+    live = _live()
     session.add_all([completed, live])
     await session.flush()
     files = [_make_batch_file(completed.id, f"scanned{i}") for i in range(3)]
+    for record in files:
+        record.agent_id = "test-agent"
+        record.created_at = _WATCH_T0
     session.add_all(files)
     await session.commit()
 
@@ -565,7 +603,11 @@ async def test_recent_scans_watcher_added_exact_after_watcher_reingests_scanned_
     assert response.status_code == 200
     # Stored counters are frozen at scan-completion time -- still "3 / 3".
     assert "3 / 3" in response.text
-    # But exactly one file now sits on the LIVE batch.
+    assert "via watcher" not in response.text
+
+    session.add(_watched(live.id, "/data/music/new.mp3", 2))
+    await session.commit()
+    response = await ac.get("/pipeline/scans/recent")
     assert "+1 via watcher" in response.text
 
 
