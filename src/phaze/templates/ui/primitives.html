@@ -1,4 +1,5 @@
 {# Shared, content-only UI primitives. Callers own endpoint behavior and stable swap-target ids. #}
+{% set _focus_ring = "focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" %}
 {% set _focus = "focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg" %}
 
 {# phaze-bx7wf: the ONE inner framed card a data table sits in (border, radius, background, both themes).
@@ -105,6 +106,11 @@
 {{ status_pill(status, tone, aria_label or (label ~ ': ' ~ status), icon, pulse, role) }}
 {% endmacro %}
 
+{# phaze-gmh3f: THE heading treatment of an alert -- Jura eyebrow, uppercase, tracked -- next to a tone icon. Exported so a
+   surface that lists alerts in its own markup (Summary's Needs Attention) wears the identical heading instead of a
+   bold Inter one. `actionable_alert` below is the one alert; the orphaned-work alert on Discover, Analyze and Summary
+   all read through this. #}
+{% set alert_heading_class = "font-jura text-xs font-medium uppercase tracking-[0.15em]" %}
 {% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}
 {% set tones = {
     'attention': 'border-amber-300 bg-amber-50 text-warn dark:border-amber-700 dark:bg-amber-950 ',
@@ -115,12 +121,49 @@
     <div class="flex items-start gap-3">
         <span aria-hidden="true" class="mt-0.5 shrink-0">{% if tone == 'danger' %}✕{% elif tone == 'info' %}ⓘ{% else %}⚠{% endif %}</span>
         <div class="min-w-0 flex-1">
-            <h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
+            <h2 class="{{ alert_heading_class }}">{{ title }}</h2>
             <p class="mt-1 text-sm opacity-90">{{ message }}</p>
             {% if caller is defined %}<div class="mt-3 flex flex-wrap gap-2">{{ caller() }}</div>{% endif %}
         </div>
     </div>
 </section>
+{% endmacro %}
+
+{# phaze-gmh3f: THE page banner -- a one-sentence statement of a boundary or stage, under the page header. One tone
+   (info), one heading treatment (the Jura eyebrow every other heading uses). `caller()` is an optional trailing
+   element (Propose's provider badge). Propose and Rename both render through it: they used to be a cyan eyebrow
+   banner and an amber bold-title banner for the same job. #}
+{% macro banner(title, message, id='') %}
+<div{% if id %} id="{{ id }}"{% endif %} data-page-banner class="flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900 dark:bg-blue-950/30">
+    <div class="min-w-0">
+        <p class="font-jura text-[11px] font-medium uppercase tracking-[0.18em] text-info ">{{ title }}</p>
+        <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">{{ message }}</p>
+    </div>
+    {% if caller is defined %}{{ caller() }}{% endif %}
+</div>
+{% endmacro %}
+
+{# phaze-gmh3f: ONE tab-count style across Propose, Rename and Audit. `tab_nav_class` is the <nav> (the underline rule
+   sits inside the page's own px-4/px-6 gutter, so every tab strip starts at the same x), `tab_class(active)` is one
+   tab, and `tab_count(count)` is the count chip -- a muted pill after the label, never "(3)" in parentheses. #}
+{% set tab_nav_class = "relative flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-phaze-border" %}
+{% macro tab_class(active) -%}
+shrink-0 px-3 py-2 text-sm transition-colors {{ _focus_ring }} {% if active %}border-b-2 border-action-brand font-semibold text-info {% else %}text-muted hover:text-gray-800 dark:hover:text-gray-200{% endif %}
+{%- endmacro %}
+{% macro tab_count(count) -%}
+<span data-not-status-pill="count chip" class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
+{%- endmacro %}
+
+{# phaze-gmh3f: THE disclosure. A <details> whose summary shows a visible marker -- the ONE expand glyph, drawn by the
+   `details > summary::before` rule in assets/src/app.css (a right-pointing triangle that turns down when open), so a
+   `display:flex` summary no longer hides the browser's native marker. `attrs` carries the hooks tests and scripts
+   key on (id, data-*) -- `{"data-history": ""}` renders `data-history=""`. `panel` frames it as a record panel;
+   `quiet` is the small inline form (Raw tags). #}
+{% macro disclosure(title, attrs=none, open=false, panel=true, quiet=false) %}
+<details{% if open %} open{% endif %}{% for key, value in (attrs or {}).items() %} {{ key }}="{{ value }}"{% endfor %} class="{% if panel %}rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel{% else %}mt-3{% endif %}{% if attrs and attrs.get('id') %} scroll-mt-4{% endif %}">
+    <summary class="{% if quiet %}cursor-pointer text-xs text-muted {% else %}flex cursor-pointer items-center font-jura text-[11px] font-medium uppercase tracking-wider text-muted {% endif %}{{ _focus_ring }}">{{ title }}</summary>
+    {{ caller() }}
+</details>
 {% endmacro %}
 
 {% macro filter_toolbar(id, url, target, push_url=false, trigger='change', label='Filters') %}

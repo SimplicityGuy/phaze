@@ -15,13 +15,17 @@
 
    `title=` is retained on each link as a supplement for truncation at narrow desktop widths. It is
    never the only carrier of a label: the visible <span> and the accessible name always agree. #}
+{# phaze-gmh3f: EVERY destination -- Pipeline, Review, Operations -- has the SAME rest and active treatment (normal
+   text colour at rest; blue wash + inset blue bar when current). `tone` is accepted for the call sites' sake and
+   changes nothing: Review is told apart by its SECTION tint (the amber panel and heading), never by tinting each
+   item's text, which read as permanently highlighted and drowned the current page. #}
 {% macro nav_link(route, label, icon, tone='pipeline') %}
 <a href="/s/{{ route }}"
    data-rail-stage="{{ route }}"
    hx-get="/s/{{ route }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
    title="{{ label }}"
    {% if stage == route or (route == 'rename' and stage in ('move', 'tagwrite')) %}aria-current="page"{% endif %}
-   class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if tone == 'review' %}text-warn hover:bg-amber-500/10 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-info aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% elif tone == 'operations' %}text-muted hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% endif %}">
+   class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-info aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="{{ icon }}"/></svg>
     <span class="flex-1 text-sm">{{ label }}</span>
     {% if caller %}{{ caller() }}{% endif %}

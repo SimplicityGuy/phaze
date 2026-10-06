@@ -90,7 +90,7 @@ async def test_workspace_renders_filter_tabs_and_search(
 
     # The count badges are corpus-wide, not page-wide: 6 total / 3 pending / 2 approved / 0 executed
     # / 0 failed (Blocked) / 1 rejected.
-    badges = [chunk.split("<")[0].strip() for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
+    badges = [chunk.split(">", 1)[1].split("<")[0].strip() for chunk in body.split('data-not-status-pill="count chip"')[1:]]
     assert badges == ["6", "3", "2", "0", "0", "1"], f"tab counts must be total/pending/approved/executed/failed/rejected, got {badges}"
 
 
@@ -204,7 +204,7 @@ async def test_executed_proposals_are_counted_by_a_tab_and_not_only_by_all(
     await session.commit()
 
     body = (await client.get("/s/propose?status=all", headers=_LIST_TARGET)).text
-    badges = [int(chunk.split("<")[0].strip()) for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
+    badges = [int(chunk.split(">", 1)[1].split("<")[0].strip()) for chunk in body.split('data-not-status-pill="count chip"')[1:]]
     total, per_status = badges[0], badges[1:]
     assert total == 7, f"the corpus is 3 pending + 2 approved + 1 executed + 1 rejected, got All={total}"
     assert sum(per_status) == total, f"the per-status badges {per_status} do not account for All={total}"
@@ -239,7 +239,7 @@ async def test_failed_proposals_have_a_blocked_tab(
         "the tab label must read the ADR-0008 (changes review approval boundary) operator vocabulary, not the persisted status"
     )
 
-    badges = [int(chunk.split("<")[0].strip()) for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
+    badges = [int(chunk.split(">", 1)[1].split("<")[0].strip()) for chunk in body.split('data-not-status-pill="count chip"')[1:]]
     total, per_status = badges[0], badges[1:]
     assert total == 7, f"the corpus is 3 pending + 2 approved + 1 failed + 1 rejected, got All={total}"
     assert sum(per_status) == total, f"the per-status badges {per_status} do not account for All={total}"

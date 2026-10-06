@@ -58,13 +58,9 @@
 {% endset %}
 {% call ws.workspace(title=page_name('propose'), subcount=subcount, actions=actions) %}
     <div class="px-4 pt-4 sm:px-6">
-        <div class="flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900 dark:bg-blue-950/30">
-            <div>
-                <p class="font-jura text-[11px] font-medium uppercase tracking-[0.18em] text-info ">Preparation stage</p>
-                <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">Generate and inspect candidate filenames and paths here. Approval and rejection happen only in Review.</p>
-            </div>
+        {% call ui.banner("Preparation stage", "Generate and inspect candidate filenames and paths here. Approval and rejection happen only in Review.") %}
             {{ ui.status_badge("Proposal provider", "litellm · " ~ llm_model, "accent", "●") }}
-        </div>
+        {% endcall %}
     </div>
     {# Trigger response lands here (trigger_response.html branches: count>0 / none ready). #}
     <div id="propose-trigger-response" class="px-6 pt-4 empty:hidden"></div>

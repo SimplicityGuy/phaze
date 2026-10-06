@@ -88,7 +88,8 @@
     {% if changes_toast is defined and changes_toast %}
     <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
     {% endif %}
-    <nav class="relative -mx-1 mb-4 flex gap-1 overflow-x-auto border-b border-gray-200 px-1 dark:border-phaze-border" aria-label="Changes Review filters">
+    {% import "ui/primitives.html" as ui %}
+    <nav class="{{ ui.tab_nav_class }} mb-4" aria-label="Changes Review filters">
         {% set tabs = [
             ("all", "All", changes_stats.all),
             ("needs_review", "Needs Review", changes_stats.needs_review),
@@ -100,8 +101,8 @@
         <a href="{{ changes_urls[value] }}" data-changes-nav
            hx-get="{{ changes_urls[value] }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true"
            {% if changes_view.status == value %}aria-current="page"{% endif %}
-           class="shrink-0 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if changes_view.status == value %}border-b-2 border-action-brand font-semibold text-info {% else %}text-muted hover:text-gray-800 dark:hover:text-gray-200{% endif %}">
-            {{ label }} <span data-not-status-pill="count chip" class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
+           class="{{ ui.tab_class(changes_view.status == value) }}">
+            {{ label }} {{ ui.tab_count(count) }}
         </a>
         {% endfor %}
     </nav>

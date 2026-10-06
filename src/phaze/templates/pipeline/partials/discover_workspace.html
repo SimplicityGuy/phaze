@@ -45,7 +45,7 @@
                         <span id="discover-recover-spinner" class="htmx-indicator text-xs">Recovering…</span>
                         <span x-show="error" class="text-xs text-danger ">Recovery could not start. Retry.</span>
                     </span>
-                    <span id="recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
+                    <span id="recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="basis-full text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
                 {% endcall %}
             </div>
             <p x-show="!$store.pipeline.orphanKnown" id="orphan-status-pending"{% if orphan_known %} style="display: none"{% endif %} class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-muted dark:border-phaze-border dark:bg-phaze-panel">Orphaned-work status not yet known. Checking…</p>

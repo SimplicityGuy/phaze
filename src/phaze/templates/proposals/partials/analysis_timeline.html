@@ -3,7 +3,9 @@
    (PR #556 review, finding 4). This template renders it with the `SCREEN` palette --
    `currentColor`, so the lane inherits the surrounding text colour in both themes. #}
 {% import "ui/set_marks.html" as marks %}
-<td colspan="7" class="min-w-0 bg-gray-50 px-4 py-4 dark:bg-phaze-panel sm:px-6">
+{# phaze-gmh3f: `timeline_embedded` is set by the record page's Set panel, which already pads its own body; the cell's
+   own px-4/px-6 stacked on the panel's p-4 and indented the timeline ~41px against the 17px every other panel body gets. #}
+<td colspan="7" class="min-w-0 {% if timeline_embedded %}p-0{% else %}bg-gray-50 px-4 py-4 dark:bg-phaze-panel sm:px-6{% endif %}">
     {# phaze-w55w1 / ADR-0007 (windowed analysis) §7: this is exhaustive stored coverage. There is no sampled
        state, cap, stride, deepen path, or client-side thinning step. #}
     {% if not has_windows %}

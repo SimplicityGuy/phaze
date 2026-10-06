@@ -55,6 +55,7 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
 
 
 def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> None:
+    """phaze-gmh3f: the amber domain is the SECTION tint (panel + heading); the items themselves read at normal text colour."""
     soup = BeautifulSoup(_render("shell/partials/rail.html", stage="rename"), "html.parser")
     review_heading = soup.select_one("#nav-review")
     current = soup.select_one('a[data-rail-stage="rename"][aria-current="page"]')
@@ -63,7 +64,10 @@ def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> Non
     assert isinstance(current, Tag)
     assert isinstance(unselected, Tag)
     assert "text-warn" in review_heading.get("class", [])
-    assert "text-warn" in unselected.get("class", [])
+    assert "text-warn" not in unselected.get("class", []), "Review items sit at normal contrast; the section tint is the differentiator"
+    review_section = review_heading.find_parent("section")
+    assert isinstance(review_section, Tag)
+    assert "bg-amber-500/[0.06]" in review_section.get("class", [])
     classes = set(current.get("class", []))
     assert "aria-[current=page]:bg-blue-500/10" in classes
     assert "aria-[current=page]:text-info" in classes

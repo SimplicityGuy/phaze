@@ -210,7 +210,7 @@ async def test_dashboard_renders_trigger_scan_card(
     response = await ac.get("/s/discover", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="trigger-scan-heading"' in response.text
-    assert ">Trigger Scan</h2>" in response.text
+    assert ">Trigger Scan</h3>" in response.text
     assert '<select id="scan-agent"' in response.text
     assert 'id="scan-path-picker"' in response.text
     # Agent option populated as "{name} ({id})" per CONTEXT D-Discretion.
