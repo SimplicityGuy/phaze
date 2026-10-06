@@ -12,8 +12,11 @@
          focus to the recorded opener, falling back to #stage-workspace.
   ARIA:  role="dialog" aria-modal="true"; aria-label starts "File record" and is refined to the
          loaded file name after the body swaps in (via textContent — inherently XSS-safe, no |e).
-  Focus: @alpinejs/focus x-trap.inert.noscroll traps focus in the open panel, inert-s the shell
-         behind it, and locks body scroll. On open, focus moves to the record <h2> (tabindex=-1).
+  Focus: @alpinejs/focus x-trap.noscroll traps focus in the open panel and locks body scroll. On open,
+         focus moves to the panel at once (takeFocus, phaze-x1cv5), then to the record <h2>
+         (tabindex=-1) once the body loads. The background is made `inert` by setBackgroundInert --
+         the real attribute, not the aria-hidden Alpine's .inert modifier applies, which Chrome
+         blocks while the opener still holds focus.
 
   Pitfall 3 (RESEARCH): shell.html's htmx:afterSwap re-inits Alpine ONLY for #stage-workspace, so
   the record host is NOT covered — hence the per-host hx-on::after-swap Alpine.initTree on
@@ -39,6 +42,56 @@
             this.requestedSection = el && el.dataset ? (el.dataset.recordSection || null) : null;
             this.loaded = false;
             this.open = true;
+            this.takeFocus();
+        },
+        // phaze-x1cv5: the drawer must take the keyboard the moment it opens, not when the record
+        // fetch lands. Until then the opener (a Details button) kept focus while the background was
+        // hidden from assistive tech, which Chrome reports as Blocked aria-hidden on an element
+        // because its descendant retained focus. So: wait for the panel's x-show reveal (a later
+        // task than anything queueable here -- see the phaze-f65nu note on #record-body), focus the
+        // panel itself (tabindex=-1; the heading takes over after the swap), and ONLY THEN make the
+        // background inert -- never the other way round. The background gets the real inert
+        // attribute instead of aria-hidden, which also removes it from the tab order and from
+        // pointer events. No literal double-quote characters in this comment: x-data is
+        // delimited by them.
+        takeFocus() {
+            let framesLeft = 120;
+            const attempt = () => {
+                if (!this.open) return;
+                const panel = this.$refs.panel;
+                if (panel && panel.getClientRects().length > 0) {
+                    if (!panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
+                    this.setBackgroundInert(true);
+                    return;
+                }
+                if (framesLeft-- > 0) requestAnimationFrame(attempt);
+            };
+            attempt();
+        },
+        // Mark every sibling along the path from this host up to <body> inert, leaving the path
+        // itself (which holds the drawer) interactive. Idempotent both ways; only elements this
+        // host marked (data-record-inert) are ever un-marked, so a layer that was already inert
+        // for its own reasons is left alone.
+        setBackgroundInert(on) {
+            if (on) {
+                let node = this.$root;
+                while (node && node !== document.body) {
+                    const parent = node.parentElement;
+                    if (!parent) break;
+                    for (const sibling of parent.children) {
+                        if (sibling === node || sibling.hasAttribute('inert')) continue;
+                        if (['SCRIPT', 'STYLE', 'LINK', 'TEMPLATE'].includes(sibling.tagName)) continue;
+                        sibling.setAttribute('inert', '');
+                        sibling.setAttribute('data-record-inert', '');
+                    }
+                    node = parent;
+                }
+            } else {
+                for (const el of document.querySelectorAll('[data-record-inert]')) {
+                    el.removeAttribute('inert');
+                    el.removeAttribute('data-record-inert');
+                }
+            }
         },
         // phaze-hltu: BOTH this host and cmdk_modal.html listen @keydown.escape.window, so with
         // both layers open a single Esc would close both. The palette is the upper layer (z-50 vs
@@ -76,6 +129,7 @@
         },
         hide() {
             this.open = false;
+            this.setBackgroundInert(false);
             this.loaded = false;
             this.requestedSection = null;
             const target = this.opener;
@@ -136,7 +190,8 @@
              role="dialog"
              aria-modal="true"
              aria-label="File record"
-             x-trap.inert.noscroll.noreturn="open"
+             tabindex="-1"
+             x-trap.noscroll.noreturn="open"
              class="absolute inset-y-4 right-4 w-[760px] max-w-[94vw] overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-phaze-border dark:bg-phaze-bg">
 
             {# phaze-7yet: skeleton shown for the duration of the fetch (x-show="!loaded"), so the
