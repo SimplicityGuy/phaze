@@ -66,7 +66,7 @@ _BUCKET_CASES = [
     ("done", "✓", "done", "Meta: done", "bg-green-100", "text-ok"),
     ("in_flight", "●", "in flight", "Meta: in flight", "bg-blue-100", "text-info"),
     ("not_started", "—", "not started", "Meta: not started", "bg-gray-100", "text-muted"),
-    ("failed", "✗", "failed", "Meta: failed", "bg-red-100", "text-danger"),
+    ("failed", "✕", "failed", "Meta: failed", "bg-red-100", "text-danger"),
     ("skipped", "⊘", "skipped", "Meta: skipped (force-completed)", "bg-violet-100", "dark:text-violet-300"),
 ]
 
@@ -82,7 +82,7 @@ def test_every_bucket_has_glyph_word_arialabel_and_semantic_tone() -> None:
         assert "dark:" in html, f"{bucket}: no dark: class at all"
         assert text_tone in html, f"{bucket}: missing text tone {text_tone!r}"
         # The pill geometry token is the project-wide pill recipe.
-        assert "text-xs font-semibold px-2 py-0.5 rounded-full" in html
+        assert "inline-flex items-center gap-1.5 text-xs font-semibold uppercase px-2 py-0.5 rounded-full" in html
 
 
 def test_in_flight_pill_pulses() -> None:
@@ -174,7 +174,7 @@ def test_matrix_legend_renders_all_five_buckets() -> None:
     """With legend=True the one-line legend names all five buckets."""
     buckets = dict.fromkeys(("metadata", "analyze", "propose", "review", "apply"), "done")
     html = _render_matrix(buckets=buckets, legend=True)
-    for fragment in ("✓ done", "● in-flight", "— not-started", "✗ failed", "⊘ skipped"):
+    for fragment in ("✓ done", "● in-flight", "— not-started", "✕ failed", "⊘ skipped"):
         assert fragment in html, f"legend missing {fragment!r}"
 
 

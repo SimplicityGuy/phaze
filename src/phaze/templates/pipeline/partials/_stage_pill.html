@@ -22,7 +22,7 @@
 {% elif bucket == 'in_flight' %}
 {{ ui.status_badge(stage_label, 'in flight', 'accent', '●', true) }}
 {% elif bucket == 'failed' %}
-{{ ui.status_badge(stage_label, 'failed', 'danger', '✗') }}
+{{ ui.status_badge(stage_label, 'failed', 'danger', '✕') }}
 {% elif bucket == 'skipped' %}
 {{ ui.status_badge(stage_label, 'skipped', 'skipped', '⊘', false, stage_label ~ ': skipped (force-completed)') }}
 {% else %}

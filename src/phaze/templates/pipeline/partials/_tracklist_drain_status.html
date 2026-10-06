@@ -42,7 +42,7 @@
             {% if arm.armed %}
                 <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Running: {{ '{:,}'.format(status.queued) }} remaining</p>
             {% elif arm.disarmed_reason == "failures" %}
-                <p class="mt-1">{{ ui.status_badge("Lookup", "Stopped after repeated failures", "danger", "✗") }}</p>
+                <p class="mt-1">{{ ui.status_badge("Lookup", "Stopped after repeated failures", "danger", "✕") }}</p>
             {% else %}
                 <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Idle</p>
             {% endif %}

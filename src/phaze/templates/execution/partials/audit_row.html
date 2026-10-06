@@ -1,7 +1,7 @@
 {% import "ui/primitives.html" as ui %}
 <tr class="border-b border-gray-100 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
     <td class="px-4 py-3">
-        <span class="bg-gray-100 dark:bg-phaze-panel text-gray-700 dark:text-gray-300 text-xs font-semibold px-2 py-0.5 rounded-full">{{ log.operation|capitalize }}</span>
+        {{ ui.status_pill(log.operation|capitalize, 'neutral') }}
     </td>
     <td class="px-4 py-3 max-w-xs truncate" title="{{ log.source_path }}">
         {{ log.source_path }}
@@ -20,7 +20,7 @@
             {% if log.sha256_verified %}
                 <span class="text-ok " aria-label="SHA256 verified">&#10003;</span>
             {% else %}
-                <span class="text-danger " aria-label="SHA256 not verified">&#10007;</span>
+                <span class="text-danger " aria-label="SHA256 not verified">&#10005;</span>
             {% endif %}
         {% else %}
             <span class="text-muted " aria-label="Not applicable">&mdash;</span>
@@ -30,7 +30,7 @@
         {% if log.status == "completed" %}
             {{ ui.status_badge('Status', 'Completed', 'success', '✓') }}
         {% elif log.status == "failed" %}
-            {{ ui.status_badge('Status', 'Failed', 'danger', '✗') }}
+            {{ ui.status_badge('Status', 'Failed', 'danger', '✕') }}
         {% elif log.status == "in_progress" %}
             {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
         {% else %}

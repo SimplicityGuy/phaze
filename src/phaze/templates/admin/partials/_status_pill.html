@@ -1,5 +1,5 @@
-{# Phase 29 + phaze-rdxfu: liveness pill. Mirrors scan_status_pill.html geometry
-   (text-xs font-semibold px-2 py-0.5 rounded-full — project-wide pill ladder).
+{# Phase 29 + phaze-rdxfu: liveness pill. Renders through ui.status_pill
+   (phaze-gjhbk: one macro, one geometry, a leading dot on EVERY branch -- agent and lane pills alike).
 
    Two callers, distinguished by which context variable is in scope (mirrors _kind_badge.html):
      * agents_table.html's merged-row loop passes `row` (a TableRow view-model, admin_agents.py) —
@@ -9,31 +9,30 @@
      * _agent_activity.html's expanded-row body passes the raw `agent` ORM object (with its transient
        `_status` attribute set by routers/admin_agents._load_agents), unchanged — it never defines a
        name called `row`, so the ORIGINAL agent-only branch below (unchanged markup) is what renders. #}
+{% import "ui/primitives.html" as ui %}
 {% if row is defined and row.status_kind == 'lane' %}
     {% if row.status == 'ACTIVE' %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-ok "><span class="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true"></span><span aria-label="Status: active">ACTIVE</span></span>
+    {{ ui.status_pill('ACTIVE', 'success', 'Status: active') }}
     {% elif row.status == 'WAITING' %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " role="alert"><span class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span><span aria-label="Status: waiting on quota">WAITING</span></span>
+    {{ ui.status_pill('WAITING', 'attention', 'Status: waiting on quota', role='alert') }}
     {% else %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-muted "><span class="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span><span aria-label="Status: idle">IDLE</span></span>
+    {{ ui.status_pill('IDLE', 'neutral', 'Status: idle') }}
     {% endif %}
 {% else %}
     {# Expects `agent` in context (loop variable from agents_table.html pre-merge, or _agent_activity.html
        today) with the transient `_status` attribute set by routers/admin_agents._load_agents per
-       UI-SPEC §Status Pill Component LOCKED. Tailwind class palette LOCKED:
-       alive=green-100/950, stale=amber-100/950, dead=red-100/950, revoked/never
-       share the gray-100/800 "no signal" hue (visually unified, semantically
-       distinct via label text + aria-label). #}
+       UI-SPEC §Status Pill Component LOCKED. alive=success, stale=attention, dead=danger, revoked/never
+       share the neutral "no signal" tone (semantically distinct via label text + aria-label). #}
     {% set _status = row.status if row is defined else agent._status %}
     {% if _status == 'alive' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: alive">ALIVE</span>
+    {{ ui.status_pill('ALIVE', 'success', 'Status: alive') }}
     {% elif _status == 'stale' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " aria-label="Status: stale">STALE</span>
+    {{ ui.status_pill('STALE', 'attention', 'Status: stale') }}
     {% elif _status == 'dead' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: dead">DEAD</span>
+    {{ ui.status_pill('DEAD', 'danger', 'Status: dead') }}
     {% elif _status == 'revoked' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: revoked">REVOKED</span>
+    {{ ui.status_pill('REVOKED', 'neutral', 'Status: revoked') }}
     {% elif _status == 'never' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: never seen">NEVER</span>
+    {{ ui.status_pill('NEVER', 'neutral', 'Status: never seen') }}
     {% endif %}
 {% endif %}

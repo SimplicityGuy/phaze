@@ -68,9 +68,9 @@
                     {% elif agent.completed + agent.failed < agent.total %}
                     {{ ui.status_badge('Status', 'in flight', 'accent', '●', true) }}
                     {% elif agent.failed == 0 %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: complete">COMPLETE</span>
+                    {{ ui.status_pill('COMPLETE', 'success', 'Status: complete') }}
                     {% else %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: errors">ERRORS</span>
+                    {{ ui.status_pill('ERRORS', 'danger', 'Status: errors') }}
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.completed }}</td>

@@ -1,6 +1,5 @@
-{# Phase 48 (CLOUDAGENT-03) + phaze-rdxfu: agent/lane kind badge. Mirrors _status_pill.html geometry
-   (text-xs font-semibold px-2 py-0.5 rounded-full — project-wide pill ladder, LOCKED
-   by 48-UI-SPEC §Spacing). Color is never the sole signal: each badge carries an uppercase label AND
+{# Phase 48 (CLOUDAGENT-03) + phaze-rdxfu: agent/lane kind badge. Renders through ui.status_pill
+   (phaze-gjhbk: one pill geometry; the kind glyph is the leading indicator). Color is never the sole signal: each badge carries an uppercase label AND
    an aria-label (WCAG 1.4.1).
 
    Two callers, distinguished by which context variable is in scope:
@@ -17,22 +16,22 @@
    changing it here would desync the two surfaces for no reason this bead asks for. A lane's `kind`
    can share a STRING with an agent's `kind` (both may be "compute") but must render differently — the
    `row.status_kind` check below runs FIRST so the two never collide. #}
+{% import "ui/primitives.html" as ui %}
 {% if row is defined and row.status_kind == 'lane' %}
     {% if row.kind == 'compute' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Kind: compute lane">☁️ COMPUTE</span>
+    {{ ui.status_pill('COMPUTE', 'accent', 'Kind: compute lane', '☁️') }}
     {% elif row.kind == 'kueue' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " aria-label="Kind: kueue lane">⎈ KUEUE</span>
+    {{ ui.status_pill('KUEUE', 'attention', 'Kind: kueue lane', '⎈') }}
     {% else %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Kind: {{ row.kind }} lane">▪ {{ row.kind | upper }}</span>
+    {{ ui.status_pill(row.kind | upper, 'neutral', 'Kind: ' ~ row.kind ~ ' lane', '▪') }}
     {% endif %}
 {% else %}
-    {# Defensive if/elif/else mirrors _status_pill.html — any out-of-enum kind falls through to the
-       neutral fileserver branch so the cell is never blank (T-48-02 tampering mitigation). Glyphs
-       match the lane branch above so agent and lane badges read as one family in the merged table. #}
+    {# Defensive if/else: any out-of-enum kind falls through to the fileserver branch so the cell is
+       never blank (T-48-02). Glyphs match the lane branch above so agent and lane badges read as one family. #}
     {% set _kind = row.kind if row is defined else agent.kind %}
     {% if _kind == 'compute' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400" aria-label="Kind: compute">⚙ COMPUTE</span>
+    {{ ui.status_pill('COMPUTE', 'indigo', 'Kind: compute', '⚙') }}
     {% else %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" aria-label="Kind: file server">🗄 FILE SERVER</span>
+    {{ ui.status_pill('FILE SERVER', 'slate', 'Kind: file server', '🗄') }}
     {% endif %}
 {% endif %}

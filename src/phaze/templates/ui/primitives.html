@@ -32,16 +32,35 @@
 </div>
 {% endmacro %}
 
-{% macro status_badge(label, status, tone='neutral', icon='—', pulse=false, aria_label='') %}
+{# phaze-gjhbk: THE status pill. Every status pill in the app renders through `status_pill` (or its
+   `status_badge` wrapper, which only derives the aria-label); tests/shared/test_status_pill_guard.py
+   fails the build on a `rounded-full` pill-shaped span anywhere else.
+
+   One rule, so pills cannot drift:
+     * geometry   -- inline-flex, gap-1.5, text-xs, font-semibold, px-2, py-0.5, rounded-full.
+     * indicator  -- ALWAYS leading, aria-hidden: the caller's glyph when `icon` is given (stage pills
+                     need a distinct SHAPE per state, WCAG 1.4.1), otherwise a dot in the tone's colour.
+     * case       -- UPPERCASE, applied here with the `uppercase` utility. The DOM text stays as the
+                     caller wrote it, so a test or screen reader sees the source string unchanged.
+     * failed     -- the glyph for a failed/danger state is U+2715 everywhere; never U+2717.
+   `aria_label` and `role` are the caller's: pass the same strings the pill carried before. #}
+{% macro status_pill(text, tone='neutral', aria_label='', icon='', pulse=false, role='') %}
 {% set tones = {
-    'accent': 'bg-blue-100 text-info dark:bg-blue-950 ',
-    'attention': 'bg-amber-100 text-warn dark:bg-amber-950 ',
-    'success': 'bg-green-100 text-ok dark:bg-green-950 ',
-    'danger': 'bg-red-100 text-danger dark:bg-red-950 ',
-    'skipped': 'bg-violet-100 text-violet-700 ring-1 ring-dashed ring-violet-400/60 dark:bg-violet-950 dark:text-violet-300',
-    'neutral': 'bg-gray-100 text-muted dark:bg-gray-800/60 '
+    'accent': ('bg-blue-100 dark:bg-blue-950 text-info ', 'bg-blue-500 dark:bg-blue-400'),
+    'attention': ('bg-amber-100 dark:bg-amber-950 text-warn ', 'bg-amber-500 dark:bg-amber-400'),
+    'success': ('bg-green-100 dark:bg-green-950 text-ok ', 'bg-green-500 dark:bg-green-400'),
+    'danger': ('bg-red-100 dark:bg-red-950 text-danger ', 'bg-red-500 dark:bg-red-400'),
+    'skipped': ('bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60', 'bg-violet-500 dark:bg-violet-400'),
+    'indigo': ('bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400', 'bg-indigo-500 dark:bg-indigo-400'),
+    'slate': ('bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300', 'bg-slate-500 dark:bg-slate-400'),
+    'neutral': ('bg-gray-100 dark:bg-gray-800/60 text-muted ', 'bg-gray-400 dark:bg-gray-500')
 } %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full {{ tones.get(tone, tones.neutral) }}{% if pulse %} motion-safe:animate-pulse{% endif %}" aria-label="{{ aria_label or (label ~ ': ' ~ status) }}"><span aria-hidden="true">{{ icon }}</span> {{ status }}</span>
+{% set _t = tones.get(tone, tones.neutral) %}
+<span class="inline-flex items-center gap-1.5 text-xs font-semibold uppercase px-2 py-0.5 rounded-full {{ _t[0] }}{% if pulse %} motion-safe:animate-pulse{% endif %}"{% if role %} role="{{ role }}"{% endif %}{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>{% if icon %}<span aria-hidden="true">{{ icon }}</span>{% else %}<span class="w-2 h-2 shrink-0 rounded-full {{ _t[1] }}" aria-hidden="true"></span>{% endif %}<span>{{ text }}</span></span>
+{% endmacro %}
+
+{% macro status_badge(label, status, tone='neutral', icon='', pulse=false, aria_label='', role='') %}
+{{ status_pill(status, tone, aria_label or (label ~ ': ' ~ status), icon, pulse, role) }}
 {% endmacro %}
 
 {% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}

@@ -22,11 +22,11 @@
                    counters, not from a count of the rows that exist -- only the analysis row
                    can know a window was planned and never analyzed. Absent row, absent chip. #}
                 {% if coverage_chip %}
-                <span data-timeline-coverage-chip
+                <span data-timeline-coverage-chip data-not-status-pill="analysis coverage chip (data hook + tooltip)"
                       class="rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide {% if coverage_chip.has_gaps %}border-amber-300 text-warn dark:border-amber-500/40{% else %}border-gray-300 text-muted dark:border-phaze-border{% endif %}"
                       title="{{ coverage_chip.detail }}">{{ coverage_chip.text }}</span>
                 {% endif %}
-                <span data-timeline-scroll-hint hidden class="rounded-full border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted dark:border-phaze-border dark:bg-phaze-bg">
+                <span data-timeline-scroll-hint data-not-status-pill="scroll hint" hidden class="rounded-full border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted dark:border-phaze-border dark:bg-phaze-bg">
                     Scroll timeline →
                 </span>
             </div>

@@ -5,7 +5,7 @@
      * unavailable  -- truthy → the degrade line ("Trace unavailable this tick."); nothing else.
      * verdict      -- "{Stage} — eligible (in the pending set)" | "{Stage} — NOT eligible".
      * eligible     -- bool; tints the verdict green (eligible) or amber (blocked).
-     * conjuncts    -- ordered list of {question, ok (bool ✓/✗), phrase, blocker (bool)}.
+     * conjuncts    -- ordered list of {question, ok (bool ✓/✕), phrase, blocker (bool)}.
 
    Trust boundary: every field is a server-derived enum/bool/fixed phrase (NO operator free text —
    the skip reason is never echoed here, T-87-21). All values autoescape through Jinja.
@@ -21,7 +21,7 @@
     {% for c in conjuncts %}
         <li class="flex items-baseline gap-2 {{ 'font-semibold text-gray-900 dark:text-gray-100' if c.blocker else 'text-muted ' }}">
             <span class="w-24 shrink-0 text-muted ">{{ c.question }}</span>
-            <span aria-hidden="true" class="{{ 'text-ok ' if c.ok else 'text-danger ' }}">{{ '✓' if c.ok else '✗' }}</span>
+            <span aria-hidden="true" class="{{ 'text-ok ' if c.ok else 'text-danger ' }}">{{ '✓' if c.ok else '✕' }}</span>
             <span>{{ c.phrase }}</span>
             {% if c.blocker %}<span class="font-semibold text-danger ">← blocker</span>{% endif %}
         </li>

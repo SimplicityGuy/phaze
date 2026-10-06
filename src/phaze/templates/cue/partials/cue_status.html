@@ -1,7 +1,8 @@
+{% import "ui/primitives.html" as ui %}
 {% if tracklist.cue_version is defined and tracklist.cue_version is not none and tracklist.cue_version >= 1 %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-ok">CUE v{{ tracklist.cue_version }}</span>
+{{ ui.status_pill('CUE v' ~ tracklist.cue_version, 'success') }}
 {% elif tracklist.cue_version is defined and tracklist.cue_version == 0 %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-phaze-panel text-muted ">No CUE</span>
+{{ ui.status_pill('No CUE', 'neutral') }}
 {% else %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400">Not Eligible</span>
+{{ ui.status_pill('Not Eligible', 'attention') }}
 {% endif %}
