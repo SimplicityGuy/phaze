@@ -93,6 +93,16 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
         .group_by(TracklistTrack.version_id)
         .subquery()
     )
+    # phaze-roug5: the SAME definition as get_stage_progress's ``match.done`` / get_match_pending_tracklists --
+    # a tracklist is Discogs-matched when ANY discogs_link hangs off ANY track of ANY of its versions. Correlated
+    # EXISTS so the Match card and the per-row column cannot drift apart.
+    discogs_matched = (
+        select(DiscogsLink.id)
+        .join(TracklistTrack, DiscogsLink.track_id == TracklistTrack.id)
+        .join(TracklistVersion, TracklistTrack.version_id == TracklistVersion.id)
+        .where(TracklistVersion.tracklist_id == Tracklist.id)
+        .exists()
+    )
     return paged_stmt(
         select(
             Tracklist.external_id,
@@ -103,6 +113,7 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
             FileRecord.original_path,
             track_counts_subq.c.total,
             track_counts_subq.c.confident,
+            discogs_matched.label("discogs_matched"),
         )
         .select_from(Tracklist)
         .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
@@ -118,7 +129,7 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
 def _project_tracklist_set_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
     """Project ordered query tuples into the render-only per-set row shape."""
     sets: list[dict[str, Any]] = []
-    for external_id, artist, event, file_id, filename, path, total, confident in rows:
+    for external_id, artist, event, file_id, filename, path, total, confident, discogs_matched in rows:
         matched = file_id is not None
         set_name = filename if matched else (artist or event or external_id)
         sets.append(
@@ -130,6 +141,8 @@ def _project_tracklist_set_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
                 "tracks_confident": int(confident or 0),
                 "tracks_total": int(total or 0),
                 "matched_to_file": matched,
+                # phaze-roug5: what the Match card counts (a Discogs link exists), NOT file linkage.
+                "discogs_matched": bool(discogs_matched),
             }
         )
     return sets

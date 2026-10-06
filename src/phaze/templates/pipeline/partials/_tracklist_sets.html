@@ -22,12 +22,19 @@
      * sets_page -- phaze.services.pagination.Page[dict] (rows/page/page_size/has_next).
      * host_id   -- the id of the host div this fragment is swapped into (hx-target for the pager).
 #}
+{# phaze-roug5: the "Tracklist" column is FILE linkage (Tracklist.file_id), and its words must not say
+   "matched" -- the Match card and the "Discogs match" column below both mean "a Discogs link exists"
+   (the ONE definition get_stage_progress / get_match_pending_tracklists / the page query's EXISTS share). #}
 {% set _match_color = {
     "matched": "text-ok",
     "candidate": "text-warn",
 } %}
+{% set _state_label = {
+    "matched": "file linked",
+    "candidate": "candidate",
+} %}
 <div>
-    {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
+    {% set columns = ["Set", "Tracklist", "Tracks", "Discogs match"] %}
     {% set ns = namespace(rows=[], file_ids=[]) %}
     {% for s in sets_page.rows %}
         {% if s.tracks_total == 0 %}
@@ -41,7 +48,7 @@
                 {% set coverage_color = "text-info " %}
             {% endif %}
         {% endif %}
-        {% if s.matched_to_file %}
+        {% if s.discogs_matched %}
             {% set matched_text = "matched" %}
             {% set matched_color = "text-ok " %}
         {% else %}
@@ -50,7 +57,7 @@
         {% endif %}
         {% set _ = ns.rows.append([
             {'text': s.set_name, 'mono': True, 'title': s.path},
-            {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-muted ")},
+            {'text': _state_label.get(s.tracklist_state, s.tracklist_state), 'color': _match_color.get(s.tracklist_state, "text-muted ")},
             {'text': coverage_text, 'mono': True, 'color': coverage_color},
             {'text': matched_text, 'color': matched_color},
         ]) %}
