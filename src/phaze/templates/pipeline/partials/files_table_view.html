@@ -156,28 +156,27 @@
        singleton untouched by the swap; the swapped-in `:style` bindings just re-read it, so a chosen
        width survives sorting, filtering, paging AND (via localStorage) a reload/bookmark.
 
-       table-layout stays the browser default (auto), not `table-fixed`: the FILE cell already
-       carries `truncate` (overflow:hidden + ellipsis + nowrap), and content that is clipped rather
-       than measured is exactly what lets auto-layout honour an explicit `<col>` width instead of
-       growing the column to fit it -- so dragging FILE wider/narrower works precisely because it
-       already truncates. The six stage cells are NOT truncated (cvn6.2's no-wrap contract needs
-       their pill+Retry content fully visible, never clipped) -- auto-layout enforces their natural
-       content width as a floor no matter how far a handle is dragged inward, so shrinking never
-       breaks the no-wrap contract or forces a second line; dragging outward still widens them. #}
+       phaze-6ezaw: the table is `table-fixed`, NOT auto. Under auto layout the FILE cell's
+       `nowrap` makes its min-content the full path, so `truncate` never engages and the column
+       renders at the path's width whatever its `<col>` says (measured: a 440px col rendering at
+       1397px, 2392px table in a 1320px pane, every stage column behind a horizontal scroll). Fixed
+       layout takes widths from the `<col>`s, so FILE really truncates and the default widths below
+       sum to fit a 1600px viewport. The stage cells stay `whitespace-nowrap`; their column floors
+       (mins in the colResize store) are sized to hold the longest pill, so a drag cannot clip one. #}
     <div x-data="colResizer()">
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
            the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
            in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
         <div class="hidden md:block">
-        {% call ui.data_table('Files and pipeline stage status') %}
+        {% call ui.data_table('Files and pipeline stage status', layout_class='table-fixed') %}
             <colgroup>
-                <col data-col="File" data-default-width="260" :style="{ width: $store.colResize.width('File') + 'px' }">
-                <col data-col="Type" data-default-width="88" :style="{ width: $store.colResize.width('Type') + 'px' }">
-                {% set _default_widths = {'Metadata': 96, 'Analyze': 128, 'Tracklist': 220, 'Propose': 108, 'Review': 104, 'Execute': 108} %}
+                <col data-col="File" data-default-width="180" :style="{ width: $store.colResize.width('File') + 'px' }">
+                <col data-col="Type" data-default-width="72" :style="{ width: $store.colResize.width('Type') + 'px' }">
+                {% set _default_widths = {'Metadata': 88, 'Analyze': 112, 'Tracklist': 210, 'Propose': 100, 'Review': 96, 'Execute': 100} %}
                 {% for col in _stage_cols | map(attribute=0) | list %}
                 <col data-col="{{ col }}" data-default-width="{{ _default_widths[col] }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
                 {% endfor %}
-                <col data-col="Current state" data-default-width="300" style="width: 300px">
+                <col data-col="Current state" data-default-width="250" style="width: 250px">
                 <col data-col="Details" data-default-width="92" style="width: 92px">
             </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-muted dark:border-phaze-border dark:bg-phaze-panel ">
@@ -249,8 +248,7 @@
                        `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
                        operator's drag instead of enabling it. `truncate` stays: it is what turns
                        "narrower than the path" into an ellipsis rather than a wrapped/overflowing
-                       cell, and (per the colgroup comment) is also WHY auto table-layout honours the
-                       dragged width here instead of growing the column to fit the full path. #}
+                       cell, and (per the colgroup comment, `table-fixed`) the dragged width is honoured. #}
                     {# phaze-x1qr3.9: the set glyph rides in THIS cell, not a new column -- a file
                        WITHOUT a `set_profile` row renders this `<td>` byte-identical to before (the
                        `{% if %}` below emits nothing), so row height and column count are unchanged

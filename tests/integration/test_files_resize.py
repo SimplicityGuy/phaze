@@ -159,15 +159,15 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
 
 
 _EXPECTED_DEFAULT_WIDTHS = {
-    "File": 260,
-    "Type": 88,
-    "Metadata": 96,
-    "Analyze": 128,
-    "Tracklist": 220,
-    "Propose": 108,
-    "Review": 104,
-    "Execute": 108,
-    "Current state": 300,
+    "File": 180,
+    "Type": 72,
+    "Metadata": 88,
+    "Analyze": 112,
+    "Tracklist": 210,
+    "Propose": 100,
+    "Review": 96,
+    "Execute": 100,
+    "Current state": 250,
     "Details": 92,
 }
 
@@ -190,7 +190,12 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
 
     assert widths["Metadata"] < widths["Analyze"] < widths["Tracklist"]
     assert widths["Current state"] > max(w for name, w in widths.items() if name != "Current state")
-    assert 'style="width: 300px"' in colgroup
+    assert 'style="width: 250px"' in colgroup
+
+    # FILE only truncates under fixed layout (auto layout sizes it to the full path), and the default
+    # widths must fit the 1320px workspace pane at a 1600px viewport so nothing sits behind a scroll.
+    assert re.search(r'<table[^>]*class="[^"]*\btable-fixed\b', body)
+    assert sum(widths.values()) <= 1320
 
     head = body[body.index("<thead") : body.index("<tbody")]
     assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
