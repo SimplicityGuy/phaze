@@ -107,7 +107,7 @@
        a labeled control rather than through headers that are not displayed at that breakpoint. #}
     <form action="/s/files" method="get" aria-label="Sort files"
           hx-get="/s/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true" hx-trigger="change"
-          class="flex flex-wrap items-end gap-2 border-y border-gray-200 px-4 py-3 xl:hidden dark:border-phaze-border">
+          class="flex flex-wrap items-end gap-2 border-y border-gray-200 px-6 py-3 xl:hidden dark:border-phaze-border">
         <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
         {% if active_stage %}<input type="hidden" name="stage" value="{{ active_stage }}">{% endif %}
         {% if active_bucket %}<input type="hidden" name="bucket" value="{{ active_bucket }}">{% endif %}

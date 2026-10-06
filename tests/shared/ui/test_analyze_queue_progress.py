@@ -96,3 +96,23 @@ def test_known_total_with_unknown_count_is_indeterminate() -> None:
     assert fine["aria-valuetext"] == "Progress unavailable"
     assert "—/141 · unavailable" in soup.get_text(" ", strip=True)
     assert coarse["aria-valuetext"] == "Sizing windows"
+
+
+def test_heartbeat_column_stays_visible_below_xl() -> None:
+    """phaze-0r8cl: at 900px the nowrap Heartbeat column was scrolled out of sight. Below ``xl`` the tiers stack,
+    the Heartbeat cell wraps and the cells tighten; ``xl`` and up keep the side-by-side nowrap layout."""
+    soup = _render(fine_done=1029, fine_total=1033, coarse_done=0, coarse_total=173, heartbeat_lost=True)
+    heartbeat = soup.select_one("#analyze-running-table tbody td:last-child")
+    assert heartbeat is not None
+    classes = set(heartbeat["class"])
+    assert "xl:whitespace-nowrap" in classes and "whitespace-nowrap" not in classes
+
+    progress = soup.select_one("#analyze-running-table tbody td:nth-last-child(2)")
+    assert progress is not None
+    assert "xl:min-w-64" in progress["class"] and "min-w-64" not in progress["class"]
+    grid = progress.select_one("div.grid")
+    assert grid is not None
+    assert {"grid-cols-1", "xl:grid-cols-2"} <= set(grid["class"]) and "grid-cols-2" not in grid["class"]
+
+    cells = soup.select("#analyze-running-table th, #analyze-running-table td")
+    assert cells and all("px-3" in cell["class"] and "xl:px-4" in cell["class"] for cell in cells)

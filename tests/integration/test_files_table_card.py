@@ -133,3 +133,17 @@ async def test_metadata_eligible_files_host_uses_the_same_card_class(client: Asy
     host = re.search(r'<div id="metadata-files-view"[^>]*class="([^"]*)"', resp.text, re.S)
     assert host
     assert _shared_card_class() in host.group(1)
+
+
+@pytest.mark.asyncio
+async def test_files_sort_controls_and_card_share_the_24px_page_gutter(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-0r8cl: at 900px the sort controls started at x=16 (px-4) while the page gutter is 24 (px-6)."""
+    session.add(_file(0))
+    await session.commit()
+
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
+    form = re.search(r'<form action="/s/files" method="get" aria-label="Sort files"[^>]*class="([^"]*)"', body, re.S)
+    assert form
+    tokens = form.group(1).split()
+    assert "px-6" in tokens and "px-4" not in tokens
+    assert any("mx-6" in c.split() for c in _card_open_tags(body))

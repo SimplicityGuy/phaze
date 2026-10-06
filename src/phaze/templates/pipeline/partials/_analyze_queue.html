@@ -43,21 +43,22 @@
     {% call ui.data_table("Analyses running now", id="analyze-running-table") %}
         <thead class="text-[10px] uppercase tracking-wider text-muted">
             <tr>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">File</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">Lane</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">Started</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">Progress</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">Heartbeat</th>
+                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">File</th>
+                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Lane</th>
+                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Started</th>
+                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Progress</th>
+                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Heartbeat</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
             {% for run in _rows %}
             <tr{% if run.heartbeat_lost %} class="bg-red-50 dark:bg-red-950"{% endif %}>
-                <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" title="{{ run.label }}">{{ run.label }}</td>
-                <td class="whitespace-nowrap px-4 py-2 text-xs">{% if run.lane_kind == "local" %}🖥️{% elif run.lane_kind == "kueue" %}⎈{% else %}▪{% endif %} {{ run.lane }}</td>
-                <td class="whitespace-nowrap px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(run.started_at, now=_now) if run.started_at else "—" }}</td>
-                <td class="min-w-64 px-4 py-2">
-                    <div class="grid grid-cols-2 gap-3">
+                <td class="max-w-44 truncate px-3 xl:px-4 py-2 font-mono text-xs xl:max-w-xs" title="{{ run.label }}">{{ run.label }}</td>
+                <td class="whitespace-nowrap px-3 xl:px-4 py-2 text-xs">{% if run.lane_kind == "local" %}🖥️{% elif run.lane_kind == "kueue" %}⎈{% else %}▪{% endif %} {{ run.lane }}</td>
+                <td class="whitespace-nowrap px-3 xl:px-4 py-2 text-xs text-muted ">{{ humanize_relative_time(run.started_at, now=_now) if run.started_at else "—" }}</td>
+                <td class="px-3 xl:px-4 py-2 xl:min-w-64">
+                    {# phaze-0r8cl: below xl the Fine/Coarse tiers STACK and the Heartbeat cell WRAPS, so the whole row fits a 900px workspace instead of scrolling the Heartbeat column out of sight; xl and up keep the side-by-side, nowrap layout. #}
+                    <div class="grid grid-cols-1 gap-2 xl:grid-cols-2 xl:gap-3">
                         {% for tier, done, total, fill, work in [("Fine", run.fine_done, run.fine_total, "bg-blue-500", none), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500", run.coarse_work_percent)] %}
                         {% set known = done is not none and total is not none and total > 0 %}
                         {% set window_pct = ([0, [100, done * 100 // total]|min]|max) if known else 0 %}
@@ -72,7 +73,7 @@
                         {% endfor %}
                     </div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-2 text-xs {% if run.heartbeat_lost %}text-danger {% else %}text-muted {% endif %}">
+                <td class="px-3 xl:px-4 py-2 text-xs xl:whitespace-nowrap {% if run.heartbeat_lost %}text-danger {% else %}text-muted {% endif %}">
                     {% if run.heartbeat_lost %}<span class="font-medium text-danger">No progress update</span><span class="block text-xs">Last update {{ humanize_relative_time(run.heartbeat_at, now=_now) }}</span>{% else %}{{ humanize_relative_time(run.heartbeat_at, now=_now) if run.heartbeat_at else "—" }}{% endif %}
                 </td>
             </tr>
