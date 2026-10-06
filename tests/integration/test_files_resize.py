@@ -158,18 +158,23 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == len(_FILES_PAGE_STAGES)
 
 
+# Stage floors hold the widest content of that column plus the cell's px-3 (24px): "— not started"
+# (106px measured on production) -> 130; Metadata/Analyze add the failed pill + Retry button -> 160;
+# Tracklist's longest pill, "low confidence · retry YYYY-MM-DD" -> 280.
 _EXPECTED_DEFAULT_WIDTHS = {
-    "File": 180,
+    "File": "flex",
     "Type": 72,
-    "Metadata": 88,
-    "Analyze": 112,
-    "Tracklist": 210,
-    "Propose": 100,
-    "Review": 96,
-    "Execute": 100,
-    "Current state": 250,
+    "Metadata": 160,
+    "Analyze": 160,
+    "Tracklist": 280,
+    "Propose": 130,
+    "Review": 130,
+    "Execute": 130,
+    "Current state": 220,
     "Details": 92,
 }
+_NOT_STARTED_PILL_PX = 106
+_CELL_PADDING_PX = 24
 
 
 @pytest.mark.asyncio
@@ -185,24 +190,40 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
 
     body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     colgroup = body[body.index("<colgroup") : body.index("</colgroup>")]
-    widths = {name: int(width) for name, width in re.findall(r'<col data-col="([^"]+)" data-default-width="(\d+)"', colgroup)}
+    widths = {
+        name: (width if width == "flex" else int(width))
+        for name, width in re.findall(r'<col data-col="([^"]+)" data-default-width="(\w+)"', colgroup)
+    }
     assert widths == _EXPECTED_DEFAULT_WIDTHS
+    fixed = {n: w for n, w in widths.items() if isinstance(w, int)}
 
-    assert widths["Metadata"] < widths["Analyze"] < widths["Tracklist"]
-    assert widths["Current state"] > max(w for name, w in widths.items() if name != "Current state")
-    assert 'style="width: 250px"' in colgroup
+    stage_cols = ("Metadata", "Analyze", "Tracklist", "Propose", "Review", "Execute")
+    for stage in stage_cols:
+        assert fixed[stage] >= _NOT_STARTED_PILL_PX + _CELL_PADDING_PX, f"{stage} would clip its '— not started' pill"
+    assert fixed["Metadata"] == fixed["Analyze"] > fixed["Propose"]
+    assert fixed["Tracklist"] == max(fixed.values())
 
-    # FILE only truncates under fixed layout (auto layout sizes it to the full path), and the default
-    # widths must fit the 1320px workspace pane at a 1600px viewport so nothing sits behind a scroll.
+    # FILE is the flexible remainder column: no inline width until dragged, and the table's xl floor
+    # is every other column plus a 140px FILE minimum.
+    file_col = re.search(r'<col data-col="File"[^>]*>', colgroup)
+    assert file_col is not None
+    assert 'style="width' not in file_col.group(0)
+    floor = re.search(r"xl:min-w-\[(\d+)px\]", body)
+    assert floor is not None
+    assert int(floor.group(1)) == sum(fixed.values()) + 140
     assert re.search(r'<table[^>]*class="[^"]*\btable-fixed\b', body)
-    assert sum(widths.values()) <= 1320
+    assert 'style="width: 220px"' in colgroup
 
     head = body[body.index("<thead") : body.index("<tbody")]
     assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
 
     shell = (Path(__file__).parents[2] / "src/phaze/templates/shell/shell.html").read_text()
     defaults_match = re.search(r"defaults: \{([^}]*)\}", shell)
+    mins_match = re.search(r"mins: \{([^}]*)\}", shell)
     assert defaults_match is not None
+    assert mins_match is not None
     store_defaults = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", defaults_match.group(1))}
-    assert store_defaults == {k: v for k, v in _EXPECTED_DEFAULT_WIDTHS.items() if k in store_defaults}
-    assert set(store_defaults) == {"File", "Type", *(c for c in _RESIZABLE_COLUMNS if c not in ("File", "Type"))}
+    store_mins = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", mins_match.group(1))}
+    assert store_defaults == {k: fixed[k] for k in ("Type", *stage_cols)}
+    for stage in stage_cols:
+        assert store_mins[stage] == fixed[stage], f"{stage}'s drag floor must hold its widest pill"

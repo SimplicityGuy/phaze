@@ -191,8 +191,8 @@
                 // files_table_view.html (a test pins the two together);
                 // mins are the narrowest a column can go: under `table-fixed` (phaze-6ezaw) nothing else
                 // floors a column, so the stage mins hold their pill (Tracklist: the longest, `× retry pending · date`).
-                defaults: { File: 180, Type: 72, Metadata: 88, Analyze: 112, Tracklist: 210, Propose: 100, Review: 96, Execute: 100 },
-                mins: { File: 140, Type: 64, Metadata: 80, Analyze: 96, Tracklist: 190, Propose: 88, Review: 84, Execute: 88 },
+                defaults: { Type: 72, Metadata: 160, Analyze: 160, Tracklist: 280, Propose: 130, Review: 130, Execute: 130 },
+                mins: { File: 140, Type: 64, Metadata: 160, Analyze: 160, Tracklist: 280, Propose: 130, Review: 130, Execute: 130 },
                 legacyKeys: { Metadata: 'Meta', Propose: 'Prop', Review: 'Appr', Execute: 'Exec' },
                 max: 900,
                 widths: (() => {
@@ -220,7 +220,7 @@
             Alpine.data('colResizer', () => ({
                 startResize(event, col) {
                     const startX = event.clientX;
-                    const startWidth = this.$store.colResize.width(col);
+                    const startWidth = event.target.closest('th')?.offsetWidth ?? this.$store.colResize.width(col);
                     const onMove = (moveEvent) => {
                         this.$store.colResize.setWidth(col, startWidth + (moveEvent.clientX - startX));
                     };
