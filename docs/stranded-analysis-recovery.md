@@ -72,7 +72,8 @@ claiming a cause the available evidence cannot distinguish.
 
 The earlier spike correctly reported invisibility at its measurement date. The current code has
 since added an amber `analyzeOrphan` badge on the global rail
-(`src/phaze/templates/shell/partials/rail.html`). Its count comes from
+(`src/phaze/templates/shell/partials/rail.html`; **removed 2026-10-05, phaze-640na** -- orphaned work is now surfaced on the Summary page's
+Needs Attention card and the workspace recovery UI, not the rail). Its count comes from
 `src/phaze/services/pipeline/orphans.py::get_stage_orphan_counts`, which deliberately reuses the
 same live-job, completion, and cloud-ownership exclusions as recovery. The badge counts recovery
 candidates, so it includes the **661** and the **4** other no-cloud orphans in this snapshot. It

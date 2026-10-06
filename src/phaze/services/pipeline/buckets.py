@@ -61,7 +61,7 @@ async def _safe_orphan_split(session: AsyncSession, stage: Stage, buckets: dict[
     total, ``in_flight`` now means what its name says, and the carved-out count is rendered as its own
     cell next to it.
 
-    Relationship to :func:`get_stage_orphan_counts` (the amber rail badge): SAME definition, different
+    Relationship to :func:`get_stage_orphan_counts` (the recovery-card orphan count): SAME definition, different
     scope and substrate. That one materializes the whole ledger in Python and counts EVERY row for the
     stage's function; this one is the SQL twin restricted to the music/video corpus the bucket dict is
     defined over (and, in :func:`_agent_stage_buckets`, to one agent). The two therefore agree except

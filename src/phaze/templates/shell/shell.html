@@ -157,8 +157,9 @@
                 // base.html, which never had a live caller once audit/agents moved onto this
                 // shell -- an oversight that would have re-created the exact "rail renders
                 // server-side 0 forever" defect CONSOLE-02 already fixed once (rail.html's
-                // amber orphan badges bind $store.pipeline.{metadata,analyze}Orphan and would
-                // have silently stuck at their seed value with no poll ever reaching them).
+                // the Analyze workspace's recovery card and the Discover workspace's recovery
+                // alert bind $store.pipeline.{metadata,analyze}Orphan (the rail no longer shows an
+                // orphan bubble: phaze-640na) and would silently stick at their seed value).
                 // Seeded to int 0 so no x-show/x-text binding ever reads `undefined` before the
                 // first /pipeline/stats poll tick; the dag.items() OOB loop in stats_bar.html
                 // pushes the real values each 5s poll via dag-seed-metadataOrphan /
