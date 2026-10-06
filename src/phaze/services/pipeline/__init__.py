@@ -149,6 +149,7 @@ from phaze.services.pipeline.orphans import (
     get_cached_stage_orphan_counts,
     get_stage_orphan_counts,
     refresh_stage_orphan_counts,
+    stage_orphan_counts_known,
 )
 from phaze.services.pipeline.pending import (
     MetadataActivitySummary,
@@ -313,4 +314,5 @@ __all__ = [
     "get_untracked_files",
     "queue_progress_percent",
     "refresh_stage_orphan_counts",
+    "stage_orphan_counts_known",
 ]

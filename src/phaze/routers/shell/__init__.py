@@ -79,6 +79,7 @@ from phaze.routers.shell.stage_maps import (
     _stage_partial,
     templates,
 )
+from phaze.routers.shell.store_seed import build_pipeline_store_seed
 from phaze.routers.shell.summary import (
     SummaryOverviewInputs,
     _build_summary_context,
@@ -207,6 +208,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 
     if wants_fragment(request):
         return _render_stage_fragment(request, stage, context)
+    # phaze-s8xtd: the full shell boots $store.pipeline from the server's own numbers instead of literal
+    # zeros. Only this branch pays for it -- a fragment swap above never does (store_seed.py: COST).
+    context["pipeline_seed"] = await build_pipeline_store_seed(request.app.state, session, context)
     # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That
     # third case is phaze-a6hm.2's acceptance criterion and it needs NO extra code: because the filter
     # tabs, search box and pager all push /s/propose?... URLs (never a bare fragment endpoint), a restore

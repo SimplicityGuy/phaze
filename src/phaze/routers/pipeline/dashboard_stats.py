@@ -47,6 +47,7 @@ from phaze.services.pipeline import (
     get_stage_controls,
     get_stage_progress,
     queue_progress_percent,
+    stage_orphan_counts_known,
 )
 from phaze.services.pipeline_counters import read_counters
 from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
@@ -218,6 +219,13 @@ async def _build_dag_context(
     orphans = get_cached_stage_orphan_counts()
     dag["metadataOrphan"] = int(orphans["metadata"])
     dag["analyzeOrphan"] = int(orphans["analyze"])
+    # phaze-s8xtd: whether those two ints were MEASURED. The cache is born as zeros, indistinguishable
+    # from a measured-empty ledger, so the Discover recovery panel gates its "none detected" claim on this.
+    dag["orphanKnown"] = int(stage_orphan_counts_known())
+    # phaze-s8xtd: every other key above is real by the time this dict exists, so a poll that got this far
+    # is also what flips the rail/header numerals from their "—" placeholder to data (a server-side seed
+    # that degraded leaves it 0; see routers/shell/store_seed.py).
+    dag["seedKnown"] = 1
 
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
     # agentBusy gate so the agent enqueue buttons gate independently (run in parallel).

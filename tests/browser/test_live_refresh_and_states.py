@@ -148,3 +148,30 @@ async def test_the_changes_review_facets_report_the_states_they_hold(page: Any, 
     assert labelled.get("Needs Review") == "1", f"Needs Review should hold the one pending proposal: {labelled}"
     assert labelled.get("Approved") == "1", f"Approved should hold the one approved proposal: {labelled}"
     assert labelled.get("Rejected") == "1", f"Rejected should hold the one rejected proposal: {labelled}"
+
+
+async def test_first_paint_shows_server_seeded_counts_before_any_poll(page: Any, seed: Any) -> None:
+    """phaze-s8xtd: the store boots from the server's numbers, so a real browser paints them with NO poll.
+
+    ``$store.pipeline`` used to boot at literal 0 and show "Agents online 0", an empty rail and "No orphaned enrich
+    work detected" until the first ``/pipeline/stats`` tick. Server-side tests can prove the seed is in the HTML;
+    only a browser can prove Alpine merged it over the defaults and the bindings painted it. The poll is ABORTED
+    here so nothing but the seed can account for the numbers on screen.
+    """
+    for index in range(3):
+        await seed.file(filename=f"<set-{index + 1:02d}>.mp3")
+    await page.route("**/pipeline/stats**", lambda route: route.abort())
+
+    await open_shell(page, "/s/discover")
+
+    assert await page.evaluate("Alpine.store('pipeline').seedKnown") == 1
+    assert await page.evaluate("Alpine.store('pipeline').discovered") == 3
+    rail_discover = page.locator('#rail-nav a[data-rail-stage="discover"] span.font-mono, a[data-rail-stage="discover"] span.font-mono').first
+    assert (await rail_discover.inner_text()).strip() == "3"
+    subtitle = await page.locator("#stage-workspace-subcount").inner_text()
+    assert "3 files" in subtitle
+    # The orphan cache has never been refreshed in this process's first moments, or if it has, it is KNOWN: either
+    # way the panel must not claim "none detected" while the count is unknown.
+    known = await page.evaluate("Alpine.store('pipeline').orphanKnown")
+    none_visible = await page.locator("details:has-text('No orphaned enrich work detected')").is_visible()
+    assert none_visible == bool(known)

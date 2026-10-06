@@ -405,6 +405,25 @@ async def test_shell_rail_marks_metadata_status_unavailable(
         AsyncMock(return_value=MetadataActivitySummary(0, None, True)),
     )
 
+    # phaze-s8xtd: the rail's first paint now comes from the shell's own server-side seed, which reads the poll's
+    # get_stage_progress rather than the workspace snapshot patched above -- so pin the seed to the same
+    # "metadata status unavailable" state this test is about, instead of letting an empty DB read as known zeros.
+    unavailable_seed = {
+        "seedKnown": 1,
+        "metadataStatusKnown": 0,
+        "metadataStatusDone": 0,
+        "metadataStatusTotal": 0,
+        "discovered": 0,
+        "analyzeDone": 0,
+        "analyzeTotal": 0,
+        "tracklistDone": 0,
+        "proposalsDone": 0,
+        "proposalsTotal": 0,
+        "agentOnline": 0,
+        "computeLanesActive": 0,
+    }
+    monkeypatch.setattr("phaze.routers.shell.build_pipeline_store_seed", AsyncMock(return_value=unavailable_seed))
+
     response = await client.get("/s/metadata")
 
     assert response.status_code == 200

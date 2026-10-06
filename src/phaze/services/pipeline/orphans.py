@@ -156,6 +156,19 @@ def get_cached_stage_orphan_counts() -> dict[str, int]:
     return dict(_orphan_cache)
 
 
+def stage_orphan_counts_known() -> bool:
+    """Whether the orphan cache has EVER been filled by a successful derivation (phaze-s8xtd).
+
+    ``_orphan_cache`` starts as ``{"metadata": 0, "analyze": 0}`` -- "seeded safe until first success" --
+    and :func:`get_cached_stage_orphan_counts` cannot tell that placeholder from a measured empty
+    ledger. A UI that renders "No orphaned work detected" off those zeros is claiming a measurement
+    nobody made, for as long as the process has not yet completed its first refresh. The stamp
+    :func:`refresh_stage_orphan_counts` writes only on success is the discriminator; it is NOT a freshness
+    check (an old success is still a known value -- D-03 keeps the last good counts on a failed refresh).
+    """
+    return _orphan_cache_expires_at > 0.0
+
+
 async def refresh_stage_orphan_counts() -> dict[str, int]:
     """Recompute the orphan counts off-request and rebind the module cache on SUCCESS ONLY (D-03).
 

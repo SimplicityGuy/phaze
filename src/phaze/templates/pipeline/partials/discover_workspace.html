@@ -2,7 +2,9 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
 {% set last_scan_when = recent_scans[0].created_at.strftime('%Y-%m-%d %H:%M') if recent_scans and recent_scans[0].created_at else 'never' %}
-{% set subcount = '`${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched`' %}
+{# phaze-s8xtd: the counts are real on first paint (shell.html seeds the store server-side); when that seed could not be
+   measured they read an em-dash, never a store default of 0. #}
+{% set subcount = '$store.pipeline.seedKnown ? `${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched` : `— files · last scan ' ~ last_scan_when ~ ' · — not yet enriched`' %}
 {% set _secondary = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
 {% set _recover = 'inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 px-3 font-jura text-xs font-medium uppercase tracking-wider text-warn hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:hover:bg-amber-950' %}
 
@@ -21,7 +23,15 @@
                 <h2 id="recovery-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">EXCEPTIONAL RECOVERY</h2>
                 <p class="mt-1 text-sm text-muted ">Recovery re-enqueues scheduled work that no queue or agent is currently processing. It is not required for routine scans.</p>
             </div>
-            <div x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan > 0" x-cloak>
+            {# phaze-s8xtd: three mutually exclusive states, decided on the server for the first paint (inline display:none,
+               which Alpine's x-show clears when its expression is true) and by the store afterwards: orphans FOUND, none
+               detected, and STATUS NOT YET KNOWN. The last one exists because the orphan counts are an in-process cache
+               that is born as zeros -- before its first successful refresh those zeros are not a measurement, so "No
+               orphaned enrich work detected" may only be claimed once `orphanKnown` says they are. #}
+            {% set orphan_seed = pipeline_seed or {} %}
+            {% set orphan_total = (orphan_seed.metadataOrphan or 0) + (orphan_seed.analyzeOrphan or 0) %}
+            {% set orphan_known = orphan_seed.seedKnown and orphan_seed.orphanKnown %}
+            <div x-show="$store.pipeline.orphanKnown && $store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan > 0" x-cloak{% if not (orphan_known and orphan_total > 0) %} style="display: none"{% endif %}>
                 {% call ui.actionable_alert('Orphaned work detected', 'Metadata or analysis work was scheduled but is no longer present in a live queue. Recover replays only that orphaned ledger work; already-running jobs remain deduplicated.', 'attention') %}
                     <span class="inline-flex flex-wrap items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
                         <button type="button"
@@ -38,7 +48,8 @@
                     <span id="recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
                 {% endcall %}
             </div>
-            <details x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan === 0" class="rounded-lg border border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel">
+            <p x-show="!$store.pipeline.orphanKnown" id="orphan-status-pending"{% if orphan_known %} style="display: none"{% endif %} class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-muted dark:border-phaze-border dark:bg-phaze-panel">Orphaned-work status not yet known. Checking…</p>
+            <details x-show="$store.pipeline.orphanKnown && $store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan === 0"{% if not (orphan_known and orphan_total == 0) %} style="display: none"{% endif %} class="rounded-lg border border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel">
                 <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">No orphaned enrich work detected</summary>
                 <div class="border-t border-gray-200 p-4 dark:border-phaze-border">
                     <p class="text-sm text-muted ">Use recovery only after diagnostics identify lost scheduled work. Active jobs disable the action to avoid competing with normal queue processing.</p>
