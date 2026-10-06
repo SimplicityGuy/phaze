@@ -5,8 +5,13 @@
 
 {% call ws.workspace(title=page_name('summary')) %}
 <div data-summary-overview class="space-y-6 p-4 sm:p-6">
-    <section aria-label="Collection progress" class="rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
-    <dl class="grid min-w-0 divide-y divide-gray-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4 dark:divide-phaze-border">
+    {# phaze-0r8cl: `divide-x` put a border on the trailing edge of EVERY tile but the last, so the 2-column
+       layout showed a stray divider down the right edge of the top row only. Same clipped-edge technique
+       as ui.metric_strip instead: every tile carries border-b/border-r, the dl is 1px wider and 1px
+       taller than the card, and the card's overflow-hidden clips the trailing-edge and bottom borders --
+       correct at any column count, no per-breakpoint divider rules. #}
+    <section aria-label="Collection progress" class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+    <dl class="-mb-px -mr-px grid min-w-0 sm:grid-cols-2 xl:grid-cols-4 *:border-b *:border-r *:border-gray-200 dark:*:border-phaze-border">
         {{ ui.metric("Files discovered", summary.total_files, "whole collection", "accent" if summary.total_files else "neutral") }}
         {{ ui.metric("Fully enriched", summary.resolved_enrichment if summary.resolved_enrichment is not none else '—', "same files with metadata and analysis done", "success") }}
         {{ ui.metric("Awaiting review", summary.proposal_pending, "current proposal queue", "attention" if summary.proposal_pending else "neutral") }}

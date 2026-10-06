@@ -111,6 +111,29 @@
 
 body { font-family: 'Inter', sans-serif; }
 .font-jura { font-family: 'Jura', sans-serif; }
+
+/* phaze-tsbdw: ONE table-header style app-wide. Every <th> carries `table-th` (Jura, 11px, uppercase,
+ * letter-spaced, muted), every <thead> carries `table-head` (the band and its border), and a sortable
+ * header's button carries `table-th-sort` (same type, hover colour, and the standard focus-visible
+ * ring the app's other controls use). Padding stays with each table (`px-*`/`py-*` utilities), and
+ * utilities outrank this layer, so a caller can still tint a header (an error table's red text).
+ * tests/shared/test_table_header_guard.py fails the build on a <th> that does not carry it. */
+@layer components {
+    .table-th {
+        font-family: 'Jura', sans-serif;
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        @apply text-muted;
+    }
+    .table-head {
+        @apply border-b border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel;
+    }
+    .table-th-sort {
+        @apply inline-flex items-center gap-1 rounded-sm uppercase tracking-[0.2em] hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-300;
+    }
+}
 .htmx-indicator { opacity: 0; transition: opacity 200ms; }
 .htmx-request .htmx-indicator { opacity: 1; }
 /* Refresh labels use display, not opacity, so only the current message exists

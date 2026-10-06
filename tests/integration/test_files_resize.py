@@ -222,7 +222,7 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
     assert 'style="width: 216px"' in colgroup
 
     head = body[body.index("<thead") : body.index("<tbody")]
-    assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
+    assert re.search(r'<th scope="col" class="table-th whitespace-nowrap[^"]*">Current state</th>', head)
 
     shell = (Path(__file__).parents[2] / "src/phaze/templates/shell/shell.html").read_text()
     defaults_match = re.search(r"defaults: \{([^}]*)\}", shell)

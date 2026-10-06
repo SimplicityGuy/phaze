@@ -383,6 +383,25 @@ def test_template_uses_shared_primitives_native_htmx_links_and_responsive_grids(
     assert all(link.get("hx-target") == "#stage-workspace" for link in links)
 
 
+def test_metric_grid_has_no_divider_on_a_rows_trailing_edge() -> None:
+    """phaze-0r8cl: ``divide-x`` bordered every tile's trailing edge but the last, so the 2-column layout
+    drew a stray divider down the right edge of the TOP row only. The grid now uses the clipped-edge
+    technique (border on every tile, 1px-oversized dl, overflow-hidden card), correct at any column count."""
+    summary = _derive(_progress())
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
+    soup = BeautifulSoup(env.get_template("shell/partials/summary_overview.html").render(summary=summary), "html.parser")
+    card = soup.select_one('section[aria-label="Collection progress"]')
+    assert card is not None
+    grid = card.select_one("dl")
+    assert grid is not None
+    card_classes = set(card.get("class", []))
+    grid_classes = set(grid.get("class", []))
+    assert "overflow-hidden" in card_classes
+    assert {"-mb-px", "-mr-px", "*:border-b", "*:border-r", "sm:grid-cols-2", "xl:grid-cols-4"} <= grid_classes
+    assert not any(token.startswith(("divide-", "sm:divide-")) or token == "dark:divide-phaze-border" for token in grid_classes)
+
+
 def test_template_renders_unknown_activity_and_intersection_as_em_dashes() -> None:
     summary = _derive(
         _progress(),

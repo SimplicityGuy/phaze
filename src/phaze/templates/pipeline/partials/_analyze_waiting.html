@@ -16,11 +16,11 @@
         <p role="status" class="px-4 py-4 text-sm text-muted ">{% if waiting.page > 1 %}No more waiting files.{% else %}Nothing is waiting on the local lane.{% endif %}</p>
     {% else %}
     {% call ui.data_table("Analyses waiting to start", id="analyze-waiting-table") %}
-        <thead class="text-[10px] uppercase tracking-wider text-muted">
+        <thead class="table-head">
             <tr>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">File</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">State</th>
-                <th scope="col" class="px-4 py-2 font-jura font-medium">Enqueued</th>
+                <th scope="col" class="table-th px-4 py-2">File</th>
+                <th scope="col" class="table-th px-4 py-2">State</th>
+                <th scope="col" class="table-th px-4 py-2">Enqueued</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">

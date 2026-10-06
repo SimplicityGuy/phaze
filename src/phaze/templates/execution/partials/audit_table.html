@@ -4,7 +4,7 @@
     {{ ui.state('error', 'Audit history unavailable', 'Phaze could not read the audit history. Retry this view; no empty result has been inferred.') }}
     {% elif logs %}
     {% call ui.data_table('File rename and move audit history', 'audit-scope-description', 'audit-table') %}
-        <thead class="text-xs font-semibold text-muted uppercase border-b border-gray-200 dark:border-phaze-border">
+        <thead class="table-head">
                 <tr>
                     {% for label in ["Operation", "Source Path", "Destination Path", "SHA256 Verified", "Status", "Timestamp", "Error"] %}
                     {% if sort and sort.is_sortable(label) %}
@@ -14,23 +14,23 @@
                        ordering of the whole corpus. aria-sort (contract rule 5) is the accessible signal;
                        the caret is decorative and aria-hidden. hx-target is the table's EXISTING host
                        container (contract's `target`), so this emits no OOB fragment and no new id. #}
-                    <th scope="col" class="px-4 py-3" aria-sort="{{ sort.aria_sort(label) }}">
+                    <th scope="col" class="table-th px-4 py-3" aria-sort="{{ sort.aria_sort(label) }}">
                         <button type="button"
                                 hx-get="{{ sort.url_for(label) }}"
                                 hx-target="{{ sort.contract.target }}"
                                 hx-swap="innerHTML"
-                                class="inline-flex items-center gap-1 uppercase hover:text-gray-700 dark:hover:text-gray-300">
+                                class="table-th-sort">
                             {{ label }}<span aria-hidden="true">{{ sort.indicator(label) }}</span>
                         </button>
                     </th>
                     {% else %}
-                    <th scope="col" class="px-4 py-3">{{ label }}</th>
+                    <th scope="col" class="table-th px-4 py-3">{{ label }}</th>
                     {% endif %}
                     {% endfor %}
                     {# phaze-37i1.3: "Details" is its own unsortable column, appended after "Error" --
                        it triggers the per-entry drill-down (audit_detail_row.html), not a data field,
                        so it has no place in the column_sort.py contract's sortable label set above. #}
-                    <th scope="col" class="px-4 py-3"><span class="sr-only">Details</span></th>
+                    <th scope="col" class="table-th px-4 py-3"><span class="sr-only">Details</span></th>
                 </tr>
         </thead>
             <tbody>

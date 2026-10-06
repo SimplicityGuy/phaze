@@ -83,7 +83,7 @@
        becomes unusable on touch. Scoping the scroll to the table keeps the page itself fixed. #}
     <div class="relative overflow-x-auto">
     <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
-        <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-muted dark:border-phaze-border dark:bg-phaze-panel ">
+        <thead class="table-head">
             <tr>
                 {% if row_select_ids %}
                 {# Select-all toggles only the checkboxes it is ALLOWED to: `:not(:disabled)` skips
@@ -91,7 +91,7 @@
                    never quietly loads the submission with terminal ids. It is scoped to `$root`
                    (the caller's x-data element), so a page holding two selectable tables could not
                    have one header toggle the other's rows. #}
-                <th scope="col" class="w-10 px-6 py-2.5">
+                <th scope="col" class="table-th w-10 px-6 py-2.5">
                     <input type="checkbox"
                            @change="$root.querySelectorAll('input[name=\'{{ select_name }}\']:not(:disabled)').forEach(cb => cb.checked = $event.target.checked); $dispatch('selection-changed')"
                            class="rounded border-gray-300 dark:border-phaze-border"
@@ -108,17 +108,17 @@
                    aria-hidden, so a screen-reader user is not read a lone glyph.
                    hx-target is the table's EXISTING host container, carried on the contract — this
                    emits no OOB fragment and introduces no new id, so it cannot duplicate one. #}
-                <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                <th scope="col" class="table-th px-6 py-2.5" aria-sort="{{ sort.aria_sort(col) }}">
                     <button type="button"
                             hx-get="{{ sort.url_for(col) }}"
                             hx-target="{{ sort.contract.target }}"
                             hx-swap="innerHTML"
-                            class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
+                            class="table-th-sort">
                         {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                     </button>
                 </th>
                 {% else %}
-                <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                <th scope="col" class="table-th px-6 py-2.5">{{ col }}</th>
                 {% endif %}
                 {% endfor %}
             </tr>

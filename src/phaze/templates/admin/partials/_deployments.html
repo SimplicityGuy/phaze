@@ -11,7 +11,7 @@
         <h3 class="mb-2 font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">{{ host }}</h3>
         <div class="relative overflow-x-auto">
             <table class="min-w-full text-left text-xs">
-                <thead class="text-muted"><tr><th class="px-2 py-1">Container</th><th class="px-2 py-1">App</th><th class="px-2 py-1">Image</th><th class="px-2 py-1">Running digest</th><th class="px-2 py-1">Observed</th></tr></thead>
+                <thead class="table-head"><tr><th class="table-th px-2 py-1">Container</th><th class="table-th px-2 py-1">App</th><th class="table-th px-2 py-1">Image</th><th class="table-th px-2 py-1">Running digest</th><th class="table-th px-2 py-1">Observed</th></tr></thead>
                 <tbody>
                     {% for deployment, stale in containers %}
                     <tr class="border-t border-gray-200 dark:border-phaze-border">

@@ -78,11 +78,11 @@
     <div class="mt-4">
         {% if diagnostics_page.rows %}
         {% call ui.data_table('Skipped orphan companion paths') %}
-            <thead class="border-b border-gray-200 text-left text-xs font-semibold uppercase text-muted dark:border-phaze-border">
+            <thead class="table-head">
                 <tr>
-                    <th scope="col" class="px-4 py-3">Configured root</th>
-                    <th scope="col" class="px-4 py-3">Type</th>
-                    <th scope="col" class="px-4 py-3">Normalized path</th>
+                    <th scope="col" class="table-th px-4 py-3">Configured root</th>
+                    <th scope="col" class="table-th px-4 py-3">Type</th>
+                    <th scope="col" class="table-th px-4 py-3">Normalized path</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">

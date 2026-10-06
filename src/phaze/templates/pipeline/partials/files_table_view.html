@@ -85,22 +85,7 @@
        surface (no separate failures page). Rendered ABOVE the table and OUTSIDE the rows guard so the
        operator can always clear a filter that returned nothing. #}
     {% include "pipeline/partials/_status_filter_bar.html" %}
-    {% if not files_page.rows %}
-    {% if active_bucket == 'failed' and active_stage %}
-    {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
-    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
-    {% elif active_bucket %}
-    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
-       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
-       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
-       contract), so an unfiltered corpus that happens to be empty must fall through to the
-       unfiltered "No files yet" copy below, not this one. #}
-    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
-    {% else %}
-    {# Unfiltered empty state (Copywriting Contract). #}
-    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
-    {% endif %}
-    {% else %}
+    {% if files_page.rows %}
     {# Bulk "Retry all failed · {stage}" (87-07, UI-02 / D-04): one primary (accent) button on the
        failed-filter view of a MANUALLY-retried enrich stage (metadata/analyze). Posts to the already-live,
        Phase-30-hardened bulk endpoint; the ack swaps into the result span (ints/bools only -- no operator
@@ -122,7 +107,7 @@
        a labeled control rather than through headers that are not displayed at that breakpoint. #}
     <form action="/s/files" method="get" aria-label="Sort files"
           hx-get="/s/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true" hx-trigger="change"
-          class="flex flex-wrap items-end gap-2 border-y border-gray-200 px-4 py-3 xl:hidden dark:border-phaze-border">
+          class="flex flex-wrap items-end gap-2 border-y border-gray-200 px-6 py-3 xl:hidden dark:border-phaze-border">
         <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
         {% if active_stage %}<input type="hidden" name="stage" value="{{ active_stage }}">{% endif %}
         {% if active_bucket %}<input type="hidden" name="bucket" value="{{ active_bucket }}">{% endif %}
@@ -143,11 +128,31 @@
             </select>
         </label>
     </form>
+    {% endif %}
+    {# phaze-bx7wf: the table region (empty state or table, plus the pager) sits in the SAME inner framed card
+       the stage pages' Eligible files table uses (ui.table_card_class); mx-6 keeps its edge on the 24px page gutter. #}
+    <div class="mx-6 mb-6 mt-4 {{ ui.table_card_class }}">
+    {% if not files_page.rows %}
+    {% if active_bucket == 'failed' and active_stage %}
+    {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
+    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
+    {% elif active_bucket %}
+    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
+       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
+       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
+       contract), so an unfiltered corpus that happens to be empty must fall through to the
+       unfiltered "No files yet" copy below, not this one. #}
+    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
+    {% else %}
+    {# Unfiltered empty state (Copywriting Contract). #}
+    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
+    {% endif %}
+    {% else %}
     {# phaze-cvn6.3: user-resizable columns, dependency-free (no JS build step -- Alpine only).
        A `<colgroup>` is the single point of truth for every column's rendered width: EACH header's
        resize handle drags `$store.colResize` (registered in base.html/shell.html next to the theme
        store, same localStorage-persistence shape) and every `<col>` here reads that same store, so a
-       header <th> and its column's cells always share one width with no per-cell duplication.
+       header <th class="table-th"> and its column's cells always share one width with no per-cell duplication.
 
        Why a store and not component-local state: this whole `<div>` (colgroup + thead + tbody) is
        exactly what the sort/filter/pager hx-get swaps replace via innerHTML (see the docstring
@@ -181,11 +186,11 @@
                 <col data-col="Current state" data-default-width="216" style="width: 216px">
                 <col data-col="Details" data-default-width="92" style="width: 92px">
             </colgroup>
-            <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-muted dark:border-phaze-border dark:bg-phaze-panel ">
+            <thead class="table-head">
                 <tr>
                     {# phaze-cvn6.1: ONE loop over ALL EIGHT header labels -- the two real FileRecord
                        columns and the six stage-matrix columns alike. Before this there were two
-                       loops, and the second emitted plain <th>s unconditionally, so the six stage
+                       loops, and the second emitted plain <th class="table-th">s unconditionally, so the six stage
                        headers could not be sorted no matter what the contract whitelisted (see the
                        FILES_SORT comment in routers/pipeline.py for the gap-vs-regression verdict).
                        Collapsing them means a header's sortability is decided in exactly ONE place --
@@ -207,19 +212,19 @@
                        phaze-cvn6.3: the resize handle is added ONCE, after both branches (identical
                        markup either way -- same "one place" reasoning cvn6.1 used for sortability: a
                        column's resizability is never decided per-branch, so a future column cannot
-                       land in one arm and silently lose its handle). The handle sits INSIDE the <th>,
+                       land in one arm and silently lose its handle). The handle sits INSIDE the <th class="table-th">,
                        AFTER the sort button, so it never lands between `{{ col }}` and the caret
                        span -- test_stage_header_labels_match_the_stage_matrix_cells anchors on that
                        exact adjacency. #}
                     {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                     {% if sort and sort.is_sortable(col) %}
-                    <th scope="col" class="relative px-3 py-2 font-medium{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}" aria-sort="{{ sort.aria_sort(col) }}">
+                    <th scope="col" class="table-th relative px-3 py-2{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}" aria-sort="{{ sort.aria_sort(col) }}">
                         <button type="button"
                                 hx-get="{{ sort.url_for(col) }}"
                                 hx-target="{{ sort.contract.target }}"
                                 hx-swap="innerHTML"
                                 hx-push-url="true"
-                                class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
+                                class="table-th-sort">
                             {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                         </button>
                         <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
@@ -228,7 +233,7 @@
                               @pointerdown="startResize($event, '{{ col }}')"></span>
                     </th>
                     {% else %}
-                    <th scope="col" class="relative px-3 py-2 font-medium{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}">
+                    <th scope="col" class="table-th relative px-3 py-2{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}">
                         {{ col }}
                         <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
                               role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
@@ -237,8 +242,8 @@
                     </th>
                     {% endif %}
                     {% endfor %}
-                    <th scope="col" class="whitespace-nowrap px-3 py-2 font-medium">Current state</th>
-                    <th scope="col" class="px-3 py-2 font-medium"><span class="sr-only">File details</span></th>
+                    <th scope="col" class="table-th whitespace-nowrap px-3 py-2">Current state</th>
+                    <th scope="col" class="table-th px-3 py-2"><span class="sr-only">File details</span></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
@@ -349,3 +354,4 @@
         </div>
     {% endcall %}
     {% endif %}
+    </div>
