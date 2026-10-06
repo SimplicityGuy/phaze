@@ -14,6 +14,8 @@ focused, and dismissible back to where the operator was.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import date
 from typing import Any
 
@@ -404,3 +406,83 @@ async def test_sorting_a_column_re_renders_its_own_aria_sort(page: Any, seed: An
         "the previously-sorted column still announces itself as sorted — two columns now claim to order the table"
     )
     assert "sort=type" in page.url, "the chosen order was not pushed, so a reload would silently drop it"
+
+
+async def _focus_state(page: Any) -> dict[str, Any]:
+    """Describe where focus is relative to the record dialog, and what is inert / aria-hidden behind it."""
+    return dict(
+        await page.evaluate(
+            """() => {
+            const dialog = document.getElementById('record-body').closest('[role=dialog]');
+            const el = document.activeElement;
+            return {
+                inside: !!el && dialog.contains(el),
+                tag: el ? el.tagName : 'nothing',
+                dialogTabindex: dialog.getAttribute('tabindex'),
+                // Any ancestor of the dialog carrying aria-hidden would be Chrome's 'Blocked aria-hidden' trigger.
+                ariaHiddenAncestor: !!dialog.parentElement.closest('[aria-hidden=true]'),
+                inertSiblings: Array.from(document.body.children).filter((c) => c.hasAttribute('inert')).length,
+                ariaHiddenSiblings: Array.from(document.querySelectorAll('[aria-hidden=true]')).filter((c) => c.hasAttribute('data-aria-hidden')).length,
+            };
+        }"""
+        )
+    )
+
+
+async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(page: Any, seed: Any) -> None:
+    """The drawer's whole focus contract, observed from the very first moment (phaze-x1cv5).
+
+    The earlier tests only look AFTER ``#record-body`` has loaded. Between the click and the fetch
+    landing, focus used to stay on the Details button while the background was hidden from assistive
+    tech, which is what Chrome reports as ``Blocked aria-hidden on an element because its descendant
+    retained focus``. So this test holds the response, reads focus while the skeleton is up, and then:
+
+    * asserts focus is already inside the dialog (the panel itself, ``tabindex=-1``) with no console
+      message mentioning ``aria-hidden`` and the background made ``inert`` rather than ``aria-hidden``;
+    * lets the record load and presses Tab more times than there are controls, asserting focus never leaves;
+    * presses Esc and asserts focus returns to the Details button that opened it.
+    """
+    target = await seed.file(filename="<track-01>.mp3")
+    messages: list[str] = []
+    page.on("console", lambda message: messages.append(f"{message.type}: {message.text}"))
+
+    release = asyncio.Event()
+
+    async def _slow_record(route: Any) -> None:
+        await release.wait()
+        await route.continue_()
+
+    await open_shell(page, "/s/files")
+    await settled(page)
+    await page.route("**/record/*", _slow_record)
+    await page.click(_details_button(target.id))
+    await page.wait_for_function("() => document.querySelector('[x-ref=panel]').checkVisibility()")
+
+    # Bounded wait, not a bare read: takeFocus() runs on the animation frame after the reveal, so
+    # the instant the panel reads as visible is legitimately one frame before focus lands.
+    with contextlib.suppress(Exception):  # a timeout falls through to the descriptive assertion below
+        await page.wait_for_function(
+            "() => document.getElementById('record-body').closest('[role=dialog]').contains(document.activeElement)", timeout=3_000
+        )
+    state = await _focus_state(page)
+    assert state["inside"], f"focus stayed outside the open drawer while it loaded — on {state['tag']}"
+    assert state["inertSiblings"] > 0, "the page behind the drawer is not inert"
+    assert not state["ariaHiddenAncestor"], "an ancestor of the drawer is aria-hidden"
+
+    release.set()
+    await _wait_for_record(page)
+    await _settled_focus_in_record(page)
+
+    for _ in range(40):
+        await page.keyboard.press("Tab")
+        assert (await _focus_state(page))["inside"], "Tab moved focus out of the open drawer"
+    for _ in range(5):
+        await page.keyboard.press("Shift+Tab")
+        assert (await _focus_state(page))["inside"], "Shift+Tab moved focus out of the open drawer"
+
+    await page.keyboard.press("Escape")
+    await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
+    assert await settled_focus(page, "aria-label") == f"Open details for {target.original_filename}"
+    assert await page.evaluate("document.querySelectorAll('[inert]').length") == 0, "the page stayed inert after the drawer closed"
+    blocked = [m for m in messages if "aria-hidden" in m.lower()]
+    assert not blocked, f"console reported an aria-hidden problem: {blocked}"
