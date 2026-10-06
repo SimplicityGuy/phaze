@@ -47,7 +47,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from phaze.database import get_session
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
@@ -181,7 +181,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     DAG canvas seeds; they are honored only during a real ``/pipeline/stats`` swap).
 
     Per-stage DB-backed context is built by :data:`_STAGE_CONTEXT_BUILDERS` (a stage absent
-    from that map, currently only "operations", keeps the base context as-is). The shell
+    from that map, currently none, keeps the base context as-is). The shell
     context keys (``stage`` / ``stage_partial`` / ``oob_counts``) that a builder's own update
     would otherwise shadow are re-asserted INSIDE that builder's return value (see
     :func:`_analyze_stage_context`, :func:`_files_stage_context`, :func:`_agents_stage_context`),
@@ -221,6 +221,17 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 async def shell_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """GET / -- render the actionable Summary overview as the shell default."""
     return await _render_stage(request, "summary", session)
+
+
+@router.get("/s/operations", include_in_schema=False)
+async def shell_operations_redirect() -> RedirectResponse:
+    """GET /s/operations -- the removed Routing page; its force-local control now lives on Config.
+
+    Redirects (307) rather than 404s so bookmarks, the header warning of older cached pages and any
+    external links keep landing on the control (phaze-6hd58). Declared BEFORE ``/s/{stage}`` so the
+    whitelist below never sees it.
+    """
+    return RedirectResponse(url="/s/runtime-config", status_code=307)
 
 
 @router.get("/s/{stage}", response_class=HTMLResponse)

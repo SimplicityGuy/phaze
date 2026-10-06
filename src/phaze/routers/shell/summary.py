@@ -203,7 +203,7 @@ def _attention_item(priority: int, title: str, detail: str, href: str, action: s
 def _awaiting_cloud_target(hold_reason: str) -> tuple[str, str]:
     """Resolve the (href, action) pair that best explains an awaiting-cloud hold reason."""
     if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
-        return "/s/operations", "Open Routing"
+        return "/s/runtime-config", "Open Config"
     if hold_reason in {"held — no cloud backend reachable", "held — no fileserver agent online"} or hold_reason.startswith(
         "held — all lanes at capacity"
     ):

@@ -1,4 +1,5 @@
-{# phaze-mvq8z.6: the Runtime Config utility pane, hosted at /s/runtime-config
+{# phaze-mvq8z.6: the Config utility pane (renamed from its old name; phaze-6hd58 renamed it and folded the
+   force-local routing override in as its first section), hosted at /s/runtime-config
    (routers/shell/stage_maps.py UTILITY_PANES["runtime-config"]) -- a content-only partial (no
    {% extends %}, no document-level tags; contract rule 9) composing the shared
    _workspace_scaffold.html, mirroring admin/agents.html's own conversion (phaze-uvmcr.4).
@@ -9,7 +10,7 @@
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount %}{{ reloadable_keys | length }} reloadable key{{ '' if reloadable_keys | length == 1 else 's' }} · {{ restart_only_keys | length }} restart-only{% endset %}
-{% call ws.workspace(title="RUNTIME CONFIG", subcount=subcount|tojson|forceescape) %}
+{% call ws.workspace(title="CONFIG", subcount=subcount|tojson|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="text-sm text-muted">
             Live overrides for hot-reloadable process configuration. A key set here takes effect without a restart on
@@ -18,6 +19,9 @@
             (ADR-0019 (runtime config hot-reload) §14). Only heartbeating workers report what is in force.
             Restart-only keys below cannot be changed live.
         </p>
+    </div>
+    <div class="px-4 pt-4 sm:px-6">
+        {% include "shell/partials/_routing_override_section.html" %}
     </div>
     <div class="p-4 sm:p-6">
         {% include "admin/partials/_runtime_config_table.html" %}

@@ -162,8 +162,8 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
 @pytest.mark.parametrize(
     ("reason", "href", "action"),
     [
-        ("cloud routing disabled", "/s/operations", "Open Routing"),
-        ("held — cloud routing paused (force-local)", "/s/operations", "Open Routing"),
+        ("cloud routing disabled", "/s/runtime-config", "Open Config"),
+        ("held — cloud routing paused (force-local)", "/s/runtime-config", "Open Config"),
         ("held — no cloud backend reachable", "/s/agents", "Inspect Compute"),
         ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Inspect Compute"),
         ("held — no fileserver agent online", "/s/agents", "Inspect Compute"),

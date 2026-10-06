@@ -24,7 +24,7 @@
    horizontal-overflow assertion, and invisible to every markup test because it is pure computed
    layout. The header's children are all `shrink-0` except the search field, so the row cannot
    absorb an extra control by squeezing; the space has to come from the gutters. #}
-<header class="h-14 shrink-0 flex items-center gap-2 px-2 sm:gap-4 sm:px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+<header class="h-14 shrink-0 flex items-center gap-1 px-2 sm:gap-4 sm:px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
 
     {# phaze-tzy6s.13: the drawer trigger for phone/tablet. Hidden at `lg` and up, where rail.html's
        expanded <aside> is the navigation — so exactly ONE navigation affordance is reachable at any
@@ -85,7 +85,7 @@
        refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
     <div class="ml-auto flex items-center gap-2.5 text-xs text-muted " x-data>
         {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
-           an explicit warning linked to the Operations control that can revert it. #}
+           an explicit warning linked to the Config control that can revert it. #}
         {% with oob=false %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
@@ -99,6 +99,21 @@
              <span>Lanes active&nbsp;<span class="font-mono" x-text="$store.pipeline.computeLanesActive">0</span></span>
         </a>
     </div>
+
+    {# phaze-6hd58: Config opens from here, not from the rail. A native link (works without JS) that HTMX
+       enhances like the rail's destinations; `data-rail-stage` lets shell.html's syncRailSelection keep
+       aria-current in step after an HTMX navigation (the header is not re-rendered by a stage swap),
+       and the server renders it correctly for a direct load. #}
+    <a href="/s/runtime-config"
+       id="config-trigger"
+       data-rail-stage="runtime-config"
+       hx-get="/s/runtime-config" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+       {% if stage == 'runtime-config' %}aria-current="page"{% endif %}
+       aria-label="Config"
+       title="Config"
+       class="shrink-0 p-2 rounded-md text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5" aria-hidden="true"><path d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.774.773c.39.39.44.997.12 1.45l-.527.738c-.25.35-.272.806-.107 1.203.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.452.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.45.12l-.737-.527c-.35-.25-.807-.272-1.205-.108-.396.166-.71.506-.78.93l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527a1.125 1.125 0 0 1-1.449-.12l-.774-.773a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.273-.807.108-1.204-.165-.397-.505-.71-.93-.78l-.893-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.893-.149c.425-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.738.527c.35.25.806.272 1.204.108.397-.165.71-.505.78-.93l.15-.894ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>
+    </a>
 
     {# Theme toggle (auto/dark/light) — lifted verbatim from base.html (SHELL-04). #}
     <div class="shrink-0" x-data>

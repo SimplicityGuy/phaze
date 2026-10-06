@@ -181,7 +181,7 @@ async def test_closed_drawer_contributes_no_tab_stops(phone_page: Any) -> None:
             };
         }"""
     )
-    assert state["total"] >= 14, f"expected the full destination set, found {state['total']}"
+    assert state["total"] >= 13, f"expected the full destination set, found {state['total']}"
     assert state["railVisibility"] == "hidden", (
         f"the closed drawer computes visibility:{state['railVisibility']} — a transform-only drawer keeps "
         "its tab stops, so a keyboard user tabs through every off-screen destination first"

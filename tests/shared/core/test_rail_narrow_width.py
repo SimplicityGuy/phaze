@@ -87,7 +87,7 @@ def test_the_icon_only_collapse_is_gone() -> None:
 def test_labels_are_visible_text_at_every_width() -> None:
     """Every destination label is real visible text, never sr-only and never display:none."""
     labels = _label_span_attrs()
-    assert len(labels) >= 14, f"expected >=14 node label spans, found {len(labels)}"
+    assert len(labels) >= 13, f"expected >=13 node label spans, found {len(labels)}"
     for attrs in labels:
         assert "max-lg:sr-only" not in attrs, f"label hidden from sighted users below lg: <span{attrs}>"
         assert "max-lg:hidden" not in attrs, f"label removed from the a11y tree below lg: <span{attrs}>"
@@ -155,7 +155,7 @@ def test_header_carries_the_drawer_trigger_only_below_lg() -> None:
 
 def test_glyphs_present() -> None:
     glyphs = re.findall(r'<svg\b[^>]*aria-hidden="true"[^>]*>', _rail_source(), re.DOTALL)
-    assert len(glyphs) >= 14, f"expected >=14 aria-hidden inline-SVG glyphs, found {len(glyphs)}"
+    assert len(glyphs) >= 13, f"expected >=13 aria-hidden inline-SVG glyphs, found {len(glyphs)}"
     for glyph in glyphs:
         assert 'viewBox="0 0 24 24"' in glyph, f"glyph not using 24x24 viewBox: {glyph}"
         assert 'stroke="currentColor"' in glyph, f"glyph not using currentColor: {glyph}"
@@ -165,19 +165,19 @@ def test_glyphs_present() -> None:
 def test_titles_present_but_never_the_only_label() -> None:
     """``title`` is retained as a supplement for truncation — it is not the label."""
     tags = _navigable_node_tags()
-    assert len(tags) >= 14, f"expected >=14 navigable nodes, found {len(tags)}"
+    assert len(tags) >= 13, f"expected >=13 navigable nodes, found {len(tags)}"
     for attrs in tags:
         assert "title=" in attrs, f"navigable node missing title tooltip: <...{attrs}>"
     # The visible labels asserted in test_labels_are_visible_text_at_every_width are what make the
     # titles a supplement rather than the sole carrier; both tests must hold together.
-    assert len(_label_span_attrs()) >= 14
+    assert len(_label_span_attrs()) >= 13
 
 
 def test_focus_and_current_preserved() -> None:
     for attrs in _navigable_node_tags():
         assert "focus-visible:" in attrs, f"navigable node lost its focus-visible ring: <...{attrs}>"
     stage_links = re.findall(r'href="/s/[a-z]+"', _rail_source())
-    assert len(stage_links) >= 14, f"expected >=14 /s/ stage links, found {len(stage_links)}"
+    assert len(stage_links) >= 13, f"expected >=13 /s/ stage links, found {len(stage_links)}"
     assert 'aria-current="page"' in _rail_source(), "the active-node idiom was lost"
 
 

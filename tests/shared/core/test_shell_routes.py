@@ -65,7 +65,6 @@ _RAIL_STAGES = [
 # utility -- so registering a pane in UTILITY_PANES is what buys it this coverage, with no
 # bespoke per-pane test of its own.
 _UTILITY_PANE_STAGES = [
-    "operations",
     "audit",
     "agents",
 ]
