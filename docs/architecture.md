@@ -738,15 +738,19 @@ dated v7 design specifications describe the original cutover, not every later re
 
 ### Shell layout
 
-- **Left — rail (navigation spine).** Fourteen destinations in four labelled groups, each
+- **Left — rail (navigation spine).** Thirteen destinations in four labelled groups, each
   pipeline node carrying a live count bound to `$store.pipeline`:
   **Overview** (Summary · Files) · **Pipeline** (Discover · Metadata · Analyze · Tracklists ·
   Propose changes) · **Review** (Changes Review · Duplicates · Cue sheets · Execute approved) ·
-  **Operations** (Routing · Audit log · Agents & compute lanes). `/s/operations`, `/s/audit` and
+  **Operations** (Audit log · Agents & compute lanes). `/s/audit` and
   `/s/agents` are resolved through the shell's `UTILITY_PANES` whitelist (phaze-uvmcr.1/.4) the
   same way a DAG stage is, so they swap into `#stage-workspace` rather than navigating to the
   legacy `/audit/` / `/admin/agents` pages (which now 301-redirect into these panes, preserving
-  the query string).
+  the query string). Config (`/s/runtime-config`, titled "Config") is a utility pane too but is not
+  a rail destination: it opens from the gear icon (`#config-trigger`) in the header, and carries the
+  force-local routing override (`shell/partials/_routing_override_section.html`). The former Routing
+  page was removed (phaze-6hd58), so the rail went from fourteen destinations to thirteen, and
+  `/s/operations` now 307-redirects to `/s/runtime-config`.
 
   Two consolidations produced the grouping above, and both are easy to mis-read from an older
   revision of this file. The Enrich group lost its Fingerprint node and the Identify group its

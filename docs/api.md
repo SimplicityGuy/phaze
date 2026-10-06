@@ -14,9 +14,11 @@ The responsive console shell. `shell.py` owns the application root (`GET /`) and
 
 `/record/{file_id}` and `/files/{file_id}` are the same record behind two presentations, both served by
 `record.py` off one `build_file_record_context` call: `/record/` returns the drawer *fragment* the shell
-swaps in place (`record_body.html`, `record_presentation="drawer"`), while `/files/` returns the
-standalone, linkable *document* (`record_page.html`, `record_presentation="page"`). Both 404 into their
-own presentation's not-found rendering rather than raising.
+swaps in place (`record_body.html`, `record_presentation="drawer"`), while `/files/` returns a
+standalone, linkable *page* — the full app shell (`shell/shell.html`, with the rail, header and status
+strip) whose workspace is the record (`record/_record_page_body.html`, `record_presentation="page"`).
+Both 404 into their own presentation's not-found rendering rather than raising; the page's 404 renders
+that not-found section inside the shell.
 
 The record context reads the narrow migration-`063` projection rather than decoding each window's
 large `features` JSONB: `SetProfile` plus `AnalysisWindow.energy`, `.camelot`, and `.mood_scores`
