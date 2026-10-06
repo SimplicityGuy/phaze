@@ -43,9 +43,11 @@ from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, g
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
 from phaze.services.record_metadata import build_metadata_card
+from phaze.services.route_control import get_route_control
 from phaze.services.set_similarity import SimilarSet, find_similar_sets
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
+from phaze.version import APP_VERSION
 from phaze.web.static import static_asset_url
 from phaze.web.template_globals import register_set_glyph_globals
 
@@ -179,7 +181,7 @@ async def build_file_record_context(
 
     ``include_similar_sets`` is the one deliberate exception to that presentation-agnosticism
     (phaze-zb5y9), and it is a read the OTHER two presentations cannot render: ``similar_sets``
-    appears only in ``record_page.html``'s sidebar, while the drawer (``record_body.html``) and
+    appears only in ``_record_page_body.html``'s sidebar, while the drawer (``record_body.html``) and
     the poster (``poster.svg``) have no slot for it. The similarity scan is a corpus-wide scan of
     ``set_profile``; the drawer is issued on EVERY Files-table row click, so paying that scan
     there bought nothing and cost one full-corpus scan per click. It defaults to ``False`` so a
@@ -357,21 +359,33 @@ async def file_record_page(
     file_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Return an addressable full document backed by the canonical record context."""
+    """Return an addressable full page backed by the canonical record context.
+
+    phaze-dnmew: rendered INSIDE the app shell (``shell/shell.html``) -- rail, header with the ⌘K launcher
+    and status strip, theme toggle, toast container -- with the record in the ``#stage-workspace``, so a
+    deep link never strands the operator. ``stage`` is ``files`` (the rail's Files node is the record's
+    parent), and a missing file renders the same not-found section in the shell with a 404.
+    """
     # phaze-zb5y9: the ONLY presentation with a "more like this set" slot, so the only one that
     # pays the corpus-wide similarity scan.
     context = await build_file_record_context(file_id, session, include_similar_sets=True)
-    if context is None:
-        return templates.TemplateResponse(
-            request=request,
-            name="record/record_page.html",
-            context={"request": request, "file": None, "record_presentation": "page"},
-            status_code=404,
-        )
+    file = context["file"] if context is not None else None
+    shell_context: dict[str, Any] = {
+        **(context or {"file": None}),
+        "request": request,
+        "record_presentation": "page",
+        "stage": "files",
+        "stage_partial": "record/_record_page_body.html",
+        "document_title": file.original_filename if file is not None else "File not found",
+        "app_version": APP_VERSION,
+        "oob_counts": False,
+        "force_local": await get_route_control(session),
+    }
     return templates.TemplateResponse(
         request=request,
-        name="record/record_page.html",
-        context={**context, "request": request, "record_presentation": "page"},
+        name="shell/shell.html",
+        context=shell_context,
+        status_code=200 if context is not None else 404,
     )
 
 

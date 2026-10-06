@@ -718,6 +718,11 @@ def build_analysis_timeline_context(
         "has_coarse_windows": bool(coarse),
         "total_sec": total_sec,
         "timeline_w": timeline_w,
+        # phaze-dnmew: a timeline whose window count does not force it wider than the TIMELINE_W baseline is
+        # sized to its container, not to 640px -- every lane is a viewBox-scaled SVG, so it stretches
+        # losslessly, and a fixed 640px floor made a 3-window set overflow (and light the scroll cue)
+        # in the shell's narrower workspace. Only a long set, wider than the baseline, scrolls.
+        "timeline_fluid": timeline_w <= TIMELINE_W,
         "timeline_h": TIMELINE_H,
         "lane_h": LANE_H,
         "bpm_points": spark.points,
