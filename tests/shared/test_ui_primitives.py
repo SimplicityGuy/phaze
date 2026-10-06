@@ -44,7 +44,11 @@ def test_metric_strip_uses_semantic_markup_and_palette_tones() -> None:
     assert 'aria-label="Pipeline metrics"' in html
     assert "<dl" in html and html.count("<dt") == 2 and html.count("<dd") == 4
     assert "text-info" in html and "text-danger" in html
-    assert "overflow-x-auto" in html
+    # kqiil: tiles wrap onto further rows instead of scrolling; no tile may be sized to the widest one.
+    assert "min-w-max" not in html and "grid-flow-col" not in html and "auto-cols-fr" not in html
+    assert "overflow-x-auto" not in html
+    assert "flex-wrap" in html
+    assert "Failed" in html and 'title="needs attention"' in html
 
 
 def test_metric_can_be_a_direct_oob_metric_strip_child() -> None:
