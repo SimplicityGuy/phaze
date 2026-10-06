@@ -12,13 +12,14 @@ request schema has no agent_id field, so accidental body forgery returns
 422 `extra_forbidden`.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, cast
 import unicodedata
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import Executable, func, literal_column, select
+from sqlalchemy import Executable, Row, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -32,9 +33,10 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
-from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
+from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertRecord, FileUpsertResponse
 from phaze.services import backend_breaker, s3_staging
 from phaze.services.live_sentinel import ensure_live_sentinel
+from phaze.services.scan_deletion import delete_file_cascade, invalidate_content_state, retention_blockers
 from phaze.services.text_repair import repair_mojibake
 
 
@@ -63,31 +65,16 @@ _PRESIGN_DOWNLOADABLE_STATUSES: frozenset[str] = frozenset(
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
 
 
-@router.post("", status_code=status.HTTP_200_OK, response_model=FileUpsertResponse)
-async def upsert_files(
-    body: FileUpsertChunk,
-    agent: Annotated[Agent, Depends(get_authenticated_agent)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> FileUpsertResponse:
-    """Idempotently upsert a chunk of FileRecord rows for the calling agent.
-
-    - Stamps `agent_id` from auth dep (NEVER from body -- AUTH-01).
-    - NFC-normalizes `original_path` on receive (RESEARCH Pitfall 7).
-    - Server-side dedups same-chunk records on `original_path` (RESEARCH Pitfall 4)
-      to avoid Postgres "cannot affect row a second time" errors on duplicate
-      natural keys within one statement.
-    - Phase 35 (D-06): does NOT auto-enqueue the metadata-extraction task. The
-      `enqueued` count is always 0 (metadata extraction is operator-triggered only).
-    - Returns `(upserted, inserted, enqueued)` counts.
-    """
+async def _resolve_batch_id(session: AsyncSession, agent: Agent, batch_id: uuid.UUID | None) -> uuid.UUID:
+    """Resolve the scan batch new rows bind to: the body's ``batch_id`` after the tenancy check, else the LIVE sentinel."""
     # Phase 27 D-09 + D-18 + D-21: resolve batch_id BEFORE the records loop.
     # Cross-tenant guard returns 403 BEFORE any FileRecord insert -- mirrors the
     # D-08 authorization-first placement in ``agent_proposals.patch_proposal_state`` and
     # ``agent_scan_batches.patch_scan_batch``. T-27-02: a leaked
     # batch_id cannot be probed by attempting an upsert, because the 403
     # rejection precedes the records loop.
-    if body.batch_id is not None:
-        batch = await session.get(ScanBatch, body.batch_id)
+    if batch_id is not None:
+        batch = await session.get(ScanBatch, batch_id)
         if batch is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
         if batch.agent_id != agent.id:
@@ -95,52 +82,53 @@ async def upsert_files(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="scan batch does not belong to authenticated agent",
             )
-        resolved_batch_id = batch.id
-    else:
-        # D-18: batch_id omitted -> resolve the calling agent's LIVE sentinel
-        # batch from the bearer-token-derived agent_id. The partial unique index
-        # `uq_scan_batches_agent_id_live` only guarantees AT MOST one LIVE row per
-        # agent -- it does NOT guarantee one exists. A sentinel is normally
-        # created at agent-registration time (`phaze agents add` / the dev seed,
-        # both via `services.live_sentinel.ensure_live_sentinel`), but an agent
-        # registered another way (e.g. a raw `INSERT INTO agents`) has none.
-        # phaze-tvdu1: self-heal instead of crashing -- a missing sentinel used
-        # to raise `NoResultFound` here (an uncaught 500 that dropped the whole
-        # chunk); it is now created on demand via the same shared helper so the
-        # only user-visible effect is a one-time WARNING log.
-        stmt = select(ScanBatch.id).where(
-            ScanBatch.agent_id == agent.id,
-            ScanBatch.status == ScanStatus.LIVE.value,
-        )
-        existing_batch_id = (await session.execute(stmt)).scalar_one_or_none()
-        if existing_batch_id is not None:
-            resolved_batch_id = existing_batch_id
-        else:
-            logger.warning(
-                "upsert_files: agent has no LIVE sentinel scan batch; self-healing by creating one",
-                agent_id=agent.id,
-            )
-            resolved_batch_id = await ensure_live_sentinel(session, agent.id)
+        return batch.id
+    # D-18: batch_id omitted -> resolve the calling agent's LIVE sentinel
+    # batch from the bearer-token-derived agent_id. The partial unique index
+    # `uq_scan_batches_agent_id_live` only guarantees AT MOST one LIVE row per
+    # agent -- it does NOT guarantee one exists. A sentinel is normally
+    # created at agent-registration time (`phaze agents add` / the dev seed,
+    # both via `services.live_sentinel.ensure_live_sentinel`), but an agent
+    # registered another way (e.g. a raw `INSERT INTO agents`) has none.
+    # phaze-tvdu1: self-heal instead of crashing -- a missing sentinel used
+    # to raise `NoResultFound` here (an uncaught 500 that dropped the whole
+    # chunk); it is now created on demand via the same shared helper so the
+    # only user-visible effect is a one-time WARNING log.
+    stmt = select(ScanBatch.id).where(
+        ScanBatch.agent_id == agent.id,
+        ScanBatch.status == ScanStatus.LIVE.value,
+    )
+    existing_batch_id = (await session.execute(stmt)).scalar_one_or_none()
+    if existing_batch_id is not None:
+        return existing_batch_id
+    logger.warning(
+        "upsert_files: agent has no LIVE sentinel scan batch; self-healing by creating one",
+        agent_id=agent.id,
+    )
+    return await ensure_live_sentinel(session, agent.id)
 
-    # 1. Build raw record dicts with agent_id stamped from auth dep (NEVER from body)
-    raw_records: list[dict[str, Any]] = []
-    for r in body.files:
-        data = r.model_dump()
-        # RESEARCH Pitfall 7: NFC-normalize defensively
-        data["original_path"] = unicodedata.normalize("NFC", data["original_path"])
-        data["agent_id"] = agent.id  # AUTH-01 -- stamped from auth, NEVER from body
-        data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
-        data["batch_id"] = resolved_batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
-        # phaze-x4ux: populate the derived, mojibake-repaired filename ONCE at ingest.
-        # `original_filename` itself is left untouched (byte-faithful record of the on-disk
-        # name); `original_filename_repaired` is what search/matching/rename-proposal code
-        # should read instead. Always set (even when the repair is a no-op, in which case it
-        # equals `original_filename`) so NULL unambiguously means "not yet backfilled" for
-        # pre-phaze-x4ux rows (see services/text_repair_backfill.py).
-        data["original_filename_repaired"] = repair_mojibake(data["original_filename"])
-        raw_records.append(data)
 
-    # 2. RESEARCH Pitfall 4: same-chunk dedup on (original_path) -- last write wins.
+def _record_row(record: FileUpsertRecord, agent_id: str, batch_id: uuid.UUID) -> dict[str, Any]:
+    """Build one ``files`` row from a wire record, with every server-owned column stamped here."""
+    data = record.model_dump()
+    # RESEARCH Pitfall 7: NFC-normalize defensively
+    data["original_path"] = unicodedata.normalize("NFC", data["original_path"])
+    data["agent_id"] = agent_id  # AUTH-01 -- stamped from auth, NEVER from body
+    data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
+    data["batch_id"] = batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
+    # phaze-x4ux: populate the derived, mojibake-repaired filename ONCE at ingest.
+    # `original_filename` itself is left untouched (byte-faithful record of the on-disk
+    # name); `original_filename_repaired` is what search/matching/rename-proposal code
+    # should read instead. Always set (even when the repair is a no-op, in which case it
+    # equals `original_filename`) so NULL unambiguously means "not yet backfilled" for
+    # pre-phaze-x4ux rows (see services/text_repair_backfill.py).
+    data["original_filename_repaired"] = repair_mojibake(data["original_filename"])
+    return data
+
+
+async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]]) -> Sequence[Row[Any]]:
+    """``INSERT ... ON CONFLICT DO UPDATE`` the rows on ``(agent_id, original_path)``; returns ``(id, file_type, original_path, inserted)``."""
+    # RESEARCH Pitfall 4: same-chunk dedup on (original_path) -- last write wins.
     # Postgres rejects multiple rows targeting the same conflict-target within one stmt.
     deduped: dict[str, dict[str, Any]] = {}
     for rec in raw_records:
@@ -187,7 +175,28 @@ async def upsert_files(
         literal_column("(xmax = 0)").label("inserted"),
     )
     result = await session.execute(upsert_stmt)
-    rows = result.all()
+    return result.all()
+
+
+@router.post("", status_code=status.HTTP_200_OK, response_model=FileUpsertResponse)
+async def upsert_files(
+    body: FileUpsertChunk,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FileUpsertResponse:
+    """Idempotently upsert a chunk of FileRecord rows for the calling agent.
+
+    - Stamps `agent_id` from auth dep (NEVER from body -- AUTH-01).
+    - NFC-normalizes `original_path` on receive (RESEARCH Pitfall 7).
+    - Server-side dedups same-chunk records on `original_path` (RESEARCH Pitfall 4)
+      to avoid Postgres "cannot affect row a second time" errors on duplicate
+      natural keys within one statement.
+    - Phase 35 (D-06): does NOT auto-enqueue the metadata-extraction task. The
+      `enqueued` count is always 0 (metadata extraction is operator-triggered only).
+    - Returns `(upserted, inserted, enqueued)` counts.
+    """
+    resolved_batch_id = await _resolve_batch_id(session, agent, body.batch_id)
+    rows = await _upsert_rows(session, [_record_row(r, agent.id, resolved_batch_id) for r in body.files])
     await session.commit()
 
     # Phase 35 (D-06): NO auto-enqueue of the metadata-extraction task. Discovery persists
@@ -199,6 +208,146 @@ async def upsert_files(
         inserted=sum(1 for r in rows if r.inserted),
         enqueued=0,
     )
+
+
+@router.post("/move", status_code=status.HTTP_200_OK, response_model=FileMoveResponse)
+async def move_file(
+    body: FileMoveRequest,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FileMoveResponse:
+    """Record a settled file that arrived by an in-tree move: keep ONE row for it, at its new path (phaze-oxn2m).
+
+    The watcher posts here instead of to the plain upsert when the settled path was reached by a
+    paired ``FileMovedEvent``. Rows are looked up on ``(agent_id, original_path)`` for the new path
+    and every previous path, and locked ``FOR UPDATE`` in ``original_path`` order -- the one global
+    order ``upsert_files`` and ``delete_scan_cascade`` already share (phaze-zfxy6).
+
+    - **No row at any previous path** (rsync's temp name, or a file never posted under its old
+      name): ``file`` is upserted exactly as ``upsert_files`` would. Outcome ``upserted``.
+    - **A row at a previous path and none at the new one:** the newest such row is re-pointed --
+      ``original_path``/``current_path``, the filename columns, the hash, size and type all take the
+      new record's values, its id and every child row stay. If the hash changed (the row was
+      ingested mid-write), the state computed from the old bytes is invalidated
+      (``scan_deletion.invalidate_content_state``). Outcome ``moved``.
+    - **A row already at the new path** (a manual scan got there first): that row is upserted, and
+      the previous-path rows are stale.
+    - Every other previous-path row is stale -- its path was moved away from -- and is retired with
+      ``scan_deletion.delete_file_cascade``, each retirement logged with both paths.
+
+    Only rows at EXACTLY the listed paths are considered (no prefix or wildcard), at most
+    ``MOVE_LINEAGE_MAX`` of them, and only those plausibly the same file
+    (:func:`_plausibly_same_file`); any other row named is logged and left untouched.
+
+    A row carrying operator-reviewed state (``scan_deletion.retention_blockers``) is never
+    re-pointed or retired: it is logged and left in place. When it is the row that would have been
+    re-pointed, ``file`` is upserted as its own row -- what every watcher move did before this
+    endpoint existed -- and the outcome is ``kept_reviewed``.
+    """
+    resolved_batch_id = await _resolve_batch_id(session, agent, None)
+    row = _record_row(body.file, agent.id, resolved_batch_id)
+    new_path: str = row["original_path"]
+    previous_paths = list(dict.fromkeys(p for p in (unicodedata.normalize("NFC", p) for p in body.previous_paths) if p != new_path))
+
+    locked = (
+        (
+            await session.execute(
+                select(FileRecord)
+                .where(FileRecord.agent_id == agent.id, FileRecord.original_path.in_([*previous_paths, new_path]))
+                .order_by(FileRecord.original_path)
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_path = {record.original_path: record for record in locked}
+    stale = []
+    for path in previous_paths:
+        if path not in by_path:
+            continue
+        if _plausibly_same_file(by_path[path], row):
+            stale.append(by_path[path])
+        else:
+            logger.warning(
+                "move_file: ignoring a previous path whose row is not this file", file_id=str(by_path[path].id), previous_path=path, new_path=new_path
+            )
+
+    outcome = "upserted"
+    content_changed = False
+    file_id: uuid.UUID | None = None
+    if stale and new_path not in by_path:
+        keeper = stale.pop()  # the newest name a row was posted under
+        content_changed = keeper.sha256_hash != row["sha256_hash"]
+        blockers = await retention_blockers(session, keeper, content_changed=content_changed)
+        if blockers:
+            logger.warning("move_file: previous row carries reviewed state; keeping it", file_id=str(keeper.id), blockers=blockers)
+            outcome = "kept_reviewed"
+        else:
+            logger.info(
+                "move_file: re-pointing row",
+                agent_id=agent.id,
+                file_id=str(keeper.id),
+                old_path=keeper.original_path,
+                new_path=new_path,
+                content_changed=content_changed,
+            )
+            _repoint(keeper, row)
+            await session.flush()
+            if content_changed:
+                await invalidate_content_state(session, keeper.id)
+            outcome, file_id = "moved", keeper.id
+    if file_id is None:
+        file_id = (await _upsert_rows(session, [row]))[0].id
+
+    retired = 0
+    for record in stale:
+        blockers = await retention_blockers(session, record, content_changed=True, retiring=True)
+        if blockers:
+            logger.warning("move_file: stale previous-path row carries reviewed state; keeping it", file_id=str(record.id), blockers=blockers)
+            continue
+        logger.info(
+            "move_file: retiring stale row",
+            agent_id=agent.id,
+            file_id=str(record.id),
+            old_path=record.original_path,
+            new_path=new_path,
+            kept_file_id=str(file_id),
+        )
+        await delete_file_cascade(session, record.id)
+        retired += 1
+    await session.commit()
+    logger.info("move_file", agent_id=agent.id, file_id=str(file_id), outcome=outcome, content_changed=content_changed, retired=retired)
+    return FileMoveResponse(agent_id=agent.id, file_id=file_id, outcome=outcome, content_changed=content_changed, retired=retired)
+
+
+def _plausibly_same_file(record: FileRecord, row: dict[str, Any]) -> bool:
+    """Whether the row at a previous path can be the file that moved: same name, same size, or same hash.
+
+    The controller cannot see the agent's disk, so a previous path is the agent's claim. This keeps a
+    bad claim from re-pointing or retiring an unrelated row: a move keeps the content (same hash or,
+    for a file posted mid-download into a preallocated file, the same size -- all 62 measured pairs),
+    and a directory move keeps the name. A file both renamed AND posted mid-download with a different
+    size fails all three; it gets its own row, which is what every move did before phaze-oxn2m.
+    """
+    return bool(
+        record.original_filename == row["original_filename"] or record.file_size == row["file_size"] or record.sha256_hash == row["sha256_hash"]
+    )
+
+
+def _repoint(record: FileRecord, row: dict[str, Any]) -> None:
+    """Point ``record`` at the moved file: every column ``_record_row`` derives from the wire, never its id or tenancy."""
+    for column in (
+        "original_path",
+        "original_filename",
+        "original_filename_repaired",
+        "current_path",
+        "file_type",
+        "file_size",
+        "sha256_hash",
+        "batch_id",
+    ):
+        setattr(record, column, row[column])
 
 
 async def _close_breaker_on_presign(session: AsyncSession, backend_id: str) -> None:

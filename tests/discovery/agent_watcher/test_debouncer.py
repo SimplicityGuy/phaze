@@ -224,3 +224,82 @@ def test_sweep_does_not_return_unsettled_entry(fake_clock: Callable[[float], Non
     assert ready == []
     assert evicted == []
     assert d.pending_count() == 1
+
+
+# phaze-oxn2m: Debouncer.move carries the names a file was moved away from, so the poster can ask
+# the controller to re-point the row it was already posted under instead of adding a second one.
+
+
+def test_move_of_a_long_settled_path_debounces_dest_with_src_as_lineage(fake_clock: Callable[[float], None]) -> None:
+    fake_clock(0.0)
+    d = Debouncer()
+
+    d.move("/in/incomplete/rel/a.mp3", "/in/rel/a.mp3")
+
+    assert d.pending_count() == 1
+    assert d.lineage("/in/rel/a.mp3") == ["/in/incomplete/rel/a.mp3"]
+    fake_clock(10.5)
+    assert d.sweep(settle_period=10.0, max_pending=3600.0) == (["/in/rel/a.mp3"], [])
+
+
+def test_move_while_src_is_still_pending_drops_src_so_only_dest_is_ever_posted(fake_clock: Callable[[float], None]) -> None:
+    """Race 1: the download is still being written when the client moves it. ``src`` was never
+    posted, so the only post is ``dest`` -- carrying ``src`` in case a row exists under it anyway."""
+    fake_clock(0.0)
+    d = Debouncer()
+    d.touch("/in/incomplete/a.mp3")
+
+    fake_clock(3.0)
+    d.move("/in/incomplete/a.mp3", "/in/a.mp3")
+
+    fake_clock(20.0)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+    assert ready == ["/in/a.mp3"]
+    assert evicted == []
+    assert d.lineage("/in/a.mp3") == ["/in/incomplete/a.mp3"]
+    assert d.lineage("/in/incomplete/a.mp3") == []
+
+
+def test_chained_moves_before_settling_accumulate_the_lineage_oldest_first(fake_clock: Callable[[float], None]) -> None:
+    fake_clock(0.0)
+    d = Debouncer()
+    d.move("/in/a.mp3", "/in/b.mp3")
+    d.move("/in/b.mp3", "/in/c.mp3")
+
+    assert d.pending_count() == 1
+    assert d.lineage("/in/c.mp3") == ["/in/a.mp3", "/in/b.mp3"]
+    assert d.lineage("/in/b.mp3") == []
+
+
+def test_move_while_src_post_is_in_flight_inherits_its_lineage(fake_clock: Callable[[float], None]) -> None:
+    """Race 2: ``b`` was swept and its POST is in flight when ``b -> c`` arrives. ``b``'s lineage is
+    still held, so ``c`` carries both names: the controller finds the row whether ``b``'s post
+    re-pointed it to ``b`` or ``b`` vanished before it was hashed and the row is still at ``a``."""
+    fake_clock(0.0)
+    d = Debouncer()
+    d.move("/in/a.mp3", "/in/b.mp3")
+    fake_clock(10.5)
+    assert d.sweep(settle_period=10.0, max_pending=3600.0)[0] == ["/in/b.mp3"]
+
+    d.move("/in/b.mp3", "/in/c.mp3")  # arrives while b's post is in flight
+    assert d.lineage("/in/b.mp3") == ["/in/a.mp3"], "the in-flight post of b still needs its own lineage"
+    d.forget("/in/b.mp3")  # b's post finished
+
+    assert d.lineage("/in/c.mp3") == ["/in/a.mp3", "/in/b.mp3"]
+    assert d.lineage("/in/b.mp3") == []
+
+
+def test_forget_and_eviction_release_lineage(fake_clock: Callable[[float], None]) -> None:
+    fake_clock(0.0)
+    d = Debouncer()
+    d.move("/in/a.mp3", "/in/b.mp3")
+    d.forget("/in/b.mp3")
+    assert d.lineage("/in/b.mp3") == []
+
+    d.move("/in/x.mp3", "/in/y.mp3")
+    for t in (1.0, 3601.0, 7202.5):  # keeps changing: the first cap crossing grants grace, the second evicts
+        fake_clock(t)
+        d.touch("/in/y.mp3")
+        d.sweep(settle_period=10.0, max_pending=3600.0)
+    assert d.pending_count() == 0
+    assert d.lineage("/in/y.mp3") == []

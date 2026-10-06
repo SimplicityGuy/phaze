@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
 import unicodedata
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 import httpx
 import pytest
@@ -678,3 +681,66 @@ async def test_post_one_swallows_agent_api_error_branches(
 
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert expected_log_fragment in text, f"expected fragment {expected_log_fragment!r} in poster log; got: {text!r}"
+
+
+# phaze-oxn2m: a moved path is posted to /files/move with its lineage; a control plane without that
+# route (404) gets the plain upsert instead, so a new agent works against an old control plane.
+@respx.mock
+async def test_post_one_with_lineage_posts_to_the_move_route(tmp_path: Path) -> None:
+    music_file = tmp_path / "rel" / "a.mp3"
+    music_file.parent.mkdir()
+    music_file.write_bytes(b"\x01" * 64)
+    old_name = unicodedata.normalize("NFD", f"{tmp_path}/incomplete/rel/Björk.mp3")
+    move_route = respx.post("http://app.test:8000/api/internal/agent/files/move").mock(
+        return_value=httpx.Response(
+            200, json={"agent_id": "a", "file_id": str(uuid.uuid4()), "outcome": "moved", "content_changed": True, "retired": 0}
+        )
+    )
+    upsert_route = respx.post("http://app.test:8000/api/internal/agent/files")
+    client = PhazeAgentClient(base_url="http://app.test:8000", token=_TEST_TOKEN, timeout=5.0)
+
+    await Poster(client=client, agent_id="test-agent").post_one(str(music_file), previous_paths=[old_name])
+    await client.close()
+
+    assert move_route.call_count == 1
+    assert upsert_route.call_count == 0
+    body = json.loads(move_route.calls.last.request.content)
+    assert body["previous_paths"] == [unicodedata.normalize("NFC", old_name)]
+    assert body["file"]["original_path"] == str(music_file)
+    assert body["file"]["sha256_hash"] == hashlib.sha256(b"\x01" * 64).hexdigest()
+
+
+@respx.mock
+async def test_post_one_with_lineage_falls_back_to_the_plain_upsert_against_an_older_control_plane(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    music_file = tmp_path / "a.mp3"
+    music_file.write_bytes(b"\x02" * 64)
+    respx.post("http://app.test:8000/api/internal/agent/files/move").mock(return_value=httpx.Response(404, json={"detail": "Not Found"}))
+    upsert_route = respx.post("http://app.test:8000/api/internal/agent/files").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a", "upserted": 1, "inserted": 1, "enqueued": 0})
+    )
+    client = PhazeAgentClient(base_url="http://app.test:8000", token=_TEST_TOKEN, timeout=5.0)
+
+    with caplog.at_level(logging.WARNING, logger="phaze.agent_watcher.poster"):
+        await Poster(client=client, agent_id="test-agent").post_one(str(music_file), previous_paths=["/old/a.mp3"])
+    await client.close()
+
+    assert upsert_route.call_count == 1
+    assert json.loads(upsert_route.calls.last.request.content)["files"][0]["original_path"] == str(music_file)
+    assert "falling back to a plain upsert" in "\n".join(r.getMessage() for r in caplog.records)
+
+
+async def test_post_one_with_lineage_drops_on_a_5xx_without_upserting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a 4xx means "no move route"; a 5xx is dropped like any upsert 5xx, never retried as an upsert."""
+    music_file = tmp_path / "a.mp3"
+    music_file.write_bytes(b"\x03" * 64)
+    client = PhazeAgentClient(base_url="http://app.test:8000", token=_TEST_TOKEN, timeout=5.0)
+    monkeypatch.setattr(client, "move_file", AsyncMock(side_effect=AgentApiServerError("POST /move -> 503 after retries")))
+    upsert = AsyncMock()
+    monkeypatch.setattr(client, "upsert_files", upsert)
+
+    await Poster(client=client, agent_id="test-agent").post_one(str(music_file), previous_paths=["/old/a.mp3"])
+    await client.close()
+
+    upsert.assert_not_awaited()

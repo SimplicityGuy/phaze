@@ -17,9 +17,13 @@ asyncio-owned :class:`Debouncer`. It:
    pair it with), so it never reaches ``on_moved``. Symmetrically, a move
    INTO the watched tree from outside degrades to a ``FileCreatedEvent``
    and is already handled by ``on_created``. That leaves ``on_moved`` to
-   handle exactly the paired, fully-in-tree case; dispatching only
-   ``event.dest_path`` (the settled final name) and ignoring ``src_path``
-   avoids ingesting the same file under two keys.
+   handle exactly the paired, fully-in-tree case. It hands the pair to
+   :meth:`Debouncer.move`, which debounces ``dest_path`` (the settled final
+   name) and remembers ``src_path`` so the poster can ask the controller to
+   re-point the row the file was already posted under. A download client
+   that finishes into ``incomplete/<release>/`` and then moves the release
+   out used to leave two rows, the old one at a path that no longer exists
+   (phaze-oxn2m). ``src_path`` itself is never debounced or posted.
 2. Filters by ``EXTENSION_MAP`` -- MUSIC/VIDEO and the six operator-approved
    COMPANION extensions enter the debouncer (SCAN-03). This matches
    ``scan_directory`` by extension but deliberately not by directory context:
@@ -86,12 +90,21 @@ _INGESTIBLE_EXTENSIONS: frozenset[str] = frozenset(
 class WatcherEventHandler(FileSystemEventHandler):
     """Watchdog event handler that bridges to the asyncio Debouncer."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, debouncer_touch: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        debouncer_touch: Callable[[str], None],
+        debouncer_move: Callable[[str, str], None] | None = None,
+    ) -> None:
         super().__init__()
         self._loop = loop
         self._debouncer_touch = debouncer_touch
+        # None keeps the pre-phaze-oxn2m behavior: a move is a touch of dest_path alone.
+        self._debouncer_move = debouncer_move
 
-    def _filter_and_dispatch(self, src_path: bytes | str) -> None:
+    @staticmethod
+    def _decode_ingestible(src_path: bytes | str) -> str | None:
+        """Return ``src_path`` as a raw ``str`` if it carries an ingestible extension, else ``None``."""
         # watchdog types ``src_path`` as ``bytes | str`` (some platforms emit
         # bytes for non-UTF-8 filesystem names). Decode via ``os.fsdecode`` so
         # the system's filesystem encoding (``sys.getfilesystemencoding()``) is
@@ -101,17 +114,23 @@ class WatcherEventHandler(FileSystemEventHandler):
         # surrogateescape by default, so un-decodable bytes survive into logs
         # rather than vanishing. (WR-03)
         if not src_path:
-            return
+            return None
         if isinstance(src_path, bytes):
             try:
                 path_str = os.fsdecode(src_path)
             except (UnicodeDecodeError, ValueError):
                 logger.warning("watcher: dropping path; cannot decode via fs encoding; len=%d", len(src_path))
-                return
+                return None
         else:
             path_str = src_path
         ext = "." + Path(path_str).suffix.lower().lstrip(".")
         if ext not in _INGESTIBLE_EXTENSIONS:
+            return None
+        return path_str
+
+    def _filter_and_dispatch(self, src_path: bytes | str) -> None:
+        path_str = self._decode_ingestible(src_path)
+        if path_str is None:
             return
         # Dispatch ``path_str`` raw; do not NFC-normalize it here.
         # It becomes the filesystem handle Poster.post_one stats/hashes; see
@@ -136,11 +155,13 @@ class WatcherEventHandler(FileSystemEventHandler):
     def on_moved(self, event: DirMovedEvent | FileMovedEvent) -> None:
         """Handle a paired, fully-in-tree rename (rsync atomic delivery, `mv`, dir renames).
 
-        Only ``event.dest_path`` -- the settled final name -- is dispatched.
-        ``event.src_path`` is intentionally never touched here: dispatching
-        both would ingest the same on-disk file under two debouncer
-        keys, and the old path no longer exists once the rename completes.
-        As documented on the module docstring, a move that crosses the
+        ``event.dest_path`` -- the settled final name -- is what gets debounced and posted.
+        ``event.src_path`` is never debounced (the old name no longer exists once the rename
+        completes). When it too has an ingestible extension it may be a name the file was
+        already posted under, so the pair goes to :meth:`Debouncer.move`, which carries it as
+        the dest's lineage (phaze-oxn2m). A non-ingestible ``src_path`` -- rsync's
+        ``.name.XXXXXX`` temp file -- can never have been posted, so that move is a plain touch
+        of ``dest_path``, exactly as before. As documented on the module docstring, a move that crosses the
         watched-tree boundary in either direction never reaches this method
         at all -- watchdog's inotify emitter degrades those to a plain
         ``FileCreatedEvent``/``FileDeletedEvent`` before ``on_moved`` is
@@ -150,4 +171,13 @@ class WatcherEventHandler(FileSystemEventHandler):
         """
         if event.is_directory:
             return
-        self._filter_and_dispatch(event.dest_path)
+        dest = self._decode_ingestible(event.dest_path)
+        if dest is None:
+            return
+        move = self._debouncer_move
+        src = self._decode_ingestible(event.src_path) if move is not None else None
+        # Same thread-bridge rule as _filter_and_dispatch: never call the debouncer directly.
+        if move is None or src is None:
+            self._loop.call_soon_threadsafe(self._debouncer_touch, dest)
+        else:
+            self._loop.call_soon_threadsafe(move, src, dest)

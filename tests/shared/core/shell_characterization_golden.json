@@ -63,6 +63,7 @@
     "POST /api/internal/agent/exec-batches/{batch_id}/progress",
     "POST /api/internal/agent/execution-log",
     "POST /api/internal/agent/files",
+    "POST /api/internal/agent/files/move",
     "POST /api/internal/agent/files/{file_id}/presign-download",
     "POST /api/internal/agent/heartbeat",
     "POST /api/internal/agent/metadata/{file_id}/failed",

@@ -25,15 +25,23 @@ tests assert the exact same log messages and survival contract as before.
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import logging
+import sys
 from typing import TYPE_CHECKING, Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+import structlog
+
 import phaze.agent_watcher.__main__ as wmain
+from phaze.agent_watcher.debouncer import Debouncer
 
 
 if TYPE_CHECKING:
-    import pytest
+    from pathlib import Path
 
 
 # _post_ready_paths: posts each ready path; a single post_one failure is
@@ -71,6 +79,87 @@ async def test_post_ready_paths_survives_a_single_post_failure(caplog: pytest.Lo
     assert "post failed" in text and "/data/music/b.mp3" in text, f"expected post-failure log; got: {text!r}"
 
 
+async def test_post_ready_paths_posts_a_moved_path_with_its_lineage_then_forgets_it() -> None:
+    """phaze-oxn2m: lineage is read before the post and released only after it -- also on failure."""
+    debouncer = Debouncer()
+    debouncer.move("/data/music/incomplete/a.mp3", "/data/music/a.mp3")
+    debouncer.move("/data/music/incomplete/b.mp3", "/data/music/b.mp3")
+    fake_poster = MagicMock()
+    fake_poster.post_one = AsyncMock(side_effect=[None, RuntimeError("simulated post failure")])
+
+    await wmain._post_ready_paths(fake_poster, ["/data/music/a.mp3", "/data/music/b.mp3", "/data/music/c.mp3"], debouncer)
+
+    fake_poster.post_one.assert_any_await("/data/music/a.mp3", previous_paths=["/data/music/incomplete/a.mp3"])
+    fake_poster.post_one.assert_any_await("/data/music/b.mp3", previous_paths=["/data/music/incomplete/b.mp3"])
+    fake_poster.post_one.assert_any_await("/data/music/c.mp3")
+    assert debouncer.lineage("/data/music/a.mp3") == []
+    assert debouncer.lineage("/data/music/b.mp3") == []
+
+
+# check_paths: the agent-side existence step of the phaze-oxn2m stale-row cleanup.
+def test_check_paths_marks_present_absent_and_unjudgeable_members(tmp_path: Path) -> None:
+    root = tmp_path / "incoming"
+    (root / "rel").mkdir(parents=True)
+    (root / "rel" / "a.mp3").write_bytes(b"x")
+    nfd_name = unicodedata.normalize("NFD", "Bjo\u0308rk.mp3")
+    (root / "rel" / nfd_name).write_bytes(b"y")
+    document = {
+        "agent_id": "agent-a",
+        "scan_roots": [str(root), str(tmp_path / "not-mounted")],
+        "groups": [
+            [
+                {"id": "1", "path": f"{root}/incomplete/rel/a.mp3"},
+                {"id": "2", "path": f"{root}/rel/a.mp3"},
+                {"id": "3", "path": f"{root}/rel/{unicodedata.normalize('NFC', nfd_name)}"},
+                {"id": "4", "path": f"{tmp_path}/not-mounted/rel/a.mp3"},
+            ]
+        ],
+    }
+
+    checked = wmain.check_paths(document)
+
+    assert [member["exists"] for member in checked["groups"][0]] == [False, True, True, None]
+
+
+def test_check_paths_cli_reads_stdin_and_writes_the_annotated_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "a.mp3").write_bytes(b"x")
+    document = {"agent_id": "agent-a", "scan_roots": [str(tmp_path)], "groups": [[{"id": "1", "path": str(tmp_path / "a.mp3")}]]}
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(document)))
+    monkeypatch.setattr(sys, "stdout", out)
+
+    real_resolve = wmain.resolve_media_path
+
+    def _logging_resolve(path: str) -> str:
+        structlog.get_logger("phaze.services.media_path_resolve").info("resolve_media_path: NFC/NFD on-disk name mismatch resolved")
+        return real_resolve(path)
+
+    monkeypatch.setattr(wmain, "resolve_media_path", _logging_resolve)
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
+
+    assert wmain._main_check_paths() == 0  # the autouse logging fixture resets structlog afterwards
+
+    assert json.loads(out.getvalue())["groups"][0][0]["exists"] is True, "stdout must be the JSON document alone"
+    assert "mismatch resolved" in err.getvalue()
+
+
+def test_entrypoint_dispatches_check_paths_or_the_watcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = MagicMock(return_value=0)
+    run = MagicMock()
+    monkeypatch.setattr(wmain, "_main_check_paths", check)
+    monkeypatch.setattr(wmain.asyncio, "run", run)
+    monkeypatch.setattr(wmain, "main", MagicMock(return_value="watcher-coroutine"))
+
+    with pytest.raises(SystemExit) as exited:
+        wmain._entrypoint(["check-paths"])
+    assert exited.value.code == 0
+    run.assert_not_called()
+
+    wmain._entrypoint([])
+    run.assert_called_once_with("watcher-coroutine")
+
+
 # _log_evicted_paths: logs a WARNING per evicted path, no side effects beyond
 # logging.
 def test_log_evicted_paths_logs_each_path(caplog: pytest.LogCaptureFixture) -> None:
@@ -94,6 +183,7 @@ def test_log_evicted_paths_no_op_on_empty_list(caplog: pytest.LogCaptureFixture)
 async def test_run_sweep_iteration_happy_path_posts_and_logs() -> None:
     fake_debouncer = MagicMock()
     fake_debouncer.sweep = MagicMock(return_value=(["/data/music/a.mp3"], ["/data/music/stuck.mp3"]))
+    fake_debouncer.lineage = MagicMock(return_value=[])
     fake_poster = MagicMock()
     fake_poster.post_one = AsyncMock()
 
@@ -197,6 +287,7 @@ async def test_sweep_loop_posts_ready_logs_evicted_then_exits(caplog: pytest.Log
     fake_debouncer = MagicMock()
     # Two ready (one will succeed, one will raise) and one evicted.
     fake_debouncer.sweep = MagicMock(return_value=(["/data/music/a.mp3", "/data/music/b.mp3"], ["/data/music/stuck.mp3"]))
+    fake_debouncer.lineage = MagicMock(return_value=[])
 
     fake_poster = MagicMock()
     call_state = {"n": 0}

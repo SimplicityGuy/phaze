@@ -318,7 +318,7 @@ def test_event_handler_dispatches_dest_path_on_moved() -> None:
 
 
 def test_event_handler_on_moved_does_not_dispatch_src_path() -> None:
-    """The old (src) path must never be dispatched -- only dest_path.
+    """Without a move callback, the old (src) path is never dispatched -- only dest_path.
 
     Dispatching both would touch the debouncer under two distinct keys for
     what is a single on-disk file, double-ingesting it.
@@ -333,6 +333,42 @@ def test_event_handler_on_moved_does_not_dispatch_src_path() -> None:
     dispatched = [call.args[1] for call in loop.call_soon_threadsafe.call_args_list]
     assert dispatched == ["/music/new.mp3"]
     assert "/music/old.mp3" not in dispatched
+
+
+def test_event_handler_on_moved_hands_an_ingestible_pair_to_the_move_callback() -> None:
+    """phaze-oxn2m: an ingestible src may be a name the file was already posted under, so the pair
+    goes to Debouncer.move (via the thread-safe bridge) and nothing touches src or dest directly."""
+    loop = MagicMock()
+    touch = MagicMock()
+    move = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch, debouncer_move=move)
+
+    handler.on_moved(FileMovedEvent(src_path=b"/music/incomplete/rel/a.mp3", dest_path=b"/music/rel/a.mp3"))
+
+    loop.call_soon_threadsafe.assert_called_once_with(move, "/music/incomplete/rel/a.mp3", "/music/rel/a.mp3")
+    move.assert_not_called()
+    touch.assert_not_called()
+
+
+def test_event_handler_on_moved_from_an_rsync_temp_name_is_a_plain_dest_touch() -> None:
+    """A non-ingestible src (rsync's ``.name.XXXXXX``) can never have been posted: plain touch of dest."""
+    loop = MagicMock()
+    touch = MagicMock()
+    move = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch, debouncer_move=move)
+
+    handler.on_moved(FileMovedEvent(src_path="/music/.show.mkv.a1B2c3", dest_path="/music/show.mkv"))
+
+    loop.call_soon_threadsafe.assert_called_once_with(touch, "/music/show.mkv")
+
+
+def test_event_handler_on_moved_to_a_non_ingestible_name_dispatches_nothing_even_with_a_move_callback() -> None:
+    loop = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=MagicMock(), debouncer_move=MagicMock())
+
+    handler.on_moved(FileMovedEvent(src_path="/music/a.mp3", dest_path="/music/a.mp3.part"))
+
+    loop.call_soon_threadsafe.assert_not_called()
 
 
 def test_event_handler_on_moved_filters_dest_extension() -> None:
