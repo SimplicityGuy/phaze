@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-4iq5t: response to GET /duplicates/groups (routers/duplicates.py's load_more_groups), the
    "Load more" fragment for the Dedupe workspace (pipeline/partials/dedupe_workspace.html).
 
@@ -27,7 +28,7 @@
             hx-target="#dedupe-load-more-wrap" hx-swap="outerHTML"
             hx-disabled-elt="this"
             aria-label="Load more duplicate groups"
-            class="inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 text-muted hover:bg-gray-100 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed dark:border-phaze-border dark:hover:bg-phaze-panel">Load {{ [total_groups - rendered_through, page_size] | min }} more</button>
+            class="{{ ui.btn('secondary', 'md') }}">Load {{ [total_groups - rendered_through, page_size] | min }} more</button>
     {% endif %}
 </div>
 

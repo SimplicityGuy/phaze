@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 29 plan 07 Component 1: HTMX self-replacing agents table partial.
 
    Outer <section> IS the swap target (hx-swap="outerHTML") so the partial owns
@@ -75,12 +76,8 @@
         </p>
     </div>
     {% if not rows %}
-    <div class="text-center py-8">
-        <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">No agents registered yet</p>
-        <p class="text-sm text-muted ">
-            Provision an agent token via psql, then run <code class="font-mono bg-gray-100 dark:bg-phaze-panel px-1 rounded">just up-agent</code> on the file server. Once the worker boots, it will appear here within a few seconds.
-        </p>
-    </div>
+    {% set _no_agents %}Provision an agent token via psql, then run <code class="font-mono bg-gray-100 dark:bg-phaze-panel px-1 rounded">just up-agent</code> on the file server. Once the worker boots, it will appear here within a few seconds.{% endset %}
+    {{ ui.state('empty', 'No agents registered yet', _no_agents) }}
     {# phaze-w92dg: the no-rows branch renders no <table>, but the never-auto-collapse invariant
        ("every response carries the open detail row's id while the URL still asks for it" — see the
        carrier comment in the tbody below) must hold here too, or one all-degraded tick would destroy
@@ -207,7 +204,7 @@
                                 hx-target="#agents-table-section"
                                 hx-swap="outerHTML"
                                 hx-push-url="{{ row.push_url }}{{ sort.query_state() }}"
-                                class="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5 dark:focus-visible:ring-offset-phaze-panel">
+                                class="{{ ui.btn('secondary', 'sm') }}">
                             Details
                         </button>
                     </td>

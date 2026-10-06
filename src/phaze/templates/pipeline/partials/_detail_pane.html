@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 88 (88-01, DRILL-03 / D-08 / D-09 / D-03) + phaze-2u8v.6: the LANE detail-pane shell.
 
    ONE reusable swap-target overlay, hosted on the Analyze workspace (lane detail) ONLY. It owns the
@@ -149,7 +150,7 @@
                 x-show="open"
                 x-cloak
                 aria-label="Close detail"
-                class="rounded-lg px-2 py-0.5 text-sm text-muted hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-100">
+                class="{{ ui.btn('ghost', 'sm') }}">
             ✕<span class="sr-only"> Close</span>
         </button>
     </div>

@@ -5,8 +5,8 @@
 {# phaze-s8xtd: the counts are real on first paint (shell.html seeds the store server-side); when that seed could not be
    measured they read an em-dash, never a store default of 0. #}
 {% set subcount = '$store.pipeline.seedKnown ? `${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched` : `— files · last scan ' ~ last_scan_when ~ ' · — not yet enriched`' %}
-{% set _secondary = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
-{% set _recover = 'inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 px-3 font-jura text-xs font-medium uppercase tracking-wider text-warn hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:hover:bg-amber-950' %}
+{% set _secondary = ui.btn('secondary', 'md') %}
+{% set _recover = ui.btn('secondary', 'md') %}
 
 {% call ws.workspace(title=page_name('discover'), subcount=subcount) %}
     <div class="space-y-6 p-4 sm:p-6">

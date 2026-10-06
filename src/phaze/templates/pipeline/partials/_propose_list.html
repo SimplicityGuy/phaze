@@ -143,7 +143,7 @@
         <p class="text-sm font-semibold text-ok ">{{ propose_stats.pending }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
         <p class="mt-1 text-xs text-ok ">Inspect candidates here, then approve, edit, or reject them in the canonical Review workspace.</p>
     </div>
-    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Review changes →</a>
+    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Review changes →</a>
 </section>
 {% endif %}
 {% if rows %}
@@ -155,19 +155,19 @@
            hx-get="/s/propose?{{ propose_view.query(q='', page=1) }}"
            hx-target="#{{ propose_list_id }}" hx-swap="innerHTML" hx-push-url="true"
            hx-on:click="document.getElementById('propose-search').value = ''"
-           class="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Clear search</a>
+           class="{{ ui.btn('secondary', 'md') }}">Clear search</a>
     {% endcall %}
 {% elif propose_view.status in ("approved", "rejected") %}
     {% call ui.state("empty", empty_heading, empty_body) %}
-        <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Review</a>
+        <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Open Review</a>
     {% endcall %}
 {% elif propose_generation_pending > 0 %}
     {% call ui.state("empty", empty_heading, "Files are ready for candidate generation. Use Generate All to create proposals, then inspect them here.") %}
-        <a href="#propose-generate" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Go to Generate All</a>
+        <a href="#propose-generate" class="{{ ui.btn('primary', 'md') }}">Go to Generate All</a>
     {% endcall %}
 {% else %}
     {% call ui.state("empty", empty_heading, empty_body) %}
-        <a href="/s/metadata" hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Prepare files in Metadata</a>
+        <a href="/s/metadata" hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Prepare files in Metadata</a>
     {% endcall %}
 {% endif %}
 {# pager_url / pager_target / page_size_choices come from the ROUTER context, not a {% with %} here,

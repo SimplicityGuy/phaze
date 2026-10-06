@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 95 (phaze-zqvh.2, CONSOLE-04): the BOUNDED Analyze per-file table + its status-filter lens.
 
    The Phase-58 workspace rendered ONE <tr> per analyze-stage file inline in analyze_workspace.html --
@@ -140,12 +141,12 @@
         <p class="text-sm text-muted ">Page {{ analyze_page.page }}</p>
         <div class="flex gap-1">
             {% if analyze_page.page > 1 %}
-            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="{{ ui.btn('secondary', 'sm') }}">Previous</button>
             {% else %}
             <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Previous</span>
             {% endif %}
             {% if analyze_page.has_next %}
-            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="{{ ui.btn('secondary', 'sm') }}">Next</button>
             {% else %}
             <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Next</span>
             {% endif %}

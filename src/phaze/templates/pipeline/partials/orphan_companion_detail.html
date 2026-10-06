@@ -15,7 +15,7 @@
         </div>
         {% set _filter_qs = view.filters_query() %}
         <a href="/pipeline/scans/{{ batch_id }}/orphan-companions/download{{ ('?' ~ _filter_qs) if _filter_qs else '' }}"
-           class="inline-flex h-9 items-center justify-center rounded-md border border-gray-300 px-3 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Download CSV</a>
+           class="{{ ui.btn('secondary', 'md') }}">Download CSV</a>
     </div>
 
     {% if total == 0 %}
@@ -72,7 +72,7 @@
                 {% endfor %}
             </select>
         </label>
-        <button type="submit" class="h-9 rounded-md bg-action-brand px-3 text-xs font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Apply filters</button>
+        <button type="submit" class="{{ ui.btn('primary', 'md') }}">Apply filters</button>
     </form>
 
     <div class="mt-4">
@@ -111,14 +111,14 @@
                hx-get="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page - 1) }}"
                hx-target="#orphan-companion-detail"
                hx-swap="outerHTML"
-               class="rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Previous</a>
+               class="{{ ui.btn('secondary', 'sm') }}">Previous</a>
             {% endif %}
             {% if diagnostics_page.has_next %}
             <a href="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page + 1) }}"
                hx-get="/pipeline/scans/{{ batch_id }}/orphan-companions?{{ view.query(page=diagnostics_page.page + 1) }}"
                hx-target="#orphan-companion-detail"
                hx-swap="outerHTML"
-               class="rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Next</a>
+               class="{{ ui.btn('secondary', 'sm') }}">Next</a>
             {% endif %}
         </div>
     </nav>

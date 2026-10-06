@@ -79,7 +79,7 @@
                 <p class="font-jura text-[10px] uppercase tracking-[0.2em] text-info ">Next Recommended Action</p>
                 <h2 id="next-action-title" class="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ summary.recommended.title }}</h2>
                 <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">{{ summary.recommended.detail }}</p>
-                <a href="{{ summary.recommended.href }}" hx-get="{{ summary.recommended.href }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="mt-4 inline-flex rounded-md bg-action-brand px-3 py-2 font-jura text-xs font-medium uppercase tracking-[0.12em] text-white hover:bg-action-brand-hover {{ _link_focus }}">{{ summary.recommended.action }}</a>
+                <a href="{{ summary.recommended.href }}" hx-get="{{ summary.recommended.href }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md', 'mt-4') }}">{{ summary.recommended.action }}</a>
             </section>
 
             <section aria-labelledby="recent-activity-title" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
@@ -111,12 +111,12 @@
         </ol>
         {% elif summary.is_empty %}
             {% call ui.state("empty", "No files discovered", "Configure a file-server agent, then run Discovery. Summary will populate from pipeline outputs as files arrive.") %}
-                <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 dark:border-phaze-border dark:text-gray-300 {{ _link_focus }}">Configure agents</a>
-                <a href="/s/discover" hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white {{ _link_focus }}">Open Discovery</a>
+                <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('secondary', 'md') }}">Configure agents</a>
+                <a href="/s/discover" hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Open Discovery</a>
             {% endcall %}
         {% else %}
             {% call ui.state("empty", "Pipeline caught up", "No failures, blocked work, recovery candidates, or capacity constraints need action.") %}
-                <a href="/s/files" hx-get="/s/files" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 dark:border-phaze-border dark:text-gray-300 {{ _link_focus }}">Browse files</a>
+                <a href="/s/files" hx-get="/s/files" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('secondary', 'md') }}">Browse files</a>
             {% endcall %}
         {% endif %}
     </section>

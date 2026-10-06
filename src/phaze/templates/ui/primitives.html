@@ -166,6 +166,31 @@ shrink-0 px-3 py-2 text-sm transition-colors {{ _focus_ring }} {% if active %}bo
 </details>
 {% endmacro %}
 
+{# phaze-9v49r: THE button. `ui.btn(kind, size, extra)` returns the class string for a button or a button-shaped link, so
+   every page's buttons share one text-case rule and one palette:
+
+     * case    -- UPPERCASE Jura, applied with the `uppercase` utility. The DOM text stays as the caller wrote it
+                  ("Start Scan", "Open Propose" and "EXECUTE APPROVED" all paint the same way), exactly as `status_pill`
+                  does for pills, so a test or screen reader sees the source string unchanged.
+     * primary -- bg-action-brand (teal), white text. The ONE fill colour: amber, cyan and green fills are gone.
+     * secondary   -- outlined, neutral.
+     * destructive -- bg-action-danger, for stopping or removing something.
+     * ghost  -- borderless muted text (a Close control).
+   `size` is `md` (h-9, the page-header size) or `sm` (h-7, a row or inline control). `extra` appends utilities the
+   caller owns (`w-full`, `px-2`). tests/shared/ui/test_button_macro.py fails the build on a button-shaped element that
+   spells its own fill colour. Text-link actions (an underlined "Undo", "Show all") are links, not buttons, and stay
+   outside it. #}
+{% macro btn(kind='secondary', size='md', extra='') -%}
+{%- set kinds = {
+    'primary': 'bg-action-brand text-white hover:bg-action-brand-hover',
+    'secondary': 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5',
+    'destructive': 'bg-action-danger text-white hover:bg-action-danger-hover',
+    'ghost': 'text-muted hover:text-gray-900 dark:hover:text-gray-100'
+} -%}
+{%- set sizes = {'md': 'h-9 px-3 text-xs', 'sm': 'h-7 px-2.5 text-[11px]'} -%}
+inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-jura font-medium uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-50 {{ _focus_ring }} {{ sizes.get(size, sizes.md) }} {{ kinds.get(kind, kinds.secondary) }}{% if extra %} {{ extra }}{% endif %}
+{%- endmacro %}
+
 {% macro filter_toolbar(id, url, target, push_url=false, trigger='change', label='Filters') %}
 <form id="{{ id }}" aria-label="{{ label }}" hx-get="{{ url }}" hx-target="{{ target }}" hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} hx-trigger="{{ trigger }}" class="flex flex-col gap-2 border-y border-gray-200 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:px-6 dark:border-phaze-border">
     {{ caller() }}
@@ -194,9 +219,9 @@ shrink-0 px-3 py-2 text-sm transition-colors {{ _focus_ring }} {% if active %}bo
 
 {% macro data_table_button(label, url='', target='', disabled=false, push_url=false) %}
 {% if disabled %}
-<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-muted dark:border-phaze-border ">{{ label }}</span>
+<span aria-disabled="true" class="{{ btn('secondary', 'sm', 'cursor-not-allowed opacity-50') }}">{{ label }}</span>
 {% else %}
-<button type="button" hx-get="{{ url }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} class="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5 {{ _focus }}">{{ label }}</button>
+<button type="button" hx-get="{{ url }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} class="{{ btn('secondary', 'sm') }}">{{ label }}</button>
 {% endif %}
 {% endmacro %}
 
@@ -229,9 +254,9 @@ shrink-0 px-3 py-2 text-sm transition-colors {{ _focus_ring }} {% if active %}bo
         <h2 id="{{ id }}-title" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
         <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
         <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <form method="dialog"><button class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-phaze-border {{ _focus }}">{{ cancel_label }}</button></form>
+            <form method="dialog"><button class="{{ btn('secondary', 'md', 'w-full') }}">{{ cancel_label }}</button></form>
             <form hx-{{ method }}="{{ action }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.closest('dialog').close()">
-                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-action-danger hover:bg-action-danger-hover{% else %}bg-action-warn hover:bg-action-warn-hover{% endif %} {{ _focus }}">{{ confirm_label }}</button>
+                <button class="{{ btn('destructive' if tone == 'danger' else 'primary', 'md', 'w-full') }}">{{ confirm_label }}</button>
             </form>
         </div>
     </div>

@@ -149,8 +149,9 @@ def test_confirmation_is_contrast_safe_and_dismissible_without_breaking_native_d
 
     assert 'id="confirm-run"' in html and 'aria-labelledby="confirm-run-title"' in html
     assert 'hx-post="/analysis/run"' in html and 'hx-target="#result"' in html
-    assert "bg-action-warn hover:bg-action-warn-hover" in html
-    assert "bg-action-danger hover:bg-action-danger-hover" in danger
+    # phaze-9v49r: the confirm button is the shared primary (brand teal), not a per-dialog amber.
+    assert "bg-action-brand" in html and "hover:bg-action-brand-hover" in html
+    assert "bg-action-danger" in danger and "hover:bg-action-danger-hover" in danger
     for color in ("843b00", "9c4c01", "a50008", "c7080d"):
         assert _contrast_against_white(color) >= 4.5
     assert 'onpointerdown="if (event.target === this) this.close()"' in html

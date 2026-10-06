@@ -31,12 +31,12 @@
         <button type="button" hx-post="/cue/{{ card.tracklist_id }}/generate" hx-target="#cue-card-{{ card.tracklist_id }}"
                 hx-vals='{"version_id":"{{ card.version_id }}"}' hx-swap="outerHTML" hx-disabled-elt="this"
                 aria-label="Generate the reviewed cue sheet for {{ card.set_name }}"
-                class="inline-flex h-9 items-center justify-center rounded-lg bg-action-ok px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-action-ok-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Generate cue sheet</button>
+                class="{{ ui.btn('primary', 'md') }}">Generate cue sheet</button>
         {% endif %}
         {% if card.file_id %}<button type="button" hx-get="/record/{{ card.file_id }}" hx-target="#record-body" hx-swap="innerHTML"
                 @click="$dispatch('record:open', { el: $el })"
-                class="inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Open source record</button>{% endif %}
-        <a href="/s/tracklist" class="inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Tracklist workspace</a>
+                class="{{ ui.btn('secondary', 'md') }}">Open source record</button>{% endif %}
+        <a href="/s/tracklist" class="{{ ui.btn('secondary', 'md') }}">Tracklist workspace</a>
     </div>
 </article>
 

@@ -5,7 +5,7 @@
    count (analyzeActive), which is queued and running together. Both figures are seeded by the
    #analyze-queue section below on every 5s poll; null (an unknown) renders an em-dash, never a 0. #}
 {% set subcount = "`${$store.pipeline.analyzeRunning ?? '—'} running · ${$store.pipeline.analyzeWaiting ?? '—'} waiting`" %}
-{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _btn = ui.btn('secondary', 'md') %}
 {% set actions %}
     <button type="button"
             hx-post="/pipeline/analyze" hx-target="#analyze-trigger-response" hx-swap="innerHTML"

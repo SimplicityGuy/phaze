@@ -32,7 +32,7 @@
    PAGE, so the old expression would have reported "25 proposals ready" for any backlog of 25 or
    more -- a header that stops counting exactly when the number starts mattering. #}
 {% set subcount = "'" ~ propose_pagination.total ~ " proposals ready · litellm'" %}
-{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _btn = ui.btn('secondary', 'md') %}
 {% set actions %}
     {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
     <button type="button" id="propose-generate"
@@ -54,7 +54,7 @@
             aria-label="Generate AI proposals for all pending files"
             class="{{ _btn }}">GENERATE ALL</button>
     <span id="propose-trigger-spinner" class="htmx-indicator pointer-events-none absolute right-0 top-full mt-0.5 whitespace-nowrap text-xs text-muted ">Enqueuing…</span>
-    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Open Review</a>
+    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Open Review</a>
 {% endset %}
 {% call ws.workspace(title=page_name('propose'), subcount=subcount, actions=actions) %}
     <div class="px-4 pt-4 sm:px-6">

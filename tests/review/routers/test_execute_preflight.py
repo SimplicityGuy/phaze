@@ -117,9 +117,7 @@ async def test_preflight_states_that_tag_writes_are_not_dispatched_here(
 
     assert "Not dispatched by this control" in body
     assert "EXECUTE APPROVED runs approved filename and destination changes only." in body
-    assert (
-        "Tag writes are authorized and dispatched separately (ADR-0008 (changes review approval boundary)); this control does not run them." in body
-    )
+    assert "Tag writes are authorized and dispatched separately; this control does not run them." in body
     assert "Dispatch them from the Tag Changes section of Changes Review." in body
     assert "Duplicate resolution is its own decision, taken in Duplicates." in body
     assert "Cue sheets are generated artifacts, written on the Cue sheets stage." in body

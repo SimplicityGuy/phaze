@@ -33,7 +33,7 @@
             <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
             <a href="/s/rename?status=needs_review"
                {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
-               class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
+               class="{{ ui.btn('primary', 'md', 'mt-3') }}">Open Changes Review</a>
             {% else %}
             <p class="mt-2 text-sm text-gray-600 dark:text-gray-300"><span class="text-ok" aria-hidden="true">✓</span> This file is up to date — nothing needs review.</p>
             {% endif %}

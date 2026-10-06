@@ -108,7 +108,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     aborting_reap_slack_seconds: int = Field(
         default=300,
         validation_alias=AliasChoices("PHAZE_ABORTING_REAP_SLACK_SECONDS", "aborting_reap_slack_seconds"),
-        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack.",
+        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). The bound is per-job (job_timeout + this), not a single fixed value — a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack.",
     )
 
     # Active rows get more slack than post-give-up aborting rows because native work can outlive
@@ -116,7 +116,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     active_reap_slack_seconds: int = Field(
         default=900,
         validation_alias=AliasChoices("PHAZE_ACTIVE_REAP_SLACK_SECONDS", "active_reap_slack_seconds"),
-        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT -- that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status (phaze-o0n6).",
+        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT — that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value — a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status (phaze-o0n6).",
     )
 
     # Both roles share one progress-silence bound: the agent arms the watchdog and control derives
@@ -246,7 +246,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_XVFB", "tracklist_render_xvfb"),
         description=(
             "Whether to start an Xvfb virtual display for the headful browser. 'auto' starts one only on Linux with no DISPLAY "
-            "already set -- i.e. exactly the headless-worker case (phaze-fq9h.1/phaze-fq9h.5)."
+            "already set — i.e. exactly the headless-worker case (phaze-fq9h.1/phaze-fq9h.5)."
         ),
     )
 
@@ -298,7 +298,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     runtime_config_dir: str = Field(
         default="/etc/phaze/runtime",
         validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_DIR", "runtime_config_dir"),
-        description="Directory holding runtime.toml, the watched hot-reload layer for reloadable keys (ADR-0019 (runtime config hot-reload)).",
+        description="Directory holding runtime.toml, the watched hot-reload layer for reloadable keys.",
     )
     # phaze-mvq8z.5 (the trigger bead) measured, inside a real container, that the native
     # watchdog Observer sees ZERO host-side edits through a Colima/virtiofs bind mount -- for
@@ -322,7 +322,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
             "Use watchdog's PollingObserver instead of the native inotify/FSEvents backend to watch "
             "runtime_config_dir. Defaults to true: phaze-mvq8z.3 measured the native backend "
             "silently seeing ZERO host edits through a Colima/virtiofs bind mount (no error, just "
-            "no reload), and Docker Desktop / a native Linux host mount are unverified either way -- "
+            "no reload), and Docker Desktop / a native Linux host mount are unverified either way — "
             "a silent miss is worse than polling's modest, bounded cost. Set false only once native "
             "delivery is verified for the target deployment."
         ),
@@ -341,7 +341,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
             "Quiet period after the last filesystem event on runtime.toml before its content is "
             "re-hashed and, if changed, reload('file') runs. Coalesces the delete+create pair a "
             "rename-into-place edit produces (both the native and the polling backend report a "
-            "rename this way, never a single moved event -- phaze-mvq8z.3) into one reload."
+            "rename this way, never a single moved event — phaze-mvq8z.3) into one reload."
         ),
     )
 

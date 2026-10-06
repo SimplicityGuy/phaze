@@ -2,8 +2,8 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
 {% set subcount = "`${$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : 'unknown'} eligible · automated extraction`" %}
-{% set _btn = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
-{% set _primary = 'inline-flex h-9 items-center justify-center rounded-lg bg-action-brand px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-phaze-bg' %}
+{% set _btn = ui.btn('secondary', 'md') %}
+{% set _primary = ui.btn('primary', 'md') %}
 {% set actions %}
     <button type="button"
             hx-post="/pipeline/extract-metadata" hx-target="#metadata-trigger-response" hx-swap="innerHTML"

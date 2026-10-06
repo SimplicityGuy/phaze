@@ -80,7 +80,7 @@
         <section data-record-not-found class="mx-4 rounded-xl border border-gray-200 bg-gray-50 px-6 py-20 text-center dark:border-phaze-border dark:bg-phaze-panel sm:mx-6">
             <h1 class="font-jura text-lg uppercase tracking-[0.15em] text-gray-800 dark:text-gray-100">That file no longer exists.</h1>
             <p class="mx-auto mt-3 max-w-lg text-sm text-muted">It may have been moved or de-duplicated. Return to Files and choose another record.</p>
-            <a href="/s/files" class="mt-5 inline-flex rounded-md bg-cyan-700 px-3 py-2 font-jura text-xs font-medium uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Return to Files</a>
+            <a href="/s/files" class="{{ ui.btn('primary', 'md', 'mt-5') }}">Return to Files</a>
         </section>
     {% endif %}
 </div>

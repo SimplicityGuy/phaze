@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
@@ -266,7 +267,12 @@ async def test_audit_log_never_run_surfaces_convergence_gate_count_and_generate_
     assert response.status_code == 200
     assert "2 files ready for proposal generation" in response.text
     assert 'href="/s/propose"' in response.text
-    assert "Generate Proposals" in response.text
+    # phaze-9v49r: the CTA is a navigation link named for the page it opens, never a "Generate Proposals" verb.
+    assert "Generate Proposals" not in response.text
+    link = re.search(r'<a href="/s/propose"[^>]*>([^<]*)</a>', response.text)
+    assert link is not None
+    assert link.group(1) == "Open Propose changes"
+    assert "hx-post" not in link.group(0)
     # No new trigger: the audit page must not post an enqueue of its own.
     assert "/pipeline/proposals" not in response.text
 

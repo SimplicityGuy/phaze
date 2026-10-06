@@ -55,7 +55,7 @@
         {% if revoked_agents %}
         <ul class="list-disc ml-4 mt-2">
             {% for agent in revoked_agents %}
-            <li class="text-sm text-orange-700 dark:text-orange-400">{{ agent.name }} (<span class="font-mono text-xs">{{ agent.agent_id }}</span>) -- {{ agent.count }} proposal{{ 's' if agent.count != 1 else '' }} skipped</li>
+            <li class="text-sm text-orange-700 dark:text-orange-400">{{ agent.name }} (<span class="font-mono text-xs">{{ agent.agent_id }}</span>) — {{ agent.count }} proposal{{ 's' if agent.count != 1 else '' }} skipped</li>
             {% endfor %}
         </ul>
         {% endif %}

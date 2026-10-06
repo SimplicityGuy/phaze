@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 <div id="cue-row-{{ tracklist.id }}" class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg px-4 py-3 flex items-center justify-between">
     <div class="flex items-center gap-3 min-w-0">
         <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{{ tracklist.artist }}</span>
@@ -22,7 +23,7 @@
                 hx-target="#cue-row-{{ tracklist.id }}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="text-xs text-ok hover:underline font-semibold px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed">
+                class="{{ ui.btn('secondary', 'sm') }}">
             Regenerate CUE
         </button>
         {% else %}
@@ -30,7 +31,7 @@
                 hx-target="#cue-row-{{ tracklist.id }}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">
+                class="{{ ui.btn('primary', 'sm') }}">
             Generate CUE
         </button>
         {% endif %}

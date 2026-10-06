@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 <section aria-labelledby="bulk-review-title" class="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/40">
     <h2 id="bulk-review-title" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-900 dark:text-amber-200">Review auto-selection</h2>
     {% if stale_count %}<p role="status" class="mt-3 text-xs text-warn ">{{ stale_count }} stale or already-resolved groups were excluded.</p>{% endif %}
@@ -21,7 +22,7 @@
           hx-confirm="Confirm these reviewed keepers and archive the other copies? The audit toast provides Undo All.">
         {% for group in dedupe_groups %}<input type="hidden" name="plan_ids" value="{{ group.plan_id }}">{% endfor %}
         <button type="button" onclick="this.closest('#dedupe-bulk-response').replaceChildren()"
-                class="h-9 rounded-lg border border-gray-300 px-3 text-sm text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300">Cancel</button>
+                class="{{ ui.btn('secondary', 'md') }}">Cancel</button>
         {# phaze-tckiy: this form declares no method/action and this button ALSO carries the form's
            hx-confirm, so it is the phaze-5i74w shape at its worst -- a click landing before htmx has
            PROCESSED the node (interception + confirm prompt are wired in htmx's deferred settle task,
@@ -31,7 +32,7 @@
            there) enables the button only once htmx has finished wiring this element up, which is what
            makes the hx-confirm prompt guaranteed rather than probable. #}
         <button type="submit" disabled data-hx-guard hx-disabled-elt="this"
-                class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm {{ dedupe_groups | length }} resolutions</button>
+                class="{{ ui.btn('primary', 'md') }}">Confirm {{ dedupe_groups | length }} resolutions</button>
     </form>
     {% else %}
     <p class="mt-2 text-sm text-warn ">None of the shown groups are still available to resolve. Refresh Dedupe before continuing.</p>
