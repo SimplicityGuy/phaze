@@ -85,22 +85,7 @@
        surface (no separate failures page). Rendered ABOVE the table and OUTSIDE the rows guard so the
        operator can always clear a filter that returned nothing. #}
     {% include "pipeline/partials/_status_filter_bar.html" %}
-    {% if not files_page.rows %}
-    {% if active_bucket == 'failed' and active_stage %}
-    {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
-    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
-    {% elif active_bucket %}
-    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
-       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
-       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
-       contract), so an unfiltered corpus that happens to be empty must fall through to the
-       unfiltered "No files yet" copy below, not this one. #}
-    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
-    {% else %}
-    {# Unfiltered empty state (Copywriting Contract). #}
-    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
-    {% endif %}
-    {% else %}
+    {% if files_page.rows %}
     {# Bulk "Retry all failed · {stage}" (87-07, UI-02 / D-04): one primary (accent) button on the
        failed-filter view of a MANUALLY-retried enrich stage (metadata/analyze). Posts to the already-live,
        Phase-30-hardened bulk endpoint; the ack swaps into the result span (ints/bools only -- no operator
@@ -143,6 +128,26 @@
             </select>
         </label>
     </form>
+    {% endif %}
+    {# phaze-bx7wf: the table region (empty state or table, plus the pager) sits in the SAME inner framed card
+       the stage pages' Eligible files table uses (ui.table_card_class); mx-6 keeps its edge on the 24px page gutter. #}
+    <div class="mx-6 mb-6 mt-4 {{ ui.table_card_class }}">
+    {% if not files_page.rows %}
+    {% if active_bucket == 'failed' and active_stage %}
+    {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
+    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
+    {% elif active_bucket %}
+    {# Any other active filter that matched nothing -- point the operator at Clear filter above.
+       phaze-7sdwt: gated on active_bucket alone, matching _status_filter_bar.html's Clear-filter
+       gate -- a lone active_stage ("any status") never filtered anything (get_files_page's
+       contract), so an unfiltered corpus that happens to be empty must fall through to the
+       unfiltered "No files yet" copy below, not this one. #}
+    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
+    {% else %}
+    {# Unfiltered empty state (Copywriting Contract). #}
+    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
+    {% endif %}
+    {% else %}
     {# phaze-cvn6.3: user-resizable columns, dependency-free (no JS build step -- Alpine only).
        A `<colgroup>` is the single point of truth for every column's rendered width: EACH header's
        resize handle drags `$store.colResize` (registered in base.html/shell.html next to the theme
@@ -349,3 +354,4 @@
         </div>
     {% endcall %}
     {% endif %}
+    </div>

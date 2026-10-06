@@ -1,6 +1,12 @@
 {# Shared, content-only UI primitives. Callers own endpoint behavior and stable swap-target ids. #}
 {% set _focus = "focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg" %}
 
+{# phaze-bx7wf: the ONE inner framed card a data table sits in (border, radius, background, both themes).
+   Exported (no leading underscore) so a caller that must put hx-* attributes on the card element itself
+   -- the stage workspaces' swap-target host divs -- composes it as `class="{{ ui.table_card_class }}"`
+   instead of re-spelling the classes; the Files matrix does the same. Insets are the caller's. #}
+{% set table_card_class = "overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel" %}
+
 {% macro page_header(title, subtitle='', actions='', subtitle_id='') %}
 <div class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 dark:border-phaze-border">
     <div class="min-w-0">
@@ -104,7 +110,7 @@
 {% endmacro %}
 
 {% macro data_table_controls(label='Table controls') %}
-<nav aria-label="{{ label }}" class="mt-6 flex flex-col gap-2 px-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">{{ caller() }}</nav>
+<nav aria-label="{{ label }}" class="mt-4 flex flex-col gap-2 px-6 pb-4 sm:flex-row sm:items-center sm:justify-between">{{ caller() }}</nav>
 {% endmacro %}
 
 {% macro data_table_button(label, url='', target='', disabled=false, push_url=false) %}

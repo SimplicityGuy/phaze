@@ -111,6 +111,10 @@ def test_data_table_controls_have_focus_and_disabled_semantics() -> None:
     assert 'aria-label="Files pagination"' in html
     assert 'hx-get="/items?page=1"' in html and 'aria-disabled="true"' in html
     assert "focus-visible:ring-2" in html
+    # phaze-bx7wf: the footer carries the stage pagers' inset (phaze-rkikk), not a bare margin.
+    nav_classes = re.search(r'<nav aria-label="Files pagination" class="([^"]*)"', html)
+    assert nav_classes
+    assert {"px-6", "pb-4"} <= set(nav_classes.group(1).split()) and "mt-6" not in nav_classes.group(1).split()
 
 
 def test_empty_loading_and_error_states_have_distinct_live_semantics() -> None:

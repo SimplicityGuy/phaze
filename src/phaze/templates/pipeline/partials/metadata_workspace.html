@@ -85,7 +85,7 @@
                  hx-get="/pipeline/pending-files?stage=metadata"
                  hx-trigger="load"
                  hx-swap="innerHTML"
-                 class="mt-3 rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+                 class="mt-3 {{ ui.table_card_class }}">
                 {{ ui.state('loading', 'Loading eligible files', 'Checking the metadata queue…') }}
             </div>
         </section>
