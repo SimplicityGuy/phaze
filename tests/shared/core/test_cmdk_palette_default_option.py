@@ -26,6 +26,8 @@ from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 import pytest
 
+from phaze.web.template_globals import register_page_name_globals
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _PALETTE_RESULTS = "search/partials/palette_results.html"
@@ -43,6 +45,7 @@ def _render_commands_only(query: str | None) -> str:
     """
     # autoescape=True mirrors Jinja2Templates' own configuration in phaze.routers.search.
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
     context: dict[str, Any] = {
         "query": query,
         "file_results": [],

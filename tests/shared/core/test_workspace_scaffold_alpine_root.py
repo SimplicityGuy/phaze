@@ -32,6 +32,8 @@ from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 import pytest
 
+from phaze.web.template_globals import register_page_name_globals
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _SCAFFOLD = _TEMPLATES / "pipeline" / "partials" / "_workspace_scaffold.html"
@@ -73,7 +75,9 @@ _CONTEXT_HEAVY_CALLERS = [
 
 
 def _env() -> Environment:
-    return Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
+    return env
 
 
 def test_workspace_scaffold_macro_always_emits_alpine_root() -> None:

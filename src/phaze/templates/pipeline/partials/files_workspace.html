@@ -27,7 +27,7 @@
    pipeline_files() filter/pagination endpoint never renders this host, so the fragment it returns
    still never re-emits (and never duplicates) the seeds. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% call ws.workspace(title="FILES") %}
+{% call ws.workspace(title=page_name('files')) %}
 <div id="files-table-view">
     {% include "pipeline/partials/files_table_view.html" %}
 </div>

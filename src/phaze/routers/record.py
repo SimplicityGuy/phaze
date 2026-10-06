@@ -36,6 +36,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
+from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.harmonic_journey import build_harmonic_journey
@@ -49,7 +50,7 @@ from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.version import APP_VERSION
 from phaze.web.static import static_asset_url
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["static_url"] = static_asset_url
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 router = APIRouter(tags=["record"])
 
 
@@ -213,6 +215,9 @@ async def build_file_record_context(
     # CONSOLE-01: the six derived per-stage buckets — the SAME stage_status_case derivation the
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
     stage_buckets = await get_file_stage_buckets(session, file_id)
+    # phaze-yyfax: the Tracklist pill prints the lookup outcome's word, exactly as the Files matrix cell does
+    # (_tracklist_pill.html), so it needs the same per-file TracklistFileLookup row (a primary-key read).
+    tracklist_lookup = await session.get(TracklistFileLookup, file_id)
 
     # phaze-cavai: the per-stage "why" facts the pills alone cannot answer. A failed pill gets the
     # STORED failure reason (FileMetadata / AnalysisResult error_message — written on failure,
@@ -310,6 +315,7 @@ async def build_file_record_context(
     return {
         "file": file,
         "stage_buckets": stage_buckets,
+        "tracklist_lookup": tracklist_lookup,
         "analysis": analysis,
         "file_id": file_id,
         "set_profile": set_profile,

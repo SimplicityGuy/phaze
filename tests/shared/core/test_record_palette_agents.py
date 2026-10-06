@@ -259,7 +259,7 @@ async def test_cmdk_current_navigation_and_mutation_commands(client: AsyncClient
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
-    for row_id in ("cmdk-nav-summary", "cmdk-nav-review", "cmdk-nav-workers", "cmdk-cmd-analyze", "cmdk-cmd-metadata"):
+    for row_id in ("cmdk-nav-summary", "cmdk-nav-rename", "cmdk-nav-agents", "cmdk-cmd-analyze", "cmdk-cmd-metadata"):
         assert f'id="{row_id}"' in body
     assert 'id="cmdk-cmd-stage"' not in body
     assert 'id="cmdk-cmd-agents"' not in body

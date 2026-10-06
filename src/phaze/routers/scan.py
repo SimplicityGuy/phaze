@@ -48,7 +48,7 @@ from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
 from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.pg_text import contains_pg_invalid_chars
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 logger = structlog.get_logger(__name__)
@@ -56,6 +56,7 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 
 router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 

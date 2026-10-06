@@ -2,7 +2,7 @@
 {% import "ui/primitives.html" as ui %}
 {% set eligible_count = cue_cards | selectattr('eligible') | list | length %}
 {% set subcount = "'" ~ eligible_count ~ " artifacts ready to generate'" %}
-{% call ws.workspace(title="Artifacts · Cue sheets", subcount=subcount) %}
+{% call ws.workspace(title=page_name('cue'), subcount=subcount) %}
     <div class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
         <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Cue sheets are generated outputs written beside their source audio. Preview the exact content here, then explicitly queue generation.</p>
         <div class="mt-3 flex flex-wrap gap-2" aria-label="Cue sheet prerequisites">

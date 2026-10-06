@@ -56,7 +56,7 @@
             aria-label="Review and execute {{ preflight.total }} approved operation{{ '' if preflight.total == 1 else 's' }}"
             class="{{ _apply_btn }}">EXECUTE APPROVED</button>
 {% endset %}
-{% call ws.workspace(title="Review & Apply · Execute", subcount=subcount, actions=actions) %}
+{% call ws.workspace(title=page_name('apply'), subcount=subcount, actions=actions) %}
     {# Dispatch response lands here (progress.html · collision_block.html · dispatch_in_progress.html);
        empty:hidden until it fires. #}
     <div id="apply-execute-response" class="px-6 pt-4 empty:hidden"></div>

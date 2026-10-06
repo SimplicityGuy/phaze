@@ -85,7 +85,7 @@
             <div class="mt-3 space-y-2">
             {% for stage_value, stage_label, is_enrich in [
                     ('metadata', 'Metadata', true), ('analyze', 'Analyze', true),
-                    ('propose', 'Propose', false), ('review', 'Review', false), ('apply', 'Execute', false)] %}
+                    ('tracklist', 'Tracklist', false), ('propose', 'Propose', false), ('review', 'Review', false), ('apply', 'Execute', false)] %}
                 <div>
                     <div class="flex flex-wrap items-center gap-2">
                         <button type="button"
@@ -104,9 +104,16 @@
                            wrapper (not the pill span) carries it, so _stage_pill.html stays a pure,
                            id-less token shared verbatim with the Files matrix. #}
                         <span id="stage-pill-{{ stage_value }}-{{ file.id }}" class="inline-flex">
+                        {# phaze-yyfax: Tracklist is worded by its lookup outcome in the Files matrix, so it takes the matrix's own pill. #}
+                        {% if stage_value == 'tracklist' %}
+                            {% with bucket=stage_buckets[stage_value], lookup=tracklist_lookup %}
+                                {% include "pipeline/partials/_tracklist_pill.html" %}
+                            {% endwith %}
+                        {% else %}
                         {% with stage_label=stage_label, bucket=stage_buckets[stage_value] %}
                             {% include "pipeline/partials/_stage_pill.html" %}
                         {% endwith %}
+                        {% endif %}
                         </span>
                         {# phaze-iyqhg: offered only where a skip can change anything -- a failed or
                            not-started stage, or an ORPHANED one (the ledger reads in_flight but nothing

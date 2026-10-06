@@ -26,6 +26,7 @@ from phaze.routers.shell.summary import SummaryOverviewInputs, _derive_summary_o
 from phaze.services.backends import get_analysis_activity_counts
 from phaze.services.pipeline import get_stage_progress
 from phaze.services.proposal_queries import ProposalStats
+from phaze.web.template_globals import register_page_name_globals
 
 
 if TYPE_CHECKING:
@@ -124,7 +125,7 @@ def test_degraded_state_prioritizes_failures_then_orphans_and_capacity() -> None
     assert summary["recommended"]["href"] == "/s/metadata"  # type: ignore[index]
     orphan_item = next(item for item in summary["attention"] if item["title"] == "Orphaned work")  # type: ignore[attr-defined,index]
     assert orphan_item["detail"] == "3 scheduled file(s) have no live job or domain result."
-    assert orphan_item["action"] == "Open Recovery"
+    assert orphan_item["action"] == "Open Discover"
     assert orphan_item["href"] == "/s/discover"
 
 
@@ -164,9 +165,9 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
     [
         ("cloud routing disabled", "/s/runtime-config", "Open Config"),
         ("held — cloud routing paused (force-local)", "/s/runtime-config", "Open Config"),
-        ("held — no cloud backend reachable", "/s/agents", "Inspect Compute"),
-        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Inspect Compute"),
-        ("held — no fileserver agent online", "/s/agents", "Inspect Compute"),
+        ("held — no cloud backend reachable", "/s/agents", "Open Agents & compute lanes"),
+        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Open Agents & compute lanes"),
+        ("held — no fileserver agent online", "/s/agents", "Open Agents & compute lanes"),
         ("queued — 2 free slots, dispatching on next drain tick (~5 min)", "/s/analyze", "Open Analyze"),
         ("held", "/s/analyze", "Open Analyze"),
     ],
@@ -360,6 +361,7 @@ def test_template_uses_shared_primitives_native_htmx_links_and_responsive_grids(
     complete_bucket = {"not_started": 0, "done": 4}
     summary = _derive(_progress(metadata=complete_bucket, analyze=complete_bucket))
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
     rendered = env.get_template("shell/partials/summary_overview.html").render(summary=summary)
     soup = BeautifulSoup(rendered, "html.parser")
 
@@ -390,6 +392,7 @@ def test_template_renders_unknown_activity_and_intersection_as_em_dashes() -> No
         analyses_lifetime=None,
     )
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
     soup = BeautifulSoup(env.get_template("shell/partials/summary_overview.html").render(summary=summary), "html.parser")
     text_content = soup.get_text(" ", strip=True)
     assert "Fully enriched —" in text_content

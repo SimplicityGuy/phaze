@@ -29,6 +29,8 @@ import re
 
 from jinja2 import Environment, FileSystemLoader
 
+from phaze.web.template_globals import register_page_name_globals
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _RAIL_HTML = _TEMPLATES / "shell" / "partials" / "rail.html"
@@ -45,6 +47,7 @@ _SPAN_TAG = re.compile(r"<span\b(?P<attrs>[^>]*)>", re.DOTALL)
 
 def _render(name: str) -> str:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
     return env.get_template(name).render(stage="summary")
 
 

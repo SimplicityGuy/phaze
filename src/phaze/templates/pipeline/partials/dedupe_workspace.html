@@ -32,7 +32,7 @@
             aria-label="Review highest-quality choices for every duplicate group"
             class="{{ _bulk_btn }}">REVIEW AUTO-SELECTION</button>
 {% endset %}
-{% call ws.workspace(title="Review & Apply · Dedupe", subcount=subcount, actions=actions) %}
+{% call ws.workspace(title=page_name('dedupe'), subcount=subcount, actions=actions) %}
     {# The review summary and subsequent bulk-resolve response share this stable target. #}
     <div id="dedupe-bulk-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
     {# Review exactly what was rendered; the summary carries only its still-live groups into commit. #}

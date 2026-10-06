@@ -36,7 +36,7 @@ from phaze.services.proposal_queries import (
     update_proposal_fields,
     update_proposal_status,
 )
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 # The review-UI state machine (phaze-uu17) now lives on the model, beside the enum it constrains --
@@ -258,6 +258,7 @@ def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
 SPARK_W = 80.0

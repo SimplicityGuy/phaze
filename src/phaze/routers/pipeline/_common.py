@@ -24,7 +24,7 @@ import structlog
 
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 # phaze-oau1o: the logger name is PINNED to the old module path rather than taken from ``__name__``.
@@ -52,6 +52,7 @@ templates.env.globals["static_url"] = static_asset_url
 # the 5s poll, and through the shell env (which registers the same global) on the initial render.
 templates.env.globals["humanize_relative_time"] = relative_time
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 router = APIRouter(tags=["pipeline"])
 
 # Hold references to background enqueue tasks to prevent GC (same pattern as scan.py). Typed

@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import PAGE_NAMES, register_page_name_globals, register_set_glyph_globals
 
 
 # phaze-bk9el.16: THREE hops, not two. This module lives at routers/shell/stage_maps.py, one
@@ -38,6 +38,7 @@ templates.env.globals["static_url"] = static_asset_url
 # (shell.html, every STAGE_PARTIALS/UTILITY_PANES partial) resolve it from here.
 templates.env.globals["humanize_relative_time"] = relative_time
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
 # from the prototype RAIL config (57-UI-SPEC "DAG Rail" table); every node now resolves
@@ -129,24 +130,9 @@ UTILITY_PANES: dict[str, str] = {
     "runtime-config": "admin/runtime_config.html",
 }
 
-DOCUMENT_TITLES: dict[str, str] = {
-    "summary": "Summary",
-    "files": "Files",
-    "discover": "Discover",
-    "metadata": "Metadata",
-    "analyze": "Analyze",
-    "tracklist": "Tracklists",
-    "propose": "Propose changes",
-    "rename": "Changes Review",
-    "tagwrite": "Changes Review",
-    "move": "Changes Review",
-    "dedupe": "Duplicates",
-    "cue": "Cue sheets",
-    "apply": "Execute approved",
-    "audit": "Audit log",
-    "agents": "Agents and compute lanes",
-    "runtime-config": "Config",
-}
+# phaze-yyfax: the document title IS the page name -- one definition in ``phaze.web.template_globals``, shared
+# with the rail label, the workspace <h1> and the palette. Not a second spelling that can drift.
+DOCUMENT_TITLES: dict[str, str] = dict(PAGE_NAMES)
 
 
 def _stage_partial(stage: str) -> str:
