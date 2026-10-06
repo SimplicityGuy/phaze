@@ -6,7 +6,10 @@ updates:
   # controls that remain live there. Do not re-add here without restoring it there too.
   # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # One entry, two directories: the composite action under .github/actions/ is not scanned by "/".
+    directories:
+      - "/"
+      - "/.github/actions/docker-build-cache"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -21,7 +24,12 @@ updates:
     assignees:
       - "SimplicityGuy"
     groups:
-      actions:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      actions-version:
+        applies-to: version-updates
         patterns:
           - "*"
 
@@ -58,15 +66,23 @@ updates:
       # acceptable: neither should move on a bot's schedule.
       - dependency-name: "python"
     groups:
-      docker-images:
+      docker-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      docker-version:
+        applies-to: version-updates
         patterns:
           - "*"
 
-  # Python dependencies (uv/pip)
+  # Python dependencies (uv)
+  # Ecosystem is "uv", not "pip": a "pip" update edits pyproject.toml but cannot rewrite uv.lock,
+  # so every Dependabot bump left the lock stale and `uv lock --check` in code-quality.yml (see
+  # tests/shared/test_uv_lock_check_gate.py) failed every PR. The "uv" ecosystem updates both.
   # No cooldown -- deliberate, paired with [tool.uv] in pyproject.toml; the rationale and the
   # controls that remain live there. Do not re-add here without restoring it there too.
   # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -83,16 +99,80 @@ updates:
     assignees:
       - "SimplicityGuy"
     open-pull-requests-limit: 10
+    ignore:
+      # litellm is capped to ONE minor on purpose (`>=X.Y.Z,<X.(Y+1).0` in pyproject.toml) and
+      # raising the cap is a deliberate operator step: the supply-chain vetting there, plus
+      # re-measuring the LLM->pydantic seam and updating MEASURED_LITELLM_MINOR in
+      # tests/review/capabilities/proposal_provider/test_wire_shapes.py in the SAME commit.
+      # Dependabot cannot do the re-measurement, so its minor/major bumps (e.g. 1.100 -> 1.103,
+      # PR #622) can only fail that guard. Patch bumps inside the cap and security updates are
+      # unaffected.
+      - dependency-name: "litellm"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
     groups:
-      python-production:
-        dependency-type: "production"
-        patterns:
-          - "*"
-      python-development:
-        dependency-type: "development"
-        patterns:
-          - "*"
-      python-security:
+      uv-security:
         applies-to: security-updates
+        patterns:
+          - "*"
+      uv-version:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  # Docker Compose images
+  # No cooldown -- deliberate, paired with [tool.uv] in pyproject.toml; the rationale and the
+  # controls that remain live there. Do not re-add here without restoring it there too.
+  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+    labels:
+      - "dependencies"
+    assignees:
+      - "SimplicityGuy"
+    groups:
+      docker-compose-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      docker-compose-version:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  # pre-commit hook revisions
+  # No cooldown -- deliberate, paired with [tool.uv] in pyproject.toml; the rationale and the
+  # controls that remain live there. Do not re-add here without restoring it there too.
+  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+    assignees:
+      - "SimplicityGuy"
+    groups:
+      pre-commit-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      pre-commit-version:
+        applies-to: version-updates
         patterns:
           - "*"

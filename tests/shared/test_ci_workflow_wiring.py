@@ -113,10 +113,15 @@ def test_dependabot_update_directories_exist() -> None:
     config: dict[str, Any] = yaml.safe_load(_DEPENDABOT_PATH.read_text(encoding="utf-8"))
 
     for update in config["updates"]:
-        directory = update["directory"]
-        assert isinstance(directory, str) and directory.startswith("/"), directory
-        path = _REPO_ROOT / directory.lstrip("/")
-        assert path.is_dir(), f"Dependabot directory does not exist: {directory}"
+        # `directory` and `directories` are mutually exclusive; one entry may list several directories.
+        directories = [update["directory"]] if "directory" in update else update["directories"]
+        for directory in directories:
+            assert isinstance(directory, str) and directory.startswith("/"), directory
+            if "*" in directory:
+                assert list(_REPO_ROOT.glob(directory.lstrip("/"))), f"Dependabot glob matches nothing: {directory}"
+                continue
+            path = _REPO_ROOT / directory.lstrip("/")
+            assert path.is_dir(), f"Dependabot directory does not exist: {directory}"
 
 
 def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
