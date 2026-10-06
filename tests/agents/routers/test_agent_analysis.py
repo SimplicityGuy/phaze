@@ -31,6 +31,7 @@ from phaze.routers import agent_analysis as agent_analysis_module
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services import s3_staging
 from phaze.services.scheduling_ledger import upsert_ledger_entry
+from tests._saq_jobs_seed import create_saq_jobs, seed_job
 
 
 def test_typed_style_without_dominant_label_derives_storage_label() -> None:
@@ -1373,6 +1374,49 @@ async def test_analysis_failed_clears_ledger_poison_case(seed_test_agent: tuple[
 
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key), "terminal-failure callback must clear the ledger row (no recovery re-queue)"
+
+
+# phaze-9z49b: a local agent calls back from INSIDE its still-active process_file job, so the key's
+# saq_jobs row is the caller's own and reads `active`. The two tests above seed no saq_jobs row at all,
+# which production never has; these seed the real shape.
+
+
+async def _seed_running_process_file_job(session: AsyncSession, key: str) -> None:
+    await create_saq_jobs(session)
+    await seed_job(session, "phaze-agent-test-analyze", key=key, status="active", blob={"attempts": 1})
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_clears_ledger_while_its_own_job_is_still_active(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A normal local completion -- PUT from the running process_file job -- leaves no ledger row behind."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    await _seed_running_process_file_job(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.0})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "the running job's own active saq_jobs row must not block its completion clear"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_clears_ledger_while_its_own_job_is_still_active(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The terminal-failure report is sent from inside the job too -- same shape, same clear."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    await _seed_running_process_file_job(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "the running job's own active saq_jobs row must not block its failure clear"
 
 
 @pytest.mark.asyncio

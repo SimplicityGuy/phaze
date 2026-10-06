@@ -41,6 +41,19 @@ call site in this codebase (the ``after_process`` hook in
 :mod:`phaze.tasks._shared.deterministic_key` AND every control-side agent-stage callback clear
 under ``phaze.routers.agent_*`` / ``phaze.services.backends``) because the guard lives inside this
 one shared primitive -- no call site needs its own ownership check.
+
+ONE NARROWING, for a callback the running job makes about ITSELF (phaze-9z49b): an agent stage
+reports its outcome over HTTP from INSIDE the SAQ job body (``extract_file_metadata`` ->
+``put_metadata``, ``process_file`` -> ``put_analysis``, ``s3_upload`` -> ``report_upload_complete``),
+so when the control-side callback clears, the key's ``saq_jobs`` row is the caller's OWN attempt and
+is still ``active``. Under the guard above that row reads as a live re-enqueue and the clear never
+lands -- every normal completion left its row for :mod:`phaze.tasks.ledger_reaper` (measured on the
+live deployment 2026-10-05: 79,911 metadata, 101 s3_upload and 32 analyze rows reaped in one day).
+Such a call site passes ``from_running_job=True``, which treats only a ``queued`` row as another
+attempt's. That is exact while the caller is active, because SAQ's enqueue only replaces a TERMINAL
+row (``ON CONFLICT (key) DO UPDATE ... WHERE status IN ('aborted', 'complete', 'failed')``) -- no
+other attempt can own the key until the caller's own row goes terminal. See
+:func:`clear_ledger_entry` for the residual a late callback leaves.
 """
 
 from __future__ import annotations
@@ -254,11 +267,34 @@ _GUARDED_CLEAR_SQL = text(
     """
 )
 
+# phaze-9z49b: the same guarded clear for a callback issued from INSIDE the job that owns the key (see
+# the module docstring's narrowing paragraph). The caller's own attempt is the ``active`` row, so only a
+# ``queued`` row -- an attempt enqueued after the caller went terminal -- protects the ledger row.
+_RUNNING_JOB_CLEAR_SQL = text(
+    """
+    DELETE FROM scheduling_ledger
+    WHERE key = :key
+      AND NOT EXISTS (
+          SELECT 1 FROM saq_jobs WHERE saq_jobs.key = :key AND saq_jobs.status = 'queued'
+      )
+    """
+)
 
-async def clear_ledger_entry(session: AsyncSession, key: str) -> None:
+
+async def clear_ledger_entry(session: AsyncSession, key: str, *, from_running_job: bool = False) -> None:
     """Delete the ledger row for ``key`` -- UNLESS a live saq_jobs row for the SAME key currently
     exists (phaze-3yln ownership guard). A clean no-op if the row is already absent, or if it is
     currently owned by a live re-enqueue that raced this clear. Caller commits.
+
+    ``from_running_job`` (phaze-9z49b) is for a callback the key's own job makes while it is still
+    running -- every agent-stage outcome callback. There the ``active`` row is the caller itself, so
+    only a ``queued`` row blocks the clear (module docstring, narrowing paragraph). Residual: a LATE
+    callback, delivered after the caller's own row went terminal AND a fresh attempt was already
+    dequeued, clears that fresh attempt's row. The same transaction has just recorded the stage's
+    domain outcome, so the row was already RESOLVED-pending-liveness -- the reaper deletes it the
+    moment that attempt ends -- and the cost is that the file reads not-in-flight for the remainder of
+    that one run. ``after_process`` must NOT pass it: by then its own row is terminal, and an
+    ``active`` row is genuinely another attempt.
 
     Residual window (documented, accepted): the WRITE hook's ledger upsert and SAQ's own
     ``saq_jobs`` insert are TWO SEPARATE transactions (``apply_deterministic_key`` commits the
@@ -298,7 +334,7 @@ async def clear_ledger_entry(session: AsyncSession, key: str) -> None:
     """
     try:
         async with session.begin_nested():
-            result = await session.execute(_GUARDED_CLEAR_SQL, {"key": key})
+            result = await session.execute(_RUNNING_JOB_CLEAR_SQL if from_running_job else _GUARDED_CLEAR_SQL, {"key": key})
     except ProgrammingError:
         logger.warning("scheduling_ledger_clear_liveness_probe_missing_table", key=key, exc_info=True)
         result = await session.execute(delete(SchedulingLedger).where(SchedulingLedger.key == key))

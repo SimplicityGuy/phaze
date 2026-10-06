@@ -290,7 +290,7 @@ async def process_uploaded(
             clear_cloud_phase=True,
         )
         if cleared:
-            await clear_ledger_entry(session, f"s3_upload:{file_id}")
+            await clear_ledger_entry(session, f"s3_upload:{file_id}", from_running_job=True)
         await session.commit()
         cleanup_error = await _best_effort_cleanup(file_id, upload_id, bucket) if cleared and bucket is not None else None
         return _uploaded_result(
@@ -343,6 +343,14 @@ async def process_uploaded(
     if res.rowcount == 0:
         await session.commit()
         return _uploaded_result(UploadedReason.UPLOAD_ID_CAS_MISS)
+
+    # phaze-9z49b: the s3_upload job's work is done -- clear its ledger row in the SAME transaction as
+    # the CAS that records it. Until this, the success path never cleared it (kueue's staging reaper
+    # said so), and the row stood until the ledger reaper found the file's analysis complete -- 101 such
+    # rows on the live deployment in one day. From here the UPLOADED cloud_job is what holds the file
+    # busy (``cloud_busy_clause``), not this row. ``from_running_job``: the agent posts this from inside
+    # its still-active s3_upload job, whose own saq_jobs row would otherwise block the clear.
+    await clear_ledger_entry(session, f"s3_upload:{file_id}", from_running_job=True)
 
     # D-01b/KROUTE-03: on the kueue target the upload-complete callback is also the
     # post-staging seam -- it enqueues submit_cloud_job through enqueue_router on the controller queue
@@ -442,7 +450,8 @@ async def _spill_failed_upload(
     # reaper + sibling failure callbacks for the full botocore window.
     bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket) if cloud_job is not None else None
     upload_id = cloud_job.upload_id if cloud_job is not None else None
-    await clear_ledger_entry(session, decision.ledger_key)
+    # phaze-9z49b: reported from inside the failing s3_upload job, before it raises.
+    await clear_ledger_entry(session, decision.ledger_key, from_running_job=True)
     await session.commit()
     cleanup_error = await _best_effort_cleanup(file_id, upload_id, bucket) if bucket is not None else None
     return _upload_failed_result(
