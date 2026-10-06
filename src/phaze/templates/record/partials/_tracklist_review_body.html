@@ -122,19 +122,19 @@
         {% for segment in track_segments | default([], true) %}{% set _ = segment_by_position.update({segment.position: segment}) %}{% endfor %}
         <div class="relative mt-3 overflow-x-auto">
             <table class="w-full text-left text-xs">
-                <thead>
+                <thead class="table-head">
                     <tr class="text-muted ">
-                        <th class="py-1 pr-3 font-medium">#</th>
-                        <th class="py-1 pr-3 font-medium">Time</th>
-                        <th class="py-1 pr-3 font-medium">Artist</th>
-                        <th class="py-1 pr-3 font-medium">Title</th>
-                        <th class="py-1 pr-3 font-medium">Label</th>
+                        <th class="table-th py-1 pr-3">#</th>
+                        <th class="table-th py-1 pr-3">Time</th>
+                        <th class="table-th py-1 pr-3">Artist</th>
+                        <th class="table-th py-1 pr-3">Title</th>
+                        <th class="table-th py-1 pr-3">Label</th>
                         {# phaze-x1qr3.6: what the audio inside this track's own time range
                            measured. Every existing column above is untouched. #}
-                        <th class="py-1 pr-3 font-medium" title="Median BPM of the fine windows inside this track">BPM</th>
-                        <th class="py-1 pr-3 font-medium" title="Modal Camelot key of the fine windows inside this track">Key</th>
-                        <th class="py-1 pr-3 font-medium" title="Strongest of the seven mood classifiers across the coarse windows inside this track">Mood</th>
-                        <th class="py-1 pr-3 font-medium" title="Mean energy of the coarse windows inside this track">Energy</th>
+                        <th class="table-th py-1 pr-3" title="Median BPM of the fine windows inside this track">BPM</th>
+                        <th class="table-th py-1 pr-3" title="Modal Camelot key of the fine windows inside this track">Key</th>
+                        <th class="table-th py-1 pr-3" title="Strongest of the seven mood classifiers across the coarse windows inside this track">Mood</th>
+                        <th class="table-th py-1 pr-3" title="Mean energy of the coarse windows inside this track">Energy</th>
                     </tr>
                 </thead>
                 <tbody>

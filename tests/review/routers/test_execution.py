@@ -640,7 +640,7 @@ async def test_audit_log_headers_announce_sort_state_via_aria_sort(client: Async
     assert 'aria-sort="ascending"' in body
     assert 'aria-sort="none"' in body
     # "Error" is deliberately NOT wired into AUDIT_SORT (sparse free-text column) and stays plain.
-    assert '<th scope="col" class="px-4 py-3">Error</th>' in body
+    assert '<th scope="col" class="table-th px-4 py-3">Error</th>' in body
 
 
 @pytest.mark.asyncio

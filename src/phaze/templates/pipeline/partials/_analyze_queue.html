@@ -41,13 +41,13 @@
         <p role="status" class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total }} file(s) are waiting for a slot.{% endif %}</p>
     {% else %}
     {% call ui.data_table("Analyses running now", id="analyze-running-table") %}
-        <thead class="text-[10px] uppercase tracking-wider text-muted">
+        <thead class="table-head">
             <tr>
-                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">File</th>
-                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Lane</th>
-                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Started</th>
-                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Progress</th>
-                <th scope="col" class="px-3 xl:px-4 py-2 font-jura font-medium">Heartbeat</th>
+                <th scope="col" class="table-th px-3 xl:px-4 py-2">File</th>
+                <th scope="col" class="table-th px-3 xl:px-4 py-2">Lane</th>
+                <th scope="col" class="table-th px-3 xl:px-4 py-2">Started</th>
+                <th scope="col" class="table-th px-3 xl:px-4 py-2">Progress</th>
+                <th scope="col" class="table-th px-3 xl:px-4 py-2">Heartbeat</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
