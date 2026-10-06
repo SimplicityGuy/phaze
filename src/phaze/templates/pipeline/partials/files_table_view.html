@@ -171,13 +171,14 @@
         <div class="hidden md:block">
         {% call ui.data_table('Files and pipeline stage status') %}
             <colgroup>
-                <col data-col="File" :style="{ width: $store.colResize.width('File') + 'px' }">
-                <col data-col="Type" :style="{ width: $store.colResize.width('Type') + 'px' }">
+                <col data-col="File" data-default-width="260" :style="{ width: $store.colResize.width('File') + 'px' }">
+                <col data-col="Type" data-default-width="88" :style="{ width: $store.colResize.width('Type') + 'px' }">
+                {% set _default_widths = {'Metadata': 96, 'Analyze': 128, 'Tracklist': 220, 'Propose': 108, 'Review': 104, 'Execute': 108} %}
                 {% for col in _stage_cols | map(attribute=0) | list %}
-                <col data-col="{{ col }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
+                <col data-col="{{ col }}" data-default-width="{{ _default_widths[col] }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
                 {% endfor %}
-                <col data-col="Current state" style="width: 190px">
-                <col data-col="Details" style="width: 92px">
+                <col data-col="Current state" data-default-width="300" style="width: 300px">
+                <col data-col="Details" data-default-width="92" style="width: 92px">
             </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-muted dark:border-phaze-border dark:bg-phaze-panel ">
                 <tr>
@@ -235,7 +236,7 @@
                     </th>
                     {% endif %}
                     {% endfor %}
-                    <th scope="col" class="px-3 py-2 font-medium">Current state</th>
+                    <th scope="col" class="whitespace-nowrap px-3 py-2 font-medium">Current state</th>
                     <th scope="col" class="px-3 py-2 font-medium"><span class="sr-only">File details</span></th>
                 </tr>
             </thead>

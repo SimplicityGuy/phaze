@@ -27,6 +27,7 @@ JS depends on:
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import TYPE_CHECKING
 import uuid
@@ -155,3 +156,48 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     # One stage cell per Files stage column (phaze-o71bf added Tracklist), each still carrying the
     # no-wrap contract cvn6.2 introduced.
     assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == len(_FILES_PAGE_STAGES)
+
+
+_EXPECTED_DEFAULT_WIDTHS = {
+    "File": 260,
+    "Type": 88,
+    "Metadata": 96,
+    "Analyze": 128,
+    "Tracklist": 220,
+    "Propose": 108,
+    "Review": 104,
+    "Execute": 108,
+    "Current state": 300,
+    "Details": 92,
+}
+
+
+@pytest.mark.asyncio
+async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-6ezaw: per-column default widths (Metadata narrow, Tracklist roomy, Current state widest).
+
+    Pins the rendered ``<col data-default-width>`` values, that ``Current state`` is the widest, that
+    its header cannot wrap, and that the shell's ``colResize`` store defaults agree with the markup
+    (the store is what actually drives the widths client-side).
+    """
+    session.add(_make_file("/music/a.mp3"))
+    await session.commit()
+
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
+    colgroup = body[body.index("<colgroup") : body.index("</colgroup>")]
+    widths = {name: int(width) for name, width in re.findall(r'<col data-col="([^"]+)" data-default-width="(\d+)"', colgroup)}
+    assert widths == _EXPECTED_DEFAULT_WIDTHS
+
+    assert widths["Metadata"] < widths["Analyze"] < widths["Tracklist"]
+    assert widths["Current state"] > max(w for name, w in widths.items() if name != "Current state")
+    assert 'style="width: 300px"' in colgroup
+
+    head = body[body.index("<thead") : body.index("<tbody")]
+    assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
+
+    shell = (Path(__file__).parents[2] / "src/phaze/templates/shell/shell.html").read_text()
+    defaults_match = re.search(r"defaults: \{([^}]*)\}", shell)
+    assert defaults_match is not None
+    store_defaults = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", defaults_match.group(1))}
+    assert store_defaults == {k: v for k, v in _EXPECTED_DEFAULT_WIDTHS.items() if k in store_defaults}
+    assert set(store_defaults) == {"File", "Type", *(c for c in _RESIZABLE_COLUMNS if c not in ("File", "Type"))}
