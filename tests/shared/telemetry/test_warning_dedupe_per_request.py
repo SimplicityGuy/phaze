@@ -63,10 +63,11 @@ def api_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TracerProvid
     assert bootstrap.configure_telemetry("api") is True
     provider = trace.get_tracer_provider()
     assert provider is bootstrap._tracer_provider
+    assert isinstance(provider, bootstrap._resolved_once_tracer_provider())
     exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[attr-defined]
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
     try:
-        yield provider, exporter  # type: ignore[misc]
+        yield provider, exporter
     finally:
         bootstrap.shutdown_telemetry(200)
         bootstrap._reset_for_tests()
@@ -116,3 +117,22 @@ def test_resolving_a_tracer_again_leaves_the_warning_filters_alone(api_provider:
             assert again is first
             _warn_from_one_location()
     assert len([warning for warning in caught if issubclass(warning.category, RepeatedWarning)]) == 1
+
+
+def test_distinct_scopes_still_get_distinct_tracers() -> None:
+    """Resolving once must not collapse scopes: each still reports under its own name and version."""
+    provider = bootstrap._resolved_once_tracer_provider()(shutdown_on_exit=False)
+    fastapi_tracer = provider.get_tracer("fastapi", "1")
+    assert provider.get_tracer("fastapi", "2") is not fastapi_tracer
+    assert provider.get_tracer("phaze") is not fastapi_tracer
+    assert provider.get_tracer("fastapi", "1", schema_url="https://example.invalid/s") is not fastapi_tracer
+    assert provider.get_tracer("fastapi", "1") is fastapi_tracer
+
+
+def test_a_scope_with_attributes_is_resolved_by_the_sdk_itself() -> None:
+    """An attribute mapping is unhashable, so it bypasses the cache -- and still gets the SDK's answer."""
+    provider = bootstrap._resolved_once_tracer_provider()(shutdown_on_exit=False)
+    tracer = provider.get_tracer("fastapi", "1", attributes={"k": "v"})
+    assert tracer is provider.get_tracer("fastapi", "1", attributes={"k": "v"})
+    assert tracer is not provider.get_tracer("fastapi", "1")
+    assert provider._resolved.keys() == {("fastapi", "1", None)}
