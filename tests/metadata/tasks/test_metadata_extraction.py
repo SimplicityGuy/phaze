@@ -346,10 +346,22 @@ async def test_nfd_on_disk_file_is_readable_via_stored_nfc_path(tmp_path) -> Non
 # phaze-3p82d: bogus / high container bitrates, and no SAQ retries on a deterministic body failure
 
 
-async def test_asf_bogus_bitrate_writes_the_rest_of_the_metadata(tmp_path: Path) -> None:
-    """End to end through the real mutagen + extract_tags: the misread ASF bitrate is dropped and
-    the PUT still carries every other field, instead of the whole extraction failing validation."""
-    path = write_asf(tmp_path / "clip.wmv", audio_stream(), video_stream(), title="Live Set", author="Some DJ", duration_s=90.0)
+@pytest.mark.parametrize(
+    ("streams", "expected_bitrate"),
+    [
+        pytest.param((audio_stream(), video_stream()), 128_000, id="audio-then-video"),
+        pytest.param((video_stream(stream_number=1), audio_stream(stream_number=2)), 128_000, id="video-then-audio"),
+        pytest.param((audio_stream(),), 128_000, id="audio-only"),
+        pytest.param((video_stream(stream_number=1),), None, id="no-audio"),
+    ],
+)
+async def test_asf_audio_bitrate_is_written_with_the_rest_of_the_metadata(
+    tmp_path: Path, streams: tuple[bytes, ...], expected_bitrate: int | None
+) -> None:
+    """End to end through the real mutagen + extract_tags (phaze-7e1xl): the PUT carries the AUDIO
+    stream's bitrate whatever the stream order -- or None when there is no audio stream -- plus
+    every other field (phaze-3p82d failed the whole extraction on the misread video-stream value)."""
+    path = write_asf(tmp_path / "clip.wmv", *streams, title="Live Set", author="Some DJ", duration_s=90.0)
     api = AsyncMock()
     api.put_metadata = AsyncMock(return_value=MagicMock())
     api.report_metadata_failed = AsyncMock()
@@ -363,7 +375,7 @@ async def test_asf_bogus_bitrate_writes_the_rest_of_the_metadata(tmp_path: Path)
 
     assert result["status"] == "extracted"
     body = api.put_metadata.await_args.args[1]
-    assert (body.bitrate, body.title, body.artist, body.duration) == (None, "Live Set", "Some DJ", 90.0)
+    assert (body.bitrate, body.title, body.artist, body.duration) == (expected_bitrate, "Live Set", "Some DJ", 90.0)
     api.report_metadata_failed.assert_not_awaited()
 
 

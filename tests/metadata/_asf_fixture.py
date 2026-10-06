@@ -1,4 +1,4 @@
-"""Synthetic ASF (.wma/.wmv) header builder for the phaze-3p82d bitrate tests.
+"""Synthetic ASF (.wma/.wmv) header builder for the phaze-3p82d / phaze-7e1xl bitrate tests.
 
 Builds the bytes of an ASF Header Object from the spec's own layout (GUIDs as ``uuid.bytes_le``,
 not mutagen's helpers), carrying a File Properties object, a Content Description object and one
@@ -63,18 +63,18 @@ def _stream_properties(stream_type: bytes, stream_number: int, type_specific: by
     return _obj(_STREAM_PROPERTIES, payload)
 
 
-def audio_stream(*, channels: int = 2, sample_rate: int = 44_100, avg_bytes_per_sec: int = 16_000) -> bytes:
+def audio_stream(*, channels: int = 2, sample_rate: int = 44_100, avg_bytes_per_sec: int = 16_000, stream_number: int = 1) -> bytes:
     """A WMA audio stream whose WAVEFORMATEX carries a real average byte rate."""
     waveformatex = struct.pack("<HHIIHHH", 0x0161, channels, sample_rate, avg_bytes_per_sec, 0x0800, 16, 0)
-    return _stream_properties(_AUDIO_MEDIA, 1, waveformatex)
+    return _stream_properties(_AUDIO_MEDIA, stream_number, waveformatex)
 
 
-def video_stream(*, width: int = 1280, height: int = 720, format_data_size: int = 44) -> bytes:
+def video_stream(*, width: int = 1280, height: int = 720, format_data_size: int = 44, stream_number: int = 2) -> bytes:
     """A video stream; ``format_data_size`` - 40 bytes of codec-private data follow the BITMAPINFOHEADER."""
     bitmapinfoheader = struct.pack("<IiiHHIIiiII", format_data_size, width, height, 1, 24, 0x33564D57, 0, 0, 0, 0, 0)
     type_specific = struct.pack("<IIBH", width, height, 0x02, format_data_size) + bitmapinfoheader
     type_specific += b"\x00" * (format_data_size - len(bitmapinfoheader))
-    return _stream_properties(_VIDEO_MEDIA, 2, type_specific)
+    return _stream_properties(_VIDEO_MEDIA, stream_number, type_specific)
 
 
 def write_asf(path: Path, *streams: bytes, title: str = "Synthetic Title", author: str = "Synthetic Artist", duration_s: float = 60.0) -> Path:
