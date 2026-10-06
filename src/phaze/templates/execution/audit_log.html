@@ -32,7 +32,7 @@
    inside of.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% call ws.workspace(title="AUDIT LOG") %}
+{% call ws.workspace(title=page_name('audit')) %}
 <div class="px-4 pt-4 sm:px-6" id="audit-scope-description">
     <p class="text-sm text-gray-600 dark:text-gray-300">Records approved file rename and move execution, including verification and failures.</p>
     <p class="mt-1 text-xs text-muted ">Tag writes and tag-write undo actions use their separate tag audit history and do not appear in this table.</p>

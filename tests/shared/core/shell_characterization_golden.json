@@ -144,7 +144,7 @@
       "templates": [
         "shell/shell.html"
       ],
-      "title": "Agents and compute lanes | Phaze"
+      "title": "Agents & compute lanes | Phaze"
     },
     "GET /s/analyze": {
       "headers": {
@@ -170,7 +170,7 @@
       "templates": [
         "shell/shell.html"
       ],
-      "title": "Execute approved | Phaze"
+      "title": "Execute | Phaze"
     },
     "GET /s/audit": {
       "headers": {
@@ -393,7 +393,7 @@
     ],
     [
       "apply",
-      "Execute approved"
+      "Execute"
     ],
     [
       "audit",
@@ -401,7 +401,7 @@
     ],
     [
       "agents",
-      "Agents and compute lanes"
+      "Agents & compute lanes"
     ],
     [
       "runtime-config",

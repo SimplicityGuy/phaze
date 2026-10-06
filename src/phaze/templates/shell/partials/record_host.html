@@ -192,6 +192,12 @@
              aria-label="File record"
              tabindex="-1"
              x-trap.noscroll.noreturn="open"
+             {# phaze-yyfax: focus inside the drawer and an inert background are ONE invariant, so the
+                background is made inert by whatever puts focus in the panel, not only by takeFocus()'s
+                animation-frame callback. x-trap focuses the panel a frame earlier than that callback, and a
+                reader (a screen reader, the browser contract test) sampling in that gap saw focus inside an
+                interactive page. setBackgroundInert is idempotent, so the later call is a no-op. #}
+             @focusin="if (open) setBackgroundInert(true)"
              class="absolute inset-y-4 right-4 w-[760px] max-w-[94vw] overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-phaze-border dark:bg-phaze-bg">
 
             {# phaze-7yet: skeleton shown for the duration of the fetch (x-show="!loaded"), so the

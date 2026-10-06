@@ -10,7 +10,7 @@
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount %}{{ reloadable_keys | length }} reloadable key{{ '' if reloadable_keys | length == 1 else 's' }} · {{ restart_only_keys | length }} restart-only{% endset %}
-{% call ws.workspace(title="CONFIG", subcount=subcount|tojson|forceescape) %}
+{% call ws.workspace(title=page_name('runtime-config'), subcount=subcount|tojson|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="text-sm text-muted">
             Live overrides for hot-reloadable process configuration. A key set here takes effect without a restart on

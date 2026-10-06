@@ -71,7 +71,7 @@ from phaze.services.execution_queries import get_execution_log_detail, get_execu
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pipeline import count_proposal_pending_files
 from phaze.web.static import static_asset_url
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 if TYPE_CHECKING:
@@ -90,6 +90,7 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 # phaze-315t: fingerprinted, cache-forever static asset URLs, registered as a Jinja global for
 # every template this router renders. `execution/audit_log.html` no longer needs it directly
 # (phaze-uvmcr.3 made it a content-only fragment, hosted directly by the asset links in shell.html), but the

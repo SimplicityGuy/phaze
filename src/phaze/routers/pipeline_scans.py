@@ -42,7 +42,7 @@ from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, paged_stmt, split_sentinel
 from phaze.services.pipeline import get_agent_reconciliations, get_scan_watcher_counts
 from phaze.services.scan_deletion import delete_scan_cascade
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +50,7 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 
 router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 

@@ -23,7 +23,7 @@
             hx-post="/pipeline/stages/analyze/resume" hx-swap="none"
             aria-label="Resume analyze" class="{{ _btn }}">RESUME</button>
 {% endset %}
-{% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions, cloud_cards=true) %}
+{% call ws.workspace(title=page_name('analyze'), subcount=subcount, actions=actions, cloud_cards=true) %}
     <div id="analyze-trigger-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
 
     <div class="space-y-4 px-4 pt-4 sm:px-6">

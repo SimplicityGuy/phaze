@@ -38,6 +38,7 @@ from phaze.services.pipeline import (
 )
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import done_clause, inflight_clause
+from phaze.web.template_globals import PAGE_NAMES, open_label
 
 
 if TYPE_CHECKING:
@@ -158,7 +159,7 @@ def _flow_dag_nodes(stage_progress: dict[str, dict[str, int | None]], total_file
 
 
 def _flow_review_apply_nodes(execute: dict[str, int | None], proposal_pending: int, proposal_approved: int) -> list[dict[str, Any]]:
-    """The two decision-driven flow tiles: Review (pending proposals) and Apply (approved)."""
+    """The two decision-driven flow tiles: Review (pending proposals) and Execute (approved)."""
     return [
         {
             "name": "Review",
@@ -169,7 +170,7 @@ def _flow_review_apply_nodes(execute: dict[str, int | None], proposal_pending: i
             "status": _flow_readiness_status(proposal_pending, "attention"),
         },
         {
-            "name": "Apply",
+            "name": PAGE_NAMES["apply"],
             "href": "/s/apply",
             "done": int(execute["done"] or 0),
             "total": proposal_approved,
@@ -182,7 +183,7 @@ def _flow_review_apply_nodes(execute: dict[str, int | None], proposal_pending: i
 def _build_summary_flow(
     stage_progress: dict[str, dict[str, int | None]], total_files: int, proposal_pending: int, proposal_approved: int
 ) -> list[dict[str, Any]]:
-    """Build the six-node DAG flow strip (Discover through Apply) for the Summary overview."""
+    """Build the six-node DAG flow strip (Discover through Execute) for the Summary overview."""
     return _flow_dag_nodes(stage_progress, total_files) + _flow_review_apply_nodes(stage_progress["execute"], proposal_pending, proposal_approved)
 
 
@@ -203,12 +204,12 @@ def _attention_item(priority: int, title: str, detail: str, href: str, action: s
 def _awaiting_cloud_target(hold_reason: str) -> tuple[str, str]:
     """Resolve the (href, action) pair that best explains an awaiting-cloud hold reason."""
     if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
-        return "/s/runtime-config", "Open Config"
+        return "/s/runtime-config", open_label("runtime-config")
     if hold_reason in {"held — no cloud backend reachable", "held — no fileserver agent online"} or hold_reason.startswith(
         "held — all lanes at capacity"
     ):
-        return "/s/agents", "Inspect Compute"
-    return "/s/analyze", "Open Analyze"
+        return "/s/agents", open_label("agents")
+    return "/s/analyze", open_label("analyze")
 
 
 def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_total: int, stalled_analyses: int) -> list[dict[str, str | int]]:
@@ -216,19 +217,26 @@ def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_t
     items: list[dict[str, str | int]] = []
     if metadata_failed:
         items.append(
-            _attention_item(10, "Metadata failures", f"{metadata_failed} file(s) need inspection or retry.", "/s/metadata", "Open Metadata", "danger")
+            _attention_item(
+                10, "Metadata failures", f"{metadata_failed} file(s) need inspection or retry.", "/s/metadata", open_label("metadata"), "danger"
+            )
         )
     if analyze_failed:
         stalled_detail = f"; {stalled_analyses} stopped by the progress watchdog" if stalled_analyses else ""
         items.append(
             _attention_item(
-                11, "Analysis failures", f"{analyze_failed} file(s) reached terminal failure{stalled_detail}.", "/s/analyze", "Open Analyze", "danger"
+                11,
+                "Analysis failures",
+                f"{analyze_failed} file(s) reached terminal failure{stalled_detail}.",
+                "/s/analyze",
+                open_label("analyze"),
+                "danger",
             )
         )
     if orphan_total:
         items.append(
             _attention_item(
-                20, "Orphaned work", f"{orphan_total} scheduled file(s) have no live job or domain result.", "/s/discover", "Open Recovery"
+                20, "Orphaned work", f"{orphan_total} scheduled file(s) have no live job or domain result.", "/s/discover", open_label("discover")
             )
         )
     return items
@@ -246,7 +254,7 @@ def _capacity_attention_items(
                 "Cloud jobs blocked by configuration",
                 f"{inputs.inadmissible_count} active cloud job(s) are Inadmissible.",
                 "/s/agents",
-                "Inspect Compute",
+                open_label("agents"),
             )
         )
     if inputs.awaiting_cloud_count:
@@ -260,7 +268,7 @@ def _capacity_attention_items(
                 "Cloud quota wait",
                 f"{inputs.queued_behind_quota_count} submitted cloud job(s) are waiting for cluster quota.",
                 "/s/agents",
-                "Inspect Compute",
+                open_label("agents"),
             )
         )
     for priority, stage_name, stage_label, stage_bucket in (
@@ -274,7 +282,7 @@ def _capacity_attention_items(
                     f"{stage_label} is paused",
                     f"{_stage_count(stage_bucket, 'not_started')} not started; {_stage_count(stage_bucket, 'in_flight')} still marked in flight.",
                     f"/s/{stage_name}",
-                    f"Open {stage_label}",
+                    open_label(stage_name),
                 )
             )
     if inputs.active_fileservers == 0:
@@ -284,7 +292,7 @@ def _capacity_attention_items(
                 "No file-server agent available",
                 "Discovery and file-owned work cannot be dispatched until an agent checks in.",
                 "/s/agents",
-                "Configure Agents",
+                open_label("agents"),
             )
         )
     return items
@@ -315,7 +323,7 @@ def _recommended_when_attention_or_empty(attention: list[dict[str, str | int]], 
             "title": "Discover the collection",
             "detail": "Run a scan from a configured file-server agent to populate the collection.",
             "href": "/s/discover",
-            "action": "Open Discover",
+            "action": open_label("discover"),
             "tone": "accent",
         }
     return None
@@ -330,7 +338,7 @@ def _recommended_when_stage_actionable(
             "title": "Start metadata enrichment",
             "detail": "Metadata and analysis are independent and can run in parallel.",
             "href": "/s/metadata",
-            "action": "Open Metadata",
+            "action": open_label("metadata"),
             "tone": "accent",
         }
     if _stage_ready_to_start_work(analyze, stage_paused["analyze"]):
@@ -338,7 +346,7 @@ def _recommended_when_stage_actionable(
             "title": "Start audio analysis",
             "detail": "Analysis can run independently of metadata enrichment.",
             "href": "/s/analyze",
-            "action": "Open Analyze",
+            "action": open_label("analyze"),
             "tone": "accent",
         }
     if _stage_paused_with_pending_work(metadata, stage_paused["metadata"]):
@@ -346,7 +354,7 @@ def _recommended_when_stage_actionable(
             "title": "Metadata enrichment is paused",
             "detail": "Review the pause before resuming metadata work.",
             "href": "/s/metadata",
-            "action": "Open Metadata",
+            "action": open_label("metadata"),
             "tone": "attention",
         }
     if _stage_paused_with_pending_work(analyze, stage_paused["analyze"]):
@@ -354,7 +362,7 @@ def _recommended_when_stage_actionable(
             "title": "Audio analysis is paused",
             "detail": "Review the pause before resuming analysis work.",
             "href": "/s/analyze",
-            "action": "Open Analyze",
+            "action": open_label("analyze"),
             "tone": "attention",
         }
     return None
@@ -376,7 +384,7 @@ def _recommended_default(
             "title": "Enrichment is in progress",
             "detail": "Current work is already running; monitor it before starting the next dependent stage.",
             "href": f"/s/{active_stage}",
-            "action": f"Open {active_stage.title()}",
+            "action": open_label(active_stage),
             "tone": "accent",
         }
     if int(proposals["done"] or 0) < int(proposals["total"] or 0):
@@ -384,7 +392,7 @@ def _recommended_default(
             "title": "Generate proposals",
             "detail": "Files with completed metadata and analysis are ready for proposal generation.",
             "href": "/s/propose",
-            "action": "Open Propose",
+            "action": open_label("propose"),
             "tone": "accent",
         }
     if proposal_pending:
@@ -392,7 +400,7 @@ def _recommended_default(
             "title": "Review proposed changes",
             "detail": f"{proposal_pending} proposal(s) await an operator decision.",
             "href": "/s/rename",
-            "action": "Open Review",
+            "action": open_label("rename"),
             "tone": "attention",
         }
     if proposal_approved:
@@ -400,14 +408,14 @@ def _recommended_default(
             "title": "Execute approved changes",
             "detail": f"{proposal_approved} approved proposal(s) are ready to apply.",
             "href": "/s/apply",
-            "action": "Open Apply",
+            "action": open_label("apply"),
             "tone": "attention",
         }
     return {
         "title": "Pipeline caught up",
         "detail": "No failures, recovery candidates, pending reviews, or approved changes need action.",
         "href": "/s/files",
-        "action": "Browse Files",
+        "action": open_label("files"),
         "tone": "success",
     }
 

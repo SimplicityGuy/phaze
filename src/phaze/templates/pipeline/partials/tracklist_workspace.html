@@ -37,7 +37,7 @@
 {% import "ui/primitives.html" as ui %}
 {% set subcount = '`${$store.pipeline.tracklistDone} sets matched · 1001Tracklists`' %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
-{% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
+{% call ws.workspace(title=page_name('tracklist'), subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Find a source tracklist first, then match its tracks to analyzed files. Complete the steps in order; queue diagnostics are available further down the page.</p>
     </div>

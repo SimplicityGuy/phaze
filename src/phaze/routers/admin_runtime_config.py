@@ -41,7 +41,7 @@ from phaze.runtime_config import (
 )
 from phaze.runtime_config_catalog import LIVE_HELP, restart_only_groups
 from phaze.services.runtime_config_overrides import clear_runtime_config_override, get_runtime_config_overrides, set_runtime_config_override
-from phaze.web.template_globals import register_set_glyph_globals
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 
 router = APIRouter(prefix="/admin/runtime-config", tags=["admin"])
 

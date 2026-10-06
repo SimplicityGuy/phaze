@@ -34,16 +34,18 @@
 {% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-muted " %}
 {% set badge_base = "shrink-0 text-[11px] px-1.5 py-0.5 rounded" %}
 
+{# phaze-yyfax: EVERY navigable page, under the name the rail uses -- generated from the one page-name
+   table (`palette_pages()`, phaze/web/template_globals.py), so the palette can neither omit a page nor spell
+   one differently from the sidebar. Config is in it: it opens from the header gear, not the rail. The
+   rows are STATIC (shown for every query, empty or not -- tests/browser/test_command_palette_search.py
+   pins that) and stay plain GET links, first in the listbox, so the accidental-Enter default is still
+   an idempotent navigation (see the Commands note below). #}
 <div role="presentation" class="{{ head_class }}">Navigate</div>
-<a id="cmdk-nav-summary" role="option" aria-selected="false" tabindex="-1" href="/s/summary" class="{{ row_class }}">
-  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Overview</span>
+{% for stage, name, href in palette_pages() %}
+<a id="cmdk-nav-{{ stage }}" role="option" aria-selected="false" tabindex="-1" href="{{ href }}" class="{{ row_class }}">
+  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">{{ name }}</span>
 </a>
-<a id="cmdk-nav-review" role="option" aria-selected="false" tabindex="-1" href="/s/rename" class="{{ row_class }}">
-  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Changes review</span>
-</a>
-<a id="cmdk-nav-workers" role="option" aria-selected="false" tabindex="-1" href="/s/agents" class="{{ row_class }}">
-  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Agents &amp; compute lanes</span>
-</a>
+{% endfor %}
 
 {% if file_results or tracklist_results or discogs_results or artists %}
   <div role="presentation" class="{{ head_class }}">Files</div>

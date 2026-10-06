@@ -34,7 +34,7 @@ async def test_cue_gate_and_preview(
     assert frag.status_code == 200
     body = frag.text
 
-    assert "Artifacts · Cue sheets" in body and "Generated artifact" in body
+    assert "Cue sheets" in body and "Generated artifact" in body
     assert "Applied file:" in body and "Tracklist:" in body and "Timestamps:" in body
     assert "<pre" in body, "the eligible card renders the in-memory .cue preview block"
     assert f'hx-post="/cue/{eligible_tracklist_id}/generate"' in body

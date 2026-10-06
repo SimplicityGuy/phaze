@@ -7,12 +7,15 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 
+from phaze.web.template_globals import register_page_name_globals
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 
 
 def _render(template: str, **context: object) -> str:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
     return env.get_template(template).render(**context)
 
 
