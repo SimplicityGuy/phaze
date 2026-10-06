@@ -1,7 +1,7 @@
 """phaze-zb5y9: WHICH record presentation pays the similarity scan, and what that scan carries.
 
 ``services/set_similarity.find_similar_sets`` scans ``set_profile`` corpus-wide. Only
-``record_page.html``'s sidebar has a slot for the result: the drawer (``record_body.html``,
+``_record_page_body.html``'s sidebar has a slot for the result: the drawer (``record_body.html``,
 issued on every Files-table row click) and the poster (``poster.svg``) render nothing from it.
 Before this bead all three paid the scan, and the scan hydrated whole ``SetProfile`` entities --
 including ``glyph``, the per-window JSONB the sidebar renders and the scoring path never reads.
