@@ -34,19 +34,18 @@
      is still the durable TracklistDrainArmState row, services.tracklist_drain_arm.get_arm_state,
      the SAME row the continuous-drain cron reads), just not on the main card.
 #}
+{% import "ui/primitives.html" as ui %}
 <div id="tracklist-drain-status">
     <div class="flex flex-col gap-3 border-t border-blue-200 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900">
         <div>
             <p class="font-jura text-[10px] font-medium uppercase tracking-[0.18em] text-muted ">Lookup state</p>
-            <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">
-                {% if arm.armed %}
-                    Running: {{ '{:,}'.format(status.queued) }} remaining
-                {% elif arm.disarmed_reason == "failures" %}
-                    Stopped after repeated failures
-                {% else %}
-                    Idle
-                {% endif %}
-            </p>
+            {% if arm.armed %}
+                <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Running: {{ '{:,}'.format(status.queued) }} remaining</p>
+            {% elif arm.disarmed_reason == "failures" %}
+                <p class="mt-1">{{ ui.status_badge("Lookup", "Stopped after repeated failures", "danger", "✗") }}</p>
+            {% else %}
+                <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Idle</p>
+            {% endif %}
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <button type="button"

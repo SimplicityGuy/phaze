@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 def _pre_extraction_projection(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
     """The inline projection used by ``get_tracklist_sets_page`` before extraction."""
     sets: list[dict[str, Any]] = []
-    for external_id, artist, event, file_id, filename, path, total, confident in rows:
+    for external_id, artist, event, file_id, filename, path, total, confident, discogs_matched in rows:
         matched = file_id is not None
         set_name = filename if matched else (artist or event or external_id)
         sets.append(
@@ -41,6 +41,7 @@ def _pre_extraction_projection(rows: list[tuple[Any, ...]]) -> list[dict[str, An
                 "tracks_confident": int(confident or 0),
                 "tracks_total": int(total or 0),
                 "matched_to_file": matched,
+                "discogs_matched": bool(discogs_matched),
             }
         )
     return sets
@@ -68,11 +69,11 @@ class _RowsSession:
 def test_tracklist_set_projection_matches_pre_extraction_values_and_order() -> None:
     matched_id = uuid.uuid4()
     rows = [
-        ("matched", "Artist", "Event", matched_id, "set.mp3", "/music/set.mp3", 2, 1),
-        ("artist-fallback", "Artist", "Event", None, None, None, None, None),
-        ("event-fallback", None, "Event", None, None, None, 0, 0),
-        ("external-fallback", None, None, None, None, None, None, None),
-        ("missing-file-data", None, None, matched_id, None, None, None, None),
+        ("matched", "Artist", "Event", matched_id, "set.mp3", "/music/set.mp3", 2, 1, True),
+        ("artist-fallback", "Artist", "Event", None, None, None, None, None, False),
+        ("event-fallback", None, "Event", None, None, None, 0, 0, False),
+        ("external-fallback", None, None, None, None, None, None, None, False),
+        ("missing-file-data", None, None, matched_id, None, None, None, None, False),
     ]
 
     projected = _project_tracklist_set_rows(rows)
@@ -83,7 +84,7 @@ def test_tracklist_set_projection_matches_pre_extraction_values_and_order() -> N
 
 @pytest.mark.asyncio
 async def test_tracklist_set_projection_preserves_sentinel_order_and_empty_pages() -> None:
-    rows = [(f"set-{index:02d}", None, None, None, None, None, None, None) for index in range(11)]
+    rows = [(f"set-{index:02d}", None, None, None, None, None, None, None, False) for index in range(11)]
 
     first_page = await get_tracklist_sets_page(_RowsSession(rows), page_size=10)  # type: ignore[arg-type]
     assert first_page.rows == _pre_extraction_projection(rows[:10])

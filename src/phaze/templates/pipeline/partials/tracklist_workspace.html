@@ -94,7 +94,7 @@
             <div class="flex flex-wrap items-start justify-between gap-2">
                 <div>
                     <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-600 dark:text-gray-300">2 · Match</p>
-                    <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Align tracks to files</h2>
+                    <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Link tracks to Discogs</h2>
                 </div>
                 {% if tracklist_match_pending > 0 %}
                     {{ ui.status_badge("Match", tracklist_match_pending ~ " pending", "attention", "●") }}
@@ -109,7 +109,7 @@
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
-                    <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }} matched</dd>
+                    <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }} with a Discogs link</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>

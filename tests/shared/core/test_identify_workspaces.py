@@ -352,8 +352,9 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     tbl = body[body.index('id="tracklist-set-table"') :]
     # D-07: N/M track-level coverage from TracklistTrack.confidence (1 confident of 2 total).
     assert "1/2" in tbl
-    # D-04/D-08: a linked tracklist reads "matched" to its file.
-    assert "matched" in tbl
+    # D-04/D-08: a file-linked tracklist reads "file linked" (phaze-roug5: NOT "matched" -- that word
+    # belongs to the Match card's Discogs-link definition).
+    assert "file linked" in tbl
     # R-1 / D-06: this linked row opens only its exact FileRecord at the Tracklist section.
     tbody = tbl[tbl.index("<tbody") :]
     assert f'hx-get="/record/{file_id}"' in tbody
@@ -810,3 +811,66 @@ async def test_tracklist_column_groups_matched_apart_from_candidate(client: Asyn
     candidates_last = max(positions["c1"], positions["c2"])
     matched_first = min(positions["matched-a.mp3"], positions["matched-b.mp3"])
     assert candidates_last < matched_first, "ascending 'Tracklist' sort must group ALL candidates before ALL matched rows, never interleaved"
+
+
+@pytest.mark.asyncio
+async def test_match_card_and_per_row_discogs_match_agree(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-roug5 -- the Match card's "N / M" and the per-row Discogs-match column share ONE definition.
+
+    The page used to say "0 / 15 matched" on the card while every row read "matched": the card counts
+    tracklists with a Discogs link (get_stage_progress match.done), the row column counted FILE linkage
+    (Tracklist.file_id). Seed the three states and assert card, rows and match-pending set all agree:
+    file-linked with 0 tracks (NOT matched), track-linked to Discogs (matched), unlinked candidate.
+    """
+    from phaze.models.discogs_link import DiscogsLink
+    from phaze.services.pipeline import get_match_pending_tracklists, get_stage_progress
+
+    file_a = await _seed_file(session, original_filename="<set-01>.mp3")
+    await _seed_tracklist(session, file_id=file_a.id, external_id="file-linked-no-tracks", artist="Example A")
+    file_b = await _seed_file(session, original_filename="<set-02>.mp3")
+    linked = await _seed_tracklist(session, file_id=file_b.id, external_id="discogs-linked", artist="Example B")
+    version = await _seed_tracklist_version(session, linked.id)
+    track = await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
+    session.add(DiscogsLink(id=uuid.uuid4(), track_id=track.id, discogs_release_id="r1", confidence=0.9))
+    await session.commit()
+    await _seed_tracklist(session, file_id=None, external_id="candidate", artist="Example C")
+
+    progress = await get_stage_progress(session)
+    assert (progress["match"]["done"], progress["match"]["total"]) == (1, 3)
+    assert len(await get_match_pending_tracklists(session)) == 2
+
+    rows = (await get_tracklist_sets_page(session)).rows
+    assert sum(1 for r in rows if r["discogs_matched"]) == progress["match"]["done"]
+    by_name = {r["set_name"]: r for r in rows}
+    assert by_name["<set-01>.mp3"]["matched_to_file"] is True
+    assert by_name["<set-01>.mp3"]["discogs_matched"] is False
+    assert by_name["<set-02>.mp3"]["discogs_matched"] is True
+    assert by_name["Example C"]["discogs_matched"] is False
+
+    html = (await client.get("/pipeline/tracklist-sets")).text
+    soup = BeautifulSoup(html, "html.parser")
+    assert "Discogs match" in html and "Matched to file" not in html
+    trs = [tr for tr in soup.select("#tracklist-set-table tbody tr") if isinstance(tr, Tag)]
+    rendered_matched = [tr for tr in trs if tr.find_all("td")[-1].get_text(strip=True) == "matched"]
+    assert len(rendered_matched) == progress["match"]["done"]
+    assert "<set-02>.mp3" in rendered_matched[0].get_text()
+    workspace = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text
+    assert "1 / 3 with a Discogs link" in workspace
+
+
+@pytest.mark.asyncio
+async def test_stopped_after_failures_lookup_state_renders_as_a_danger_badge(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-roug5 -- "Stopped after repeated failures" uses ui.status_badge's danger tone, not plain mono text."""
+    from phaze.services import tracklist_drain_arm
+
+    await tracklist_drain_arm.arm_if_not_running(session)
+    await tracklist_drain_arm.disarm_drain(session, reason="failures")
+    await session.commit()
+
+    body = (await client.get("/pipeline/tracklist-drain-status")).text
+    soup = BeautifulSoup(body, "html.parser")
+    badge = next(
+        el for el in soup.find_all("span") if "Stopped after repeated failures" in el.get_text() and "rounded-full" in " ".join(el.get("class") or [])
+    )
+    assert "text-danger" in badge["class"]
+    assert badge.get("aria-label") == "Lookup: Stopped after repeated failures"
