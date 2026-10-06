@@ -51,7 +51,6 @@ from phaze.services.pipeline import (
     get_agent_lane_depths,
     get_agent_recent_scans,
     get_agent_reconciliations,
-    get_agent_watcher_counts,
     get_analysis_failed_count,
     get_analysis_failed_files,
     get_analysis_stalled_count,
@@ -71,6 +70,7 @@ from phaze.services.pipeline import (
     get_pushed_count,
     get_pushing_count,
     get_queue_activity,
+    get_scan_watcher_counts,
     get_scanned_total,
     get_stage_activity_counts,
     get_stage_busy_counts,
@@ -261,7 +261,7 @@ def _live_batch(agent_id: str) -> ScanBatch:
     Mirrors production's invariant of exactly one LIVE batch per agent. Its
     ``total_files``/``processed_files`` are pinned at 0 -- nothing on the watcher write path
     (``routers/agent_files.py``) ever increments them, which is exactly the gap
-    :func:`~phaze.services.pipeline.reconciliation.get_agent_watcher_counts` /
+    :func:`~phaze.services.pipeline.reconciliation.get_scan_watcher_counts` /
     :func:`~phaze.services.pipeline.reconciliation.get_global_watcher_count` close by counting
     this batch's FileRecord rows directly ON READ instead.
     """
@@ -501,7 +501,6 @@ __all__ = [
     "get_agent_lane_depths",
     "get_agent_recent_scans",
     "get_agent_reconciliations",
-    "get_agent_watcher_counts",
     "get_analysis_failed_count",
     "get_analysis_failed_files",
     "get_analysis_stalled_count",
@@ -521,6 +520,7 @@ __all__ = [
     "get_pushed_count",
     "get_pushing_count",
     "get_queue_activity",
+    "get_scan_watcher_counts",
     "get_scanned_total",
     "get_stage_activity_counts",
     "get_stage_busy_counts",

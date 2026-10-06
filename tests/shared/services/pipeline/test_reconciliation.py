@@ -5,8 +5,10 @@ deduped_count, get_scanned_total, get_global_reconciliation, get_agent_reconcili
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from phaze.models.file import FileRecord
 from tests.shared.services.pipeline._shared import (
     UTC,
     Agent,
@@ -20,9 +22,9 @@ from tests.shared.services.pipeline._shared import (
     datetime,
     deduped_count,
     get_agent_reconciliations,
-    get_agent_watcher_counts,
     get_global_reconciliation,
     get_global_watcher_count,
+    get_scan_watcher_counts,
     get_scanned_total,
     pytest,
     seed_active_agent,
@@ -362,98 +364,204 @@ async def test_get_agent_reconciliations_degrade_preserves_caller_loaded_rows(se
     assert await session.get(ScanBatch, batch.id) is not None
 
 
-# Watcher-ingested reconciliation (phaze-3sgw0) -- get_agent_watcher_counts / get_global_watcher_count
+# Watcher-ingested reconciliation (phaze-3sgw0) -- get_scan_watcher_counts / get_global_watcher_count.
+# phaze-eeqd0 made the per-row count per SCAN: the agent's LIVE files under that scan's path,
+# first discovered after that scan finished. Timestamps are explicit so "after" is never a race.
+
+_T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-@pytest.mark.asyncio
-async def test_get_agent_watcher_counts_exact_count_on_live_batch(session: AsyncSession) -> None:
-    """3 files stamped onto an agent's LIVE batch -> {'nox': 3}, an exact COUNT on read."""
-    await seed_active_agent(session, "nox")
-    live = _live_batch("nox")
-    session.add(live)
+def _hours(n: float) -> datetime:
+    return _T0 + timedelta(hours=n)
+
+
+def _scan(agent_id: str, scan_path: str, finished: datetime | None, *, status: str = ScanStatus.COMPLETED.value) -> ScanBatch:
+    """A non-LIVE scan row of ``scan_path`` that finished (``completed_at``) at ``finished``."""
+    return ScanBatch(id=uuid.uuid4(), agent_id=agent_id, scan_path=scan_path, status=status, total_files=0, processed_files=0, completed_at=finished)
+
+
+def _file_at(agent_id: str, batch_id: uuid.UUID, path: str, created: datetime) -> FileRecord:
+    """A FileRecord at ``path`` on ``batch_id``, first discovered (``created_at``) at ``created``."""
+    record = _watcher_file(agent_id, batch_id, 0)
+    record.original_path = record.current_path = path
+    record.original_filename = path.rsplit("/", 1)[-1]
+    record.created_at = created
+    return record
+
+
+async def _seed(session: AsyncSession, *rows: ScanBatch | FileRecord) -> None:
+    session.add_all([row for row in rows if isinstance(row, ScanBatch)])
     await session.flush()
-    session.add_all([_watcher_file("nox", live.id, i) for i in range(3)])
+    session.add_all([row for row in rows if isinstance(row, FileRecord)])
     await session.commit()
 
-    assert await get_agent_watcher_counts(session) == {"nox": 3}
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_same_path_scanned_twice_counts_since_each_scan(session: AsyncSession) -> None:
+    """The operator's "Since that scan only": an older scan of a path counts every watcher file
+    added after IT finished, a newer scan of the same path only those added after the newer one."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    older = _scan("nox", "/music/sets", _hours(1))
+    newer = _scan("nox", "/music/sets", _hours(3))
+    await _seed(
+        session,
+        live,
+        older,
+        newer,
+        _file_at("nox", live.id, "/music/sets/a.mp3", _hours(2)),
+        _file_at("nox", live.id, "/music/sets/b.mp3", _hours(4)),
+        _file_at("nox", live.id, "/music/sets/c.mp3", _hours(5)),
+    )
+
+    assert await get_scan_watcher_counts(session, [older.id, newer.id]) == {older.id: 3, newer.id: 2}
 
 
 @pytest.mark.asyncio
-async def test_get_agent_watcher_counts_per_agent(session: AsyncSession) -> None:
-    """Two agents, two LIVE batches: each agent's count is independent."""
+async def test_scan_watcher_counts_root_row_includes_its_subpath_row(session: AsyncSession) -> None:
+    """A root scan counts files anywhere under it; a subpath scan only those under the subpath."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    root = _scan("nox", "/music", _hours(1))
+    sub = _scan("nox", "/music/sets/2024", _hours(1))
+    await _seed(
+        session,
+        live,
+        root,
+        sub,
+        _file_at("nox", live.id, "/music/sets/2024/deep/a.mp3", _hours(2)),
+        _file_at("nox", live.id, "/music/sets/2025/b.mp3", _hours(2)),
+        _file_at("nox", live.id, "/music/c.mp3", _hours(2)),
+    )
+
+    assert await get_scan_watcher_counts(session, [root.id, sub.id]) == {root.id: 3, sub.id: 1}
+
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_same_path_on_two_agents_never_cross_counts(session: AsyncSession) -> None:
+    """Each scan row reads only its OWN agent's LIVE batch, even when two agents share a path."""
     await seed_active_agent(session, "nox")
     await seed_active_agent(session, "lux")
-    nox_live = _live_batch("nox")
-    lux_live = _live_batch("lux")
-    session.add_all([nox_live, lux_live])
-    await session.flush()
-    session.add_all([_watcher_file("nox", nox_live.id, i) for i in range(2)])
-    session.add_all([_watcher_file("lux", lux_live.id, i) for i in range(5)])
-    await session.commit()
+    nox_live, lux_live = _live_batch("nox"), _live_batch("lux")
+    nox_scan, lux_scan = _scan("nox", "/music", _hours(1)), _scan("lux", "/music", _hours(1))
+    await _seed(
+        session,
+        nox_live,
+        lux_live,
+        nox_scan,
+        lux_scan,
+        _file_at("nox", nox_live.id, "/music/a.mp3", _hours(2)),
+        *[_file_at("lux", lux_live.id, f"/music/{i}.mp3", _hours(2)) for i in range(4)],
+    )
 
-    counts = await get_agent_watcher_counts(session)
-    assert counts == {"nox": 2, "lux": 5}
-
-
-@pytest.mark.asyncio
-async def test_get_agent_watcher_counts_omits_agent_with_no_watcher_files(session: AsyncSession) -> None:
-    """An agent whose LIVE batch owns zero files is ABSENT from the map (not present with 0) --
-    the inner join drops it, mirroring get_agent_reconciliations' 'empty means no annotation'."""
-    await seed_active_agent(session, "nox")
-    session.add(_live_batch("nox"))
-    await session.commit()
-
-    assert await get_agent_watcher_counts(session) == {}
+    assert await get_scan_watcher_counts(session, [nox_scan.id, lux_scan.id]) == {nox_scan.id: 1, lux_scan.id: 4}
 
 
 @pytest.mark.asyncio
-async def test_get_agent_watcher_counts_ignores_non_live_batches(session: AsyncSession) -> None:
-    """Files on a COMPLETED batch never count as watcher-added, only a LIVE batch's rows do."""
+async def test_scan_watcher_counts_prefix_match_stops_at_a_path_component(session: AsyncSession) -> None:
+    """``/a/b`` claims ``/a/b`` and ``/a/b/...`` but never the sibling ``/a/bc``; a trailing slash
+    on the scan path changes nothing, and LIKE wildcards in a path are literal, not patterns."""
     await seed_active_agent(session, "nox")
-    completed = _completed_batch("nox", 5)
-    session.add(completed)
-    await session.flush()
-    session.add_all([_watcher_file("nox", completed.id, i) for i in range(5)])
-    await session.commit()
-
-    assert await get_agent_watcher_counts(session) == {}
-
-
-@pytest.mark.asyncio
-async def test_get_agent_watcher_counts_exact_when_watcher_reingests_already_scanned_file(session: AsyncSession) -> None:
-    """phaze-3sgw0 core scenario: the watcher upsert can move an already-scanned file's
-    ``batch_id`` onto the LIVE batch (``ON CONFLICT DO UPDATE ... batch_id = excluded.batch_id``
-    in routers/agent_files.py). The completed batch's stored counters stay frozen at their
-    original total, but the count here reflects EXACTLY which rows sit on the LIVE batch right
-    now -- computed on read, never from a stored counter.
-    """
-    await seed_active_agent(session, "nox")
-    completed = _completed_batch("nox", 3)
     live = _live_batch("nox")
-    session.add_all([completed, live])
-    await session.flush()
-    files = [_watcher_file("nox", completed.id, i) for i in range(3)]
-    session.add_all(files)
-    await session.commit()
+    plain = _scan("nox", "/a/b", _hours(1))
+    slashed = _scan("nox", "/a/b/", _hours(1))
+    wildcard = _scan("nox", "/a/x_%", _hours(1))
+    root = _scan("nox", "/", _hours(1))
+    await _seed(
+        session,
+        live,
+        plain,
+        slashed,
+        wildcard,
+        root,
+        _file_at("nox", live.id, "/a/b", _hours(2)),
+        _file_at("nox", live.id, "/a/b/in.mp3", _hours(2)),
+        _file_at("nox", live.id, "/a/bc/out.mp3", _hours(2)),
+        _file_at("nox", live.id, "/a/bc.mp3", _hours(2)),
+        _file_at("nox", live.id, "/a/xy%/out.mp3", _hours(2)),
+        _file_at("nox", live.id, "/a/x_%/in.mp3", _hours(2)),
+    )
 
-    # Before any reassignment: nothing sits on the LIVE batch yet.
-    assert await get_agent_watcher_counts(session) == {}
-
-    # The watcher re-ingests one of the three files, moving it onto the LIVE batch --
-    # the completed batch's total_files (3) is now stale/frozen, but the exact watcher
-    # count reflects the single row that actually moved.
-    files[0].batch_id = live.id
-    await session.commit()
-
-    assert await get_agent_watcher_counts(session) == {"nox": 1}
-    # The completed batch's counters are untouched (frozen, as documented).
-    refreshed_completed = await session.get(ScanBatch, completed.id)
-    assert refreshed_completed is not None
-    assert refreshed_completed.total_files == 3
+    counts = await get_scan_watcher_counts(session, [plain.id, slashed.id, wildcard.id, root.id])
+    assert counts == {plain.id: 2, slashed.id: 2, wildcard.id: 1, root.id: 6}
 
 
 @pytest.mark.asyncio
-async def test_get_agent_watcher_counts_degrades_to_empty_on_db_error() -> None:
+async def test_scan_watcher_counts_a_retouched_file_is_not_added_since_the_scan(session: AsyncSession) -> None:
+    """A file a walk found before the scan finished, then re-touched by the watcher (its batch_id
+    reassigned onto LIVE by the upsert), was not ADDED since that scan: ``created_at`` decides,
+    and the upsert never moves it. A file first discovered after the scan does count."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    scan = _scan("nox", "/music", _hours(1))
+    retouched = _file_at("nox", scan.id, "/music/old.mp3", _hours(0.5))
+    await _seed(session, live, scan, retouched, _file_at("nox", live.id, "/music/new.mp3", _hours(2)))
+
+    retouched.batch_id = live.id
+    retouched.updated_at = _hours(3)
+    await session.commit()
+
+    assert await get_scan_watcher_counts(session, [scan.id]) == {scan.id: 1}
+
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_unfinished_and_unstamped_rows(session: AsyncSession) -> None:
+    """A RUNNING scan has not finished, so nothing is "since" it and the row is absent. A terminal
+    row whose ``completed_at`` was never stamped falls back to ``updated_at`` -- the same end the
+    elapsed timer freezes at -- and a FAILED row counts from when it failed."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    running = _scan("nox", "/music", None, status=ScanStatus.RUNNING.value)
+    unstamped = _scan("nox", "/music", None)
+    unstamped.updated_at = _hours(3)
+    failed = _scan("nox", "/music", _hours(1), status=ScanStatus.FAILED.value)
+    await _seed(
+        session,
+        live,
+        running,
+        unstamped,
+        failed,
+        _file_at("nox", live.id, "/music/a.mp3", _hours(2)),
+        _file_at("nox", live.id, "/music/b.mp3", _hours(4)),
+    )
+
+    assert await get_scan_watcher_counts(session, [running.id, unstamped.id, failed.id]) == {unstamped.id: 1, failed.id: 2}
+
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_only_live_files_and_only_requested_scans(session: AsyncSession) -> None:
+    """Files on a non-LIVE batch are a walk's, never the watcher's; a scan not asked for is absent."""
+    await seed_active_agent(session, "nox")
+    live = _live_batch("nox")
+    asked = _scan("nox", "/music", _hours(1))
+    other = _scan("nox", "/music", _hours(1))
+    later_walk = _scan("nox", "/music", _hours(9))
+    await _seed(
+        session,
+        live,
+        asked,
+        other,
+        later_walk,
+        _file_at("nox", later_walk.id, "/music/walked.mp3", _hours(8)),
+        _file_at("nox", live.id, "/music/watched.mp3", _hours(2)),
+    )
+
+    assert await get_scan_watcher_counts(session, [asked.id]) == {asked.id: 1}
+
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_no_rows_issues_no_query() -> None:
+    """An empty page asks nothing of the database."""
+
+    class _UntouchableSession:
+        def begin_nested(self) -> object:
+            raise AssertionError("an empty page must not open a savepoint")
+
+    assert await get_scan_watcher_counts(_UntouchableSession(), []) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_scan_watcher_counts_degrades_to_empty_on_db_error() -> None:
     """A forced read error degrades to an empty map, never raising into the 5s poll."""
 
     class _ExplodingSession:
@@ -463,22 +571,22 @@ async def test_get_agent_watcher_counts_degrades_to_empty_on_db_error() -> None:
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("scan_batches table unavailable")
 
-    assert await get_agent_watcher_counts(_ExplodingSession()) == {}  # type: ignore[arg-type]
+    assert await get_scan_watcher_counts(_ExplodingSession(), [uuid.uuid4()]) == {}  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_get_agent_watcher_counts_degrades_when_begin_nested_itself_raises() -> None:
+async def test_scan_watcher_counts_degrades_when_begin_nested_itself_raises() -> None:
     """Even if opening the SAVEPOINT itself raises, the map still degrades to {}."""
 
     class _DoublyExplodingSession:
         def begin_nested(self) -> object:
             raise RuntimeError("connection already closed")
 
-    assert await get_agent_watcher_counts(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]
+    assert await get_scan_watcher_counts(_DoublyExplodingSession(), [uuid.uuid4()]) == {}  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_get_agent_watcher_counts_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_scan_watcher_counts_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this session."""
     from unittest.mock import AsyncMock
 
@@ -490,7 +598,7 @@ async def test_get_agent_watcher_counts_degrade_preserves_caller_loaded_rows(ses
 
     real_execute = session.execute
     monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
-    counts = await get_agent_watcher_counts(session)
+    counts = await get_scan_watcher_counts(session, [batch.id])
     monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
 
     assert counts == {}
