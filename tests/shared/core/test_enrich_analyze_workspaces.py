@@ -37,6 +37,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.routers.shell.stage_maps import STAGE_PARTIALS, UTILITY_PANES
 
 
 if TYPE_CHECKING:
@@ -1401,3 +1402,38 @@ async def test_poll_still_seeds_store_and_lands_analyze_lanes_oob(client: AsyncC
     assert 'id="analyze-lanes"' in body
     assert 'hx-swap-oob="true"' in body
     assert _analyze_lanes_hash(body), "the OOB grid must still carry its content hash"
+
+
+@pytest.mark.asyncio
+async def test_workspaces_sink_analyze_queue_total_oob_card(client: AsyncClient) -> None:
+    """phaze-79fxz -- every workspace has exactly one #analyze-queue-total-card target.
+
+    The shared `/pipeline/stats` poll (one response, page-agnostic: the poll cannot know which page hosts
+    it) re-emits the global TOTAL QUEUED card OOB every tick. Its real host is only analyze_workspace.html;
+    every other page must carry the hidden sink or htmx logs `htmx:oobErrorNoTarget` every 5s. Analyze keeps
+    exactly one (the real, live-updating card).
+    """
+    for stage in ("discover", "metadata", "analyze", "files"):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        count = frag.text.count('id="analyze-queue-total-card"')
+        assert count == 1, f"{stage} fragment must have exactly one #analyze-queue-total-card target (found {count})"
+
+
+@pytest.mark.asyncio
+async def test_every_poll_oob_id_has_a_target_on_every_workspace(client: AsyncClient) -> None:
+    """phaze-79fxz -- the general form: each id the shared poll pushes OOB lands somewhere on every shell page.
+
+    Collects every element id carrying `hx-swap-oob` in the `/pipeline/stats` response and asserts each is
+    present in the served page, so the next card added to stats_bar.html without a sink fails here rather
+    than as a console error every 5s in production. The poll still emits the live card (Analyze updates).
+    """
+    stats = (await client.get("/pipeline/stats")).text
+    oob_ids = set(re.findall(r'<[^>]*\bid="([^"]+)"[^>]*hx-swap-oob', stats)) | set(re.findall(r'<[^>]*hx-swap-oob[^>]*\bid="([^"]+)"', stats))
+    assert "analyze-queue-total-card" in oob_ids, "the poll must still emit the queue-total card OOB (Analyze live update)"
+    for stage in (*STAGE_PARTIALS, *UTILITY_PANES):
+        response = await client.get(f"/s/{stage}")
+        assert response.status_code == 200, stage
+        page = response.text
+        missing = sorted(i for i in oob_ids if f'id="{i}"' not in page)
+        assert not missing, f"/s/{stage} lacks OOB targets for poll ids {missing} (htmx:oobErrorNoTarget every 5s)"

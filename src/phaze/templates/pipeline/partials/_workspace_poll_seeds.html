@@ -112,6 +112,10 @@
     <section id="analyzing-cloud-card"></section>
     <section id="staged-pushing-card"></section>
     <div id="analyze-active-total-card"></div>
+    {# phaze-79fxz: the global TOTAL QUEUED (analyze) card (#analyze-queue-total-card, phaze-5c6i2) is re-emitted
+       OOB every tick too, but its real host is only analyze_workspace.html, so every other stage sinks it here
+       under the same gate -- without it htmx logged htmx:oobErrorNoTarget every 5s on every non-Analyze page. #}
+    <div id="analyze-queue-total-card"></div>
     {# Phase 71 (71-03, BEUI-01): the shared /pipeline/stats poll ALSO re-emits the #analyze-lanes
        N-lane grid OOB every tick (stats_bar.html). Its real host lives ONLY in analyze_workspace.html;
        on every other stage (and the first-run empty state) the outerHTML OOB swap would land nowhere and
