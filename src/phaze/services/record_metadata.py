@@ -25,6 +25,7 @@ import json
 from typing import TYPE_CHECKING, Final, Literal
 
 from phaze.services.analysis_timeline import format_elapsed_time
+from phaze.services.bitrate import bps_to_kbps
 
 
 if TYPE_CHECKING:
@@ -73,7 +74,7 @@ def _formatted_fields(file_metadata: FileMetadata) -> list[MetadataField]:
         ("Year", str(file_metadata.year) if file_metadata.year is not None else None),
         ("Genre", file_metadata.genre),
         (_TRACK_LABEL, str(file_metadata.track_number) if file_metadata.track_number is not None else None),
-        ("Bitrate", f"{file_metadata.bitrate} kbps" if file_metadata.bitrate is not None else None),
+        ("Bitrate", f"{bps_to_kbps(file_metadata.bitrate)} kbps" if file_metadata.bitrate is not None else None),
         ("Duration", format_elapsed_time(file_metadata.duration) if file_metadata.duration else None),
     ]
     return [MetadataField(label=label, value=value) for label, value in candidates if value]

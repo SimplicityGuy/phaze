@@ -629,7 +629,7 @@ async def test_the_metadata_card_renders_every_non_null_tag_field_on_both_presen
             year=2024,
             genre="Techno",
             track_number=3,
-            bitrate=320,
+            bitrate=320_000,
             duration=125.0,
         )
     )

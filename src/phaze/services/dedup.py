@@ -14,6 +14,7 @@ from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.services.bitrate import bps_to_kbps
 from phaze.services.bulk_insert import chunk_rows
 from phaze.services.stage_status import dedup_resolved_clause
 
@@ -121,7 +122,7 @@ def _canonical_rationale(winner: dict[str, Any], runner_up: dict[str, Any] | Non
     runner_tags = _runner_up_value(runner_up, "tag_filled")
 
     if _led_on_bitrate(winner_bitrate, runner_bitrate):
-        return f"highest bitrate ({winner_bitrate // 1000}kbps)"
+        return f"highest bitrate ({bps_to_kbps(winner_bitrate)}kbps)"
     if _led_on_tag_completeness(winner_tags, runner_tags):
         return f"most complete tags ({winner_tags}/{winner_tag_total})"
     return "shortest path"
