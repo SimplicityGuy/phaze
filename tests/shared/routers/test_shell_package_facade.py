@@ -40,7 +40,7 @@ def test_templates_dir_resolves_to_the_real_template_root() -> None:
 def test_no_submodule_name_is_shadowed_by_a_re_export() -> None:
     """No submodule shares a name with anything ``__init__`` re-exports, and each stays a module."""
     submodules = {info.name for info in pkgutil.iter_modules(pkg.__path__)}
-    assert submodules == {"stage_context", "stage_maps", "summary"}, f"unexpected shell submodule set: {sorted(submodules)}"
+    assert submodules == {"stage_context", "stage_maps", "store_seed", "summary"}, f"unexpected shell submodule set: {sorted(submodules)}"
     collisions = submodules & set(pkg.__all__)
     assert not collisions, f"submodule names shadowed by a re-export (rename the submodule): {sorted(collisions)}"
 

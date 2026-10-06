@@ -113,7 +113,14 @@
             // poll. The Phase-34 keys (discovered/analyzed/metadataExtracted/agentBusy/
             // controllerBusy) are PRESERVED — the existing button :disabled gating reads
             // them.
+            // phaze-s8xtd: the defaults below are only the FALLBACK. The server renders its own numbers into
+            // `pipeline_seed` (routers/shell/store_seed.py -- the same functions the poll uses) and they are merged
+            // OVER these defaults right after the store is created (Object.assign below), so the first paint shows real counts. When the seed could not be measured
+            // (`pipeline_seed` is null) `seedKnown` stays 0 and every count display shows an em-dash instead of
+            // these zeros -- a zero on this screen must always mean "measured zero". `orphanKnown` is the same
+            // contract for the Discover recovery panel's "none detected" claim.
             Alpine.store('pipeline', {
+                seedKnown: 0, orphanKnown: 0,
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
@@ -168,6 +175,9 @@
                 // Summary Recent Activity uses null as an explicit degraded/unknown value.
                 summaryRecentLive: null, summaryRecentToday: null, summaryRecentLifetime: null
             });
+            // phaze-s8xtd: merge the server's numbers over the defaults above, before any binding evaluates. (Double quotes on
+            // purpose: test_theme_and_store_preserved counts the single-quoted literal to prove the store is defined ONCE.)
+            Object.assign(Alpine.store("pipeline"), {{ (pipeline_seed or {}) | tojson }});
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every
             // htmx sort/filter/pager swap of #files-table-view -- that swap replaces the WHOLE

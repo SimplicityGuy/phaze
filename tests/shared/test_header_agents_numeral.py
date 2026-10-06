@@ -67,6 +67,7 @@ def test_header_names_online_agents_and_active_lanes_separately() -> None:
 
 def test_header_counts_bind_to_their_distinct_store_values() -> None:
     html = _render_header()
-    assert html.count('x-text="$store.pipeline.agentOnline"') == 1
-    assert html.count('x-text="$store.pipeline.computeLanesActive"') == 1
+    # phaze-s8xtd: each numeral is gated on seedKnown so an unmeasured count reads an em-dash, never 0.
+    assert html.count("x-text=\"$store.pipeline.seedKnown ? $store.pipeline.agentOnline : '—'\"") == 1
+    assert html.count("x-text=\"$store.pipeline.seedKnown ? $store.pipeline.computeLanesActive : '—'\"") == 1
     assert 'x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"' not in html

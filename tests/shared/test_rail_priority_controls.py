@@ -67,5 +67,5 @@ def test_enrich_numeral_renders_done_over_total_with_matching_labels(stage: str,
 def test_other_rail_numerals_remain_labeled() -> None:
     html = _RAIL.read_text()
     for key in ("discovered", "tracklistDone", "proposalsDone"):
-        assert re.search(rf':title="\$store\.pipeline\.{key}[^\"]*"', html)
-        assert re.search(rf':aria-label="\$store\.pipeline\.{key}[^\"]*"', html)
+        assert re.search(rf':title="[^\"]*\$store\.pipeline\.{key}[^\"]*"', html)
+        assert re.search(rf':aria-label="[^\"]*\$store\.pipeline\.{key}[^\"]*"', html)
