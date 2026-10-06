@@ -86,6 +86,11 @@ async def test_dedupe_workspace_preserves_pagination_and_order(
 
     expected = await baseline_review.get_dedupe_groups(session, limit=1, offset=1)
     actual = await review.get_dedupe_groups(session, limit=1, offset=1)
+    # phaze-6ak0q: ``strictly_better`` is a KEY the pinned snapshot cannot carry (the badge's tie-vs-win
+    # state is new, additive, and recorded on that bead). Assert the new side carries it, then strip it
+    # so the raw ``==`` keeps its teeth on every other key.
+    assert all("strictly_better" in group for group in actual)
+    actual = [{k: v for k, v in group.items() if k != "strictly_better"} for group in actual]
 
     assert actual == expected
     assert len(actual) == 1

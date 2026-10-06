@@ -19,6 +19,7 @@ Consumes the DB fixtures, so ``conftest.py`` auto-marks this module ``integratio
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
@@ -333,9 +334,12 @@ async def test_the_wheel_plots_the_flicker_filtered_runs_with_dashed_amber_jumps
     for edge in adjacent:
         assert edge.get("stroke-dasharray") is None
         assert "stroke-cyan-700" in edge.get("class", [])
+    # phaze-6ak0q: the banner is amber only while decisions are PENDING (neutral when nothing needs review),
+    # and this journey file has none -- so the shared amber is pinned on the banner's pending branch in source.
     banner = page.select_one("[data-review-banner]")
     assert banner is not None
-    assert any("amber-500" in name for name in banner.get("class", [])), "the jump stroke names the banner's own amber"
+    banner_source = (Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates" / "record" / "_record_content.html").read_text()
+    assert "border-amber-500/25" in banner_source, "the jump stroke names the banner's own amber"
 
     # The one-line summary states the run count and how many of the wheel's own edges were
     # adjacent -- the SAME two numbers, never a re-derivation -- and doubles as the SVG's own
