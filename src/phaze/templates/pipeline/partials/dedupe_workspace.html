@@ -79,7 +79,7 @@
                 hx-target="#dedupe-load-more-wrap" hx-swap="outerHTML"
                 hx-disabled-elt="this"
                 aria-label="Load more duplicate groups"
-                class="{{ _load_more_btn }}">Load {{ [(dedupe_total_groups | default(0)) - (dedupe_groups | length), dedupe_page_size | default(100)] | min }} more</button>
+                class="{{ _load_more_btn }}">Load {{ ([(dedupe_total_groups | default(0)) - (dedupe_groups | length), dedupe_page_size | default(100)] | min) | thousands }} more</button>
         {% endif %}
     </div>
 {% endcall %}

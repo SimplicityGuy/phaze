@@ -39,7 +39,7 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
 {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary) operator vocabulary: "needing review", not "pending review". #}
-{% set subcount = "'" ~ preflight.total ~ " ready to execute · " ~ stats.pending ~ " still needing review'" %}
+{% set subcount = "'" ~ (preflight.total | thousands) ~ " ready to execute · " ~ (stats.pending | thousands) ~ " still needing review'" %}
 {% set _apply_btn = ui.btn('primary', 'md') %}
 {% set _eyebrow = 'font-jura text-[11px] uppercase tracking-[0.2em] text-muted ' %}
 {% set actions %}
@@ -53,7 +53,7 @@
             disabled
             aria-describedby="apply-blocked-reason"
             {% endif %}
-            aria-label="Review and execute {{ preflight.total }} approved operation{{ '' if preflight.total == 1 else 's' }}"
+            aria-label="Review and execute {{ preflight.total | thousands }} approved operation{{ '' if preflight.total == 1 else 's' }}"
             class="{{ _apply_btn }}">EXECUTE APPROVED</button>
 {% endset %}
 {% call ws.workspace(title=page_name('apply'), subcount=subcount, actions=actions) %}
@@ -87,7 +87,7 @@
                     {% for dest, count in preflight.conflicts %}
                     <tr class="border-t border-red-200 dark:border-red-900">
                         <td class="break-all px-3 py-2 font-mono text-gray-800 dark:text-gray-200">{{ dest }}</td>
-                        <td class="px-3 py-2 text-right tabular-nums text-danger ">{{ count }}</td>
+                        <td class="px-3 py-2 text-right tabular-nums text-danger ">{{ count | thousands }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -98,13 +98,13 @@
 
     {% if preflight.operations %}
     <div class="px-6 pt-4">
-        <p class="{{ _eyebrow }} mb-2">Will run — {{ preflight.total }} operation{{ '' if preflight.total == 1 else 's' }}</p>
+        <p class="{{ _eyebrow }} mb-2">Will run — {{ preflight.total | thousands }} operation{{ '' if preflight.total == 1 else 's' }}</p>
         <ul class="space-y-2">
             {% for op in preflight.operations %}
             <li class="rounded-lg border border-gray-200 p-3 dark:border-phaze-border">
                 <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
                     <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ op.label }}</span>
-                    <span class="font-jura text-sm tabular-nums text-ok ">{{ op.count }}</span>
+                    <span class="font-jura text-sm tabular-nums text-ok ">{{ op.count | thousands }}</span>
                 </div>
                 <p class="mt-1 text-xs text-muted ">{{ op.consequence }}</p>
                 <p class="mt-1 text-xs text-muted "><span class="font-semibold">Reversibility:</span> {{ op.reversibility }}</p>
@@ -121,7 +121,7 @@
             {% for agent in preflight.agents %}
             <li class="inline-flex items-center gap-2 rounded-md border border-gray-200 px-2.5 py-1 text-xs dark:border-phaze-border">
                 <span class="text-gray-800 dark:text-gray-200">{{ agent.name }}</span>
-                <span class="tabular-nums text-muted ">{{ agent.count }}</span>
+                <span class="tabular-nums text-muted ">{{ agent.count | thousands }}</span>
             </li>
             {% endfor %}
         </ul>
@@ -133,7 +133,7 @@
         {# phaze-tzy6s.17: the "+" is not decoration. One contributing row (tag writes) can only be
            counted by a capped scan, so when it saturates this total is a FLOOR and says so. An
            exact-looking total sitting above a row openly marked "N+" is the worse of the two. #}
-        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
+        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total | thousands }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
         <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
@@ -151,7 +151,7 @@
                             {{ exclusion.label }}
                             {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-danger ">blocking</span>{% endif %}
                         </td>
-                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count }}{{ "+" if exclusion.at_least }}</td>
+                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count | thousands }}{{ "+" if exclusion.at_least }}</td>
                         <td class="px-3 py-2 align-top text-muted ">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
                     </tr>
                     {% endfor %}
@@ -206,16 +206,16 @@
     {% if preflight.can_execute %}
     {{ ui.confirmation(
         id="apply-confirm",
-        title="Execute " ~ preflight.total ~ " approved operation" ~ ("" if preflight.total == 1 else "s") ~ "?",
+        title="Execute " ~ (preflight.total | thousands) ~ " approved operation" ~ ("" if preflight.total == 1 else "s") ~ "?",
         message="Files are copied to their proposed destination, verified, then the original is deleted. Originals survive until"
                 ~ " verification succeeds, and every operation is written to the audit log. "
-                ~ preflight.excluded_total ~ ("+" if preflight.excluded_total_at_least else "")
+                ~ (preflight.excluded_total | thousands) ~ ("+" if preflight.excluded_total_at_least else "")
                 ~ " item" ~ ("" if preflight.excluded_total == 1 and not preflight.excluded_total_at_least else "s")
                 ~ " listed above are excluded and will not be touched."
                 ~ (" The excluded figure is a lower bound: the tag-write queue scan is capped." if preflight.excluded_total_at_least else ""),
         action="/execution/start",
         target="#apply-execute-response",
-        confirm_label="Execute " ~ preflight.total,
+        confirm_label="Execute " ~ (preflight.total | thousands),
         cancel_label="Cancel",
         tone="attention") }}
     {% endif %}

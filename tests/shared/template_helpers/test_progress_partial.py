@@ -15,12 +15,15 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from phaze.web.template_globals import register_format_filters
+
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "src" / "phaze" / "templates"
 
 # Reuse the production-style ``Jinja2Templates`` wrapper. Autoescape for ``.html``
 # is enabled by default in this constructor (see FastAPI's docs).
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_format_filters(_templates.env)
 
 
 def _fake_request() -> Request:

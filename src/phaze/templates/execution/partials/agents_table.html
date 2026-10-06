@@ -73,9 +73,9 @@
                     {{ ui.status_pill('ERRORS', 'danger', 'Status: errors') }}
                     {% endif %}
                 </td>
-                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.completed }}</td>
-                <td class="px-4 py-3 font-mono text-sm {% if agent.failed > 0 %}text-danger font-semibold{% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ agent.failed }}</td>
-                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.total }}</td>
+                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.completed | thousands }}</td>
+                <td class="px-4 py-3 font-mono text-sm {% if agent.failed > 0 %}text-danger font-semibold{% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ agent.failed | thousands }}</td>
+                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.total | thousands }}</td>
             </tr>
             {% endfor %}
         </tbody>

@@ -36,6 +36,7 @@ from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import ProcessFilePayload
+from phaze.web.template_globals import register_format_filters
 from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
@@ -246,6 +247,7 @@ def _render_files_table(*, bucket: str, active_stage: str | None = None, active_
 
     templates_dir = Path(__file__).resolve().parent.parent.parent / "src" / "phaze" / "templates"
     _templates = Jinja2Templates(directory=str(templates_dir))
+    register_format_filters(_templates.env)
     scope = {
         "type": "http",
         "method": "GET",

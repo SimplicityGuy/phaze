@@ -33,7 +33,7 @@
     {% call ui.state('empty', 'No renames have been executed yet', 'Nothing has been proposed for rename yet. Proposal generation is a deliberate operator action; this audit records approved file rename and move execution after proposals are generated, approved, and executed.') %}
     {% if proposal_ready_count %}
     <p class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
-        {{ proposal_ready_count }} file{{ "" if proposal_ready_count == 1 else "s" }} ready for proposal generation
+        {{ proposal_ready_count | thousands }} file{{ "" if proposal_ready_count == 1 else "s" }} ready for proposal generation
         <span class="text-muted ">(metadata and analysis both complete)</span>
     </p>
     {# phaze-9v49r: a LINK to the page where proposals are generated -- navigation, never a mutation. It used to read

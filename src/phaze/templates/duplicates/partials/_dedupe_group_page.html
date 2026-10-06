@@ -28,7 +28,7 @@
             hx-target="#dedupe-load-more-wrap" hx-swap="outerHTML"
             hx-disabled-elt="this"
             aria-label="Load more duplicate groups"
-            class="{{ ui.btn('secondary', 'md') }}">Load {{ [total_groups - rendered_through, page_size] | min }} more</button>
+            class="{{ ui.btn('secondary', 'md') }}">Load {{ ([total_groups - rendered_through, page_size] | min) | thousands }} more</button>
     {% endif %}
 </div>
 

@@ -9,22 +9,22 @@
         <p class="text-xs text-muted">Kueue admission · updates about every 5 min</p>
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-3" aria-label="Cloud admission stages">
             <div class="rounded-lg bg-gray-50 px-4 py-3 dark:bg-phaze-panel">
-                <p class="font-mono text-xl font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ queued_behind_quota_count }}</p>
+                <p class="font-mono text-xl font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ queued_behind_quota_count | thousands }}</p>
                 <p class="text-sm text-muted">Waiting for quota</p>
             </div>
             <div class="rounded-lg bg-blue-50 px-4 py-3 dark:bg-blue-950">
-                <p class="font-mono text-xl font-semibold tabular-nums text-info">{{ admitted_count }}</p>
+                <p class="font-mono text-xl font-semibold tabular-nums text-info">{{ admitted_count | thousands }}</p>
                 <p class="text-sm text-info">Admitted</p>
             </div>
             <div class="rounded-lg bg-violet-50 px-4 py-3 dark:bg-violet-950">
-                <p class="font-mono text-xl font-semibold tabular-nums text-violet-700 dark:text-violet-400">{{ running_count }}</p>
+                <p class="font-mono text-xl font-semibold tabular-nums text-violet-700 dark:text-violet-400">{{ running_count | thousands }}</p>
                 <p class="text-sm text-violet-600 dark:text-violet-400">Running</p>
             </div>
         </div>
         {% endif %}
         {% if finished_count %}
         <p class="border-t border-gray-200 pt-3 text-sm text-muted dark:border-phaze-border">
-            <span class="font-mono font-semibold tabular-nums text-ok">{{ finished_count }}</span>
+            <span class="font-mono font-semibold tabular-nums text-ok">{{ finished_count | thousands }}</span>
             <span class="font-medium text-ok">Finished overall</span>
             <span>· lifetime total</span>
         </p>

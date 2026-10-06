@@ -181,7 +181,7 @@
             {% endif %}
             {% if changes_pagination.has_prev or changes_pagination.has_next %}
             <div class="flex items-center justify-between p-4 text-xs text-muted ">
-                <span>Showing {{ changes_pagination.start }}-{{ changes_pagination.end }} of {{ changes_pagination.total }}</span>
+                <span>Showing {{ changes_pagination.start | thousands }}-{{ changes_pagination.end | thousands }} of {{ changes_pagination.total | thousands }}</span>
                 <div class="flex gap-2">
                     {% if changes_prev_url %}<a href="{{ changes_prev_url }}" data-changes-nav hx-get="{{ changes_prev_url }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true" class="{{ ui.btn('secondary', 'sm') }}">Previous</a>{% endif %}
                     {% if changes_next_url %}<a href="{{ changes_next_url }}" data-changes-nav hx-get="{{ changes_next_url }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true" class="{{ ui.btn('secondary', 'sm') }}">Next</a>{% endif %}

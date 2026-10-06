@@ -140,7 +140,7 @@
 {% if propose_stats.pending > 0 %}
 <section aria-label="Proposal generation complete" class="mx-4 mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 sm:mx-6 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-900 dark:bg-emerald-950/30">
     <div>
-        <p class="text-sm font-semibold text-ok ">{{ propose_stats.pending }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
+        <p class="text-sm font-semibold text-ok ">{{ propose_stats.pending | thousands }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
         <p class="mt-1 text-xs text-ok ">Inspect candidates here, then approve, edit, or reject them in the canonical Review workspace.</p>
     </div>
     <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="{{ ui.btn('primary', 'md') }}">Review changes →</a>

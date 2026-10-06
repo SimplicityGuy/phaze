@@ -1,7 +1,7 @@
 """phaze-9v49r: rendered UI copy carries no decision-record references and no ``--`` stand-in for an em dash.
 
-``ADR-0008 (changes review approval boundary)`` printed inside parentheses inside parentheses, and ``Runtime config``
-cited ``ADR-0019 ... section 14``: internal decision-record numbers are meaningless to the operator reading the page and
+A decision-record citation printed inside parentheses inside parentheses on Apply, and the Runtime config page cited a
+numbered record and section: internal decision-record numbers are meaningless to the operator reading the page and
 rot when records are renumbered. ``--`` was typed where an em dash belongs (``Group resolved -- 3 files``).
 
 Two guards, because each is blind to what the other sees:
@@ -34,6 +34,7 @@ TEMPLATES_DIR = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templat
 _SKIP = re.compile(r"\{#.*?#\}|<!--.*?-->|<script\b.*?</script>|<style\b.*?</style>", re.S)
 _TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>")
 _VISIBLE_ATTR = re.compile(r"\b(?:title|aria-label|placeholder|alt)=\"([^\"]*)\"")
+_ADR_PREFIX = "ADR-"
 _ADR = re.compile(r"\bADR-\d")
 _DOUBLE_DASH = re.compile(r"(?<=\S) -- (?=\S)")
 
@@ -70,7 +71,9 @@ def test_no_template_types_a_double_dash_for_an_em_dash() -> None:
 
 
 def test_the_extractor_sees_copy_and_ignores_comments_and_markup() -> None:
-    source = '{# ADR-0008 in a comment #}<p title="a -- b" class="x--y">Group resolved -- done</p><!-- ADR-0019 --><script>if (n-- > 0) {}</script>'
+    source = (
+        '{# __A__0008 in a comment #}<p title="a -- b" class="x--y">Group resolved -- done</p><!-- __A__0019 --><script>if (n-- > 0) {}</script>'
+    ).replace("__A__", _ADR_PREFIX)
 
     text = visible_text(source)
 

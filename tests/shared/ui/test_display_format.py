@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 import pytest
 
 from phaze.services.analysis_timeline import format_elapsed_time
-from phaze.utils.humanize import NO_DATA, format_duration
+from phaze.utils.humanize import NO_DATA, format_count, format_duration
 from phaze.web.template_globals import register_page_name_globals
 from tests.shared.ui.test_template_globals_reach_every_environment import _modules_building_a_template_environment
 
@@ -94,3 +94,64 @@ def test_the_four_duration_sites_no_longer_hand_roll_a_format(template: str, ret
 
     assert retired not in source
     assert "| duration" in source
+
+
+# --- phaze-dwevc: counts ------------------------------------------------------------------------------------------
+
+# Shared with tests/browser/test_format_count_parity.py, which runs the SAME table through the shipped JS formatter.
+COUNT_CASES: list[tuple[object, str]] = [
+    (0, "0"),
+    (7, "7"),
+    (999, "999"),
+    (1000, "1,000"),
+    (12345, "12,345"),
+    (145057, "145,057"),
+    (1234567, "1,234,567"),
+    (-1234, "-1,234"),
+    (1000.0, "1,000"),
+    ("1000", "1,000"),
+    (" 94772 ", "94,772"),
+    ("12+", "12+"),
+    ("soon", "soon"),
+    (12.5, "12.5"),
+    (None, "\u2014"),
+    (float("nan"), "\u2014"),
+    (float("inf"), "\u2014"),
+]
+
+
+@pytest.mark.parametrize(("value", "expected"), COUNT_CASES)
+def test_format_count(value: object, expected: str) -> None:
+    assert format_count(value) == expected
+
+
+def test_a_count_with_no_data_is_an_em_dash_never_zero() -> None:
+    assert format_count(None) == "\u2014"
+    assert format_count(0) == "0"
+    assert format_count(True) == "\u2014"
+
+
+@pytest.mark.parametrize("module_name", _modules_building_a_template_environment())
+def test_every_template_environment_carries_the_thousands_filter(module_name: str) -> None:
+    environment = importlib.import_module(module_name).templates.env
+
+    assert environment.filters["thousands"] is format_count, f"{module_name} has no `thousands` filter"
+
+
+def test_the_thousands_filter_renders_the_acceptance_values() -> None:
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    register_page_name_globals(templates.env)
+
+    rendered = templates.env.from_string(
+        "{{ a | thousands }}|{{ b | thousands }}|{{ c | thousands }}|{{ d | thousands }}|{{ e | thousands }}"
+    ).render(a=0, b=999, c=1000, d=145057, e=None)
+
+    assert rendered == "0|999|1,000|145,057|\u2014"
+
+
+def test_jinjas_own_count_filter_is_untouched() -> None:
+    """``count`` is a builtin alias of ``length``; the formatter is deliberately named ``thousands``."""
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    register_page_name_globals(templates.env)
+
+    assert templates.env.from_string("{{ items | count }}").render(items=[1, 2, 3]) == "3"

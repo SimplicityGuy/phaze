@@ -35,7 +35,7 @@
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = '`${$store.pipeline.tracklistDone} sets matched · 1001Tracklists`' %}
+{% set subcount = '`${formatCount($store.pipeline.tracklistDone)} sets matched · 1001Tracklists`' %}
 {% set _btn = ui.btn('secondary', 'md') %}
 {% call ws.workspace(title=page_name('tracklist'), subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
@@ -72,7 +72,7 @@
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} files have a tracklist.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done | thousands }} files have a tracklist.</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>
@@ -109,7 +109,7 @@
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
-                    <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }} with a Discogs link</dd>
+                    <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done | thousands }} / {{ tracklist_steps.match.total | thousands }} with a Discogs link</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>

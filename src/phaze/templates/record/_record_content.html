@@ -30,7 +30,7 @@
                operator reads were still on the pre-ADR term. #}
             <p class="font-jura text-[11px] font-medium uppercase tracking-wider {% if pending_rows %}text-warn{% else %}text-muted{% endif %} ">Changes needing review for this file</p>
             {% if pending_rows %}
-            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
+            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ (pending_rows | length) | thousands }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
             <a href="/s/rename?status=needs_review"
                {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
                class="{{ ui.btn('primary', 'md', 'mt-3') }}">Open Changes Review</a>

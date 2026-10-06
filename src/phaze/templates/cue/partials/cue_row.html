@@ -15,7 +15,7 @@
     </div>
     <div class="flex items-center gap-3 shrink-0">
         <span data-not-status-pill="count chip" class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-muted ">
-            {{ tracklist.track_count }} tracks
+            {{ tracklist.track_count | thousands }} tracks
         </span>
         {% include "cue/partials/cue_status.html" %}
         {% if tracklist.cue_version is defined and tracklist.cue_version > 0 %}

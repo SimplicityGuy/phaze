@@ -45,7 +45,7 @@
         </div>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
-        {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
+        {{ batch.processed_files | thousands }} / {{ (batch.total_files or '?') | thousands }} files
     </p>
     <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}
@@ -64,7 +64,7 @@
         {{ ui.status_pill('COMPLETED', 'success', 'Status: completed') }}
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
-        {{ batch.processed_files }} / {{ batch.total_files }} files
+        {{ batch.processed_files | thousands }} / {{ batch.total_files | thousands }} files
     </p>
     <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}{% if elapsed_seconds is not none %} · finished in {{ elapsed_seconds | duration }}{% endif %}
@@ -78,7 +78,7 @@
         {{ ui.status_pill('FAILED', 'danger', 'Status: failed', '✕') }}
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
-        {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
+        {{ batch.processed_files | thousands }} / {{ (batch.total_files or '?') | thousands }} files
     </p>
     <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}

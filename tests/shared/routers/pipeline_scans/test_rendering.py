@@ -408,8 +408,8 @@ async def test_get_recent_scans_partial_renders_table(
     # Known cells from the seeded row.
     assert "Test Agent" in response.text
     assert "/data/music/live-scan/" in response.text
-    assert "5500" in response.text
-    assert "9000" in response.text
+    assert "5,500" in response.text
+    assert "9,000" in response.text
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import structlog
 
 from phaze.services.bitrate import bps_to_kbps
+from phaze.utils.humanize import format_count
 
 
 if TYPE_CHECKING:
@@ -75,8 +76,8 @@ def dedupe_subcount_text(rendered: int, total: int) -> str:
     """Render the exact workspace subcount, including partial-page disclosure."""
     if rendered >= total:
         noun = "group" if total == 1 else "groups"
-        return f"{total} duplicate {noun} · pick the keeper, others archived"
-    return f"Showing {rendered} of {total} duplicate groups · pick the keeper, others archived"
+        return f"{format_count(total)} duplicate {noun} · pick the keeper, others archived"
+    return f"Showing {format_count(rendered)} of {format_count(total)} duplicate groups · pick the keeper, others archived"
 
 
 class SqlDedupeReviewReader:

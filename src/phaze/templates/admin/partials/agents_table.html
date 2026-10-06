@@ -72,7 +72,7 @@
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; compute lanes</h2>
         <p class="font-mono text-xs tabular-nums text-muted ">
-            {{ agent_count }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count }} lane{{ '' if compute_lane_count == 1 else 's' }}
+            {{ agent_count | thousands }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count | thousands }} lane{{ '' if compute_lane_count == 1 else 's' }}
         </p>
     </div>
     {% if not rows %}

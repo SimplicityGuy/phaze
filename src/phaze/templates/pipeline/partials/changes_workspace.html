@@ -1,6 +1,6 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = "'" ~ changes_stats.needs_review ~ " awaiting approval · filename + destination · " ~ (changes_tag_rows | length) ~ ("+" if changes_tag_partial else "") ~ " tag decisions'" %}
+{% set subcount = "'" ~ (changes_stats.needs_review | thousands) ~ " awaiting approval · filename + destination · " ~ ((changes_tag_rows | length) | thousands) ~ ("+" if changes_tag_partial else "") ~ " tag decisions'" %}
 {% call ws.workspace(title=page_name('rename'), subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
         {{ ui.banner("Approval boundary", "Filename and destination are one atomic proposal approval. Tags are a separate, reversible write after execution; approving a proposal never authorizes tags.") }}

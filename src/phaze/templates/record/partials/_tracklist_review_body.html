@@ -106,7 +106,7 @@
             <div>
                 <dt class="text-muted ">Latest version</dt>
                 <dd class="mt-0.5 text-gray-900 dark:text-gray-200">
-                    {{ review.tracks | length }} track{% if review.tracks | length != 1 %}s{% endif %}
+                    {{ (review.tracks | length) | thousands }} track{% if review.tracks | length != 1 %}s{% endif %}
                     {% if review.latest_version %} · scraped {{ review.latest_version.scraped_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
                 </dd>
             </div>

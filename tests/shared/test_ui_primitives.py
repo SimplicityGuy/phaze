@@ -9,9 +9,12 @@ from types import SimpleNamespace
 from fastapi.templating import Jinja2Templates
 import pytest
 
+from phaze.web.template_globals import register_format_filters
+
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "src" / "phaze" / "templates"
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_format_filters(_templates.env)
 
 
 def _render(source: str, **context: object) -> str:

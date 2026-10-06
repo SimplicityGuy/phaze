@@ -34,7 +34,7 @@
 } %}
 <div{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} class="min-w-32 px-4 py-3">
     <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-muted ">{{ label }}</dt>
-    <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value }}</dd>
+    <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value | thousands if value is number else value }}</dd>
     {% if detail %}<dd class="mt-0.5 break-words text-xs text-muted " title="{{ detail }}">{{ detail }}</dd>{% endif %}
 </div>
 {% endmacro %}
@@ -151,7 +151,7 @@
 shrink-0 px-3 py-2 text-sm transition-colors {{ _focus_ring }} {% if active %}border-b-2 border-action-brand font-semibold text-info {% else %}text-muted hover:text-gray-800 dark:hover:text-gray-200{% endif %}
 {%- endmacro %}
 {% macro tab_count(count) -%}
-<span data-not-status-pill="count chip" class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
+<span data-not-status-pill="count chip" class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count | thousands }}</span>
 {%- endmacro %}
 
 {# phaze-gmh3f: THE disclosure. A <details> whose summary shows a visible marker -- the ONE expand glyph, drawn by the
@@ -329,7 +329,7 @@ inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap round
         </li>
         {% endfor %}
     </ul>
-    <span data-legend-cell-count>{{ cell_count }} segment{{ '' if cell_count == 1 else 's' }}</span>
+    <span data-legend-cell-count>{{ cell_count | thousands }} segment{{ '' if cell_count == 1 else 's' }}</span>
 </div>
 {% endmacro %}
 

@@ -652,7 +652,7 @@ async def test_lane_detail_template_renders_real_depths_and_names_the_agent() ->
         refreshed_at=None,
         recent_n=20,
     )
-    assert "analyze 2075" in body
+    assert "analyze 2,075" in body
     assert "io 8" in body
     # Naming the agent is what makes a future zero auditable: the operator can see WHICH queues
     # were counted instead of guessing why a busy lane reads idle.
@@ -710,5 +710,5 @@ async def test_lane_detail_endpoint_local_lane_reports_the_fileserver_depths(
     response = await client.get(f"/pipeline/lanes/{lane['id']}")
 
     assert response.status_code == 200, response.text
-    assert "analyze 2075" in response.text
+    assert "analyze 2,075" in response.text
     assert "analyze 0" not in response.text

@@ -1,11 +1,11 @@
 {% import "ui/primitives.html" as ui %}
 <section aria-labelledby="bulk-review-title" class="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/40">
     <h2 id="bulk-review-title" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-900 dark:text-amber-200">Review auto-selection</h2>
-    {% if stale_count %}<p role="status" class="mt-3 text-xs text-warn ">{{ stale_count }} stale or already-resolved groups were excluded.</p>{% endif %}
-    {% if truncated_count %}<p role="alert" class="mt-3 text-xs text-warn ">{{ truncated_count }} groups were excluded because not every member fit in the review. No unseen copy can be archived.</p>{% endif %}
+    {% if stale_count %}<p role="status" class="mt-3 text-xs text-warn ">{{ stale_count | thousands }} stale or already-resolved groups were excluded.</p>{% endif %}
+    {% if truncated_count %}<p role="alert" class="mt-3 text-xs text-warn ">{{ truncated_count | thousands }} groups were excluded because not every member fit in the review. No unseen copy can be archived.</p>{% endif %}
     {% if dedupe_groups %}
     <p class="mt-1 text-sm text-warn ">
-        {{ dedupe_groups | length }} groups · {{ dedupe_groups | sum(attribute='count') }} copies reviewed. No files have been archived yet.
+        {{ (dedupe_groups | length) | thousands }} groups · {{ (dedupe_groups | sum(attribute='count')) | thousands }} copies reviewed. No files have been archived yet.
     </p>
     <ul class="relative mt-3 max-h-64 space-y-2 overflow-y-auto" aria-label="Proposed duplicate resolutions">
         {% for group in dedupe_groups %}
@@ -13,7 +13,7 @@
         <li class="rounded-lg border border-amber-200 bg-white/70 p-3 dark:border-amber-800 dark:bg-phaze-panel">
             <p class="break-words text-sm font-medium text-gray-900 dark:text-gray-100">{{ group.group_name }}</p>
             <p class="mt-1 break-words text-xs text-gray-600 dark:text-gray-300">Keep {{ keeper.name }} · {{ keeper.quality }} · {{ group.rationale }}</p>
-            <p class="mt-1 text-xs text-muted ">Archive {{ group.count - 1 }} other {{ "copy" if group.count == 2 else "copies" }}</p>
+            <p class="mt-1 text-xs text-muted ">Archive {{ (group.count - 1) | thousands }} other {{ "copy" if group.count == 2 else "copies" }}</p>
         </li>
         {% endfor %}
     </ul>
@@ -32,7 +32,7 @@
            there) enables the button only once htmx has finished wiring this element up, which is what
            makes the hx-confirm prompt guaranteed rather than probable. #}
         <button type="submit" disabled data-hx-guard hx-disabled-elt="this"
-                class="{{ ui.btn('primary', 'md') }}">Confirm {{ dedupe_groups | length }} resolutions</button>
+                class="{{ ui.btn('primary', 'md') }}">Confirm {{ (dedupe_groups | length) | thousands }} resolutions</button>
     </form>
     {% else %}
     <p class="mt-2 text-sm text-warn ">None of the shown groups are still available to resolve. Refresh Dedupe before continuing.</p>

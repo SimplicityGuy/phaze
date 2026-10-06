@@ -31,7 +31,7 @@
    `propose_proposals | length`. Once the list is paginated that length is the size of the current
    PAGE, so the old expression would have reported "25 proposals ready" for any backlog of 25 or
    more -- a header that stops counting exactly when the number starts mattering. #}
-{% set subcount = "'" ~ propose_pagination.total ~ " proposals ready · litellm'" %}
+{% set subcount = "'" ~ (propose_pagination.total | thousands) ~ " proposals ready · litellm'" %}
 {% set _btn = ui.btn('secondary', 'md') %}
 {% set actions %}
     {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
@@ -47,7 +47,7 @@
                thousands (and vice versa) -- a bulk-enqueue confirm must name the scope the ACTION
                actually has (paging contract rule 7 -- enqueue sets are never paged), which is this
                count, not the review-tab stat. #}
-            hx-confirm="Generate AI proposals for all {{ propose_generation_pending }} pending files? This enqueues {{ propose_generation_pending }} litellm jobs."
+            hx-confirm="Generate AI proposals for all {{ propose_generation_pending | thousands }} pending files? This enqueues {{ propose_generation_pending | thousands }} litellm jobs."
             hx-indicator="#propose-trigger-spinner"
             hx-disabled-elt="this"
             :disabled="$store.pipeline.controllerBusy > 0"

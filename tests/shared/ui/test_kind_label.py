@@ -17,6 +17,7 @@ import pytest
 
 from phaze.services.record_facts import RecordFact
 from phaze.utils.humanize import relative_time
+from phaze.web.template_globals import register_format_filters
 
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "src/phaze/templates"
@@ -28,6 +29,7 @@ _GAP = "gap-1.5"
 
 def _env() -> Environment:
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    register_format_filters(environment)
     environment.globals["humanize_relative_time"] = relative_time
     return environment
 
