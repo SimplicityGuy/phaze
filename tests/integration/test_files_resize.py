@@ -158,22 +158,27 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == len(_FILES_PAGE_STAGES)
 
 
-# Stage floors hold the widest content of that column plus the cell's px-3 (24px): "— not started"
-# (106px measured on production) -> 130; Metadata/Analyze add the failed pill + Retry button -> 160;
-# Tracklist's longest pill, "low confidence · retry YYYY-MM-DD" -> 280.
+# Stage floors = MEASURED widest content + the cell's px-3 (24px), rounded up. Measured in headless
+# Chromium (compiled app.css, real partials, every state each column can render, phaze-6ezaw):
+#   Metadata/Analyze  138.5  failed pill + Retry button   -> 164
+#   Propose/Review/Execute 118.5  "not started" pill      -> 144
+#   Tracklist         256.1  "low confidence . retry date" -> 282
+#   Current state     190.7  stacked label + pill, one line -> 216
+# The Retry "Enqueuing..." indicator is absolutely positioned so it takes no layout space.
 _EXPECTED_DEFAULT_WIDTHS = {
     "File": "flex",
     "Type": 72,
-    "Metadata": 160,
-    "Analyze": 160,
-    "Tracklist": 280,
-    "Propose": 130,
-    "Review": 130,
-    "Execute": 130,
-    "Current state": 220,
+    "Metadata": 164,
+    "Analyze": 164,
+    "Tracklist": 282,
+    "Propose": 144,
+    "Review": 144,
+    "Execute": 144,
+    "Current state": 216,
     "Details": 92,
 }
-_NOT_STARTED_PILL_PX = 106
+_NOT_STARTED_PILL_PX = 119
+_FAILED_PILL_PLUS_RETRY_PX = 139
 _CELL_PADDING_PX = 24
 
 
@@ -199,7 +204,9 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
 
     stage_cols = ("Metadata", "Analyze", "Tracklist", "Propose", "Review", "Execute")
     for stage in stage_cols:
-        assert fixed[stage] >= _NOT_STARTED_PILL_PX + _CELL_PADDING_PX, f"{stage} would clip its '— not started' pill"
+        assert fixed[stage] >= _NOT_STARTED_PILL_PX + _CELL_PADDING_PX, f"{stage} would clip its 'not started' pill"
+    for stage in ("Metadata", "Analyze"):
+        assert fixed[stage] >= _FAILED_PILL_PLUS_RETRY_PX + _CELL_PADDING_PX, f"{stage} would clip its failed pill + Retry"
     assert fixed["Metadata"] == fixed["Analyze"] > fixed["Propose"]
     assert fixed["Tracklist"] == max(fixed.values())
 
@@ -212,7 +219,7 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
     assert floor is not None
     assert int(floor.group(1)) == sum(fixed.values()) + 140
     assert re.search(r'<table[^>]*class="[^"]*\btable-fixed\b', body)
-    assert 'style="width: 220px"' in colgroup
+    assert 'style="width: 216px"' in colgroup
 
     head = body[body.index("<thead") : body.index("<tbody")]
     assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
@@ -227,3 +234,13 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
     assert store_defaults == {k: fixed[k] for k in ("Type", *stage_cols)}
     for stage in stage_cols:
         assert store_mins[stage] == fixed[stage], f"{stage}'s drag floor must hold its widest pill"
+
+
+def test_retry_indicator_takes_no_layout_space() -> None:
+    """The invisible 'Enqueuing...' indicator must not widen a failed stage cell (it sat in the flex row)."""
+    partial = (Path(__file__).parents[2] / "src/phaze/templates/pipeline/partials/_files_stage_control.html").read_text()
+    indicator = re.search(r'<span id="retry-ind-[^>]*class="([^"]*)"', partial)
+    assert indicator is not None
+    classes = indicator.group(1).split()
+    assert "absolute" in classes
+    assert "relative" in re.search(r'\{% if not oob %\}<span class="([^"]*)"', partial).group(1).split()  # type: ignore[union-attr]

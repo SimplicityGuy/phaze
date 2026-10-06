@@ -1,6 +1,6 @@
 {% set retry_endpoints = {'metadata': 'metadata-failed', 'analyze': 'analysis-failed'} %}
 {% set surface_prefix = 'files-mobile' if surface == 'mobile' else 'files' %}
-{% if not oob %}<span class="inline-flex flex-nowrap items-center gap-2">{% endif %}
+{% if not oob %}<span class="relative inline-flex flex-nowrap items-center gap-2">{% endif %}
 <span id="{{ surface_prefix }}-stage-pill-{{ key }}-{{ file_id }}"
       class="inline-flex flex-nowrap items-center gap-2"{% if oob %} hx-swap-oob="true"{% endif %}>
     {% with stage_label=stage_label, bucket=bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
@@ -17,7 +17,7 @@
     {% endif %}
 </span>
 {% if not oob and bucket == 'failed' and key in retry_endpoints %}
-    <span id="retry-ind-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="htmx-indicator shrink-0 text-xs text-muted ">Enqueuing…</span>
+    <span id="retry-ind-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="htmx-indicator pointer-events-none absolute left-0 top-full mt-0.5 whitespace-nowrap text-xs text-muted ">Enqueuing…</span>
     <span id="retry-result-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="shrink-0" aria-live="polite"></span>
 {% endif %}
 {% if not oob %}</span>{% endif %}

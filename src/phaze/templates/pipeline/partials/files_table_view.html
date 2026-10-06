@@ -162,7 +162,7 @@
        1397px, 2392px table in a 1320px pane, every stage column behind a horizontal scroll). Fixed
        layout takes widths from the `<col>`s, so FILE really truncates. FILE is the FLEXIBLE column: its
        `<col>` carries no width until the operator drags it, so it absorbs whatever the fixed stage
-       columns leave (and grows on wide viewports); `xl:min-w-[1514px]` on the table is every other
+       columns leave (and grows on wide viewports); `xl:min-w-[1562px]` on the table is every other
        column plus a 140px FILE floor. The stage cells stay `whitespace-nowrap`; each stage column's
        default AND drag floor (colResize store) hold its widest content, so nothing clips. #}
     <div x-data="colResizer()">
@@ -170,15 +170,15 @@
            the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
            in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
         <div class="hidden md:block">
-        {% call ui.data_table('Files and pipeline stage status', layout_class='table-fixed xl:min-w-[1514px]') %}
+        {% call ui.data_table('Files and pipeline stage status', layout_class='table-fixed xl:min-w-[1562px]') %}
             <colgroup>
                 <col data-col="File" data-default-width="flex" :style="$store.colResize.widths.File ? { width: $store.colResize.width('File') + 'px' } : {}">
                 <col data-col="Type" data-default-width="72" :style="{ width: $store.colResize.width('Type') + 'px' }">
-                {% set _default_widths = {'Metadata': 160, 'Analyze': 160, 'Tracklist': 280, 'Propose': 130, 'Review': 130, 'Execute': 130} %}
+                {% set _default_widths = {'Metadata': 164, 'Analyze': 164, 'Tracklist': 282, 'Propose': 144, 'Review': 144, 'Execute': 144} %}
                 {% for col in _stage_cols | map(attribute=0) | list %}
                 <col data-col="{{ col }}" data-default-width="{{ _default_widths[col] }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
                 {% endfor %}
-                <col data-col="Current state" data-default-width="220" style="width: 220px">
+                <col data-col="Current state" data-default-width="216" style="width: 216px">
                 <col data-col="Details" data-default-width="92" style="width: 92px">
             </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-muted dark:border-phaze-border dark:bg-phaze-panel ">
