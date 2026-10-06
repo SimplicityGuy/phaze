@@ -97,9 +97,9 @@
    correctly the whole time. `relative` makes this div the containing block, so those descendants are
    clipped here where they belong. Enforced by
    test_every_table_scroll_container_is_a_containing_block. #}
-{% macro data_table(label, describedby='', id='') %}
+{% macro data_table(label, describedby='', id='', layout_class='') %}
 <div class="relative overflow-x-auto">
-    <table{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm">{{ caller() }}</table>
+    <table{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm{% if layout_class %} {{ layout_class }}{% endif %}">{{ caller() }}</table>
 </div>
 {% endmacro %}
 

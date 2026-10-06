@@ -27,6 +27,7 @@ JS depends on:
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import TYPE_CHECKING
 import uuid
@@ -155,3 +156,91 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     # One stage cell per Files stage column (phaze-o71bf added Tracklist), each still carrying the
     # no-wrap contract cvn6.2 introduced.
     assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == len(_FILES_PAGE_STAGES)
+
+
+# Stage floors = MEASURED widest content + the cell's px-3 (24px), rounded up. Measured in headless
+# Chromium (compiled app.css, real partials, every state each column can render, phaze-6ezaw):
+#   Metadata/Analyze  138.5  failed pill + Retry button   -> 164
+#   Propose/Review/Execute 118.5  "not started" pill      -> 144
+#   Tracklist         256.1  "low confidence . retry date" -> 282
+#   Current state     190.7  stacked label + pill, one line -> 216
+# The Retry "Enqueuing..." indicator is absolutely positioned so it takes no layout space.
+_EXPECTED_DEFAULT_WIDTHS = {
+    "File": "flex",
+    "Type": 72,
+    "Metadata": 164,
+    "Analyze": 164,
+    "Tracklist": 282,
+    "Propose": 144,
+    "Review": 144,
+    "Execute": 144,
+    "Current state": 216,
+    "Details": 92,
+}
+_NOT_STARTED_PILL_PX = 119
+_FAILED_PILL_PLUS_RETRY_PX = 139
+_CELL_PADDING_PX = 24
+
+
+@pytest.mark.asyncio
+async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-6ezaw: per-column default widths (Metadata narrow, Tracklist roomy, Current state widest).
+
+    Pins the rendered ``<col data-default-width>`` values, that ``Current state`` is the widest, that
+    its header cannot wrap, and that the shell's ``colResize`` store defaults agree with the markup
+    (the store is what actually drives the widths client-side).
+    """
+    session.add(_make_file("/music/a.mp3"))
+    await session.commit()
+
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
+    colgroup = body[body.index("<colgroup") : body.index("</colgroup>")]
+    widths = {
+        name: (width if width == "flex" else int(width))
+        for name, width in re.findall(r'<col data-col="([^"]+)" data-default-width="(\w+)"', colgroup)
+    }
+    assert widths == _EXPECTED_DEFAULT_WIDTHS
+    fixed = {n: w for n, w in widths.items() if isinstance(w, int)}
+
+    stage_cols = ("Metadata", "Analyze", "Tracklist", "Propose", "Review", "Execute")
+    for stage in stage_cols:
+        assert fixed[stage] >= _NOT_STARTED_PILL_PX + _CELL_PADDING_PX, f"{stage} would clip its 'not started' pill"
+    for stage in ("Metadata", "Analyze"):
+        assert fixed[stage] >= _FAILED_PILL_PLUS_RETRY_PX + _CELL_PADDING_PX, f"{stage} would clip its failed pill + Retry"
+    assert fixed["Metadata"] == fixed["Analyze"] > fixed["Propose"]
+    assert fixed["Tracklist"] == max(fixed.values())
+
+    # FILE is the flexible remainder column: no inline width until dragged, and the table's xl floor
+    # is every other column plus a 140px FILE minimum.
+    file_col = re.search(r'<col data-col="File"[^>]*>', colgroup)
+    assert file_col is not None
+    assert 'style="width' not in file_col.group(0)
+    floor = re.search(r"xl:min-w-\[(\d+)px\]", body)
+    assert floor is not None
+    assert int(floor.group(1)) == sum(fixed.values()) + 140
+    assert re.search(r'<table[^>]*class="[^"]*\btable-fixed\b', body)
+    assert 'style="width: 216px"' in colgroup
+
+    head = body[body.index("<thead") : body.index("<tbody")]
+    assert re.search(r'<th scope="col" class="whitespace-nowrap[^"]*">Current state</th>', head)
+
+    shell = (Path(__file__).parents[2] / "src/phaze/templates/shell/shell.html").read_text()
+    defaults_match = re.search(r"defaults: \{([^}]*)\}", shell)
+    mins_match = re.search(r"mins: \{([^}]*)\}", shell)
+    assert defaults_match is not None
+    assert mins_match is not None
+    store_defaults = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", defaults_match.group(1))}
+    store_mins = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", mins_match.group(1))}
+    assert store_defaults == {k: fixed[k] for k in ("Type", *stage_cols)}
+    for stage in stage_cols:
+        assert store_mins[stage] == fixed[stage], f"{stage}'s drag floor must hold its widest pill"
+
+
+def test_retry_indicator_takes_no_layout_space() -> None:
+    """The invisible 'Enqueuing...' indicator must not widen a failed stage cell (it sat in the flex row)."""
+    partial = (Path(__file__).parents[2] / "src/phaze/templates/pipeline/partials/_files_stage_control.html").read_text()
+    indicator = re.search(r'<span id="retry-ind-[^>]*class="([^"]*)"', partial)
+    assert indicator is not None
+    classes = indicator.group(1).split()
+    assert "absolute" in classes
+    assert "relative" in re.search(r'\{% if not oob %\}<span class="([^"]*)"', partial).group(1).split()  # type: ignore[union-attr]

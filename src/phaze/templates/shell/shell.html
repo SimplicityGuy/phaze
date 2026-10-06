@@ -186,14 +186,13 @@
             // is untouched by the swap; the fresh markup's `:style` bindings just re-read it.
             Alpine.store('colResize', {
                 _key: 'phaze-pipeline-col-widths',
-                // Defaults approximate this table's current un-resized (auto-layout) proportions;
-                // mins are the narrowest a column can go before dragging it further is a no-op --
-                // for the six stage columns that floor is enforced by auto table-layout itself
-                // (their un-truncated pill+Retry content refuses to shrink below its own width, see
-                // the colgroup comment in files_table_view.html), these are just a sane JS-side floor
-                // so a fast drag never reports a negative or zero width mid-gesture.
-                defaults: { File: 320, Type: 88, Metadata: 116, Analyze: 116, Propose: 108, Review: 104, Execute: 108 },
-                mins: { File: 140, Type: 64, Metadata: 96, Analyze: 96, Propose: 88, Review: 84, Execute: 88 },
+                // Defaults are content-fitted per column (phaze-6ezaw): Metadata's pill is short, Tracklist's can
+                // carry `× retry pending · YYYY-MM-DD`. Keep in step with the <col data-default-width> attrs in
+                // files_table_view.html (a test pins the two together);
+                // mins are the narrowest a column can go: under `table-fixed` (phaze-6ezaw) nothing else
+                // floors a column, so the stage mins hold their pill (Tracklist: the longest, `× retry pending · date`).
+                defaults: { Type: 72, Metadata: 164, Analyze: 164, Tracklist: 282, Propose: 144, Review: 144, Execute: 144 },
+                mins: { File: 140, Type: 64, Metadata: 164, Analyze: 164, Tracklist: 282, Propose: 144, Review: 144, Execute: 144 },
                 legacyKeys: { Metadata: 'Meta', Propose: 'Prop', Review: 'Appr', Execute: 'Exec' },
                 max: 900,
                 widths: (() => {
@@ -221,7 +220,7 @@
             Alpine.data('colResizer', () => ({
                 startResize(event, col) {
                     const startX = event.clientX;
-                    const startWidth = this.$store.colResize.width(col);
+                    const startWidth = event.target.closest('th')?.offsetWidth ?? this.$store.colResize.width(col);
                     const onMove = (moveEvent) => {
                         this.$store.colResize.setWidth(col, startWidth + (moveEvent.clientX - startX));
                     };
