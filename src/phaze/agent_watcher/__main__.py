@@ -8,6 +8,9 @@ POSTs each settled path via :class:`Poster`. SIGINT / SIGTERM trigger graceful
 shutdown: sweep loop exits, every root observer's stop() + join() drain its watchdog
 thread, and the HTTP client is closed.
 
+``python -m phaze.agent_watcher check-paths`` is a one-shot instead: the agent-side step of the
+phaze-oxn2m stale-row cleanup (see :func:`check_paths`).
+
 Import-graph invariant:
     This module MUST NOT import ``phaze.tasks.agent_worker``,
     ``phaze.database``, ``phaze.tasks.session``, or ``sqlalchemy.ext.asyncio``.
@@ -18,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+from pathlib import Path
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 import structlog
@@ -32,6 +37,7 @@ from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
+from phaze.services.media_path_resolve import resolve_media_path
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_with_retry
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 
@@ -55,17 +61,28 @@ def _log_settings_validation_error(exc: ValidationError) -> None:
     logger.debug("phaze.agent_watcher: full pydantic ValidationError follows", exc_info=exc)
 
 
-async def _post_ready_paths(poster: Poster, ready: list[str]) -> None:
+async def _post_ready_paths(poster: Poster, ready: list[str], debouncer: Debouncer | None = None) -> None:
     """POST each settled path; one path's failure must not stop the others.
 
     The broad handler guards the unattended loop against violations of Poster's
     no-exception contract; narrowing it to documented errors would defeat that guard.
+
+    A path reached by an in-tree move is posted with its lineage (phaze-oxn2m), which the
+    debouncer holds until the post has finished -- so a further move that arrives while this
+    post is in flight still inherits it (``Debouncer.move``).
     """
     for path in ready:
+        lineage = debouncer.lineage(path) if debouncer is not None else []
         try:
-            await poster.post_one(path)
+            if lineage:
+                await poster.post_one(path, previous_paths=lineage)
+            else:
+                await poster.post_one(path)
         except Exception:
             logger.exception("watcher: post failed; entry already removed from debouncer path=%s", path)
+        finally:
+            if debouncer is not None:
+                debouncer.forget(path)
 
 
 def _log_evicted_paths(evicted: list[str]) -> None:
@@ -97,7 +114,7 @@ async def _run_sweep_iteration(
     """
     try:
         ready, evicted = debouncer.sweep(settle_period=settle_period, max_pending=max_pending)
-        await _post_ready_paths(poster, ready)
+        await _post_ready_paths(poster, ready, debouncer)
         _log_evicted_paths(evicted)
     except Exception:
         logger.exception("watcher: sweep iteration failed")
@@ -187,7 +204,7 @@ async def main() -> None:
 
         # Polling mode supports bind mounts that do not propagate inotify; native observers
         # remain the production default.
-        handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
+        handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch, debouncer_move=debouncer.move)
 
         # One observer per root isolates missing mounts and exhausted watch limits; fail hard only
         # when no root can start.
@@ -247,5 +264,46 @@ async def main() -> None:
         shutdown_telemetry()
 
 
-if __name__ == "__main__":
+def _is_under(path: str, root: str) -> bool:
+    root = root.rstrip("/")
+    return path == root or path.startswith(root + "/")
+
+
+def check_paths(document: dict[str, Any]) -> dict[str, Any]:
+    """Annotate ``phaze backfill moved-twin-candidates``' document with ``exists`` per member (phaze-oxn2m).
+
+    Runs HERE, on the agent, because only the agent's filesystem can say whether a row's path is
+    still there. ``exists`` is ``None`` -- not ``False`` -- for a path under no scan root mounted in
+    this container, so an unmounted root can never make a live file read as gone. A stored path is
+    NFC; the on-disk name may be NFD, so a miss is retried through ``resolve_media_path``.
+    """
+    roots = [root for root in document.get("scan_roots", []) if Path(root).is_dir()]
+    for group in document["groups"]:
+        for member in group:
+            path = member["path"]
+            member["exists"] = Path(resolve_media_path(path)).exists() if any(_is_under(path, root) for root in roots) else None
+    return document
+
+
+def _main_check_paths() -> int:
+    """``python -m phaze.agent_watcher check-paths``: stdin JSON -> annotated JSON on stdout. No settings, no network.
+
+    Logs go to stderr: ``resolve_media_path`` logs every NFC/NFD resolution, and structlog's
+    unconfigured default prints to stdout, which corrupted the JSON on the first run against a
+    real archive.
+    """
+    structlog.reset_defaults()
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
+    sys.stdout.write(json.dumps(check_paths(json.load(sys.stdin))) + "\n")
+    return 0
+
+
+def _entrypoint(argv: list[str]) -> None:
+    """Dispatch ``python -m phaze.agent_watcher [check-paths]``: the one-shot check, else the watcher."""
+    if argv == ["check-paths"]:
+        sys.exit(_main_check_paths())
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    _entrypoint(sys.argv[1:])

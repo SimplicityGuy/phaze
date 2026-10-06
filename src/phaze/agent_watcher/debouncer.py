@@ -50,6 +50,10 @@ class Debouncer:
 
     def __init__(self) -> None:
         self._pending: dict[str, _PendingEntry] = {}
+        # phaze-oxn2m: path -> the paths it was moved away from, oldest first. Held from the move
+        # until the caller ``forget``s it after posting, so it outlives the pending entry for the
+        # whole time that path's POST is in flight (see ``move``).
+        self._lineage: dict[str, list[str]] = {}
 
     def touch(self, path: str) -> None:
         """Record a file-change event for ``path``.
@@ -64,6 +68,38 @@ class Debouncer:
             self._pending[path] = _PendingEntry(first_seen_at=now, last_change_at=now)
         else:
             entry.last_change_at = now
+
+    def move(self, src: str, dest: str) -> None:
+        """Record an in-tree rename ``src -> dest`` (phaze-oxn2m).
+
+        ``dest`` is touched like any changed path, and remembers ``src`` -- plus whatever ``src``
+        itself had been moved from -- so that when ``dest`` settles the controller can find the row
+        the file was already posted under and re-point it instead of adding a second one.
+
+        - ``src`` still pending (never posted under that name): its entry is dropped -- the name no
+          longer exists, so posting it could only ENOENT -- and its own lineage passes to ``dest``.
+        - ``src``'s POST already in flight: its lineage is still held (the caller only
+          ``forget``s after the post), so ``dest`` inherits it too. The controller then finds the
+          row whichever way that in-flight post ended: re-pointed to ``src``, or still at an older
+          name because ``src`` vanished before it was hashed.
+        - ``src`` posted long ago: ``dest`` carries just ``[src]``.
+
+        Ordering against an in-flight post is structural, not timed: ``dest`` cannot be ready
+        before a full settle period, and the sweep loop awaits each post before sweeping again.
+        """
+        lineage = [*self._lineage.get(src, ()), src]
+        if self._pending.pop(src, None) is not None:
+            self._lineage.pop(src, None)
+        self.touch(dest)
+        self._lineage[dest] = lineage
+
+    def lineage(self, path: str) -> list[str]:
+        """Paths ``path`` was moved away from since it last settled, oldest first; empty if none."""
+        return list(self._lineage.get(path, ()))
+
+    def forget(self, path: str) -> None:
+        """Drop ``path``'s lineage once its post has finished, successfully or not."""
+        self._lineage.pop(path, None)
 
     def sweep(self, settle_period: float, max_pending: float) -> tuple[list[str], list[str]]:
         """Emit settled paths and evict stuck paths in a single pass.
@@ -93,6 +129,7 @@ class Debouncer:
                 if entry.cap_grace_used:
                     evicted.append(path)
                     del self._pending[path]
+                    self._lineage.pop(path, None)
                 else:
                     entry.cap_grace_used = True
                     entry.first_seen_at = now

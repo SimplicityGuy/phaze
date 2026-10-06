@@ -8,6 +8,8 @@ Command groups:
     phaze backfill recover-stranded-analyses [--enqueue]
     phaze backfill set-projection
     phaze backfill reset-cloud-attempts --backend <id> --window-start <ts> --window-end <ts> --attempts-floor <n> [--apply]
+    phaze backfill moved-twin-candidates --agent <id> > candidates.json
+    phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -15,6 +17,18 @@ sha256 hash is persisted) alongside the derived `phaze-agent-<id>` queue name.
 A `--kind fileserver` agent also gets its LIVE sentinel `ScanBatch` seeded here
 (via `phaze.services.live_sentinel.ensure_live_sentinel`) so its watcher's
 `batch_id`-omitted upserts have somewhere to resolve to from the first call.
+
+`backfill moved-twin-candidates` / `retire-moved-twins` are the phaze-oxn2m one-off cleanup of the
+stale rows a watcher move used to leave behind (a file posted under one name, moved, and posted again
+under the new one). Only the agent can say whether a path still exists, so it runs in three steps:
+
+    docker compose exec -T api phaze backfill moved-twin-candidates --agent <id> > candidates.json
+    docker compose -f docker-compose.agent.yml exec -T watcher uv run python -m phaze.agent_watcher check-paths < candidates.json > checked.json
+    docker compose exec -T api phaze backfill retire-moved-twins --agent <id> < checked.json            # dry run
+    docker compose exec -T api phaze backfill retire-moved-twins --agent <id> --apply < checked.json    # the operator's call
+
+Run the check in the watcher container: it sees the scan roots at the same paths the rows were posted
+with. Selection and retirement rules live in `phaze.services.scan_deletion.retire_moved_twins`.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -46,6 +60,7 @@ import argparse
 import asyncio
 from collections import Counter
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 import secrets
@@ -72,6 +87,7 @@ from phaze.services.reanalysis_backfill import (
     count_null_windows_columns_rows,
     enqueue_incomplete_reanalysis,
 )
+from phaze.services.scan_deletion import moved_twin_candidates, retire_moved_twins
 from phaze.services.set_projection_backfill import run_backfill
 from phaze.services.stranded_analysis_recovery import select_stranded_analysis_keys
 from phaze.tasks.reenqueue import recover_orphaned_work
@@ -316,6 +332,27 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Select rows with attempts >= this (the cloud_submit_max_attempts cap for exhausted rows).",
     )
+    # phaze-oxn2m: the candidates -> agent existence check -> retire pipeline (module docstring).
+    twins = backfill_sub.add_parser(
+        "moved-twin-candidates",
+        help="Print, as JSON, every group of an agent's rows sharing a filename and size (phaze-oxn2m step 1 of 3).",
+    )
+    twins.add_argument("--agent", dest="agent_id", required=True, help="The fileserver agent whose rows to group.")
+    retire = backfill_sub.add_parser(
+        "retire-moved-twins",
+        help="Retire rows whose file is gone and whose moved-to twin exists, from the agent-checked JSON on stdin (phaze-oxn2m step 3). "
+        "Dry run unless --apply.",
+        description=(
+            "Reads the document `python -m phaze.agent_watcher check-paths` printed on the agent. In each group, a row whose path "
+            "is gone is retired (deleted with its derived rows) only when exactly one other row of the group exists on disk; that "
+            "row is kept. A row carrying operator-reviewed state is reported and never deleted. Without --apply it runs READ ONLY."
+        ),
+    )
+    retire.add_argument("--agent", dest="agent_id", required=True, help="The agent the checked document was produced for.")
+    retire_mode = retire.add_mutually_exclusive_group()
+    retire_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
+    retire_mode.add_argument("--apply", dest="apply", action="store_true", help="Delete the stale rows. Without it nothing is written.")
+    retire.set_defaults(apply=False)
     mode = reset.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
@@ -392,6 +429,10 @@ def _main_backfill(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         return asyncio.run(_run_reset_cloud_attempts(scope, apply=args.apply))
+    if args.backfill_command == "moved-twin-candidates":
+        return asyncio.run(_run_moved_twin_candidates(args.agent_id))
+    if args.backfill_command == "retire-moved-twins":
+        return asyncio.run(_run_retire_moved_twins(args.agent_id, sys.stdin.read(), apply=args.apply))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -467,6 +508,58 @@ async def _run_reset_cloud_attempts(scope: ResetScope, *, apply: bool) -> int:
     print(
         f"APPLIED: {report.rows_reset} row(s) reset; cloud_budget rows deleted={report.ledger_rows_deleted} decremented={report.ledger_rows_decremented}"
     )
+    return 0
+
+
+async def _run_moved_twin_candidates(agent_id: str) -> int:
+    """Print ``phaze backfill moved-twin-candidates``' JSON document on stdout (phaze-oxn2m). Read-only."""
+    async with async_session() as session:
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        try:
+            document = await moved_twin_candidates(session, agent_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    print(json.dumps(document))
+    groups = document["groups"]
+    print(f"{len(groups)} group(s), {sum(len(group) for group in groups)} row(s) for agent {agent_id!r}", file=sys.stderr)
+    return 0
+
+
+async def _run_retire_moved_twins(agent_id: str, checked_json: str, *, apply: bool) -> int:
+    """Run ``phaze backfill retire-moved-twins`` (phaze-oxn2m). Returns a process exit code.
+
+    The dry run opens its transaction READ ONLY, so Postgres itself refuses a write. One line per
+    stale/twin pair, then the counts; ``--apply`` deletes in one transaction and commits at the end.
+    """
+    try:
+        checked = json.loads(checked_json)
+    except json.JSONDecodeError as exc:
+        print(f"error: stdin is not the checked JSON document: {exc}", file=sys.stderr)
+        return 1
+    async with async_session() as session:
+        if not apply:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+        try:
+            report = await retire_moved_twins(session, agent_id, checked, apply=apply)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        for stale_id, twin_id in report.retire:
+            print(f"  retire {stale_id}  keep {twin_id}")
+        for stale_id, twin_id, blockers in report.kept_reviewed:
+            print(f"  KEEP   {stale_id}  twin {twin_id}  reviewed: {','.join(blockers)}")
+        print(
+            f"summary: retire={len(report.retire)} (same content={report.same_content}) kept_reviewed={len(report.kept_reviewed)} "
+            f"absent_without_twin={report.absent_without_twin} absent_with_several_twins={report.absent_with_several_twins} "
+            f"unverifiable_groups={report.unverifiable_groups} changed_since_check={report.changed_since_check}"
+        )
+        if not apply:
+            await session.rollback()
+            print(f"DRY RUN: nothing written; {len(report.retire)} row(s) would be retired. Re-run with --apply to write.")
+            return 0
+        await session.commit()
+    print(f"APPLIED: {len(report.retire)} row(s) retired")
     return 0
 
 

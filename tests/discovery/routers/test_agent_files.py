@@ -29,6 +29,7 @@ Phase 35 (D-06) update:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import TYPE_CHECKING, Any
 import unicodedata
 from unittest.mock import AsyncMock
@@ -40,8 +41,12 @@ import pytest_asyncio
 from sqlalchemy import event, func as sa_func, select, update
 
 from phaze.database import get_session
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.tracklist import Tracklist
 from phaze.routers import agent_files
 
 
@@ -462,3 +467,242 @@ async def test_no_enqueue_for_non_music_file_type(smoke_app_and_router: tuple[As
     assert body["inserted"] == 2
     assert body["enqueued"] == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+# phaze-oxn2m: POST /api/internal/agent/files/move -- a moved file keeps ONE row, at its new path.
+# Paths are invented placeholders; none comes from the real archive.
+
+_INCOMPLETE = "/test/music/incomplete/rel/a.mp3"
+_FINAL = "/test/music/rel/a.mp3"
+
+
+def _hashed(path: str, sha: str = "0") -> dict[str, object]:
+    return {**_make_record(path=path), "sha256_hash": sha * 64}
+
+
+async def _rows(session: AsyncSession) -> list[FileRecord]:
+    session.expire_all()
+    return list((await session.execute(select(FileRecord).order_by(FileRecord.original_path))).scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_move_repoints_the_existing_row_in_place(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE)]})
+    assert r1.status_code == 200, r1.text
+    original = (await _rows(session))[0]
+    original_id, created_at = original.id, original.created_at
+    session.add(FileMetadata(file_id=original_id, artist="kept"))
+    await session.commit()
+
+    r2 = await authenticated_client.post("/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL)})
+
+    assert r2.status_code == 200, r2.text
+    assert r2.json() | {"agent_id": None} == {
+        "agent_id": None,
+        "file_id": str(original_id),
+        "outcome": "moved",
+        "content_changed": False,
+        "retired": 0,
+    }
+    (row,) = await _rows(session)
+    assert (row.id, row.original_path, row.current_path, row.original_filename) == (original_id, _FINAL, _FINAL, "a.mp3")
+    assert row.created_at == created_at
+    assert (await session.execute(select(FileMetadata.artist).where(FileMetadata.file_id == original_id))).scalar_one() == "kept"
+
+
+@pytest.mark.asyncio
+async def test_move_logs_the_repoint_with_agent_id_and_both_paths(
+    authenticated_client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE)]})
+    file_id = str((await _rows(session))[0].id)
+
+    with caplog.at_level(logging.INFO, logger="phaze.routers.agent_files"):
+        await authenticated_client.post("/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL)})
+
+    (line,) = [r.getMessage() for r in caplog.records if "re-pointing row" in r.getMessage()]
+    assert all(part in line for part in (file_id, _INCOMPLETE, _FINAL, "test-agent-01"))
+
+
+@pytest.mark.asyncio
+async def test_move_with_a_new_hash_takes_the_final_hash_and_resets_derived_state(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE, sha="1")]})
+    original_id = (await _rows(session))[0].id
+    session.add(FileMetadata(file_id=original_id, artist="read mid-download"))
+    await session.commit()
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL, sha="2")}
+    )
+
+    assert response.status_code == 200, response.text
+    assert (response.json()["outcome"], response.json()["content_changed"]) == ("moved", True)
+    (row,) = await _rows(session)
+    assert (row.id, row.original_path, row.sha256_hash) == (original_id, _FINAL, "2" * 64)
+    assert (await session.execute(select(sa_func.count()).select_from(FileMetadata))).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_move_with_no_row_at_any_previous_path_upserts_like_a_plain_post(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": ["/test/music/.a.mp3.Xy12Zq"], "file": _hashed(_FINAL)}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["outcome"] == "upserted"
+    (row,) = await _rows(session)
+    assert (str(row.id), row.original_path) == (response.json()["file_id"], _FINAL)
+
+
+@pytest.mark.asyncio
+async def test_move_matches_an_nfd_previous_path_to_its_nfc_row(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    old = unicodedata.normalize("NFC", "/test/music/incomplete/Hör.mp3")
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(old)]})
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [unicodedata.normalize("NFD", old)], "file": _hashed("/test/music/Hör.mp3")}
+    )
+
+    assert response.json()["outcome"] == "moved"
+    assert [row.original_path for row in await _rows(session)] == [unicodedata.normalize("NFC", "/test/music/Hör.mp3")]
+
+
+@pytest.mark.asyncio
+async def test_move_when_the_new_path_already_has_a_row_retires_the_old_one(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """A manual scan reached the new path first: two rows exist, the old one points nowhere."""
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE, sha="1"), _hashed(_FINAL, sha="2")]})
+    final_id = next(row.id for row in await _rows(session) if row.original_path == _FINAL)
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL, sha="2")}
+    )
+
+    assert response.json() | {"agent_id": None} == {
+        "agent_id": None,
+        "file_id": str(final_id),
+        "outcome": "upserted",
+        "content_changed": False,
+        "retired": 1,
+    }
+    assert [(row.id, row.original_path) for row in await _rows(session)] == [(final_id, _FINAL)]
+
+
+@pytest.mark.asyncio
+async def test_move_through_several_names_keeps_the_newest_row_and_retires_the_rest(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """The watcher's lineage race: a row at an older name AND one at the newer name it was posted under."""
+    middle = "/test/music/incomplete/a.mp3"
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE, sha="1"), _hashed(middle, sha="2")]})
+    middle_id = next(row.id for row in await _rows(session) if row.original_path == middle)
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE, middle], "file": _hashed(_FINAL, sha="2")}
+    )
+
+    assert (response.json()["outcome"], response.json()["file_id"], response.json()["retired"]) == ("moved", str(middle_id), 1)
+    assert [(row.id, row.original_path) for row in await _rows(session)] == [(middle_id, _FINAL)]
+
+
+@pytest.mark.asyncio
+async def test_move_never_repoints_a_row_an_operator_reviewed(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """Escalation, not a guess: the reviewed row stays where it was and the new path gets its own row."""
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE)]})
+    reviewed_id = (await _rows(session))[0].id
+    session.add(RenameProposal(file_id=reviewed_id, proposed_filename="better.mp3", status=ProposalStatus.APPROVED.value))
+    await session.commit()
+
+    response = await authenticated_client.post("/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL)})
+
+    assert response.json()["outcome"] == "kept_reviewed"
+    rows = await _rows(session)
+    assert [(row.original_path, row.id == reviewed_id) for row in rows] == [(_INCOMPLETE, True), (_FINAL, False)]
+
+
+@pytest.mark.asyncio
+async def test_move_with_a_new_hash_under_a_busy_cloud_burst_is_kept(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE, sha="1")]})
+    busy_id = (await _rows(session))[0].id
+    session.add(CloudJob(file_id=busy_id, status=CloudJobStatus.RUNNING.value))
+    await session.commit()
+
+    changed = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL, sha="2")}
+    )
+
+    assert changed.json()["outcome"] == "kept_reviewed"
+    assert len(await _rows(session)) == 2
+
+
+@pytest.mark.asyncio
+async def test_move_request_rejects_an_empty_lineage_and_unknown_fields(authenticated_client: AsyncClient) -> None:
+    empty = await authenticated_client.post("/api/internal/agent/files/move", json={"previous_paths": [], "file": _hashed(_FINAL)})
+    forged = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed(_FINAL), "agent_id": "someone-else"}
+    )
+
+    assert (empty.status_code, forged.status_code) == (422, 422)
+
+
+@pytest.mark.asyncio
+async def test_move_naming_an_unrelated_row_neither_repoints_nor_deletes_it(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """Security review: previous_paths is the agent's claim. A row that cannot be the moved file --
+    different name, size AND hash -- is left exactly as it was, and the new path gets its own row."""
+    unrelated = {**_hashed("/test/music/other/unrelated.mp3", sha="9"), "file_size": 12345}
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [unrelated]})
+    unrelated_id = (await _rows(session))[0].id
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": ["/test/music/other/unrelated.mp3"], "file": _hashed(_FINAL, sha="1")}
+    )
+
+    assert (response.json()["outcome"], response.json()["retired"]) == ("upserted", 0)
+    rows = await _rows(session)
+    assert [(row.id == unrelated_id, row.original_path, row.sha256_hash) for row in rows] == [
+        (True, "/test/music/other/unrelated.mp3", "9" * 64),
+        (False, _FINAL, "1" * 64),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_move_retires_only_exact_paths_never_a_prefix(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """A previous path that is a directory (a prefix of real rows) matches nothing."""
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE)]})
+
+    response = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": ["/test/music/incomplete/rel", "/test/music/incomplete/%"], "file": _hashed(_FINAL)}
+    )
+
+    assert (response.json()["outcome"], response.json()["retired"]) == ("upserted", 0)
+    assert [row.original_path for row in await _rows(session)] == [_INCOMPLETE, _FINAL]
+
+
+@pytest.mark.asyncio
+async def test_move_lineage_is_capped(authenticated_client: AsyncClient) -> None:
+    too_long = [f"/test/music/{i}/a.mp3" for i in range(5)]
+
+    response = await authenticated_client.post("/api/internal/agent/files/move", json={"previous_paths": too_long, "file": _hashed(_FINAL)})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_move_logs_every_retirement_with_both_paths_and_keeps_a_row_with_a_tracklist(
+    authenticated_client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """delete_file_cascade would take a row's tracklists with it, so such a row is kept, not retired."""
+    middle = "/test/music/incomplete/a.mp3"
+    await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE), _hashed(middle), _hashed(_FINAL)]})
+    rows = {row.original_path: row.id for row in await _rows(session)}
+    session.add(Tracklist(external_id="tl-1", source_url="https://1001.tl/x", file_id=rows[middle]))
+    await session.commit()
+
+    with caplog.at_level(logging.INFO, logger="phaze.routers.agent_files"):
+        response = await authenticated_client.post(
+            "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE, middle], "file": _hashed(_FINAL)}
+        )
+
+    assert response.json()["retired"] == 1
+    assert sorted(row.original_path for row in await _rows(session)) == sorted([middle, _FINAL])
+    retire_logs = [r.getMessage() for r in caplog.records if "retiring stale row" in r.getMessage()]
+    assert len(retire_logs) == 1
+    assert _INCOMPLETE in retire_logs[0] and _FINAL in retire_logs[0] and "test-agent-01" in retire_logs[0]
+    assert any("tracklist" in r.getMessage() for r in caplog.records if "keeping it" in r.getMessage())

@@ -55,7 +55,7 @@ if TYPE_CHECKING:
         ExecutionLogPatch,
         ExecutionLogPatchResponse,
     )
-    from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
+    from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
     from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
@@ -321,6 +321,20 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return FileUpsertResponse.model_validate(response.json())
+
+    async def move_file(self, payload: FileMoveRequest) -> FileMoveResponse:
+        """POST /api/internal/agent/files/move -- a settled file that arrived by an in-tree move (phaze-oxn2m).
+
+        A control plane older than this route answers 404, raised as ``AgentApiClientError``.
+        """
+        from phaze.schemas.agent_files import FileMoveResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            "/api/internal/agent/files/move",
+            json=payload.model_dump(mode="json"),
+        )
+        return FileMoveResponse.model_validate(response.json())
 
     async def put_metadata(self, file_id: uuid.UUID, payload: MetadataWriteRequest) -> MetadataWriteResponse:
         """PUT /api/internal/agent/metadata/{file_id} -- partial metadata upsert (CR-01)."""

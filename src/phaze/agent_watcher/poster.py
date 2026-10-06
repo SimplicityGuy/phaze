@@ -27,8 +27,14 @@ Invariants:
   (``original_path``, ``original_filename``, ``current_path``) are
   NFC-normalized before being serialized into the FileUpsertRecord, so the
   DB-facing keys stay canonical while the on-disk lookup stays byte-exact.
-- **T-27-04 (no bearer leakage):** the only client surface exposed here is
-  ``self._client.upsert_files(chunk)``. Exception logs go through
+- **Moves (phaze-oxn2m):** a path reached by an in-tree move is posted with its lineage
+  (``previous_paths``) to ``/api/internal/agent/files/move``, so the controller re-points the row
+  the file was already posted under rather than adding a second one. A control plane that
+  predates that route answers 404 (any 4xx is treated the same way), and the record is then
+  posted through the plain upsert -- what every move did before. Agent and control plane deploy
+  separately, so this fallback is the backward-compatibility contract, not an error path.
+- **T-27-04 (no bearer leakage):** the only client surfaces exposed here are
+  ``self._client.upsert_files(chunk)`` and ``self._client.move_file(request)``. Exception logs go through
   ``logger.exception`` which captures the traceback for the AgentApiError
   (already redacted to ``METHOD path -> status``), never
   the client or chunk repr.
@@ -38,11 +44,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 import unicodedata
 
 import structlog
 
-from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
+from phaze.schemas.agent_files import MOVE_LINEAGE_MAX, FileMoveRequest, FileUpsertChunk, FileUpsertRecord
 from phaze.services.agent_client import (
     AgentApiClientError,
     AgentApiError,
@@ -50,6 +57,10 @@ from phaze.services.agent_client import (
     PhazeAgentClient,
 )
 from phaze.services.hashing import compute_sha256
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 logger = structlog.get_logger(__name__)
@@ -63,8 +74,11 @@ class Poster:
         # The controller binds identity from the bearer; this value is diagnostic context only.
         self._agent_id = agent_id
 
-    async def post_one(self, path: str) -> None:
+    async def post_one(self, path: str, previous_paths: Sequence[str] = ()) -> None:
         """POST one settled path as a chunk-of-1 to /api/internal/agent/files.
+
+        With ``previous_paths`` (the names it was moved away from, oldest first) the record goes
+        to /api/internal/agent/files/move instead, falling back to the plain upsert on a 4xx.
 
         Failure modes:
             OSError on stat/SHA-256 -> WARNING log, return (Pitfall 1).
@@ -98,12 +112,27 @@ class Poster:
             file_type=p.suffix.lower().lstrip("."),
             file_size=file_size,
         )
-        chunk = FileUpsertChunk(files=[record])  # D-18: batch_id omitted; controller resolves LIVE.
         try:
-            await self._client.upsert_files(chunk)
+            if previous_paths and await self._moved(record, previous_paths):
+                return
+            await self._client.upsert_files(FileUpsertChunk(files=[record]))  # D-18: batch_id omitted; controller resolves LIVE.
         except AgentApiClientError:
             logger.exception("watcher: 4xx posting path=%s; dropping", path)
         except AgentApiServerError:
             logger.exception("watcher: 5xx posting path=%s; dropping (will recover via manual scan)", path)
         except AgentApiError:
             logger.exception("watcher: unknown error posting path=%s; dropping", path)
+
+    async def _moved(self, record: FileUpsertRecord, previous_paths: Sequence[str]) -> bool:
+        """POST ``record`` as a move; ``False`` means the control plane refused it and the caller should upsert.
+
+        Only a 4xx falls back: it is what a control plane without the move route answers (404).
+        5xx and transport errors propagate to ``post_one``'s handlers exactly like an upsert's.
+        """
+        lineage = [unicodedata.normalize("NFC", p) for p in previous_paths][-MOVE_LINEAGE_MAX:]
+        try:
+            await self._client.move_file(FileMoveRequest(previous_paths=lineage, file=record))
+        except AgentApiClientError as exc:
+            logger.warning("watcher: move post refused (%s); falling back to a plain upsert path=%s", exc, record.original_path)
+            return False
+        return True

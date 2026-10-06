@@ -58,3 +58,48 @@ class FileUpsertResponse(BaseModel):
     upserted: int
     inserted: int
     enqueued: int
+
+
+MOVE_LINEAGE_MAX: int = 4
+"""Cap on ``FileMoveRequest.previous_paths``. A paired move event has ONE source; the lineage grows
+past one only when a file is renamed again before it settles, or while its previous name's POST is
+in flight (``Debouncer.move``) -- two entries cover that race, four leave room for a rename burst.
+A file renamed more often than this before settling keeps only its most recent names (the agent
+truncates), and the controller never acts on more than this many rows per request."""
+
+
+class FileMoveRequest(BaseModel):
+    """Body of POST /api/internal/agent/files/move: a settled file that arrived by an in-tree move.
+
+    phaze-oxn2m. ``previous_paths`` is the file's lineage, oldest first: every path it was moved
+    away from since it last settled. Usually one entry; more when it was renamed again before
+    settling, or while the post of its previous name was still in flight -- the controller cannot
+    know which of those names a row was last posted under, so the agent sends them all.
+
+    A separate endpoint rather than a new optional field on :class:`FileUpsertRecord`, whose
+    ``extra="forbid"`` would 422 a newer agent's whole upsert against an older control plane. An
+    older control plane answers this route 404 instead, and the watcher falls back to a plain
+    upsert of ``file`` -- exactly the pre-phaze-oxn2m behavior.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    previous_paths: list[str] = Field(min_length=1, max_length=MOVE_LINEAGE_MAX)
+    file: FileUpsertRecord
+
+
+class FileMoveResponse(BaseModel):
+    """What the controller did with a :class:`FileMoveRequest`.
+
+    ``outcome`` is a plain string, not a Literal, so a newer control plane can add one without an
+    older agent failing to parse the reply: ``moved`` (an existing row now points at the new path),
+    ``upserted`` (no row had any previous path; ``file`` was upserted exactly as a plain post would),
+    or ``kept_reviewed`` (a previous row carries operator-reviewed state, so it was left alone and
+    ``file`` was upserted as its own row). ``retired`` counts stale previous-path rows deleted.
+    """
+
+    agent_id: str
+    file_id: uuid.UUID
+    outcome: str
+    content_changed: bool
+    retired: int
