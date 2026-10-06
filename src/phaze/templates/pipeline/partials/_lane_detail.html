@@ -26,21 +26,20 @@
    1.4.1). D-06: quota-waiting + Inadmissible render ONLY for a kueue lane; NO fabricated n/a rows on
    local/compute. All ids/kinds stay Jinja-autoescaped (operator-declared, never |safe -- T-88-05). #}
 {% if lane %}
+    {% import "ui/primitives.html" as ui %}
     {% set _kind = lane.kind %}
+    {# The kind LABEL is ui.kind_label (neutral, phaze-x6ql9). lane_color / lane_bar below are the lane's
+       live-load tint for the in-flight numeral and the saturation bar -- a state signal, not the label. #}
     {% if _kind == 'local' %}
-        {% set lane_glyph = "🖥️" %}
         {% set lane_color = "text-ok " %}
         {% set lane_bar = "bg-emerald-400" %}
     {% elif _kind == 'compute' %}
-        {% set lane_glyph = "☁️" %}
         {% set lane_color = "text-info " %}
         {% set lane_bar = "bg-blue-400" %}
     {% elif _kind == 'kueue' %}
-        {% set lane_glyph = "⎈" %}
         {% set lane_color = "text-warn " %}
         {% set lane_bar = "bg-amber-400" %}
     {% else %}
-        {% set lane_glyph = "▪" %}
         {% set lane_color = "text-gray-600 dark:text-gray-300" %}
         {% set lane_bar = "bg-gray-400" %}
     {% endif %}
@@ -55,7 +54,7 @@
         {# Header: kind glyph/color + id + RANK micro-label (reused from _lane_card.html). #}
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
-                {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
+                {{ ui.kind_label(lane.kind, lane.id) }}
                 <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-muted ">RANK {{ lane.rank }}</span>
             </span>
             {% if _kind == 'local' %}

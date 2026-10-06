@@ -538,7 +538,7 @@ async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, sessio
     assert response.status_code == 200, response.text
     body = response.text
 
-    assert f"· {lane['id']}" in body
+    assert f', {lane["id"]}"' in body  # the ui.kind_label aria-label names the lane (phaze-x6ql9)
     assert f"RANK {lane['rank']}" in body
     # phaze-lwz8n: a LOCAL lane no longer renders its in_flight/cap pair (queued + running against a
     # cap derived from the control host is not a capacity reading); it names running and waiting.

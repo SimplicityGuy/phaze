@@ -140,14 +140,15 @@ def test_the_digest_row_abbreviates_for_display_and_keeps_the_whole_value_as_its
 
 
 @pytest.mark.parametrize(
-    ("lane_kind", "glyph", "tone"),
-    [("local", "🖥️", "ok"), ("compute", "☁️", "info"), ("kueue", "⎈", "warn"), (None, "▪", "unknown"), ("retired-kind", "▪", "unknown")],
+    ("lane_kind", "expected"),
+    [("local", "local"), ("compute", "compute"), ("kueue", "kueue"), (None, ""), ("retired-kind", "retired-kind")],
 )
-def test_the_lane_row_keeps_the_analyze_matrixs_own_glyph_for_every_kind(lane_kind: str | None, glyph: str, tone: str) -> None:
-    """phaze-lljfx: an unrecognised or deregistered kind must never silently read as local."""
+def test_the_lane_row_hands_its_kind_to_the_shared_label_macro(lane_kind: str | None, expected: str) -> None:
+    """phaze-lljfx + phaze-x6ql9: the Lane fact carries the file's REAL kind (never defaulting to local) and
+    renders through ``ui.kind_label``; glyph and tone are the macro's, so the fact holds neither."""
     fact = next(fact for fact in build_record_facts(**_kwargs(lane_kind=lane_kind, lane="a1")) if fact.label == "Lane")
 
-    assert (fact.glyph, fact.tone, fact.value) == (glyph, tone, "a1")
+    assert (fact.lane_kind, fact.tone, fact.value) == (expected, "neutral", "a1")
 
 
 def test_the_windows_row_reuses_the_coverage_chips_own_sentence_verbatim() -> None:

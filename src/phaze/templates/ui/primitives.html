@@ -65,6 +65,42 @@
 <span class="inline-flex items-center gap-1.5 text-xs font-semibold uppercase px-2 py-0.5 rounded-full {{ _t[0] }}{% if pulse %} motion-safe:animate-pulse{% endif %}"{% if role %} role="{{ role }}"{% endif %}{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>{% if icon %}<span aria-hidden="true">{{ icon }}</span>{% else %}<span class="w-2 h-2 shrink-0 rounded-full {{ _t[1] }}" aria-hidden="true"></span>{% endif %}<span>{{ text }}</span></span>
 {% endmacro %}
 
+{# phaze-x6ql9: the ONE lane / agent kind label. Every surface that names a lane or an agent kind
+   (Analyze Running-now and File-progress rows, lane cards and detail headers, the Agents table, the
+   record page's Lane fact) renders it through here, so the glyph, the icon-to-text gap and the tone
+   cannot drift per site. Built on status_pill: the kind glyph is the leading indicator and the pill's
+   own gap-1.5 is the single icon-text gap. The tone is ALWAYS neutral -- a kind is an identity, not a
+   state, and a status hue (green/amber/blue) on it reads as health. Kind is carried by glyph + word,
+   never hue (WCAG 1.4.1).
+
+     * kind      -- lane family: local | compute | kueue (anything else -> neutral square, word = the kind);
+                    agent family: compute | fileserver.
+     * name      -- optional lane id / backend id, rendered verbatim (normal-case) after the kind word.
+     * show_kind -- False renders glyph + name only (rows where the column header already says "Lane").
+     * family    -- 'lane' (default) or 'agent'; an agent's "compute" is a different thing from a
+                    compute lane and keeps its own glyph. #}
+{% macro kind_label(kind, name='', show_kind=true, family='lane') %}
+{% set _lane_kinds = {
+    'local': ('\U0001f5a5\ufe0f', 'LOCAL', 'local'),
+    'compute': ('\u2601\ufe0f', 'COMPUTE', 'compute'),
+    'kueue': ('\u2388', 'KUEUE', 'kueue')
+} %}
+{% set _agent_kinds = {
+    'compute': ('\u2699', 'COMPUTE', 'compute'),
+    'fileserver': ('\U0001f5c4', 'FILE SERVER', 'file server')
+} %}
+{% if family == 'agent' %}
+    {# Defensive: an out-of-enum agent kind falls through to the fileserver entry so the cell is never blank (T-48-02). #}
+    {% set _e = _agent_kinds.get(kind, _agent_kinds.fileserver) %}
+    {% set _aria = 'Kind: ' ~ _e[2] %}
+{% else %}
+    {% set _e = _lane_kinds.get(kind, ('\u25aa', (kind or 'cloud') | upper, kind or 'cloud')) %}
+    {% set _aria = 'Kind: ' ~ _e[2] ~ ' lane' %}
+{% endif %}
+{% set _text %}{% if show_kind %}{{ _e[1] }}{% endif %}{% if show_kind and name %} &middot; {% endif %}{% if name %}<span class="normal-case">{{ name }}</span>{% endif %}{% endset %}
+{{ status_pill(_text, 'neutral', _aria ~ (', ' ~ name if name else ''), _e[0]) }}
+{% endmacro %}
+
 {% macro status_badge(label, status, tone='neutral', icon='', pulse=false, aria_label='', role='') %}
 {{ status_pill(status, tone, aria_label or (label ~ ': ' ~ status), icon, pulse, role) }}
 {% endmacro %}

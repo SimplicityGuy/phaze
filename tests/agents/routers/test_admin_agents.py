@@ -650,13 +650,12 @@ async def test_deployed_shape_fileserver_agent_keeps_its_liveness(deployed_shape
 async def test_kind_badge_compute_renders(smoke: AsyncClient) -> None:
     """Full shell-hosted GET /s/agents renders the COMPUTE badge for a kind='compute' row.
 
-    Palette + label + aria-label are LOCKED by 48-UI-SPEC §Component Contract.
+    Label + aria-label are LOCKED by 48-UI-SPEC §Component Contract; the palette is neutral since phaze-x6ql9.
     """
     response = await smoke.get("/s/agents")
     body = response.text
     assert "COMPUTE" in body
-    assert "bg-indigo-100 dark:bg-indigo-950" in body
-    assert "text-indigo-700 dark:text-indigo-400" in body
+    assert "bg-indigo-100" not in body, "kind is neutral, never a status colour (phaze-x6ql9)"
     assert 'aria-label="Kind: compute"' in body
     # Geometry is the shared ui.status_pill recipe (phaze-gjhbk), identical to the status pills.
     assert "text-xs font-semibold uppercase px-2 py-0.5 rounded-full" in body
@@ -668,9 +667,7 @@ async def test_kind_badge_fileserver_renders(smoke: AsyncClient) -> None:
     response = await smoke.get("/s/agents")
     body = response.text
     assert "FILE SERVER" in body
-    assert "bg-slate-100" in body
-    assert "dark:bg-slate-800" in body
-    assert "text-slate-700 dark:text-slate-300" in body
+    assert "bg-slate-100" not in body, "kind is neutral, never a status colour (phaze-x6ql9)"
     assert 'aria-label="Kind: file server"' in body
 
 
@@ -684,10 +681,10 @@ async def test_kind_badge_in_poll_partial(smoke: AsyncClient) -> None:
     response = await smoke.get("/admin/agents/_table")
     body = response.text
     assert "COMPUTE" in body
-    assert "bg-indigo-100 dark:bg-indigo-950" in body
+    assert "bg-indigo-100" not in body, "kind is neutral, never a status colour (phaze-x6ql9)"
     assert 'aria-label="Kind: compute"' in body
     assert "FILE SERVER" in body
-    assert "bg-slate-100" in body
+    assert "bg-slate-100" not in body
     assert 'aria-label="Kind: file server"' in body
 
 

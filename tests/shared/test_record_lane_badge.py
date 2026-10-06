@@ -41,7 +41,7 @@ async def test_no_cloud_job_renders_local_lane(client, session, make_file) -> No
 
     body = (await client.get(f"/record/{file_rec.id}")).text
 
-    assert "🖥️ local" in body
+    assert 'aria-label="Kind: local lane, local"' in body
     assert "☁️" not in body
     assert "⎈" not in body
 
@@ -57,8 +57,8 @@ async def test_compute_backend_job_renders_compute_lane(client, session, make_fi
 
     body = (await client.get(f"/record/{file_rec.id}")).text
 
-    assert "☁️ a1" in body
-    assert "🖥️ local" not in body
+    assert 'aria-label="Kind: compute lane, a1"' in body
+    assert 'aria-label="Kind: local lane, local"' not in body
 
 
 async def test_kueue_backend_job_renders_kueue_lane(client, session, make_file, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
@@ -73,8 +73,8 @@ async def test_kueue_backend_job_renders_kueue_lane(client, session, make_file, 
 
     body = (await client.get(f"/record/{file_rec.id}")).text
 
-    assert "⎈ k8s" in body
-    assert "🖥️ local" not in body
+    assert 'aria-label="Kind: kueue lane, k8s"' in body
+    assert 'aria-label="Kind: local lane, local"' not in body
 
 
 async def test_unattributed_cloud_job_falls_back_to_the_cloud_glyph(client, session, make_file) -> None:  # type: ignore[no-untyped-def]
@@ -86,5 +86,5 @@ async def test_unattributed_cloud_job_falls_back_to_the_cloud_glyph(client, sess
 
     body = (await client.get(f"/record/{file_rec.id}")).text
 
-    assert "▪ cloud" in body
-    assert "🖥️ local" not in body
+    assert 'aria-label="Kind: cloud lane, cloud"' in body
+    assert 'aria-label="Kind: local lane, local"' not in body
