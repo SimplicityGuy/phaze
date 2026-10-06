@@ -232,34 +232,107 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_force_local_control_lives_in_operations_and_header_only_warns(client: AsyncClient) -> None:
-    """Operations owns the mutation while the persistent header only warns when it is active.
+async def test_force_local_control_lives_in_config_and_header_only_warns(client: AsyncClient, session: AsyncSession) -> None:
+    """Config owns the mutation while the persistent header only warns when it is active (phaze-6hd58).
 
     The seed reads ``get_route_control`` in ``shell.py`` ``_render_stage`` (base shell context),
     NOT the Analyze-only dashboard context -- so the global control shows correct state everywhere.
+    The whole control is exercised end to end from the Config page: the page renders the pill with the
+    engage confirmation, the POST flips the persisted row, and both the pill and the warning update.
     """
-    # Engage, then load a non-Analyze stage: the header warning reflects the persisted state but cannot mutate it.
-    await client.post("/pipeline/routing/force-local", data={"engage": "true"})
+    # Normal routing: the Config page carries the control, with the engage confirmation and the restore copy.
+    config0 = await client.get("/s/runtime-config")
+    assert config0.status_code == 200
+    assert 'id="force-local-pill"' in config0.text
+    assert 'aria-checked="false"' in config0.text
+    assert 'hx-confirm="Force all analysis routing to local?' in config0.text
+    assert "Restoring normal routing is immediate" in config0.text
+    assert 'id="routing-operations-warning"' in config0.text
+    assert "Override active: all analysis is routed locally" not in config0.text
+
+    # Engage from the Config page's own control (the pill's hx-post target), then the page reflects it.
+    assert 'hx-post="/pipeline/routing/force-local"' in config0.text
+    engaged = await client.post("/pipeline/routing/force-local", data={"engage": "true"})
+    assert engaged.status_code == 200
+    assert 'aria-checked="true"' in engaged.text
+    assert await get_route_control(session) is True
+
+    # Engaged: a non-Config page's header shows the read-only warning, which links to Config and cannot mutate.
     page = await client.get("/s/discover")
     assert page.status_code == 200
     assert 'aria-label="Routing override active: forced local"' in page.text
     header = page.text.split("</header>", maxsplit=1)[0]
     assert 'hx-post="/pipeline/routing/force-local"' not in header
+    assert 'href="/s/runtime-config"' in header
     assert "FORCED" in page.text
 
-    operations = await client.get("/s/operations")
-    assert operations.status_code == 200
-    assert 'id="force-local-pill"' in operations.text
-    assert 'aria-checked="true"' in operations.text
-    assert "Override active: all analysis is routed locally" in operations.text
-    assert "hx-confirm=" not in operations.text
+    config = await client.get("/s/runtime-config")
+    assert config.status_code == 200
+    assert 'id="force-local-pill"' in config.text
+    assert 'aria-checked="true"' in config.text
+    assert "Override active: all analysis is routed locally" in config.text
+    assert "hx-confirm=" not in config.text  # restoring is immediate
 
-    # Revert, then reload: normal routing is quiet in the header and remains controllable in Operations.
+    # Revert, then reload: normal routing is quiet in the header and remains controllable in Config.
     await client.post("/pipeline/routing/force-local", data={"engage": "false"})
+    assert await get_route_control(session) is False
     page2 = await client.get("/s/discover")
     assert 'aria-label="Routing override active: forced local"' not in page2.text
-    operations2 = await client.get("/s/operations")
-    assert 'aria-checked="false"' in operations2.text
-    assert "CLOUD" in operations2.text
-    assert 'hx-confirm="Force all analysis routing to local?' in operations2.text
-    assert "Restoring normal routing is immediate" in operations2.text
+    config2 = await client.get("/s/runtime-config")
+    assert 'aria-checked="false"' in config2.text
+    assert "CLOUD" in config2.text
+    assert 'hx-confirm="Force all analysis routing to local?' in config2.text
+
+
+@pytest.mark.asyncio
+async def test_operations_url_redirects_to_config_and_routing_is_gone_from_the_rail(client: AsyncClient) -> None:
+    """The removed Routing page 307-redirects to Config; the rail has no Routing or Config entry (phaze-6hd58)."""
+    redirect = await client.get("/s/operations", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/s/runtime-config"
+
+    followed = await client.get("/s/operations", follow_redirects=True)
+    assert followed.status_code == 200
+    assert 'id="force-local-pill"' in followed.text
+
+    page = await client.get("/s/runtime-config")
+    rail = page.text.split("<aside", maxsplit=1)[1].split("</aside>", maxsplit=1)[0]
+    assert 'data-rail-stage="operations"' not in rail
+    assert 'data-rail-stage="runtime-config"' not in rail
+    assert "Routing" not in rail
+    assert "Runtime config" not in page.text
+
+
+@pytest.mark.asyncio
+async def test_config_gear_in_header_is_named_and_marks_the_current_page(client: AsyncClient) -> None:
+    """The header gear is a named link to Config with aria-current only on the Config page (phaze-6hd58)."""
+    from bs4 import BeautifulSoup
+
+    on_config = BeautifulSoup((await client.get("/s/runtime-config")).text, "html.parser")
+    gear = on_config.select_one("header #config-trigger")
+    assert gear is not None
+    assert gear["href"] == "/s/runtime-config"
+    assert gear["aria-label"] == "Config"
+    assert gear["aria-current"] == "page"
+    assert "focus-visible:ring-2" in gear["class"]
+    assert on_config.title is not None
+    assert on_config.title.get_text() == "Config | Phaze"
+
+    elsewhere = BeautifulSoup((await client.get("/s/discover")).text, "html.parser")
+    other = elsewhere.select_one("header #config-trigger")
+    assert other is not None
+    assert not other.has_attr("aria-current")
+
+
+def test_no_template_links_to_the_removed_routing_page_or_the_old_config_name() -> None:
+    """No template or router source still points at /s/operations or names the page "Runtime config" (phaze-6hd58)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3] / "src" / "phaze"
+    offenders = []
+    for path in [*root.joinpath("templates").rglob("*.html"), *root.joinpath("routers").rglob("*.py")]:
+        text = path.read_text(encoding="utf-8")
+        for needle in ('"/s/operations', "'/s/operations", 'href="/s/operations', 'Runtime config"', 'RUNTIME CONFIG"'):
+            if needle in text and path.name != "__init__.py":
+                offenders.append(f"{path.name}: {needle}")
+    assert not offenders

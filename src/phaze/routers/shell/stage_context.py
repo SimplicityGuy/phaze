@@ -522,7 +522,7 @@ async def _agents_stage_context(request: Request, session: AsyncSession, stage: 
 # through explicitly rather than assumed by the callee, so a builder stays correct if a second
 # key is ever aliased at it -- exactly like `rename`/`move`/`tagwrite` already alias at
 # build_changes_review_context below, which is stage-agnostic and ignores the argument. A stage
-# absent from this map (only "operations" today) keeps the base context untouched, matching the
+# absent from this map (none today) keeps the base context untouched, matching the
 # pre-decomposition behavior of an if/elif chain with no matching branch.
 _STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession, str], Awaitable[dict[str, Any]]]] = {
     "summary": lambda request, session, _stage: _build_summary_context(request.app.state, session),

@@ -41,7 +41,6 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
         "dedupe",
         "cue",
         "apply",
-        "operations",
         "audit",
         "agents",
     ]

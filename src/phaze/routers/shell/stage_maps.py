@@ -122,7 +122,6 @@ STAGE_PARTIALS: dict[str, str] = {
 # entry roots. Audit and Agents reuse their redirect routes' context builders so the two render paths
 # cannot drift (phaze-uvmcr.3/phaze-uvmcr.4).
 UTILITY_PANES: dict[str, str] = {
-    "operations": "shell/partials/operations.html",
     "audit": "execution/audit_log.html",
     "agents": "admin/agents.html",
     # phaze-mvq8z.6: the DB-override admin panel for hot-reloadable config (ADR-0019 (runtime
@@ -144,10 +143,9 @@ DOCUMENT_TITLES: dict[str, str] = {
     "dedupe": "Duplicates",
     "cue": "Cue sheets",
     "apply": "Execute approved",
-    "operations": "Routing operations",
     "audit": "Audit log",
     "agents": "Agents and compute lanes",
-    "runtime-config": "Runtime config",
+    "runtime-config": "Config",
 }
 
 

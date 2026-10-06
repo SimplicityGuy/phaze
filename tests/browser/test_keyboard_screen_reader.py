@@ -150,7 +150,7 @@ async def test_the_closed_drawer_contributes_no_tab_stops_below_lg(theme: str, p
                 };
             }"""
         )
-        assert state["total"] >= 14, f"expected the full destination set, found {state['total']}"
+        assert state["total"] >= 13, f"expected the full destination set, found {state['total']}"
         assert state["railVisibility"] == "hidden", f"tablet/{theme}: the closed drawer computes visibility:{state['railVisibility']}"
         assert state["focusable"] == 0, f"tablet/{theme}: {state['focusable']} rail destinations remain focusable while the drawer is closed"
 

@@ -326,7 +326,7 @@ def test_response_only_conditional_oob_fragment_cannot_provide_its_own_target() 
     """Removing either persistent routing host must expose its still-emitted OOB response."""
     cases = (
         ("shell/partials/header.html", "shell/partials/_routing_override_warning.html", "routing-override-warning"),
-        ("shell/partials/operations.html", "shell/partials/_routing_operations_warning.html", "routing-operations-warning"),
+        ("shell/partials/_routing_override_section.html", "shell/partials/_routing_operations_warning.html", "routing-operations-warning"),
     )
     for host_template, fragment_template, target in cases:
         source = _template_source(host_template)
