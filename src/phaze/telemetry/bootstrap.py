@@ -33,10 +33,11 @@ collector is up ten minutes later.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import metrics, trace
 
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.view import View
     from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.util import types
 
 log = logging.getLogger(__name__)
 
@@ -277,6 +279,58 @@ def _require_provider_took(current: object, expected: object, what: str) -> None
     raise ProviderNotInstalledError(msg)
 
 
+@functools.cache
+def _resolved_once_tracer_provider() -> type[TracerProvider]:
+    """The SDK ``TracerProvider``, with ``get_tracer`` resolved once per instrumentation scope.
+
+    **Why (phaze-0gwqr).** opentelemetry-sdk 1.45's ``TracerProvider.get_tracer`` calls
+    ``warnings.filterwarnings(...)`` on EVERY call, before its own lookup of an already-built
+    tracer. Re-adding an identical filter still counts as a mutation of ``warnings.filters``,
+    and every mutation invalidates every module's ``__warningregistry__`` -- the record behind
+    Python's "show this warning once per location". FastAPI 0.142's native telemetry calls
+    ``trace.get_tracer("fastapi", ...)`` once per HTTP request, so in phaze-api the dedupe was
+    reset on every request and a repeated warning re-emitted on every request (the kr8s
+    version warning printed 3,201 times before phaze-lhunw bounded that one caller).
+
+    The SDK already hands back the SAME tracer for a repeated scope; only the filter mutation
+    in front of that lookup is the defect. So each scope is resolved through the SDK once and
+    that tracer is returned thereafter. No warning is filtered, suppressed or re-routed: the
+    filter the SDK installs is still installed, once per scope instead of once per request.
+
+    A scope with ``attributes`` goes straight to the SDK, uncached: an attribute mapping is not
+    hashable, and no caller in phaze or FastAPI passes one.
+
+    Built lazily, like every other SDK import here, so a process with telemetry off never
+    imports the SDK; cached, so there is one class per process and ``isinstance`` holds.
+    """
+    from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider  # noqa: PLC0415  # SDK import, telemetry-on path only
+
+    class ResolvedOnceTracerProvider(SDKTracerProvider):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._resolved: dict[tuple[str, str | None, str | None], trace.Tracer] = {}
+
+        def get_tracer(
+            self,
+            instrumenting_module_name: str,
+            instrumenting_library_version: str | None = None,
+            schema_url: str | None = None,
+            attributes: types.Attributes = None,
+        ) -> trace.Tracer:
+            if attributes is not None:
+                return super().get_tracer(instrumenting_module_name, instrumenting_library_version, schema_url, attributes)
+            key = (instrumenting_module_name, instrumenting_library_version, schema_url)
+            tracer = self._resolved.get(key)
+            if tracer is None:
+                # A race here resolves the scope twice; the SDK's own lock hands both callers the
+                # same tracer, so the only cost is one extra filter mutation, once.
+                tracer = super().get_tracer(instrumenting_module_name, instrumenting_library_version, schema_url)
+                self._resolved[key] = tracer
+            return tracer
+
+    return ResolvedOnceTracerProvider
+
+
 def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvider]:
     """Build and register both providers. Raises on failure; the caller swallows."""
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter  # noqa: PLC0415  # SDK imports, telemetry-on path only
@@ -284,12 +338,13 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
     from opentelemetry.sdk.metrics import MeterProvider  # noqa: PLC0415
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader  # noqa: PLC0415
     from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
-    from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
     from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
 
     from phaze.telemetry import instruments  # noqa: PLC0415  # circular at module scope: instruments imports the API, not this
 
-    tracer_provider = TracerProvider(
+    # Not the bare SDK class: its get_tracer mutates warnings.filters on every call, and
+    # FastAPI's telemetry calls it per request (phaze-0gwqr).
+    tracer_provider = _resolved_once_tracer_provider()(
         resource=Resource.create(_trace_resource_attributes(role, service_name)),
         # See this module's docstring, point 3. THE default here is True.
         shutdown_on_exit=False,
