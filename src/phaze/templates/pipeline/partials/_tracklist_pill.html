@@ -20,7 +20,7 @@
 {% elif bucket == 'in_flight' %}
 {{ ui.status_badge('Tracklist', 'queued', 'accent', '●') }}
 {% elif bucket == 'failed' %}
-{{ ui.status_badge('Tracklist', 'retry pending · ' ~ (_retry or 'parked'), 'danger', '✗') }}
+{{ ui.status_badge('Tracklist', 'retry pending · ' ~ (_retry or 'parked'), 'danger', '✕') }}
 {% elif bucket == 'skipped' %}
 {% if _outcome == 'not_found' %}
 {{ ui.status_badge('Tracklist', 'not found · retry ' ~ (_retry or '—'), 'skipped', '⊘') }}

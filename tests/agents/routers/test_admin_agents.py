@@ -658,8 +658,8 @@ async def test_kind_badge_compute_renders(smoke: AsyncClient) -> None:
     assert "bg-indigo-100 dark:bg-indigo-950" in body
     assert "text-indigo-700 dark:text-indigo-400" in body
     assert 'aria-label="Kind: compute"' in body
-    # LOCKED geometry copied verbatim from _status_pill.html.
-    assert "text-xs font-semibold px-2 py-0.5 rounded-full" in body
+    # Geometry is the shared ui.status_pill recipe (phaze-gjhbk), identical to the status pills.
+    assert "text-xs font-semibold uppercase px-2 py-0.5 rounded-full" in body
 
 
 @pytest.mark.asyncio

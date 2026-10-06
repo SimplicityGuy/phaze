@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Runtime config admin table (phaze-mvq8z.6, ADR-0019 (runtime config hot-reload) §3/§10/§15).
 
    Lists every RELOADABLE key with its live effective value + source layer (override > file > env >
@@ -53,12 +54,7 @@
                     </th>
                     <td class="px-4 py-2 font-mono">{{ row.value }}</td>
                     <td class="px-4 py-2">
-                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-                            {% if row.source == 'override' %}bg-blue-100 text-info dark:bg-blue-950
-                            {% elif row.source == 'file' %}bg-emerald-100 text-ok dark:bg-emerald-950
-                            {% else %}bg-gray-100 text-muted dark:bg-white/5{% endif %}">
-                            {{ row.source }}
-                        </span>
+                        {{ ui.status_pill(row.source, 'accent' if row.source == 'override' else ('success' if row.source == 'file' else 'neutral'), 'Source: ' ~ row.source) }}
                     </td>
                     <td class="px-4 py-2">
                         <form hx-post="/admin/runtime-config/{{ row.key }}" hx-target="#runtime-config-table" hx-swap="outerHTML"

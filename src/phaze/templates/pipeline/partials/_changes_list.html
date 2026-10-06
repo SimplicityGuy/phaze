@@ -101,7 +101,7 @@
            hx-get="{{ changes_urls[value] }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true"
            {% if changes_view.status == value %}aria-current="page"{% endif %}
            class="shrink-0 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if changes_view.status == value %}border-b-2 border-action-brand font-semibold text-info {% else %}text-muted hover:text-gray-800 dark:hover:text-gray-200{% endif %}">
-            {{ label }} <span class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
+            {{ label }} <span data-not-status-pill="count chip" class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
         </a>
         {% endfor %}
     </nav>

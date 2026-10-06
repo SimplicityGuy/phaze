@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 27 Component 3 (UI-SPEC lines 253-329): poll partial (running / completed / failed / gone).
 
    Pitfall 6 (terminal-state halt): the in-progress branch carries hx-trigger="every 2s"
@@ -17,7 +18,7 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan no longer available</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-800 text-muted " aria-label="Status: gone">GONE</span>
+        {{ ui.status_pill('GONE', 'neutral', 'Status: gone') }}
     </div>
     <p class="text-xs text-muted mt-1">This scan was removed. Check Recent Scans for its outcome.</p>
 </div>
@@ -40,7 +41,7 @@
             {% else %}
             <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 motion-safe:animate-pulse" aria-hidden="true"></span>
             {% endif %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Status: running">RUNNING</span>
+            {{ ui.status_pill('RUNNING', 'accent', 'Status: running') }}
         </div>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
@@ -60,7 +61,7 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan complete</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: completed">COMPLETED</span>
+        {{ ui.status_pill('COMPLETED', 'success', 'Status: completed') }}
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files }} files
@@ -74,7 +75,7 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan failed</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: failed">FAILED</span>
+        {{ ui.status_pill('FAILED', 'danger', 'Status: failed', '✕') }}
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files or '?' }} files

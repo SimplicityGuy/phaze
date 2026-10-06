@@ -54,7 +54,7 @@
                 <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataEligible > 0">{{ ui.status_badge('Metadata', 'eligible', 'neutral', '—') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataQueued > 0">{{ ui.status_badge('Metadata', 'queued', 'attention', '●') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataActive > 0">{{ ui.status_badge('Metadata', 'active', 'accent', '●', true) }}</span>
-                <span x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✗') }}</span>
+                <span x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✕') }}</span>
                 <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0">{{ ui.status_badge('Metadata', 'idle', 'success', '✓') }}</span>
                 <span x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown">{{ ui.status_badge('Metadata', 'unknown', 'attention', '?') }}</span>
             </div>

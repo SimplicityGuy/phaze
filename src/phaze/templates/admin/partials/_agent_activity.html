@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 88 (88-03, DRILL-02 / D-04 / D-05 / D-03): the agent-activity BODY fragment.
 
    phaze-2u8v.6: the wave-2 body for the agents-table EXPANDED ROW
@@ -48,12 +49,12 @@
    count is the number the DAG's amber rail badge and the Recover button already act on. Amber (not red)
    is deliberate -- orphaned work is recoverable, not failed. #}
 {% set _bucket_tokens = [
-    ('done', '✓', 'done', 'bg-green-100 dark:bg-green-950 text-ok '),
-    ('in_flight', '●', 'in flight', 'bg-blue-100 dark:bg-blue-950 text-info '),
-    ('orphaned', '⚠', 'orphaned', 'bg-amber-100 dark:bg-amber-950 text-warn '),
-    ('not_started', '—', 'not started', 'bg-gray-100 dark:bg-gray-800/60 text-muted '),
-    ('failed', '✗', 'failed', 'bg-red-100 dark:bg-red-950 text-danger '),
-    ('skipped', '⊘', 'skipped', 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60'),
+    ('done', '✓', 'done', 'success'),
+    ('in_flight', '●', 'in flight', 'accent'),
+    ('orphaned', '⚠', 'orphaned', 'attention'),
+    ('not_started', '—', 'not started', 'neutral'),
+    ('failed', '✕', 'failed', 'danger'),
+    ('skipped', '⊘', 'skipped', 'skipped'),
 ] %}
 {# The 6-pill stage order + Appr=review / Exec=apply remap (from _stage_matrix.html:29-36). #}
 {% set _matrix_stages = [
@@ -96,7 +97,7 @@
                 <thead class="text-xs font-semibold text-muted uppercase border-b border-gray-200 dark:border-phaze-border">
                     <tr>
                         <th scope="col" class="px-2 py-2">Stage</th>
-                        {% for _key, _glyph, _word, _cls in _bucket_tokens %}
+                        {% for _key, _glyph, _word, _tone in _bucket_tokens %}
                         <th scope="col" class="px-2 py-2 text-center"><span aria-hidden="true">{{ _glyph }}</span> {{ _word }}</th>
                         {% endfor %}
                     </tr>
@@ -105,11 +106,10 @@
                     {% for _stage_label, _stage_buckets in _matrix_stages %}
                     <tr>
                         <th scope="row" class="px-2 py-2 font-medium text-gray-700 dark:text-gray-300">{{ _stage_label }}</th>
-                        {% for _key, _glyph, _word, _cls in _bucket_tokens %}
+                        {% for _key, _glyph, _word, _tone in _bucket_tokens %}
                         {% set _n = (_stage_buckets[_key] if _stage_buckets else 0) or 0 %}
                         <td class="px-2 py-2 text-center">
-                            <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-full {{ _cls }}"
-                                  aria-label="{{ _stage_label }} {{ _word }}: {{ _n }}"><span aria-hidden="true">{{ _glyph }}</span> {{ _n }}</span>
+                            {{ ui.status_pill(_n, _tone, _stage_label ~ ' ' ~ _word ~ ': ' ~ _n, _glyph) }}
                         </td>
                         {% endfor %}
                     </tr>
@@ -123,7 +123,7 @@
             <span>● in-flight</span>
             <span>⚠ orphaned</span>
             <span>— not-started</span>
-            <span>✗ failed</span>
+            <span>✕ failed</span>
             <span>⊘ skipped</span>
         </p>
         {# Say what the amber cell MEANS and what clears it -- a count with no remedy is the defect this
@@ -169,12 +169,7 @@
                         <th scope="row" class="px-2 py-2 text-left font-mono text-xs font-normal text-gray-700 dark:text-gray-300">{{ row.key }}</th>
                         <td class="px-2 py-2 font-mono">{{ row.value }}</td>
                         <td class="px-2 py-2">
-                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-                                {% if row.source == 'override' %}bg-blue-100 text-info dark:bg-blue-950
-                                {% elif row.source == 'file' %}bg-emerald-100 text-ok dark:bg-emerald-950
-                                {% else %}bg-gray-100 text-muted dark:bg-white/5{% endif %}">
-                                {{ row.source }}
-                            </span>
+                            {{ ui.status_pill(row.source, 'accent' if row.source == 'override' else ('success' if row.source == 'file' else 'neutral'), 'Source: ' ~ row.source) }}
                         </td>
                     </tr>
                     {% endfor %}
