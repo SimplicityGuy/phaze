@@ -145,7 +145,7 @@
     {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). Carries the status
        lens + page_size as autoescaped query values (T-57-01: never a path splice). #}
     {% set _qs = '&page_size=' ~ analyze_page.page_size ~ (('&status=' ~ analyze_page.status) if analyze_page.status else '') %}
-    <nav aria-label="Analyze files pagination" class="flex items-center justify-between mt-6">
+    <nav aria-label="Analyze files pagination" class="flex items-center justify-between mt-4 px-6 pb-4">
         <p class="text-sm text-muted ">Page {{ analyze_page.page }}</p>
         <div class="flex gap-1">
             {% if analyze_page.page > 1 %}
