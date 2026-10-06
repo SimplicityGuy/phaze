@@ -14,7 +14,7 @@
             :disabled="$store.pipeline.analyzeBusy > 0"
             aria-label="Run analysis on all discovered files"
             class="{{ _btn }}">RUN ANALYSIS</button>
-    <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-muted ">Enqueuing…</span>
+    <span id="analyze-trigger-spinner" class="htmx-indicator pointer-events-none absolute right-0 top-full mt-0.5 whitespace-nowrap text-xs text-muted ">Enqueuing…</span>
     <button type="button" x-show="!$store.pipeline.analyzePaused"
             hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
             :disabled="$store.pipeline.analyzeBusy === 0" aria-label="Pause analyze"

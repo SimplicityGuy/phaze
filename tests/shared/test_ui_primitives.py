@@ -7,6 +7,7 @@ import re
 from types import SimpleNamespace
 
 from fastapi.templating import Jinja2Templates
+import pytest
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "src" / "phaze" / "templates"
@@ -199,3 +200,25 @@ def test_files_workspace_adopts_primitives_without_changing_htmx_contracts() -> 
     assert "No failed files in Analyze" in html
     assert 'role="status"' in html
     assert "sm:flex-row" in html
+
+
+_PARTIALS = Path(__file__).resolve().parents[2] / "src" / "phaze" / "templates" / "pipeline" / "partials"
+
+
+def test_page_header_actions_slot_anchors_absolutely_positioned_indicators() -> None:
+    html = _render("""{% import "ui/primitives.html" as ui %}{{ ui.page_header("T", "", "Go") }}""")
+
+    assert re.search(r'<div class="relative [^"]*">Go</div>', html)
+
+
+@pytest.mark.parametrize("stage", ["propose", "analyze", "metadata"])
+def test_header_trigger_indicator_takes_no_idle_layout_space(stage: str) -> None:
+    """An opacity-0 inline indicator still reserves ~70px, pushing the header buttons off the right edge."""
+    source = (_PARTIALS / f"{stage}_workspace.html").read_text()
+    match = re.search(rf'<span id="{stage}-trigger-spinner" class="([^"]*)"', source)
+
+    assert match is not None
+    classes = match.group(1).split()
+    assert "htmx-indicator" in classes  # still revealed by .htmx-request while a request is in flight
+    assert {"absolute", "pointer-events-none"} <= set(classes)
+    assert "inline-flex" not in classes and "ml-2" not in classes
