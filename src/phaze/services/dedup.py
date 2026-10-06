@@ -151,7 +151,14 @@ def score_group(group: dict[str, Any]) -> None:
     group["canonical_id"] = winner["id"]
 
     # Determine what actually differentiated the winner from the runner-up
-    group["rationale"] = _canonical_rationale(winner, files[1] if len(files) > 1 else None)
+    runner_up = files[1] if len(files) > 1 else None
+    group["rationale"] = _canonical_rationale(winner, runner_up)
+    # phaze-6ak0q: the keeper is only "highest quality" when it STRICTLY beat the runner-up on a quality
+    # criterion (bitrate, tag completeness). A tie on both is decided by shortest path alone -- a
+    # tie-break, not a quality win -- and the UI must not claim otherwise.
+    group["strictly_better"] = _led_on_bitrate(winner.get("bitrate") or 0, _runner_up_value(runner_up, "bitrate")) or _led_on_tag_completeness(
+        winner.get("tag_filled", 0), _runner_up_value(runner_up, "tag_filled")
+    )
 
 
 def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
