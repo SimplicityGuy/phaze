@@ -94,7 +94,7 @@ dependencies = [
     # Raised 1.61.x -> 1.62.x on 2026-08-18. The lockstep holds automatically: Dockerfile's
     # `python -m patchright install --with-deps chrome` runs from the venv this pin resolves,
     # so CI's docker-validate / docker-publish rebuild is what re-pairs image and client.
-    "patchright>=1.62.3,<1.63.0",
+    "patchright>=1.63.0,<1.64.0",
 
     # v4.1.1 hotfix: saq[postgres] pulls bare `psycopg` (pure-Python), which needs a
     # libpq backend at import. The v4.1.0 slim image had none (no C ext, no binary
@@ -453,7 +453,7 @@ constraint-dependencies = [
 
 [dependency-groups]
 browser = [
-    "playwright==1.62.0",
+    "playwright==1.63.0",
 ]
 dev = [
     "bandit>=1.9.4",
