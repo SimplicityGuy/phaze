@@ -23,7 +23,7 @@
         <div data-inspection-scope class="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <article data-file-id="{{ file.id }}" aria-labelledby="record-title" class="min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-bg">
             <header class="border-b border-gray-200 px-6 py-5 dark:border-phaze-border">
-                <h1 id="record-title" class="break-words font-jura text-xl uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ file.original_filename }}</h1>
+                <h1 id="record-title" class="break-words font-jura text-xl tracking-wide text-gray-900 dark:text-gray-100">{{ file.original_filename }}</h1>
                 <p class="mt-1 break-all font-mono text-xs text-muted">{{ file.current_path }}</p>
                 <div class="mt-3">
                     {{ ui.set_glyph(set_profile, "record-set-glyph") }}

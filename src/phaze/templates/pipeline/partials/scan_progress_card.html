@@ -67,7 +67,7 @@
         {{ batch.processed_files }} / {{ batch.total_files }} files
     </p>
     <p class="text-xs text-muted mt-1">
-        {{ agent_name }} · {{ batch.scan_path }}{% if elapsed_seconds is not none %} · finished in {{ elapsed_seconds }}s{% endif %}
+        {{ agent_name }} · {{ batch.scan_path }}{% if elapsed_seconds is not none %} · finished in {{ elapsed_seconds | duration }}{% endif %}
     </p>
 </div>
 {% elif batch.status == 'failed' %}

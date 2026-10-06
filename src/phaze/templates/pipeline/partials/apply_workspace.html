@@ -176,12 +176,12 @@
         </p>
     </div>
 
-    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-7">
-        <div>
-            <span class="{{ _eyebrow }}">Total</span>
-            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
-        </div>
-        {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): these are proposal statuses, so they carry the operator
+    <div class="px-6 pt-4">
+        {# phaze-nwmsu: the status strip is the shared ui.metric_strip / ui.metric (framed, dividers, mono values), and a
+           metric with no data renders an em dash. `stats.avg_confidence` is None when there are no proposals to average. #}
+        {% call ui.metric_strip("Proposal status counts") %}
+            {{ ui.metric("Total", stats.total) }}
+            {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): these are proposal statuses, so they carry the operator
            vocabulary -- `pending` reads "Needs Review".
 
            phaze-te2g3 FIXED the accounting hole .17 filed here. `stats.approved` still counts ONLY
@@ -194,30 +194,13 @@
 
            phaze-5uh4u adds `stats.failed` (operator vocabulary: Blocked) below, the last missing
            term -- the five status numbers now sum to Total unconditionally. #}
-        <div>
-            <span class="{{ _eyebrow }}">Needs Review</span>
-            <p class="text-xl font-semibold text-warn ">{{ stats.pending }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Approved</span>
-            <p class="text-xl font-semibold text-ok ">{{ stats.approved }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Executed</span>
-            <p class="text-xl font-semibold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Blocked</span>
-            <p class="text-xl font-semibold text-danger ">{{ stats.failed }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Rejected</span>
-            <p class="text-xl font-semibold text-danger ">{{ stats.rejected }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Avg confidence</span>
-            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
-        </div>
+            {{ ui.metric("Needs Review", stats.pending, tone="attention") }}
+            {{ ui.metric("Approved", stats.approved, tone="success") }}
+            {{ ui.metric("Executed", stats.executed) }}
+            {{ ui.metric("Blocked", stats.failed, tone="danger") }}
+            {{ ui.metric("Rejected", stats.rejected, tone="danger") }}
+            {{ ui.metric("Avg confidence", ("%.0f%%" | format((stats.avg_confidence or 0) * 100)) if stats.avg_confidence is not none else "—") }}
+        {% endcall %}
     </div>
 
     {% if preflight.can_execute %}

@@ -89,7 +89,7 @@
            kind, projected server-side -- never a static id->badge map). Glyph/color mirrors
            _lane_card.html (local 🖥️/emerald, compute ☁️/blue, kueue ⎈/amber); an unattributed cloud
            row (or an unrecognized kind) gets the neutral gray fallback. #}
-        {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
+        {% set duration_cell = f.duration | duration if f.duration else '—' %}
         {% if f.completed %}
             {# Completed (ANALYZED): full window coverage from the aggregate. #}
             {% set state_text = ('%s/%s windows' % (f.fine_done, f.fine_total)) if f.fine_total else '' %}

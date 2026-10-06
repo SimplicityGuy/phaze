@@ -151,7 +151,7 @@
                     </td>
                     <td class="px-4 py-3 text-muted ">{{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '—' }}</td>
                     <td class="px-4 py-3 text-muted ">
-                        {% if batch._elapsed_seconds is not none %}{{ batch._elapsed_seconds }}s{% else %}—{% endif %}
+                        {{ batch._elapsed_seconds | duration }}
                     </td>
                     {# PR5 Actions: a delete control on terminal (completed/failed) rows
                        only. Running rows render an empty cell (no control); live rows
