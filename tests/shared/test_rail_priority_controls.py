@@ -42,13 +42,12 @@ def test_rail_contains_no_stage_mutation_controls() -> None:
     assert "priority and pause controls" not in html
 
 
-@pytest.mark.parametrize("stage", _ENRICH_STAGES)
-def test_orphan_badge_remains_read_only_rail_status(stage: str) -> None:
+def test_rail_surfaces_no_orphan_bubble_for_any_stage() -> None:
+    """phaze-640na: orphaned work lives on the Summary Needs Attention card, never as a rail bubble."""
     html = _RAIL.read_text()
-    assert f'x-show="$store.pipeline.{stage}Orphan > 0"' in html
-    assert f'x-text="$store.pipeline.{stage}Orphan"' in html
-    assert "bg-amber-100 text-warn dark:bg-amber-950" in html
-    assert 'role="status"' in html
+    assert "Orphan" not in html
+    assert "orphan" not in html.lower()
+    assert "bg-amber-100 text-warn dark:bg-amber-950" not in html
 
 
 @pytest.mark.parametrize(
