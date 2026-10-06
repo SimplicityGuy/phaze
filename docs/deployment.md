@@ -322,7 +322,7 @@ either way, so the plain `docker compose kill -s HUP` form above is sufficient; 
 
 ### The admin panel
 
-The "Runtime config" pane in the admin shell (`/s/runtime-config`, also reachable standalone at
+The "Config" page in the admin shell (`/s/runtime-config`, opened from the header gear icon rather than the rail, also reachable standalone at
 `GET /admin/runtime-config/_table`) lists every reloadable key with its live effective value and
 source layer (`override`/`file`/`env`/`default`), plus every restart-only key shown read-only as
 "requires restart". Setting or clearing a key there writes the DB-override layer
@@ -331,7 +331,10 @@ every other operator admin surface in this repo (`route_control`, `/admin/agents
 **no authentication of its own** and sits behind the same private-LAN reverse-proxy trust
 boundary; every set/clear attempt, accepted or rejected, is audit-logged as the compensating
 control (see [docs/configuration.md](configuration.md#runtime-config-hot-reload)). An
-invalid value is rejected with nothing written to the database.
+invalid value is rejected with nothing written to the database. The same page carries the
+"Analysis routing override" section (the force-local control, `shell/partials/_routing_override_section.html`);
+it was the whole of the separate Routing page, which was removed — `/s/operations` now 307-redirects to
+`/s/runtime-config`.
 
 The DB-override table is created by Alembic migration `073_runtime_config_override` (chained
 after main's `072_cloud_job_redrive_after`, current head `076` — see
@@ -688,7 +691,7 @@ You can also build/push manually with `just`: `just docker-build`, `just docker-
 
 ### Static asset caching (phaze-315t)
 
-Every `/static/...` URL the app's templates emit (`app.css`, favicons, `site.webmanifest`, `og_image.png`) carries a `?v=<content-hash>` query parameter — `phaze.web.static.STATIC_VERSION`, a SHA-256 fingerprint over the content of every file under `src/phaze/static/`, computed once at process import time. `shell/shell.html` and `record/record_page.html` build these URLs via the `static_url(...)` Jinja global, registered per-router on each router's own `Jinja2Templates` instance in `shell.py`, `record.py`, `execution.py` and `pipeline/_common.py`. (`base.html` was deleted in `phaze-uvmcr.5` once audit/agents/files moved onto the shell and it had zero remaining callers; `shell/shell.html` is now the only full page layout, alongside the standalone `record/record_page.html`.)
+Every `/static/...` URL the app's templates emit (`app.css`, favicons, `site.webmanifest`, `og_image.png`) carries a `?v=<content-hash>` query parameter — `phaze.web.static.STATIC_VERSION`, a SHA-256 fingerprint over the content of every file under `src/phaze/static/`, computed once at process import time. `shell/shell.html` (which also renders the full record page, with `record/_record_page_body.html` as its workspace partial) builds these URLs via the `static_url(...)` Jinja global, registered per-router on each router's own `Jinja2Templates` instance in `shell.py`, `record.py`, `execution.py` and `pipeline/_common.py`. (`base.html` was deleted in `phaze-uvmcr.5` once audit/agents/files moved onto the shell and it had zero remaining callers; `shell/shell.html` is now the only full page layout; the full record page at `/files/<id>` renders inside it.)
 
 `RevalidatingStaticFiles` (`src/phaze/web/static.py`, mounted at `/static` in `main.py`) answers a request whose `?v=` matches the CURRENT `STATIC_VERSION` with `Cache-Control: max-age=31536000, immutable` — safe forever, because that exact URL can never later serve different bytes: if the content changes, the fingerprint changes too, and the browser fetches the new URL instead of reusing anything. Any other request (a stale fingerprint from a previous deploy, or a direct request with no `?v=` at all — e.g. a browser's automatic `/favicon.ico` probe, or the icon paths inside `site.webmanifest` itself, which is static JSON and not template-rendered) falls back to `Cache-Control: no-cache`, forcing a cheap conditional-request/304 revalidation instead of a stale heuristic hit.
 

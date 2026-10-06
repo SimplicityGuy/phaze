@@ -168,7 +168,7 @@ Three triggers, all converging on the same validate → atomic swap → apply pi
 (`src/phaze/runtime_config.py`) — a trigger only decides *when* to rebuild, never what the
 rebuilt snapshot contains:
 
-1. **Admin UI/API** (writes the top, DB-override layer) — the "Runtime config" pane in the admin
+1. **Admin UI/API** (writes the top, DB-override layer) — the "Config" page in the admin
    shell (`/s/runtime-config`), backed by `POST`/`DELETE /admin/runtime-config/<key>`. Carries
    **no authentication of its own** — it sits behind the same private-LAN trust boundary as every
    other operator admin surface in this repo (ADR-0019 (runtime config hot-reload) §10); every attempt, accepted or rejected,
@@ -286,7 +286,7 @@ any longer.
 
 ### Effective config visibility
 
-- **Control plane** (api, control worker): the admin "Runtime config" pane renders the live
+- **Control plane** (api, control worker): the admin "Config" page renders the live
   snapshot's resolved value **and** source layer (`override`/`file`/`env`/`default`) per key,
   plus every restart-only key shown read-only as "requires restart" — `GET
   /admin/runtime-config/_table`.

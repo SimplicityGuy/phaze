@@ -55,7 +55,7 @@ navigation groups:
 | Overview | Summary, Files |
 | Pipeline | Discover, Metadata, Analyze, Tracklists, Propose changes |
 | Review | Changes Review, Duplicates, Cue sheets, Execute approved |
-| Operations | Routing, Audit log, Agents & compute lanes |
+| Operations | Audit log, Agents & compute lanes |
 
 `GET /` opens the actionable Summary. Native links work normally; HTMX enhances `/s/<stage>`
 navigation into in-place workspace swaps. The command palette and record drawer provide global

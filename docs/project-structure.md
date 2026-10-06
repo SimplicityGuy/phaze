@@ -164,7 +164,7 @@ template path.
 | `/s/rename`, `/s/tagwrite`, `/s/move` | Compatibility aliases for `pipeline/partials/changes_workspace.html` |
 | `/s/dedupe`, `/s/cue` | `pipeline/partials/dedupe_workspace.html`, `cue_workspace.html` |
 | `/s/apply` | `pipeline/partials/apply_workspace.html` |
-| `/s/operations`, `/s/audit`, `/s/agents` | Utility panes under shell, execution, and admin templates |
+| `/s/audit`, `/s/agents`, `/s/runtime-config` | Utility panes under shell, execution, and admin templates; Config (`/s/runtime-config`) opens from the header gear, and `/s/operations` 307-redirects to it |
 
 The legacy top-level page routes redirect into these workspaces; the API and callback endpoints
 documented in [API Reference](api.md) remain separate.
