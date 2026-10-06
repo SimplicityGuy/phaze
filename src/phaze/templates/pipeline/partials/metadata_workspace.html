@@ -12,7 +12,7 @@
             :disabled="$store.pipeline.metadataBusy > 0"
             aria-label="Extract metadata for all pending files"
             class="{{ _primary }}">EXTRACT ALL</button>
-    <span id="metadata-trigger-spinner" class="htmx-indicator text-xs text-muted ">Enqueuing…</span>
+    <span id="metadata-trigger-spinner" class="htmx-indicator pointer-events-none absolute right-0 top-full mt-0.5 whitespace-nowrap text-xs text-muted ">Enqueuing…</span>
 {% endset %}
 
 {% call ws.workspace(title="METADATA", subcount=subcount, actions=actions) %}

@@ -53,7 +53,7 @@
             :disabled="$store.pipeline.controllerBusy > 0"
             aria-label="Generate AI proposals for all pending files"
             class="{{ _btn }}">GENERATE ALL</button>
-    <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-muted ">Enqueuing…</span>
+    <span id="propose-trigger-spinner" class="htmx-indicator pointer-events-none absolute right-0 top-full mt-0.5 whitespace-nowrap text-xs text-muted ">Enqueuing…</span>
     <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Open Review</a>
 {% endset %}
 {% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
