@@ -12,8 +12,8 @@
 {% endmacro %}
 
 {% macro metric_strip(label='Metrics') %}
-<section aria-label="{{ label }}" class="relative overflow-x-auto rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
-    <dl class="grid min-w-max auto-cols-fr grid-flow-col divide-x divide-gray-200 dark:divide-phaze-border">{{ caller() }}</dl>
+<section aria-label="{{ label }}" class="relative overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+    <dl class="-mb-px -mr-px flex flex-wrap *:grow *:basis-44 *:border-b *:border-r *:border-gray-200 dark:*:border-phaze-border">{{ caller() }}</dl>
 </section>
 {% endmacro %}
 
@@ -28,7 +28,7 @@
 <div{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} class="min-w-32 px-4 py-3">
     <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-muted ">{{ label }}</dt>
     <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value }}</dd>
-    {% if detail %}<dd class="mt-0.5 text-xs text-muted ">{{ detail }}</dd>{% endif %}
+    {% if detail %}<dd class="mt-0.5 break-words text-xs text-muted " title="{{ detail }}">{{ detail }}</dd>{% endif %}
 </div>
 {% endmacro %}
 
