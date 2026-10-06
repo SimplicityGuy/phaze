@@ -1,37 +1,19 @@
-{# Phase 48 (CLOUDAGENT-03) + phaze-rdxfu: agent/lane kind badge. Renders through ui.status_pill
-   (phaze-gjhbk: one pill geometry; the kind glyph is the leading indicator). Color is never the sole signal: each badge carries an uppercase label AND
-   an aria-label (WCAG 1.4.1).
+{# Phase 48 (CLOUDAGENT-03) + phaze-rdxfu + phaze-x6ql9: agent/lane kind badge. Renders through ui.kind_label
+   (the ONE lane/kind label macro: glyph + consistent gap + word, neutral tone -- color is never the
+   signal, WCAG 1.4.1) which itself rides ui.status_pill (phaze-gjhbk: one pill geometry).
 
    Two callers, distinguished by which context variable is in scope:
-     * agents_table.html's merged-row loop passes `row` (a TableRow view-model, admin_agents.py) —
+     * agents_table.html's merged-row loop passes `row` (a TableRow view-model, admin_agents.py) --
        may be an agent-kind OR a lane-kind row, discriminated by `row.status_kind`.
-     * _agent_activity.html's expanded-row body passes the raw `agent` ORM object, unchanged — it
-       never defines a name called `row`, so `row is defined` is False there and the ORIGINAL
-       agent-only branch below (unchanged behavior/markup) is what renders.
+     * _agent_activity.html's expanded-row body passes the raw `agent` ORM object -- it never defines
+       a name called `row`, so `row is defined` is False there and the agent branch renders.
 
-   phaze-rdxfu extends the badge with the LANE kinds (kueue, cloud/compute), reusing the SAME
-   identity pairing the deleted compute_lanes.html tile used (compute=blue, kueue=amber, else
-   neutral) — glyph + uppercase word, unlike the plain-text agent badges below, because that pairing
-   is what the rest of the app (pipeline/partials/_lane_card.html) already uses for a lane's kind and
-   changing it here would desync the two surfaces for no reason this bead asks for. A lane's `kind`
-   can share a STRING with an agent's `kind` (both may be "compute") but must render differently — the
-   `row.status_kind` check below runs FIRST so the two never collide. #}
+   A lane's `kind` can share a STRING with an agent's `kind` (both may be "compute") but must render
+   differently (different glyph + aria-label) -- the `row.status_kind` check runs FIRST so the two
+   never collide. #}
 {% import "ui/primitives.html" as ui %}
 {% if row is defined and row.status_kind == 'lane' %}
-    {% if row.kind == 'compute' %}
-    {{ ui.status_pill('COMPUTE', 'accent', 'Kind: compute lane', '☁️') }}
-    {% elif row.kind == 'kueue' %}
-    {{ ui.status_pill('KUEUE', 'attention', 'Kind: kueue lane', '⎈') }}
-    {% else %}
-    {{ ui.status_pill(row.kind | upper, 'neutral', 'Kind: ' ~ row.kind ~ ' lane', '▪') }}
-    {% endif %}
+    {{ ui.kind_label(row.kind) }}
 {% else %}
-    {# Defensive if/else: any out-of-enum kind falls through to the fileserver branch so the cell is
-       never blank (T-48-02). Glyphs match the lane branch above so agent and lane badges read as one family. #}
-    {% set _kind = row.kind if row is defined else agent.kind %}
-    {% if _kind == 'compute' %}
-    {{ ui.status_pill('COMPUTE', 'indigo', 'Kind: compute', '⚙') }}
-    {% else %}
-    {{ ui.status_pill('FILE SERVER', 'slate', 'Kind: file server', '🗄') }}
-    {% endif %}
+    {{ ui.kind_label(row.kind if row is defined else agent.kind, family='agent') }}
 {% endif %}

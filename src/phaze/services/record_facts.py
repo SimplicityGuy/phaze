@@ -77,18 +77,6 @@ ABSENT: Final[str] = "—"
 # row's ``title``; the truncation is display only and the same length the four-tile grid used.
 SHA_PREFIX_LEN: Final[int] = 12
 
-# Lane kind -> (glyph, tone). The SAME mapping the Analyze matrix renders from
-# ``f.lane_kind`` (COMPUTE-03), moved out of the record template unchanged by phaze-x1qr3.8:
-# local=local machine, compute=a registered cloud agent, kueue=a burst-to-cluster job. An
-# unrecognised or deregistered kind gets the neutral marker rather than silently asserting
-# local, which is the defect phaze-lljfx fixed and this must not undo.
-_LANE_PRESENTATION: Final[dict[str, tuple[str, str]]] = {
-    "local": ("\U0001f5a5️", "ok"),
-    "compute": ("☁️", "info"),
-    "kueue": ("⎈", "warn"),
-}
-_LANE_FALLBACK: Final[tuple[str, str]] = ("▪", "unknown")
-
 
 @dataclass(frozen=True)
 class MoodChip:
@@ -122,7 +110,10 @@ class RecordFact:
     """The untruncated value, for a row whose display form is abbreviated. Empty otherwise.
     Doubles as the Mood row's hover text (phaze-4ye5i): the full ranked mood list, not just
     the top 3 the chips show."""
-    glyph: str = ""
+    lane_kind: str | None = None
+    """Set only on the Lane row: the file's lane kind (``""`` for an unattributed/unrecognised one).
+    The template renders such a row through ``ui.kind_label`` -- the one lane/kind label macro
+    (phaze-x6ql9) -- so the glyph, gap and neutral tone are the macro's, not this module's."""
     tone: str = "neutral"
     mono: bool = False
     """True for a value read character by character (the digest), which wants a mono face."""
@@ -220,7 +211,6 @@ def build_record_facts(
     See the module docstring for why Mood, unlike BPM and Style, is no longer read off
     ``AnalysisResult`` at all.
     """
-    glyph, tone = _LANE_PRESENTATION.get(lane_kind or "", _LANE_FALLBACK)
     digest = sha256_hash or ""
     tempo = analysis.bpm if analysis is not None else None
     style = analysis.dominant_style if analysis is not None else None
@@ -251,7 +241,7 @@ def build_record_facts(
             title=digest,
             mono=True,
         ),
-        RecordFact(label="Lane", value=lane, glyph=glyph, tone=tone),
+        RecordFact(label="Lane", value=lane, lane_kind=lane_kind or ""),
         RecordFact(label="Windows", value=coverage_text or ABSENT),
         RecordFact(label="Median BPM", value=str(round(tempo)) if tempo is not None else ABSENT),
         RecordFact(label="Modal key", value=_joined(camelot_modal, key_name_for_camelot(camelot_modal))),

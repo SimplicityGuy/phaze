@@ -26,24 +26,15 @@
    ACTIVE/WAITING/IDLE badge mirrors compute_lanes.html's per-lane tile exactly (DEAD is structurally
    impossible here, KDEPLOY-04). All values are Jinja-autoescaped (operator-declared ids, never |safe). #}
 {% if lane %}
+    {% import "ui/primitives.html" as ui %}
     {% set _kind = lane.kind %}
-    {% if _kind == "compute" %}
-        {% set lane_glyph = "☁️" %}
-        {% set lane_color = "text-info " %}
-    {% elif _kind == "kueue" %}
-        {% set lane_glyph = "⎈" %}
-        {% set lane_color = "text-warn " %}
-    {% else %}
-        {% set lane_glyph = "▪" %}
-        {% set lane_color = "text-gray-600 dark:text-gray-300" %}
-    {% endif %}
     <div class="space-y-4">
         {# Header: kind glyph/color + backend_id, plus the SAME 3-state badge compute_lanes.html renders.
            Left-aligned cluster (name then status, no justify-between) so the identity/status positions
            match _agent_activity.html's liveness header — the two expanded-row bodies render in the same
            table and must not put the same facts in different places. #}
         <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium {{ lane_color }}">{{ lane_glyph }} {{ lane.backend_id }}</span>
+            {{ ui.kind_label(lane.kind, lane.backend_id, show_kind=false) }}
             {% if lane.state == "ACTIVE" %}
             <span class="inline-flex items-center gap-2 text-sm font-semibold text-ok ">
                 <span class="w-2.5 h-2.5 rounded-full bg-emerald-400" aria-hidden="true"></span>

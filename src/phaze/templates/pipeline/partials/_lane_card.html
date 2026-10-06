@@ -1,14 +1,5 @@
 {% import "ui/primitives.html" as ui %}
 {% set _kind = lane.kind %}
-{% if _kind == "local" %}
-    {% set lane_glyph, lane_color = "🖥️", "text-ok " %}
-{% elif _kind == "compute" %}
-    {% set lane_glyph, lane_color = "☁️", "text-info " %}
-{% elif _kind == "kueue" %}
-    {% set lane_glyph, lane_color = "⎈", "text-warn " %}
-{% else %}
-    {% set lane_glyph, lane_color = "▪", "text-gray-700 dark:text-gray-300" %}
-{% endif %}
 {% set _queued = lane.queued if lane.queued is defined and lane.queued is not none else none %}
 {% set _working = lane.working if lane.working is defined and lane.working is not none else none %}
 {% set _active = lane.active if lane.active is defined and lane.active is not none else none %}
@@ -36,21 +27,31 @@
      onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
      class="grid cursor-pointer gap-3 border-t border-gray-200 bg-white px-4 py-3 first:border-t-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel sm:grid-cols-12 sm:items-center{% if selected_lane == lane.id %} ring-2 ring-blue-500 ring-inset{% endif %}{% if not lane.available %} opacity-60{% endif %}">
     <div class="min-w-0 sm:col-span-3">
-        <p class="truncate text-sm font-semibold {{ lane_color }}">{{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}</p>
+        <p class="truncate">{{ ui.kind_label(lane.kind, lane.id) }}</p>
         {% if _local %}
         <p class="mt-0.5 text-[11px] text-muted ">Runs at the agent's own concurrency</p>
         {% else %}
         <p class="mt-0.5 text-[11px] text-muted ">Configured capacity {{ lane.cap }}</p>
         {% endif %}
     </div>
+    {# phaze-x6ql9: column-label mapping (read from lane_snapshot.py / queue_introspection.py, not guessed).
+       Columns 1-2 mean the SAME thing on every lane kind, so they carry the SAME label:
+         * Waiting = lane.queued  -- admitted work that has not started executing. Local: SAQ queued PLUS
+                     claimed-but-unrun (local_queue.waiting). Cloud: the staged half of the cloud window.
+         * Running = lane.active  -- work actually executing. Local: SAQ jobs the worker started. Kueue: a
+                     cloud_job in RUNNING. Compute has no execution signal, so it renders an em-dash.
+       Column 3 is where the semantics TRULY differ, so it keeps a kind-specific label:
+         * Local   "Claimed"  -- claimed_unrun, the claimed-but-never-started SUBSET of Waiting (its
+                   stuck alarm); a local lane's in_flight/cap is deliberately not comparable (phaze-lwz8n).
+         * Cloud   "Capacity" -- in_flight/cap, the admission window the drain schedules against. #}
     <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
         {% if _local %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Claimed</dt><dd class="font-mono text-sm tabular-nums {% if _stuck %}text-danger {% endif %}" title="Taken by the agent but not started yet">{{ _claimed if _claimed is not none else "—" }}</dd></div>
         {% else %}
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-danger {% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
         {% endif %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Status</dt><dd class="mt-0.5">

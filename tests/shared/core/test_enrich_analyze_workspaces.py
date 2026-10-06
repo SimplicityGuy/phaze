@@ -606,11 +606,15 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # D-05: the lane grid host id is stable; one card per seeded lane.
     assert 'id="analyze-lanes"' in body
     # Lane identities carry a word + glyph -- {KIND · id} (never hue-only).
-    assert "COMPUTE · a1" in body
-    assert "KUEUE · k8s" in body
-    assert "LOCAL · nox" in body
+    assert 'aria-label="Kind: compute lane, a1"' in body
+    assert 'aria-label="Kind: kueue lane, k8s"' in body
+    assert 'aria-label="Kind: local lane, nox"' in body
     # D-06: rank-ascending render order (a1 rank10 -> k8s rank20 -> nox rank99).
-    assert body.index("COMPUTE · a1") < body.index("KUEUE · k8s") < body.index("LOCAL · nox")
+    assert (
+        body.index('aria-label="Kind: compute lane, a1"')
+        < body.index('aria-label="Kind: kueue lane, k8s"')
+        < body.index('aria-label="Kind: local lane, nox"')
+    )
     # RANK micro-labels, now paired with the cap CAPTION (phaze-5c6i2: never a live-count denominator).
     assert "RANK 10 · cap 4" in body
     assert "RANK 20 · cap 3" in body
@@ -621,7 +625,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # phaze-lwz8n: the LOCAL lane's in-flight is queued + running and its cap comes from the control host,
     # so it renders no in-flight/cap pair at all -- it names waiting, running and claimed instead.
     assert "5/8" not in body
-    local_card = body[body.index("LOCAL · nox") :]
+    local_card = body[body.index('aria-label="Kind: local lane, nox"') :]
     assert re.search(r">Waiting</dt><dd[^>]*>3</dd>", local_card)
     assert re.search(r">Running</dt><dd[^>]*>5</dd>", local_card)
     # queued/working/processed render per lane, 24h primary + lifetime caption (acceptance rule 1).
@@ -658,7 +662,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
 
 
 def test_kueue_lane_card_renders_four_running_and_no_quota_wait() -> None:
-    """The reconciled four-slot state renders the exact Active, Capacity, and diagnostic values."""
+    """The reconciled four-slot state renders the exact Running, Capacity, and diagnostic values."""
     from phaze.routers.pipeline import templates
 
     body = templates.get_template("pipeline/partials/_lane_card.html").render(
@@ -680,7 +684,7 @@ def test_kueue_lane_card_renders_four_running_and_no_quota_wait() -> None:
         selected_lane=None,
     )
 
-    assert re.search(r">Active</dt><dd[^>]*>\s*4\s*</dd>", body)
+    assert re.search(r">Running</dt><dd[^>]*>\s*4\s*</dd>", body)
     assert re.search(r">Capacity</dt><dd[^>]*>\s*4/4\s*</dd>", body)
     assert "Post-submit window 4 · pod running 4" in body
     assert "Quota: 0 waiting · 0 inadmissible" in body
@@ -911,7 +915,7 @@ async def test_local_lane_stuck_jobs_render_red(
         assert 'role="alert"' in health and "bg-red-50" in health
         assert "STUCK" in health and detail in health
         assert "LOCAL · local has" in health
-        card = body[body.index("LOCAL · local") :]
+        card = body[body.index('aria-label="Kind: local lane, local"') :]
         assert "STUCK" in card and "are stuck" in card
         # Still no capacity verdict for the local lane.
         assert "UNSAFE" not in body and "OVER LIMIT" not in body
@@ -956,7 +960,7 @@ async def test_cloud_lane_over_limit_is_still_unsafe(
     assert "3 in-flight jobs exceed scheduler cap 2" in health
     assert "Stop new admission and inspect the lane" in health
     assert "OVER LIMIT" in body
-    assert re.search(r">Active</dt><dd[^>]*>1</dd>", body)
+    assert re.search(r">Running</dt><dd[^>]*>1</dd>", body)
     assert re.search(r">Capacity</dt><dd[^>]*>3/2</dd>", body)
     assert "New work can compound resource pressure" in body
 
@@ -1047,7 +1051,7 @@ async def test_lane_grid_subcount_makes_no_across_lanes_claim(client: AsyncClien
     assert "$store.pipeline.analyzeWaiting" in body and "waiting" in body
     assert "$store.pipeline.analyzeActive" not in body
     # The compute lane renders configured + available off the snapshot; "not configured" is retired.
-    assert "COMPUTE · a1" in body
+    assert 'aria-label="Kind: compute lane, a1"' in body
     assert "not configured" not in body
     assert "cloud_target" not in body
 
@@ -1126,9 +1130,9 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # Per-file lane badge derivation (COMPUTE-03): no cloud_job -> local; backend_id='vox' (kueue) ->
     # its own glyph + id; NULL backend_id -> the neutral unattributed cloud fallback.
     assert "local" in tbl
-    assert "⎈ vox" in tbl
-    assert "☁️ vox" not in tbl, "a kueue-kind backend must NOT render the compute glyph"
-    assert "▪ cloud" in tbl, "an unattributed cloud_job (no backend_id) renders the neutral fallback badge"
+    assert 'aria-label="Kind: kueue lane, vox"' in tbl
+    assert 'aria-label="Kind: compute lane, vox"' not in tbl, "a kueue-kind backend must NOT render the compute glyph"
+    assert 'aria-label="Kind: cloud lane, cloud"' in tbl, "an unattributed cloud_job (no backend_id) renders the neutral fallback badge"
 
     # Phase 61 (RECORD-01 / D-06 supersession): rows now open the full-record slide-in --
     # hx-get="/record/{file_id}" into #record-body + a record:open dispatch. (The Phase-58
