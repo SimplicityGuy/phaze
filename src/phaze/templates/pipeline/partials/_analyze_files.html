@@ -109,7 +109,8 @@
             {% set state_bucket = 'failed' %}
         {% elif f.awaiting_cloud %}
             {% set state_text = 'awaiting cloud' %}
-            {% set state_bucket = 'in_flight' %}
+            {# phaze-6ak0q: queued behind the cloud lane is NOT executing -- its own pill, never "in flight". #}
+            {% set state_bucket = 'queued' %}
         {% elif f.fine_total %}
             {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04). #}
             {% set state_text = '%s/%s windows' % (f.fine_done, f.fine_total) %}

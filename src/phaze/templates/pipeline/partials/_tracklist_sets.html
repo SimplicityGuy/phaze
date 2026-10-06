@@ -25,41 +25,46 @@
 {# phaze-roug5: the "Tracklist" column is FILE linkage (Tracklist.file_id), and its words must not say
    "matched" -- the Match card and the "Discogs match" column below both mean "a Discogs link exists"
    (the ONE definition get_stage_progress / get_match_pending_tracklists / the page query's EXISTS share). #}
-{% set _match_color = {
-    "matched": "text-ok",
-    "candidate": "text-warn",
-} %}
+{# phaze-6ak0q: every status cell here is a shared `ui.status_badge` pill (phaze-gjhbk) -- never plain
+   coloured text. File linkage: linked = success, candidate = attention. #}
 {% set _state_label = {
     "matched": "file linked",
     "candidate": "candidate",
+} %}
+{% set _state_pill = {
+    "matched": ("success", "✓"),
+    "candidate": ("attention", "!"),
 } %}
 <div>
     {% set columns = ["Set", "Tracklist", "Tracks", "Discogs match"] %}
     {% set ns = namespace(rows=[], file_ids=[]) %}
     {% for s in sets_page.rows %}
         {% if s.tracks_total == 0 %}
-            {% set coverage_text = "—" %}
-            {% set coverage_color = "text-muted " %}
+            {% set coverage_cell = {'text': "—", 'mono': True, 'color': "text-muted "} %}
         {% else %}
             {% set coverage_text = "%d/%d" | format(s.tracks_confident, s.tracks_total) %}
             {% if s.tracks_confident == s.tracks_total %}
-                {% set coverage_color = "text-ok " %}
+                {% set coverage_cell = {'pill': {'label': 'Track coverage', 'text': coverage_text, 'tone': 'success', 'icon': '✓'}} %}
             {% else %}
-                {% set coverage_color = "text-info " %}
+                {% set coverage_cell = {'pill': {'label': 'Track coverage', 'text': coverage_text, 'tone': 'accent', 'icon': '◐'}} %}
             {% endif %}
         {% endif %}
         {% if s.discogs_matched %}
-            {% set matched_text = "matched" %}
-            {% set matched_color = "text-ok " %}
+            {% set discogs_cell = {'pill': {'label': 'Discogs match', 'text': 'matched', 'tone': 'success', 'icon': '✓'}} %}
         {% else %}
-            {% set matched_text = "—" %}
-            {% set matched_color = "text-muted " %}
+            {% set discogs_cell = {'text': "—", 'color': "text-muted "} %}
+        {% endif %}
+        {% set _tp = _state_pill.get(s.tracklist_state) %}
+        {% if _tp %}
+            {% set tracklist_cell = {'pill': {'label': 'Tracklist', 'text': _state_label[s.tracklist_state], 'tone': _tp[0], 'icon': _tp[1]}} %}
+        {% else %}
+            {% set tracklist_cell = {'text': s.tracklist_state, 'color': "text-muted "} %}
         {% endif %}
         {% set _ = ns.rows.append([
             {'text': s.set_name, 'mono': True, 'title': s.path},
-            {'text': _state_label.get(s.tracklist_state, s.tracklist_state), 'color': _match_color.get(s.tracklist_state, "text-muted ")},
-            {'text': coverage_text, 'mono': True, 'color': coverage_color},
-            {'text': matched_text, 'color': matched_color},
+            tracklist_cell,
+            coverage_cell,
+            discogs_cell,
         ]) %}
         {% set _ = ns.file_ids.append(s.file_id) %}
     {% endfor %}

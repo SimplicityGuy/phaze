@@ -851,7 +851,7 @@ async def test_match_card_and_per_row_discogs_match_agree(client: AsyncClient, s
     soup = BeautifulSoup(html, "html.parser")
     assert "Discogs match" in html and "Matched to file" not in html
     trs = [tr for tr in soup.select("#tracklist-set-table tbody tr") if isinstance(tr, Tag)]
-    rendered_matched = [tr for tr in trs if tr.find_all("td")[-1].get_text(strip=True) == "matched"]
+    rendered_matched = [tr for tr in trs if tr.find_all("td")[-1].get_text(strip=True).endswith("matched")]
     assert len(rendered_matched) == progress["match"]["done"]
     assert "<set-02>.mp3" in rendered_matched[0].get_text()
     workspace = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text

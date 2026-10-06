@@ -56,22 +56,33 @@ def _stage_count(bucket: dict[str, int | None], key: str) -> int:
     return int(bucket.get(key) or 0)
 
 
-def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool]:
-    """Map an authoritative stage-progress bucket to the shared status vocabulary."""
+def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool | int]:
+    """Map an authoritative stage-progress bucket to the shared status vocabulary.
+
+    phaze-6ak0q: the stage's overall state is derived from its ACTIVITY and COMPLETION, never from a
+    nonzero failure count. A stage with 5 analyses executing is "in flight" and one at 104156/104247
+    with 91 terminal failures is "complete" (every file has settled) -- failures are reported
+    separately in ``failed`` (rendered as its own badge) so they stay visible without overriding
+    what the stage is doing. Only a stage whose every settled file failed reads "failed" overall.
+    """
     total = _stage_count(stage, "total")
     done = _stage_count(stage, "done")
     skipped = _stage_count(stage, "skipped")
     failed = _stage_count(stage, "failed")
     in_flight = _stage_count(stage, "in_flight")
-    if failed:
-        return {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
     if in_flight:
-        return {"label": "in flight", "tone": "accent", "icon": "●", "pulse": True}
-    if total and done + skipped >= total:
-        return {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
-    if total:
-        return {"label": "not started", "tone": "neutral", "icon": "—", "pulse": False}
-    return {"label": "empty", "tone": "neutral", "icon": "—", "pulse": False}
+        state: dict[str, str | bool | int] = {"label": "in flight", "tone": "accent", "icon": "●", "pulse": True}
+    elif total and done + skipped + failed >= total:
+        if done + skipped:
+            state = {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
+        else:
+            state = {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
+    elif total:
+        state = {"label": "not started", "tone": "neutral", "icon": "—", "pulse": False}
+    else:
+        state = {"label": "empty", "tone": "neutral", "icon": "—", "pulse": False}
+    state["failed"] = failed
+    return state
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,13 +123,13 @@ def _stage_paused_with_pending_work(bucket: dict[str, int | None], paused: bool)
     return bool(paused and (_stage_count(bucket, "not_started") or _stage_count(bucket, "in_flight")))
 
 
-def _flow_readiness_status(count: int, ready_label: str) -> dict[str, str | bool]:
+def _flow_readiness_status(count: int, ready_label: str) -> dict[str, str | bool | int]:
     """The Review/Apply flow tiles share one status shape: a ready pill when ``count`` is
     non-zero, else the same "caught up" pill every DAG-progress tile falls back to.
     """
     if count:
-        return {"label": ready_label, "tone": "attention", "icon": "!", "pulse": False}
-    return {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False}
+        return {"label": ready_label, "tone": "attention", "icon": "!", "pulse": False, "failed": 0}
+    return {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False, "failed": 0}
 
 
 def _flow_dag_nodes(stage_progress: dict[str, dict[str, int | None]], total_files: int) -> list[dict[str, Any]]:

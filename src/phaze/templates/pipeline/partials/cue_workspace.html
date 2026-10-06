@@ -6,9 +6,27 @@
     <div class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
         <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Cue sheets are generated outputs written beside their source audio. Preview the exact content here, then explicitly queue generation.</p>
         <div class="mt-3 flex flex-wrap gap-2" aria-label="Cue sheet prerequisites">
+            {# phaze-6ak0q: the chips are REQUIREMENTS, so they report whether each is MET -- never a
+               hardcoded green check. Every card the reader builds (eligible or gated) is for an
+               applied file with an approved tracklist, so "any card" is the met signal for those two;
+               timestamps are met only when EVERY card is eligible. Unmet is a distinct (neutral/attention)
+               style with a different glyph and its own wording, so met vs unmet never differs by colour alone. #}
+            {% set _has_cards = cue_cards | length > 0 %}
+            {% set _blocked_count = cue_cards | rejectattr('eligible') | list | length %}
+            {% if _has_cards %}
             {{ ui.status_badge("Prerequisite", "file applied", "success", "✓") }}
             {{ ui.status_badge("Prerequisite", "tracklist approved", "success", "✓") }}
-            {{ ui.status_badge("Prerequisite", "timestamps required", "attention", "!") }}
+            {% else %}
+            {{ ui.status_badge("Prerequisite", "needs applied file", "neutral", "○") }}
+            {{ ui.status_badge("Prerequisite", "needs approved tracklist", "neutral", "○") }}
+            {% endif %}
+            {% if _has_cards and not _blocked_count %}
+            {{ ui.status_badge("Prerequisite", "timestamps present", "success", "✓") }}
+            {% elif _has_cards %}
+            {{ ui.status_badge("Prerequisite", "timestamps required (" ~ _blocked_count ~ " blocked)", "attention", "!") }}
+            {% else %}
+            {{ ui.status_badge("Prerequisite", "needs timestamps", "neutral", "○") }}
+            {% endif %}
         </div>
     </div>
     {% if cue_cards %}

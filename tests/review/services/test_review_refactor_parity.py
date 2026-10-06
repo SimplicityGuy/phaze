@@ -286,6 +286,11 @@ async def test_dedupe_groups_parity(
 
     old_groups = await old_review.get_dedupe_groups(session)
     new_groups = await new_review.get_dedupe_groups(session)
+    # phaze-6ak0q: ``strictly_better`` is a KEY the pinned snapshot cannot carry (the badge's tie-vs-win
+    # state is new, additive, and recorded on that bead). Assert the new side carries it, then strip it
+    # so the raw ``==`` keeps its teeth on every other key.
+    assert all("strictly_better" in group for group in new_groups)
+    new_groups = [{k: v for k, v in group.items() if k != "strictly_better"} for group in new_groups]
 
     assert old_groups == new_groups
 

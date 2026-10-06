@@ -24,18 +24,18 @@
            hx-target is the shell's #stage-workspace — the SAME container the rail swaps into.
            phaze-x1qr3.8 moved it to the top and it carries NO fold: a pending decision that the
            operator has to expand to discover is a pending decision that gets missed. #}
-        <div data-review-banner class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+        <div data-review-banner data-review-state="{{ 'pending' if pending_rows else 'clear' }}" class="rounded-xl border p-4 {% if pending_rows %}border-amber-500/25 bg-amber-500/[0.06]{% else %}border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-white/[0.03]{% endif %}">
             {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): operator vocabulary -- the drawer says "Needs Review", not
                "Pending". The link below already carries `status=needs_review`; only the words the
                operator reads were still on the pre-ADR term. #}
-            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-warn ">Changes needing review for this file</p>
+            <p class="font-jura text-[11px] font-medium uppercase tracking-wider {% if pending_rows %}text-warn{% else %}text-muted{% endif %} ">Changes needing review for this file</p>
             {% if pending_rows %}
             <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
             <a href="/s/rename?status=needs_review"
                {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
                class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
             {% else %}
-            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — nothing needs review.</p>
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300"><span class="text-ok" aria-hidden="true">✓</span> This file is up to date — nothing needs review.</p>
             {% endif %}
         </div>
 

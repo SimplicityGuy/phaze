@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as _ui %}
 {# Phase 58 (58-02, UI-SPEC Pattern 2): the reusable file/queue table.
 
    Modeled on recent_scans_table.html's empty-state + thead/tbody structure, retokened to the
@@ -19,6 +20,8 @@
                         normal wrapping instead of the default compact truncation.
                         Optional ``bucket`` and ``stage_label`` render the shared stage status pill,
                         with ``text`` as accompanying detail.
+                        Optional ``pill`` ({label, text, tone, icon}) renders a `ui.status_badge`
+                        directly (phaze-6ak0q) -- for a status column that has no stage bucket.
      * empty_heading  — empty-state heading (e.g. "No scans yet").
      * empty_body     — empty-state body copy.
      * row_id_prefix  — optional stable per-row id stem (D-06 inert-but-present rows).
@@ -142,7 +145,9 @@
                 {% endif %}
                 {% for cell in row %}
                 <td class="px-6 py-3 {% if cell.color %}{{ cell.color }}{% elif loop.first %}text-gray-900 dark:text-gray-200{% else %}text-muted {% endif %}{% if cell.mono %}{% if cell.wrap %} whitespace-normal break-all font-mono text-xs{% else %} max-w-md truncate font-mono text-xs{% endif %}{% endif %}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>
-                    {% if cell.bucket %}
+                    {% if cell.pill %}
+                        {{ _ui.status_badge(cell.pill.label, cell.pill.text, cell.pill.tone, cell.pill.icon) }}
+                    {% elif cell.bucket %}
                         {% with bucket=cell.bucket, stage_label=cell.stage_label %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
                         {% if cell.text %}<span class="ml-2 whitespace-nowrap text-xs">{{ cell.text }}</span>{% endif %}
                     {% else %}{{ cell.text }}{% endif %}

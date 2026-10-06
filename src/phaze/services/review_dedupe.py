@@ -54,6 +54,8 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
         "count": len(files),
         "truncated": group.get("truncated", False),
         "rationale": group.get("rationale", "highest-quality ranking"),
+        # phaze-6ak0q: absent (an unscored group) reads as NOT strictly better -- never claim a quality win unproven.
+        "strictly_better": bool(group.get("strictly_better", False)),
         "files": [
             {
                 "id": file["id"],
