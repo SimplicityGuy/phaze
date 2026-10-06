@@ -161,6 +161,15 @@ def test_canvas_width_grows_without_capping_or_dropping_windows() -> None:
     assert len(context["timeline_inspection"]["windows"]) == 24  # type: ignore[index]
 
 
+def test_a_short_timeline_is_fluid_and_a_long_one_keeps_its_pixel_width() -> None:
+    """phaze-dnmew: only a set wider than the baseline needs a fixed, scrolling canvas."""
+    short = [_window(index, index * 30.0, (index + 1) * 30.0, bpm=120.0) for index in range(3)]
+    long = [_window(index, index * 30.0, (index + 1) * 30.0, bpm=120.0) for index in range(24)]
+
+    assert build_analysis_timeline_context(short)["timeline_fluid"] is True
+    assert build_analysis_timeline_context(long)["timeline_fluid"] is False
+
+
 # phaze-0zx26: `set_profile.peak_sec` and the live `energy_peak(...)["sec"]` used to be TWO
 # DIFFERENT DEFINITIONS of the same word -- the stored value argmaxes the 64-point resampled
 # `arc` while the live one argmaxes the raw coarse windows, which can land on a different window

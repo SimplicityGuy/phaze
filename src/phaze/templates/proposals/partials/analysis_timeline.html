@@ -64,7 +64,7 @@
                 <div data-timeline-viewport class="analysis-timeline-viewport">
                     <div data-timeline-inspector
                          class="analysis-timeline-inspector"
-                         style="width: {{ timeline_w | round | int }}px;"
+                         style="{% if timeline_fluid %}width: 100%;{% else %}width: {{ timeline_w | round | int }}px;{% endif %}"
                          role="slider"
                          tabindex="0"
                          aria-label="Analysis over elapsed time. Use Left and Right Arrow keys to inspect windows."

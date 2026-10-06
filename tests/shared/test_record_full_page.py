@@ -105,3 +105,49 @@ async def test_full_page_missing_and_malformed_ids_do_not_leak(client: AsyncClie
     assert malformed.status_code == 422
     assert "Traceback" not in malformed.text
     assert "/test/music" not in malformed.text
+
+
+def _assert_app_shell(body: str) -> BeautifulSoup:
+    """The shell landmarks a deep link must not lose: the banner header, the Pipeline rail and the workspace."""
+    page = BeautifulSoup(body, "html.parser")
+    # The shell's own <header> is a direct child of <body> (a banner landmark); the record
+    # article's inner <header> is scoped to the <article> and is not one.
+    assert len(page.select("body > header")) == 1, "the shell header (banner) must be present"
+    assert page.select_one('nav[aria-label="Pipeline stages"]') is not None, "the Pipeline navigation rail must be present"
+    workspace = page.select_one("main #stage-workspace")
+    assert workspace is not None, "the record must render inside the shell's workspace"
+    assert page.select_one("#toast-container") is not None
+    return page
+
+
+@pytest.mark.asyncio
+async def test_full_page_renders_inside_the_app_shell(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """phaze-dnmew: /files/<id> keeps the banner and Pipeline navigation, with the record in the workspace."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    response = await client.get(f"/files/{file.id}")
+
+    assert response.status_code == 200
+    page = _assert_app_shell(response.text)
+    workspace = page.select_one("#stage-workspace")
+    assert workspace is not None
+    assert workspace.select_one(f'article[data-file-id="{file.id}"]') is not None
+    assert workspace.select_one("[data-record-content]") is not None
+    assert file.original_filename in (page.title.get_text() if page.title else "")
+    # The drawer host is part of the shell, so the page and the drawer share one chrome.
+    assert page.select_one("#record-body") is not None
+
+
+@pytest.mark.asyncio
+async def test_full_page_not_found_also_renders_inside_the_app_shell(client: AsyncClient) -> None:
+    """phaze-dnmew: the 404 keeps the shell too, so a dead deep link still offers a way out."""
+    response = await client.get(f"/files/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    page = _assert_app_shell(response.text)
+    not_found = page.select_one("#stage-workspace [data-record-not-found]")
+    assert not_found is not None
+    assert "That file no longer exists" in not_found.get_text()

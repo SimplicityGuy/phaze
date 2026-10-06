@@ -53,7 +53,7 @@ _TIMELINE_TEMPLATE = _TEMPLATES / "proposals" / "partials" / "analysis_timeline.
 _TRACKLIST_TEMPLATE = _TEMPLATES / "record" / "partials" / "_tracklist_review_body.html"
 _WHEEL_TEMPLATE = _TEMPLATES / "record" / "partials" / "_harmonic_wheel.html"
 _PRIMITIVES_TEMPLATE = _TEMPLATES / "ui" / "primitives.html"
-_RECORD_PAGE = _TEMPLATES / "record" / "record_page.html"
+_RECORD_PAGE = _TEMPLATES / "record" / "_record_page_body.html"
 _RECORD_BODY = _TEMPLATES / "record" / "record_body.html"
 
 
