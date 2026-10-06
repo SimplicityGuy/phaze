@@ -981,3 +981,152 @@ async def test_scan_directory_companion_only_subtree_does_not_block_hashing_walk
 
     assert result["status"] == "completed"
     assert result["files_posted"] == 1
+
+
+# phaze-ehryj: a companion whose own directory holds no media is admitted only when its sub-folder
+# name or its own stem names a media file in its PARENT -- exactly one level, never a grandparent,
+# and never the reverse (media below the companion).
+
+
+def test_walk_ingestible_admits_subfolder_companions_only_by_name_match(tmp_path: Path) -> None:
+    """Stem and folder-name matches join the set; unmatched, deeper or upward companions stay orphaned."""
+    from phaze.tasks.scan import _count_ingestible, _walk_ingestible
+
+    release = tmp_path / "release"
+    (release / "info" / "deep").mkdir(parents=True)
+    (release / "Live_Set-2019").mkdir()
+    _touch(release / "Live Set 2019.mp3")
+    _touch(release / "info" / "00-live.set.2019.nfo")  # stem matches after the scene index and separators
+    _touch(release / "info" / "notes.nfo")  # generic name, no match
+    _touch(release / "info" / "art.jpg")  # not an approved companion -- neither admitted nor orphaned
+    _touch(release / "Live_Set-2019" / "site.txt")  # sub-folder name matches
+    _touch(release / "info" / "deep" / "live set 2019.cue")  # matches, but two levels below media
+    above = tmp_path / "above"
+    (above / "media").mkdir(parents=True)
+    _touch(above / "media.txt")  # media sits BELOW, not above
+    _touch(above / "media" / "media.mp4")
+
+    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
+    count, count_errors = _count_ingestible(tmp_path)
+
+    assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
+        "release/Live Set 2019.mp3",
+        "release/info/00-live.set.2019.nfo",
+        "release/Live_Set-2019/site.txt",
+        "above/media/media.mp4",
+    }
+    assert {path.relative_to(tmp_path).as_posix() for path in orphan_paths} == {
+        "release/info/notes.nfo",
+        "release/info/deep/live set 2019.cue",
+        "above/media.txt",
+    }
+    assert count == len(paths)
+    assert errors == count_errors == []
+
+
+def test_walk_ingestible_dump_folder_admits_no_unmatched_subfolder_companion(tmp_path: Path) -> None:
+    """A flat dump of unrelated sets admits only the one sub-folder named after one of its files.
+
+    The production shape that sank the proximity rule (phaze-ehryj, 2026-10-06): one parent holding
+    18,535 unrelated media files, with hundreds of release husk folders beside them.
+    """
+    from phaze.tasks.scan import _walk_ingestible
+
+    dump = tmp_path / "Artist Live Sets 2019"  # a plausible set-like name that must not admit every husk
+    dump.mkdir()
+    for index in range(200):
+        _touch(dump / f"Artist {index} - Live @ Venue {index}.mp3")
+    for index in range(20):
+        husk = dump / f"Other Artist {index} - Live"
+        husk.mkdir()
+        _touch(husk / "site.nfo")
+        _touch(husk / "Tracklist.txt")
+    (dump / "Artist 7 - Live @ Venue 7").mkdir()
+    _touch(dump / "Artist 7 - Live @ Venue 7" / "site.nfo")
+
+    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+
+    assert {path.relative_to(dump).as_posix() for path in paths if path.suffix != ".mp3"} == {"Artist 7 - Live @ Venue 7/site.nfo"}
+    assert len(orphan_paths) == 40
+
+
+def test_walk_with_parent_media_holds_only_the_unvisited_frontier(tmp_path: Path) -> None:
+    """The parent-media names are released as each child is visited, never kept per media directory."""
+    from phaze.tasks.scan import _walk_with_parent_media
+
+    for index in range(50):
+        (tmp_path / f"release-{index}" / "info").mkdir(parents=True)
+        _touch(tmp_path / f"release-{index}" / f"set-{index}.mp3")
+        _touch(tmp_path / f"release-{index}" / "info" / f"set-{index}.nfo")
+
+    walk = _walk_with_parent_media(tmp_path, [])
+    pending_sizes: list[int] = []
+    matched = 0
+    for _directory, _filenames, parent_media_keys in walk:
+        matched += bool(parent_media_keys)
+        assert walk.gi_frame is not None
+        pending_sizes.append(len(walk.gi_frame.f_locals["pending"]))
+
+    assert matched == 50
+    assert len(pending_sizes) == 101
+    assert max(pending_sizes) == 1
+
+
+def test_companion_match_key_normalization() -> None:
+    """Case, Unicode form, scene index and every separator are ignored; letters and digits decide."""
+    from phaze.constants import companion_match_key
+
+    assert companion_match_key("00-Some_Artist-Live.At-Venue") == companion_match_key("some artist live at venue")
+    assert companion_match_key("Club, Town (2001-01-01)") == companion_match_key("Club Town 2001 01 01")
+    assert companion_match_key("Hipo\u0301dromo") == companion_match_key("HIP\u00d3DROMO") == "hip\u00f3dromo"
+    assert companion_match_key("1986 01 02 Show") == "19860102show"  # a four-digit year is not a scene index
+    assert companion_match_key("011") == "011"
+    assert companion_match_key(" - ") == ""
+
+
+def test_companion_match_key_drops_a_trailing_duplicate_copy_marker() -> None:
+    """A download's " (1)" copy marker never decides a match; a four-digit year in brackets is kept."""
+    from phaze.constants import companion_match_key
+
+    assert companion_match_key("Band Live - Night 1 (2022) (1)") == companion_match_key("Band Live - Night 1 (2022)")
+    assert companion_match_key("Show (1)") == companion_match_key("Show (2)") == companion_match_key("show(12)") == "show"
+    assert companion_match_key("Show (2022)") == "show2022"
+    assert companion_match_key("Show (123)") == "show123"  # three digits is not a copy marker
+
+
+def test_walk_ingestible_names_with_no_letters_or_digits_never_match(tmp_path: Path) -> None:
+    """The scan agrees with association: two names normalizing to the empty key are not a match."""
+    from phaze.tasks.scan import _walk_ingestible
+
+    (tmp_path / "set" / "info").mkdir(parents=True)
+    _touch(tmp_path / "set" / "__.mp3")
+    _touch(tmp_path / "set" / "info" / "--.nfo")
+
+    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+
+    assert [path.name for path in paths] == ["__.mp3"]
+    assert [path.name for path in orphan_paths] == ["--.nfo"]
+
+
+def test_walk_ingestible_admits_info_companions_by_the_release_folders_name(tmp_path: Path) -> None:
+    """An info/ notice joins the set when the release folder's own name matches its video (bead phaze-ehryj)."""
+    from phaze.tasks.scan import _count_ingestible, _walk_ingestible
+
+    release = tmp_path / "Band Live - Night 1 (2022)"
+    (release / "info").mkdir(parents=True)
+    _touch(release / "Band Live_Night 1 (2022) (1).mkv")
+    _touch(release / "info" / "Downloaded from a site.txt")
+    unrelated = tmp_path / "Some Other Release"
+    (unrelated / "info").mkdir(parents=True)
+    _touch(unrelated / "different.mkv")
+    _touch(unrelated / "info" / "Downloaded from a site.txt")
+
+    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+
+    assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
+        "Band Live - Night 1 (2022)/Band Live_Night 1 (2022) (1).mkv",
+        "Band Live - Night 1 (2022)/info/Downloaded from a site.txt",
+        "Some Other Release/different.mkv",
+    }
+    assert [path.relative_to(tmp_path).as_posix() for path in orphan_paths] == ["Some Other Release/info/Downloaded from a site.txt"]
+    assert _count_ingestible(tmp_path)[0] == len(paths)

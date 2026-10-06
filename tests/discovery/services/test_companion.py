@@ -292,3 +292,150 @@ async def test_companions_with_underscore_dir_do_not_link_across_path_separator(
     assert count == 0
     result = await session.execute(select(FileCompanion))
     assert len(result.scalars().all()) == 0
+
+
+# phaze-ehryj: a companion with no media of its own links only to media directly in its PARENT
+# directory, on the same agent, whose stem matches the companion's sub-folder name or own stem --
+# exactly one level, and own-directory media always wins.
+
+
+async def _link_pairs(session: AsyncSession) -> set[tuple[uuid.UUID, uuid.UUID]]:
+    result = await session.execute(select(FileCompanion))
+    return {(link.companion_id, link.media_id) for link in result.scalars().all()}
+
+
+@pytest.mark.asyncio
+async def test_subfolder_companion_links_to_parent_media_by_stem_or_folder_name(session: AsyncSession) -> None:
+    """A release's info/ companion links by its stem; a release-named folder's companion links by the folder."""
+    media = _make_file("/music/set/Live Set 2019.mp3", "mp3")
+    by_stem = _make_file("/music/set/info/00-live_set-2019.nfo", "nfo")
+    by_folder = _make_file("/music/set/Live.Set.2019/site.txt", "txt")
+    unmatched = _make_file("/music/set/playlist 000-049/011.txt", "txt")
+    session.add_all([media, by_stem, by_folder, unmatched])
+    await session.flush()
+
+    assert await associate_companions(session) == 2
+    assert await _link_pairs(session) == {(by_stem.id, media.id), (by_folder.id, media.id)}
+
+
+@pytest.mark.asyncio
+async def test_dump_folder_subfolder_companions_link_only_to_their_named_set(session: AsyncSession) -> None:
+    """A flat dump of unrelated sets yields zero links for non-matching names, one for the matching one."""
+    # The dump folder's own name looks like a set name too, and must not pair every husk with anything.
+    dump = "/music/Artist Live Sets 2019"
+    dump_media = [_make_file(f"{dump}/Artist {index} - Live.mp3", "mp3") for index in range(300)]
+    husks = [_make_file(f"{dump}/Other {index} - Live/site.nfo", "nfo") for index in range(30)]
+    named = _make_file(f"{dump}/Artist 7 - Live/site.nfo", "nfo")
+    session.add_all([*dump_media, *husks, named])
+    await session.flush()
+
+    assert await associate_companions(session) == 1
+    assert await _link_pairs(session) == {(named.id, dump_media[7].id)}
+
+
+@pytest.mark.asyncio
+async def test_name_match_links_every_same_named_parent_media_file(session: AsyncSession) -> None:
+    """Two parent media files sharing a stem (one set, two containers) are both linked; others are not."""
+    audio = _make_file("/music/set/show.mp3", "mp3")
+    video = _make_file("/music/set/show.mkv", "mkv")
+    other = _make_file("/music/set/encore.mp3", "mp3")
+    cue = _make_file("/music/set/info/show.cue", "cue")
+    session.add_all([audio, video, other, cue])
+    await session.flush()
+
+    assert await associate_companions(session) == 2
+    assert await _link_pairs(session) == {(cue.id, audio.id), (cue.id, video.id)}
+
+
+@pytest.mark.asyncio
+async def test_own_directory_media_wins_over_parent_media(session: AsyncSession) -> None:
+    """A sub-folder holding its own media never also links to its parent's, even by name."""
+    parent_media = _make_file("/music/set/bonus.mp3", "mp3")
+    own_media = _make_file("/music/set/bonus/other.mp3", "mp3")
+    cue = _make_file("/music/set/bonus/bonus.cue", "cue")
+    session.add_all([parent_media, own_media, cue])
+    await session.flush()
+
+    assert await associate_companions(session) == 1
+    assert await _link_pairs(session) == {(cue.id, own_media.id)}
+
+
+@pytest.mark.asyncio
+async def test_parent_fallback_is_one_level_and_never_downward(session: AsyncSession) -> None:
+    """A grandparent's media is never consulted, and a companion ABOVE media stays unlinked."""
+    grand_media = _make_file("/music/set/track.mp3", "mp3")
+    too_deep = _make_file("/music/set/info/deep/track.cue", "cue")
+    above = _make_file("/music/upper/set.txt", "txt")
+    below_media = _make_file("/music/upper/media/set.mp4", "mp4")
+    session.add_all([grand_media, too_deep, above, below_media])
+    await session.flush()
+
+    assert await associate_companions(session) == 0
+    assert await _link_pairs(session) == set()
+
+
+@pytest.mark.asyncio
+async def test_parent_fallback_stays_on_the_companions_agent(session: AsyncSession) -> None:
+    """Same-named parent media on ANOTHER agent at the identical path is never a fallback target."""
+    session.add(Agent(id="test-fileserver-b", name="test-fileserver-b", kind="fileserver", scan_roots=[]))
+    await session.flush()
+    other_media = _make_file("/music/set/track.mp3", "mp3", agent_id="test-fileserver-b")
+    notes = _make_file("/music/set/info/track.nfo", "nfo")
+    session.add_all([other_media, notes])
+    await session.flush()
+
+    assert await associate_companions(session) == 0
+    assert await _link_pairs(session) == set()
+
+
+@pytest.mark.asyncio
+async def test_companion_at_filesystem_root_has_no_parent_fallback(session: AsyncSession) -> None:
+    """A companion directly under '/' has no parent to fall back to, and links nothing."""
+    notes = _make_file("/notes.nfo", "nfo")
+    session.add(notes)
+    await session.flush()
+
+    assert await associate_companions(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_names_with_no_letters_or_digits_never_match(session: AsyncSession) -> None:
+    """A media stem and a companion stem that both normalize to the empty key are not a name match."""
+    media = _make_file("/music/set/__.mp3", "mp3")
+    notes = _make_file("/music/set/info/--.nfo", "nfo")
+    session.add_all([media, notes])
+    await session.flush()
+
+    assert await associate_companions(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_info_subfolder_companion_links_by_its_release_folders_name(session: AsyncSession) -> None:
+    """A release folder named like its one video links its info/ notices, whatever their own names.
+
+    Production shape (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj): the
+    notices are download-site text files and the sub-folder is "info", so only the release folder's
+    own name ties them to the video.
+    """
+    video = _make_file("/video/Band Live - Night 1 (2022)/Band Live_Night 1 (2022) (1).mkv", "mkv")
+    notice = _make_file("/video/Band Live - Night 1 (2022)/info/Downloaded from a site.txt", "txt")
+    other = _make_file("/video/Band Live - Night 1 (2022)/encore.mkv", "mkv")
+    session.add_all([video, notice, other])
+    await session.flush()
+
+    assert await associate_companions(session) == 1
+    assert await _link_pairs(session) == {(notice.id, video.id)}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_copies_share_a_key_and_both_link(session: AsyncSession) -> None:
+    """ "X (1)" and "X (2)" key equal once the copy marker is dropped, so a companion named X links to both."""
+    first = _make_file("/music/set/Show (1).mp3", "mp3")
+    second = _make_file("/music/set/Show (2).mp3", "mp3")
+    other = _make_file("/music/set/Encore.mp3", "mp3")
+    cue = _make_file("/music/set/info/Show.cue", "cue")
+    session.add_all([first, second, other, cue])
+    await session.flush()
+
+    assert await associate_companions(session) == 2
+    assert await _link_pairs(session) == {(cue.id, first.id), (cue.id, second.id)}

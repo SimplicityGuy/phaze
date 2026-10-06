@@ -1,15 +1,15 @@
-"""Companion association service: links companion files to media files in the same directory."""
+"""Companion association service: links companion files to media in their own directory, or name-matched parent media."""
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import PurePosixPath
 from typing import Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, and_, or_, select
+from sqlalchemy import ColumnElement, CursorResult, and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.constants import EXTENSION_MAP, FileCategory, companion_match_key
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
@@ -55,10 +55,8 @@ def _group_by_directory(files: Sequence[FileRecord]) -> dict[tuple[str, str], li
     return groups
 
 
-async def _media_in_directories(
-    session: AsyncSession, dir_groups: dict[tuple[str, str], list[FileRecord]]
-) -> dict[tuple[str, str], list[FileRecord]]:
-    """Fetch every media file sitting directly in one of ``dir_groups``' directories, bucketed the same way.
+async def _media_in_directories(session: AsyncSession, dir_groups: Collection[tuple[str, str]]) -> dict[tuple[str, str], list[FileRecord]]:
+    """Fetch every media file sitting directly in one of the ``(agent_id, directory)`` keys, bucketed the same way.
 
     phaze-vu88k.3: ONE query for every (agent, directory) group in this page, instead of one per
     group. A page holds at most ``batch_size`` companions, so at most that many distinct groups.
@@ -74,6 +72,15 @@ async def _media_in_directories(
     matches rows whose parent IS that literal directory, so recomputing the parent from each
     returned row reconstructs the exact same grouping the one-query-per-group form did.
     """
+    media_result = await session.execute(select(FileRecord).where(_media_directly_in(dir_groups)))
+    return _group_by_directory(media_result.scalars().all())
+
+
+def _media_directly_in(dir_groups: Collection[tuple[str, str]]) -> ColumnElement[bool]:
+    """WHERE clause: a media file sitting directly in one of the ``(agent_id, directory)`` keys.
+
+    The media-type predicate sits OUTSIDE the per-directory OR (phaze-6igef): 16 binds, plus 3 per key.
+    """
     directory_conditions = [
         and_(
             FileRecord.agent_id == agent_id,
@@ -84,23 +91,84 @@ async def _media_in_directories(
         )
         for agent_id, directory in dir_groups
     ]
-    media_result = await session.execute(
-        select(FileRecord).where(
-            FileRecord.file_type.in_(MEDIA_TYPES),
-            or_(*directory_conditions),
-        )
-    )
-    return _group_by_directory(media_result.scalars().all())
+    return and_(FileRecord.file_type.in_(MEDIA_TYPES), or_(*directory_conditions))
 
 
-def _link_rows(
-    dir_groups: dict[tuple[str, str], list[FileRecord]],
-    media_by_group: dict[tuple[str, str], list[FileRecord]],
-) -> list[dict[str, uuid.UUID]]:
+async def _parent_media_by_name(session: AsyncSession, parent_keys: Collection[tuple[str, str]]) -> dict[tuple[str, str], dict[str, list[uuid.UUID]]]:
+    """Index the media directly in each parent directory by :func:`companion_match_key` of its stem.
+
+    Reads only ``id``/``agent_id``/``original_path``, never whole rows: a parent may be a flat dump
+    folder holding tens of thousands of media files (18,535 in one production parent, measured
+    2026-10-06), and only their names and ids are needed. The index is built once per page, so each
+    companion's match is a dict lookup, never a scan of the parent. Same WHERE clause, and so the
+    same bind budget, as :func:`_media_in_directories`.
+    """
+    result = await session.execute(select(FileRecord.id, FileRecord.agent_id, FileRecord.original_path).where(_media_directly_in(parent_keys)))
+    index: dict[tuple[str, str], dict[str, list[uuid.UUID]]] = {}
+    for media_id, agent_id, original_path in result.all():
+        path = PurePosixPath(original_path)
+        if key := companion_match_key(path.stem):
+            index.setdefault((agent_id, str(path.parent)), {}).setdefault(key, []).append(media_id)
+    return index
+
+
+def _parent_key(group_key: tuple[str, str]) -> tuple[str, str] | None:
+    """The same agent's PARENT directory of ``group_key``, or None at the filesystem root."""
+    agent_id, directory = group_key
+    parent = str(PurePosixPath(directory).parent)
+    return None if parent == directory else (agent_id, parent)
+
+
+async def _link_targets(session: AsyncSession, dir_groups: dict[tuple[str, str], list[FileRecord]]) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Resolve each companion in this page to the media ids it links to.
+
+    A companion beside media links to every media file in its own directory -- the long-standing
+    rule. A companion with NO media in its own directory (phaze-ehryj) links only to media directly
+    in its PARENT directory, on the same agent, whose stem matches the companion's sub-folder name
+    or the companion's own stem under :func:`phaze.constants.companion_match_key` (operator decision
+    2026-10-06, "Match by name"; bead phaze-ehryj), or matches that parent directory's OWN name -- a
+    release folder holding its media beside an "info" sub-folder of download notices (operator
+    decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). An unmatched companion stays
+    unlinked even when its parent holds media: a flat dump folder's unrelated sets must never be
+    paired by proximity alone.
+
+    Own-directory media WINS -- a group with any is never matched against its parent -- and the
+    fallback is exactly one level. ``tasks/scan.py`` admits a companion by the same key, so the scan
+    ingests exactly the companions this can link.
+
+    Two reads, never one widened read: the parent read runs only for the groups the first left
+    without media, and each stays within :func:`_media_directly_in`'s per-key bind budget, so the
+    phaze-6igef bound still holds for a maximally dispersed page.
+    """
+    own_media = await _media_in_directories(session, dir_groups)
+    targets = {
+        companion.id: [media.id for media in own_media[group_key]]
+        for group_key, companions in dir_groups.items()
+        if group_key in own_media
+        for companion in companions
+    }
+    fallback = {group_key: parent_key for group_key in dir_groups if group_key not in own_media and (parent_key := _parent_key(group_key))}
+    if not fallback:
+        return targets
+    parent_index = await _parent_media_by_name(session, set(fallback.values()))
+    for group_key, parent_key in fallback.items():
+        by_name = parent_index.get(parent_key, {})
+        folder_matches = [
+            *by_name.get(companion_match_key(PurePosixPath(group_key[1]).name), []),
+            *by_name.get(companion_match_key(PurePosixPath(parent_key[1]).name), []),
+        ]
+        for companion in dir_groups[group_key]:
+            stem_matches = by_name.get(companion_match_key(PurePosixPath(companion.original_path).stem), [])
+            if matched := list(dict.fromkeys([*folder_matches, *stem_matches])):
+                targets[companion.id] = matched
+    return targets
+
+
+def _link_rows(targets: dict[uuid.UUID, list[uuid.UUID]]) -> list[dict[str, uuid.UUID]]:
     """Build the companion x media cross-product rows for one page. PURE -- no IO.
 
     This is the O(companions * media) nest, and it is deliberately a pure function so the nesting
-    carries no database round trips: the two reads that feed it already ran (one per page each), and
+    carries no database round trips: the reads that feed it already ran (:func:`_link_targets`), and
     the write it feeds runs once per bind-parameter chunk. A static "nested loop with IO" reading of
     :func:`associate_companions` is measuring the shape of the OLD one-query-per-directory form; the
     only thing nested here is dict/list traversal.
@@ -108,15 +176,11 @@ def _link_rows(
     Explicit id: pg_insert bypasses ``FileCompanion.id``'s Python-side ``default=uuid.uuid4``
     (dedup.resolve_group precedent).
     """
-    rows: list[dict[str, uuid.UUID]] = []
-    for group_key, companions in dir_groups.items():
-        media_files = media_by_group.get(group_key)
-        if not media_files:
-            continue
-        for comp in companions:
-            for media in media_files:
-                rows.append({"id": uuid.uuid4(), "companion_id": comp.id, "media_id": media.id})
-    return rows
+    return [
+        {"id": uuid.uuid4(), "companion_id": companion_id, "media_id": media_id}
+        for companion_id, media_ids in targets.items()
+        for media_id in media_ids
+    ]
 
 
 async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]]) -> int:
@@ -203,6 +267,9 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 #     (_media_in_directories)      it -- phaze-vu88k.3 collapsed the one-query-per-group form. Once
 #                                  per page is the floor; it cannot be hoisted out of the paging
 #                                  loop because it is scoped to that page's directories.
+#   parent media read              phaze-ehryj: at most one more query per page, only for the groups
+#     (_parent_media_by_name)      the first read left without media. It depends on that read's
+#                                  result, so it is sequential by data dependence, not just session.
 #   chunked insert                 One statement per bind-parameter chunk (32767 cap, phaze-p3qr).
 #     (_insert_links)              Chunk count is driven by the page's cross-product size, not by
 #                                  row count; serial execution is what keeps every chunk in one
@@ -220,11 +287,13 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 
 
 async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE) -> int:
-    """Link unlinked companion files to media files in the same directory.
+    """Link unlinked companion files to media in the same directory, or else name-matched parent media.
 
     Finds all companion FileRecords not yet present in file_companions,
     groups them by (agent, directory), and creates FileCompanion links to
-    every media file in that same directory ON THE SAME AGENT. Idempotent:
+    every media file in that same directory ON THE SAME AGENT -- or, when that
+    directory has none, to the media directly in its parent directory on the same
+    agent whose name it matches (phaze-ehryj; see :func:`_link_targets`). Idempotent:
     running twice produces no duplicate links, including under CONCURRENT
     invocations (e.g. an HTMX double-submit of POST /associate) — the insert
     is ON CONFLICT DO NOTHING against uq_file_companions_pair, so a pair the
@@ -284,8 +353,7 @@ async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAU
         after = unlinked_companions[-1].id
 
         dir_groups = _group_by_directory(unlinked_companions)
-        media_by_group = await _media_in_directories(session, dir_groups)
-        rows = _link_rows(dir_groups, media_by_group)
+        rows = _link_rows(await _link_targets(session, dir_groups))
 
         if rows:
             count += await _insert_links(session, rows)
