@@ -25,8 +25,8 @@ a module makes the inventory fail until this page is reconciled.
 | `models/` | 32 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
 | `routers/` | 59 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 25 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 140 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 50 | SAQ controller/agent jobs and shared queue policy |
+| `services/` | 141 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 51 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |

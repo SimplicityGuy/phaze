@@ -199,7 +199,7 @@ async def test_defensive_live_409_when_literal_bypassed(session: AsyncSession, s
     rogue = ScanBatchPatch.model_construct(status="live")
 
     with pytest.raises(HTTPException) as excinfo:
-        await patch_scan_batch(batch_id=batch_id, body=rogue, agent=agent, session=session)
+        await patch_scan_batch(batch_id=batch_id, body=rogue, request=None, agent=agent, session=session)  # refused before the request is read
 
     assert excinfo.value.status_code == 409
     assert "LIVE" in excinfo.value.detail or "live" in excinfo.value.detail.lower()
