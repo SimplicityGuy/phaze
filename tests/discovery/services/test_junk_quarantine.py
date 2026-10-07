@@ -7,6 +7,7 @@ about which rows are claimed, what is committed before a job leaves, and what a 
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import hashlib
 from typing import TYPE_CHECKING, Any
@@ -160,21 +161,71 @@ async def test_no_ids_and_unknown_ids_enqueue_nothing(session: AsyncSession) -> 
     assert router.enqueued == []
 
 
-async def test_a_dispatch_that_never_reached_the_broker_fails_the_row(session: AsyncSession) -> None:
+class _DyingRouter(_Router):
+    """Enqueues the first ``healthy`` jobs, then every later call raises ``failure`` (the broker died mid-batch)."""
+
+    def __init__(self, session: AsyncSession, *, healthy: int, failure: BaseException) -> None:
+        super().__init__(session)
+        self.healthy = healthy
+        self.failure = failure
+        self.calls = 0
+
+    async def enqueue_for_agent(self, *, agent_id: str, task_name: str, payload: BaseModel) -> None:
+        self.calls += 1
+        if self.calls > self.healthy:
+            raise self.failure
+        await super().enqueue_for_agent(agent_id=agent_id, task_name=task_name, payload=payload)
+
+
+async def _three_approved(session: AsyncSession) -> list[CompanionJunkReview]:
     await _agents(session)
-    lost = await _review(session, f"{_ROOT}/a/site.nfo", JunkReviewStatus.APPROVED)
-    sent = await _review(session, f"{_ROOT}/b/site.nfo", JunkReviewStatus.APPROVED)
+    rows = [await _review(session, f"{_ROOT}/{name}/site.nfo", JunkReviewStatus.APPROVED) for name in ("a", "b", "c")]
     await session.commit()
-    router = _Router(session, fail={lost.id: ConnectionRefusedError("broker down")})
+    return rows
 
-    assert await enqueue_quarantine(session, [lost.id, sent.id], task_router=router) == 1  # type: ignore[arg-type]
 
-    row = await _status(session, lost.id)
-    assert (row.status, row.executed_at is not None) == ("failed", True)
-    assert row.error_message is not None
-    assert "could not dispatch the quarantine" in row.error_message
-    assert "broker down" in row.error_message
-    assert (await _status(session, sent.id)).status == "executing"
+async def test_a_broker_failing_partway_releases_the_rest_to_approved_and_a_retry_sends_them(session: AsyncSession) -> None:
+    """No row is stranded in executing: the unsent ones keep their approval, and the next call dispatches exactly them."""
+    rows = await _three_approved(session)
+    dying = _DyingRouter(session, healthy=1, failure=ConnectionRefusedError("broker down"))
+
+    assert await enqueue_quarantine(session, [row.id for row in rows], task_router=dying) == 1  # type: ignore[arg-type]
+
+    after = [await _status(session, row.id) for row in rows]
+    assert [row.status for row in after] == ["executing", "approved", "approved"]
+    assert all(row.decided_at is not None and row.error_message is None for row in after)  # the approval stands
+
+    retry = _Router(session)
+    assert await enqueue_quarantine(session, [row.id for row in rows], task_router=retry) == 2  # type: ignore[arg-type]
+    assert [payload["review_id"] for _agent, _task, payload in retry.enqueued] == [str(rows[1].id), str(rows[2].id)]
+    assert [(await _status(session, row.id)).status for row in rows] == ["executing"] * 3
+
+
+async def test_an_escaping_cancellation_releases_every_unsent_row_and_still_propagates(session: AsyncSession) -> None:
+    rows = await _three_approved(session)
+    dying = _DyingRouter(session, healthy=1, failure=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await enqueue_quarantine(session, [row.id for row in rows], task_router=dying)  # type: ignore[arg-type]
+
+    assert [(await _status(session, row.id)).status for row in rows] == ["executing", "approved", "approved"]
+    retry = _Router(session)
+    assert await enqueue_quarantine(session, [row.id for row in rows], task_router=retry) == 2  # type: ignore[arg-type]
+
+
+async def test_a_release_never_touches_a_row_an_agent_already_reported(session: AsyncSession) -> None:
+    """The release is guarded on executing: a row already terminal is not pulled back to approved."""
+    rows = await _three_approved(session)
+    await _claim_and_finish(session, rows[0].id)
+
+    assert await junk_quarantine._release_unsent(session, {rows[0].id, rows[1].id}) == 0
+    assert [(await _status(session, row.id)).status for row in rows[:2]] == ["quarantined", "approved"]
+
+
+async def _claim_and_finish(session: AsyncSession, review_id: uuid.UUID) -> None:
+    await enqueue_quarantine(session, [review_id], task_router=_Router(session))  # type: ignore[arg-type]
+    await record_quarantine_result(session, _AGENT, review_id, _moved())
+    await session.commit()
 
 
 async def test_an_ambiguous_dispatch_leaves_the_row_executing_and_uncounted(session: AsyncSession) -> None:
@@ -333,3 +384,34 @@ async def test_the_plan_lists_every_approved_row_and_nothing_else(session: Async
         (unrooted.id, _OTHER, None),
     ]
     assert {(item.reason, item.size) for item in plan} == {("known_stamp", len(_JUNK))}
+
+
+# A job lost AFTER a successful enqueue
+
+
+def test_a_lost_quarantine_job_is_left_to_ledger_recovery_which_replays_it_to_its_owner() -> None:
+    """The ``quarantine_companion:<review_id>`` ledger row outlives a lost job, and recovery classifies it as owed agent work.
+
+    The control-side router writes that row before the broker insert; only this module's report
+    clears it (the agent worker carries no ledger session, so its ``after_process`` clears nothing).
+    A job that vanishes, aborts or exhausts its retries therefore leaves the row behind with no live
+    ``saq_jobs`` key, which is exactly what ``recover_orphaned_work`` re-drives -- verbatim, to the
+    payload's ``agent_id`` -- at controller start and from the Recover button. There is no periodic
+    sweep: between those two moments the review row stays ``executing``.
+    """
+    from phaze.models.scheduling_ledger import SchedulingLedger
+    from phaze.services.scheduling_ledger import routing_for_function
+    from phaze.tasks.recovery_policy import _DoneSets, _is_orphaned, _plan_owner_groups, _plan_replay
+
+    review_id = uuid.uuid4()
+    payload = QuarantineCompanionPayload(review_id=review_id, agent_id=_AGENT, source_path=f"{_ROOT}/a/site.nfo", sha256=_SHA, size=len(_JUNK))
+    row = SchedulingLedger(
+        key=f"{QUARANTINE_TASK}:{review_id}", function=QUARANTINE_TASK, routing=routing_for_function(QUARANTINE_TASK), payload=payload.model_dump()
+    )
+    nothing_done = _DoneSets(set(), set(), {}, set(), set())
+
+    assert row.routing == "agent"
+    assert _is_orphaned(row, live=set(), done_sets=nothing_done, in_flight=set(), awaiting_cloud=set())
+    assert not _is_orphaned(row, live={row.key}, done_sets=nothing_done, in_flight=set(), awaiting_cloud=set())
+    assert _plan_replay([row]).other_agent_rows == (row,)
+    assert [(group.owner_id, group.rows) for group in _plan_owner_groups([row]).groups] == [(_AGENT, (row,))]

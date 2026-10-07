@@ -36,7 +36,7 @@ from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +87,29 @@ async def _claim_approved(session: AsyncSession, review_ids: Sequence[uuid.UUID]
     return sorted(claimed, key=lambda row: (row.agent_id, row.original_path))
 
 
+async def _release_unsent(session: AsyncSession, review_ids: Collection[uuid.UUID]) -> int:
+    """Undo the claim of rows whose job provably never left: ``executing -> approved``, COMMITTED. Returns how many moved.
+
+    This is the dispatcher withdrawing its own claim, not a review transition, which is why it is not
+    an edge in :data:`~phaze.enums.junk_review.TRANSITIONS`: there, an ``executing -> approved`` edge
+    would let an operator's group approval (``decide_content_group``) pull a row back out from under a
+    LIVE job and dispatch it twice. Here the guard is the caller's knowledge that no job exists, and
+    the ``WHERE status = 'executing'`` keeps a row an agent already reported on untouched.
+    """
+    ids = list(review_ids)
+    released = 0
+    for start in range(0, len(ids), _ID_PAGE):
+        result = await session.execute(
+            update(CompanionJunkReview)
+            .where(CompanionJunkReview.id.in_(ids[start : start + _ID_PAGE]), CompanionJunkReview.status == JunkReviewStatus.EXECUTING)
+            .values(status=JunkReviewStatus.APPROVED.value, updated_at=func.now())
+            .returning(CompanionJunkReview.id)
+        )
+        released += len(result.all())
+    await session.commit()
+    return released
+
+
 async def enqueue_quarantine(session: AsyncSession, review_ids: Sequence[uuid.UUID], *, task_router: AgentTaskRouter | None = None) -> int:
     """Dispatch every APPROVED row among ``review_ids`` to its owning agent; returns how many were enqueued. COMMITS.
 
@@ -95,10 +118,14 @@ async def enqueue_quarantine(session: AsyncSession, review_ids: Sequence[uuid.UU
     agent: the agent's report must find the row in ``executing`` (the tag-write rule, phaze-ysnp).
     Whatever the caller changed in ``session`` before this call is committed with it.
 
-    A dispatch that provably never reached the broker marks its row ``failed`` (the detector proposes
-    the file again, decision 4 of 2026-10-07 on epic phaze-4x319). An AMBIGUOUS one
-    (:class:`AmbiguousEnqueueError`: the job may exist) leaves the row ``executing``, so the file can
-    never be dispatched twice; it is not counted.
+    A row whose job provably never reached the broker -- its enqueue raised before the broker
+    connection existed, or the loop never got to it because something escaped (a cancellation, a
+    payload that failed validation) -- goes BACK to ``approved`` (:func:`_release_unsent`), so the
+    operator's approval stands and the next call dispatches it. Nothing is ever left ``executing``
+    without a job that may exist. An AMBIGUOUS enqueue (:class:`AmbiguousEnqueueError`: the job may
+    exist) is the one case that stays ``executing``: releasing it could dispatch the file twice. Its
+    ``quarantine_companion:<review_id>`` scheduling-ledger row, written before the broker insert,
+    is what ledger recovery re-drives if the job never landed. It is not counted.
 
     ``task_router`` is the per-agent enqueuer (``app.state.task_router`` in a route). Without one, a
     router is built from settings for this call and closed afterwards.
@@ -115,6 +142,7 @@ async def enqueue_quarantine(session: AsyncSession, review_ids: Sequence[uuid.UU
 
         settings = get_settings()
         router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
+    unsent = {row.id for row in claimed}
     enqueued = 0
     try:
         for row in claimed:
@@ -124,18 +152,25 @@ async def enqueue_quarantine(session: AsyncSession, review_ids: Sequence[uuid.UU
             try:
                 await router.enqueue_for_agent(agent_id=row.agent_id, task_name=QUARANTINE_TASK, payload=payload)
             except AmbiguousEnqueueError:
+                unsent.discard(row.id)
                 logger.error("junk quarantine enqueue ambiguous -- row left executing", review_id=str(row.id), agent_id=row.agent_id, exc_info=True)
                 continue
-            except Exception as exc:
-                logger.warning("junk quarantine enqueue failed", review_id=str(row.id), agent_id=row.agent_id, exc_info=True)
-                reason = sanitize_pg_text(f"could not dispatch the quarantine to agent {row.agent_id!r}: {exc}")[:_ERROR_MESSAGE_MAX]
-                await transition_review(session, row.id, JunkReviewStatus.FAILED, error_message=reason)
-                await session.commit()
+            except Exception:
+                logger.warning(
+                    "junk quarantine enqueue failed -- row goes back to approved", review_id=str(row.id), agent_id=row.agent_id, exc_info=True
+                )
                 continue
+            unsent.discard(row.id)
             enqueued += 1
     finally:
-        if task_router is None:
-            await router.close()
+        try:
+            if unsent:
+                await session.rollback()
+                released = await _release_unsent(session, unsent)
+                logger.warning("junk quarantine: undispatched rows released back to approved", released=released)
+        finally:
+            if task_router is None:
+                await router.close()
     logger.info("junk quarantine dispatched", requested=len(review_ids), claimed=len(claimed), enqueued=enqueued)
     return enqueued
 
