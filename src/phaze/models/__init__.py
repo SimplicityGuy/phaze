@@ -5,6 +5,7 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.backend_breaker import BackendBreaker
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.dedup_review_plan import DedupReviewPlan
 from phaze.models.deployment import Deployment
@@ -38,6 +39,7 @@ __all__ = [
     "CloudBudget",
     "CloudJob",
     "CloudJobStatus",
+    "CompanionContentFeatures",
     "DedupResolution",
     "DedupReviewPlan",
     "Deployment",

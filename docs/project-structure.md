@@ -22,11 +22,11 @@ a module makes the inventory fail until this page is reconciled.
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
 | `cli/` | 1 | Operator commands, including agent management and projection backfill |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, and tracklist vocabulary |
-| `models/` | 30 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
-| `routers/` | 57 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 23 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 133 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 48 | SAQ controller/agent jobs and shared queue policy |
+| `models/` | 31 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics and companion content features |
+| `routers/` | 58 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 24 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 136 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 49 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |

@@ -104,8 +104,9 @@ def test_lane_tasks_totality_union_equals_agent_tasks() -> None:
     assert union == AGENT_TASKS
     # phaze-6bkk added three more file-touching agent tasks to the meta lane (write_file_tags,
     # write_cue_sheet, read_companion_files) -- the archive I/O the fileless api/controller used to
-    # attempt in-process against a mount they do not have.
-    assert len(AGENT_TASKS) == 9
+    # attempt in-process against a mount they do not have. phaze-osy6j added the companion-features
+    # backfill read (extract_companion_features), also on the meta lane.
+    assert len(AGENT_TASKS) == 10
 
 
 def test_lane_tasks_no_task_in_two_lanes() -> None:

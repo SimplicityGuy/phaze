@@ -64,6 +64,7 @@ from phaze.tasks._shared.live_worker import install_live_concurrency, lane_concu
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
+from phaze.tasks.companion_features import extract_companion_features
 from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
@@ -558,6 +559,8 @@ _FUNCTIONS_BY_NAME: dict[str, Any] = {
     "write_file_tags": write_file_tags,
     "write_cue_sheet": write_cue_sheet,
     "read_companion_files": read_companion_files,
+    # phaze-osy6j: the backfill's per-page companion content read. MUST mirror LANE_TASKS["meta"].
+    "extract_companion_features": extract_companion_features,
     "push_file": push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
     # Phase 53: fileserver httpx multipart-PUT upload to presigned S3 URLs. Registered under the
     # explicit SAQ name "s3_upload" (a (name, func) tuple) so the control-plane producer enqueues
@@ -573,6 +576,7 @@ _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "write_file_tags",
     "write_cue_sheet",
     "read_companion_files",
+    "extract_companion_features",
     "push_file",
     "s3_upload",
 )

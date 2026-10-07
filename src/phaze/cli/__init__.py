@@ -10,6 +10,7 @@ Command groups:
     phaze backfill reset-cloud-attempts --backend <id> --window-start <ts> --window-end <ts> --attempts-floor <n> [--apply]
     phaze backfill moved-twin-candidates --agent <id> > candidates.json
     phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
+    phaze backfill companion-features [--apply] [--page-size <n>]
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -29,6 +30,16 @@ under the new one). Only the agent can say whether a path still exists, so it ru
 
 Run the check in the watcher container: it sees the scan roots at the same paths the rows were posted
 with. Selection and retirement rules live in `phaze.services.scan_deletion.retire_moved_twins`.
+
+`backfill companion-features` is the phaze-osy6j one-off that covers the companion rows ingested
+before the agents reported content features (references, tracklist flag, junk class, encoding) at
+ingest. Without `--apply` it only counts, per agent, the companion rows with current features and
+those with none, with features of older bytes, or from an older extractor -- in a READ ONLY
+transaction. With `--apply` it enqueues one meta-lane `extract_companion_features` job per page of
+those rows on the owning agent, which reads them off its mount and reports them through the same
+route ingest uses. Idempotent: a row whose features are current is never selected again. Selection
+lives in `phaze.services.companion_content`. Upgrade the agents before `--apply`: an agent image that
+predates the task fails the jobs (nothing is written), and the rows stay selected for the next run.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -76,8 +87,10 @@ from phaze.database import async_session
 from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
+from phaze.schemas.agent_tasks import CompanionFeaturesTarget, ExtractCompanionFeaturesPayload
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.cloud_attempts_reset import ResetScope, apply_reset, preview_reset
+from phaze.services.companion_content import count_backfill, select_backfill_page
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 from phaze.services.reanalysis_backfill import (
@@ -108,6 +121,12 @@ MAX_AGENT_ID_LENGTH = 64
 a length that only Postgres rejects surfaces as an uncaught DataError, not the CLI's friendly
 error-plus-exit-1 contract (StringDataRightTruncation is a DBAPIError sibling of IntegrityError,
 not a subclass, so the existing `except IntegrityError` around the insert does not catch it)."""
+
+COMPANION_FEATURES_PAGE_SIZE = 200
+"""Companion rows per ``extract_companion_features`` job: a few seconds of small reads on the meta lane."""
+
+COMPANION_FEATURES_PAGE_MAX = 1000
+"""Mirrors the default ``agent_file_chunk_max``, the payload's and the report chunk's bound."""
 
 MAX_AGENT_NAME_LENGTH = 128
 """Mirrors `Agent.name` (`String(128)`, models/agent.py). Same pre-DB rationale as
@@ -353,6 +372,22 @@ def _build_parser() -> argparse.ArgumentParser:
     retire_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     retire_mode.add_argument("--apply", dest="apply", action="store_true", help="Delete the stale rows. Without it nothing is written.")
     retire.set_defaults(apply=False)
+    # phaze-osy6j: companion content features for rows ingested before the agents reported them.
+    features = backfill_sub.add_parser(
+        "companion-features",
+        help="Count companion rows without current content features; --apply has each owning agent read them (phaze-osy6j). Dry run unless --apply.",
+    )
+    features_mode = features.add_mutually_exclusive_group()
+    features_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
+    features_mode.add_argument("--apply", dest="apply", action="store_true", help="Enqueue the agent reads. Without it nothing is enqueued.")
+    features.add_argument(
+        "--page-size",
+        dest="page_size",
+        type=int,
+        default=COMPANION_FEATURES_PAGE_SIZE,
+        help=f"Companion rows per agent job (1-1000, default {COMPANION_FEATURES_PAGE_SIZE}).",
+    )
+    features.set_defaults(apply=False)
     mode = reset.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
@@ -433,6 +468,11 @@ def _main_backfill(args: argparse.Namespace) -> int:
         return asyncio.run(_run_moved_twin_candidates(args.agent_id))
     if args.backfill_command == "retire-moved-twins":
         return asyncio.run(_run_retire_moved_twins(args.agent_id, sys.stdin.read(), apply=args.apply))
+    if args.backfill_command == "companion-features":
+        if not 1 <= args.page_size <= COMPANION_FEATURES_PAGE_MAX:
+            print(f"error: --page-size must be between 1 and {COMPANION_FEATURES_PAGE_MAX}", file=sys.stderr)
+            return 1
+        return asyncio.run(_run_companion_features(apply=args.apply, page_size=args.page_size))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -561,6 +601,68 @@ async def _run_retire_moved_twins(agent_id: str, checked_json: str, *, apply: bo
         await session.commit()
     print(f"APPLIED: {len(report.retire)} row(s) retired")
     return 0
+
+
+async def _run_companion_features(*, apply: bool, page_size: int) -> int:
+    """Run ``phaze backfill companion-features`` (phaze-osy6j). Returns a process exit code.
+
+    The counts are read first, in a READ ONLY transaction either way. ``--apply`` then walks each
+    agent's pending rows by keyset page and enqueues one ``extract_companion_features`` job per page
+    on that agent's meta lane, printing a line per agent; it exits 1 if any enqueue failed.
+    """
+    async with async_session() as session:
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        counts = await count_backfill(session)
+        await session.rollback()
+    for row in counts:
+        print(
+            f"  {row.agent_id}: companions={row.companions} current={row.current} missing={row.missing} "
+            f"stale_content={row.stale_content} stale_extractor={row.stale_extractor}"
+        )
+    pending = sum(row.pending for row in counts)
+    jobs = sum(-(-row.pending // page_size) for row in counts)
+    print(f"summary: companions={sum(row.companions for row in counts)} pending={pending} jobs={jobs} page_size={page_size}")
+    if not apply:
+        print(f"DRY RUN: nothing enqueued; {pending} companion row(s) would be read in {jobs} job(s). Re-run with --apply to enqueue.")
+        return 0
+
+    settings = get_settings()
+    task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
+    failed = 0
+    try:
+        for row in counts:
+            if not row.pending:
+                continue
+            enqueued, rows, error = await _enqueue_companion_feature_pages(task_router, row.agent_id, page_size)
+            failed += bool(error)
+            print(f"  {row.agent_id}: enqueued {enqueued} job(s) for {rows} row(s)" + (f"; STOPPED: {error}" if error else ""))
+    finally:
+        await task_router.close()
+    print("APPLIED: the agents report features as the jobs run; re-run without --apply to watch pending fall.")
+    return 1 if failed else 0
+
+
+async def _enqueue_companion_feature_pages(task_router: AgentTaskRouter, agent_id: str, page_size: int) -> tuple[int, int, str | None]:
+    """Enqueue every pending page of one agent; returns ``(jobs, rows, first error or None)``."""
+    jobs = rows = 0
+    after = None
+    while True:
+        async with async_session() as session:
+            page = await select_backfill_page(session, agent_id, after=after, limit=page_size)
+        if not page:
+            return jobs, rows, None
+        payload = ExtractCompanionFeaturesPayload(
+            agent_id=agent_id,
+            targets=[CompanionFeaturesTarget(file_id=file_id, original_path=path) for file_id, path in page],
+        )
+        try:
+            await task_router.enqueue_for_agent(agent_id=agent_id, task_name="extract_companion_features", payload=payload)
+        except Exception as exc:
+            return jobs, rows, str(exc)
+        jobs += 1
+        rows += len(page)
+        last_id, last_path = page[-1]
+        after = (last_path, last_id)
 
 
 async def _run_reenqueue_incomplete_analyses() -> int:

@@ -40,6 +40,7 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
@@ -149,6 +150,9 @@ def _file_descendant_steps(file_scope: ColumnElement[bool]) -> list[tuple[str, D
         # reads to see what a scan deletion actually took. Deleting a file legitimately erases its cloud
         # budget history: a re-scanned file is a NEW files.id and has genuinely never spent a cloud budget.
         (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id.in_(files_in_scope))),
+        # phaze-osy6j: companion content features. ON DELETE CASCADE like cloud_budget, deleted
+        # explicitly for the same rowcount-report reason.
+        (CompanionContentFeatures.__tablename__, delete(CompanionContentFeatures).where(CompanionContentFeatures.file_id.in_(files_in_scope))),
         # StageSkip (force-skip sidecar) FKs files.id with NO ON DELETE and is not deferrable. It is
         # the ONLY file sidecar with no undo/reaper, so a force-skipped file leaves a live stage_skip
         # row that blocks the files delete (ForeignKeyViolation -> 500 -> batch permanently undeletable).
@@ -380,6 +384,8 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
       the caller holds the file row's lock) and ``cloud_budget``: a
       SUCCEEDED burst reads as analyzed, and budget spent failing on a truncated file must not
       ration the final file's analysis.
+    - ``companion_content_features``: what a companion's OLD bytes contained; the watcher reports
+      the new content right after the move lands (phaze-osy6j).
     - ``scheduling_ledger`` rows keyed to this file: cleared through the guarded
       :func:`~phaze.services.scheduling_ledger.clear_ledger_entry`, so a row whose job is still
       live in ``saq_jobs`` is left for that job (it was enqueued with the old path and fails or
@@ -401,6 +407,7 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
         (RenameProposal.__tablename__, delete(RenameProposal).where(RenameProposal.id.in_(pending_proposals))),
         (CloudJob.__tablename__, delete(CloudJob).where(CloudJob.file_id == file_id)),
         (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id == file_id)),
+        (CompanionContentFeatures.__tablename__, delete(CompanionContentFeatures).where(CompanionContentFeatures.file_id == file_id)),
     ]
     counts = await _execute_ordered(session, ordered)
     ledger_keys = (

@@ -33,6 +33,7 @@ from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.services.agent_client import AgentApiServerError
+from phaze.services.companion_features_report import report_companion_features
 from phaze.services.hashing import compute_sha256
 
 
@@ -258,6 +259,7 @@ async def _hash_and_post_chunks(
         logger.debug("file discovered", path=record.original_path, size=record.file_size, ext=record.file_type)
         if len(batch) >= chunk_size:
             await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+            await report_companion_features(api, [posted.original_path for posted in batch])  # phaze-osy6j
             await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
             logger.info("scan progress", batch_id=str(payload.batch_id), processed=progress.total)
             batch = []
@@ -265,6 +267,7 @@ async def _hash_and_post_chunks(
     # Flush final partial chunk.
     if batch:
         await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+        await report_companion_features(api, [posted.original_path for posted in batch])  # phaze-osy6j
         await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
 
 
