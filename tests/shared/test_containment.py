@@ -10,9 +10,13 @@ while resolving outside it.
 
 from __future__ import annotations
 
+import unicodedata
+from unittest.mock import patch
+
 import pytest
 
-from phaze.services.containment import resolve_and_check_containment
+from phaze.services.containment import resolve_and_check_containment, resolve_contained_twin
+from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
 def test_accepts_path_under_scan_root(tmp_path) -> None:
@@ -108,3 +112,80 @@ def test_matches_the_longest_of_overlapping_scan_roots(tmp_path) -> None:
     # Either root is a valid match (the function returns the first match in iteration order);
     # what matters is that containment is granted and the returned root is one of the two.
     assert owning_root in {outer.resolve(), inner.resolve()}
+
+
+# phaze-2tei9: the twin lookup must run BEFORE the containment check, so the check covers the path
+# that is actually opened. An NFD directory name that is a symlink pointing out of the root is the
+# shape: the stored NFC string never matches it byte-exact, so it resolves lexically inside the root.
+_NFD_DIR = unicodedata.normalize("NFD", "Hör")
+_NFC_DIR = unicodedata.normalize("NFC", "Hör")
+
+
+def _symlinked_twin_layout(tmp_path):
+    """``archive/<NFD dir> -> outside/``, with ``outside/notes.nfo`` the file that must stay unread."""
+    assert _NFD_DIR != _NFC_DIR, "fixture must actually exercise two distinct byte forms"
+    root = tmp_path / "archive"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.nfo").write_text("SECRET=1", encoding="utf-8")
+    (root / _NFD_DIR).symlink_to(outside, target_is_directory=True)
+    return root, outside
+
+
+def test_twin_through_a_symlinked_directory_out_of_the_root_is_refused(tmp_path) -> None:
+    """The escape, on the REAL directory walk (byte-exact ``exists`` as on Linux).
+
+    Discriminating on Linux only: on macOS ``realpath`` finds the NFD entry from the NFC string and
+    follows the symlink, so the old check-then-swap order refused this too. The substituted cases
+    below discriminate on every host.
+    """
+    root, _outside = _symlinked_twin_layout(tmp_path)
+    stored = root / _NFC_DIR / "notes.nfo"
+
+    with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists), pytest.raises(ValueError, match="escapes all scan_roots"):
+        resolve_contained_twin(str(stored), [str(root)])
+
+
+def test_substituted_twin_through_a_symlinked_directory_is_refused(tmp_path) -> None:
+    """The stored path passes containment ON ITS OWN; only the twin it maps to escapes.
+
+    This is the order that matters: ``resolve_and_check_containment`` on the stored string alone
+    accepts it, which is exactly what the pre-fix order then swapped the twin in after.
+    """
+    root, _outside = _symlinked_twin_layout(tmp_path)
+    stored = root / "stored-nfc" / "notes.nfo"
+    twin = root / _NFD_DIR / "notes.nfo"
+    resolve_and_check_containment(str(stored), [str(root)])  # the stored string alone looks contained
+
+    with (
+        patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, twin)),
+        pytest.raises(ValueError, match="escapes all scan_roots"),
+    ):
+        resolve_contained_twin(str(stored), [str(root)])
+
+
+def test_legitimate_twin_is_returned_resolved(tmp_path) -> None:
+    """A real NFD twin inside the root resolves to the twin itself, with its owning root."""
+    root = tmp_path / "archive"
+    (root / _NFD_DIR).mkdir(parents=True)
+    twin = root / _NFD_DIR / "notes.nfo"
+    twin.write_text("Artist: DJ Test", encoding="utf-8")
+    stored = root / _NFC_DIR / "notes.nfo"
+
+    with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists):
+        resolved, owning_root = resolve_contained_twin(str(stored), [str(root)])
+
+    assert resolved == twin.resolve()
+    assert resolved.parent.name == _NFD_DIR
+    assert owning_root == root.resolve()
+
+
+def test_byte_exact_path_is_unchanged(tmp_path) -> None:
+    """The common case: a path that exists byte-exact is just containment-checked."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    target = root / "info.nfo"
+    target.write_text("x", encoding="utf-8")
+
+    assert resolve_contained_twin(str(target), [str(root)]) == resolve_and_check_containment(str(target), [str(root)])

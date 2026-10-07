@@ -14,11 +14,18 @@ not catch that.
 ``load_companion_contents`` (``services/proposal.py``) reuses this exact function for the
 companion-file read boundary rather than reimplementing it, so the two enforcement points can
 never drift apart.
+
+:func:`resolve_contained_twin` is the entry point for every agent task that also needs the
+NFC/NFD on-disk twin (phaze-9pg11): it runs the twin lookup FIRST and the containment check on
+its result, so the check always covers the exact path that gets opened (phaze-2tei9). Its one
+non-stdlib dependency, ``services/media_path_resolve.py``, is held to the same import ban.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from phaze.services.media_path_resolve import resolve_media_path
 
 
 def resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> tuple[Path, Path]:
@@ -44,3 +51,25 @@ def resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> tupl
             continue
     msg = f"path {candidate!r} (resolved to {resolved}) escapes all scan_roots {scan_roots}"
     raise ValueError(msg)
+
+
+def resolve_contained_twin(candidate: str, scan_roots: list[str]) -> tuple[Path, Path]:
+    """Resolve `candidate`'s on-disk NFC/NFD twin, then assert THAT lives under `scan_roots`.
+
+    Returns ``(resolved, owning_root)`` exactly like :func:`resolve_and_check_containment`;
+    ``resolved`` is the path to open, and nothing else is.
+
+    The order is the point (phaze-2tei9). Checking `candidate` first and swapping in the twin
+    afterwards leaves the opened path unchecked: ``Path.resolve()`` is non-strict, so a stored NFC
+    tail that does not exist byte-exact stays LEXICAL and passes, and ``resolve_media_path`` then
+    walks down from the longest existing ancestor through real children -- including a symlinked
+    DIRECTORY pointing outside every root. Looking up the twin first hands the check a path whose
+    components all exist, so ``resolve()`` follows every symlink in it before comparing.
+
+    ``resolved`` is symlink-free at check time. A caller that reads it opens it with
+    ``O_NOFOLLOW``, so a final component swapped for a symlink after the check is refused
+    (``ELOOP``) rather than followed out of the roots.
+
+    Raises ValueError on traversal or symlink escape, like :func:`resolve_and_check_containment`.
+    """
+    return resolve_and_check_containment(resolve_media_path(candidate), scan_roots)

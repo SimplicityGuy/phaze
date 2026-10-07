@@ -25,7 +25,7 @@ import pytest
 
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.tasks.tag_write import write_file_tags
-from tests._media_path_fakes import byte_exact_exists
+from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
 if TYPE_CHECKING:
@@ -137,6 +137,38 @@ class TestWriteFileTagsTask:
         api.patch_tag_write.assert_awaited_once()
         _called_log_id, payload = api.patch_tag_write.await_args.args
         assert payload.status == TagWriteStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_twin_through_a_symlinked_directory_out_of_the_root_is_refused_and_never_written(self, tmp_path: Path) -> None:
+        """phaze-2tei9: containment covers the NFC/NFD twin that is WRITTEN, not the stored string.
+
+        The stored path does not exist, so on its own it resolves lexically inside the root; the twin
+        it maps to runs through an NFD directory that is a symlink out of the root. The twin lookup is
+        substituted (``substituted_twin_lookup``) because macOS's ``realpath`` would follow the symlink
+        from the NFC string anyway and hide the bug; on Linux the real lookup does exactly this.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = _make_mp3(outside / "<track-01>.mp3")
+        before = victim.read_bytes()
+        nfd_dir = unicodedata.normalize("NFD", "Hör")
+        (archive_root / nfd_dir).symlink_to(outside, target_is_directory=True)
+        stored = archive_root / "stored-nfc" / "<track-01>.mp3"
+
+        ctx, api = _ctx()
+        with (
+            _patch_scan_roots([str(archive_root)]),
+            patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, archive_root / nfd_dir / "<track-01>.mp3")),
+        ):
+            result = await write_file_tags(ctx, **_kwargs(str(stored), {"artist": "New Artist"}))
+
+        assert result["status"] == TagWriteStatus.FAILED
+        assert victim.read_bytes() == before
+        _called_log_id, payload = api.patch_tag_write.await_args.args
+        assert "escapes all scan_roots" in payload.error_message
+        api.report_tag_write_before_snapshot.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reports_the_before_tags_snapshot(self, mp3_file: Path) -> None:
