@@ -347,3 +347,4 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | POST   | `/api/internal/agent/scratch/live`                    | Compute-scratch janitor liveness probe — answers "is a durable job still claiming this scratch entry?" off `saq_jobs` (phaze-5cvbz) |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued` (phaze-anrw4) |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`** (phaze-6bkk DIST-01) |
+| PATCH  | `/api/internal/agent/junk-quarantine/{review_id}`     | Outcome of an on-agent junk quarantine move: `quarantined` marks the `executing` review row and retires the moved file's `files` row, `failed` records the agent's reason; only the owning agent's rows, idempotent (phaze-lwuf6) |

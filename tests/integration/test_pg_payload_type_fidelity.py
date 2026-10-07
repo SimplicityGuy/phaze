@@ -66,6 +66,7 @@ from phaze.schemas.agent_tasks import (
     ExtractMetadataPayload,
     ProcessFilePayload,
     PushFilePayload,
+    QuarantineCompanionPayload,
     ReadCompanionFilesPayload,
     ScanDirectoryPayload,
     WriteCueSheetPayload,
@@ -173,6 +174,10 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
                     CompanionFeaturesTarget(file_id=uuid.uuid4(), original_path="/archive/<set-01>.cue"),
                 ],
             ),
+        ),
+        (
+            "quarantine_companion",
+            QuarantineCompanionPayload(review_id=uuid.uuid4(), agent_id="itest-agent", source_path="/archive/<set-01>.nfo", sha256="0" * 64, size=48),
         ),
         (
             "s3_upload",

@@ -133,6 +133,9 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # Postgres-free agent boundary (test_task_split). ``test_learner_key_matches_the_learner_module``
     # asserts the two agree, so the duplication cannot drift silently.
     "learn_filename_conventions": lambda _kwargs: "release_group:date_order",
+    # phaze-lwuf6: keyed on the junk-review row. A second dispatch of the same approved row dedups to
+    # a no-op; the row's own status machine already refuses a second claim.
+    "quarantine_companion": lambda k: str(k["review_id"]),
 }
 
 

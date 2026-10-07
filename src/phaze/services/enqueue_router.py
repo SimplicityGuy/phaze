@@ -116,6 +116,9 @@ LANE_TASKS: dict[str, frozenset[str]] = {
             # phaze-osy6j: the companion-features backfill -- a page of small companion reads, the
             # same I/O-light profile as read_companion_files.
             "extract_companion_features",
+            # phaze-lwuf6: one approved junk companion moved into its root's quarantine directory --
+            # a re-hash and a single rename, the same light per-file profile as write_file_tags.
+            "quarantine_companion",
         }
     ),
     # Network-bound offload (off the CPU budget).

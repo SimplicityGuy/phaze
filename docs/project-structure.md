@@ -20,13 +20,13 @@ a module makes the inventory fail until this page is reconciled.
 | Package area | Python files | Responsibility |
 | ------------ | -----------: | -------------- |
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
-| `cli/` | 1 | Operator commands, including agent management and projection backfill |
+| `cli/` | 1 | Operator commands, including agent management, projection backfill and the junk quarantine dispatch |
 | `enums/` | 6 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
 | `models/` | 32 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
-| `routers/` | 58 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 24 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 138 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 49 | SAQ controller/agent jobs and shared queue policy |
+| `routers/` | 59 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 25 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 140 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 50 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
