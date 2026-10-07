@@ -321,6 +321,29 @@ class ReadCompanionFilesPayload(WirePayload):
     max_chars: int = Field(gt=0, le=1_000_000)
 
 
+class CompanionFeaturesTarget(WirePayload):
+    """One companion row the features backfill asks its agent to read (phaze-osy6j)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: uuid.UUID
+    original_path: str = Field(min_length=1)
+
+
+class ExtractCompanionFeaturesPayload(WirePayload):
+    """SAQ job: one page of the companion-features backfill, read on the owning agent (phaze-osy6j).
+
+    The agent re-checks every path against ITS OWN scan roots before opening it (the
+    ``ReadCompanionFilesPayload`` precedent) and reports through the same route the scan and the
+    watcher use. ``max_length`` mirrors the default ``agent_file_chunk_max`` the report chunk is held to.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    targets: list[CompanionFeaturesTarget] = Field(min_length=1, max_length=1000)
+
+
 class ExecuteApprovedBatchPayload(WirePayload):
     """SAQ job: per-agent sub-batch of an approved-proposal execution dispatch.
 

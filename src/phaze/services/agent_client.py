@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         AnalysisWriteResponse,
         PresignDownloadMetadata,
     )
+    from phaze.schemas.agent_companion_features import CompanionFeaturesChunk, CompanionFeaturesResponse
     from phaze.schemas.agent_config import AgentConfigResponse
 
     # D-06 execution-batch schema.
@@ -642,6 +643,17 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ScanBatchPatchResponse.model_validate(response.json())
+
+    async def post_companion_features(self, payload: CompanionFeaturesChunk) -> CompanionFeaturesResponse:
+        """POST /api/internal/agent/companion-features -- one chunk of companion content features (phaze-osy6j)."""
+        from phaze.schemas.agent_companion_features import CompanionFeaturesResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            "/api/internal/agent/companion-features",
+            json=payload.model_dump(mode="json"),
+        )
+        return CompanionFeaturesResponse.model_validate(response.json())
 
     async def post_exec_batch_progress(
         self,

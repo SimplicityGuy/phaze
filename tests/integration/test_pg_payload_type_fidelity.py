@@ -24,7 +24,7 @@ invisible. That is a worker-side failure, in the place failures are least visibl
 WHAT THIS PINS
 --------------
 
-:func:`test_production_payload_survives_the_broker_round_trip` is parametrized over ALL NINE
+:func:`test_production_payload_survives_the_broker_round_trip` is parametrized over ALL TEN
 task payloads that cross this seam, and for each one it:
 
 1. builds the payload the way the PRODUCER does (``<Payload>(...).model_dump(mode="json")``);
@@ -58,9 +58,11 @@ from saq.queue.postgres import PostgresQueue
 
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.schemas.agent_tasks import (
+    CompanionFeaturesTarget,
     CompanionReadItem,
     ExecuteApprovedBatchPayload,
     ExecuteBatchProposalItem,
+    ExtractCompanionFeaturesPayload,
     ExtractMetadataPayload,
     ProcessFilePayload,
     PushFilePayload,
@@ -85,9 +87,9 @@ BROKER_DSN, _ = integration_dsns()
 def _representative_payloads() -> list[tuple[str, BaseModel]]:
     """One production-shaped payload per task that crosses the enqueue seam.
 
-    The nine entries are exactly the nine ``<Payload>.model_validate(kwargs)`` consumers in
+    The ten entries are exactly the ten ``<Payload>.model_validate(kwargs)`` consumers in
     ``src/phaze/tasks/`` -- :func:`test_every_model_validate_consumer_is_covered` fails the build
-    if a tenth appears and is not added here, so this list cannot silently fall behind the code.
+    if an eleventh appears and is not added here, so this list cannot silently fall behind the code.
 
     Values are representative rather than minimal: every optional field is populated (a ``None``
     would pass a JSON round trip trivially and prove nothing about the field's real type), and the
@@ -160,6 +162,16 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
                     CompanionReadItem(filename="<set-01>.nfo", path="/archive/<set-01>.nfo"),
                 ],
                 max_chars=4096,
+            ),
+        ),
+        (
+            "extract_companion_features",
+            ExtractCompanionFeaturesPayload(
+                agent_id="itest-agent",
+                targets=[
+                    CompanionFeaturesTarget(file_id=uuid.uuid4(), original_path="/archive/<set-01>.nfo"),
+                    CompanionFeaturesTarget(file_id=uuid.uuid4(), original_path="/archive/<set-01>.cue"),
+                ],
             ),
         ),
         (
@@ -265,7 +277,7 @@ async def test_a_raw_uuid_kwarg_is_refused_by_the_real_broker(pg_queue: Postgres
     This is the failure ``FakeQueue`` could not exhibit before phaze-9nz1g: an unserialized fake
     accepted the ``UUID`` and echoed it back, so a producer that forgot ``model_dump(mode="json")``
     read as green. Every payload model above carries a ``UUID`` field, so this is one omitted
-    ``mode="json"`` away at nine call sites.
+    ``mode="json"`` away at ten call sites.
     """
     with pytest.raises(TypeError, match="UUID is not JSON serializable"):
         await pg_queue.enqueue("process_file", key=f"process_file:{uuid.uuid4()}", file_id=uuid.uuid4())
@@ -334,12 +346,13 @@ async def test_the_omitted_conversion_is_now_harmless_across_the_real_broker(pg_
     every producer is currently WRITTEN, this one dumps the way a producer might be written TOMORROW
     if its author forgets. With ``WirePayload`` forcing JSON mode it lands, and the real consumer --
     ``type(payload).model_validate``, the same call the task function makes at
-    ``tasks/functions.py:573`` and its eight siblings -- reconstructs an EQUAL model, so a ``UUID``
+    ``tasks/functions.py:573`` and its nine siblings -- reconstructs an EQUAL model, so a ``UUID``
     field comes back a ``UUID`` rather than its text.
 
-    **EIGHT of the nine rows are load-bearing; ``read_companion_files`` is not, and saying so is the
+    **NINE of the ten rows are load-bearing; ``read_companion_files`` is not, and saying so is the
     point.** phaze-9nz1g's inventory and this bead both state that ``uuid.UUID`` "is a field on ALL
-    NINE task-payload models". Re-measured here: it is a field on eight.
+    NINE task-payload models". Re-measured here: it was a field on eight of those nine (and is on
+    ``ExtractCompanionFeaturesPayload``'s nested target, the tenth, added by phaze-osy6j).
     ``ReadCompanionFilesPayload`` declares **no** ``UUID`` -- neither does its nested
     ``CompanionReadItem`` -- so that lane's payload was already JSON-native and its omission was
     already harmless before this bead. Its row still belongs in the parametrization (it guards
@@ -375,7 +388,7 @@ async def test_the_omitted_conversion_is_still_refused_for_a_plain_basemodel(pg_
     This is what makes the parametrized test above evidence rather than decoration. The model here is
     field-for-field the shape of a real task payload and differs in exactly one respect -- it
     inherits ``BaseModel`` instead of ``WirePayload`` -- and the live broker refuses it with the same
-    ``TypeError`` every one of the nine used to raise.
+    ``TypeError`` every one of the original nine used to raise.
 
     It is also the failure mode ``tests/shared/schemas/test_wire_payload_contract.py`` exists to
     prevent at review time: a tenth payload model wired up without the base.

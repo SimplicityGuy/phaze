@@ -41,6 +41,7 @@ from phaze.models import (
     Agent,
     AnalysisResult,
     AnalysisWindow,
+    CompanionContentFeatures,
     ExecutionLog,
     FileMetadata,
     FileRecord,
@@ -48,6 +49,7 @@ from phaze.models import (
     ScanBatch,
 )
 from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
+from phaze.schemas.agent_companion_features import CompanionFeaturesRecord
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_files import FileUpsertRecord
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
@@ -69,6 +71,7 @@ SCHEMA_BINDINGS: dict[type[BaseModel], type] = {
     AnalysisWindowPayload: AnalysisWindow,
     ProposalStatePatch: RenameProposal,
     ScanBatchPatch: ScanBatch,
+    CompanionFeaturesRecord: CompanionContentFeatures,
 }
 
 # Fields of a bound schema that intentionally match no column of that schema's model.
@@ -89,6 +92,11 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "effective domain is int8 headroom-capped: Field(ge=0, le=QUEUE_DEPTH_MAX) in "
         "schemas/agent_heartbeat.py (phaze-s4r0), not 'no width to match'",
         "lane": "-> Agent.last_status['lanes'] JSONB key, no scalar column",
+    },
+    CompanionFeaturesRecord: {
+        # phaze-osy6j: the resolution key, matched against FileRecord.original_path (Text) for the
+        # authenticated agent and never stored on companion_content_features -- unbounded (rule 2).
+        "original_path": "-> resolves FileRecord.original_path Text, not stored on this model; unbounded (rule 2)",
     },
     ProposalStatePatch: {
         # This schema patches a proposal but writes these two ACROSS models -- both to Text columns,

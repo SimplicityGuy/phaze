@@ -58,6 +58,7 @@
     "POST /admin/runtime-config/{key}",
     "POST /api/internal/agent/analysis/{file_id}/failed",
     "POST /api/internal/agent/analysis/{file_id}/progress",
+    "POST /api/internal/agent/companion-features",
     "POST /api/internal/agent/exec-batches/{batch_id}/progress",
     "POST /api/internal/agent/execution-log",
     "POST /api/internal/agent/files",

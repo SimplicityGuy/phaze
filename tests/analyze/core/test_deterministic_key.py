@@ -57,6 +57,10 @@ _UNKEYED_TASKS: frozenset[str] = frozenset(
         # caller's enqueue dedup onto an in-flight job it has no handle on, so it would wait out
         # its full timeout and then propose with no companion context. Distinct jobs, always.
         "read_companion_files",
+        # phaze-osy6j: one job is a PAGE of the companion-features backfill, keyed by the set of rows
+        # it names. Two runs page the same rows differently, so no natural key identifies the work;
+        # an overlapping pair re-reads a few small files and rewrites the same rows (idempotent).
+        "extract_companion_features",
         # phaze-fq9h.7: one job is a BOUNDED SLICE of a months-long drain -- the next N lookups,
         # not a repeat of the last N -- so consecutive slices are genuinely distinct work, the
         # same reasoning as scan_directory. A key would not buy concurrency safety either: the

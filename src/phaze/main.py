@@ -19,6 +19,7 @@ from phaze.routers import (
     admin_agents,
     admin_runtime_config,
     agent_analysis,
+    agent_companion_features,
     agent_config,
     agent_exec_batches,
     agent_execution,
@@ -270,6 +271,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_proposals.router,
     agent_scan_batches.router,
     agent_orphan_companions.router,
+    # phaze-osy6j: what the agent read inside each companion (references, tracklist flag, junk class).
+    agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
     agent_scratch.router,
