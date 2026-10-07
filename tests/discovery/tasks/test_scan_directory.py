@@ -107,6 +107,21 @@ async def test_scan_directory_walks_known_extensions(tmp_path: Path) -> None:
     assert file_types == {"mp3", "flac", "mp4", "txt"}
 
 
+async def test_scan_directory_admits_mp2_as_music(tmp_path: Path) -> None:
+    """A .mp2 file is walked and posted like any other MUSIC file (phaze-f78n6)."""
+    from phaze.tasks.scan import scan_directory
+
+    _touch(tmp_path / "a.mp2")
+    _touch(tmp_path / "b.MP2")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["files_posted"] == 2
+    chunk = ctx["api_client"].upsert_files.await_args.args[0]
+    assert {r.file_type for r in chunk.files} == {"mp2"}
+
+
 def test_resolve_chunk_size_falls_back_when_not_agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Coverage gap fill (Codecov PR #59): scan.py:82.
 

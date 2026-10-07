@@ -66,6 +66,7 @@ __all__ = [
 # Vocabulary
 
 _AUDIO_VIDEO_EXTENSIONS = (
+    "mp2",
     "mp3",
     "flac",
     "wav",
