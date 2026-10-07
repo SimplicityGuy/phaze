@@ -126,6 +126,15 @@ class LookupOutcome(enum.StrEnum):
     """The detail page rendered but produced zero tracks -- almost always our selectors drifting
     against a site redesign, not an empty tracklist."""
 
+    DECOY = "decoy"
+    """The detail page rendered with its layout and cues intact, but its track NAMES disagree with
+    the page's own per-row ``meta[itemprop=name]`` microdata -- the shape 1001Tracklists serves a
+    client it has flagged, with randomised names (phaze-y5fc7). Persisting it as ``FOUND`` would be
+    permanent wrong data (a ``FOUND`` is never re-looked-up); caching it as ``NOT_FOUND`` would hide
+    the real tracklist for the negative TTL. It is a statement about US (how the site sees our
+    client), so it is transient: backed off, retried, and parked after
+    :data:`TRANSIENT_MAX_ATTEMPTS` like every other transient. No track rows are ever written."""
+
     LOW_CONFIDENCE = "low_confidence"
     """The search ran cleanly and returned rows, but the best of them scored below the selection
     threshold (phaze-no6sv). That can mean the QUERY was bad -- a polluted derived query returns
@@ -157,6 +166,7 @@ TRANSIENT_OUTCOMES: frozenset[LookupOutcome] = frozenset(
         LookupOutcome.RENDER_FAILED,
         LookupOutcome.BLOCKED,
         LookupOutcome.PARSE_FAILED,
+        LookupOutcome.DECOY,
     }
 )
 """Outcomes that get a short exponential backoff instead of the negative TTL.
@@ -217,6 +227,16 @@ _QUERYABLE_DECISIONS: frozenset[CacheDecision] = frozenset(
     }
 )
 
+RETRY_HINT_OUTCOMES: frozenset[LookupOutcome] = frozenset({LookupOutcome.BLOCKED, LookupOutcome.RENDER_FAILED})
+"""The transient outcomes whose chosen detail-page URL is persisted as a retry HINT (phaze-w5fni).
+
+Exactly the two where the page itself was never fetched successfully, so the attempt's only durable
+finding is WHICH page the scorer chose; the retry can then spend one render instead of a search plus
+a render. Every other transient is excluded on purpose: ``DECOY`` -- the site served a flagged-client
+page for that URL, and offering it again would re-ask for the same decoy; ``PARSE_FAILED`` -- the page
+was fetched and our selectors failed, which a fresh render of the same URL cannot be assumed to fix;
+``SEARCH_FAILED`` -- no page was ever chosen."""
+
 TRANSIENT_MAX_ATTEMPTS: int = 5
 """Attempts after which a persistently-transient set stops being retried automatically.
 
@@ -256,7 +276,7 @@ class TracklistFileOutcome(enum.StrEnum):
     """The search returned only low-scoring rows; held until ``next_eligible_at`` (phaze-no6sv)."""
 
     RETRY_PENDING = "retry_pending"
-    """A transient failure (blocked, render/search/parse failure). Retried at ``next_eligible_at``;
+    """A transient failure (blocked, render/search/parse failure, decoy page). Retried at ``next_eligible_at``;
     ``NULL`` there means the attempt cap parked it for an operator."""
 
     NOT_ELIGIBLE = "not_eligible"

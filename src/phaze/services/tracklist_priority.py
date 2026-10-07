@@ -395,7 +395,7 @@ async def _lookup_status_without_a_tracklist(
     if classification.candidate_class is not CandidateClass.LIVE_SET or answered_elsewhere is not None:
         return classification.candidate_class, None, None, answered_elsewhere
 
-    derived = derive_query(signals.filename)
+    derived = derive_query(signals.filename, artist=signals.artist, title=signals.title, album=signals.album, original_path=signals.original_path)
     signals = replace(signals, derived_query=derived.query)
     unique_sets = group_unique_sets([signals])
     if not unique_sets:  # pragma: no cover - defensive; a single-element input always yields one cluster
