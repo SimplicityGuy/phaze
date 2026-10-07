@@ -23,9 +23,9 @@ a module makes the inventory fail until this page is reconciled.
 | `cli/` | 1 | Operator commands, including agent management, projection backfill and the junk quarantine dispatch |
 | `enums/` | 6 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
 | `models/` | 32 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
-| `routers/` | 59 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `routers/` | 60 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 25 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 141 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `services/` | 142 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 51 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
@@ -163,6 +163,7 @@ template path.
 | `/s/propose` | `pipeline/partials/propose_workspace.html` |
 | `/s/rename`, `/s/tagwrite`, `/s/move` | Compatibility aliases for `pipeline/partials/changes_workspace.html` |
 | `/s/dedupe`, `/s/cue` | `pipeline/partials/dedupe_workspace.html`, `cue_workspace.html` |
+| `/s/junk` | `pipeline/partials/junk_workspace.html` (decisions: `routers/junk_review.py`) |
 | `/s/apply` | `pipeline/partials/apply_workspace.html` |
 | `/s/audit`, `/s/agents`, `/s/runtime-config` | Utility panes under shell, execution, and admin templates; Config (`/s/runtime-config`) opens from the header gear, and `/s/operations` 307-redirects to it |
 
