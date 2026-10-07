@@ -80,6 +80,18 @@ _INTERSTITIAL_MARKERS: tuple[str, ...] = (
     "checking if the site connection is secure",
 )
 
+# Markers of 1001Tracklists' OWN image-captcha page (phaze-a6n3e), lowercased. Taken from the real
+# capture `tests/identify/fixtures/tracklist_render/25fhn7c9-captcha.html` (2026-10-07), not from
+# memory: the page is a bare form -- heading "We need to validate your are real human!" (sic), a
+# base64 `<img alt="Captcha">`, `<input id="captcha">` and a hidden `cSalt` field. It is NOT
+# Cloudflare Turnstile, so `_INTERSTITIAL_MARKERS` never matched it. Same precedence rule as above:
+# only consulted when the track container is absent.
+_CAPTCHA_MARKERS: tuple[str, ...] = (
+    "validate your are real human",
+    'id="captcha"',
+    'id="csalt"',
+)
+
 
 class RenderOutcome(StrEnum):
     """Why a detail-page render ended the way it did.
@@ -99,6 +111,13 @@ class RenderOutcome(StrEnum):
 
     INTERSTITIAL_PERSISTED = "interstitial_persisted"
     """Every attempt was served the Turnstile challenge. Retryable later; NOT a negative."""
+
+    CAPTCHA_BLOCKED = "captcha_blocked"
+    """The site served its own image captcha instead of the page. Retryable later; NOT a negative.
+
+    Distinct from INTERSTITIAL_PERSISTED on purpose: a reload cannot clear a captcha, so the attempt
+    loop does not spend more host requests on it, and we never try to solve it.
+    """
 
     TIMEOUT = "timeout"
     """The hard per-page wall clock expired. Retryable; says nothing about the page's content."""
@@ -141,6 +160,7 @@ class RenderResult:
         """
         return self.outcome in {
             RenderOutcome.INTERSTITIAL_PERSISTED,
+            RenderOutcome.CAPTCHA_BLOCKED,
             RenderOutcome.TIMEOUT,
             RenderOutcome.NAVIGATION_FAILED,
         }
@@ -230,6 +250,15 @@ def looks_like_interstitial(html: str) -> bool:
     """
     lowered = html.lower()
     return any(marker in lowered for marker in _INTERSTITIAL_MARKERS)
+
+
+def looks_like_captcha(html: str) -> bool:
+    """True when `html` is 1001Tracklists' own image-captcha page (phaze-a6n3e).
+
+    Only meaningful when the track container is ABSENT, like `looks_like_interstitial`.
+    """
+    lowered = html.lower()
+    return any(marker in lowered for marker in _CAPTCHA_MARKERS)
 
 
 def _xvfb_required(mode: str, *, platform: str, environ: dict[str, str] | None = None) -> bool:
@@ -700,11 +729,13 @@ def _classify(html: str, *, container_found: bool) -> RenderOutcome:
     The container check comes FIRST and wins outright: a cleared detail page still carries
     Turnstile widget markup, so consulting the markers first would misreport successful
     renders as blocked. Only when there is no container does the challenge-page marker set
-    decide between "we never got in" (retryable) and "this set has no tracklist" (a real,
+    decide between "we never got in" (retryable; a captcha is checked before the Cloudflare set) and "this set has no tracklist" (a real,
     cacheable negative).
     """
     if container_found:
         return RenderOutcome.OK
+    if looks_like_captcha(html):
+        return RenderOutcome.CAPTCHA_BLOCKED
     if looks_like_interstitial(html):
         return RenderOutcome.INTERSTITIAL_PERSISTED
     return RenderOutcome.NO_TRACKLIST
