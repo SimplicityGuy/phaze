@@ -636,18 +636,22 @@ def derive_query(
     ``tracklist_drain``'s no-signal guard). Whenever the filename yields either, the result is the
     unmodified filename derivation, byte for byte, whatever tags or path are supplied.
 
-    Fallback order, first hit wins: the ``artist`` tag (as artist) with the ``album`` tag, or failing
-    that the ``title`` tag (as event); then the parent folder's name, parsed with the same
-    filename pipeline. A year the filename carried is kept in the query either way. With no signal
-    anywhere the filename derivation is returned untouched, so the drain still spends nothing on it.
+    Fallback order, first hit wins, and a fallback applies ONLY when it forms BOTH an artist and an
+    event (phaze-t7yld): the ``artist`` tag with the ``album`` tag; then the parent folder's name,
+    parsed with the same filename pipeline and yielding both. The ``title`` tag is never an event (a
+    track title such as "Intro" names no event), and an artist-only or folder-only query would send
+    many unrelated files to one search whose top row could be stored as FOUND and never re-looked-up.
+    A year the filename carried is kept in the query. Otherwise the filename derivation is returned
+    untouched, so the drain's artist/event guard still spends nothing on it.
     """
+    del title  # accepted for caller compatibility; a track title is never an event (phaze-t7yld)
     base = _derive_from_filename(filename)
     if base.artist or base.event:
         return base
 
     tag_artist = _named(_clean_field(artist)) if artist else None
-    tag_event = (_named(_clean_field(album)) if album else None) or (_named(_clean_field(title)) if title else None)
-    if tag_artist or tag_event:
+    tag_event = _named(_clean_field(album)) if album else None
+    if tag_artist and tag_event:
         return replace(
             base,
             query=_query_from(tag_artist, tag_event, base.year),
@@ -659,7 +663,7 @@ def derive_query(
     if folder is not None:
         from_folder = _derive_from_filename(folder)
         from_folder = replace(from_folder, artist=_named(from_folder.artist), event=_named(from_folder.event))
-        if from_folder.artist or from_folder.event:
+        if from_folder.artist and from_folder.event:
             year = base.year if base.year is not None else from_folder.year
             return replace(
                 base,
