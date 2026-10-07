@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader
 
 from phaze.utils.humanize import relative_time
+from phaze.web.template_globals import register_format_filters
 
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "src/phaze/templates"
@@ -39,6 +40,7 @@ def _render(
     )
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
     environment.globals["humanize_relative_time"] = relative_time
+    register_format_filters(environment)
     html = environment.get_template("pipeline/partials/_analyze_queue.html").render(
         running_analyses=[run], analyze_running_total=1, total_queued_analyze=0, queue_now=now, oob=oob
     )

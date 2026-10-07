@@ -27,13 +27,17 @@ import re
 
 from jinja2 import Environment, FileSystemLoader
 
+from phaze.web.template_globals import register_format_filters
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _DETAIL_PANE = "pipeline/partials/_detail_pane.html"
 
 
 def _env() -> Environment:
-    return Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    _env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_format_filters(_env)
+    return _env
 
 
 def _render_detail_pane() -> str:

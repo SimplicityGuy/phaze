@@ -1,9 +1,9 @@
 {# Metadata uses the shared operational hierarchy without changing extraction or queue controls. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = "`${$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : 'unknown'} eligible · automated extraction`" %}
-{% set _btn = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
-{% set _primary = 'inline-flex h-9 items-center justify-center rounded-lg bg-action-brand px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-phaze-bg' %}
+{% set subcount = "`${$store.pipeline.metadataStatusKnown ? formatCount($store.pipeline.metadataStatusDone) : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? formatCount($store.pipeline.metadataEligible) : 'unknown'} eligible · automated extraction`" %}
+{% set _btn = ui.btn('secondary', 'md') %}
+{% set _primary = ui.btn('primary', 'md') %}
 {% set actions %}
     <button type="button"
             hx-post="/pipeline/extract-metadata" hx-target="#metadata-trigger-response" hx-swap="innerHTML"
@@ -18,12 +18,12 @@
 {% call ws.workspace(title=page_name('metadata'), subcount=subcount, actions=actions) %}
     <div class="space-y-5 p-4 sm:p-6">
         <span class="hidden" x-init="$store.pipeline.metadataStatusDone = {{ metadata_status.done }}; $store.pipeline.metadataStatusFailed = {{ metadata_status.failed }}; $store.pipeline.metadataStatusTotal = {{ metadata_status.total }}; $store.pipeline.metadataStatusKnown = {{ 1 if metadata_status.available else 0 }}; $store.pipeline.metadataEligible = {{ metadata_selection.eligible_count or 0 }}; $store.pipeline.metadataEligibleKnown = {{ 1 if metadata_selection.available else 0 }}; $store.pipeline.metadataQueued = {{ metadata_queue.counts.metadata.queued }}; $store.pipeline.metadataActive = {{ metadata_queue.counts.metadata.active }}; $store.pipeline.metadataQueueKnown = {{ 1 if metadata_queue.available else 0 }}; $store.pipeline.metadataBusy = $store.pipeline.metadataQueued + $store.pipeline.metadataActive"></span>
-        {% set eligible_value %}<span id="metadata-eligible-value" x-text="$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : '—'">{{ metadata_selection.eligible_count if metadata_selection.available else '—' }}</span>{% endset %}
-        {% set queued_value %}<span id="metadata-queued-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataQueued : '—'">{{ metadata_queue.counts.metadata.queued if metadata_queue.available else '—' }}</span>{% endset %}
-        {% set active_value %}<span id="metadata-active-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataActive : '—'">{{ metadata_queue.counts.metadata.active if metadata_queue.available else '—' }}</span>{% endset %}
-        {% set completed_value %}<span id="metadata-completed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : '—'">{{ metadata_status.done if metadata_status.available else '—' }}</span>{% endset %}
-        {% set failed_value %}<span id="metadata-failed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusFailed : '—'">{{ metadata_status.failed if metadata_status.available else '—' }}</span>{% endset %}
-        {% set recent_value %}<span id="metadata-24h-value">{{ metadata_activity.unique_files_24h if metadata_activity.available else '—' }}</span>{% endset %}
+        {% set eligible_value %}<span id="metadata-eligible-value" x-text="$store.pipeline.metadataEligibleKnown ? formatCount($store.pipeline.metadataEligible) : '—'">{{ (metadata_selection.eligible_count if metadata_selection.available else '—') | thousands }}</span>{% endset %}
+        {% set queued_value %}<span id="metadata-queued-value" x-text="$store.pipeline.metadataQueueKnown ? formatCount($store.pipeline.metadataQueued) : '—'">{{ (metadata_queue.counts.metadata.queued if metadata_queue.available else '—') | thousands }}</span>{% endset %}
+        {% set active_value %}<span id="metadata-active-value" x-text="$store.pipeline.metadataQueueKnown ? formatCount($store.pipeline.metadataActive) : '—'">{{ (metadata_queue.counts.metadata.active if metadata_queue.available else '—') | thousands }}</span>{% endset %}
+        {% set completed_value %}<span id="metadata-completed-value" x-text="$store.pipeline.metadataStatusKnown ? formatCount($store.pipeline.metadataStatusDone) : '—'">{{ (metadata_status.done if metadata_status.available else '—') | thousands }}</span>{% endset %}
+        {% set failed_value %}<span id="metadata-failed-value" x-text="$store.pipeline.metadataStatusKnown ? formatCount($store.pipeline.metadataStatusFailed) : '—'">{{ (metadata_status.failed if metadata_status.available else '—') | thousands }}</span>{% endset %}
+        {% set recent_value %}<span id="metadata-24h-value">{{ (metadata_activity.unique_files_24h if metadata_activity.available else '—') | thousands }}</span>{% endset %}
         {% set latest_value %}<span>{{ humanize_relative_time(metadata_activity.latest_successful_at) if metadata_activity.available else 'unavailable' }}</span>{% endset %}
         {% call ui.metric_strip('Metadata extraction summary') %}
             {{ ui.metric('Eligible', eligible_value, 'Exact current Extract All selection', 'neutral') }}

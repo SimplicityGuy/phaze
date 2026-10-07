@@ -3,6 +3,6 @@
          aria-label="Cloud jobs submitted or running"
          {% if oob %}hx-swap-oob="true"{% endif %}
          class="inline-flex items-baseline gap-1.5">
-    <span class="font-mono font-semibold tabular-nums text-violet-700 dark:text-violet-400">{{ analyzing_cloud_count }}</span>
+    <span class="font-mono font-semibold tabular-nums text-violet-700 dark:text-violet-400">{{ analyzing_cloud_count | thousands }}</span>
     <span>submitted / running</span>
 </section>

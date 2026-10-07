@@ -209,7 +209,7 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "convention_date_fallback_enabled"),
         description=(
             "Enable the corpus-learned release-group date-order fallback in the rename-proposal path (phaze-5fta.4). "
-            "DEFAULT ON -- phaze-5fta.5's external validation passed and the operator enabled it; derived dates reach "
+            "DEFAULT ON — phaze-5fta.5's external validation passed and the operator enabled it; derived dates reach "
             "rename proposals only, which the approval workflow still gates. Set false to restore fail-closed behavior."
         ),
     )
@@ -305,7 +305,7 @@ class ControlSettings(BaseSettings):
         description=(
             "Days a file is barred from CLOUD backends after a cloud chain burns out its budget (phaze-2mwyo). "
             "The primary policy: rate-limits fresh chains instead of banning files, and is SELF-CLEARING, so a file "
-            "grounded by a transient node fault flies again without operator action. Default 14 -- comfortably above the "
+            "grounded by a transient node fault flies again without operator action. Default 14 — comfortably above the "
             "4-day re-chain gap observed in the incident. 0 disables the cooldown; local is never barred either way."
         ),
     )
@@ -382,14 +382,14 @@ class ControlSettings(BaseSettings):
         gt=0,
         lt=86400,
         validation_alias=AliasChoices("PHAZE_S3_PRESIGN_GET_TTL_SEC", "s3_presign_get_ttl_sec"),
-        description="TTL (seconds) for the just-in-time presigned GET URL minted at pod startup (Phase 53, KSTAGE-03). Default 900 (short -- minted post-admission so it never expires during a Kueue wait); bounded gt=0, lt=86400.",
+        description="TTL (seconds) for the just-in-time presigned GET URL minted at pod startup (Phase 53, KSTAGE-03). Default 900 (short — minted post-admission so it never expires during a Kueue wait); bounded gt=0, lt=86400.",
     )
     s3_lifecycle_ttl_days: int = Field(
         default=2,
         gt=0,
         lt=30,
         validation_alias=AliasChoices("PHAZE_S3_LIFECYCLE_TTL_DAYS", "s3_lifecycle_ttl_days"),
-        description="Bucket lifecycle TTL (days) -- the backstop that deletes any staged object the inline callback delete missed (Phase 53, KSTAGE-04, D-02). Default 2; bounded gt=0, lt=30.",
+        description="Bucket lifecycle TTL (days) — the backstop that deletes any staged object the inline callback delete missed (Phase 53, KSTAGE-04, D-02). Default 2; bounded gt=0, lt=30.",
     )
     s3_multipart_part_size_bytes: int = Field(
         default=67108864,

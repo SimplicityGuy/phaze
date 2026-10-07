@@ -106,7 +106,7 @@
         {% if harmonic_journey.rows | length > _VISIBLE_RUN_CAP %}
         <button type="button" data-harmonic-show-all x-show="!expanded" x-on:click="expanded = true"
                 class="mt-2 text-xs font-medium text-cyan-700 hover:underline dark:text-cyan-400">
-            Show all {{ harmonic_journey.rows | length }} runs
+            Show all {{ (harmonic_journey.rows | length) | thousands }} runs
         </button>
         {% endif %}
     </div>

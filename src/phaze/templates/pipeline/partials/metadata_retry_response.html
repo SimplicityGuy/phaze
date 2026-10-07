@@ -17,6 +17,6 @@
 </span>
 {% else %}
 <span class="text-sm text-ok font-medium">
-    Re-queued {{ count }} failed file(s) for metadata extraction.
+    Re-queued {{ count | thousands }} failed file(s) for metadata extraction.
 </span>
 {% endif %}

@@ -7,4 +7,4 @@
      - agents (list[dict]): one entry per agent in dispatch order
      - subjobs_expected (int): ceil(N/500) summed across agents
 #}
-Dispatched {{ total }} proposal{{ 's' if total != 1 else '' }} across {{ agents|length }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})
+Dispatched {{ total | thousands }} proposal{{ 's' if total != 1 else '' }} across {{ (agents|length) | thousands }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})

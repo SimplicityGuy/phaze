@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-fq9h.8: the per-file 1001Tracklists review body.
 
    Swapped into #tracklist-review-{{ file_id }} on the record page, both on first render
@@ -34,12 +35,12 @@
 #}
 {% set _badge = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold' %}
 {% set _outcome_labels = {
-    'not_found': ('No confident match on 1001Tracklists', 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', 'Definitive -- the search ran cleanly and the site has nothing for this set. Re-checked automatically after its TTL, since the site does gain tracklists over time.'),
-    'blocked': ('Blocked by a Turnstile challenge', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
-    'search_failed': ('Search failed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
-    'render_failed': ('Detail page did not render', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
-    'low_confidence': ('Only low-confidence matches on 1001Tracklists', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Not a negative -- the search returned rows, but none scored high enough to trust. That usually means the search text was off, not that the site lacks this set; it is re-checked after a hold (30 days for a near miss, 180 when every row was far off), and at once if the search text changes.'),
-    'parse_failed': ('Page rendered, nothing parsed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
+    'not_found': ('No confident match on 1001Tracklists', 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', 'Definitive — the search ran cleanly and the site has nothing for this set. Re-checked automatically after its TTL, since the site does gain tracklists over time.'),
+    'blocked': ('Blocked by a Turnstile challenge', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
+    'search_failed': ('Search failed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
+    'render_failed': ('Detail page did not render', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
+    'low_confidence': ('Only low-confidence matches on 1001Tracklists', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Not a negative — the search returned rows, but none scored high enough to trust. That usually means the search text was off, not that the site lacks this set; it is re-checked after a hold (30 days for a near miss, 180 when every row was far off), and at once if the search text changes.'),
+    'parse_failed': ('Page rendered, nothing parsed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
 } %}
 {% if review is none %}
 <p class="text-sm text-danger ">File not found.</p>
@@ -58,7 +59,7 @@
 
     {% if just_refreshed %}
     <p class="mb-2 text-sm text-info ">
-        Refresh requested -- the cached answer for this page has been dropped and a batch of tracklist lookups dispatched.
+        Refresh requested — the cached answer for this page has been dropped and a batch of tracklist lookups dispatched.
         The tracks below are the CURRENT version and stay in place until the re-read succeeds; a blocked or
         empty re-read writes nothing at all.
     </p>
@@ -69,7 +70,7 @@
         <div class="flex flex-wrap items-center gap-2">
             {% if review.is_propagated %}
             <span class="{{ _badge }} text-info bg-blue-100 dark:bg-blue-500/10"
-                  title="This file was never fetched from 1001Tracklists directly -- the tracklist was inherited from a byte-identical duplicate file and copied here.">
+                  title="This file was never fetched from 1001Tracklists directly — the tracklist was inherited from a byte-identical duplicate file and copied here.">
                 Propagated from a duplicate · {{ review.tracklist.propagation_confidence or 'unknown' }} confidence link
             </span>
             {% else %}
@@ -78,7 +79,7 @@
             </span>
             {% endif %}
             {% if review.tracklist.match_confidence is not none %}
-            <span class="text-xs text-muted " title="phaze-fq9h.6 result-scoring confidence -- did we pick the right 1001Tracklists search result for this file. NOT a claim that the tracklist's tracks were verified against the audio.">
+            <span class="text-xs text-muted " title="phaze-fq9h.6 result-scoring confidence — did we pick the right 1001Tracklists search result for this file. NOT a claim that the tracklist's tracks were verified against the audio.">
                 match confidence {{ review.tracklist.match_confidence }}
             </span>
             {% endif %}
@@ -105,7 +106,7 @@
             <div>
                 <dt class="text-muted ">Latest version</dt>
                 <dd class="mt-0.5 text-gray-900 dark:text-gray-200">
-                    {{ review.tracks | length }} track{% if review.tracks | length != 1 %}s{% endif %}
+                    {{ (review.tracks | length) | thousands }} track{% if review.tracks | length != 1 %}s{% endif %}
                     {% if review.latest_version %} · scraped {{ review.latest_version.scraped_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
                 </dd>
             </div>
@@ -215,19 +216,19 @@
         {% if not review.actionable %}
             {% if review.cache_decision.value == 'suppressed_negative' %}
         <p class="mt-2 text-xs font-medium text-warn ">
-            Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) -- Look up again becomes available at that time.
+            Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) — Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'backoff' %}
         <p class="mt-2 text-xs font-medium text-warn ">
-            In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- Look up again becomes available at that time.
+            In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure — Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'low_confidence_hold' %}
         <p class="mt-2 text-xs font-medium text-warn ">
-            Held until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a low-confidence search -- Look up again becomes available at that time.
+            Held until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a low-confidence search — Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'transient_exhausted' %}
         <p class="mt-2 text-xs font-medium text-danger ">
-            Parked after repeated transient failures -- needs a human look before it can be retried.
+            Parked after repeated transient failures — needs a human look before it can be retried.
         </p>
             {% endif %}
         {% endif %}
@@ -239,7 +240,7 @@
            request on an unrelated set while doing nothing for this one. #}
         <p class="mb-2 text-sm font-medium text-gray-900 dark:text-gray-200">No matched 1001Tracklists tracklist.</p>
         <p class="text-sm text-muted ">
-            Already has track data from a {{ review.answered_elsewhere }} -- excluded from the drain queue.
+            Already has track data from a {{ review.answered_elsewhere }} — excluded from the drain queue.
         </p>
     {% else %}
         {# STATE 3b -- never looked up, and nothing else excludes it either. #}
@@ -265,7 +266,7 @@
                 hx-post="/pipeline/tracklists/{{ file_id }}/refresh" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
                 hx-confirm="Re-read this tracklist's page from 1001Tracklists? The current tracks are kept until a successful re-read replaces them."
                 aria-label="Refresh this file's tracklist from 1001Tracklists"
-                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+                class="{{ ui.btn('secondary', 'sm') }}">
             Refresh from 1001Tracklists
         </button>
     </div>
@@ -282,7 +283,7 @@
         <button type="button"
                 hx-post="/pipeline/tracklists/{{ file_id }}/unprioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
                 aria-label="Cancel prioritized lookup for this file"
-                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+                class="{{ ui.btn('secondary', 'sm') }}">
             Lookup queued · cancel
         </button>
         {% if not review.actionable %}
@@ -290,7 +291,7 @@
            the drain queue until the cache verdict changes. Say so, rather than let "Priority
            queued" stand as an unqualified claim of an active queue position. #}
         <p class="mt-1 text-xs text-muted ">
-            This flag will have no effect until the cache verdict above changes -- the drain keeps a cache-suppressed set out of the queue even when flagged.
+            This flag will have no effect until the cache verdict above changes — the drain keeps a cache-suppressed set out of the queue even when flagged.
         </p>
         {% endif %}
         {% elif review.actionable %}
@@ -298,7 +299,7 @@
                 hx-post="/pipeline/tracklists/{{ file_id }}/prioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
                 hx-confirm="Queue an exact-set 1001Tracklists lookup for this file?"
                 aria-label="{% if review.cache_entry %}Look up this file again on 1001Tracklists{% else %}Look up this file now on 1001Tracklists{% endif %}"
-                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+                class="{{ ui.btn('secondary', 'sm') }}">
             {% if review.cache_entry %}Look up again{% else %}Look up now{% endif %}
         </button>
         {% endif %}

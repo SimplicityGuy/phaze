@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-mft5: Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the
    paging contract forbids (rule 2). ``pagination`` is a phaze.services.pagination.Page
    (rows/page/page_size/has_next), the same shape the Analyze/metadata pagers use.
@@ -16,7 +17,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
-            class="text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
+            class="{{ ui.btn('secondary', 'sm') }}">
             Previous
         </button>
         {% endif %}
@@ -25,7 +26,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
-            class="text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
+            class="{{ ui.btn('secondary', 'sm') }}">
             Next
         </button>
         {% endif %}

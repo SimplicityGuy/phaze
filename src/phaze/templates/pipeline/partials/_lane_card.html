@@ -31,7 +31,7 @@
         {% if _local %}
         <p class="mt-0.5 text-[11px] text-muted ">Runs at the agent's own concurrency</p>
         {% else %}
-        <p class="mt-0.5 text-[11px] text-muted ">Configured capacity {{ lane.cap }}</p>
+        <p class="mt-0.5 text-[11px] text-muted ">Configured capacity {{ lane.cap | thousands }}</p>
         {% endif %}
     </div>
     {# phaze-x6ql9: column-label mapping (read from lane_snapshot.py / queue_introspection.py, not guessed).
@@ -46,13 +46,13 @@
          * Cloud   "Capacity" -- in_flight/cap, the admission window the drain schedules against. #}
     <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
         {% if _local %}
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Claimed</dt><dd class="font-mono text-sm tabular-nums {% if _stuck %}text-danger {% endif %}" title="Taken by the agent but not started yet">{{ _claimed if _claimed is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued | thousands }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active | thousands }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Claimed</dt><dd class="font-mono text-sm tabular-nums {% if _stuck %}text-danger {% endif %}" title="Taken by the agent but not started yet">{{ _claimed | thousands }}</dd></div>
         {% else %}
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-danger {% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Waiting</dt><dd class="font-mono text-sm tabular-nums">{{ _queued | thousands }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Running</dt><dd class="font-mono text-sm tabular-nums">{{ _active | thousands }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-danger {% endif %}">{{ _in_flight | thousands }}/{{ lane.cap | thousands }}</dd></div>
         {% endif %}
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Status</dt><dd class="mt-0.5">
             {% if _stuck %}{{ ui.status_badge("Lane status", "STUCK", "danger", "✕") }}
@@ -65,29 +65,29 @@
             {% elif _local and _queued %}{{ ui.status_badge("Lane status", "WAITING", "neutral", "…") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
         </dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h | thousands }}</dd></div>
     </dl>
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-info sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
     {% if _stuck %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck | thousands }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
     {% elif _breaker_held %}
     <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">Dispatch held: this lane's pods cannot reach the control plane ({{ lane.breaker_reason or "breaker open" }}). No attempts are being charged. One probe file is sent{% if lane.breaker_next_probe_at %} from {{ lane.breaker_next_probe_at.strftime("%H:%M UTC") }}{% endif %}; the lane resumes on its own the first time a pod reaches the control plane. Check the burst cluster's DNS and network path to the control plane.</p>
     {% elif _capacity_over %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight | thousands }} exceeds scheduler cap {{ lane.cap | thousands }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% elif _capacity_full and lane.available %}
-    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-warn dark:bg-amber-950  sm:col-span-12">At scheduler cap {{ lane.cap }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
+    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-warn dark:bg-amber-950  sm:col-span-12">At scheduler cap {{ lane.cap | thousands }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
     {% endif %}
     <details id="lane-diagnostics-{{ lane.id }}" data-poll-preserve-disclosure class="sm:col-span-12"
              onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">
         <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-muted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
-            <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
-            {% if _local %}<span>Scheduler in-flight {{ _in_flight if _in_flight is not none else "—" }} (queued + running; not compared with cap)</span>{% endif %}
-            {% if _local and lane.claimed_overdue is defined and lane.claimed_overdue is not none %}<span>Claimed past the stall bound {{ lane.claimed_overdue }} · stranded {{ lane.stranded }} · heartbeat lost {{ lane.heartbeat_lost }}</span>{% endif %}
+            <span>RANK {{ lane.rank }} · cap {{ lane.cap | thousands }}</span>
+            {% if _local %}<span>Scheduler in-flight {{ _in_flight | thousands }} (queued + running; not compared with cap)</span>{% endif %}
+            {% if _local and lane.claimed_overdue is defined and lane.claimed_overdue is not none %}<span>Claimed past the stall bound {{ lane.claimed_overdue | thousands }} · stranded {{ lane.stranded | thousands }} · heartbeat lost {{ lane.heartbeat_lost | thousands }}</span>{% endif %}
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}
-            <span>processed {{ _processed_24h if _processed_24h is not none else "—" }} (24h) / {{ _processed_lifetime if _processed_lifetime is not none else "—" }} all time</span>
-            {% if _kind == "compute" %}<span>Execution activity unavailable · staged window {{ _queued if _queued is not none else "—" }}</span>{% endif %}
-            {% if _kind == "kueue" %}<span>Post-submit window {{ _working if _working is not none else "—" }} · pod running {{ _active if _active is not none else "—" }}</span>{% endif %}
+            <span>processed {{ _processed_24h | thousands }} (24h) / {{ _processed_lifetime | thousands }} all time</span>
+            {% if _kind == "compute" %}<span>Execution activity unavailable · staged window {{ _queued | thousands }}</span>{% endif %}
+            {% if _kind == "kueue" %}<span>Post-submit window {{ _working if _working is not none else "—" }} · pod running {{ _active | thousands }}</span>{% endif %}
             {% if _kind == "kueue" %}<span>Quota: {{ lane.quota_wait }} waiting · {{ lane.inadmissible }} inadmissible</span>{% endif %}
         </div>
     </details>

@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-2u8v.6: the Agents-table detail, as an EXPANDED ROW beneath its trigger row.
 
    Replaces the shared side #detail-pane (pipeline/partials/_detail_pane.html) for this surface — the
@@ -83,7 +84,7 @@
             <button type="button"
                     @click="hide()"
                     aria-label="Close detail"
-                    class="rounded-lg px-2 py-0.5 text-sm text-muted hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-100">
+                    class="{{ ui.btn('ghost', 'sm') }}">
                 ✕<span class="sr-only"> Close</span>
             </button>
         </div>

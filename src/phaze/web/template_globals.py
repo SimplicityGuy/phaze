@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
+from phaze.utils.humanize import format_count, format_duration
 
 
 if TYPE_CHECKING:
@@ -126,6 +127,9 @@ def register_set_glyph_globals(env: Environment) -> None:
     env.globals["energy_lightness"] = energy_lightness
     env.globals["camelot_legend"] = CAMELOT_LEGEND
     env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
+    # ``ui/primitives.html`` (which hosts ``set_glyph_legend``) uses the display-format filters at COMPILE time, so any
+    # environment that can import it needs them; registering here keeps the two helpers from being a trap in either order.
+    register_format_filters(env)
 
 
 def register_page_name_globals(env: Environment) -> None:
@@ -136,6 +140,19 @@ def register_page_name_globals(env: Environment) -> None:
     """
     env.globals["page_name"] = page_name
     env.globals["palette_pages"] = palette_pages
+    register_format_filters(env)
+
+
+def register_format_filters(env: Environment) -> None:
+    """Register the display-format Jinja filters on ``env`` (phaze-nwmsu).
+
+    Called from :func:`register_page_name_globals`, which every ``Jinja2Templates`` environment
+    already calls, so the filters reach all of them without a second registration line per router.
+    ``duration`` renders seconds as ``h:mm:ss`` / ``m:ss`` / ``—``; ``thousands`` renders an integer count with ``,``
+    separators (phaze-dwevc). The name is not ``count``: Jinja already ships ``count`` as an alias of ``length``.
+    """
+    env.filters["duration"] = format_duration
+    env.filters["thousands"] = format_count
 
 
 __all__ = [
@@ -144,6 +161,7 @@ __all__ = [
     "open_label",
     "page_name",
     "palette_pages",
+    "register_format_filters",
     "register_page_name_globals",
     "register_set_glyph_globals",
 ]

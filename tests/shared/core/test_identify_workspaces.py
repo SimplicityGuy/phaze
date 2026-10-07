@@ -244,7 +244,7 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     # one short line each (was two dense sentences per dt).
     assert "Live sets not already answered by tags, a .cue file, or a pending lookup." in body
     assert "files have a tracklist." in body
-    assert "Run lookups below -- they keep going until the queue is empty." in body
+    assert "Run lookups below — they keep going until the queue is empty." in body
     assert "artist and event metadata" not in body
     assert "pending only while no Discogs link exists for any track on any version" in body
     assert "one link of any status removes it from pending" in body

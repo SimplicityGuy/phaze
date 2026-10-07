@@ -22,10 +22,13 @@ import re
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from phaze.web.template_globals import register_format_filters
+
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "phaze" / "templates"
 
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_format_filters(_templates.env)
 
 
 def _fake_request() -> Request:
@@ -68,6 +71,6 @@ def test_header_names_online_agents_and_active_lanes_separately() -> None:
 def test_header_counts_bind_to_their_distinct_store_values() -> None:
     html = _render_header()
     # phaze-s8xtd: each numeral is gated on seedKnown so an unmeasured count reads an em-dash, never 0.
-    assert html.count("x-text=\"$store.pipeline.seedKnown ? $store.pipeline.agentOnline : '—'\"") == 1
-    assert html.count("x-text=\"$store.pipeline.seedKnown ? $store.pipeline.computeLanesActive : '—'\"") == 1
+    assert html.count("x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'\"") == 1
+    assert html.count("x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.computeLanesActive) : '—'\"") == 1
     assert 'x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"' not in html

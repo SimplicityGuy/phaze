@@ -31,7 +31,7 @@
             ⚠ K8s Jobs not admitting — check LocalQueue config
         </h2>
         <p class="text-sm text-warn ">
-            {{ inadmissible_count }} cloud job(s) Inadmissible — the Kueue LocalQueue/ClusterQueue may be misconfigured.
+            {{ inadmissible_count | thousands }} cloud job(s) Inadmissible — the Kueue LocalQueue/ClusterQueue may be misconfigured.
         </p>
     </div>
     {% endif %}

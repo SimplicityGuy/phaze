@@ -42,7 +42,7 @@
 {% if pagination.total_pages > 1 or pagination.total %}
 <div class="flex items-center justify-between mt-4 px-6 pb-4 text-sm">
     <div class="text-muted ">
-        Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} proposals
+        Showing {{ pagination.start | thousands }}-{{ pagination.end | thousands }} of {{ pagination.total | thousands }} proposals
     </div>
 
     {% if pagination.total_pages > 1 %}

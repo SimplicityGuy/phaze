@@ -38,6 +38,7 @@ from phaze.services.pipeline import (
 )
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import done_clause, inflight_clause
+from phaze.utils.humanize import format_count
 from phaze.web.template_globals import PAGE_NAMES, open_label
 
 
@@ -177,7 +178,7 @@ def _flow_review_apply_nodes(execute: dict[str, int | None], proposal_pending: i
             "href": "/s/rename",
             "done": None,
             "total": proposal_pending,
-            "detail": f"{proposal_pending} awaiting decision",
+            "detail": f"{format_count(proposal_pending)} awaiting decision",
             "status": _flow_readiness_status(proposal_pending, "attention"),
         },
         {
@@ -229,16 +230,21 @@ def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_t
     if metadata_failed:
         items.append(
             _attention_item(
-                10, "Metadata failures", f"{metadata_failed} file(s) need inspection or retry.", "/s/metadata", open_label("metadata"), "danger"
+                10,
+                "Metadata failures",
+                f"{format_count(metadata_failed)} file(s) need inspection or retry.",
+                "/s/metadata",
+                open_label("metadata"),
+                "danger",
             )
         )
     if analyze_failed:
-        stalled_detail = f"; {stalled_analyses} stopped by the progress watchdog" if stalled_analyses else ""
+        stalled_detail = f"; {format_count(stalled_analyses)} stopped by the progress watchdog" if stalled_analyses else ""
         items.append(
             _attention_item(
                 11,
                 "Analysis failures",
-                f"{analyze_failed} file(s) reached terminal failure{stalled_detail}.",
+                f"{format_count(analyze_failed)} file(s) reached terminal failure{stalled_detail}.",
                 "/s/analyze",
                 open_label("analyze"),
                 "danger",
@@ -247,7 +253,11 @@ def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_t
     if orphan_total:
         items.append(
             _attention_item(
-                20, "Orphaned work", f"{orphan_total} scheduled file(s) have no live job or domain result.", "/s/discover", open_label("discover")
+                20,
+                "Orphaned work",
+                f"{format_count(orphan_total)} scheduled file(s) have no live job or domain result.",
+                "/s/discover",
+                open_label("discover"),
             )
         )
     return items
@@ -263,7 +273,7 @@ def _capacity_attention_items(
             _attention_item(
                 30,
                 "Cloud jobs blocked by configuration",
-                f"{inputs.inadmissible_count} active cloud job(s) are Inadmissible.",
+                f"{format_count(inputs.inadmissible_count)} active cloud job(s) are Inadmissible.",
                 "/s/agents",
                 open_label("agents"),
             )
@@ -271,13 +281,15 @@ def _capacity_attention_items(
     if inputs.awaiting_cloud_count:
         hold_reason = inputs.awaiting_hold_reason or "reason unavailable"
         href, action = _awaiting_cloud_target(hold_reason)
-        items.append(_attention_item(40, "Files awaiting cloud routing", f"{inputs.awaiting_cloud_count} file(s): {hold_reason}.", href, action))
+        items.append(
+            _attention_item(40, "Files awaiting cloud routing", f"{format_count(inputs.awaiting_cloud_count)} file(s): {hold_reason}.", href, action)
+        )
     if inputs.queued_behind_quota_count:
         items.append(
             _attention_item(
                 41,
                 "Cloud quota wait",
-                f"{inputs.queued_behind_quota_count} submitted cloud job(s) are waiting for cluster quota.",
+                f"{format_count(inputs.queued_behind_quota_count)} submitted cloud job(s) are waiting for cluster quota.",
                 "/s/agents",
                 open_label("agents"),
             )
@@ -409,7 +421,7 @@ def _recommended_default(
     if proposal_pending:
         return {
             "title": "Review proposed changes",
-            "detail": f"{proposal_pending} proposal(s) await an operator decision.",
+            "detail": f"{format_count(proposal_pending)} proposal(s) await an operator decision.",
             "href": "/s/rename",
             "action": open_label("rename"),
             "tone": "attention",

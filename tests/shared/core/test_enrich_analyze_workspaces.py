@@ -711,7 +711,7 @@ async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: A
     assert 'x-text="$store.pipeline.analyzeActive"' not in body[metrics:health]
     assert "execution activity unavailable" in body[metrics:health]
     assert "executing now" not in body[metrics:health]
-    assert 'x-text="$store.pipeline.analyzeDone"' in body[metrics:health]
+    assert 'x-text="formatCount($store.pipeline.analyzeDone)"' in body[metrics:health]
     assert "Waiting" in body and "Running" in body and "Completed" in body
     assert "lane capacity" not in body.lower(), "phaze-lwz8n: the local lane has no capacity reading to compare against"
     assert "Technical diagnostics" in body

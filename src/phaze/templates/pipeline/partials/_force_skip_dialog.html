@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 87 (87-06, UI-04 / D-08/D-09/D-10): the enrich-only force-skip control + confirm dialog.
 
    Rendered ONCE per ENRICH stage (metadata / analyze) from the record slide-in right
@@ -34,7 +35,7 @@
     <button type="button"
             aria-label="Skip {{ stage_value }} for this file"
             @click="open = true; $nextTick(() => $refs.cancel && $refs.cancel.focus())"
-            class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium text-muted hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:text-gray-200">
+            class="{{ ui.btn('primary', 'md') }}">
         Skip stage…
     </button>
 
@@ -59,7 +60,7 @@
                 <div id="skip-error-{{ stage_value }}-{{ file_id }}" aria-live="polite" class="mt-1 empty:hidden"></div>
                 <div class="mt-4 flex items-center justify-end gap-2">
                     <button type="button" x-ref="cancel" @click="hide()"
-                            class="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-300 dark:hover:bg-white/5">Cancel</button>
+                            class="{{ ui.btn('secondary', 'md') }}">Cancel</button>
                     {# phaze-tckiy: no method/action -- a click before htmx has processed this
                        form falls through to a native GET, which drops the skip AND promotes the
                        operator's free-text reason into the address bar. `disabled` +
@@ -70,7 +71,7 @@
                        enabled there). Not on the Alpine `open` toggle -- so the button is already
                        live by the time the modal is shown. #}
                     <button type="submit" disabled data-hx-guard
-                            class="rounded-lg bg-cyan-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 dark:bg-cyan-500 dark:hover:bg-cyan-400">Skip stage</button>
+                            class="{{ ui.btn('primary', 'md') }}">Skip stage</button>
                 </div>
             </form>
         </div>

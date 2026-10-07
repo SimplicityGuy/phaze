@@ -3,6 +3,6 @@
          aria-label="Cloud jobs staging or transferring"
          {% if oob %}hx-swap-oob="true"{% endif %}
          class="inline-flex items-baseline gap-1.5">
-    <span class="font-mono font-semibold tabular-nums text-warn">{{ pushing_count }}</span>
+    <span class="font-mono font-semibold tabular-nums text-warn">{{ pushing_count | thousands }}</span>
     <span>staged / transferring</span>
 </section>

@@ -12,13 +12,13 @@
 #}
 <div>
     <div class="text-xs font-semibold uppercase text-muted ">Total</div>
-    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total }}</div>
+    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total | thousands }}</div>
 </div>
 <div>
     <div class="text-xs font-semibold uppercase text-muted ">Completed</div>
-    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed }}</div>
+    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed | thousands }}</div>
 </div>
 <div>
     <div class="text-xs font-semibold uppercase text-muted ">Failed</div>
-    <div class="text-xl font-semibold {% if failed > 0 %}text-danger {% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
+    <div class="text-xl font-semibold {% if failed > 0 %}text-danger {% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed | thousands }}</div>
 </div>
