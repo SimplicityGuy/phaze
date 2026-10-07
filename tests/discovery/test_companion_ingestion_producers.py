@@ -196,7 +196,7 @@ async def test_watcher_persists_approved_companions_including_orphans_and_never_
 
 
 def _release_tree(root: Path) -> dict[str, Path]:
-    """A release whose companions sit in sub-folders beside, and below, its media (phaze-ehryj)."""
+    """A release whose companions sit in sub-folders beside, and below, its media (phaze-ehryj's tree, real contents since phaze-rmhfr)."""
     release = root / "release"
     info = release / "info"
     named = release / "Live_Set-2019"
@@ -209,14 +209,20 @@ def _release_tree(root: Path) -> dict[str, Path]:
         directory.mkdir(parents=True, exist_ok=True)
     return {
         "track": _write(release / "Live Set 2019.mp3", b"release-music"),
-        "by_stem": _write(info / "00-live_set_2019.nfo", b"release-notes"),
-        "by_folder": _write(named / "site.txt", b"release-site"),
-        "unmatched": _write(playlist / "011.txt", b"release-playlist"),
-        "too_deep": _write(deep / "live set 2019.cue", b"two-levels-down"),
+        "by_stem": _write(
+            info / "00-live_set_2019.nfo", b"Artist ......: Example Artist\r\nTitle .......: Live Set\r\nDate ........: 2019\r\nSource ......: FM\r\n"
+        ),
+        "by_folder": _write(named / "site.txt", b"Notes about this recording session, taken at the venue on the night."),
+        "unmatched": _write(playlist / "011.txt", b"Episode eleven: notes recorded in the studio, no running order."),
+        "too_deep": _write(
+            deep / "live set 2019.cue", b'TITLE "Live Set"\r\nFILE "Live Set 2019.mp3" MP3\r\n  TRACK 01 AUDIO\r\n    TITLE "Opening"\r\n'
+        ),
         "bonus_track": _write(bonus / "bonus.mp3", b"bonus-music"),
         "video": _write(video_release / "Band Live_Night 1 (2022) (1).mkv", b"release-video"),
-        "notice": _write(video_info / "Downloaded from a site.txt", b"release-notice"),
-        "bonus_cue": _write(bonus / "bonus.cue", b"bonus-cue"),
+        "notice": _write(
+            video_info / "Downloaded from a site.txt", b"Downloaded from www.example-release-site.test\r\nVisit us for more free sets!\r\n"
+        ),
+        "bonus_cue": _write(bonus / "bonus.cue", b'TITLE "Bonus"\r\nFILE "bonus.mp3" MP3\r\n  TRACK 01 AUDIO\r\n    TITLE "Encore"\r\n'),
     }
 
 
@@ -231,13 +237,15 @@ async def _linked_names(session: AsyncSession) -> set[tuple[str, str]]:
     return {(row[0], row[1]) for row in result.all()}
 
 
-# Identical for both producers: both admit 011.txt and the two-levels-down cue (phaze-gafl9), and
-# association leaves them unlinked; bonus.cue's own-directory media wins.
+# Identical for both producers. The linking chain (phaze-rmhfr) decides from the features the producer
+# reported: both CUEs link by their FILE reference (the two-levels-down one included, which phaze-ehryj
+# left unlinked), and the info/ NFO by whole-agent close name. phaze-ehryj's parent-folder name pairing
+# is retired (operator decision 8, 2026-10-07; epic phaze-4x319), so site.txt -- linked by its folder's
+# name until then -- stays unlinked, as does 011.txt; the download notice is a site advert, so junk.
 _RELEASE_LINKS = {
     ("00-live_set_2019.nfo", "Live Set 2019.mp3"),
-    ("site.txt", "Live Set 2019.mp3"),
+    ("live set 2019.cue", "Live Set 2019.mp3"),
     ("bonus.cue", "bonus.mp3"),
-    ("Downloaded from a site.txt", "Band Live_Night 1 (2022) (1).mkv"),
 }
 
 
@@ -247,7 +255,7 @@ async def test_scan_admits_and_links_companions_in_a_media_folders_subfolder(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """The real scan ingests every sub-folder companion (phaze-gafl9); association links the name-matched ones (phaze-ehryj)."""
+    """The real scan ingests every sub-folder companion (phaze-gafl9) and reports its features; the chain links from them (phaze-rmhfr)."""
     tree = _release_tree(tmp_path)
     agent, _token = seed_test_agent
     batch = ScanBatch(agent_id=agent.id, scan_path=str(tmp_path), status=ScanStatus.RUNNING.value, total_files=0, processed_files=0)
@@ -267,9 +275,9 @@ async def test_scan_admits_and_links_companions_in_a_media_folders_subfolder(
     await associate_companions(session)
     links = await _linked_names(session)
     assert links == _RELEASE_LINKS
-    # Admitted is no longer the same as linked: the two companions nothing names stay unlinked file rows.
+    # Admitted is no longer the same as linked: what nothing names, and the junk notice, stay unlinked file rows.
     unlinked = {name for name in names if not name.endswith((".mp3", ".mkv"))} - {companion for companion, _media in links}
-    assert unlinked == {tree["unmatched"].name, tree["too_deep"].name}
+    assert unlinked == {tree["unmatched"].name, tree["by_folder"].name, tree["notice"].name}
 
 
 async def test_watcher_links_companions_in_a_media_folders_subfolder_like_the_scan(

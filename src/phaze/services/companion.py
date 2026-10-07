@@ -1,167 +1,259 @@
-"""Companion association service: links companion files to media in their own directory, or name-matched parent media."""
+"""Companion association: re-derives every companion's links with the linking chain over stored content features (phaze-rmhfr).
 
-from collections.abc import Collection, Sequence
+The decisions are ``services/companion_linking.py``'s (pure, cited rule by rule to
+``docs/spikes/phaze-9aker-companion-matching-accuracy.md``); this module does the IO around them --
+which companions to decide, the agent's media they are decided against, and the writes.
+
+- **Every link is re-derived.** Operator decision 2026-10-07, "Re-derive every link (Recommended)"
+  (dispatch session; durable record: bead phaze-rmhfr comment). Each run decides every companion that
+  carries CURRENT features, linked or not, and REPLACES its links with exactly what the chain returns:
+  links the chain no longer returns -- a junk companion's, the retired parent-folder rule's, an
+  over-link to every file of a collection folder -- are deleted, missing ones inserted, the rest kept.
+  ``file_companions`` carries no provenance, and this module is its only writer, so no link is
+  operator-made and none is exempt.
+- **Only companions with CURRENT content features are decided.** A companion with no
+  ``companion_content_features`` row, or whose stored fingerprint no longer equals
+  ``files.sha256_hash``, keeps whatever links it has, untouched, and is counted as
+  ``awaiting_features``: without its features the junk veto and the reference step cannot run, and
+  linking by location alone is the rule the spike measured linking 17 of 20 junk files (§4.3). So the
+  deploy order is the features backfill (``phaze backfill companion-features``) first, association
+  second.
+- **Per agent.** ``original_path`` is unique only per agent (uq_files_agent_id_original_path), so
+  every read, the media index and every link stay on one agent: two fileserver agents holding the
+  identical path never pair files from unrelated recordings (phaze-vpig).
+- **Companions beside media first, and duplicates judged on THIS run's links.** The duplicate veto asks
+  whether a byte-identical copy is linked. Deciding every companion beside media before any without,
+  and answering from the links this run has derived so far (never from links an earlier run left on a
+  companion not yet re-derived), makes the outcome a function of the archive alone: a re-run derives
+  the same links, whatever the ingest order or the previous state.
+- **Head-only junk verdicts do not veto.** A per-file class (empty, all-NUL, site ad) the agent reached
+  on a TRUNCATED read judged only the first ``MAX_FEATURE_BYTES``; a large file whose head looks like an
+  advert may be a real tracklist, so it does not veto a link. A known stamp is a whole-file
+  fingerprint verdict and still does (the phaze-bk5jp detector applies the same guard).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import ColumnElement, CursorResult, and_, or_, select
+from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.constants import EXTENSION_MAP, FileCategory, companion_match_key
+from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
+from phaze.services.companion_content import COMPANION_FILE_TYPES
+from phaze.services.companion_linking import AgentMediaIndex, LinkInput, LinkStep, link_companion
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 MEDIA_CATEGORIES: set[FileCategory] = {FileCategory.MUSIC, FileCategory.VIDEO}
-COMPANION_TYPES: set[str] = {ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat == FileCategory.COMPANION}
+COMPANION_TYPES: frozenset[str] = COMPANION_FILE_TYPES
+"""The companion types association decides: the ingestible ones, the only ones that carry content features."""
 MEDIA_TYPES: set[str] = {ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in MEDIA_CATEGORIES}
 
-_LIKE_ESCAPE_CHAR = "\\"
-
 DEFAULT_ASSOCIATE_BATCH_SIZE = 2_000
-"""Unlinked companion FileRecords read per keyset page in :func:`associate_companions`
-(phaze-yiwq5). The pre-fix query materialized the WHOLE unlinked-companion corpus with a single
-unbounded ``.scalars().all()`` and built the full per-directory link cross-product from it in one
-shot -- on an archive with a large never-associated backlog that is an unbounded allocation in the
-api process, reachable from an operator-triggered ``POST /associate``. Paging by
-``FileRecord.id`` bounds peak memory to one page's companions plus the media cross-product for the
-directories that page touches, regardless of how large the total backlog is."""
+"""Pending companions read per keyset page in :func:`associate_companions` (phaze-yiwq5). The pre-fix
+query materialized the WHOLE unlinked-companion corpus with a single unbounded ``.scalars().all()``
+-- on an archive with a large never-associated backlog that is an unbounded allocation in the api
+process, reachable from an operator-triggered ``POST /associate``. Paging by ``FileRecord.id``
+bounds each page's companions regardless of how large the total backlog is."""
+
+MEDIA_INDEX_PAGE_SIZE = 10_000
+"""Media rows read per keyset page while building one agent's :class:`AgentMediaIndex`."""
 
 
-def _escape_like(value: str) -> str:
-    """Escape LIKE metacharacters (backslash, %, _) so a filesystem path can be used
-    safely as a literal prefix in a SQL LIKE pattern."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+@dataclass
+class AssociationOutcome:
+    """What one :func:`associate_companions` run did."""
+
+    links_created: int = 0
+    links_removed: int = 0
+    links_kept: int = 0
+    awaiting_features: int = 0
+    decided: dict[LinkStep, int] = field(default_factory=dict)
+    """Companions decided this run, by the chain step that decided them."""
 
 
-def _group_by_directory(files: Sequence[FileRecord]) -> dict[tuple[str, str], list[FileRecord]]:
-    """Bucket ``files`` by ``(agent_id, parent directory)``.
+_HEAD_ONLY_JUNK: frozenset[str] = frozenset({"empty", "all_nul", "site_ad"})
+"""Per-file junk classes, judged by the agent on the bytes it read: on a truncated read, only the head."""
 
-    The directory string ALONE is ambiguous across agents: ``original_path`` is unique only per
-    agent (uq_files_agent_id_original_path), so two fileserver agents can hold files at the
-    identical path. Keying on the pair is what stops a companion linking to media on every agent
-    that happens to share a directory path, pairing files from unrelated recordings.
 
-    Used for both sides of the association -- this page's companions and the media rows fetched for
-    them -- so both sides are bucketed by an identically-computed key.
+@dataclass(frozen=True)
+class _Companion:
+    """One companion with current stored features, as the chain needs it."""
+
+    id: uuid.UUID
+    path: str
+    fingerprint: str
+    junk_class: str | None
+    is_tracklist: bool
+    references: tuple[tuple[str, str], ...]
+
+
+def linking_junk_class(junk_class: str | None, *, truncated: bool) -> str | None:
+    """The junk class the linking veto honours: a per-file class from a truncated read is not a whole-file verdict."""
+    return None if truncated and junk_class in _HEAD_ONLY_JUNK else junk_class
+
+
+async def _media_index(session: AsyncSession, agent_id: str, *, page_size: int = MEDIA_INDEX_PAGE_SIZE) -> AgentMediaIndex:
+    """Every media row of ``agent_id``, read in keyset pages on ``(agent_id, original_path)``.
+
+    Reads only ``id`` and ``original_path``, never whole rows. Each page is ``page_size`` rows and
+    four binds plus the media types, so no read grows with the archive; the index itself is linear in
+    the agent's media count (measured on the archive's 104,247 media rows on one agent: 47 MiB, and
+    104 MiB once step 6's close-name index is built) and is dropped before the next agent.
     """
-    groups: dict[tuple[str, str], list[FileRecord]] = {}
-    for record in files:
-        parent = str(PurePosixPath(record.original_path).parent)
-        groups.setdefault((record.agent_id, parent), []).append(record)
-    return groups
-
-
-async def _media_in_directories(session: AsyncSession, dir_groups: Collection[tuple[str, str]]) -> dict[tuple[str, str], list[FileRecord]]:
-    """Fetch every media file sitting directly in one of the ``(agent_id, directory)`` keys, bucketed the same way.
-
-    phaze-vu88k.3: ONE query for every (agent, directory) group in this page, instead of one per
-    group. A page holds at most ``batch_size`` companions, so at most that many distinct groups.
-
-    phaze-6igef: the media-type predicate is invariant across every group and MUST stay outside the
-    per-directory OR. Repeating its 16 values in each of a default page's 2,000 clauses rendered
-    38,000 bind parameters and crossed asyncpg's 32,767-parameter cap. Factoring it out preserves
-    the same conjunction while rendering only 16 media-type binds plus 3 binds per group (6,016 at
-    the default page size).
-
-    Media rows are re-bucketed by their OWN (agent_id, parent directory), computed the same way
-    ``dir_groups`` was, rather than by which OR clause matched them: the LIKE/NOT-LIKE pair only
-    matches rows whose parent IS that literal directory, so recomputing the parent from each
-    returned row reconstructs the exact same grouping the one-query-per-group form did.
-    """
-    media_result = await session.execute(select(FileRecord).where(_media_directly_in(dir_groups)))
-    return _group_by_directory(media_result.scalars().all())
-
-
-def _media_directly_in(dir_groups: Collection[tuple[str, str]]) -> ColumnElement[bool]:
-    """WHERE clause: a media file sitting directly in one of the ``(agent_id, directory)`` keys.
-
-    The media-type predicate sits OUTSIDE the per-directory OR (phaze-6igef): 16 binds, plus 3 per key.
-    """
-    directory_conditions = [
-        and_(
-            FileRecord.agent_id == agent_id,
-            # Escape LIKE metacharacters in the directory so '_'/'%'/'\' in a real
-            # path (e.g. "Coachella_2024") are matched literally rather than as wildcards.
-            FileRecord.original_path.like(f"{_escape_like(directory)}/%", escape=_LIKE_ESCAPE_CHAR),
-            ~FileRecord.original_path.like(f"{_escape_like(directory)}/%/%", escape=_LIKE_ESCAPE_CHAR),
+    index = AgentMediaIndex()
+    after: str | None = None
+    while True:
+        statement = (
+            select(FileRecord.id, FileRecord.original_path)
+            .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(MEDIA_TYPES))
+            .order_by(FileRecord.original_path)
+            .limit(page_size)
         )
-        for agent_id, directory in dir_groups
+        if after is not None:
+            statement = statement.where(FileRecord.original_path > after)
+        rows = (await session.execute(statement)).all()
+        for media_id, path in rows:
+            index.add(media_id, path)
+        if len(rows) < page_size:
+            return index
+        after = rows[-1].original_path
+
+
+def _current_features() -> Any:
+    """Join condition: the companion's stored features, only while they describe its current bytes."""
+    return (CompanionContentFeatures.file_id == FileRecord.id) & (CompanionContentFeatures.fingerprint == FileRecord.sha256_hash)
+
+
+async def _companion_page(session: AsyncSession, agent_id: str, *, after: uuid.UUID | None, limit: int) -> list[_Companion]:
+    """One keyset page of ``agent_id``'s companions that carry current features, linked or not, by ``FileRecord.id``."""
+    statement = (
+        select(
+            FileRecord.id,
+            FileRecord.original_path,
+            CompanionContentFeatures.fingerprint,
+            CompanionContentFeatures.junk_class,
+            CompanionContentFeatures.truncated,
+            CompanionContentFeatures.is_tracklist,
+            CompanionContentFeatures.media_references,
+        )
+        .join(CompanionContentFeatures, _current_features())
+        .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(COMPANION_TYPES))
+        .order_by(FileRecord.id)
+        .limit(limit)
+    )
+    if after is not None:
+        statement = statement.where(FileRecord.id > after)
+    return [
+        _Companion(
+            id=row.id,
+            path=row.original_path,
+            fingerprint=row.fingerprint,
+            junk_class=linking_junk_class(row.junk_class, truncated=row.truncated),
+            is_tracklist=row.is_tracklist,
+            references=tuple((str(reference["name"]), str(reference["source"])) for reference in row.media_references),
+        )
+        for row in (await session.execute(statement)).all()
     ]
-    return and_(FileRecord.file_type.in_(MEDIA_TYPES), or_(*directory_conditions))
 
 
-async def _parent_media_by_name(session: AsyncSession, parent_keys: Collection[tuple[str, str]]) -> dict[tuple[str, str], dict[str, list[uuid.UUID]]]:
-    """Index the media directly in each parent directory by :func:`companion_match_key` of its stem.
+async def _agents_with_features(session: AsyncSession) -> list[str]:
+    """Every agent holding stored companion features: the only agents association has anything to decide on."""
+    result = await session.execute(select(CompanionContentFeatures.agent_id).distinct().order_by(CompanionContentFeatures.agent_id))
+    return list(result.scalars())
 
-    Reads only ``id``/``agent_id``/``original_path``, never whole rows: a parent may be a flat dump
-    folder holding tens of thousands of media files (18,535 in one production parent, measured
-    2026-10-06), and only their names and ids are needed. The index is built once per page, so each
-    companion's match is a dict lookup, never a scan of the parent. Same WHERE clause, and so the
-    same bind budget, as :func:`_media_in_directories`.
+
+async def _count_awaiting_features(session: AsyncSession) -> int:
+    """Companions association cannot decide yet (no stored features, or features of older bytes); their links stay as they are."""
+    result = await session.execute(
+        select(func.count())
+        .select_from(FileRecord)
+        .outerjoin(CompanionContentFeatures, _current_features())
+        .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None))
+    )
+    return int(result.scalar_one())
+
+
+def _decide_page(
+    index: AgentMediaIndex, page: Sequence[_Companion], linked: set[str], outcome: AssociationOutcome
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Run the chain over one page; returns ``companion id -> media ids`` for EVERY companion of the page (empty: no links).
+
+    ``linked`` holds the fingerprints this run has linked so far on this agent; it is the duplicate
+    veto's answer and is updated as companions link, so two copies on one page cannot both slip past
+    it. PURE: no IO.
     """
-    result = await session.execute(select(FileRecord.id, FileRecord.agent_id, FileRecord.original_path).where(_media_directly_in(parent_keys)))
-    index: dict[tuple[str, str], dict[str, list[uuid.UUID]]] = {}
-    for media_id, agent_id, original_path in result.all():
-        path = PurePosixPath(original_path)
-        if key := companion_match_key(path.stem):
-            index.setdefault((agent_id, str(path.parent)), {}).setdefault(key, []).append(media_id)
-    return index
-
-
-def _parent_key(group_key: tuple[str, str]) -> tuple[str, str] | None:
-    """The same agent's PARENT directory of ``group_key``, or None at the filesystem root."""
-    agent_id, directory = group_key
-    parent = str(PurePosixPath(directory).parent)
-    return None if parent == directory else (agent_id, parent)
-
-
-async def _link_targets(session: AsyncSession, dir_groups: dict[tuple[str, str], list[FileRecord]]) -> dict[uuid.UUID, list[uuid.UUID]]:
-    """Resolve each companion in this page to the media ids it links to.
-
-    A companion beside media links to every media file in its own directory -- the long-standing
-    rule. A companion with NO media in its own directory (phaze-ehryj) links only to media directly
-    in its PARENT directory, on the same agent, whose stem matches the companion's sub-folder name
-    or the companion's own stem under :func:`phaze.constants.companion_match_key` (operator decision
-    2026-10-06, "Match by name"; bead phaze-ehryj), or matches that parent directory's OWN name -- a
-    release folder holding its media beside an "info" sub-folder of download notices (operator
-    decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). An unmatched companion stays
-    unlinked even when its parent holds media: a flat dump folder's unrelated sets must never be
-    paired by proximity alone.
-
-    Own-directory media WINS -- a group with any is never matched against its parent -- and the
-    fallback is exactly one level. Since phaze-gafl9 ``tasks/scan.py`` admits every approved companion
-    wherever it sits, so a companion this cannot link is an unlinked file row, never a skipped file.
-
-    Two reads, never one widened read: the parent read runs only for the groups the first left
-    without media, and each stays within :func:`_media_directly_in`'s per-key bind budget, so the
-    phaze-6igef bound still holds for a maximally dispersed page.
-    """
-    own_media = await _media_in_directories(session, dir_groups)
-    targets = {
-        companion.id: [media.id for media in own_media[group_key]]
-        for group_key, companions in dir_groups.items()
-        if group_key in own_media
-        for companion in companions
-    }
-    fallback = {group_key: parent_key for group_key in dir_groups if group_key not in own_media and (parent_key := _parent_key(group_key))}
-    if not fallback:
-        return targets
-    parent_index = await _parent_media_by_name(session, set(fallback.values()))
-    for group_key, parent_key in fallback.items():
-        by_name = parent_index.get(parent_key, {})
-        folder_matches = [
-            *by_name.get(companion_match_key(PurePosixPath(group_key[1]).name), []),
-            *by_name.get(companion_match_key(PurePosixPath(parent_key[1]).name), []),
-        ]
-        for companion in dir_groups[group_key]:
-            stem_matches = by_name.get(companion_match_key(PurePosixPath(companion.original_path).stem), [])
-            if matched := list(dict.fromkeys([*folder_matches, *stem_matches])):
-                targets[companion.id] = matched
+    targets: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for companion in page:
+        decision = link_companion(
+            LinkInput(
+                path=companion.path,
+                references=companion.references,
+                junk_class=companion.junk_class,
+                is_tracklist=companion.is_tracklist,
+                identical_copy_linked=companion.fingerprint in linked,
+            ),
+            index,
+        )
+        outcome.decided[decision.step] = outcome.decided.get(decision.step, 0) + 1
+        targets[companion.id] = list(decision.media_ids)
+        if decision.media_ids:
+            linked.add(companion.fingerprint)
     return targets
+
+
+async def _existing_links(session: AsyncSession, companion_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, dict[uuid.UUID, uuid.UUID]]:
+    """``companion id -> {media id: link id}`` for the page's companions: one read, one bind per companion (a page is <= batch_size)."""
+    result = await session.execute(
+        select(FileCompanion.id, FileCompanion.companion_id, FileCompanion.media_id).where(FileCompanion.companion_id.in_(companion_ids))
+    )
+    existing: dict[uuid.UUID, dict[uuid.UUID, uuid.UUID]] = {}
+    for link_id, companion_id, media_id in result.all():
+        existing.setdefault(companion_id, {})[media_id] = link_id
+    return existing
+
+
+_DELETE_CHUNK = 10_000
+"""Link ids per DELETE statement: one bind each, well under the 32,767 cap."""
+
+
+async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uuid.UUID]], outcome: AssociationOutcome) -> None:
+    """Make each companion's links exactly its target set: delete the rest, insert the missing. Does NOT commit.
+
+    Runs inside the page's transaction, so every companion's replacement lands whole or not at all.
+    """
+    if not targets:
+        return
+    existing = await _existing_links(session, list(targets))
+    stale: list[uuid.UUID] = []
+    missing: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for companion_id, media_ids in targets.items():
+        held = existing.get(companion_id, {})
+        wanted = set(media_ids)
+        stale.extend(link_id for media_id, link_id in held.items() if media_id not in wanted)
+        outcome.links_kept += len(wanted & held.keys())
+        if absent := [media_id for media_id in media_ids if media_id not in held]:
+            missing[companion_id] = absent
+    for start in range(0, len(stale), _DELETE_CHUNK):
+        deleted = cast(
+            "CursorResult[Any]", await session.execute(delete(FileCompanion).where(FileCompanion.id.in_(stale[start : start + _DELETE_CHUNK])))
+        )
+        outcome.links_removed += deleted.rowcount
+    if rows := _link_rows(missing):
+        outcome.links_created += await _insert_links(session, rows)
 
 
 def _link_rows(targets: dict[uuid.UUID, list[uuid.UUID]]) -> list[dict[str, uuid.UUID]]:
@@ -203,7 +295,7 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
     raise here. Serial execution is also what keeps every chunk inside one transaction, which is
     the atomicity guarantee below.
 
-    The unlinked read in the caller is a snapshot: a concurrent run computes the same pairs, and
+    The existing-link read in the caller is a snapshot: a concurrent run computes the same pairs, and
     whichever commits second would violate uq_file_companions_pair. ON CONFLICT DO NOTHING makes
     that first-writer-wins; summing each chunk's rowcount keeps the return value honest under races.
     An INSERT returns a CursorResult at runtime (exposing rowcount); the async stubs type it as the
@@ -227,7 +319,7 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # below is inside a loop by construction; the question a static finding cannot answer is whether the
 # loop is the unit of work, and here it always is.
 #
-# The mechanical bar first, because it disposes of the whole class: all four awaits run on ONE
+# The mechanical bar first, because it disposes of the whole class: every await runs on ONE
 # AsyncSession, and no await here is convertible to a concurrent one without giving each branch its
 # own session -- which would break the transaction the page's atomicity depends on.
 #
@@ -259,25 +351,26 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # docs/design/0015-shared-session-gather.md, and the same false premise in proposal.py's ``store_proposals`` has
 # been amended to agree with this block.
 #
-#   unlinked-companion page read   The keyset walk's cursor. Page N+1's ``id > after`` bound is not
-#     (in associate_companions)    known until page N has been read. Sequencing IS the algorithm;
+#   companion page read            The keyset walk's cursor. Page N+1's ``id > after`` bound is not
+#     (_companion_page)            known until page N has been read. Sequencing IS the algorithm;
 #                                  the whole point of phaze-yiwq5 was to STOP reading this in one
 #                                  unbounded shot.
-#   media read                     Already ONE query per page for every (agent, directory) group in
-#     (_media_in_directories)      it -- phaze-vu88k.3 collapsed the one-query-per-group form. Once
-#                                  per page is the floor; it cannot be hoisted out of the paging
-#                                  loop because it is scoped to that page's directories.
-#   parent media read              phaze-ehryj: at most one more query per page, only for the groups
-#     (_parent_media_by_name)      the first read left without media. It depends on that read's
-#                                  result, so it is sequential by data dependence, not just session.
+#   media index read               phaze-rmhfr: the agent's media, read ONCE per agent in keyset
+#     (_media_index)               pages, before the first page is decided. Each page's cursor is the
+#                                  previous page's last path, so it is sequential by data dependence.
+#                                  It replaced the per-page own-folder read (phaze-vu88k.3) and the
+#                                  phaze-ehryj parent read: the chain resolves references and names
+#                                  across the whole agent, which no per-folder read can answer.
+#   existing-link read + delete    phaze-rmhfr: one read of the page's current links, then the stale
+#     (_replace_links)             ones deleted in id chunks. The delete needs the read's result, and
+#                                  both must share the page's transaction (atomic replacement).
 #   chunked insert                 One statement per bind-parameter chunk (32767 cap, phaze-p3qr).
 #     (_insert_links)              Chunk count is driven by the page's cross-product size, not by
 #                                  row count; serial execution is what keeps every chunk in one
 #                                  transaction. See _insert_links.
 #   per-page commit                The page's commit boundary, and load-bearing for correctness, not
-#     (in associate_companions)    just durability: page N's links must be visible to page N+1's
-#                                  ``NOT IN`` subquery. Deferring or batching commits would make the
-#                                  next page recompute pairs it already inserted.
+#     (in _associate_agent)        just durability: it is the atomicity boundary of the page's link
+#                                  replacements, so a failure never leaves half a companion's link set.
 #
 # nested_loop_with_io is the one finding this bead changed rather than merely ruled on. It read the
 # chunked insert as a database call inside a nested loop (O(n*m) round trips). The O(companions x
@@ -286,83 +379,59 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # no longer exists.
 
 
-async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE) -> int:
-    """Link unlinked companion files to media in the same directory, or else name-matched parent media.
+async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: int, outcome: AssociationOutcome) -> None:
+    """Re-derive every current-features companion of one agent: those beside media in a first keyset walk, the rest in a second."""
+    index: AgentMediaIndex | None = None
+    linked: set[str] = set()
+    for beside_media in (True, False):
+        after: uuid.UUID | None = None
+        while True:
+            page = await _companion_page(session, agent_id, after=after, limit=batch_size)
+            if not page:
+                break
+            after = page[-1].id
+            if index is None:
+                index = await _media_index(session, agent_id)
+            this_pass = [companion for companion in page if bool(index.in_folder(str(PurePosixPath(companion.path).parent))) is beside_media]
+            await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome)
+            # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
+            await session.commit()
+            if len(page) < batch_size:
+                break
+        if index is None:
+            return
 
-    Finds all companion FileRecords not yet present in file_companions,
-    groups them by (agent, directory), and creates FileCompanion links to
-    every media file in that same directory ON THE SAME AGENT -- or, when that
-    directory has none, to the media directly in its parent directory on the same
-    agent whose name it matches (phaze-ehryj; see :func:`_link_targets`). Idempotent:
-    running twice produces no duplicate links, including under CONCURRENT
-    invocations (e.g. an HTMX double-submit of POST /associate) — the insert
-    is ON CONFLICT DO NOTHING against uq_file_companions_pair, so a pair the
-    other request already committed is silently skipped instead of raising
-    IntegrityError and rolling back the whole batch.
 
-    original_path is only unique per agent (uq_files_agent_id_original_path),
-    so two fileserver agents can hold files at the identical path; without the
-    agent scoping a companion would link to media on every agent sharing the
-    directory path, pairing files from unrelated recordings.
+async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE) -> AssociationOutcome:
+    """Re-derive the links of every companion with current content features (module docstring).
 
-    PAGING (phaze-yiwq5): unlinked companions are read in keyset pages of *batch_size*, ordered
-    by ``FileRecord.id`` -- never materialized in one unbounded ``.scalars().all()`` -- so peak
-    memory is bounded by one page's companions plus the media cross-product for the directories
-    that page happens to touch, regardless of the total backlog size. Each page commits its own
-    links before the next page is read, so a companion a prior page already linked is excluded
-    from later pages by BOTH the ``NOT IN`` subquery and the ``id > cursor`` bound. This trades the
-    single-run all-or-nothing atomicity the earlier unbounded version had for a bounded memory
-    footprint: a failure mid-sweep leaves whatever earlier pages already committed in place rather
-    than rolling back the whole run, which is safe precisely because the function is idempotent --
-    a retry (or the next scheduled run) picks up wherever the backlog was left.
+    Per agent holding stored features, every such companion is decided by
+    :func:`phaze.services.companion_linking.link_companion` against that agent's media -- companions
+    beside media first, then the rest -- and its links are replaced by exactly the chain's answer.
+    Companions without current features are counted, never decided, and keep their links.
 
-    SERIAL AWAITS (phaze-bk9el.25): every ``await`` in the loop below is deliberately serial and
-    none may be converted to ``asyncio.gather``. The page read, the media read, the chunked insert
-    and the commit all run on ONE ``AsyncSession``, whose concurrent use upstream does not support
-    and which, measured, does not overlap statements anyway -- see the RULING block directly above
-    for the numbers and for why "it raises" is the wrong reason to give.
-    Beyond that, the loop is a keyset walk: page N+1's ``id > after`` bound is not known until page
-    N has been read, and page N's ``commit()`` is what makes its links visible to page N+1's
-    ``NOT IN`` subquery. The serialization IS the paging.
+    Idempotent: a second run derives the same links, so it deletes and inserts nothing (pinned by the
+    tests). Under CONCURRENT runs (e.g. an HTMX double-submit of POST /associate) the insert is ON
+    CONFLICT DO NOTHING against uq_file_companions_pair, so a pair the other run committed first is
+    skipped instead of raising IntegrityError, and deleting a link the other run already deleted is a
+    no-op.
 
-    Returns the number of new links created across every page.
+    PAGING (phaze-yiwq5): companions are read in keyset pages of *batch_size*, ordered by
+    ``FileRecord.id`` -- never materialized in one unbounded ``.scalars().all()``. Each page commits
+    its replacements before the next page is read. A failure mid-sweep leaves earlier pages committed,
+    which is safe because the function is idempotent. Peak memory is one page's companions plus the
+    agent's :class:`AgentMediaIndex` (:func:`_media_index` gives the measured size) and the set of
+    fingerprints linked this run, all linear in that agent's files and independent of the backlog.
+
+    SERIAL AWAITS (phaze-bk9el.25): every ``await`` below is deliberately serial and none may be
+    converted to ``asyncio.gather``. Every read, write and commit runs on ONE ``AsyncSession``, whose
+    concurrent use upstream does not support and which, measured, does not overlap statements anyway
+    -- see the RULING block directly above for the numbers and for why "it raises" is the wrong reason
+    to give. Beyond that, the loop is a keyset walk: page N+1's ``id > after`` bound is not known until
+    page N has been read. The serialization IS the paging.
     """
-    already_linked_subq = select(FileCompanion.companion_id)
-
-    count = 0
-    after: uuid.UUID | None = None
-    while True:
-        # Keyset-paged unlinked-companion read: LIMIT batch_size, ordered by id, resuming past
-        # the last id this call has already consumed. Bounded regardless of backlog size.
-        stmt = (
-            select(FileRecord)
-            .where(
-                FileRecord.file_type.in_(COMPANION_TYPES),
-                FileRecord.id.notin_(already_linked_subq),
-            )
-            .order_by(FileRecord.id)
-            .limit(batch_size)
-        )
-        if after is not None:
-            stmt = stmt.where(FileRecord.id > after)
-        result = await session.execute(stmt)
-        unlinked_companions = result.scalars().all()
-
-        if not unlinked_companions:
-            break
-        after = unlinked_companions[-1].id
-
-        dir_groups = _group_by_directory(unlinked_companions)
-        rows = _link_rows(await _link_targets(session, dir_groups))
-
-        if rows:
-            count += await _insert_links(session, rows)
-
-        # This PAGE's commit boundary -- see _insert_links for what it does and does not make atomic,
-        # and the docstring's PAGING note for why each page commits before the next is read.
-        await session.commit()
-
-        if len(unlinked_companions) < batch_size:
-            break
-
-    return count
+    outcome = AssociationOutcome()
+    for agent_id in await _agents_with_features(session):
+        await _associate_agent(session, agent_id, batch_size=batch_size, outcome=outcome)
+    outcome.awaiting_features = await _count_awaiting_features(session)
+    return outcome

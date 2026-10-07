@@ -23,11 +23,19 @@ router = APIRouter(prefix="/api/v1", tags=["companion"])
 async def trigger_association(
     session: AsyncSession = Depends(get_session),
 ) -> AssociateResponse:
-    """Trigger companion file association. Links unlinked companions to media in same directory."""
-    count = await associate_companions(session)
+    """Trigger companion association: re-derive the links of every companion with current content features."""
+    outcome = await associate_companions(session)
+    message = f"Associated {outcome.links_created} companion link(s) with media files"
+    if outcome.links_removed:
+        message += f"; removed {outcome.links_removed} link(s) the linking chain no longer derives"
+    if outcome.awaiting_features:
+        message += f"; {outcome.awaiting_features} companion(s) await content features (phaze backfill companion-features)"
     return AssociateResponse(
-        new_associations=count,
-        message=f"Associated {count} companion file(s) with media files",
+        new_associations=outcome.links_created,
+        removed_associations=outcome.links_removed,
+        kept_associations=outcome.links_kept,
+        awaiting_features=outcome.awaiting_features,
+        message=message,
     )
 
 

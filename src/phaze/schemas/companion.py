@@ -9,6 +9,12 @@ class AssociateResponse(BaseModel):
     """Response from companion association endpoint."""
 
     new_associations: int
+    removed_associations: int = 0
+    """Links removed because the linking chain, re-run on current features, no longer derives them."""
+    kept_associations: int = 0
+    """Links the re-derivation confirmed unchanged."""
+    awaiting_features: int = 0
+    """Unlinked companions not decided because they have no current content features yet."""
     message: str
 
 
