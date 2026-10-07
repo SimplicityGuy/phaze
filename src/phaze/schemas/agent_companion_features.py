@@ -58,7 +58,7 @@ class CompanionFeaturesRecord(BaseModel):
     # -> byte_size BigInteger (int8), rule 3: no narrower domain for a file's size.
     byte_size: int = Field(ge=0, le=INT64_MAX)
     truncated: bool
-    # DoS bound (rule 7): the extractor caps the list at MAX_REFERENCES and reports the full count.
+    # DoS bound (rule 7): the extractor keeps MAX_REFERENCES and stops counting one past it.
     media_references: list[CompanionReferenceWire] = Field(max_length=MAX_REFERENCES)
     reference_count: int = Field(ge=0, le=INT32_MAX)
     is_tracklist: bool

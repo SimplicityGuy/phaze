@@ -17,6 +17,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from structlog.testing import capture_logs
 
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings
@@ -27,6 +28,8 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import agent_files, agent_scan_batches
 from phaze.schemas.agent_tasks import CompanionFeaturesTarget, ExtractCompanionFeaturesPayload
 from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.companion_content import count_backfill, select_backfill_page
+from phaze.services.companion_features import read_companion
 from phaze.tasks.companion_features import extract_companion_features
 from phaze.tasks.scan import scan_directory
 
@@ -34,6 +37,7 @@ from phaze.tasks.scan import scan_directory
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.agent import Agent
@@ -177,13 +181,13 @@ def _agent_settings(scan_roots: list[str]) -> AgentSettings:
     return cfg
 
 
-async def test_the_backfill_task_reads_contained_rows_and_reports_them(
+async def test_a_companion_skipped_at_ingest_is_logged_and_recovered_by_the_backfill(
     tmp_path: Path,
     authenticated_client: AsyncClient,
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """The backfill's agent half: rows that predate ingest reporting get the same features."""
+    """The 404 tolerance is a version-skew backstop: the skip is logged, and the backfill's own selection recovers it."""
     root = tmp_path / "root"
     files = _release(root)
     outside = tmp_path / "elsewhere" / "outside.cue"
@@ -193,17 +197,82 @@ async def test_the_backfill_task_reads_contained_rows_and_reports_them(
     old_app = FastAPI()
     old_app.include_router(agent_files.router)
     old_app.dependency_overrides[get_session] = lambda: session
-    # The rows exist from before this bead: upserted through the route, with no features reported.
     session.add(ScanBatch(agent_id=agent.id, scan_path="<watcher>", status=ScanStatus.LIVE.value, total_files=0, processed_files=0))
     await session.commit()
-    async with AsyncClient(transport=ASGITransport(app=old_app), base_url="http://test", headers=dict(authenticated_client.headers)) as client:
-        poster = Poster(client=_agent_api(client), agent_id=agent.id)
-        for path in [*files.values(), outside]:
-            await poster.post_one(str(path))
-    rows = (await session.execute(select(FileRecord.id, FileRecord.original_path))).all()
+    # Ingest against a control plane without the features route: the rows land, the features do not.
+    with capture_logs() as logs:
+        async with AsyncClient(transport=ASGITransport(app=old_app), base_url="http://test", headers=dict(authenticated_client.headers)) as client:
+            poster = Poster(client=_agent_api(client), agent_id=agent.id)
+            for path in [*files.values(), outside]:
+                await poster.post_one(str(path))
+    skipped = [entry for entry in logs if entry["event"] == "companion features not reported; the backfill will cover them"]
+    assert len(skipped) == len(files)  # one per companion post; never silent
     assert (await session.execute(select(CompanionContentFeatures.file_id))).all() == []
 
+    # The backfill selects exactly the skipped companions (media never), then its task reports them.
+    (before,) = await count_backfill(session)
+    assert (before.companions, before.missing, before.current) == (len(files), len(files), 0)
+    page = await select_backfill_page(session, agent.id, after=None, limit=100)
     with patch("phaze.tasks.companion_features.get_settings", return_value=_agent_settings([str(root)])):
+        result = await extract_companion_features(
+            {"api_client": _agent_api(authenticated_client)},
+            **ExtractCompanionFeaturesPayload(
+                agent_id=agent.id, targets=[CompanionFeaturesTarget(file_id=file_id, original_path=path) for file_id, path in page]
+            ).model_dump(mode="json"),
+        )
+
+    assert result == {"requested": len(files), "escaped": 1, "unreadable": 0, "reported": len(files) - 1, "stored": len(files) - 1}
+    _assert_release_features(files, await _features_by_name(session))
+    (after,) = await count_backfill(session)
+    assert (after.current, after.missing) == (len(files) - 1, 1)  # only the escaping path stays selected
+    assert await select_backfill_page(session, agent.id, after=None, limit=100) == [(fid, path) for fid, path in page if path == str(outside)]
+
+
+async def test_the_backfill_reads_through_the_resolved_path_and_never_follows_an_escape(
+    tmp_path: Path,
+    authenticated_client: AsyncClient,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Containment resolves the control-plane string; the RESOLVED path is what gets opened."""
+    root = tmp_path / "root"
+    release = root / "rel"
+    release.mkdir(parents=True)
+    (release / "set.mp3").write_bytes(b"audio")
+    secret = tmp_path / "outside" / "secret.nfo"
+    secret.parent.mkdir()
+    secret.write_bytes(b"Artist ....: NOT FOR READING\r\nGenre .....: x\r\nSource ....: y\r\n")
+    real = release / "real.cue"
+    real.write_bytes(b'FILE "set.mp3" MP3\r\n')
+    (release / "alias.cue").symlink_to(real)  # contained: resolves inside the root
+    (release / "escape.nfo").symlink_to(secret)  # escapes: resolves outside every root
+    agent, _token = seed_test_agent
+    session.add_all(
+        FileRecord(
+            agent_id=agent.id,
+            sha256_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
+            original_path=str(path),
+            original_filename=path.name,
+            current_path=str(path),
+            file_type=path.suffix.lstrip("."),
+            file_size=path.stat().st_size,
+        )
+        for path in (release / "alias.cue", release / "escape.nfo")
+    )
+    await session.commit()
+    rows = (await session.execute(select(FileRecord.id, FileRecord.original_path).order_by(FileRecord.original_path))).all()
+
+    opened: list[str] = []
+    real_read = read_companion
+
+    def _spy(path: str, **kwargs: object) -> object:
+        opened.append(path)
+        return real_read(path, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("phaze.tasks.companion_features.get_settings", return_value=_agent_settings([str(root)])),
+        patch("phaze.services.companion_features_report.read_companion", side_effect=_spy),
+    ):
         result = await extract_companion_features(
             {"api_client": _agent_api(authenticated_client)},
             **ExtractCompanionFeaturesPayload(
@@ -211,8 +280,33 @@ async def test_the_backfill_task_reads_contained_rows_and_reports_them(
             ).model_dump(mode="json"),
         )
 
-    assert result == {"requested": len(files) + 1, "escaped": 1, "unreadable": 0, "reported": len(files) - 1, "stored": len(files) - 1}
-    _assert_release_features(files, await _features_by_name(session))
+    assert result["escaped"] == 1
+    assert opened == [str(real.resolve())]  # the resolved target, never the raw alias string or the escape
+    by_name = await _features_by_name(session)
+    assert set(by_name) == {"alias.cue"}  # reported under the ROW KEY, so it lands on the alias's row
+    assert by_name["alias.cue"].media_references == [{"name": "set.mp3", "source": "cue_file"}]
+
+
+def test_a_symlink_swapped_in_after_the_containment_check_is_refused(tmp_path: Path) -> None:
+    """The window between resolving and opening: O_NOFOLLOW refuses a symlink planted at the resolved path."""
+    from phaze.services.companion_features_report import read_companion_records
+    from phaze.tasks.companion_features import _contained
+
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "notes.nfo"
+    target.write_bytes(b"release notes long enough to be read\r\n")
+    secret = tmp_path / "secret.nfo"
+    secret.write_bytes(b"outside the roots, never to be read\r\n")
+
+    targets = _contained([str(target)], [str(root)])
+    assert targets == [(str(target), str(target.resolve()))]
+    target.unlink()
+    target.symlink_to(secret)  # the swap, after the check
+
+    records, unreadable = read_companion_records(targets, follow_symlinks=False)
+
+    assert (records, unreadable) == ([], 1)
 
 
 async def test_the_backfill_task_posts_nothing_when_every_path_escapes(tmp_path: Path) -> None:
@@ -229,3 +323,36 @@ async def test_the_backfill_task_posts_nothing_when_every_path_escapes(tmp_path:
 
     assert result == {"requested": 1, "escaped": 1, "unreadable": 0, "reported": 0, "stored": 0}
     api.post_companion_features.assert_not_awaited()
+
+
+def test_an_nfd_twin_reached_through_a_symlinked_directory_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Containment applies to the path that gets OPENED: the twin, not the control-plane string.
+
+    On a normalization-sensitive filesystem (Linux) a stored NFC path that does not exist byte-exact is
+    handed to ``resolve_media_path``, which walks down from the longest existing ancestor and may
+    pick a child that is a symlinked DIRECTORY. The twin is substituted here, deterministically, so the
+    test does not depend on the machine's filesystem: checking the raw string (it resolves lexically,
+    inside the root) and then opening the twin would read outside the roots.
+    """
+    from phaze.services.companion_features_report import read_companion_records
+    from phaze.tasks import companion_features as task
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.nfo").write_bytes(b"outside the roots, never to be read\r\n")
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    stored = str(root / "Cafe-nfc" / "notes.nfo")  # does not exist byte-exact
+    twin = str(root / "link" / "notes.nfo")  # what the NFD walk would pick
+    monkeypatch.setattr(task, "resolve_media_path", lambda path: twin if path == stored else path)
+
+    targets = task._contained([stored], [str(root)])
+
+    assert targets == []  # refused: the twin resolves outside every root
+    assert read_companion_records(targets, follow_symlinks=False) == ([], 0)
+    # Positive control: the same twin without the symlinked directory is read, from its resolved form.
+    (root / "link").unlink()
+    (root / "link").mkdir()
+    (root / "link" / "notes.nfo").write_bytes(b"inside the root, fine to be read here\r\n")
+    assert task._contained([stored], [str(root)]) == [(stored, str((root / "link" / "notes.nfo").resolve()))]

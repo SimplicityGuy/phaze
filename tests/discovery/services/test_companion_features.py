@@ -219,7 +219,7 @@ def test_reference_basenames_are_nfc_and_the_list_is_capped() -> None:
     many = "".join(f"track-{index:04d}.mp3\n" for index in range(MAX_REFERENCES + 5)).encode()
     capped = extract_content_features(many, ".m3u")
     assert len(capped.references) == MAX_REFERENCES
-    assert capped.reference_count == MAX_REFERENCES + 5
+    assert capped.reference_count == MAX_REFERENCES + 1  # extraction stops one past the cap
 
 
 def test_a_file_past_the_read_cap_is_fingerprinted_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,3 +287,93 @@ def test_a_record_path_with_a_nul_is_refused() -> None:
     assert CompanionFeaturesRecord.from_reading("/r/a.nfo", reading).content_junk_class == "empty"
     with pytest.raises(ValidationError, match="NUL"):
         CompanionFeaturesRecord.from_reading("/r/a\0.nfo", reading)
+
+
+# Bounded work: the extractor reads files phaze does not control, on the agent.
+
+_MIB = 1 << 20
+
+
+def _adversarial_inputs() -> dict[str, bytes]:
+    """Inputs built to make the survey's original patterns backtrack, as one line and as many long lines."""
+    shapes = {
+        "spaces after a number": b"1" + b" " * 1000 + b"x",
+        "spaced dashes": b"a - " * 250,
+        "a long word then one spaced dash": b"a" * 997 + b" - ",
+        "repeated www prefixes": b"www." * 250,
+        "a token with no stop character": b"a" * 1000 + b".mp3x",
+        "field dots": b"Artist" + b"." * 1000,
+        "timestamp separators": b"12" + b": " * 500,
+    }
+    inputs: dict[str, bytes] = {}
+    for name, line in shapes.items():
+        inputs[f"{name}, one line"] = (line * (_MIB // len(line) + 1))[:_MIB]
+        inputs[f"{name}, many lines"] = ((line[:1000] + b"\n") * (_MIB // 1001 + 1))[:_MIB]
+    return inputs
+
+
+@pytest.mark.parametrize("name", sorted(_adversarial_inputs()))
+@pytest.mark.parametrize("suffix", [".txt", ".nfo", ".cue", ".m3u", ".pls"])
+def test_an_adversarial_megabyte_line_is_extracted_in_bounded_time(name: str, suffix: str) -> None:
+    import time
+
+    payload = _adversarial_inputs()[name]
+    assert len(payload) == _MIB
+
+    started = time.perf_counter()
+    features = extract_content_features(payload, suffix)
+    elapsed = time.perf_counter() - started
+
+    # Measured 2026-10-07: on ONE 20,000-character line the survey's numbered-line pattern took 1.59 s
+    # and its Artist - Title pattern 1.26 s -- both quadratic in the line length. The bounded
+    # extractor handles every 1 MiB input here in about 0.1 s; 5 s is a generous ceiling.
+    assert elapsed < 5.0, f"{name} {suffix}: {elapsed:.2f}s"
+    assert features.reference_count <= MAX_REFERENCES + 1
+
+
+_PATTERN_CORPUS = [
+    "01. Example Artist - First Tune [Label A]",
+    "Example Artist \u2013 Second Tune",
+    "Example Artist \u2014 Third Tune",
+    "Artist-Title-NoSpaces",
+    " - leading dash",
+    "trailing dash - ",
+    "a - b",
+    "- - -",
+    "x - - y",
+    "visit www.example.test for more - now",
+    "see https://example.test/path - here",
+    "www.nodot",
+    "www.a.b",
+    "http://x.y1",
+    "www.www.www.example.com",
+    "Files.: Example Artist - Live.mp3",
+    "track01.MP3 and track02.flac",
+    'FILE "a/b\\c.wav" WAVE',
+    "no media here.mp3x",
+    ".mp3 at the start",
+    "x" * 300 + ".mp3",
+    "weird.mp3.mp3",
+    "a.mp3b.mp4",
+    "",
+]
+
+
+def test_the_linear_rewrites_agree_with_the_survey_patterns() -> None:
+    """The bounded scans decide exactly what the survey's regexes decided, on ordinary lines."""
+    import re
+
+    media = companion_features._MEDIA_EXT_ALT
+    survey_token = re.compile(r"([^\\/\"'<>|*?\t\r\n]{1,240}?\.(?:" + media + r"))\b", re.IGNORECASE)
+    survey_url = re.compile(r"(?:https?://|www\.)([a-z0-9][a-z0-9.\-]*\.[a-z]{2,})", re.IGNORECASE)
+    survey_artist_title = re.compile(r"\w.*\s[-\u2013\u2014]\s.*\w")
+    survey_ts = re.compile(r"^\s*(?:\d{1,3}[.)\-:\s]+\s*)?[\[(]?\d{1,3}:\d{2}(?::\d{2})?[\])]?")
+    survey_num = re.compile(r"^\s*(?:\d{1,3}|[A-Z]\d{1,2})\s*[.)\-:]?\s+\S")
+    corpus = [*_PATTERN_CORPUS, "[00:00] A - B", "00:12:30 A - B", "1) A - B", "01 - A - B", "1.  x", "1 .x", "A1 x", "12:3", "  3:05 a"]
+
+    for line in corpus:
+        assert companion_features._text_tokens(line) == survey_token.findall(line), line
+        assert companion_features._has_url(line) == bool(survey_url.search(line)), line
+        assert companion_features._is_artist_title(line) == bool(survey_artist_title.search(line)), line
+        assert bool(companion_features._TS_LINE.match(line)) == bool(survey_ts.match(line)), line
+        assert bool(companion_features._NUM_LINE.match(line)) == bool(survey_num.match(line)), line

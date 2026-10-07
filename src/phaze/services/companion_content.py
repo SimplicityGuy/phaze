@@ -3,7 +3,7 @@
 The agent reads each companion and reports its features (``services/companion_features.py``); this
 module persists them and decides the one class no single file can decide about itself.
 
-KNOWN STAMPS -- THE METHOD. A known stamp is a CONTENT, not a filename: one fingerprint that the
+KNOWN STAMPS -- THE METHOD (decided on write, never at read time). A known stamp is a CONTENT, not a filename: one fingerprint that the
 agent holds in at least three differently named folders which hold DIFFERENT media -- the media sets
 of the folders that hold any have an empty intersection -- or, when none of its folders holds media,
 in at least three differently named folders. That is the rule
@@ -18,6 +18,12 @@ features land, never from a hand-typed list of names, digests or text. Two thing
 - **A duplicated release is not a stamp.** The same release downloaded three times leaves three
   identical NFOs beside the SAME media, and usually in folders of the same name: the survey's 251
   such rows (``.m3u`` 128, ``.nfo`` 123) are a dedup matter and stay out of junk.
+
+The verdict is a property of the GROUP, so it is recomputed for the whole group whenever its
+membership changes: when features land (:func:`store_companion_features` -- the third copy flips all
+three) and when a copy leaves (a scan or file deletion, or a content change: ``services/
+scan_deletion.py`` calls :func:`stamp_groups_in` before and :func:`refresh_stamp_groups` after), so no
+copy keeps a stale flag. Readers take ``junk_class`` as stored.
 
 Folder names compare alphanumeric-only and case-folded, as the survey did. Folder media are what the
 agent listed beside the companion when it read it; a folder listed before its media arrived reads as
@@ -129,6 +135,31 @@ async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprint
             )
         )
     return stamps
+
+
+async def stamp_groups_in(session: AsyncSession, file_scope: Any) -> dict[str, set[str]]:
+    """``agent_id -> fingerprints`` of the content groups the files ``file_scope`` selects belong to.
+
+    Read BEFORE a deletion or a content invalidation removes those rows, then handed to
+    :func:`refresh_stamp_groups` after it: a stamp verdict is a property of the whole group, so a
+    removed copy must re-decide the copies that remain (it can un-stamp them -- two folders left --
+    and, when the removed copy was the only one beside media, stamp them).
+    """
+    rows = await session.execute(
+        select(CompanionContentFeatures.agent_id, CompanionContentFeatures.fingerprint)
+        .where(CompanionContentFeatures.file_id.in_(select(FileRecord.id).where(file_scope)))
+        .distinct()
+    )
+    groups: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        groups[row.agent_id].add(row.fingerprint)
+    return dict(groups)
+
+
+async def refresh_stamp_groups(session: AsyncSession, groups: dict[str, set[str]]) -> None:
+    """Re-decide every group :func:`stamp_groups_in` collected. Does NOT commit."""
+    for agent_id, fingerprints in sorted(groups.items()):
+        await refresh_known_stamps(session, agent_id, fingerprints)
 
 
 async def _companion_rows(session: AsyncSession, agent_id: str, paths: Sequence[str]) -> dict[str, uuid.UUID]:

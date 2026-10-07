@@ -30,6 +30,12 @@ Every rule here is the one ``docs/spikes/phaze-lm73u-companion-content-survey.md
   alphanumerics), ``all_nul`` (non-zero size, every byte 0x00 -- 368 files, mostly an interrupted
   copy), ``site_ad`` (a URL domain, at most 40 non-blank lines, an ad word, and no tracklist, media
   reference or release block). Sampled precision of every junk label: 52/52.
+- **Bounded work by construction.** The files are not ours, so nothing here may cost more than linear
+  time in its input: at most :data:`MAX_FEATURE_BYTES` are read, every line is cut to
+  :data:`MAX_LINE_CHARS` before any pattern sees it, no pattern can backtrack across a line (the
+  ``Artist - Title`` test, the URL test and the filename-token scan are explicit linear scans, not
+  backtracking regexes), and reference extraction stops once it holds one more than
+  :data:`MAX_REFERENCES`. ``test_an_adversarial_megabyte_line_is_extracted_in_bounded_time`` pins it.
 - **Known stamps are NOT decided here.** A stamp is a CONTENT seen in at least three folders beside
   different media, which no single file can know about itself; the control plane decides it over the
   stored fingerprints (``services/companion_content.py``). A stamp with real text appended has
@@ -61,6 +67,11 @@ MAX_FEATURE_BYTES: Final = 1_048_576
 companion is read whole; the cap bounds a mis-named multi-hundred-MB file."""
 
 MAX_REFERENCES: Final = 200
+"""References kept per companion. Extraction stops at one more, so ``reference_count`` is exact up to
+the cap and ``MAX_REFERENCES + 1`` means "more than the cap"."""
+MAX_LINE_CHARS: Final = 1024
+"""Characters of each line any pattern sees. Real track, field and playlist lines are far shorter; the
+bound is what keeps a 1 MiB file with no newline from turning a per-line test into a whole-file one."""
 MAX_REFERENCE_LENGTH: Final = 255
 MAX_FOLDER_MEDIA: Final = 256
 """Media names kept from the companion's own folder. A flat dump folder can hold 18,535 media files
@@ -77,13 +88,25 @@ _PLAYLIST_SUFFIXES: Final = frozenset({".m3u", ".m3u8", ".pls"})
 _EIGHT_BIT: Final[frozenset[Encoding]] = frozenset({"cp437", "cp1252"})
 
 _MEDIA_EXT_ALT = "|".join(sorted(ext.lstrip(".") for ext in MEDIA_EXTENSIONS))
-_MEDIA_TOKEN = re.compile(r"([^\\/\"'<>|*?\t\r\n]{1,240}?\.(?:" + _MEDIA_EXT_ALT + r"))\b", re.IGNORECASE)
+_MEDIA_EXT_HIT = re.compile(r"\.(?:" + _MEDIA_EXT_ALT + r")\b", re.IGNORECASE)
+_TOKEN_STOP: Final = frozenset("\\/\"'<>|*?\t\r\n")
+_TOKEN_MAX_PREFIX: Final = 240
 _ENDS_IN_MEDIA = re.compile(r"\.(?:" + _MEDIA_EXT_ALT + r")$", re.IGNORECASE)
-_URL = re.compile(r"(?:https?://|www\.)([a-z0-9][a-z0-9.\-]*\.[a-z]{2,})", re.IGNORECASE)
+# A URL is a scheme or ``www.`` prefix followed by a domain run holding a ``.<2+ letters>`` part after
+# its first character. The run is matched possessively, so a line of repeated prefixes is one pass.
+_URL_RUN = re.compile(r"(?:https?://|www\.)([a-z0-9][a-z0-9.\-]*+)", re.IGNORECASE)
+_TLD = re.compile(r"\.[a-z]{2}", re.IGNORECASE)
 _URL_ENTRY = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
-_TS_LINE = re.compile(r"^\s*(?:\d{1,3}[.)\-:\s]+\s*)?[\[(]?\d{1,3}:\d{2}(?::\d{2})?[\])]?")
-_NUM_LINE = re.compile(r"^\s*(?:\d{1,3}|[A-Z]\d{1,2})\s*[.)\-:]?\s+\S")
-_ARTIST_TITLE = re.compile(r"\w.*\s[-\u2013\u2014]\s.*\w")
+# The survey's timestamp and numbered-line patterns, with their adjacent whitespace runs made
+# possessive: ``[.)\-:\s]+\s*`` and ``\s*[.)\-:]?\s+`` match the same lines but backtrack
+# quadratically over a long run of spaces.
+_TS_LINE = re.compile(r"^\s*+(?:\d{1,3}[.)\-:\s]++)?[\[(]?\d{1,3}:\d{2}(?::\d{2})?[\])]?")
+_NUM_LINE = re.compile(r"^\s*+(?:\d{1,3}|[A-Z]\d{1,2})(?:\s*+[.)\-:]\s++|\s++)\S")
+# ``Artist - Title``: a spaced dash with a word character somewhere before it and somewhere after it.
+# Overlapping separator positions via a lookahead; the word-character test is two index lookups.
+_DASH_SEPARATOR = re.compile(r"(?=\s[-\u2013\u2014]\s)")
+_WORD_CHAR = re.compile(r"\w")
+_ARTIST_TITLE_MAX = 200
 _FIELD = re.compile(r"^([A-Za-z][A-Za-z ./]{1,24}?)\s*[.:\[]{1,}\s*\S")
 _WORDS = re.compile(r"[^\W\d_]{2,}")
 _LEADING_ART = re.compile(r"^[^\w\[(]+")
@@ -246,26 +269,67 @@ def _cue_file_value(rest: str) -> str:
     return quoted.group(1) if quoted else value.rsplit(" ", 1)[0]
 
 
-def _references(lines: list[str], text: str, suffix: str) -> list[MediaReference]:
-    """Every media reference in the companion, deduplicated in order of appearance."""
-    found: list[MediaReference] = []
+def _has_url(text: str) -> bool:
+    """Whether ``text`` carries a URL domain, in one linear pass (see ``_URL_RUN``)."""
+    return any(_TLD.search(match.group(1), 1) for match in _URL_RUN.finditer(text))
+
+
+def _text_tokens(line: str) -> list[str]:
+    """Every token in ``line`` that ends in a media filename: up to 240 allowed characters before ``.<ext>``.
+
+    The survey's lazy 1-240 character token regex without its backtracking: each extension hit
+    walks back over allowed characters, never past the previous token's end, so the line is visited a
+    bounded number of times. The token keeps the words before the filename (``Files.: <name>.mp3``);
+    resolving the filename at its end is the linking chain's job.
+    """
+    tokens: list[str] = []
+    floor = 0
+    for hit in _MEDIA_EXT_HIT.finditer(line):
+        begin = start = hit.start()
+        limit = max(floor, start - _TOKEN_MAX_PREFIX)
+        while begin > limit and line[begin - 1] not in _TOKEN_STOP:
+            begin -= 1
+        if begin < start:
+            tokens.append(line[begin : hit.end()])
+            floor = hit.end()
+    return tokens
+
+
+def _line_references(line: str, suffix: str) -> list[MediaReference]:
+    """The references one line names, by the companion's type."""
     if suffix == ".cue":
-        for line in lines:
-            match = _CUE_KEYWORD.match(line)
-            if match and match.group(1).upper() == "FILE" and (cue_name := _basename(_cue_file_value(match.group(2)))):
-                found.append(MediaReference(cue_name, "cue_file"))
-    elif suffix in (".m3u", ".m3u8", ".pls"):
-        for line in lines:
-            if suffix == ".pls":
-                pls_match = _PLS_FILE.match(line)
-                if pls_match is None:
-                    continue
-                line = pls_match.group(1)  # the PLS value IS the entry
-            if entry := _playlist_entry(line):
-                found.append(MediaReference(entry, "pls" if suffix == ".pls" else "m3u"))
-    else:
-        found.extend(MediaReference(token_name, "text_token") for token in _MEDIA_TOKEN.findall(text) if (token_name := _basename(token)))
-    return list(dict.fromkeys(found))
+        match = _CUE_KEYWORD.match(line)
+        if match and match.group(1).upper() == "FILE" and (cue_name := _basename(_cue_file_value(match.group(2)))):
+            return [MediaReference(cue_name, "cue_file")]
+        return []
+    if suffix in (".m3u", ".m3u8"):
+        entry = _playlist_entry(line)
+        return [MediaReference(entry, "m3u")] if entry else []
+    if suffix == ".pls":
+        pls_match = _PLS_FILE.match(line)
+        entry = _playlist_entry(pls_match.group(1)) if pls_match else None
+        return [MediaReference(entry, "pls")] if entry else []
+    return [MediaReference(name, "text_token") for token in _text_tokens(line) if (name := _basename(token))]
+
+
+def _references(lines: list[str], suffix: str) -> list[MediaReference]:
+    """Distinct media references in order of appearance, stopping at one more than :data:`MAX_REFERENCES`."""
+    found: dict[MediaReference, None] = {}
+    for line in lines:
+        for reference in _line_references(line, suffix):
+            found[reference] = None
+            if len(found) > MAX_REFERENCES:
+                return list(found)
+    return list(found)
+
+
+def _is_artist_title(line: str) -> bool:
+    """A spaced dash with a word character before it and another after it (the survey's ``\\w.*\\s-\\s.*\\w``)."""
+    first = _WORD_CHAR.search(line)
+    if first is None:
+        return False
+    last = max((match.start() for match in _WORD_CHAR.finditer(line, first.start())), default=first.start())
+    return any(first.start() < sep.start() and sep.start() + 3 <= last for sep in _DASH_SEPARATOR.finditer(line))
 
 
 def _line_kind(line: str) -> str | None:
@@ -276,7 +340,7 @@ def _line_kind(line: str) -> str | None:
         return "ts"
     if _NUM_LINE.match(line) and len(_WORDS.findall(line)) >= 2:
         return "num"
-    if _ARTIST_TITLE.search(line) and not _URL.search(line) and len(line) < 200:
+    if len(line) < _ARTIST_TITLE_MAX and _is_artist_title(line) and not _has_url(line):
         return "at"
     return None
 
@@ -315,12 +379,13 @@ def extract_content_features(raw: bytes, suffix: str) -> ContentFeatures:
 
     text = raw.decode(encoding, errors="replace")
     decision = _decision_text(text, encoding)
-    lines = text.splitlines()
-    decision_lines = decision.splitlines()
+    # Every line is cut before any pattern sees it; see the module docstring's "Bounded work".
+    lines = [line[:MAX_LINE_CHARS] for line in text.splitlines()]
+    decision_lines = [line[:MAX_LINE_CHARS] for line in decision.splitlines()]
     nonblank = [line for line in decision_lines if line.strip()]
     stripped = [_LEADING_ART.sub("", line).rstrip() for line in nonblank]
 
-    references = _references(lines, text, suffix)
+    references = _references(lines, suffix)
     cue_counts = {"TRACK": 0, "TITLE": 0}
     for line in decision_lines:
         if (match := _CUE_KEYWORD.match(line)) and (keyword := match.group(1).upper()) in cue_counts:
@@ -331,8 +396,8 @@ def extract_content_features(raw: bytes, suffix: str) -> ContentFeatures:
     if not raw or sum(1 for char in decision if char.isalnum()) < _MIN_ALNUM:
         junk_class = "empty"
     elif (
-        _URL.search(decision)
-        and len(nonblank) <= _SITE_AD_MAX_LINES
+        len(nonblank) <= _SITE_AD_MAX_LINES
+        and any(_has_url(line) for line in nonblank)
         and _AD_WORD.search(decision)
         and not (track_like or references or _has_release_block(stripped))
     ):
@@ -366,16 +431,19 @@ def folder_media(directory: str) -> tuple[tuple[str, ...], int]:
     return tuple(names[:MAX_FOLDER_MEDIA]), len(names)
 
 
-def read_companion(path: str) -> CompanionReading:
+def read_companion(path: str, *, follow_symlinks: bool = True) -> CompanionReading:
     """Read one companion at ``path`` (an on-disk handle) and extract everything the agent reports.
 
     Reads at most :data:`MAX_FEATURE_BYTES`; a larger file is fingerprinted by a streamed hash of the
     whole file, so the fingerprint is always the hash of the complete content (the same value as the
     ``files.sha256_hash`` an unchanged file was ingested with). Raises ``OSError`` when unreadable.
-    Synchronous, blocking I/O: callers run it via ``asyncio.to_thread``.
+    ``follow_symlinks=False`` opens with ``O_NOFOLLOW``: a caller that has just containment-checked a
+    RESOLVED path passes it, so a symlink swapped in after the check is refused (``ELOOP``) rather
+    than followed out of the scan roots. Synchronous, blocking I/O: callers use ``asyncio.to_thread``.
     """
     handle = Path(path)
-    with handle.open("rb") as stream:
+    flags = os.O_RDONLY | (0 if follow_symlinks else os.O_NOFOLLOW)
+    with os.fdopen(os.open(handle, flags), "rb") as stream:
         raw = stream.read(MAX_FEATURE_BYTES + 1)
         truncated = len(raw) > MAX_FEATURE_BYTES
         digest = hashlib.sha256(raw)

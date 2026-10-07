@@ -45,7 +45,7 @@ class CompanionContentFeatures(TimestampMixin, Base):
     # True when the file exceeded the agent's read cap, so the features describe only its head.
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # [{"name": <NFC basename>, "source": "cue_file" | "m3u" | "pls" | "text_token"}, ...], capped;
-    # reference_count is the uncapped total.
+    # reference_count is exact up to the cap; MAX_REFERENCES + 1 means "more than the cap".
     media_references: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, server_default="[]")
     reference_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     is_tracklist: Mapped[bool] = mapped_column(Boolean, nullable=False)

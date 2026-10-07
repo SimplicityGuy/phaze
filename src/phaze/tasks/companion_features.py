@@ -25,6 +25,7 @@ from phaze.schemas.agent_companion_features import CompanionFeaturesChunk
 from phaze.schemas.agent_tasks import ExtractCompanionFeaturesPayload
 from phaze.services.companion_features_report import read_companion_records
 from phaze.services.containment import resolve_and_check_containment
+from phaze.services.media_path_resolve import resolve_media_path
 
 
 if TYPE_CHECKING:
@@ -34,16 +35,24 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _contained(paths: list[str], scan_roots: list[str]) -> list[str]:
-    """The paths that resolve inside one of ``scan_roots``; an escaping path is logged and dropped."""
-    kept: list[str] = []
+def _contained(paths: list[str], scan_roots: list[str]) -> list[tuple[str, str]]:
+    """``(row_key, read path)`` for every path whose OPENED form is inside ``scan_roots``; an escape is logged and dropped.
+
+    Containment applies to the exact path that gets opened. The NFD-twin lookup runs FIRST, then
+    the containment check resolves ITS result, and the resolved path -- symlink-free at check time --
+    is what the caller opens (with ``O_NOFOLLOW``). The opposite order would resolve the control-plane
+    string, then let ``resolve_media_path`` walk down from an existing ancestor and pick a twin
+    through a symlinked DIRECTORY that was never checked; ``O_NOFOLLOW`` guards only the final
+    component. The row key stays the original string so the features land on their ``files`` row.
+    """
+    kept: list[tuple[str, str]] = []
     for path in paths:
         try:
-            resolve_and_check_containment(path, scan_roots)
+            resolved, _owning_root = resolve_and_check_containment(resolve_media_path(path), scan_roots)
         except ValueError:
             logger.warning("companion features: containment escape skipped", path=path)
             continue
-        kept.append(path)
+        kept.append((path, str(resolved)))
     return kept
 
 
@@ -56,8 +65,8 @@ async def extract_companion_features(ctx: dict[str, Any], **kwargs: Any) -> dict
     scan_roots = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
     api: PhazeAgentClient = ctx["api_client"]
 
-    paths = await asyncio.to_thread(_contained, [target.original_path for target in payload.targets], scan_roots)
-    records, unreadable = await asyncio.to_thread(read_companion_records, paths)
+    targets = await asyncio.to_thread(_contained, [target.original_path for target in payload.targets], scan_roots)
+    records, unreadable = await asyncio.to_thread(lambda: read_companion_records(targets, follow_symlinks=False))
     stored = 0
     if records:
         # Unlike ingest, a failed POST here is the job's failure: SAQ retries it, and the rows stay
@@ -65,7 +74,7 @@ async def extract_companion_features(ctx: dict[str, Any], **kwargs: Any) -> dict
         stored = (await api.post_companion_features(CompanionFeaturesChunk(features=records))).stored
     result = {
         "requested": len(payload.targets),
-        "escaped": len(payload.targets) - len(paths),
+        "escaped": len(payload.targets) - len(targets),
         "unreadable": unreadable,
         "reported": len(records),
         "stored": stored,

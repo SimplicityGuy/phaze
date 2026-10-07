@@ -246,3 +246,30 @@ async def test_a_chunk_naming_no_row_of_the_agent_stores_nothing(session: AsyncS
 
     assert (outcome.stored, outcome.unknown) == (0, 1)
     assert (await session.execute(select(CompanionContentFeatures.file_id))).all() == []
+
+
+async def test_a_deleted_copy_re_decides_the_copies_that_remain(session: AsyncSession, tmp_path: Path) -> None:
+    """The verdict is the GROUP's: a third copy flips all three, and removing one flips the other two back."""
+    copies = [await _release(session, tmp_path, f"release-{index}", f"set-{index}.mp3", _STAMP) for index in range(3)]
+    await store_companion_features(session, _AGENT, [_record(tmp_path / f"release-{index}" / "site.nfo") for index in range(3)])
+    assert [(await _features(session, copy.id)).junk_class for copy in copies] == ["known_stamp"] * 3
+
+    await delete_file_cascade(session, copies[2].id)
+
+    assert [(await _features(session, copy.id)).junk_class for copy in copies[:2]] == ["site_ad", "site_ad"]
+
+
+async def test_removing_the_only_copy_beside_media_can_make_the_rest_a_stamp(session: AsyncSession, tmp_path: Path) -> None:
+    """Three media-less folders plus one beside media is undecidable; without the media copy it is a stamp."""
+    bare = []
+    for index in range(3):
+        bare.append(await _row(session, _put(tmp_path / f"bare-{index}" / "site.nfo", _STAMP)))
+    beside = await _release(session, tmp_path, "release-m", "set-m.mp3", _STAMP)
+    await store_companion_features(
+        session, _AGENT, [_record(tmp_path / f"bare-{index}" / "site.nfo") for index in range(3)] + [_record(tmp_path / "release-m" / "site.nfo")]
+    )
+    assert {(await _features(session, row.id)).junk_class for row in [*bare, beside]} == {"site_ad"}
+
+    await invalidate_content_state(session, beside.id)  # its old bytes' features leave the group
+
+    assert [(await _features(session, row.id)).junk_class for row in bare] == ["known_stamp"] * 3

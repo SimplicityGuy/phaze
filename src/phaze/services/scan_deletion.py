@@ -54,6 +54,7 @@ from phaze.models.set_profile import SetProfile
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.companion_content import refresh_stamp_groups, stamp_groups_in
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.services.stage_status import cloud_busy_clause
 from phaze.telemetry.pipeline import record_transition
@@ -287,7 +288,10 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
 
+    # phaze-osy6j: a removed companion copy re-decides the stamp verdict of the copies that remain.
+    stamp_groups = await stamp_groups_in(session, FileRecord.batch_id == batch_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     logger.info("scan cascade deleted", batch_id=str(batch_id), **counts)
     return counts
 
@@ -306,7 +310,9 @@ async def delete_file_cascade(session: AsyncSession, file_id: uuid.UUID) -> dict
         *_file_descendant_steps(FileRecord.id == file_id),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.id == file_id)),
     ]
+    stamp_groups = await stamp_groups_in(session, FileRecord.id == file_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     logger.info("file cascade deleted", file_id=str(file_id), **counts)
     return counts
 
@@ -409,7 +415,9 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
         (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id == file_id)),
         (CompanionContentFeatures.__tablename__, delete(CompanionContentFeatures).where(CompanionContentFeatures.file_id == file_id)),
     ]
+    stamp_groups = await stamp_groups_in(session, FileRecord.id == file_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     ledger_keys = (
         (await session.execute(select(SchedulingLedger.key).where(SchedulingLedger.payload["file_id"].astext == str(file_id)))).scalars().all()
     )

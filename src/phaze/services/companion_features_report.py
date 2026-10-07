@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from phaze.constants import INGESTIBLE_COMPANION_EXTENSIONS
+from phaze.constants import INGESTIBLE_COMPANION_EXTENSIONS, is_quarantined
 from phaze.schemas.agent_companion_features import CompanionFeaturesChunk, CompanionFeaturesRecord
 from phaze.services.agent_client import AgentApiError
 from phaze.services.companion_features import read_companion
@@ -42,22 +42,37 @@ def is_companion_path(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in INGESTIBLE_COMPANION_EXTENSIONS
 
 
-def read_companion_records(paths: Iterable[str]) -> tuple[list[CompanionFeaturesRecord], int]:
-    """Read every companion in ``paths`` (NFC row keys); returns ``(records, unreadable)``. Blocking I/O."""
+def read_companion_records(targets: Iterable[tuple[str, str]], *, follow_symlinks: bool = True) -> tuple[list[CompanionFeaturesRecord], int]:
+    """Read each ``(row_key, read_path)`` companion; returns ``(records, unreadable)``. Blocking I/O.
+
+    ``row_key`` is the NFC ``original_path`` the features are reported under -- what matches them to
+    their ``files`` row. ``read_path`` is the handle actually opened; the backfill task passes the
+    containment-RESOLVED path there (with ``follow_symlinks=False``), never the control-plane string.
+    A non-companion or a quarantined path is skipped without being opened.
+    """
     records: list[CompanionFeaturesRecord] = []
     unreadable = 0
-    for path in paths:
-        if not is_companion_path(path):
+    for row_key, read_path in targets:
+        if not is_companion_path(row_key) or is_quarantined(row_key):
             continue
         try:
-            # phaze-9pg11: the row key is NFC; the on-disk entry may be NFD.
-            reading = read_companion(resolve_media_path(path))
+            reading = read_companion(read_path, follow_symlinks=follow_symlinks)
         except OSError as exc:
             unreadable += 1
-            logger.warning("companion features: unreadable companion skipped", path=path, error=str(exc))
+            logger.warning("companion features: unreadable companion skipped", path=row_key, error=str(exc))
             continue
-        records.append(CompanionFeaturesRecord.from_reading(path, reading))
+        records.append(CompanionFeaturesRecord.from_reading(row_key, reading))
     return records, unreadable
+
+
+def _ingest_targets(paths: Iterable[str]) -> list[tuple[str, str]]:
+    """Ingest's ``(row_key, read_path)`` pairs. Blocking (``resolve_media_path`` may list a directory).
+
+    The scan and the watcher hand over paths from their OWN walk or event -- the same handle they just
+    hashed -- so no control-plane string is involved. phaze-9pg11: the row key is NFC, the on-disk entry
+    may be NFD.
+    """
+    return [(path, resolve_media_path(path)) for path in paths]
 
 
 async def report_companion_features(api: PhazeAgentClient, paths: Iterable[str]) -> int:
@@ -65,12 +80,14 @@ async def report_companion_features(api: PhazeAgentClient, paths: Iterable[str])
     wanted = [path for path in paths if is_companion_path(path)]
     if not wanted:
         return 0
-    records, _unreadable = await asyncio.to_thread(read_companion_records, wanted)
+    records, _unreadable = await asyncio.to_thread(lambda: read_companion_records(_ingest_targets(wanted)))
     if not records:
         return 0
     try:
         response = await api.post_companion_features(CompanionFeaturesChunk(features=records))
     except AgentApiError as exc:
+        # Never silent: the rows keep no features row, so `phaze backfill companion-features` selects
+        # them as missing (tests/discovery/test_companion_features_producers.py pins the recovery).
         logger.warning("companion features not reported; the backfill will cover them", count=len(records), error=str(exc))
         return 0
     return response.stored
