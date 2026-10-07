@@ -48,8 +48,9 @@ rather than silently picking a day/month order with no evidence behind it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date as _date
+from pathlib import PurePosixPath
 import re
 
 from phaze.services.text_repair import repair_mojibake
@@ -223,6 +224,12 @@ _LIVE_AT_RE = re.compile(r"^(?P<artist>.+?)\s*-?\s*live\s*@\s*(?P<event>.+)$", r
 _STRUCTURAL_SYMBOLS = frozenset({"@"})
 
 _WHITESPACE_RE = re.compile(r"\s+")
+
+# Folder names that say where a file was filed, not what it is -- never a usable artist/event, so a
+# folder-derived query is skipped for them rather than spending a request on "Downloads".
+_GENERIC_FOLDER_NAMES: frozenset[str] = frozenset(
+    {"audio", "downloads", "download", "incoming", "media", "mixes", "music", "new folder", "sets", "tmp", "temp", "unsorted", "videos"}
+)
 
 
 # Public result type
@@ -543,8 +550,8 @@ def _finalize_fields(text: str) -> tuple[str | None, str | None]:
 # Entry point
 
 
-def derive_query(filename: str) -> DerivedQuery:
-    """Derive a 1001Tracklists search query (plus structured signals) from one filename.
+def _derive_from_filename(filename: str) -> DerivedQuery:
+    """Derive a 1001Tracklists search query (plus structured signals) from one filename ALONE.
 
     Never raises: every step degrades gracefully (a filename that doesn't parse into artist +
     event just falls back to whatever text is left, same shape as the pre-existing "bare
@@ -589,3 +596,83 @@ def derive_query(filename: str) -> DerivedQuery:
         radio_show=radio_show,
         month=date_extraction.month,
     )
+
+
+def _folder_name(original_path: str | None) -> str | None:
+    """The immediate parent directory's name, or ``None`` when absent or too generic to name anything."""
+    if not original_path:
+        return None
+    name = PurePosixPath(original_path).parent.name.strip()
+    if not name or name.casefold() in _GENERIC_FOLDER_NAMES:
+        return None
+    return name
+
+
+def _named(field: str | None) -> str | None:
+    """*field* when it carries at least one letter -- a bare number or date names no artist or event."""
+    return field if field and any(ch.isalpha() for ch in field) else None
+
+
+def _query_from(artist: str | None, event: str | None, year: int | None) -> str:
+    parts = [part for part in (artist, event) if part]
+    if year is not None:
+        parts.append(str(year))
+    return " ".join(parts).strip()
+
+
+def derive_query(
+    filename: str,
+    *,
+    artist: str | None = None,
+    title: str | None = None,
+    album: str | None = None,
+    original_path: str | None = None,
+) -> DerivedQuery:
+    """Derive a search query from a filename, falling back to tags and then the folder (phaze-q0j9d).
+
+    **Filename-first precedence is the safety property.** The filename is derived exactly as it
+    always was; tags and the folder are consulted ONLY when that derivation yields neither an
+    artist nor an event -- the very population that spends zero host requests today (see
+    ``tracklist_drain``'s no-signal guard). Whenever the filename yields either, the result is the
+    unmodified filename derivation, byte for byte, whatever tags or path are supplied.
+
+    Fallback order, first hit wins, and a fallback applies ONLY when it forms BOTH an artist and an
+    event (phaze-t7yld): the ``artist`` tag with the ``album`` tag; then the parent folder's name,
+    parsed with the same filename pipeline and yielding both. The ``title`` tag is never an event (a
+    track title such as "Intro" names no event), and an artist-only or folder-only query would send
+    many unrelated files to one search whose top row could be stored as FOUND and never re-looked-up.
+    A year the filename carried is kept in the query. Otherwise the filename derivation is returned
+    untouched, so the drain's artist/event guard still spends nothing on it.
+    """
+    del title  # accepted for caller compatibility; a track title is never an event (phaze-t7yld)
+    base = _derive_from_filename(filename)
+    if base.artist or base.event:
+        return base
+
+    tag_artist = _named(_clean_field(artist)) if artist else None
+    tag_event = _named(_clean_field(album)) if album else None
+    if tag_artist and tag_event:
+        return replace(
+            base,
+            query=_query_from(tag_artist, tag_event, base.year),
+            artist=tag_artist,
+            event=tag_event,
+        )
+
+    folder = _folder_name(original_path)
+    if folder is not None:
+        from_folder = _derive_from_filename(folder)
+        from_folder = replace(from_folder, artist=_named(from_folder.artist), event=_named(from_folder.event))
+        if from_folder.artist and from_folder.event:
+            year = base.year if base.year is not None else from_folder.year
+            return replace(
+                base,
+                query=_query_from(from_folder.artist, from_folder.event, year),
+                artist=from_folder.artist,
+                event=from_folder.event,
+                year=year,
+                date=base.date if base.year is not None else from_folder.date,
+                date_ambiguous=base.date_ambiguous if base.year is not None else from_folder.date_ambiguous,
+                month=base.month if base.year is not None else from_folder.month,
+            )
+    return base

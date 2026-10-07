@@ -29,8 +29,10 @@ from phaze.services.tracklist_render import (
     TracklistRenderer,
     XvfbDisplay,
     XvfbError,
+    _classify,
     _paced,
     _wait,
+    looks_like_captcha,
     looks_like_interstitial,
 )
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, honest_user_agent_token
@@ -1017,6 +1019,58 @@ class TestRecordedCaptures:
         assert not looks_like_interstitial(html)
 
 
+class TestRealCaptchaCapture:
+    """phaze-a6n3e: the site's own image captcha, from a real 2026-10-07 capture.
+
+    The fixture is the unaltered page the renderer received on its first navigation, which at the
+    time was classified NO_TRACKLIST (and so cached as NOT_FOUND for 180 days by the drain).
+    """
+
+    CAPTCHA = FIXTURES / "25fhn7c9-captcha.html"
+    OK_CAPTURES = ("25fhn7c9-ok.html", "19h6nw7t-ok.html")
+
+    def test_captcha_page_is_blocked_not_no_tracklist(self):
+        """The real captcha page classifies as a retryable block, never as a negative."""
+        html = self.CAPTCHA.read_text(encoding="utf-8")
+
+        assert "tlpitem" not in html.lower(), "the capture really has no track container"
+        outcome = _classify(html, container_found=False)
+
+        assert outcome is RenderOutcome.CAPTCHA_BLOCKED
+        assert outcome is not RenderOutcome.NO_TRACKLIST
+        assert RenderResult(url=ANCHOR_URL, outcome=outcome, html=html, attempts=1, elapsed_seconds=0.1).is_retryable
+
+    async def test_captcha_is_not_reloaded_around(self):
+        """A reload cannot clear a captcha: exactly one navigation is spent, and it is not solved."""
+        html = self.CAPTCHA.read_text(encoding="utf-8")
+        browser = FakeBrowser([[html] * 5])
+
+        async with TracklistRenderer(launcher=FakeLauncher(browser), settings=_settings()) as renderer:
+            result = await renderer.render(ANCHOR_URL)
+
+        assert result.outcome is RenderOutcome.CAPTCHA_BLOCKED
+        assert result.attempts == 1
+        assert result.attempt_outcomes == (RenderOutcome.CAPTCHA_BLOCKED,)
+
+    @pytest.mark.parametrize("name", OK_CAPTURES)
+    def test_real_ok_captures_still_classify_ok(self, name: str):
+        """Both recorded OK captures (52-row and 12-row) stay OK, and carry no captcha marker."""
+        html = (FIXTURES / name).read_text(encoding="utf-8")
+
+        assert not looks_like_captcha(html)
+        assert _classify(html, container_found=True) is RenderOutcome.OK
+
+    def test_a_page_that_mentions_a_challenge_but_holds_the_container_is_not_blocked(self):
+        """Container wins even when a captcha marker and Turnstile markup are both present."""
+        html = TRACKLIST_HTML + '<input id="captcha"><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>'
+
+        assert looks_like_captcha(html)
+        assert _classify(html, container_found=True) is RenderOutcome.OK
+
+    def test_a_genuinely_empty_page_is_still_a_real_negative(self):
+        assert _classify(EMPTY_HTML, container_found=False) is RenderOutcome.NO_TRACKLIST
+
+
 class TestRenderResultSemantics:
     """The contract the drain (phaze-fq9h.7) reads."""
 
@@ -1026,6 +1080,7 @@ class TestRenderResultSemantics:
             (RenderOutcome.OK, True, False),
             (RenderOutcome.NO_TRACKLIST, False, False),
             (RenderOutcome.INTERSTITIAL_PERSISTED, False, True),
+            (RenderOutcome.CAPTCHA_BLOCKED, False, True),
             (RenderOutcome.TIMEOUT, False, True),
             (RenderOutcome.NAVIGATION_FAILED, False, True),
         ],

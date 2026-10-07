@@ -9,8 +9,8 @@ are ``docs/spikes/phaze-lm73u-companion-content-survey.md``; the writer is
 No backfill here: only the agent can read the files. ``phaze backfill companion-features`` (dry run
 by default) covers the rows that exist before the agents report features at ingest.
 
-Revision ID: 078
-Revises: 077
+Revision ID: 079
+Revises: 078
 """
 
 from collections.abc import Sequence
@@ -21,8 +21,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 
-revision: str = "078"
-down_revision: str | None = "077"
+revision: str = "079"
+down_revision: str | None = "078"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

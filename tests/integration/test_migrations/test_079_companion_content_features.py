@@ -1,4 +1,4 @@
-"""Migration 078 creates companion_content_features reversibly, cascading with its files row (phaze-osy6j)."""
+"""Migration 079 creates companion_content_features reversibly, cascading with its files row (phaze-osy6j)."""
 
 import asyncio
 
@@ -30,14 +30,14 @@ async def _tables(connection: object) -> set[str]:
 async def test_the_table_is_created_cascades_with_files_and_downgrades_away() -> None:
     cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
     await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
-    await asyncio.to_thread(upgrade_to, cfg, "077")
+    await asyncio.to_thread(upgrade_to, cfg, "078")
     engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
     try:
         async with engine.begin() as connection:
             assert "companion_content_features" not in await _tables(connection)
             await connection.execute(text(_AGENT))
             await connection.execute(text(_FILE))
-        await asyncio.to_thread(upgrade_to, cfg, "078")
+        await asyncio.to_thread(upgrade_to, cfg, "079")
         async with engine.begin() as connection:
             await connection.execute(text(_FEATURES), {"encoding": "cp437", "junk": "known_stamp"})
             row = (
@@ -53,10 +53,10 @@ async def test_the_table_is_created_cascades_with_files_and_downgrades_away() ->
         async with engine.begin() as connection:
             await connection.execute(text("DELETE FROM files"))
             assert (await connection.execute(text("SELECT count(*) FROM companion_content_features"))).scalar_one() == 0
-        await asyncio.to_thread(downgrade_to, cfg, "077")
+        await asyncio.to_thread(downgrade_to, cfg, "078")
         async with engine.connect() as connection:
             assert "companion_content_features" not in await _tables(connection)
-        await asyncio.to_thread(upgrade_to, cfg, "078")
+        await asyncio.to_thread(upgrade_to, cfg, "079")
         async with engine.connect() as connection:
             assert "companion_content_features" in await _tables(connection)
     finally:

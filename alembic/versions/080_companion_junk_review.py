@@ -9,8 +9,8 @@ deletion can neither be blocked by it nor erase it. The design and its evidence 
 No backfill: the detector (``phaze backfill junk-review``) proposes rows from the stored content
 features.
 
-Revision ID: 079
-Revises: 078
+Revision ID: 080
+Revises: 079
 """
 
 from collections.abc import Sequence
@@ -21,8 +21,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 
-revision: str = "079"
-down_revision: str | None = "078"
+revision: str = "080"
+down_revision: str | None = "079"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

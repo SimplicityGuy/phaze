@@ -535,6 +535,63 @@ class TracklistScraper:
         return artist_part.strip(), rest.strip() or None
 
     @classmethod
+    def detail_url_external_id(cls, url: str) -> str | None:
+        """The 1001Tracklists id of a detail-page ``url``, or ``None`` when it is not a usable one.
+
+        ``None`` for a URL off the host allow-list (or not https) and for one carrying no
+        ``/tracklist/<id>`` segment. This is the public form of the two checks a persisted retry hint
+        must pass before it is rendered (phaze-3ekjl): callers outside this module have no business
+        reaching for ``_is_allowed_url`` or ``_EXTERNAL_ID_PATTERN``. The id is bounded to the
+        ``Tracklist.external_id`` column width exactly as a searched row's is.
+        """
+        if not cls._is_allowed_url(url):
+            return None
+        match = cls._EXTERNAL_ID_PATTERN.search(url)
+        return match.group(1)[: cls._EXTERNAL_ID_MAX_LEN] if match is not None else None
+
+    @classmethod
+    def detail_page_result(cls, html: str, url: str) -> TracklistSearchResult | None:
+        """Read a rendered DETAIL page's own headline as a search-row-shaped result (phaze-w5fni).
+
+        The headline (``h1#pageTitle``, falling back to ``og:title`` then ``<title>``) has exactly
+        the search row's link-text shape, ``"Artist @ Event, Venue, City, Country[ YYYY-MM-DD]"``,
+        and its trailing date is the same one the row's href slug carries. Producing a
+        :class:`TracklistSearchResult` from it lets the EXISTING result scorer judge a page that was
+        reached by a persisted hint instead of by a search, with no second scoring rubric to drift.
+        ``None`` when no headline can be read -- which the caller must treat as "cannot verify",
+        never as a match.
+        """
+        soup = BeautifulSoup(html, "lxml")
+        headline = soup.select_one("h1#pageTitle")
+        title = headline.get_text(" ", strip=True) if headline is not None else ""
+        if not title:
+            og = soup.select_one('meta[property="og:title"]')
+            title = str(og.get("content", "")).strip() if og is not None else ""
+        if not title and soup.title is not None:
+            title = soup.title.get_text(strip=True)
+        if not title:
+            return None
+        title = re.sub(r"\s+([,;:])", r"\1", re.sub(r"\s+", " ", title))
+        match = cls._EXTERNAL_ID_PATTERN.search(url)
+        if match is None:
+            return None
+        # The LAST date: the headline can quote another date inside the event text (a broadcast of an
+        # earlier show), and the tracklist's own date is the trailing one.
+        dated = next(iter(reversed(list(cls._ISO_DATE_IN_TEXT_PATTERN.finditer(title)))), None)
+        # A search row's link text carries no date (it has its own cell), so strip the headline's
+        # trailing one before splitting -- otherwise the event text would be scored with it attached.
+        undated = title[: dated.start()].rstrip() if dated is not None and title.endswith(dated.group(0)) else title
+        artist, event = cls._split_link_text(undated)
+        return TracklistSearchResult(
+            external_id=match.group(1)[: cls._EXTERNAL_ID_MAX_LEN],
+            title=title,
+            url=url,
+            artist=artist,
+            date=dated.group(0) if dated else cls._extract_date_from_href(url),
+            event=event,
+        )
+
+    @classmethod
     def _extract_row_date(cls, item: Tag) -> str | None:
         """Extract a search row's displayed ``YYYY-MM-DD`` tracklist date (phaze-fq9h.6).
 

@@ -41,6 +41,7 @@
     'render_failed': ('Detail page did not render', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
     'low_confidence': ('Only low-confidence matches on 1001Tracklists', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Not a negative — the search returned rows, but none scored high enough to trust. That usually means the search text was off, not that the site lacks this set; it is re-checked after a hold (30 days for a near miss, 180 when every row was far off), and at once if the search text changes.'),
     'parse_failed': ('Page rendered, nothing parsed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
+    'decoy': ('Decoy page rejected', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient — the page rendered, but its visible track names disagree with its own track metadata, the shape the site serves a client it has flagged. Nothing was stored; will be retried.'),
 } %}
 {% if review is none %}
 <p class="text-sm text-danger ">File not found.</p>

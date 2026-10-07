@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 
 from phaze.enums.stage import Stage
 from phaze.enums.tracklist_candidate import (
+    TRANSIENT_MAX_ATTEMPTS,
     TRANSIENT_OUTCOMES,
     CacheDecision,
     DuplicateConfidence,
@@ -71,9 +72,10 @@ from phaze.services.tracklist_lookup_cache import (
     record_outcome,
 )
 from phaze.services.tracklist_query import derive_query
-from phaze.services.tracklist_render import RenderOutcome, RenderResult
+from phaze.services.tracklist_render import RenderOutcome, RenderResult, _classify
 from phaze.services.tracklist_result_scorer import SELECTION_THRESHOLD
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistScraper, TracklistSearchResult
+from tests.identify.services.test_tracklist_decoy import fabricate_synthetic_decoy
 
 
 if TYPE_CHECKING:
@@ -307,6 +309,7 @@ class TestPerformLookupHonesty:
         [
             (RenderOutcome.NO_TRACKLIST, LookupOutcome.NOT_FOUND),
             (RenderOutcome.INTERSTITIAL_PERSISTED, LookupOutcome.BLOCKED),
+            (RenderOutcome.CAPTCHA_BLOCKED, LookupOutcome.BLOCKED),
             (RenderOutcome.TIMEOUT, LookupOutcome.RENDER_FAILED),
             (RenderOutcome.NAVIGATION_FAILED, LookupOutcome.RENDER_FAILED),
         ],
@@ -389,6 +392,7 @@ class TestPerformLookupHonesty:
             LookupOutcome.RENDER_FAILED,
             LookupOutcome.BLOCKED,
             LookupOutcome.PARSE_FAILED,
+            LookupOutcome.DECOY,
             LookupOutcome.LOW_CONFIDENCE,
         }
         assert producible == set(LookupOutcome)
@@ -504,6 +508,39 @@ class TestPersistence:
         assert verdict.entry.outcome == LookupOutcome.BLOCKED.value
         assert verdict.decision is CacheDecision.BACKOFF, "a block earns a backoff, never the negative TTL"
         assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+
+    async def test_captcha_outcome_is_never_cached_as_not_found(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-a6n3e: the site's captcha is transient, backs off, writes no negative and no tracks, and parks at the cap."""
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+        captcha_html = (RENDER_FIXTURES / "25fhn7c9-captcha.html").read_text(encoding="utf-8")
+        # Through the real classifier first: the captcha page must reach the drain as CAPTCHA_BLOCKED.
+        classified = _classify(captcha_html, container_found=False)
+        assert classified is RenderOutcome.CAPTCHA_BLOCKED
+
+        attempt = await perform_lookup(candidate, search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(outcome=classified, html=captcha_html))
+        assert attempt.outcome is LookupOutcome.BLOCKED
+        assert attempt.outcome.is_transient
+        assert not attempt.outcome.is_definitive_negative
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.entry is not None
+        assert verdict.entry.outcome == LookupOutcome.BLOCKED.value
+        assert verdict.entry.outcome != LookupOutcome.NOT_FOUND.value
+        assert verdict.decision is CacheDecision.BACKOFF
+        assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+        assert (await session.execute(select(func.count()).select_from(TracklistTrack))).scalar_one() == 0
+
+        # Repeated captchas park the set after the existing cap, never converting to a negative.
+        for _ in range(TRANSIENT_MAX_ATTEMPTS - 1):
+            await persist_lookup(session, candidate, attempt, now=NOW)
+            await session.flush()
+        parked = await lookup(session, candidate.set_key, now=NOW)
+        assert parked.decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert not parked.decision.should_query
 
     async def test_a_far_off_low_confidence_search_is_held_for_the_negative_ttl_not_suppressed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=NO_MATCH_FILENAME)
@@ -969,14 +1006,89 @@ class TestTally:
             LookupOutcome.NOT_FOUND,
             LookupOutcome.BLOCKED,
             LookupOutcome.PARSE_FAILED,
+            LookupOutcome.DECOY,
             LookupOutcome.LOW_CONFIDENCE,
         ):
             _tally(report, LookupAttempt(set_key="k", query_text="q", outcome=outcome, host_requests=2), PersistResult())
 
-        assert (report.found, report.not_found, report.transient, report.low_confidence) == (1, 1, 2, 1)
+        assert (report.found, report.not_found, report.transient, report.low_confidence) == (1, 1, 3, 1)
         assert report.attempted == report.found + report.not_found + report.transient + report.low_confidence
-        assert report.host_requests == 10
+        assert report.host_requests == 12
         assert report.as_dict()["low_confidence"] == 1
+
+
+class TestDecoyPage:
+    """phaze-y5fc7: a decoy page is a transient -- never FOUND, never NOT_FOUND, never a track row.
+
+    The decoy render is SYNTHETIC: the anchor capture's real layout with its visible names
+    randomised by ``fabricate_synthetic_decoy`` (see that module's docstring). The search side is the
+    real ``time-warp-2024`` capture, so the scorer selects the anchor exactly as on the happy path and
+    the only thing that differs from a FOUND is the page's names.
+    """
+
+    @staticmethod
+    def decoy_lookup() -> tuple[FakeSearch, FakeRenderer]:
+        return FakeSearch("time-warp-2024"), FakeRenderer(html=fabricate_synthetic_decoy(load_render(ANCHOR_ID)))
+
+    async def test_a_decoy_render_is_a_transient_with_no_tracks(self) -> None:
+        search, renderer = self.decoy_lookup()
+        attempt = await perform_lookup(candidate_for(ANCHOR_FILENAME), search=search, renderer=renderer)
+
+        assert attempt.outcome is LookupOutcome.DECOY
+        assert attempt.outcome.is_transient
+        assert not attempt.outcome.is_definitive_negative
+        assert not attempt.is_found
+        assert attempt.tracks == ()
+        assert attempt.external_id == ANCHOR_ID, "the selected page is still recorded, for diagnosis"
+        assert attempt.detail is not None
+        assert "42 of 42" in attempt.detail
+        assert attempt.host_requests == 2
+
+    async def test_a_decoy_stores_nothing_caches_no_negative_and_parks_after_the_cap(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+
+        moment = NOW
+        for attempt_number in range(1, TRANSIENT_MAX_ATTEMPTS + 1):
+            search, renderer = self.decoy_lookup()
+            attempt = await perform_lookup(candidate, search=search, renderer=renderer)
+            result = await persist_lookup(session, candidate, attempt, now=moment)
+            await session.flush()
+
+            assert result.tracks_written == 0
+            verdict = await lookup(session, candidate.set_key, now=moment)
+            assert verdict.entry is not None
+            assert verdict.entry.outcome == LookupOutcome.DECOY.value, "never rewritten as not_found"
+            assert verdict.entry.attempts == attempt_number
+            if attempt_number < TRANSIENT_MAX_ATTEMPTS:
+                assert verdict.decision is CacheDecision.BACKOFF, "a decoy earns a backoff, never the negative TTL"
+                assert verdict.entry.expires_at is not None
+                assert verdict.entry.expires_at < NOW + timedelta(days=1)
+                moment = verdict.entry.expires_at + timedelta(minutes=1)
+                assert (await lookup(session, candidate.set_key, now=moment)).decision is CacheDecision.TRANSIENT_RETRY_READY
+
+        parked = await lookup(session, candidate.set_key, now=moment + timedelta(days=30))
+        assert parked.decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert not parked.should_query
+
+        assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+        assert (await session.execute(select(func.count()).select_from(TracklistTrack))).scalar_one() == 0
+        negatives = select(func.count()).select_from(TracklistLookupCache).where(TracklistLookupCache.outcome == LookupOutcome.NOT_FOUND.value)
+        assert (await session.execute(negatives)).scalar_one() == 0
+        record = await _file_record(session, file.id)
+        assert record is not None
+        assert record.outcome == TracklistFileOutcome.RETRY_PENDING.value
+
+    async def test_a_drain_pass_over_a_decoy_reports_a_transient_and_writes_nothing(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        await TestDrainPass._seed(make_file, session, ANCHOR_FILENAME)
+        search, renderer = self.decoy_lookup()
+
+        report = await drain_once(session_factory_for(session), search=search, renderer=renderer, limit=5, now=NOW)
+
+        assert (report.attempted, report.found, report.not_found, report.transient) == (1, 0, 0, 1)
+        assert report.tracks_written == 0
+        assert report.outcomes == {LookupOutcome.DECOY.value: 1}
+        assert (await session.execute(select(func.count()).select_from(TracklistTrack))).scalar_one() == 0
 
 
 # phaze-o71bf: the per-file lookup record (tracklist_file_lookups)

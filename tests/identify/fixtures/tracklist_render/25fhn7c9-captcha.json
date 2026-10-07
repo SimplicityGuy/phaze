@@ -1,0 +1,13 @@
+{
+  "attempts": 1,
+  "bead": "phaze-a6n3e",
+  "captured_utc": "2026-10-07T16:58:46Z",
+  "html_bytes": 63753,
+  "note": "Site image captcha ('We need to validate your are real human!'), served on the first navigation. recorded_outcome is what the classifier said at capture time (the bug); it was not solved or retried. Captured with --max-attempts 1.",
+  "recorded_attempt_outcomes": [
+    "no_tracklist"
+  ],
+  "recorded_outcome": "no_tracklist",
+  "track_container_count": 0,
+  "url": "https://www.1001tracklists.com/tracklist/25fhn7c9/sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25.html"
+}

@@ -20,7 +20,14 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome, TracklistFileOutcome, tracklist_file_outcome
+from phaze.enums.tracklist_candidate import (
+    RETRY_HINT_OUTCOMES,
+    TRANSIENT_MAX_ATTEMPTS,
+    CacheDecision,
+    LookupOutcome,
+    TracklistFileOutcome,
+    tracklist_file_outcome,
+)
 from phaze.models.tracklist_lookup_cache import TracklistFileLookup, TracklistLookupCache
 from phaze.services.bulk_insert import chunk_rows
 
@@ -328,6 +335,7 @@ async def record_outcome(
     source_url: str | None = None,
     result_confidence: int | None = None,
     detail: str | None = None,
+    retry_url: str | None = None,
     now: datetime | None = None,
     negative_ttl_days: int = NEGATIVE_TTL_DAYS,
 ) -> TracklistLookupCache:
@@ -344,8 +352,16 @@ async def record_outcome(
     ``expires_at`` follows the same rule: on the UPDATE path the transient backoff is computed IN
     SQL from the stored ``attempts``, so it matches :func:`compute_expires_at` exactly rather than
     being approximated from a possibly-stale Python read.
+
+    ``retry_url`` is a HINT for the next attempt, never a result (phaze-w5fni), and this function --
+    not its callers -- enforces that: it is stored only for :data:`RETRY_HINT_OUTCOMES` and is NULL
+    for every other outcome, so a ``FOUND``, a negative or a ``DECOY`` write clears whatever an
+    earlier attempt left. It is also cleared in the same statement that parks the set (the write
+    that takes the streak to :data:`TRANSIENT_MAX_ATTEMPTS`), computed in SQL from the stored
+    ``attempts`` for the same concurrency reason as ``expires_at``.
     """
     moment = now or datetime.now(UTC)
+    hint = retry_url if outcome in RETRY_HINT_OUTCOMES else None
     insert_attempts = 1
     insert_expires = compute_expires_at(outcome, insert_attempts, moment, negative_ttl_days=negative_ttl_days, best_score=result_confidence)
 
@@ -357,6 +373,7 @@ async def record_outcome(
         source_url=source_url,
         result_confidence=result_confidence,
         detail=detail,
+        retry_url=hint,
         attempts=insert_attempts,
         first_attempted_at=moment,
         last_attempted_at=moment,
@@ -371,6 +388,7 @@ async def record_outcome(
             "source_url": source_url,
             "result_confidence": result_confidence,
             "detail": detail,
+            "retry_url": _update_retry_url(outcome, hint),
             "attempts": _next_attempts_on_conflict(outcome),
             "last_attempted_at": moment,
             "expires_at": _update_expires_at(outcome, moment, negative_ttl_days, best_score=result_confidence),
@@ -385,6 +403,51 @@ async def record_outcome(
     result = await session.execute(upsert, execution_options={"populate_existing": True})
     entry: TracklistLookupCache = result.scalar_one()
     return entry
+
+
+def _update_retry_url(outcome: LookupOutcome, hint: str | None) -> Any:
+    """The ``retry_url`` the ON CONFLICT UPDATE should write: the hint, or NULL once the set parks.
+
+    The parked test reads the same :func:`_next_attempts_on_conflict` expression ``attempts`` is
+    written from, so the clear lands in the very write that reaches the cap.
+    """
+    if hint is None:
+        return None
+    return case((_next_attempts_on_conflict(outcome) >= TRANSIENT_MAX_ATTEMPTS, None), else_=hint)
+
+
+def _usable_hint_entry(verdict: CacheVerdict) -> TracklistLookupCache | None:
+    """The row whose retry hint a lookup may act on, or ``None``; the one place that rule lives."""
+    entry = verdict.entry
+    if verdict.decision is not CacheDecision.TRANSIENT_RETRY_READY or entry is None or not entry.retry_url:
+        return None
+    if _parse_outcome(entry.outcome) not in RETRY_HINT_OUTCOMES:
+        return None
+    return entry
+
+
+def retry_hint_for(verdict: CacheVerdict) -> str | None:
+    """The detail-page URL a retry of this set may render directly, or ``None`` to search afresh.
+
+    Honoured only while the verdict is ``TRANSIENT_RETRY_READY`` -- the hint therefore expires with
+    the existing transient backoff and dies with the park (``BACKOFF`` and ``TRANSIENT_EXHAUSTED``
+    never reach a lookup, and every other decision is a clean answer or a miss) -- and only for a row
+    whose stored outcome is in :data:`RETRY_HINT_OUTCOMES`. A hint is advisory: the caller must still
+    check the rendered page against the query (see ``tracklist_drain.perform_lookup``).
+    """
+    entry = _usable_hint_entry(verdict)
+    return entry.retry_url if entry is not None else None
+
+
+def retry_confidence_for(verdict: CacheVerdict) -> int | None:
+    """The score the ORIGINAL search stored next to a usable hint, or ``None`` (phaze-3ekjl).
+
+    ``result_confidence`` is not a second copy of anything: the transient write that left the hint is
+    the same write that stored the chosen row's score, so the row's own column already holds it. It
+    only needs to be carried through the next attempt, which rewrites the whole row.
+    """
+    entry = _usable_hint_entry(verdict)
+    return entry.result_confidence if entry is not None else None
 
 
 def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int, *, best_score: int | None = None) -> Any:

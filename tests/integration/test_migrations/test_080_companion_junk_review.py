@@ -1,4 +1,4 @@
-"""Migration 079 creates companion_junk_review reversibly, FK-free, one live row per identity (phaze-bk5jp)."""
+"""Migration 080 creates companion_junk_review reversibly, FK-free, one live row per identity (phaze-bk5jp)."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -34,14 +34,14 @@ async def _tables(connection: object) -> set[str]:
 async def test_the_table_is_created_fk_free_with_one_live_row_per_identity_and_downgrades_away() -> None:
     cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
     await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
-    await asyncio.to_thread(upgrade_to, cfg, "078")
+    await asyncio.to_thread(upgrade_to, cfg, "079")
     engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
     try:
         async with engine.begin() as connection:
             assert "companion_junk_review" not in await _tables(connection)
             await connection.execute(text(_AGENT))
             await connection.execute(text(_FILE))
-        await asyncio.to_thread(upgrade_to, cfg, "079")
+        await asyncio.to_thread(upgrade_to, cfg, "080")
         async with engine.begin() as connection:
             foreign_keys = await connection.execute(
                 text("SELECT count(*) FROM pg_constraint WHERE conrelid = 'companion_junk_review'::regclass AND contype = 'f'")
@@ -68,10 +68,10 @@ async def test_the_table_is_created_fk_free_with_one_live_row_per_identity_and_d
         async with engine.begin() as connection:
             await connection.execute(text("DELETE FROM files"))
             assert (await connection.execute(text("SELECT count(*) FROM companion_junk_review"))).scalar_one() == 2
-        await asyncio.to_thread(downgrade_to, cfg, "078")
+        await asyncio.to_thread(downgrade_to, cfg, "079")
         async with engine.connect() as connection:
             assert "companion_junk_review" not in await _tables(connection)
-        await asyncio.to_thread(upgrade_to, cfg, "079")
+        await asyncio.to_thread(upgrade_to, cfg, "080")
         async with engine.connect() as connection:
             assert "companion_junk_review" in await _tables(connection)
     finally:

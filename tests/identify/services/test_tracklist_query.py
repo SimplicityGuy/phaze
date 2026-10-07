@@ -11,6 +11,8 @@ often on this corpus's realistic scene-release shapes.
 from __future__ import annotations
 
 from datetime import date
+import json
+from pathlib import Path
 
 import pytest
 
@@ -587,3 +589,106 @@ class TestNumericIdAndMonthName:
         result = derive_query("Vela May - 2019 Nightgrove.mp3")
         assert result.artist == "Vela May"
         assert result.month is None
+
+
+# Tag and folder fallback (phaze-q0j9d)
+
+
+_LEGACY_QUERIES_PATH = Path(__file__).parent.parent / "fixtures" / "tracklist_query" / "legacy_queries.json"
+_SIGNAL_LESS_FILENAME = "LIVE.mp3"
+_FOLDER_PATH = "/archive/Nova Ryn - Nightgrove Festival 2019/LIVE.mp3"
+
+
+def test_existing_queries_are_byte_identical() -> None:
+    """Every filename whose derivation has an artist or event keeps its exact query.
+
+    The golden file was recorded from ``derive_query`` BEFORE the tag/folder fallback existed, over
+    every audio/video filename literal in this repo's tests (which includes the filenames behind the
+    recorded search fixtures). Tags and a folder that would each yield a query of their own are
+    supplied on the second pass, and must change nothing.
+    """
+    legacy: dict[str, str] = json.loads(_LEGACY_QUERIES_PATH.read_text(encoding="utf-8"))
+    assert len(legacy) > 100  # the corpus is real, not an accidentally empty file
+    for filename, expected in legacy.items():
+        plain = derive_query(filename)
+        assert plain.query == expected, filename
+        assert plain.artist or plain.event, filename
+        with_extras = derive_query(filename, artist="Tag Artist", title="Tag Title", album="Tag Album", original_path=_FOLDER_PATH)
+        assert with_extras == plain, filename
+
+
+def _is_signal_less(result: DerivedQuery) -> bool:
+    return not (result.artist or result.event)
+
+
+def test_artist_and_album_tags_fill_a_signal_less_filename() -> None:
+    assert _is_signal_less(derive_query(_SIGNAL_LESS_FILENAME))
+
+    tagged = derive_query(_SIGNAL_LESS_FILENAME, artist="Nova Ryn", album="Nightgrove Festival")
+    assert tagged.artist == "Nova Ryn"
+    assert tagged.event == "Nightgrove Festival"
+    assert tagged.query == "Nova Ryn Nightgrove Festival"
+
+    # tags beat the folder when both are complete
+    both = derive_query(_SIGNAL_LESS_FILENAME, artist="Other Act", album="Other Fest", original_path=_FOLDER_PATH)
+    assert both.query == "Other Act Other Fest"
+
+    # a year the filename carried survives
+    assert derive_query("LIVE 2019.mp3", artist="Nova Ryn", album="Nightgrove Festival").query == "Nova Ryn Nightgrove Festival 2019"
+
+
+def test_folder_yielding_artist_and_event_fills_a_signal_less_filename() -> None:
+    folder_only = derive_query(_SIGNAL_LESS_FILENAME, original_path=_FOLDER_PATH)
+    assert folder_only.artist == "Nova Ryn"
+    assert folder_only.event == "Nightgrove Festival"
+    assert folder_only.query == "Nova Ryn Nightgrove Festival 2019"
+    assert folder_only.year == 2019
+
+    # an incomplete tag set does not block a complete folder
+    assert derive_query(_SIGNAL_LESS_FILENAME, artist="Nova Ryn", original_path=_FOLDER_PATH).query == "Nova Ryn Nightgrove Festival 2019"
+
+
+def test_title_tag_is_never_used_as_event() -> None:
+    """A track title ("Intro") is not an event; artist + title alone must stay signal-less."""
+    baseline = derive_query(_SIGNAL_LESS_FILENAME)
+    assert derive_query(_SIGNAL_LESS_FILENAME, artist="Nova Ryn", title="Intro") == baseline
+    assert derive_query(_SIGNAL_LESS_FILENAME, artist="Nova Ryn", title="Duskfield") == baseline
+    assert derive_query(_SIGNAL_LESS_FILENAME, title="Intro") == baseline
+    # with an album the title is still ignored
+    with_album = derive_query(_SIGNAL_LESS_FILENAME, artist="Nova Ryn", title="Intro", album="Nightgrove Festival")
+    assert with_album.query == "Nova Ryn Nightgrove Festival"
+
+
+@pytest.mark.parametrize(
+    ("extras", "case"),
+    [
+        ({"artist": "Nova Ryn"}, "artist tag alone"),
+        ({"album": "Nightgrove Festival"}, "album tag alone"),
+        ({"original_path": "/archive/Nova Ryn/LIVE.mp3"}, "folder parsing to an artist only"),
+        ({"original_path": "/archive/Nightgrove Festival 2019/LIVE.mp3"}, "folder with a date and no separator"),
+        ({"artist": "Nova Ryn", "original_path": "/archive/Nova Ryn/LIVE.mp3"}, "artist tag plus an artist-only folder"),
+    ],
+)
+def test_artist_only_and_folder_only_produce_no_query(extras: dict[str, str | None], case: str) -> None:
+    result = derive_query(_SIGNAL_LESS_FILENAME, **extras)
+    assert result == derive_query(_SIGNAL_LESS_FILENAME), case
+    assert _is_signal_less(result), case
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        {},
+        {"artist": "", "title": "  ", "album": None},
+        {"original_path": "/archive/Music/LIVE.mp3"},
+        {"original_path": "/archive/Downloads/LIVE.mp3"},
+        {"original_path": "LIVE.mp3"},
+        {"original_path": "/archive/320/LIVE.mp3"},
+    ],
+)
+def test_no_signal_anywhere_stays_signal_less(extras: dict[str, str | None]) -> None:
+    """The drain's no-signal guard keys on artist/event; nothing here may invent either."""
+    result = derive_query(_SIGNAL_LESS_FILENAME, **extras)
+    assert result == derive_query(_SIGNAL_LESS_FILENAME)
+    assert not result.artist
+    assert not result.event

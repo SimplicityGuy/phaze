@@ -14,6 +14,7 @@ markup is suspected of having changed, and then say so in the bead.
 |------|------|-----------:|------:|
 | `25fhn7c9-ok.html` | Sven Väth @ Time Warp, Maimarkthalle Mannheim, 2024-10-25 — the spike anchor | 52 | 349,128 |
 | `19h6nw7t-ok.html` | Sven Väth @ BBC Radio 1 Dance Presents Time Warp, 2024-10-12 | 12 | 181,991 |
+| `25fhn7c9-captcha.html` | The anchor URL again, captured **2026-10-07** — the site's own image captcha, not a listing | 0 | 63,753 |
 
 The anchor is the acceptance criterion's page: its `og:description` states 52 tracks and the
 capture carries exactly 52 `.tlpItem` rows. The second file is a short listing, kept so the parser
@@ -51,3 +52,16 @@ mentions Turnstile" can never mean "we were blocked", and `_classify` checks for
 container first. Marker-first classification would have reported 4 of these 16 successful renders
 as blocked, and the inconsistency across otherwise identical pages is what makes that failure mode
 hard to spot: it would have looked like intermittent blocking rather than a bug.
+
+## The image captcha capture (phaze-a6n3e)
+
+`25fhn7c9-captcha.html` is a **real** capture, not a fabricated one: 1 live request for the anchor
+URL on 2026-10-07 (paced, honest User-Agent, `--max-attempts 1`, no solving, no retry) was served
+1001Tracklists' own image captcha — heading "We need to validate your are real human!" (sic), a
+base64 `<img alt="Captcha">`, `<input id="captcha">` and a hidden `cSalt` field. It is **not**
+Cloudflare Turnstile, so `looks_like_interstitial` did not match it and the renderer recorded it as
+`no_tracklist` (the sidecar keeps that as `recorded_outcome`). It is now classified
+`captcha_blocked`: retryable, never a negative.
+
+The same URL cleared on 2026-08-03 (`25fhn7c9-ok.html`), so this is a changed behaviour. How often
+it fires in the drain's persistent-browser flow is **unmeasured**: this is 1 captcha in 1 request.
