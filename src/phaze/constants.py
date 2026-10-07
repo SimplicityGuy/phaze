@@ -1,6 +1,7 @@
 """Constants for file discovery and ingestion."""
 
 import enum
+from pathlib import PurePath
 import re
 import unicodedata
 
@@ -64,6 +65,21 @@ This is the operator-approved D6 subset of the COMPANION entries in
 ``EXTENSION_MAP``. Artwork and checksum companions remain intentionally excluded.
 """
 
+QUARANTINE_DIRNAME: str = ".phaze-quarantine"
+"""The hidden per-scan-root directory approved junk companions are moved into.
+
+Operator decision 9, 2026-10-07, "Hidden dir per scan root (Recommended)"; epic phaze-4x319: the
+quarantine task places it at ``<root>/.phaze-quarantine/``, mirroring each file's original relative
+path. Neither producer ingests anything beneath it: ``tasks/scan.py`` prunes it from the walk and the
+watcher drops its events, so a quarantined file is never re-ingested (bead phaze-gafl9).
+"""
+
+
+def is_quarantined(path: str) -> bool:
+    """True when any component of ``path`` is :data:`QUARANTINE_DIRNAME` -- the scan and watcher share this test."""
+    return QUARANTINE_DIRNAME in PurePath(path).parts
+
+
 _SCENE_INDEX_PREFIX = re.compile(r"^\d{1,3}[\s_.\-]+")
 _DUPLICATE_MARKER_SUFFIX = re.compile(r"\s*\(\d{1,2}\)$")
 
@@ -74,9 +90,10 @@ def companion_match_key(name: str) -> str:
     A companion with no media in its own directory pairs with a parent-directory media file only when
     this key of the media's stem equals the key of the companion's sub-folder name or of its own stem
     (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj), or of the parent directory's own
-    name (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). The scan's admission and
-    ``services/companion.py``'s association both call THIS function, so a companion the scan admits is
-    exactly one association can link.
+    name (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). ``services/companion.py``'s
+    association calls THIS function. The scan no longer does: since bead phaze-gafl9 it admits every
+    approved companion wherever it sits (operator decision 6, 2026-10-07, "Yes, include them
+    (Recommended)"; epic phaze-4x319), so linking alone decides.
 
     A trailing duplicate-copy marker (`` (1)``, `` (12)``) is dropped first, so a download saved as
     ``<release> (1).mkv`` still matches its ``<release>`` folder (operator decision 2026-10-06,

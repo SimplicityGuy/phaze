@@ -1,8 +1,8 @@
 """Tests for the scan_directory SAQ task (Phase 27 Plan 04, D-11..D-13).
 
 Covers:
-- Extension filter (MUSIC + VIDEO plus the six approved COMPANION extensions;
-  companions require a media sibling only on settled-tree scans).
+- Extension filter (MUSIC + VIDEO plus the six approved COMPANION extensions,
+  admitted wherever they sit -- phaze-gafl9; nothing under .phaze-quarantine).
 - Exact chunking at AgentSettings.scan_chunk_size (default 500).
 - Per-chunk PATCH(processed_files=...) calls with monotonic counts.
 - Terminal PATCH(status='completed', total_files=N, processed_files=N).
@@ -62,6 +62,7 @@ def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
     """Create a minimal SAQ context dict with api_client mock.
 
     upsert_files, post_orphan_companions, and patch_scan_batch are AsyncMocks that record every call.
+    post_orphan_companions is retired (phaze-gafl9); it stays on the mock so tests can assert it is never called.
     """
     if api_client is None:
         api_client = AsyncMock()
@@ -139,8 +140,8 @@ def test_scan_directory_ingestible_extensions_are_derived_from_extension_map() -
     assert media_extensions | INGESTIBLE_COMPANION_EXTENSIONS == _INGESTIBLE_EXTENSIONS
 
 
-async def test_scan_directory_accepts_only_approved_companions_with_media_sibling(tmp_path: Path) -> None:
-    """D6-D7: accept six companion extensions beside media and reject the other six."""
+async def test_scan_directory_accepts_only_approved_companions(tmp_path: Path) -> None:
+    """D6: accept the six approved companion extensions and reject the other six."""
     from phaze.tasks.scan import scan_directory
 
     # One file from each COMPANION extension surveyed by EXTENSION_MAP, plus media.
@@ -176,8 +177,11 @@ async def test_scan_directory_accepts_only_approved_companions_with_media_siblin
     ctx["api_client"].post_orphan_companions.assert_not_awaited()
 
 
-async def test_scan_directory_rejects_orphaned_approved_companions(tmp_path: Path) -> None:
-    """D7: a settled-tree scan does not ingest approved companions without local media."""
+async def test_scan_directory_admits_approved_companions_with_no_media_anywhere(tmp_path: Path) -> None:
+    """A companion with no media beside or above it is ingested, not reported.
+
+    Bead phaze-gafl9, operator decision 6, 2026-10-07, "Yes, include them (Recommended)"; epic phaze-4x319.
+    """
     from phaze.tasks.scan import scan_directory
 
     orphaned = tmp_path / "orphaned"
@@ -191,18 +195,16 @@ async def test_scan_directory_rejects_orphaned_approved_companions(tmp_path: Pat
     ctx = _make_ctx()
     result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
-    assert result["files_posted"] == 1
+    assert result["files_posted"] == 7
     chunk = ctx["api_client"].upsert_files.await_args.args[0]
-    assert [record.original_filename for record in chunk.files] == ["song.mp3"]
-    diagnostic_chunk = ctx["api_client"].post_orphan_companions.await_args.args[1]
-    assert {record.normalized_path for record in diagnostic_chunk.diagnostics} == {
+    assert {record.original_path for record in chunk.files} == {str(media / "song.mp3")} | {
         str(orphaned / f"companion.{extension}") for extension in ("cue", "nfo", "txt", "m3u", "m3u8", "pls")
     }
-    assert {record.companion_extension for record in diagnostic_chunk.diagnostics} == {".cue", ".nfo", ".txt", ".m3u", ".m3u8", ".pls"}
+    ctx["api_client"].post_orphan_companions.assert_not_awaited()
 
 
-async def test_scan_directory_neither_ingests_nor_reports_excluded_companions(tmp_path: Path) -> None:
-    """Only the approved D6 companion subset becomes an orphan diagnostic."""
+async def test_scan_directory_ingests_a_companion_only_tree_without_excluded_types(tmp_path: Path) -> None:
+    """A tree with no media at all still ingests its approved companion; excluded types never enter."""
     from phaze.tasks.scan import scan_directory
 
     for extension in ("jpg", "jpeg", "png", "gif", "sfv", "md5"):
@@ -212,17 +214,17 @@ async def test_scan_directory_neither_ingests_nor_reports_excluded_companions(tm
     ctx = _make_ctx()
     result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
-    assert result == {"status": "completed", "files_posted": 0}
-    ctx["api_client"].upsert_files.assert_not_awaited()
-    diagnostic_chunk = ctx["api_client"].post_orphan_companions.await_args.args[1]
-    assert [record.normalized_path for record in diagnostic_chunk.diagnostics] == [str(tmp_path / "accepted.nfo")]
+    assert result == {"status": "completed", "files_posted": 1}
+    chunk = ctx["api_client"].upsert_files.await_args.args[0]
+    assert [record.original_path for record in chunk.files] == [str(tmp_path / "accepted.nfo")]
+    ctx["api_client"].post_orphan_companions.assert_not_awaited()
 
 
-async def test_scan_directory_chunks_orphan_diagnostics_without_expanding_progress_patch(
+async def test_scan_directory_chunks_companion_only_files_like_media(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A diagnostic population larger than one chunk remains bounded and off ScanBatchPatch."""
+    """Former orphans ride the ordinary bounded upsert chunks and progress PATCHes, nothing else."""
     from phaze.config import get_settings
     from phaze.tasks.scan import scan_directory
 
@@ -232,14 +234,63 @@ async def test_scan_directory_chunks_orphan_diagnostics_without_expanding_progre
         _touch(tmp_path / f"orphan-{index}.txt")
 
     ctx = _make_ctx()
-    await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
-    calls = ctx["api_client"].post_orphan_companions.await_args_list
-    assert [len(call.args[1].diagnostics) for call in calls] == [3, 3, 1]
-    assert all(call.args[0] == calls[0].args[0] for call in calls)
-    assert len({record.normalized_path for call in calls for record in call.args[1].diagnostics}) == 7
-    for call in ctx["api_client"].patch_scan_batch.await_args_list:
-        assert "diagnostics" not in call.args[1].model_dump()
+    assert result == {"status": "completed", "files_posted": 7}
+    calls = ctx["api_client"].upsert_files.await_args_list
+    assert [len(call.args[0].files) for call in calls] == [3, 3, 1]
+    assert len({record.original_path for call in calls for record in call.args[0].files}) == 7
+    ctx["api_client"].post_orphan_companions.assert_not_awaited()
+
+
+async def test_scan_directory_never_ingests_anything_under_phaze_quarantine(tmp_path: Path) -> None:
+    """``<root>/.phaze-quarantine/`` mirrors original paths, and nothing beneath it is ingested.
+
+    Operator decision 9, 2026-10-07, "Hidden dir per scan root (Recommended)"; epic phaze-4x319.
+    """
+    from phaze.tasks.scan import scan_directory
+
+    release = tmp_path / "release"
+    release.mkdir()
+    _touch(release / "set.mp3")
+    _touch(release / "notes.nfo")
+    quarantined = tmp_path / ".phaze-quarantine" / "release"
+    quarantined.mkdir(parents=True)
+    _touch(quarantined / "junk.nfo")
+    _touch(quarantined / "stray.mp3")  # Even media is skipped: the quarantine tree is never walked.
+    _touch(tmp_path / ".phaze-quarantine" / "top.txt")
+    nested = release / "info" / ".phaze-quarantine"
+    nested.mkdir(parents=True)
+    _touch(nested / "deep.txt")
+    _touch(tmp_path / "release" / ".phaze-quarantine-not.txt")  # A FILE whose name merely starts that way is admitted.
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result == {"status": "completed", "files_posted": 3}
+    chunk = ctx["api_client"].upsert_files.await_args.args[0]
+    assert {record.original_path for record in chunk.files} == {
+        str(release / "set.mp3"),
+        str(release / "notes.nfo"),
+        str(release / ".phaze-quarantine-not.txt"),
+    }
+    precount = ctx["api_client"].patch_scan_batch.await_args_list[0].args[1]
+    assert precount.total_files == 3  # The pre-count walk prunes it identically.
+
+
+async def test_scan_directory_rooted_inside_phaze_quarantine_ingests_nothing(tmp_path: Path) -> None:
+    """A scan pointed AT a quarantine directory (or below one) walks nothing -- a dedicated guard, not os.walk pruning."""
+    from phaze.tasks.scan import scan_directory
+
+    quarantine = tmp_path / ".phaze-quarantine" / "release"
+    quarantine.mkdir(parents=True)
+    _touch(quarantine / "junk.nfo")
+
+    for root in (tmp_path / ".phaze-quarantine", quarantine):
+        ctx = _make_ctx()
+        result = await scan_directory(ctx, **_make_payload_kwargs(str(root)))
+        assert result == {"status": "completed", "files_posted": 0}
+        ctx["api_client"].upsert_files.assert_not_awaited()
 
 
 async def test_scan_directory_chunks_at_500(tmp_path: Path) -> None:
@@ -815,18 +866,18 @@ def test_count_ingestible_matches_walk_population_with_companions(tmp_path: Path
     _touch(video / "set.cue")
 
     count, errors = _count_ingestible(tmp_path)
-    paths, orphan_paths, walk_errors = _walk_ingestible(tmp_path)
+    paths, walk_errors = _walk_ingestible(tmp_path)
 
-    assert count == len(paths) == 5
+    assert count == len(paths) == 6
     assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
         "media/a.mp3",
         "media/b.flac",
         "media/c.txt",
+        "orphaned/playlist.m3u",
         "video/set.cue",
         "video/set.mkv",
     }
     assert errors == []
-    assert [path.relative_to(tmp_path).as_posix() for path in orphan_paths] == ["orphaned/playlist.m3u"]
     assert walk_errors == []
 
 
@@ -885,8 +936,8 @@ async def test_scan_directory_precount_runs_off_loop(tmp_path: Path, monkeypatch
 # walk above and left this second walk iterating os.walk directly on the loop.
 
 
-def test_walk_ingestible_preserves_media_and_applies_scan_companion_rule(tmp_path: Path) -> None:
-    """Every media path remains selected; only approved sibling companions join it."""
+def test_walk_ingestible_preserves_media_and_admits_approved_companions(tmp_path: Path) -> None:
+    """Every media path remains selected; approved companions join it."""
     from phaze.tasks.scan import _walk_ingestible
 
     _touch(tmp_path / "a.mp3")
@@ -895,10 +946,9 @@ def test_walk_ingestible_preserves_media_and_applies_scan_companion_rule(tmp_pat
     (tmp_path / "sub").mkdir()
     _touch(tmp_path / "sub" / "e.mp4")
 
-    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
+    paths, errors = _walk_ingestible(tmp_path)
 
     assert {p.name for p in paths} == {"a.mp3", "d.txt", "e.mp4"}
-    assert orphan_paths == []
     assert errors == []
 
 
@@ -917,10 +967,9 @@ def test_walk_ingestible_collects_walk_errors(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(scan_module.os, "walk", fake_walk)
 
-    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
+    paths, errors = _walk_ingestible(tmp_path)
 
     assert paths == []
-    assert orphan_paths == []
     assert errors == [exc]
 
 
@@ -959,13 +1008,14 @@ async def test_scan_directory_hashing_walk_runs_off_loop(tmp_path: Path, monkeyp
 async def test_scan_directory_companion_only_subtree_does_not_block_hashing_walk(
     tmp_path: Path,
 ) -> None:
-    """A subtree containing only orphaned/excluded companion files must not stall the walk.
+    """A subtree containing only companion files must not stall the walk.
 
     Regression for the failure scenario in phaze-j54q: a companion-heavy subtree (all
     files excluded by the scan ingestion filter) used to keep the loop body's for-filenames iteration
     entirely await-free while os.walk's generator advanced directly on the event loop.
     Now the traversal happens off-loop before any per-file work starts, so a large
-    companion-only subtree alongside a real ingestible file still completes normally.
+    companion-only subtree alongside a real ingestible file still completes normally. Since
+    phaze-gafl9 its approved companions are ingested too; the excluded artwork is not.
     """
     from phaze.tasks.scan import scan_directory
 
@@ -980,16 +1030,19 @@ async def test_scan_directory_companion_only_subtree_does_not_block_hashing_walk
     result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
     assert result["status"] == "completed"
-    assert result["files_posted"] == 1
+    assert result["files_posted"] == 26
 
 
-# phaze-ehryj: a companion whose own directory holds no media is admitted only when its sub-folder
-# name or its own stem names a media file in its PARENT -- exactly one level, never a grandparent,
-# and never the reverse (media below the companion).
+# phaze-gafl9 retires phaze-ehryj's scan admission rule (operator decision 6, 2026-10-07, "Yes, include them (Recommended)"; epic phaze-4x319): the
+# scan used to admit a media-less companion only when its sub-folder name, its own stem or its release
+# folder's name matched media in its PARENT. The four tests below pinned that rule on the same trees;
+# they now pin that where a companion sits, and what it is called, never decides whether it is ingested.
+# ``companion_match_key`` survives for association (services/companion.py), so its tests stay as they were.
+# The frontier-memory test of the retired ``_walk_with_parent_media`` went with the function.
 
 
-def test_walk_ingestible_admits_subfolder_companions_only_by_name_match(tmp_path: Path) -> None:
-    """Stem and folder-name matches join the set; unmatched, deeper or upward companions stay orphaned."""
+def test_walk_ingestible_admits_subfolder_companions_whatever_their_name(tmp_path: Path) -> None:
+    """Matched, unmatched, two-levels-deep and media-below companions are all admitted; artwork never is."""
     from phaze.tasks.scan import _count_ingestible, _walk_ingestible
 
     release = tmp_path / "release"
@@ -998,41 +1051,41 @@ def test_walk_ingestible_admits_subfolder_companions_only_by_name_match(tmp_path
     _touch(release / "Live Set 2019.mp3")
     _touch(release / "info" / "00-live.set.2019.nfo")  # stem matches after the scene index and separators
     _touch(release / "info" / "notes.nfo")  # generic name, no match
-    _touch(release / "info" / "art.jpg")  # not an approved companion -- neither admitted nor orphaned
+    _touch(release / "info" / "art.jpg")  # not an approved companion -- never admitted
     _touch(release / "Live_Set-2019" / "site.txt")  # sub-folder name matches
-    _touch(release / "info" / "deep" / "live set 2019.cue")  # matches, but two levels below media
+    _touch(release / "info" / "deep" / "live set 2019.cue")  # two levels below media
     above = tmp_path / "above"
     (above / "media").mkdir(parents=True)
     _touch(above / "media.txt")  # media sits BELOW, not above
     _touch(above / "media" / "media.mp4")
 
-    paths, orphan_paths, errors = _walk_ingestible(tmp_path)
+    paths, errors = _walk_ingestible(tmp_path)
     count, count_errors = _count_ingestible(tmp_path)
 
     assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
         "release/Live Set 2019.mp3",
         "release/info/00-live.set.2019.nfo",
-        "release/Live_Set-2019/site.txt",
-        "above/media/media.mp4",
-    }
-    assert {path.relative_to(tmp_path).as_posix() for path in orphan_paths} == {
         "release/info/notes.nfo",
+        "release/Live_Set-2019/site.txt",
         "release/info/deep/live set 2019.cue",
         "above/media.txt",
+        "above/media/media.mp4",
     }
     assert count == len(paths)
     assert errors == count_errors == []
 
 
-def test_walk_ingestible_dump_folder_admits_no_unmatched_subfolder_companion(tmp_path: Path) -> None:
-    """A flat dump of unrelated sets admits only the one sub-folder named after one of its files.
+def test_walk_ingestible_dump_folder_admits_every_subfolder_companion(tmp_path: Path) -> None:
+    """A flat dump of unrelated sets admits every husk folder's companions; linking, not the scan, decides.
 
     The production shape that sank the proximity rule (phaze-ehryj, 2026-10-06): one parent holding
-    18,535 unrelated media files, with hundreds of release husk folders beside them.
+    18,535 unrelated media files, with hundreds of release husk folders beside them. phaze-ehryj kept
+    the husks' companions out by name; since phaze-gafl9 they are file rows, and the content-first
+    linking chain (phaze-rmhfr) is what keeps them from linking to the dump's media.
     """
     from phaze.tasks.scan import _walk_ingestible
 
-    dump = tmp_path / "Artist Live Sets 2019"  # a plausible set-like name that must not admit every husk
+    dump = tmp_path / "Artist Live Sets 2019"
     dump.mkdir()
     for index in range(200):
         _touch(dump / f"Artist {index} - Live @ Venue {index}.mp3")
@@ -1044,32 +1097,10 @@ def test_walk_ingestible_dump_folder_admits_no_unmatched_subfolder_companion(tmp
     (dump / "Artist 7 - Live @ Venue 7").mkdir()
     _touch(dump / "Artist 7 - Live @ Venue 7" / "site.nfo")
 
-    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+    paths, _errors = _walk_ingestible(tmp_path)
 
-    assert {path.relative_to(dump).as_posix() for path in paths if path.suffix != ".mp3"} == {"Artist 7 - Live @ Venue 7/site.nfo"}
-    assert len(orphan_paths) == 40
-
-
-def test_walk_with_parent_media_holds_only_the_unvisited_frontier(tmp_path: Path) -> None:
-    """The parent-media names are released as each child is visited, never kept per media directory."""
-    from phaze.tasks.scan import _walk_with_parent_media
-
-    for index in range(50):
-        (tmp_path / f"release-{index}" / "info").mkdir(parents=True)
-        _touch(tmp_path / f"release-{index}" / f"set-{index}.mp3")
-        _touch(tmp_path / f"release-{index}" / "info" / f"set-{index}.nfo")
-
-    walk = _walk_with_parent_media(tmp_path, [])
-    pending_sizes: list[int] = []
-    matched = 0
-    for _directory, _filenames, parent_media_keys in walk:
-        matched += bool(parent_media_keys)
-        assert walk.gi_frame is not None
-        pending_sizes.append(len(walk.gi_frame.f_locals["pending"]))
-
-    assert matched == 50
-    assert len(pending_sizes) == 101
-    assert max(pending_sizes) == 1
+    assert len([path for path in paths if path.suffix == ".mp3"]) == 200
+    assert len([path for path in paths if path.suffix != ".mp3"]) == 41
 
 
 def test_companion_match_key_normalization() -> None:
@@ -1094,22 +1125,21 @@ def test_companion_match_key_drops_a_trailing_duplicate_copy_marker() -> None:
     assert companion_match_key("Show (123)") == "show123"  # three digits is not a copy marker
 
 
-def test_walk_ingestible_names_with_no_letters_or_digits_never_match(tmp_path: Path) -> None:
-    """The scan agrees with association: two names normalizing to the empty key are not a match."""
+def test_walk_ingestible_admits_companions_whose_names_have_no_letters_or_digits(tmp_path: Path) -> None:
+    """A name normalizing to the empty match key is no longer an admission question: both files are ingested."""
     from phaze.tasks.scan import _walk_ingestible
 
     (tmp_path / "set" / "info").mkdir(parents=True)
     _touch(tmp_path / "set" / "__.mp3")
     _touch(tmp_path / "set" / "info" / "--.nfo")
 
-    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+    paths, _errors = _walk_ingestible(tmp_path)
 
-    assert [path.name for path in paths] == ["__.mp3"]
-    assert [path.name for path in orphan_paths] == ["--.nfo"]
+    assert sorted(path.name for path in paths) == ["--.nfo", "__.mp3"]
 
 
-def test_walk_ingestible_admits_info_companions_by_the_release_folders_name(tmp_path: Path) -> None:
-    """An info/ notice joins the set when the release folder's own name matches its video (bead phaze-ehryj)."""
+def test_walk_ingestible_admits_info_companions_of_any_release_folder(tmp_path: Path) -> None:
+    """An info/ notice is admitted whether or not its release folder's name matches the video beside it."""
     from phaze.tasks.scan import _count_ingestible, _walk_ingestible
 
     release = tmp_path / "Band Live - Night 1 (2022)"
@@ -1121,12 +1151,12 @@ def test_walk_ingestible_admits_info_companions_by_the_release_folders_name(tmp_
     _touch(unrelated / "different.mkv")
     _touch(unrelated / "info" / "Downloaded from a site.txt")
 
-    paths, orphan_paths, _errors = _walk_ingestible(tmp_path)
+    paths, _errors = _walk_ingestible(tmp_path)
 
     assert {path.relative_to(tmp_path).as_posix() for path in paths} == {
         "Band Live - Night 1 (2022)/Band Live_Night 1 (2022) (1).mkv",
         "Band Live - Night 1 (2022)/info/Downloaded from a site.txt",
         "Some Other Release/different.mkv",
+        "Some Other Release/info/Downloaded from a site.txt",
     }
-    assert [path.relative_to(tmp_path).as_posix() for path in orphan_paths] == ["Some Other Release/info/Downloaded from a site.txt"]
     assert _count_ingestible(tmp_path)[0] == len(paths)

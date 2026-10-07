@@ -139,15 +139,6 @@
                            the dedup hint above. Explains the sidebar Discover count exceeding every visible
                            scan total: the surplus is watcher-ingested, not lost or miscounted. #}
                         {% if batch._watcher_added > 0 %}<span class="text-xs text-muted ">· +{{ batch._watcher_added }} via watcher</span>{% endif %}
-                        {% if batch._orphan_companion_count > 0 %}
-                        <a href="/pipeline/scans/{{ batch.id }}/orphan-companions"
-                           hx-get="/pipeline/scans/{{ batch.id }}/orphan-companions"
-                           hx-target="#orphan-companion-detail"
-                           hx-swap="outerHTML"
-                           class="mt-1 block text-xs font-semibold text-warn underline decoration-dotted underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-                            {{ batch._orphan_companion_count | thousands }} orphan companion{{ '' if batch._orphan_companion_count == 1 else 's' }}
-                        </a>
-                        {% endif %}
                     </td>
                     <td class="px-4 py-3 text-muted ">{{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '—' }}</td>
                     <td class="px-4 py-3 text-muted ">
@@ -192,5 +183,4 @@
             </tbody>
     {% endcall %}
     {% endif %}
-    <section id="orphan-companion-detail" class="empty:hidden" aria-live="polite"></section>
 </section>
