@@ -96,6 +96,8 @@ labels are quoted as answers. The attribution extends no further than the questi
 
 > The spike evidence is in. How should the decision bead rule on looser event+date set merging? The collapse spike found 96% of the groups it would fold join sets with different artist text (festival-day shapes), and a measured collapse ratio of 1.10.
 
+**Correction (phaze-5d0wg.3, 2026-10-07):** The spike `docs/spikes/phaze-5rhjq-collapse-ratio.md` measured 1,571 of 1,718 groups (91.4%) join sets with differing artist text; 96.2% (4,103 of 4,264) is the share of the extra sets in those groups. The NO-GO verdict is unaffected: merging could save at most 4,264 sets, about 1.2 days of the 24.9-day drain.
+
 Answer as given (selected option label): "NO-GO (Recommended)".
 
 **Which paths to carry into implementation** (multi-select). Question as put:
