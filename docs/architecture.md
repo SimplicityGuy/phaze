@@ -738,10 +738,10 @@ dated v7 design specifications describe the original cutover, not every later re
 
 ### Shell layout
 
-- **Left — rail (navigation spine).** Thirteen destinations in four labelled groups, each
+- **Left — rail (navigation spine).** Fourteen destinations in four labelled groups, each
   pipeline node carrying a live count bound to `$store.pipeline`:
   **Overview** (Summary · Files) · **Pipeline** (Discover · Metadata · Analyze · Tracklists ·
-  Propose changes) · **Review** (Changes Review · Duplicates · Cue sheets · Execute approved) ·
+  Propose changes) · **Review** (Changes Review · Duplicates · Junk review · Cue sheets · Execute approved) ·
   **Operations** (Audit log · Agents & compute lanes). `/s/audit` and
   `/s/agents` are resolved through the shell's `UTILITY_PANES` whitelist (phaze-uvmcr.1/.4) the
   same way a DAG stage is, so they swap into `#stage-workspace` rather than navigating to the

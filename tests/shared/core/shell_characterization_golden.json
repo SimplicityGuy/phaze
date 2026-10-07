@@ -21,6 +21,7 @@
     "GET /files/{file_id}",
     "GET /files/{file_id}/poster.svg",
     "GET /health",
+    "GET /junk-review/{sha256_hash}/excerpt",
     "GET /pipeline/",
     "GET /pipeline/analyze-files",
     "GET /pipeline/analyze-queue/waiting",
@@ -87,6 +88,8 @@
     "POST /duplicates/{group_hash}/review",
     "POST /duplicates/{group_hash}/undo",
     "POST /execution/start",
+    "POST /junk-review/bulk",
+    "POST /junk-review/{sha256_hash}/{action}",
     "POST /pipeline/analysis-failed/retry",
     "POST /pipeline/analyze",
     "POST /pipeline/backfill-cloud",
@@ -236,6 +239,19 @@
         "shell/shell.html"
       ],
       "title": "Files | Phaze"
+    },
+    "GET /s/junk": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Junk review | Phaze"
     },
     "GET /s/metadata": {
       "headers": {
@@ -388,6 +404,10 @@
       "Duplicates"
     ],
     [
+      "junk",
+      "Junk review"
+    ],
+    [
       "cue",
       "Cue sheets"
     ],
@@ -506,6 +526,18 @@
       ]
     },
     "GET /s/files": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/junk": {
       "headers": {
         "cache-control": "no-store",
         "content-type": "text/html; charset=utf-8",
@@ -701,6 +733,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -799,6 +836,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -925,6 +967,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1012,6 +1059,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1095,6 +1147,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1211,6 +1268,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1294,6 +1356,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1386,6 +1453,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1502,6 +1574,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1538,6 +1615,98 @@
         "form",
         "status-filter-bar",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\", \"hx-trigger\": \"change\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/junk": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "config-trigger",
+        "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
       ],
       [
         "input",
@@ -1590,6 +1759,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1707,6 +1881,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1839,6 +2018,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1980,6 +2164,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2108,6 +2297,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2289,6 +2483,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2387,6 +2586,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2519,6 +2723,11 @@
         "a",
         "",
         "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/junk\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2823,6 +3032,36 @@
         "shell/_stage_fragment.html"
       ]
     },
+    "junk|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "junk|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "junk|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "junk|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "junk|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
     "metadata|": {
       "status": 200,
       "templates": [
@@ -3115,6 +3354,10 @@
       "_files_stage_context"
     ],
     [
+      "junk",
+      "<lambda>"
+    ],
+    [
       "metadata",
       "<lambda>"
     ],
@@ -3191,6 +3434,10 @@
     [
       "dedupe",
       "pipeline/partials/dedupe_workspace.html"
+    ],
+    [
+      "junk",
+      "pipeline/partials/junk_workspace.html"
     ],
     [
       "cue",

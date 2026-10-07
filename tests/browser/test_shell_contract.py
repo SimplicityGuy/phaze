@@ -307,6 +307,7 @@ async def test_execute_always_states_the_scope_it_will_not_dispatch(page: Any) -
         "propose",
         "rename",
         "dedupe",
+        "junk",
         "cue",
         "apply",
         "operations",

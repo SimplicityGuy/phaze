@@ -42,6 +42,7 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
         "propose",
         "rename",
         "dedupe",
+        "junk",
         "cue",
         "apply",
         "audit",

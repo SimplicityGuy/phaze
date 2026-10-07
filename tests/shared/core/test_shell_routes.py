@@ -53,6 +53,7 @@ _RAIL_STAGES = [
     "propose",
     "rename",
     "dedupe",
+    "junk",
     "cue",
     "apply",
 ]
