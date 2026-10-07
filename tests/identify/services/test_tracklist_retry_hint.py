@@ -17,7 +17,10 @@ Per-outcome reasoning for what is persisted (the hint is a HINT, never a result)
 
 from __future__ import annotations
 
+import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -28,9 +31,9 @@ from phaze.enums.tracklist_candidate import RETRY_HINT_OUTCOMES, TRANSIENT_MAX_A
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
-from phaze.services import tracklist_scraper
+from phaze.services import tracklist_drain, tracklist_scraper
 from phaze.services.tracklist_drain import drain_once, perform_lookup, persist_lookup
-from phaze.services.tracklist_lookup_cache import lookup, record_outcome, retry_hint_for
+from phaze.services.tracklist_lookup_cache import lookup, record_outcome, retry_confidence_for, retry_hint_for
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
 from phaze.services.tracklist_scraper import TracklistScraper
 from tests.identify.services.test_tracklist_decoy import fabricate_synthetic_decoy
@@ -312,3 +315,115 @@ class TestDetailPageResult:
 
     def test_no_headline_is_unverifiable(self) -> None:
         assert TracklistScraper.detail_page_result("<html></html>", ANCHOR_URL) is None
+
+
+class TestRetryKeepsTheOriginalConfidence:
+    async def test_hint_retry_preserves_result_confidence(self, session: AsyncSession, make_file: Any, slots: HostSlots, real_search: Any) -> None:
+        """A BLOCKED then a RENDER_FAILED hint retry leave the confidence the ORIGINAL search stored (review finding #3).
+
+        The cache row's own ``result_confidence`` is the carrier: the transient write is the only thing
+        that could erase it, and the retry now writes it back instead of ``None``. No new column.
+        """
+        await _seed(session, make_file)
+        factory = session_factory_for(session)
+
+        await drain_once(factory, search=real_search, renderer=SlotRenderer(slots, outcome=RenderOutcome.INTERSTITIAL_PERSISTED), limit=5, now=NOW)
+        original = (await _cache_row(session)).result_confidence
+        assert original is not None, "the searched path stored the chosen row's confidence"
+
+        for outcome, expected in (
+            (RenderOutcome.INTERSTITIAL_PERSISTED, LookupOutcome.BLOCKED),
+            (RenderOutcome.TIMEOUT, LookupOutcome.RENDER_FAILED),
+        ):
+            await _make_retry_ready(session)
+            slots.reservations.clear()
+            report = await drain_once(factory, search=real_search, renderer=SlotRenderer(slots, outcome=outcome), limit=5, now=datetime.now(UTC))
+            assert report.outcomes == {expected.value: 1}
+            assert slots.count("search") == 0, "this was a hint retry"
+            row = await _cache_row(session)
+            await session.refresh(row)
+            assert row.retry_url == ANCHOR_URL
+            assert row.result_confidence == original
+
+    async def test_the_confidence_only_travels_with_a_usable_hint(self, session: AsyncSession) -> None:
+        entry = await record_outcome(
+            session, set_key="c" * 64, query_text="q", outcome=LookupOutcome.BLOCKED, retry_url=ANCHOR_URL, result_confidence=77, now=NOW
+        )
+        await session.flush()
+        assert entry.expires_at is not None
+        assert retry_confidence_for(await lookup(session, entry.set_key, now=NOW)) is None, "inside the backoff"
+        assert retry_confidence_for(await lookup(session, entry.set_key, now=entry.expires_at + timedelta(minutes=1))) == 77
+
+
+class TestHintPathMatchesSearchedPath:
+    @pytest.mark.parametrize("outcome", [o for o in RenderOutcome if o is not RenderOutcome.OK], ids=lambda o: o.value)
+    async def test_hint_path_failure_attempts_match_searched_path(self, outcome: RenderOutcome) -> None:
+        """Same outcome, external_id, source_url, confidence and detail for the same render, however it was reached."""
+        html = load_render(ANCHOR_ID)
+        searched = await perform_lookup(
+            candidate_for(ANCHOR_FILENAME), search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(html=html, outcome=outcome)
+        )
+        hinted = await perform_lookup(
+            candidate_for(ANCHOR_FILENAME),
+            search=FakeSearch(raises=AssertionError("no search")),
+            renderer=FakeRenderer(html=html, outcome=outcome),
+            retry_url=ANCHOR_URL,
+            retry_confidence=searched.result_confidence,
+        )
+        assert searched.result_confidence is not None
+        assert hinted.host_requests == searched.host_requests - 1, "the only difference is the search the hint skipped"
+        assert hinted == replace(searched, host_requests=hinted.host_requests)
+
+    async def test_a_raising_render_matches_the_searched_path(self) -> None:
+        raising = RuntimeError("no display")
+        searched = await perform_lookup(candidate_for(ANCHOR_FILENAME), search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(raises=raising))
+        hinted = await perform_lookup(
+            candidate_for(ANCHOR_FILENAME),
+            search=FakeSearch(raises=AssertionError("no search")),
+            renderer=FakeRenderer(raises=raising),
+            retry_url=ANCHOR_URL,
+            retry_confidence=searched.result_confidence,
+        )
+        assert searched.outcome is LookupOutcome.RENDER_FAILED
+        assert hinted == replace(searched, host_requests=hinted.host_requests)
+        assert hinted.host_requests == searched.host_requests - 1
+
+
+class TestDrainUsesOnlyPublicScraperNames:
+    def test_drain_does_not_import_private_scraper_names(self) -> None:
+        """tracklist_drain.py may not import, or reach through ``TracklistScraper`` for, an underscore-prefixed name."""
+        source = Path(tracklist_drain.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        private_imports = [
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "phaze.services.tracklist_scraper"
+            for alias in node.names
+            if alias.name.startswith("_")
+        ]
+        private_attributes = [
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "TracklistScraper"
+            and node.attr.startswith("_")
+        ]
+        assert private_imports == []
+        assert private_attributes == []
+
+
+class TestDetailUrlExternalId:
+    def test_an_allowed_detail_url_yields_its_id(self) -> None:
+        assert TracklistScraper.detail_url_external_id(ANCHOR_URL) == ANCHOR_ID
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://evil.example/tracklist/25fhn7c9/x.html",
+            "http://www.1001tracklists.com/tracklist/25fhn7c9/x.html",
+            "https://www.1001tracklists.com/dj/x/",
+        ],
+    )
+    def test_off_allow_list_or_idless_urls_yield_none(self, url: str) -> None:
+        assert TracklistScraper.detail_url_external_id(url) is None
