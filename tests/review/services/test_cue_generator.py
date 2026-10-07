@@ -758,3 +758,9 @@ class TestRealCueConsumerIsDiscriminating:
 
         assert clean_sheet.tracks[0].title == "Evil"
         assert injected_sheet.tracks[0].title != clean_sheet.tracks[0].title or len(injected_sheet.tracks) != len(clean_sheet.tracks)
+
+
+def test_mp2_file_is_declared_as_mp3_in_the_cue_file_line() -> None:
+    """MPEG-1 Layer II is an MPEG audio stream; CUE's MP3 FILE type covers it (phaze-f78n6)."""
+    content = generate_cue_content("test.mp2", "mp2", [])
+    assert 'FILE "test.mp2" MP3' in content

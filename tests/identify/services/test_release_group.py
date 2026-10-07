@@ -39,6 +39,7 @@ KNOWN_GROUPS = ("talion", "1king", "1real", "cin_int", "ffm", "sob", "coin_int",
     [
         # Fully glued scene tail: the dominant shape.
         ("Artist-Event-04-05-2014-sbd-talion.mp3", "talion"),
+        ("Artist-Event-04-05-2014-sbd-talion.mp2", "talion"),
         ("Artist-Event-Night-2-04-05-2014-cable-1king.mp3", "1king"),
         # Spaced-out messy tail: whitespace separators, readable only because "sbd" corroborates.
         ("Artist - Event - 03-04-2014 - sbd - talion.mp3", "talion"),

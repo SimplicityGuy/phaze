@@ -89,6 +89,18 @@ def test_observer_accepts_approved_companions_and_drops_excluded_companions() ->
     assert touch.call_count == 0
 
 
+def test_event_handler_dispatches_mp2() -> None:
+    """A .mp2 path reaches the debouncer like any other MUSIC extension (phaze-f78n6)."""
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_created(FileCreatedEvent(src_path="/foo/a.mp2"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    assert loop.call_soon_threadsafe.call_args.args == (touch, "/foo/a.mp2")
+
+
 def test_event_handler_ignores_directories() -> None:
     """DirCreatedEvent (is_directory=True) is dropped without any dispatch."""
     loop = MagicMock()
