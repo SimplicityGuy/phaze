@@ -88,10 +88,32 @@ def test_mostly_done_with_failures_reads_complete_not_failed() -> None:
     assert status["failed"] == 91
 
 
-def test_idle_with_some_failed_keeps_its_idle_state() -> None:
+def test_idle_partly_done_with_some_failed_reads_partial_with_separate_failures() -> None:
     status = _summary_stage_status(_bucket(total=10, not_started=3, done=5, failed=2))
-    assert status["label"] == "not started"
+    assert status["label"] == "partial"
     assert status["failed"] == 2
+
+
+def test_idle_partly_done_without_failures_reads_partial() -> None:
+    status = _summary_stage_status(_bucket(total=145057, not_started=40901, done=104156))
+    assert (status["label"], status["failed"]) == ("partial", 0)
+
+
+def test_idle_with_nothing_done_reads_not_started() -> None:
+    assert _summary_stage_status(_bucket(total=8, not_started=8))["label"] == "not started"
+    assert _summary_stage_status(_bucket(total=8, not_started=6, failed=2))["label"] == "not started"
+
+
+def test_running_partly_done_stage_still_reads_in_flight() -> None:
+    assert _summary_stage_status(_bucket(total=8, not_started=2, in_flight=2, done=4))["label"] == "in flight"
+
+
+def test_summary_template_renders_partial_pill_beside_failed_badge() -> None:
+    partial = _bucket(total=8, not_started=3, done=4, failed=1)
+    summary = _derive(_progress(metadata=partial))
+    pills = _pills(_render("shell/partials/summary_overview.html", summary=summary))
+    assert "partial" in pills
+    assert "1 failed" in pills
 
 
 def test_everything_failed_is_the_only_overall_failed() -> None:

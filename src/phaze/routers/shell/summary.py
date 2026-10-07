@@ -65,6 +65,9 @@ def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool 
     with 91 terminal failures is "complete" (every file has settled) -- failures are reported
     separately in ``failed`` (rendered as its own badge) so they stay visible without overriding
     what the stage is doing. Only a stage whose every settled file failed reads "failed" overall.
+
+    phaze-a51b2: an IDLE stage with some (not all) files settled successfully reads "partial", never
+    "not started" -- that label is reserved for a stage where nothing has succeeded yet.
     """
     total = _stage_count(stage, "total")
     done = _stage_count(stage, "done")
@@ -78,6 +81,9 @@ def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool 
             state = {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
         else:
             state = {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
+    elif total and done + skipped:
+        # Idle but unfinished: some files settled successfully, the rest are waiting. Not "not started" (a51b2).
+        state = {"label": "partial", "tone": "slate", "icon": "◐", "pulse": False}
     elif total:
         state = {"label": "not started", "tone": "neutral", "icon": "—", "pulse": False}
     else:
