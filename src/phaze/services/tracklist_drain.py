@@ -50,7 +50,7 @@ from phaze.services.tracklist_lookup_cache import (
     record_outcome,
     verdict_for,
 )
-from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
+from phaze.services.tracklist_parser import TracklistParseError, assess_decoy, parse_tracklist_tracks
 from phaze.services.tracklist_priority import clear_flags, load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
@@ -419,6 +419,7 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     page rendered, no track list      ``NOT_FOUND``                   yes (negative TTL)
     Turnstile survived the retries    ``BLOCKED``                     no (transient)
     timeout / navigation failure      ``RENDER_FAILED``               no (transient)
+    names disagree with row microdata ``DECOY``                       no (transient)
     parse partial or empty            ``PARSE_FAILED``                no (transient)
     tracks parsed                     ``FOUND``                       n/a (positive)
     ================================  ==============================  ==================
@@ -507,6 +508,28 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
             source_url=chosen.result.url,
             result_confidence=chosen.confidence,
             detail=f"render {render.outcome.value}: {render.error or 'no detail'}",
+            host_requests=requests,
+        )
+
+    # phaze-y5fc7: a flagged client is served real layout with randomised names. Such a page parses
+    # cleanly, so this check runs BEFORE the parse -- a decoy must never reach `_found`, whose
+    # FOUND is cached forever, nor be read as a negative, which would hide the real tracklist.
+    decoy = assess_decoy(render.html)
+    if decoy.is_decoy:
+        logger.warning(
+            "tracklist drain rejected a decoy detail page",
+            set_key=candidate.set_key,
+            url=chosen.result.url,
+            paired_rows=decoy.paired_rows,
+            disagreeing_rows=decoy.disagreeing_rows,
+        )
+        return replace(
+            base,
+            outcome=LookupOutcome.DECOY,
+            external_id=chosen.result.external_id,
+            source_url=chosen.result.url,
+            result_confidence=chosen.confidence,
+            detail=f"decoy page: {decoy.disagreeing_rows} of {decoy.paired_rows} paired rows' visible names disagree with their microdata",
             host_requests=requests,
         )
 

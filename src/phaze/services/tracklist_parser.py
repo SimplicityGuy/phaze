@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import unicodedata
 
 from bs4 import BeautifulSoup, Tag
 import structlog
@@ -229,6 +230,89 @@ def _parse_timestamp(container: Tag) -> str | None:
         return None
     text = cue_el.get_text(strip=True)
     return text if text and _CUE_TIME_PATTERN.match(text) else None
+
+
+# Decoy detection (phaze-y5fc7)
+#
+# A client 1001Tracklists has flagged is reportedly served a real-looking page whose visible track
+# names are randomised while cues and layout stay intact. Each resolved row also carries schema.org
+# microdata -- a `meta[itemprop=name]` whose content is "Artist - Title (Remix)" -- inside the row's
+# own `itemscope`. On a clean page the two agree; on a decoy they do not.
+#
+# PAIRING IS PER ROW, NOT PER META. Measured on the two recorded captures (2026-08-02, see
+# tests/identify/fixtures/tracklist_render/README.md): the 52-row capture has 46 name metas, the
+# 12-row capture 13. Page-level metas (the playlist, the publisher organisation, a body-level one)
+# sit outside every row, and unresolved "ID - ID" rows have no microdata at all. Zipping metas to
+# rows would therefore misalign every row after the first ID row. A row is PAIRED only when it
+# holds exactly one name meta and exactly one `.trackValue`, both non-empty after normalisation;
+# anything else (no meta, no visible text, or more than one of either -- an unseen nested shape) is
+# excluded from both the numerator and the denominator rather than guessed at.
+#
+# NORMALISATION is the sequence of Unicode word tokens of the NFKC-casefolded text. Measured on the
+# same two captures before this was written: with whitespace-collapse + casefold alone, 2 of 10 and
+# 12 of 42 paired rows "disagreed", every one of them solely because the visible span structure
+# renders "(Day Mix)" as "( Day Mix )" when its spans are joined. Under word tokens both captures
+# measure 0 of 10 and 0 of 42. Punctuation and spacing are formatting; a randomised name changes the
+# words, which is what this compares.
+DECOY_MIN_PAIRED_ROWS = 3
+"""Below this many paired rows the page is never classified decoy -- too little evidence."""
+
+_NAME_META_SELECTOR = 'meta[itemprop="name"]'
+_WORD_TOKEN = re.compile(r"\w+")
+
+
+@dataclass(frozen=True, slots=True)
+class DecoyAssessment:
+    """How a rendered detail page's visible names compare with its own per-row microdata."""
+
+    paired_rows: int
+    """Rows holding exactly one name meta and one `.trackValue`, both non-empty."""
+    disagreeing_rows: int
+    """Paired rows whose normalised meta name and visible text differ."""
+
+    @property
+    def disagreement_rate(self) -> float:
+        """Disagreeing / paired, or 0.0 when nothing could be paired."""
+        return self.disagreeing_rows / self.paired_rows if self.paired_rows else 0.0
+
+    @property
+    def is_decoy(self) -> bool:
+        """True when at least 3 rows paired and at least half of them disagree.
+
+        Integer arithmetic (``2 * disagreeing >= paired``) so "exactly 50%" is not at the mercy of a
+        float comparison.
+        """
+        return self.paired_rows >= DECOY_MIN_PAIRED_ROWS and 2 * self.disagreeing_rows >= self.paired_rows
+
+
+def _name_tokens(text: str) -> tuple[str, ...]:
+    """Normalise a track name to its word tokens -- see the decoy section comment for the measurement."""
+    return tuple(_WORD_TOKEN.findall(unicodedata.normalize("NFKC", text).casefold()))
+
+
+def assess_decoy(html: str) -> DecoyAssessment:
+    """Compare every row's visible track name with the row's own `meta[itemprop=name]`.
+
+    Pure and offline, like the rest of this module: the drain calls it on an ``OK`` render before
+    parsing, and a decoy verdict means nothing from the page is stored.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    paired = 0
+    disagreeing = 0
+    for container in soup.select(TRACK_CONTAINER_SELECTOR):
+        metas = container.select(_NAME_META_SELECTOR)
+        values = container.select(_TRACK_VALUE_SELECTOR)
+        if len(metas) != 1 or len(values) != 1:
+            continue
+        content = metas[0].get("content")
+        meta_tokens = _name_tokens(content if isinstance(content, str) else "")
+        visible_tokens = _name_tokens(values[0].get_text(" ", strip=True))
+        if not meta_tokens or not visible_tokens:
+            continue
+        paired += 1
+        if meta_tokens != visible_tokens:
+            disagreeing += 1
+    return DecoyAssessment(paired_rows=paired, disagreeing_rows=disagreeing)
 
 
 def _parse_is_mashup(container: Tag) -> bool:
