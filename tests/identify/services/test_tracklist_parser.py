@@ -111,7 +111,8 @@ class TestAnchorFixture:
     def test_every_row_has_position_and_artist_or_title(self) -> None:
         tracks = parse_tracklist_tracks(ANCHOR_HTML)
         for track in tracks:
-            assert track.artist or track.title
+            # An unresolved "ID - ID" row (phaze-8yvb0) deliberately carries neither.
+            assert track.artist or track.title or track.is_unresolved
 
     def test_positions_are_contiguous_from_one(self) -> None:
         tracks = parse_tracklist_tracks(ANCHOR_HTML)
@@ -127,14 +128,17 @@ class TestAnchorFixture:
         assert track.timestamp is None  # no cue recorded anywhere in this capture
         assert track.is_mashup is False
 
-    def test_unidentified_id_row_still_populates_artist_and_title(self) -> None:
+    def test_unidentified_id_row_is_kept_as_an_unresolved_row_not_as_artist_id(self) -> None:
         """Position 5 in the anchor is an "ID - ID" row with NO schema.org microdata at all --
-        the shape that would defeat a parser reading only `meta[itemprop=name]`."""
+        the shape that would defeat a parser reading only `meta[itemprop=name]`. The row is KEPT
+        (its position and any cue still matter) but is marked unresolved rather than stored as a
+        real artist "ID" with a real title "ID" (phaze-8yvb0)."""
         tracks = parse_tracklist_tracks(ANCHOR_HTML)
         id_track = tracks[4]
         assert id_track.position == 5
-        assert id_track.artist == "ID"
-        assert id_track.title == "ID"
+        assert id_track.is_unresolved is True
+        assert id_track.artist is None
+        assert id_track.title is None
 
     def test_multi_artist_joiner_preserved(self) -> None:
         """Position 13 in the anchor is "Adam Beyer & Raxon - The Signal (Night Mix)"."""
@@ -159,7 +163,7 @@ class TestAnchorFixture:
         assert len(unlabeled) == 14
         # Every one of those rows still has an artist/title -- absence of a label never
         # suppresses the rest of the row.
-        assert all(t.artist or t.title for t in unlabeled)
+        assert all(t.artist or t.title or t.is_unresolved for t in unlabeled)
 
 
 class TestShortListingFixture:
