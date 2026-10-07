@@ -23,6 +23,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
 | `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
 | `file_companions`     | Many-to-many: companion files to media files                          |
+| `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
 | `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
 | `tracklists`          | Tracklist metadata (sourced from `1001tracklists`; audio-fingerprint sourcing was removed, phaze-0jpe) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
@@ -82,7 +83,8 @@ deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with t
 (`ON DELETE CASCADE`), as do `cloud_budget` and `companion_content_features`. `orphan_companion_diagnostics` cascades with its
 `scan_batches` row; the remaining per-file sidecars (`metadata`,
 `analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
-tracklist chain use the default restricting FK (no cascade).
+tracklist chain use the default restricting FK (no cascade). `companion_junk_review` carries no foreign
+key at all, so neither scan nor file deletion can be blocked by it or erase it (phaze-bk5jp).
 
 ```mermaid
 erDiagram
@@ -256,10 +258,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-078)
+### Post-baseline chain (040-079)
 
-`alembic/versions/` holds **40** files: the `039` baseline plus a linear chain to the current
-head, **`078`**.
+`alembic/versions/` holds **41** files: the `039` baseline plus a linear chain to the current
+head, **`079`**.
 
 | Rev | Change |
 |-----|--------|
@@ -301,7 +303,8 @@ head, **`078`**.
 | `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
 | `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt |
 | `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results |
-| `078` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) — **head** |
+| `078` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
+| `079` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

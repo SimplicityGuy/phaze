@@ -89,6 +89,8 @@ _EXPECTED_TABLES = frozenset(
         "cloud_job",
         # phaze-osy6j (migration 078): what each companion file contains, read on its agent.
         "companion_content_features",
+        # phaze-bk5jp (migration 079): the FK-free junk-companion review queue, audit trail and tombstone.
+        "companion_junk_review",
         "dedup_resolution",
         "dedup_review_plan",
         "deployments",
@@ -304,7 +306,8 @@ def test_baseline_is_the_only_migration() -> None:
     (phaze-mvq8z.6) creates runtime_config_override, the DB-override layer for hot-reloadable
     config (docs/design/0019-runtime-config-hot-reload.md); 074 adds the host-observed
     deployment inventory; 075 adds display-only coarse work progress; 078 (phaze-osy6j) creates
-    companion_content_features, what each companion file contains as read on its agent.
+    companion_content_features, what each companion file contains as read on its agent; 079
+    (phaze-bk5jp) creates companion_junk_review, the FK-free junk-companion review queue.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -349,6 +352,7 @@ def test_baseline_is_the_only_migration() -> None:
         "076_cloud_job_started_at.py",
         "077_analysis_attempt_terminal_at.py",
         "078_companion_content_features.py",
+        "079_companion_junk_review.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -377,10 +381,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (078: companion content features)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (079: companion junk review)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "078"
+    assert version == "079"
 
 
 @pytest.mark.asyncio
@@ -706,7 +710,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "078"
+        assert version == "079"
     finally:
         if engine is not None:
             await engine.dispose()

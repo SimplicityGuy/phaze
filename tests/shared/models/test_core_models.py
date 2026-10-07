@@ -26,6 +26,7 @@ def test_all_tables_defined() -> None:
         "scheduling_ledger",
         "cloud_job",
         "companion_content_features",  # phaze-osy6j: per-companion content features (migration 078)
+        "companion_junk_review",  # phaze-bk5jp: the FK-free junk-companion review queue (migration 079)
         # phaze-2mwyo (migration 055): the DURABLE per-file cloud budget ledger. Separate from cloud_job
         # because `routers/agent_analysis`'s D-14 reaper deletes that sidecar on every analyze terminal,
         # taking the file's retry budget with it -- which let one file start an unbounded number of
