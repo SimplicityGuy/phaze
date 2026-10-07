@@ -22,6 +22,11 @@ from phaze.services.tracklist_query import DerivedQuery, derive_query, resolve_a
 
 
 class TestSceneGroupStripping:
+    def test_mp2_extension_is_stripped_like_mp3(self) -> None:
+        mp3 = derive_query("Nova Ryn - Nightgrove Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp3")
+        mp2 = derive_query("Nova Ryn - Nightgrove Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp2")
+        assert mp2 == mp3
+
     def test_trailing_uppercase_group_is_stripped_and_reported(self) -> None:
         result = derive_query("Nova Ryn - Nightgrove Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp3")
         assert result.scene_group == "GRVMSTR"
