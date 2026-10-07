@@ -1308,7 +1308,57 @@ class TestQueueFileOutcomesUnderATarget:
         assert [(o.file_id, o.outcome) for o in answered.file_outcomes()] == [(target.id, TracklistFileOutcome.NOT_FOUND)]
 
 
-# phaze-8yvb0: unresolved rows through the real drain path
+# phaze-xtwjg / phaze-8yvb0: the row-count canary and unresolved rows through the real drain path
+
+
+def synthetic_anchor_declaring(count: int) -> str:
+    """SYNTHETIC page, generated at test time: the real anchor capture with its declared numTracks rewritten."""
+    html = load_render(ANCHOR_ID)
+    rewritten = html.replace('<meta itemprop="numTracks" content="52">', f'<meta itemprop="numTracks" content="{count}">')
+    assert rewritten != html or count == ANCHOR_TRACKS, "the anchor capture is expected to carry the exact numTracks meta rewritten here"
+    return rewritten
+
+
+class TestRowCountCanaryThroughTheDrain:
+    async def test_real_anchor_still_reaches_found_with_all_52_rows(self) -> None:
+        attempt = await perform_lookup(
+            candidate_for(ANCHOR_FILENAME), search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(html=load_render(ANCHOR_ID))
+        )
+
+        assert attempt.outcome is LookupOutcome.FOUND
+        assert len(attempt.tracks) == ANCHOR_TRACKS
+
+    async def test_mismatched_row_count_is_parse_failed_not_found(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A declared count the rendered rows do not match is the existing transient PARSE_FAILED:
+        no tracks, no tracklist row, no negative cache entry, a backoff, and parked at the cap."""
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+        html = synthetic_anchor_declaring(ANCHOR_TRACKS + 3)
+
+        attempt = await perform_lookup(candidate, search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(html=html))
+
+        assert attempt.outcome is LookupOutcome.PARSE_FAILED
+        assert attempt.outcome.is_transient
+        assert not attempt.outcome.is_definitive_negative
+        assert attempt.tracks == ()
+        assert attempt.detail is not None and "numTracks" in attempt.detail
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.entry is not None
+        assert verdict.entry.outcome == LookupOutcome.PARSE_FAILED.value
+        assert verdict.entry.outcome not in {LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value}
+        assert verdict.decision is CacheDecision.BACKOFF
+        assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+        assert (await session.execute(select(func.count()).select_from(TracklistTrack))).scalar_one() == 0
+
+        for _ in range(TRANSIENT_MAX_ATTEMPTS - 1):
+            await persist_lookup(session, candidate, attempt, now=NOW)
+            await session.flush()
+        parked = await lookup(session, candidate.set_key, now=NOW)
+        assert parked.decision is CacheDecision.TRANSIENT_EXHAUSTED
 
 
 class TestUnresolvedRowsThroughTheDrain:

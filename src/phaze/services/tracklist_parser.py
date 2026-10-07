@@ -10,6 +10,11 @@ Every matched track container must yield an artist or title. A partial parse rai
 ``TracklistParseError`` instead of caching a truncated tracklist as a permanent success; zero
 containers remains a valid empty result. Selector derivation and exact fixture measurements are
 preserved in ``docs/design/0014-tracklist-candidate-sets.md``.
+
+Two further parse-failure rules (phaze-xtwjg, phaze-8yvb0): a page that declares ``itemprop=numTracks``
+and matches a different number of containers raises ``TracklistParseError`` (the drain records the
+transient ``PARSE_FAILED``; a page without the meta is not checked), and the site's own unresolved
+"ID - ID" rows are kept but marked ``is_unresolved`` with a NULL artist and title.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ logger = structlog.get_logger(__name__)
 # not a character inside a text blob.
 _TRACK_VALUE_SELECTOR = ".trackValue"
 _ARTIST_TITLE_SEPARATOR_TEXT = "-"
+_NUM_TRACKS_SELECTOR = 'meta[itemprop="numTracks"]'
 _LABEL_SELECTOR = ".trackLabel"
 _CUE_SELECTOR = ".cue"
 _MASHUP_CLASS = "mashupTrack"
@@ -102,13 +108,21 @@ class TracklistParseError(RuntimeError):
     into drain-level bookkeeping it has no other business with.
     """
 
-    def __init__(self, *, container_count: int, parsed_count: int) -> None:
-        super().__init__(
-            f"Parsed {parsed_count} of {container_count} track row(s) matched by "
-            f"{TRACK_CONTAINER_SELECTOR!r} -- selectors are likely stale, not a short tracklist"
-        )
+    def __init__(self, *, container_count: int, parsed_count: int, declared_count: int | None = None) -> None:
+        if declared_count is not None and declared_count != container_count:
+            message = (
+                f"Page declares {declared_count} track(s) (itemprop=numTracks) but {TRACK_CONTAINER_SELECTOR!r} matched {container_count} "
+                f"-- the selector under-matches or the page rendered partially, not a short tracklist"
+            )
+        else:
+            message = (
+                f"Parsed {parsed_count} of {container_count} track row(s) matched by "
+                f"{TRACK_CONTAINER_SELECTOR!r} -- selectors are likely stale, not a short tracklist"
+            )
+        super().__init__(message)
         self.container_count = container_count
         self.parsed_count = parsed_count
+        self.declared_count = declared_count
 
 
 def parse_tracklist_tracks(html: str) -> list[TracklistTrackPayload]:
@@ -125,6 +139,7 @@ def parse_tracklist_tracks(html: str) -> list[TracklistTrackPayload]:
     """
     soup = BeautifulSoup(html, "lxml")
     containers = soup.select(TRACK_CONTAINER_SELECTOR)
+    declared = _declared_track_count(soup)
 
     tracks: list[TracklistTrackPayload] = []
     unparsed = 0
@@ -144,7 +159,34 @@ def parse_tracklist_tracks(html: str) -> list[TracklistTrackPayload]:
         )
         raise TracklistParseError(container_count=len(containers), parsed_count=len(tracks))
 
+    # Row-count canary (phaze-xtwjg). Every row selector can be fine while the CONTAINER selector
+    # under-matches, and a clean partial parse would be stored as FOUND and never looked up again.
+    # The page's own declared count is independent of every row selector. Absent -> no check.
+    if declared is not None and declared != len(containers):
+        logger.error(
+            "Detail-page row count disagrees with the page's declared numTracks",
+            container_count=len(containers),
+            declared_count=declared,
+        )
+        raise TracklistParseError(container_count=len(containers), parsed_count=len(tracks), declared_count=declared)
+
     return tracks
+
+
+def _declared_track_count(soup: BeautifulSoup) -> int | None:
+    """Return the page's ``itemprop=numTracks`` as an int, or None when absent or not an integer.
+
+    A malformed value is treated like an absent one (logged, no check) rather than as a mismatch:
+    the canary exists to catch a parser that under-matches, not to fail pages on an unreadable hint.
+    """
+    meta = soup.select_one(_NUM_TRACKS_SELECTOR)
+    if meta is None:
+        return None
+    raw = meta.get("content")
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    logger.warning("Detail page carries a numTracks meta without an integer content -- row-count canary skipped", raw_content=raw)
+    return None
 
 
 def _parse_track_container(container: Tag, fallback_position: int) -> TracklistTrackPayload | None:
