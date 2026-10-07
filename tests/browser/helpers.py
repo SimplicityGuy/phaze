@@ -167,6 +167,46 @@ async def settled_focus(page: Any, describe: str = "id", *, timeout_ms: int = 5_
     return str(previous)
 
 
+async def wait_for_focus_on(page: Any, selector: str, *, timeout_ms: int = 15_000) -> None:
+    """Wait (bounded) until ``document.activeElement`` IS the element ``selector`` matches.
+
+    The right tool for a focus restore whose target has no ``id``: ``settled_focus`` never counts an
+    id-less element as stable, so it burns its whole timeout there and the caller's single read
+    afterwards can lose to a starved machine with no product bug (phaze-o1v0p). This waits for the
+    exact post-condition instead, and on timeout fails with what the page actually looked like --
+    the actual active element, whether the selector still matches a CONNECTED element, how many
+    siblings are still ``inert``, and whether the record drawer is still open -- gathered in-page.
+    """
+    try:
+        await page.wait_for_function(
+            "selector => document.activeElement === document.querySelector(selector)",
+            arg=selector,
+            timeout=timeout_ms,
+        )
+    except Exception as exc:
+        diagnostics = await page.evaluate(
+            """selector => {
+                const active = document.activeElement;
+                const match = document.querySelector(selector);
+                const body = document.getElementById('record-body');
+                return {
+                    active: active ? {
+                        tag: active.tagName.toLowerCase(),
+                        id: active.id,
+                        classes: active.className && active.className.baseVal === undefined ? String(active.className) : '',
+                        text: (active.textContent || '').trim().slice(0, 60),
+                        isBody: active === document.body,
+                    } : null,
+                    selectorMatchesConnectedElement: !!match && match.isConnected,
+                    inertSiblings: document.querySelectorAll('[inert]').length,
+                    drawerOpen: !!body && body.checkVisibility(),
+                };
+            }""",
+            selector,
+        )
+        raise AssertionError(f"focus never returned to {selector!r} within {timeout_ms} ms; page state: {diagnostics}") from exc
+
+
 async def settled(page: Any) -> None:
     """Wait until htmx has no request in flight.
 
