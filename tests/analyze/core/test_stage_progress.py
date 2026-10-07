@@ -10,6 +10,7 @@ not the state machine.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
 
@@ -24,7 +25,9 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.pipeline import _safe_count, get_stage_progress, stages as pipeline_stages_mod
+from phaze.routers.pipeline import _build_dag_context
+from phaze.routers.shell.summary import _build_summary_flow
+from phaze.services.pipeline import _safe_count, count_proposal_pending_files, get_stage_progress, stages as pipeline_stages_mod
 
 
 if TYPE_CHECKING:
@@ -174,6 +177,49 @@ async def test_proposals_total_excludes_partial_and_failed_analysis_rows(session
 
     assert progress["proposals"]["total"] == 1  # only both_done clears the convergence gate
     assert progress["proposals"]["done"] == 0
+
+
+@pytest.mark.asyncio
+async def test_proposals_done_never_exceeds_total_on_rail_and_summary(session: AsyncSession):
+    """phaze-vtwk9: the browser seed's "Propose 5 / 4" -- done and total must count the SAME unit.
+
+    Four converged files each carry a proposal (two proposals on one of them, one SUPERSEDED-style REJECTED
+    sibling), plus a fifth file whose only marker is an EXECUTED proposal and which has no metadata/analysis
+    (outside the convergence set), plus a file that has a proposal but is mid-re-analysis. ``done`` used to be
+    a bare distinct-file count over every proposal (5 / 4); it now counts distinct files INSIDE the
+    convergence set. Asserted on both real consumers: the rail's dag context and the Summary flow card.
+    """
+    converged = [_make_file(i) for i in range(1, 5)]
+    outside = _make_file(5)
+    session.add_all([*converged, outside])
+    await session.flush()
+    for f in converged:
+        session.add(FileMetadata(id=uuid.uuid4(), file_id=f.id))
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+        session.add(RenameProposal(id=uuid.uuid4(), file_id=f.id, proposed_filename=f"p{f.id}.mp3", status=ProposalStatus.PENDING))
+    # Several proposals on one converged file must still count that file once.
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=converged[0].id, proposed_filename="old.mp3", status=ProposalStatus.REJECTED))
+    # The executed-only file: has a proposal, but no metadata/analysis, so it is not in the convergence set.
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=outside.id, proposed_filename="executed.mp3", status=ProposalStatus.EXECUTED))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["proposals"]["total"] == 4
+    assert progress["proposals"]["done"] == 4
+    assert progress["proposals"]["done"] <= progress["proposals"]["total"]
+
+    rail = (await _build_dag_context(SimpleNamespace(), session, {}, progress))["dag"]
+    assert rail["proposalsDone"] <= rail["proposalsTotal"]
+    assert (rail["proposalsDone"], rail["proposalsTotal"]) == (4, 4)
+
+    flow = _build_summary_flow(progress, total_files=5, proposal_pending=0, proposal_approved=0)
+    propose = next(node for node in flow if node["name"] == "Propose")
+    assert propose["done"] <= propose["total"]
+    assert (propose["done"], propose["total"]) == (4, 4)
+
+    # total - done is exactly what the trigger button will batch.
+    assert progress["proposals"]["total"] - progress["proposals"]["done"] == await count_proposal_pending_files(session)
 
 
 @pytest.mark.asyncio
