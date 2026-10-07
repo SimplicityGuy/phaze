@@ -1,6 +1,8 @@
 """Constants for file discovery and ingestion."""
 
 import enum
+import re
+import unicodedata
 
 
 class FileCategory(enum.StrEnum):
@@ -61,6 +63,34 @@ INGESTIBLE_COMPANION_EXTENSIONS: frozenset[str] = frozenset(
 This is the operator-approved D6 subset of the COMPANION entries in
 ``EXTENSION_MAP``. Artwork and checksum companions remain intentionally excluded.
 """
+
+_SCENE_INDEX_PREFIX = re.compile(r"^\d{1,3}[\s_.\-]+")
+_DUPLICATE_MARKER_SUFFIX = re.compile(r"\s*\(\d{1,2}\)$")
+
+
+def companion_match_key(name: str) -> str:
+    """Normalize a folder name or file stem for pairing a sub-folder companion with parent media (phaze-ehryj).
+
+    A companion with no media in its own directory pairs with a parent-directory media file only when
+    this key of the media's stem equals the key of the companion's sub-folder name or of its own stem
+    (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj), or of the parent directory's own
+    name (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). The scan's admission and
+    ``services/companion.py``'s association both call THIS function, so a companion the scan admits is
+    exactly one association can link.
+
+    A trailing duplicate-copy marker (`` (1)``, `` (12)``) is dropped first, so a download saved as
+    ``<release> (1).mkv`` still matches its ``<release>`` folder (operator decision 2026-10-06,
+    "Strip \" (N)\" markers (Recommended)"; bead phaze-ehryj). ``X (1)`` and ``X (2)`` therefore share
+    a key, and a companion named ``X`` links to both. Then the name is case-folded and NFC-normalized
+    (after folding, so an NFD name off disk and its NFC database row agree), a leading scene index
+    (``00-``, ``01 ``, ``002_``) dropped, then every non-alphanumeric
+    character removed -- so ``_``, space, ``-``, ``.``, commas and brackets never decide a match.
+    Unicode letters are kept: ``isalnum`` is Unicode-aware, unlike an ASCII character class. A key of
+    ``""`` never matches anything.
+    """
+    folded = unicodedata.normalize("NFC", _DUPLICATE_MARKER_SUFFIX.sub("", name).casefold())
+    return "".join(char for char in _SCENE_INDEX_PREFIX.sub("", folded) if char.isalnum())
+
 
 BULK_INSERT_BATCH_SIZE: int = 1000
 """Number of records per bulk INSERT batch for database ingestion."""

@@ -28,7 +28,7 @@ import unicodedata
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory, companion_match_key
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
@@ -38,6 +38,8 @@ from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from phaze.schemas.agent_orphan_companions import CompanionExtension
     from phaze.services.agent_client import PhazeAgentClient
 
@@ -62,8 +64,10 @@ _INGESTIBLE_EXTENSIONS: frozenset[str] = frozenset(
 
 The scan and watcher accept the same extensions, including the six approved
 COMPANION extensions. They deliberately differ by directory context: a settled-tree
-scan admits a companion only beside MUSIC/VIDEO, while the watcher admits it
-unconditionally because 96.5% of companions arrive before their last media sibling.
+scan admits a companion only beside MUSIC/VIDEO in its own directory or beside a parent
+media file its name matches (phaze-ehryj), while the watcher admits it unconditionally because 96.5% of companions
+arrive before their last media sibling. Both paths then reach the same
+``services/companion.py::associate_companions``, which applies the same own-then-name-matched-parent rule.
 """
 
 
@@ -75,22 +79,77 @@ def _classify(filename: str) -> FileCategory:
     return EXTENSION_MAP.get(Path(filename).suffix.lower(), FileCategory.UNKNOWN)
 
 
-def _scan_ingestible_filenames(filenames: list[str]) -> list[str]:
-    """Select this directory's media and companion files under the scan-only sibling rule."""
-    has_media = any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames)
-    return [
-        filename
-        for filename in filenames
-        if (extension := Path(filename).suffix.lower()) in _INGESTIBLE_EXTENSIONS and (EXTENSION_MAP[extension] in _MEDIA_CATEGORIES or has_media)
-    ]
+def _has_media(filenames: list[str]) -> bool:
+    """True when any of ``filenames`` is MUSIC or VIDEO."""
+    return any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames)
+
+
+_NO_PARENT_MEDIA: frozenset[str] = frozenset()
+
+
+def _split_companions(directory: Path, filenames: list[str], parent_media_keys: frozenset[str]) -> tuple[list[str], list[str]]:
+    """Split this directory's files into ``(ingestible, orphan_companions)`` under the scan's companion rule.
+
+    Media is always ingestible. An approved companion is ingestible beside media in its own
+    directory; failing that, it is ingestible only when its sub-folder name or its own stem names a
+    media file directly in its PARENT directory (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj),
+    or when that parent directory's OWN name does -- a release folder holding its media beside an
+    "info" sub-folder (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj),
+    all compared by :func:`phaze.constants.companion_match_key` -- the same key
+    ``services/companion.py::associate_companions`` links by, so the scan admits exactly the
+    companions association can link. Every other approved companion is an orphan diagnostic.
+    Exactly one level: a grandparent's media is never consulted.
+    """
+    own_media = _has_media(filenames)
+    folder_matches = bool(parent_media_keys) and (
+        companion_match_key(directory.name) in parent_media_keys or companion_match_key(directory.parent.name) in parent_media_keys
+    )
+    ingestible: list[str] = []
+    orphans: list[str] = []
+    for filename in filenames:
+        extension = Path(filename).suffix.lower()
+        if extension not in _INGESTIBLE_EXTENSIONS:
+            continue
+        admitted = EXTENSION_MAP[extension] in _MEDIA_CATEGORIES or own_media or folder_matches
+        if admitted or (parent_media_keys and companion_match_key(Path(filename).stem) in parent_media_keys):
+            ingestible.append(filename)
+        else:
+            orphans.append(filename)
+    return ingestible, orphans
+
+
+def _media_keys(filenames: list[str]) -> frozenset[str]:
+    """The :func:`companion_match_key` of every media file's stem in one directory listing."""
+    return frozenset(key for filename in filenames if _classify(filename) in _MEDIA_CATEGORIES and (key := companion_match_key(Path(filename).stem)))
+
+
+def _walk_with_parent_media(scan_root: Path, errors: list[OSError]) -> Iterator[tuple[Path, list[str], frozenset[str]]]:
+    """Yield ``(directory, filenames, parent_media_keys)`` for every directory under ``scan_root``.
+
+    phaze-ehryj: the companion rule needs the PARENT's media names, which os.walk has already
+    listed by the time it reaches a child (top-down order). Rather than retain every media
+    directory's names, a directory with media registers its own sub-directories in ``pending``,
+    all sharing ONE frozenset of its media keys, and each sub-directory removes itself when
+    visited. ``pending`` therefore holds only children not yet walked -- the frontier of the
+    depth-first walk -- and a parent's key set is released once its last child has been visited,
+    never kept for the whole tree. A sub-directory os.walk never descends into (a symlink, an
+    unreadable directory) stays in ``pending``, bounded by the number of such directories.
+    """
+    pending: dict[Path, frozenset[str]] = {}
+    for dirpath, dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
+        directory = Path(dirpath)
+        parent_media_keys = pending.pop(directory, _NO_PARENT_MEDIA)
+        if dirnames and (media_keys := _media_keys(filenames)):
+            pending.update(dict.fromkeys((directory / dirname for dirname in dirnames), media_keys))
+        yield directory, filenames, parent_media_keys
 
 
 def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[Path], list[OSError]]:
     """Authoritative walk over `scan_root`, run entirely off the event loop (phaze-j54q).
 
     Walks the tree once WITHOUT stat or hashing, collecting the full path of every file
-    whose extension is ingestible, accepted companions skipped solely because their
-    directory has no media sibling, and any directory-read OSError raised by os.walk.
+    whose extension is ingestible, accepted companions skipped because they have no media beside
+    them and none in their parent that their name matches, and any directory-read OSError raised by os.walk.
     Returns ``(paths, orphan_companions, errors)``; the caller stats/hashes only the
     ingestible paths and reports orphan paths as metadata-only diagnostics.
 
@@ -107,14 +166,10 @@ def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[Path], list[OSEr
     errors: list[OSError] = []
     paths: list[Path] = []
     orphan_companions: list[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
-        directory = Path(dirpath)
-        ingestible_filenames = _scan_ingestible_filenames(filenames)
-        paths.extend(directory / filename for filename in ingestible_filenames)
-        if not any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames):
-            orphan_companions.extend(
-                directory / filename for filename in filenames if Path(filename).suffix.lower() in INGESTIBLE_COMPANION_EXTENSIONS
-            )
+    for directory, filenames, parent_media_keys in _walk_with_parent_media(scan_root, errors):
+        ingestible, orphans = _split_companions(directory, filenames, parent_media_keys)
+        paths.extend(directory / filename for filename in ingestible)
+        orphan_companions.extend(directory / filename for filename in orphans)
     return paths, orphan_companions, errors
 
 
@@ -138,8 +193,8 @@ def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     """
     errors: list[OSError] = []
     count = 0
-    for _dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
-        count += len(_scan_ingestible_filenames(filenames))
+    for directory, filenames, parent_media_keys in _walk_with_parent_media(scan_root, errors):
+        count += len(_split_companions(directory, filenames, parent_media_keys)[0])
     return count, errors
 
 
