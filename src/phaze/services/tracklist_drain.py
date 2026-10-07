@@ -284,7 +284,7 @@ async def build_drain_queue(
     derived_by_file: dict[uuid.UUID, DerivedQuery] = {}
     signals = []
     for signal in raw_signals:
-        derived = derive_query(signal.filename)
+        derived = derive_query(signal.filename, artist=signal.artist, title=signal.title, album=signal.album, original_path=signal.original_path)
         derived_by_file[signal.file_id] = derived
         signals.append(replace(signal, derived_query=derived.query))
 
