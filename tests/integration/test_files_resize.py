@@ -164,6 +164,8 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
 #   Propose/Review/Execute 118.5  "not started" pill      -> 144
 #   Tracklist         256.1  "low confidence . retry date" -> 282
 #   Current state     190.7  stacked label + pill, one line -> 216
+#   Details           88.16  `ui.btn('secondary', 'sm')` "DETAILS" + chevron, UPPERCASE Jura -> 113
+#                     (phaze-5gde8: the old 92 was narrower than button + padding; measured in both themes)
 # The Retry "Enqueuing..." indicator is absolutely positioned so it takes no layout space.
 _EXPECTED_DEFAULT_WIDTHS = {
     "File": "flex",
@@ -175,10 +177,11 @@ _EXPECTED_DEFAULT_WIDTHS = {
     "Review": 144,
     "Execute": 144,
     "Current state": 216,
-    "Details": 92,
+    "Details": 113,
 }
 _NOT_STARTED_PILL_PX = 119
 _FAILED_PILL_PLUS_RETRY_PX = 139
+_DETAILS_BUTTON_PX = 88.16
 _CELL_PADDING_PX = 24
 
 
@@ -207,6 +210,7 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
         assert fixed[stage] >= _NOT_STARTED_PILL_PX + _CELL_PADDING_PX, f"{stage} would clip its 'not started' pill"
     for stage in ("Metadata", "Analyze"):
         assert fixed[stage] >= _FAILED_PILL_PLUS_RETRY_PX + _CELL_PADDING_PX, f"{stage} would clip its failed pill + Retry"
+    assert fixed["Details"] >= _DETAILS_BUTTON_PX + _CELL_PADDING_PX, "Details would clip or touch the card edge"
     assert fixed["Metadata"] == fixed["Analyze"] > fixed["Propose"]
     assert fixed["Tracklist"] == max(fixed.values())
 
