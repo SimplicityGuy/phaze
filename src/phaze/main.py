@@ -41,6 +41,7 @@ from phaze.routers import (
     duplicates,
     execution,
     health,
+    junk_review,
     pipeline,
     pipeline_scans,
     pipeline_stages,
@@ -234,6 +235,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     execution.router,
     preview.router,
     duplicates.router,
+    # phaze-l1j35: the junk review's group decisions (approve / reject / undo / bulk) and its excerpt.
+    junk_review.router,
     tracklists.router,
     pipeline.router,
     # SHELL-01: the v7.0 shell router owns GET / (Analyze default) + GET

@@ -379,6 +379,14 @@
                 d.shouldSwap = true;
                 d.isError = false;
             }
+            // phaze-l1j35: a review decision refused because the item changed after it was rendered
+            // answers 409 with the REFRESHED item plus the reason (the junk review's group cards and
+            // its bulk result). Swap it so the refusal is visible -- but only into a target that opts
+            // in with data-conflict-swap; every other 409 keeps htmx's default of not swapping.
+            if (d && d.xhr && d.xhr.status === 409 && d.target && d.target.hasAttribute && d.target.hasAttribute('data-conflict-swap')) {
+                d.shouldSwap = true;
+                d.isError = false;
+            }
             // PUT /tracklists/tracks/{id}/edit/{field} answers an over-width inline-edit value
             // (timestamp > varchar(20)) with a 422 that re-renders the SAME edit input, the
             // operator's typed value preserved, plus an inline reason -- not a bare rejection that

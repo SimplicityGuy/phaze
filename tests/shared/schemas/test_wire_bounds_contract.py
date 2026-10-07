@@ -249,6 +249,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
     ("/duplicates/review-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
+    # phaze-l1j35: each element is a junk-review token -- length-capped in-route, decoded and matched
+    # against the group's live rows before any write; never stored.
+    ("/junk-review/bulk", "review_tokens"): "list[str] Form; each element length-capped, decoded and validated against live rows in-route",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
     # phaze-oldp: ``agent_id`` no longer needs an entry here -- it now carries an explicit

@@ -90,6 +90,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from phaze.enums.execution import ExecutionStatus
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.companion_junk_review import CompanionJunkReview
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -632,6 +633,35 @@ class Seeder:
             )
         await self.session.commit()
 
+    # --- junk review --------------------------------------------------------------------
+
+    async def junk_group(
+        self, *, count: int = 2, reason: str = "known_stamp", file_type: str = "nfo", file_size: int = 96
+    ) -> list[CompanionJunkReview]:
+        """Seed ``count`` pending junk-review rows sharing one sha256 -- one undecided junk content group.
+
+        Each row gets the ``files`` row the detector would have read it from, so the card's member
+        list, size and link state render as they would in production (phaze-l1j35).
+        """
+        shared = _sha256()
+        rows: list[CompanionJunkReview] = []
+        for index in range(count):
+            record = await self.file(filename=f"<set-0{index + 1}>-info.{file_type}", sha256=shared, file_type=file_type, file_size=file_size)
+            row = CompanionJunkReview(
+                agent_id=record.agent_id,
+                original_path=record.original_path,
+                sha256_hash=shared,
+                file_id=record.id,
+                file_type=file_type,
+                file_size=file_size,
+                reason=reason,
+                content_group=shared,
+            )
+            self.session.add(row)
+            await self.session.commit()
+            rows.append(row)
+        return rows
+
     # --- scans ----------------------------------------------------------------------------
 
     async def scan_batch(
@@ -867,6 +897,28 @@ async def seed_populated(dsn: str, *, with_failures: bool = False) -> None:
                 ]
             )
             tracklist.latest_version_id = version.id
+            await session.commit()
+
+            # A pending junk content group behind /s/junk (phaze-l1j35): two identical stamp files.
+            stamp = _sha256()
+            stamps = [_file(f"<set-0{index + 1}>-info.nfo", sha=stamp) for index in range(2)]
+            session.add_all(stamps)
+            await session.commit()
+            session.add_all(
+                [
+                    CompanionJunkReview(
+                        agent_id=DEFAULT_AGENT_ID,
+                        original_path=record.original_path,
+                        sha256_hash=stamp,
+                        file_id=record.id,
+                        file_type="nfo",
+                        file_size=record.file_size,
+                        reason="known_stamp",
+                        content_group=stamp,
+                    )
+                    for record in stamps
+                ]
+            )
             await session.commit()
 
             if with_failures:

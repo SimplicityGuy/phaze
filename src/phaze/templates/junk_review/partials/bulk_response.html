@@ -1,0 +1,7 @@
+{# phaze-l1j35: the answer to a bulk decision. The message is the main swap into the live region
+   #junk-bulk-result; each decided (or, on a 409, refreshed) group's card replaces itself out of band,
+   so every card keeps its own Undo. #}
+<p>{{ message }}</p>
+{% for group in groups %}
+{% with oob = true %}{% include "pipeline/partials/_junk_group.html" %}{% endwith %}
+{% endfor %}

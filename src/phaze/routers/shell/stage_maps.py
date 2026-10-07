@@ -101,6 +101,11 @@ STAGE_PARTIALS: dict[str, str] = {
     # AUTO-KEEP + the file_states undo round-trip) supersedes the placeholder -- a STATIC string literal
     # (T-57-01: `stage` is never spliced into a template path). Supersede-in-place; legacy templates stay.
     "dedupe": "pipeline/partials/dedupe_workspace.html",
+    # phaze-l1j35: the Junk review -- companion files the detector proposes to quarantine, one card per
+    # identical content, approve / reject / undo / bulk through routers/junk_review.py. A STATIC string
+    # literal (T-57-01: `stage` is never spliced into a template path). Beside Dedupe: both review copies
+    # of content, and neither moves a file until the operator approves.
+    "junk": "pipeline/partials/junk_workspace.html",
     # Phase 60 (60-04, REVIEW-04): the real Cue preview workspace (in-memory .cue preview cards + an
     # APPROVE wired to /cue/{id}/generate + visibly gated ineligible cards) supersedes the placeholder --
     # a STATIC string literal (T-57-01). This is the LAST of the six Review workspaces; every placeholder

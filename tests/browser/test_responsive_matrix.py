@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 
-# Every rail destination: STAGE_PARTIALS' twelve DAG stages plus UTILITY_PANES' three, minus the two
+# Every rail destination: STAGE_PARTIALS' fourteen DAG stages plus UTILITY_PANES' three, minus the two
 # Changes Review aliases (`tagwrite`, `move`) that render the same partial as `rename` and are
 # deliberately absent from the rail. Kept in rail order so a failure names where in the rail it sat.
 WORKSPACES: tuple[str, ...] = (
@@ -68,6 +68,7 @@ WORKSPACES: tuple[str, ...] = (
     "propose",
     "rename",
     "dedupe",
+    "junk",
     "cue",
     "apply",
     "operations",

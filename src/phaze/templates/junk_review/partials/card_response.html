@@ -1,0 +1,6 @@
+{# phaze-l1j35: the answer to one group decision (routers/junk_review.py). The card swaps in place
+   (outerHTML on its own id); the outcome lands in the workspace's polite live region out of band,
+   so a screen reader hears it while focus moves to the refreshed card's heading. On a 409 this is
+   the same shape: the refreshed card plus the reason nothing was applied. #}
+{% include "pipeline/partials/_junk_group.html" %}
+<div hx-swap-oob="innerHTML:#junk-review-status">{{ message }}</div>

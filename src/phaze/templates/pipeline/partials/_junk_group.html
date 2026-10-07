@@ -1,0 +1,105 @@
+{% import "ui/primitives.html" as ui %}
+{# phaze-l1j35: ONE junk content group -- every live review row sharing a SHA-256, decided at once.
+
+   Approve only marks the group approved (Undo takes it back); "Quarantine approved" is the separate
+   run step that hands the approved copies to their agents, after which nothing can be undone --
+   the operator's 2026-10-07 amendment recorded on phaze-l1j35 ("Approve, then a separate Run step").
+
+   Rendered by the /s/junk workspace and, after every decision, by routers/junk_review.py, which
+   swaps it in place (outerHTML on #junk-group-<hash>). The card carries the review token the tags
+   review pattern needs: Approve / Reject / Undo post it back, and the route answers a token that no
+   longer matches the group's live rows with 409 and a refreshed copy of this card. shell.html's
+   htmx:beforeSwap lets a 409 swap ONLY into an element marked data-conflict-swap, so the refusal is
+   shown rather than silently dropped.
+
+   File names, paths and the excerpt are file-derived text: autoescaped, never `| safe`. Status is
+   word + glyph, never hue alone (WCAG 1.4.1). #}
+{% set sha = group.sha256_hash %}
+{% set card_id = "junk-group-" ~ sha %}
+<article id="{{ card_id }}"{% if oob is defined and oob %} hx-swap-oob="true"{% endif %} data-junk-group data-conflict-swap aria-labelledby="{{ card_id }}-title"
+         class="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div class="flex min-w-0 items-start gap-3">
+            {% if group.open %}
+            <input type="checkbox" id="{{ card_id }}-select" name="review_tokens" value="{{ group.token }}" data-junk-select
+                   class="mt-1 h-4 w-4 shrink-0 accent-emerald-500 focus-visible:ring-2 focus-visible:ring-blue-500">
+            {% endif %}
+            <div class="min-w-0">
+                <h3 id="{{ card_id }}-title" tabindex="-1"{% if focus_card is defined and focus_card %} autofocus{% endif %}
+                    class="text-sm font-semibold text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-100">
+                    {% if group.open %}<label for="{{ card_id }}-select" class="cursor-pointer">{{ group.signature }}</label>{% else %}{{ group.signature }}{% endif %}
+                </h3>
+                <p class="mt-1 break-all font-mono text-[11px] text-muted" title="SHA-256 of the content">sha256 {{ sha[:16] }}…</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+            {% if group.pending %}{{ ui.status_badge("Review", (group.pending | thousands) ~ " pending", "attention", "!") }}{% endif %}
+            {% if group.approved %}{{ ui.status_badge("Review", (group.approved | thousands) ~ " approved, not run", "success", "✓") }}{% endif %}
+            {% if group.executing %}{{ ui.status_badge("Quarantine", (group.executing | thousands) ~ " queued", "info", "↻") }}{% endif %}
+            {% if group.rejected %}{{ ui.status_badge("Review", (group.rejected | thousands) ~ " kept", "neutral", "✕") }}{% endif %}
+        </div>
+    </div>
+
+    <dl class="mt-3 grid grid-cols-1 gap-x-4 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div><dt class="inline text-muted">Copies:</dt> <dd class="inline text-gray-800 dark:text-gray-200">{{ group.copies | thousands }}{% if group.agents | length > 1 %} on {{ group.agents | length }} agents{% endif %}</dd></div>
+        <div><dt class="inline text-muted">Size:</dt> <dd class="inline text-gray-800 dark:text-gray-200">{{ group.file_size | filesizeformat(true) }} each{% if group.pending > 1 %} · {{ group.pending_size | filesizeformat(true) }} pending{% endif %}</dd></div>
+        <div><dt class="inline text-muted">Links:</dt> <dd class="inline text-gray-800 dark:text-gray-200">
+            {%- if group.linked_members %}{{ group.linked_members | thousands }} of these copies linked to media{% else %}none of these copies linked{% endif -%}
+            {%- if group.linked_elsewhere %}; {{ group.linked_elsewhere | thousands }} linked copy kept elsewhere{% endif -%}
+        </dd></div>
+        {% if group.features %}
+        <div><dt class="inline text-muted">Content:</dt> <dd class="inline text-gray-800 dark:text-gray-200">{{ group.features.encoding }}{% if group.features.is_tracklist %} · tracklist{% endif %}{% if group.features.reference_count %} · names {{ group.features.reference_count | thousands }} media{% endif %}</dd></div>
+        {% endif %}
+    </dl>
+    {% if group.features and group.features.reference_names %}
+    <p class="mt-1 break-words text-xs text-muted">Names: {{ group.features.reference_names | join(", ") }}{% if group.features.reference_count > group.features.reference_names | length %}, …{% endif %}</p>
+    {% endif %}
+
+    <ul class="mt-3 space-y-1" aria-label="Copies of this content">
+        {% for m in group.members %}
+        <li class="flex flex-col gap-0.5 rounded-md bg-gray-50 px-2 py-1.5 sm:flex-row sm:items-center sm:gap-2 dark:bg-phaze-bg">
+            <span class="min-w-0 flex-1 break-all font-mono text-[11px] text-gray-700 dark:text-gray-300">{{ m.original_path }}</span>
+            <span class="shrink-0 text-[11px] text-muted">{{ m.agent_id }} · {{ m.status }}{% if m.linked %} · linked{% endif %}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% if group.copies > group.members | length %}
+    <p class="mt-1 text-xs text-muted">and {{ (group.copies - (group.members | length)) | thousands }} more {{ "copy" if group.copies - (group.members | length) == 1 else "copies" }} with identical content.</p>
+    {% endif %}
+
+    {% if group.copies %}
+    <details class="mt-3" hx-get="/junk-review/{{ sha }}/excerpt" hx-trigger="toggle once" hx-target="find [data-excerpt]" hx-swap="innerHTML">
+        <summary class="cursor-pointer font-jura text-[11px] uppercase tracking-wider text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">Content excerpt</summary>
+        <div data-excerpt aria-live="polite" class="mt-2 text-xs text-muted">Loading excerpt…</div>
+    </details>
+    {% endif %}
+
+    <div class="mt-4 flex flex-col gap-2 border-t border-gray-200 pt-3 sm:flex-row sm:flex-wrap sm:items-center dark:border-phaze-border">
+        {% set _vals = {"review_token": group.token} | tojson %}
+        {% if group.pending %}
+        <button type="button" hx-post="/junk-review/{{ sha }}/approve" hx-vals='{{ _vals }}' hx-target="#{{ card_id }}" hx-swap="outerHTML" hx-disabled-elt="this"
+                aria-label="Approve {{ group.pending | thousands }} pending {{ 'copy' if group.pending == 1 else 'copies' }} for quarantine: {{ group.signature }}"
+                class="{{ ui.btn('secondary', 'md') }}">Approve</button>
+        <button type="button" hx-post="/junk-review/{{ sha }}/reject" hx-vals='{{ _vals }}' hx-target="#{{ card_id }}" hx-swap="outerHTML" hx-disabled-elt="this"
+                aria-label="Reject: keep every copy of this content ({{ group.signature }})"
+                class="{{ ui.btn('secondary', 'md') }}">Reject, keep files</button>
+        {% endif %}
+        {% if group.approved %}
+        <button type="button" hx-post="/junk-review/{{ sha }}/quarantine" hx-vals='{{ _vals }}' hx-target="#{{ card_id }}" hx-swap="outerHTML" hx-disabled-elt="this"
+                aria-label="Quarantine the {{ group.approved | thousands }} approved {{ 'copy' if group.approved == 1 else 'copies' }}: {{ group.signature }}"
+                class="{{ ui.btn('destructive', 'md') }}">Quarantine approved</button>
+        {% endif %}
+        {% if group.undoable %}
+        <button type="button" hx-post="/junk-review/{{ sha }}/undo" hx-vals='{{ _vals }}' hx-target="#{{ card_id }}" hx-swap="outerHTML" hx-disabled-elt="this"
+                aria-label="Undo the decision on {{ group.signature }}"
+                class="{{ ui.btn('secondary', 'md') }}">Undo</button>
+        {% endif %}
+        <p class="text-xs text-muted sm:ml-auto">
+            {% if group.approved %}Approved copies stay where they are until you run the quarantine; until then Undo takes them back.
+            {% elif group.pending %}Approve, then run the quarantine to move the copies into the hidden quarantine folder. Rejecting keeps every identical copy, everywhere.
+            {% elif group.executing %}Handed to quarantine: the agent moves each file and reports back. This can no longer be undone.
+            {% elif group.copies %}Decided.
+            {% else %}No live copies remain in this group; quarantined or failed copies can no longer be undone.{% endif %}
+        </p>
+    </div>
+</article>
