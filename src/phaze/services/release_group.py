@@ -219,6 +219,7 @@ _AUDIO_VIDEO_EXTENSIONS = (
     "m4v",
     "mkv",
     "mov",
+    "mp2",
     "mp3",
     "mp4",
     "ogg",

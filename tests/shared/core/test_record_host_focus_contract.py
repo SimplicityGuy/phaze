@@ -37,4 +37,4 @@ def test_open_moves_focus_into_the_drawer_before_making_the_background_inert() -
 
 def test_close_removes_inert_before_returning_focus_to_the_opener() -> None:
     hide = _source().split("hide() {", 1)[1]
-    assert hide.index("setBackgroundInert(false)") < hide.index("target.focus()"), "focus is returned to an opener that is still inert"
+    assert hide.index("setBackgroundInert(false)") < hide.index("restore.focus()"), "focus is returned to an opener that is still inert"

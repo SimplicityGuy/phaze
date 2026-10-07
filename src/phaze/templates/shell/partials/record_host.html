@@ -158,6 +158,11 @@
             this.loaded = false;
             this.requestedSection = null;
             const target = this.opener;
+            // phaze-ozqbk: remember WHICH control opened the drawer (tag + hx-get URL, i.e. the
+            // file) so a swapped-out opener can be re-found below. No double quotes here.
+            const openerTag = target && target.tagName ? target.tagName : null;
+            const openerUrl = target && target.getAttribute ? target.getAttribute('hx-get') : null;
+            const openerSection = target && target.dataset ? (target.dataset.recordSection || null) : null;
             this.opener = null;
             // Defer to after Alpine tears the panel down (see cmdk_modal.html): a
             // synchronous focus here is undone when the browser resets focus to <body>
@@ -192,8 +197,22 @@
                 // CAUSE (a row can be swapped out from under an open drawer at all, which can
                 // orphan more than focus for an operator mid-click). The underlying swap race
                 // is tracked separately and is deliberately NOT fixed here.
-                if (target && target.isConnected && typeof target.focus === 'function') {
-                    target.focus();
+                // phaze-ozqbk: a stale opener is usually REPLACED, not removed -- an htmx swap
+                // (paging, a filter, a re-render) re-inserts an identical control for the same
+                // file. Return focus to that equivalent control (same tag, same hx-get, same
+                // record section) so the keyboard operator keeps their place; only when no
+                // equivalent exists fall through to the stage heading.
+                let restore = target && target.isConnected ? target : null;
+                if (!restore && openerTag && openerUrl) {
+                    for (const el of document.getElementsByTagName(openerTag)) {
+                        if (el.getAttribute('hx-get') === openerUrl && (el.dataset.recordSection || null) === openerSection && el.getClientRects().length > 0) {
+                            restore = el;
+                            break;
+                        }
+                    }
+                }
+                if (restore && typeof restore.focus === 'function') {
+                    restore.focus();
                 } else if (window._focusStageHeading) {
                     window._focusStageHeading();
                 }

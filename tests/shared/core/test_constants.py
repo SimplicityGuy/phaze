@@ -15,8 +15,8 @@ def test_file_category_values():
 
 
 def test_extension_map_completeness():
-    """EXTENSION_MAP contains exactly 28 entries (9 music + 7 video + 12 companion)."""
-    assert len(EXTENSION_MAP) == 28
+    """EXTENSION_MAP contains exactly 29 entries (10 music + 7 video + 12 companion)."""
+    assert len(EXTENSION_MAP) == 29
 
 
 def test_opus_extension_classified():
@@ -25,9 +25,14 @@ def test_opus_extension_classified():
     assert EXTENSION_MAP[".opus"] == FileCategory.MUSIC
 
 
+def test_mp2_extension_classified() -> None:
+    """MPEG-1 Layer II (.mp2) is MUSIC, so scan and watcher admit it (phaze-f78n6)."""
+    assert EXTENSION_MAP[".mp2"] == FileCategory.MUSIC
+
+
 def test_music_extensions_classified():
     """All music file extensions map to FileCategory.MUSIC."""
-    music_exts = [".mp3", ".m4a", ".ogg", ".flac", ".wav", ".aiff", ".wma", ".aac", ".opus"]
+    music_exts = [".mp3", ".m4a", ".ogg", ".flac", ".wav", ".aiff", ".wma", ".aac", ".opus", ".mp2"]
     for ext in music_exts:
         assert EXTENSION_MAP[ext] == FileCategory.MUSIC, f"{ext} should be MUSIC"
 

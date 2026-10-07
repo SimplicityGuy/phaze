@@ -32,6 +32,7 @@ class CueTrackData:
 
 
 _FILE_TYPE_MAP: dict[str, str] = {
+    "mp2": "MP3",
     "mp3": "MP3",
     "wav": "WAVE",
     "wave": "WAVE",
