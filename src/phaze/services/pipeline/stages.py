@@ -174,7 +174,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       drain writes gets its first version in the same transaction, so the bar reported 100% always and
       measured nothing.
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
-    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (metadata
+    - ``proposals``   -- done = DISTINCT file_id in ``proposals`` AND in the convergence set (phaze-vtwk9); total = convergence set (metadata
       DONE-AND-NOT-IN-FLIGHT AND analysis DONE-AND-NOT-IN-FLIGHT, mirroring ``get_proposal_pending_batches``'s
       ``_proposal_pending_clauses`` ready-set gate below -- phaze-nuyn, phaze-rhs6m, phaze-3542b, phaze-mvq8z.17)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
@@ -228,13 +228,27 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # ``_get_summary_aggregates``, fixed alongside this). Add the same two conjuncts so this
     # denominator agrees with BOTH the pending-set gate above it and the analyze/metadata "done"
     # buckets it is meant to total.
-    convergence_stmt = (
-        select(func.count(FileRecord.id))
-        .where(done_clause(Stage.METADATA), ~inflight_clause(Stage.METADATA))
-        .where(done_clause(Stage.ANALYZE), ~inflight_clause(Stage.ANALYZE))
+    convergence_clauses = (
+        done_clause(Stage.METADATA),
+        ~inflight_clause(Stage.METADATA),
+        done_clause(Stage.ANALYZE),
+        ~inflight_clause(Stage.ANALYZE),
     )
+    convergence_stmt = select(func.count(FileRecord.id)).where(*convergence_clauses)
     tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
-    proposals_stmt = select(func.count(distinct(RenameProposal.file_id)))
+    # phaze-vtwk9: the numerator counts the SAME unit as the denominator -- distinct files INSIDE the
+    # convergence set -- so ``done <= total`` always. It was a bare ``COUNT(DISTINCT proposals.file_id)``
+    # over every proposal, so a file that has a proposal but is not (or no longer) in the convergence set
+    # (never analyzed, a force-skipped or failed enrich stage, mid-re-analysis, a file whose only marker
+    # is an EXECUTED proposal) inflated ``done`` past ``total`` ("Propose 5 / 4" on the seeded browser DB:
+    # four converged files each with a proposal, plus one executed proposal on a file with no
+    # metadata/analysis). ``total - done`` is now exactly ``count_proposal_pending_files``.
+    proposals_stmt = (
+        select(func.count(distinct(RenameProposal.file_id)))
+        .select_from(RenameProposal)
+        .join(FileRecord, FileRecord.id == RenameProposal.file_id)
+        .where(*convergence_clauses)
+    )
     execute_total_stmt = select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED)
 
     # match.done: distinct tracklist_id reachable from a discogs_link, walked
