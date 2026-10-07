@@ -30,9 +30,8 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_tasks import WriteCueSheetPayload
-from phaze.services.containment import resolve_and_check_containment
+from phaze.services.containment import resolve_contained_twin
 from phaze.services.cue_generator import retarget_cue_file_line, write_cue_file
-from phaze.services.media_path_resolve import resolve_media_path
 
 
 logger = structlog.get_logger(__name__)
@@ -58,13 +57,12 @@ def _write_sync(audio_path: Path, content: str, scan_roots: list[str]) -> tuple[
     file it is actually placed beside. Nothing is retargeted for a path that is its own realpath,
     which is every non-symlinked file in the archive.
     """
-    resolved, _owning_root = resolve_and_check_containment(str(audio_path), scan_roots)
     # phaze-9pg11: `audio_path` (FileRecord.current_path) is stored NFC-normalized (the identity/
     # dedup key); resolve it against the real on-disk entry so the CUE sheet's ``FILE`` directive
     # names the audio file's ACTUAL on-disk name -- an NFD-named file's stored path otherwise never
-    # matches its own directory entry. Applied AFTER containment so the fallback can only ever pick
-    # another entry in the SAME already-contained directory.
-    resolved = Path(resolve_media_path(str(resolved)))
+    # matches its own directory entry. phaze-2tei9: the twin is looked up FIRST and containment is
+    # checked on IT, so the sheet is only ever written beside a path that was itself checked.
+    resolved, _owning_root = resolve_contained_twin(str(audio_path), scan_roots)
     return write_cue_file(retarget_cue_file_line(content, resolved.name), resolved)
 
 

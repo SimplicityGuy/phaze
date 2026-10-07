@@ -15,7 +15,9 @@ the agent worker, which is banned from importing ``phaze.database`` / ``sqlalche
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import IO
 
 
 # Read this multiple of `max_chars` so clean_companion_content's ASCII-art-line stripping (which
@@ -32,7 +34,14 @@ COMPANION_READ_CHAR_MARGIN = 4
 CP437_FALLBACK_SUFFIXES = frozenset({".nfo", ".txt"})
 
 
-def read_companion_bounded_sync(path: str, max_chars: int) -> str:
+def _open_text(path: str, *, follow_symlinks: bool, encoding: str, errors: str) -> IO[str]:
+    """Open ``path`` for text reading; ``follow_symlinks=False`` opens it with ``O_NOFOLLOW``."""
+    if follow_symlinks:
+        return Path(path).open(encoding=encoding, errors=errors)
+    return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), encoding=encoding, errors=errors)
+
+
+def read_companion_bounded_sync(path: str, max_chars: int, *, follow_symlinks: bool = True) -> str:
     """Synchronous BOUNDED read of one companion file (phaze-cycw, phaze-j9b3z).
 
     Reads at most ``max_chars * COMPANION_READ_CHAR_MARGIN`` DECODED characters -- not the whole
@@ -63,19 +72,23 @@ def read_companion_bounded_sync(path: str, max_chars: int) -> str:
     a stray U+FEFF ahead of the replacement characters). Each attempt is its own bounded read --
     never a whole-file slurp -- so the worst case is two small reads, not one large one.
 
+    ``follow_symlinks=False`` opens every attempt with ``O_NOFOLLOW`` (phaze-2tei9): the agent task
+    passes the containment-RESOLVED path, so a final component swapped for a symlink after the
+    check is refused (``ELOOP``, an ``OSError``) rather than followed out of the scan roots.
+
     Must be run via ``asyncio.to_thread`` by the caller: the open()+read() here is still
     synchronous, blocking disk I/O.
     """
     limit = max_chars * COMPANION_READ_CHAR_MARGIN
     try:
-        with Path(path).open(encoding="utf-8-sig", errors="strict") as f:
+        with _open_text(path, follow_symlinks=follow_symlinks, encoding="utf-8-sig", errors="strict") as f:
             return f.read(limit)
     except UnicodeDecodeError:
         pass
 
     if Path(path).suffix.lower() not in CP437_FALLBACK_SUFFIXES:
-        with Path(path).open(encoding="utf-8-sig", errors="replace") as f:
+        with _open_text(path, follow_symlinks=follow_symlinks, encoding="utf-8-sig", errors="replace") as f:
             return f.read(limit)
 
-    with Path(path).open(encoding="cp437") as f:
+    with _open_text(path, follow_symlinks=follow_symlinks, encoding="cp437", errors="strict") as f:
         return f.read(limit)

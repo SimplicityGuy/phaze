@@ -34,7 +34,7 @@ from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchP
 import phaze.tasks.execution as execmod
 from phaze.tasks.execution import _same_filesystem, _streamed_copy, execute_approved_batch
 from phaze.tasks.execution_filesystem import FilesystemMoveRequest, LocalExecutionFilesystemEngine, LocalFilesystemPrimitives, MoveStep
-from tests._media_path_fakes import byte_exact_exists
+from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
 if TYPE_CHECKING:
@@ -780,3 +780,34 @@ async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_pat
     assert dest.exists()
     assert dest.read_bytes() == content
     assert not on_disk.exists()
+
+
+async def test_move_refuses_a_source_twin_reached_through_a_symlinked_directory(tmp_path: Path) -> None:
+    """phaze-2tei9: containment covers the NFC/NFD twin that is MOVED, not the stored source string.
+
+    The stored source does not exist, so on its own it resolves lexically inside the root; the twin it
+    maps to runs through an NFD directory that is a symlink out of the root. The lookup is substituted
+    (``substituted_twin_lookup``): macOS's ``realpath`` would follow the symlink from the NFC string
+    anyway and hide the bug; on Linux the real lookup does exactly this.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "Hör.mp3"
+    victim.write_bytes(b"not yours")
+    nfd_dir = unicodedata.normalize("NFD", "Hör")
+    (root / nfd_dir).symlink_to(outside, target_is_directory=True)
+    stored = root / "stored-nfc" / "Hör.mp3"
+
+    with (
+        patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, root / nfd_dir / "Hör.mp3")),
+        pytest.raises(ValueError, match="escapes all scan_roots"),
+    ):
+        await LocalExecutionFilesystemEngine(LocalFilesystemPrimitives()).move(
+            FilesystemMoveRequest(item=_item(stored, "moved", "Hör.mp3"), scan_roots=[str(root)]),
+            MoveStep(),
+        )
+
+    assert victim.read_bytes() == b"not yours"
+    assert not (root / "moved").exists()
