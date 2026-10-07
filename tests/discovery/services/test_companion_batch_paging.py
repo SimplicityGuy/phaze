@@ -102,9 +102,9 @@ async def test_associate_companions_commits_once_per_keyset_page(
     outcome = await associate_companions(session, batch_size=batch_size)
 
     assert outcome.links_created == num_directories, "one companion x one media per directory -> one link each"
-    # One commit for the junk-link removal, then one per keyset page of the beside-media walk; the second
-    # walk's first read finds every companion already linked and commits nothing.
-    assert commit_calls == 1 + math.ceil(num_directories / batch_size), (
+    # One commit per keyset page, in each of the two walks (companions beside media, then the rest);
+    # phaze-rmhfr re-derives every companion, so the second walk pages the same companions again.
+    assert commit_calls == 2 * math.ceil(num_directories / batch_size), (
         "paging by batch_size must produce one commit per page, not one commit for the whole run"
     )
 

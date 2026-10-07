@@ -90,7 +90,7 @@ async def test_associate_idempotent(client: AsyncClient, session: AsyncSession) 
 
 
 @pytest.mark.asyncio
-async def test_associate_reports_removed_junk_links_and_companions_awaiting_features(client: AsyncClient, session: AsyncSession) -> None:
+async def test_associate_reports_removed_links_and_companions_awaiting_features(client: AsyncClient, session: AsyncSession) -> None:
     """The response says what the run removed and what it could not decide yet, never just a bare zero."""
     media = _file("/music/album3/track.mp3", "e" * 64)
     stamp = _file("/music/album3/site.nfo", "f" * 64)
@@ -104,9 +104,9 @@ async def test_associate_reports_removed_junk_links_and_companions_awaiting_feat
     response = await client.post("/api/v1/associate")
 
     data = response.json()
-    assert (data["new_associations"], data["removed_associations"], data["awaiting_features"]) == (0, 1, 1)
+    assert (data["new_associations"], data["removed_associations"], data["kept_associations"], data["awaiting_features"]) == (0, 1, 0, 1)
     assert data["message"] == (
-        "Associated 0 companion link(s) with media files; removed 1 link(s) held by junk companions; "
+        "Associated 0 companion link(s) with media files; removed 1 link(s) the linking chain no longer derives; "
         "1 companion(s) await content features (phaze backfill companion-features)"
     )
 

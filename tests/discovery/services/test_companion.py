@@ -115,7 +115,7 @@ async def test_companion_no_media_anywhere_links_nothing(session: AsyncSession) 
 
 @pytest.mark.asyncio
 async def test_idempotent_association(session: AsyncSession) -> None:
-    """Running association twice does not create duplicate rows."""
+    """A second run re-derives the same links: it decides again, and keeps every link without a delete or an insert."""
     media = _make_file("/music/album/track.mp3", "mp3")
     cue, cue_features = _companion("/music/album/track.cue", "track.mp3")
     await _seed(session, media, cue, cue_features)
@@ -123,26 +123,58 @@ async def test_idempotent_association(session: AsyncSession) -> None:
     first = await associate_companions(session)
     second = await associate_companions(session)
 
-    assert (first.links_created, second.links_created) == (1, 0)
-    assert second.decided == {}
+    assert (first.links_created, first.links_removed, first.links_kept) == (1, 0, 0)
+    assert (second.links_created, second.links_removed, second.links_kept) == (0, 0, 1)
+    assert second.decided == {"reference": 1}
     assert await _link_pairs(session) == {(cue.id, media.id)}
 
 
 @pytest.mark.asyncio
-async def test_already_linked_companions_are_not_re_decided(session: AsyncSession) -> None:
-    """Only a new companion is decided on the next run; an existing link is left as it is."""
-    media = _make_file("/music/album/song.m4a", "m4a")
-    nfo, nfo_features = _companion("/music/album/info.nfo")
-    await _seed(session, media, nfo, nfo_features)
-    assert (await associate_companions(session)).links_created == 1
+async def test_existing_links_are_replaced_by_exactly_what_the_chain_derives(session: AsyncSession) -> None:
+    """Operator decision 2026-10-07, "Re-derive every link (Recommended)" (bead phaze-rmhfr comment).
 
-    tracklist, tracklist_features = _companion("/music/album/tracklist.txt")
-    await _seed(session, tracklist, tracklist_features)
+    An over-link (a tracklist linked to every mix in its folder by the old own-folder rule) and a
+    retired parent-folder link are both removed; the one link the chain still derives is kept, not
+    rewritten; the missing one is inserted.
+    """
+    mix1 = _make_file("/music/mixes/Mix 01.mp3", "mp3")
+    mix2 = _make_file("/music/mixes/Mix 02.mp3", "mp3")
+    mix3 = _make_file("/music/mixes/Mix 03.mp3", "mp3")
+    tracklist, tracklist_features = _companion("/music/mixes/Mix 02.txt", is_tracklist=True)
+    parent_media = _make_file("/music/release/Live Set 2019.mp3", "mp3")
+    sub_notes, sub_notes_features = _companion("/music/release/info/00-live_set-2019.nfo")
+    cue, cue_features = _companion("/music/mixes/mix-03.cue", "Mix 03.mp3", "Mix 01.mp3")
+    await _seed(session, mix1, mix2, mix3, tracklist, tracklist_features, parent_media, sub_notes, sub_notes_features, cue, cue_features)
+    old = [(tracklist, mix1), (tracklist, mix2), (tracklist, mix3), (sub_notes, parent_media), (cue, mix3)]
+    for companion, media in old:
+        await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=companion.id, media_id=media.id))
+    kept_link_id = (await session.execute(select(FileCompanion.id).where(FileCompanion.companion_id == cue.id))).scalar_one()
+
     outcome = await associate_companions(session)
 
-    assert outcome.links_created == 1
-    assert outcome.decided == {"folder": 1}
-    assert await _link_pairs(session) == {(nfo.id, media.id), (tracklist.id, media.id)}
+    assert (outcome.links_created, outcome.links_removed, outcome.links_kept) == (1, 3, 2)
+    assert await _link_pairs(session) == {(tracklist.id, mix2.id), (cue.id, mix3.id), (cue.id, mix1.id)}
+    assert kept_link_id in set((await session.execute(select(FileCompanion.id))).scalars())
+
+    again = await associate_companions(session)
+    assert (again.links_created, again.links_removed, again.links_kept) == (0, 0, 3)
+
+
+@pytest.mark.asyncio
+async def test_a_companion_without_current_features_keeps_its_links_untouched(session: AsyncSession) -> None:
+    """Re-derivation needs features: a companion still awaiting them keeps every link it has, even one the chain would drop."""
+    media = _make_file("/music/release/Live Set 2019.mp3", "mp3")
+    never_read = _make_file("/music/release/info/notes.nfo", "nfo")
+    stale = _make_file("/music/release/info/old.cue", "cue")
+    decided, decided_features = _companion("/music/release/info/x.nfo")
+    await _seed(session, media, never_read, stale, _features(stale, fingerprint="d" * 64), decided, decided_features)
+    for companion in (never_read, stale, decided):
+        await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=companion.id, media_id=media.id))
+
+    outcome = await associate_companions(session)
+
+    assert (outcome.links_removed, outcome.awaiting_features) == (1, 2)
+    assert await _link_pairs(session) == {(never_read.id, media.id), (stale.id, media.id)}
 
 
 @pytest.mark.asyncio
@@ -159,26 +191,26 @@ async def test_companions_link_only_to_their_own_folders_media(session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_concurrent_run_that_already_linked_the_pair_does_not_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Idempotent under concurrency (phaze-u6ml): the pending-companion read is a snapshot, so a concurrent
+    """Idempotent under concurrency (phaze-u6ml): the existing-link read is a snapshot, so a concurrent
     POST /associate computes the same pairs and commits them first. Simulate that by inserting the
-    conflicting link right after the page read; the run must skip it (first-writer-wins) instead of
+    conflicting link right after that read; the run must skip it (first-writer-wins) instead of
     raising IntegrityError against uq_file_companions_pair and rolling back the page."""
     media = _make_file("/music/album/track.mp3", "mp3")
     nfo, nfo_features = _companion("/music/album/info.nfo")
     await _seed(session, media, nfo, nfo_features)
 
-    real_page = companion_module._pending_page
+    real_read = companion_module._existing_links
     injected = False
 
-    async def page_then_race(*args: object, **kwargs: object) -> object:
+    async def read_then_race(*args: object, **kwargs: object) -> object:
         nonlocal injected
-        page = await real_page(*args, **kwargs)  # type: ignore[arg-type]
-        if page and not injected:
+        existing = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+        if not injected:
             injected = True
             await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=nfo.id, media_id=media.id))
-        return page
+        return existing
 
-    monkeypatch.setattr(companion_module, "_pending_page", page_then_race)
+    monkeypatch.setattr(companion_module, "_existing_links", read_then_race)
 
     outcome = await associate_companions(session)
 
@@ -195,18 +227,18 @@ async def test_partial_overlap_with_concurrent_run_inserts_only_missing_pairs(se
     nfo, nfo_features = _companion("/music/album/info.nfo")
     await _seed(session, media1, media2, nfo, nfo_features)
 
-    real_page = companion_module._pending_page
+    real_read = companion_module._existing_links
     injected = False
 
-    async def page_then_race(*args: object, **kwargs: object) -> object:
+    async def read_then_race(*args: object, **kwargs: object) -> object:
         nonlocal injected
-        page = await real_page(*args, **kwargs)  # type: ignore[arg-type]
-        if page and not injected:
+        existing = await real_read(*args, **kwargs)  # type: ignore[arg-type]
+        if not injected:
             injected = True
             await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=nfo.id, media_id=media1.id))
-        return page
+        return existing
 
-    monkeypatch.setattr(companion_module, "_pending_page", page_then_race)
+    monkeypatch.setattr(companion_module, "_existing_links", read_then_race)
 
     outcome = await associate_companions(session)
 
@@ -389,6 +421,67 @@ async def test_companions_without_current_features_wait_and_are_counted(session:
     assert outcome.awaiting_features == 2
     assert outcome.decided == {}
     assert await _link_pairs(session) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_head_only_junk_verdict_does_not_veto_but_a_known_stamp_does(session: AsyncSession) -> None:
+    """A per-file class from a TRUNCATED read judged only the head; a known stamp is a whole-file fingerprint verdict."""
+    media = _make_file("/music/set/live.mp3", "mp3")
+    big_ad = _make_file("/music/set/huge-notes.txt", "txt")
+    big_stamp = _make_file("/music/set/huge-stamp.txt", "txt")
+    small_ad, small_ad_features = _companion("/music/set/ad.txt", junk_class="site_ad")
+    big_ad_features = _features(big_ad, junk_class="site_ad")
+    big_ad_features.truncated = True
+    big_stamp_features = _features(big_stamp, junk_class="known_stamp")
+    big_stamp_features.truncated = True
+    await _seed(session, media, big_ad, big_stamp, big_ad_features, big_stamp_features, small_ad, small_ad_features)
+
+    outcome = await associate_companions(session)
+
+    assert outcome.decided == {"folder": 1, "junk": 2}
+    assert await _link_pairs(session) == {(big_ad.id, media.id)}
+
+
+@pytest.mark.asyncio
+async def test_the_duplicate_rule_is_stable_across_a_full_re_derive_from_any_prior_state(session: AsyncSession) -> None:
+    """Linked copies only (operator-confirmed 2026-10-07, relayed by the dispatcher; epic phaze-4x319): the copy that links does not depend on which copy an older run linked.
+
+    The prior state links the HIGHER-id media-less copy and the copy of a beside-media original (as the
+    retired rules could). Re-derivation judges duplicates on this run's links alone, so: the original
+    links, its media-less copy is a duplicate, the lower-id media-less copy links, the higher-id one is a
+    duplicate -- and a second run changes nothing.
+    """
+    media = _make_file("/archive/Set C/set-c.mp3", "mp3")
+    original = _make_file("/archive/Set C/set-c.cue", "cue", sha256_hash="a" * 64)
+    orphan_copy = _make_file("/archive/leftovers/Set C/set-c.cue", "cue", sha256_hash="a" * 64)
+    other_media = _make_file("/archive/releases/Set D/set-d.mp3", "mp3")
+    first = _make_file("/archive/copy1/notes.cue", "cue", sha256_hash="b" * 64)
+    second = _make_file("/archive/copy2/notes.cue", "cue", sha256_hash="b" * 64)
+    first.id, second.id = sorted([uuid.uuid4(), uuid.uuid4()])
+    await _seed(
+        session,
+        media,
+        original,
+        orphan_copy,
+        other_media,
+        first,
+        second,
+        _features(original, "set-c.mp3"),
+        _features(orphan_copy, "set-c.mp3"),
+        _features(first, "set-d.mp3"),
+        _features(second, "set-d.mp3"),
+    )
+    for companion, target in ((orphan_copy, media), (second, other_media)):
+        await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=companion.id, media_id=target.id))
+
+    outcome = await associate_companions(session, batch_size=1)
+
+    assert outcome.decided == {"reference": 2, "duplicate": 2}
+    expected = {(original.id, media.id), (first.id, other_media.id)}
+    assert await _link_pairs(session) == expected
+    again = await associate_companions(session)
+    assert (again.links_created, again.links_removed, again.decided) == (0, 0, {"reference": 2, "duplicate": 2})
+    assert await _link_pairs(session) == expected
 
 
 # --- phaze-ehryj's parent-folder name fallback, RETIRED by phaze-rmhfr ------------------------------

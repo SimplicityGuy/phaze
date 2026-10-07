@@ -1,24 +1,35 @@
-"""Companion association: runs the linking chain over stored content features and writes the links (phaze-rmhfr).
+"""Companion association: re-derives every companion's links with the linking chain over stored content features (phaze-rmhfr).
 
 The decisions are ``services/companion_linking.py``'s (pure, cited rule by rule to
 ``docs/spikes/phaze-9aker-companion-matching-accuracy.md``); this module does the IO around them --
 which companions to decide, the agent's media they are decided against, and the writes.
 
+- **Every link is re-derived.** Operator decision 2026-10-07, "Re-derive every link (Recommended)"
+  (dispatch session; durable record: bead phaze-rmhfr comment). Each run decides every companion that
+  carries CURRENT features, linked or not, and REPLACES its links with exactly what the chain returns:
+  links the chain no longer returns -- a junk companion's, the retired parent-folder rule's, an
+  over-link to every file of a collection folder -- are deleted, missing ones inserted, the rest kept.
+  ``file_companions`` carries no provenance, and this module is its only writer, so no link is
+  operator-made and none is exempt.
 - **Only companions with CURRENT content features are decided.** A companion with no
   ``companion_content_features`` row, or whose stored fingerprint no longer equals
-  ``files.sha256_hash``, is left unlinked and counted as ``awaiting_features``: without its features
-  the junk veto and the reference step cannot run, and linking it by location alone is exactly the
-  rule the spike measured linking 17 of 20 junk files (§4.3). It is decided on the first run after
-  its features land (``phaze backfill companion-features`` reads the backlog).
+  ``files.sha256_hash``, keeps whatever links it has, untouched, and is counted as
+  ``awaiting_features``: without its features the junk veto and the reference step cannot run, and
+  linking by location alone is the rule the spike measured linking 17 of 20 junk files (§4.3). So the
+  deploy order is the features backfill (``phaze backfill companion-features``) first, association
+  second.
 - **Per agent.** ``original_path`` is unique only per agent (uq_files_agent_id_original_path), so
   every read, the media index and every link stay on one agent: two fileserver agents holding the
   identical path never pair files from unrelated recordings (phaze-vpig).
-- **Companions beside media first.** The duplicate veto asks whether a byte-identical copy is linked;
-  deciding every companion that has media of its own before any that has none makes that answer the
-  same whatever order the rows were ingested in.
-- **Junk links are removed.** A companion whose current features say junk keeps no link, including
-  one an earlier rule wrote (the shipped own-folder rule linked 17 of 20 junk files, spike §4.3).
-  Nothing else already linked is re-decided.
+- **Companions beside media first, and duplicates judged on THIS run's links.** The duplicate veto asks
+  whether a byte-identical copy is linked. Deciding every companion beside media before any without,
+  and answering from the links this run has derived so far (never from links an earlier run left on a
+  companion not yet re-derived), makes the outcome a function of the archive alone: a re-run derives
+  the same links, whatever the ingest order or the previous state.
+- **Head-only junk verdicts do not veto.** A per-file class (empty, all-NUL, site ad) the agent reached
+  on a TRUNCATED read judged only the first ``MAX_FEATURE_BYTES``; a large file whose head looks like an
+  advert may be a real tracklist, so it does not veto a link. A known stamp is a whole-file
+  fingerprint verdict and still does (the phaze-bk5jp detector applies the same guard).
 """
 
 from __future__ import annotations
@@ -28,7 +39,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, delete, exists, func, select
+from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -36,7 +47,7 @@ from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
-from phaze.services.companion_content import COMPANION_FILE_TYPES, linked_copy_fingerprints
+from phaze.services.companion_content import COMPANION_FILE_TYPES
 from phaze.services.companion_linking import AgentMediaIndex, LinkInput, LinkStep, link_companion
 
 
@@ -68,14 +79,19 @@ class AssociationOutcome:
 
     links_created: int = 0
     links_removed: int = 0
+    links_kept: int = 0
     awaiting_features: int = 0
     decided: dict[LinkStep, int] = field(default_factory=dict)
     """Companions decided this run, by the chain step that decided them."""
 
 
+_HEAD_ONLY_JUNK: frozenset[str] = frozenset({"empty", "all_nul", "site_ad"})
+"""Per-file junk classes, judged by the agent on the bytes it read: on a truncated read, only the head."""
+
+
 @dataclass(frozen=True)
-class _Pending:
-    """One undecided companion and its current stored features."""
+class _Companion:
+    """One companion with current stored features, as the chain needs it."""
 
     id: uuid.UUID
     path: str
@@ -83,6 +99,11 @@ class _Pending:
     junk_class: str | None
     is_tracklist: bool
     references: tuple[tuple[str, str], ...]
+
+
+def linking_junk_class(junk_class: str | None, *, truncated: bool) -> str | None:
+    """The junk class the linking veto honours: a per-file class from a truncated read is not a whole-file verdict."""
+    return None if truncated and junk_class in _HEAD_ONLY_JUNK else junk_class
 
 
 async def _media_index(session: AsyncSession, agent_id: str, *, page_size: int = MEDIA_INDEX_PAGE_SIZE) -> AgentMediaIndex:
@@ -117,34 +138,31 @@ def _current_features() -> Any:
     return (CompanionContentFeatures.file_id == FileRecord.id) & (CompanionContentFeatures.fingerprint == FileRecord.sha256_hash)
 
 
-def _unlinked() -> Any:
-    return ~exists().where(FileCompanion.companion_id == FileRecord.id)
-
-
-async def _pending_page(session: AsyncSession, agent_id: str, *, after: uuid.UUID | None, limit: int) -> list[_Pending]:
-    """One keyset page of ``agent_id``'s unlinked companions that carry current features, by ``FileRecord.id``."""
+async def _companion_page(session: AsyncSession, agent_id: str, *, after: uuid.UUID | None, limit: int) -> list[_Companion]:
+    """One keyset page of ``agent_id``'s companions that carry current features, linked or not, by ``FileRecord.id``."""
     statement = (
         select(
             FileRecord.id,
             FileRecord.original_path,
             CompanionContentFeatures.fingerprint,
             CompanionContentFeatures.junk_class,
+            CompanionContentFeatures.truncated,
             CompanionContentFeatures.is_tracklist,
             CompanionContentFeatures.media_references,
         )
         .join(CompanionContentFeatures, _current_features())
-        .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(COMPANION_TYPES), _unlinked())
+        .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(COMPANION_TYPES))
         .order_by(FileRecord.id)
         .limit(limit)
     )
     if after is not None:
         statement = statement.where(FileRecord.id > after)
     return [
-        _Pending(
+        _Companion(
             id=row.id,
             path=row.original_path,
             fingerprint=row.fingerprint,
-            junk_class=row.junk_class,
+            junk_class=linking_junk_class(row.junk_class, truncated=row.truncated),
             is_tracklist=row.is_tracklist,
             references=tuple((str(reference["name"]), str(reference["source"])) for reference in row.media_references),
         )
@@ -159,59 +177,83 @@ async def _agents_with_features(session: AsyncSession) -> list[str]:
 
 
 async def _count_awaiting_features(session: AsyncSession) -> int:
-    """Unlinked companions association cannot decide yet: no stored features, or features of older bytes."""
+    """Companions association cannot decide yet (no stored features, or features of older bytes); their links stay as they are."""
     result = await session.execute(
         select(func.count())
         .select_from(FileRecord)
         .outerjoin(CompanionContentFeatures, _current_features())
-        .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None), _unlinked())
+        .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None))
     )
     return int(result.scalar_one())
 
 
-async def _remove_junk_links(session: AsyncSession, agent_id: str) -> int:
-    """Delete every link held by a companion of ``agent_id`` whose current features say junk. Does NOT commit.
-
-    One statement and one bind: the junk companions are selected server-side, so the delete never
-    carries their ids. Bounded by the junk links that exist, which only an older rule could write.
-    """
-    junk = (
-        select(FileRecord.id)
-        .join(CompanionContentFeatures, _current_features())
-        .where(CompanionContentFeatures.agent_id == agent_id, CompanionContentFeatures.junk_class.is_not(None))
-    )
-    result = cast("CursorResult[Any]", await session.execute(delete(FileCompanion).where(FileCompanion.companion_id.in_(junk))))
-    return result.rowcount
-
-
-async def _decide_page(
-    session: AsyncSession, agent_id: str, index: AgentMediaIndex, page: Sequence[_Pending], outcome: AssociationOutcome
+def _decide_page(
+    index: AgentMediaIndex, page: Sequence[_Companion], linked: set[str], outcome: AssociationOutcome
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
-    """Run the chain over one page; returns ``companion id -> media ids`` for the companions that link.
+    """Run the chain over one page; returns ``companion id -> media ids`` for EVERY companion of the page (empty: no links).
 
-    The duplicate veto reads which fingerprints already have a linked copy -- committed by an earlier
-    page or run (one bounded read) or linked earlier in THIS page (tracked here), so two copies on one
-    page cannot both slip past it.
+    ``linked`` holds the fingerprints this run has linked so far on this agent; it is the duplicate
+    veto's answer and is updated as companions link, so two copies on one page cannot both slip past
+    it. PURE: no IO.
     """
-    orphans = [pending for pending in page if pending.junk_class is None and not index.in_folder(str(PurePosixPath(pending.path).parent))]
-    linked = await linked_copy_fingerprints(session, agent_id, {pending.fingerprint for pending in orphans}) if orphans else set()
     targets: dict[uuid.UUID, list[uuid.UUID]] = {}
-    for pending in page:
+    for companion in page:
         decision = link_companion(
             LinkInput(
-                path=pending.path,
-                references=pending.references,
-                junk_class=pending.junk_class,
-                is_tracklist=pending.is_tracklist,
-                identical_copy_linked=pending.fingerprint in linked,
+                path=companion.path,
+                references=companion.references,
+                junk_class=companion.junk_class,
+                is_tracklist=companion.is_tracklist,
+                identical_copy_linked=companion.fingerprint in linked,
             ),
             index,
         )
         outcome.decided[decision.step] = outcome.decided.get(decision.step, 0) + 1
+        targets[companion.id] = list(decision.media_ids)
         if decision.media_ids:
-            targets[pending.id] = list(decision.media_ids)
-            linked.add(pending.fingerprint)
+            linked.add(companion.fingerprint)
     return targets
+
+
+async def _existing_links(session: AsyncSession, companion_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, dict[uuid.UUID, uuid.UUID]]:
+    """``companion id -> {media id: link id}`` for the page's companions: one read, one bind per companion (a page is <= batch_size)."""
+    result = await session.execute(
+        select(FileCompanion.id, FileCompanion.companion_id, FileCompanion.media_id).where(FileCompanion.companion_id.in_(companion_ids))
+    )
+    existing: dict[uuid.UUID, dict[uuid.UUID, uuid.UUID]] = {}
+    for link_id, companion_id, media_id in result.all():
+        existing.setdefault(companion_id, {})[media_id] = link_id
+    return existing
+
+
+_DELETE_CHUNK = 10_000
+"""Link ids per DELETE statement: one bind each, well under the 32,767 cap."""
+
+
+async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uuid.UUID]], outcome: AssociationOutcome) -> None:
+    """Make each companion's links exactly its target set: delete the rest, insert the missing. Does NOT commit.
+
+    Runs inside the page's transaction, so every companion's replacement lands whole or not at all.
+    """
+    if not targets:
+        return
+    existing = await _existing_links(session, list(targets))
+    stale: list[uuid.UUID] = []
+    missing: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for companion_id, media_ids in targets.items():
+        held = existing.get(companion_id, {})
+        wanted = set(media_ids)
+        stale.extend(link_id for media_id, link_id in held.items() if media_id not in wanted)
+        outcome.links_kept += len(wanted & held.keys())
+        if absent := [media_id for media_id in media_ids if media_id not in held]:
+            missing[companion_id] = absent
+    for start in range(0, len(stale), _DELETE_CHUNK):
+        deleted = cast(
+            "CursorResult[Any]", await session.execute(delete(FileCompanion).where(FileCompanion.id.in_(stale[start : start + _DELETE_CHUNK])))
+        )
+        outcome.links_removed += deleted.rowcount
+    if rows := _link_rows(missing):
+        outcome.links_created += await _insert_links(session, rows)
 
 
 def _link_rows(targets: dict[uuid.UUID, list[uuid.UUID]]) -> list[dict[str, uuid.UUID]]:
@@ -253,7 +295,7 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
     raise here. Serial execution is also what keeps every chunk inside one transaction, which is
     the atomicity guarantee below.
 
-    The unlinked read in the caller is a snapshot: a concurrent run computes the same pairs, and
+    The existing-link read in the caller is a snapshot: a concurrent run computes the same pairs, and
     whichever commits second would violate uq_file_companions_pair. ON CONFLICT DO NOTHING makes
     that first-writer-wins; summing each chunk's rowcount keeps the return value honest under races.
     An INSERT returns a CursorResult at runtime (exposing rowcount); the async stubs type it as the
@@ -309,8 +351,8 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # docs/design/0015-shared-session-gather.md, and the same false premise in proposal.py's ``store_proposals`` has
 # been amended to agree with this block.
 #
-#   pending-companion page read    The keyset walk's cursor. Page N+1's ``id > after`` bound is not
-#     (_pending_page)              known until page N has been read. Sequencing IS the algorithm;
+#   companion page read            The keyset walk's cursor. Page N+1's ``id > after`` bound is not
+#     (_companion_page)            known until page N has been read. Sequencing IS the algorithm;
 #                                  the whole point of phaze-yiwq5 was to STOP reading this in one
 #                                  unbounded shot.
 #   media index read               phaze-rmhfr: the agent's media, read ONCE per agent in keyset
@@ -319,17 +361,16 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 #                                  It replaced the per-page own-folder read (phaze-vu88k.3) and the
 #                                  phaze-ehryj parent read: the chain resolves references and names
 #                                  across the whole agent, which no per-folder read can answer.
-#   linked-copy read               phaze-rmhfr: at most one read per page of fingerprints, only for
-#     (linked_copy_fingerprints)   that page's media-less companions. It must see the previous page's
-#                                  committed links, so it is sequential by data dependence.
+#   existing-link read + delete    phaze-rmhfr: one read of the page's current links, then the stale
+#     (_replace_links)             ones deleted in id chunks. The delete needs the read's result, and
+#                                  both must share the page's transaction (atomic replacement).
 #   chunked insert                 One statement per bind-parameter chunk (32767 cap, phaze-p3qr).
 #     (_insert_links)              Chunk count is driven by the page's cross-product size, not by
 #                                  row count; serial execution is what keeps every chunk in one
 #                                  transaction. See _insert_links.
 #   per-page commit                The page's commit boundary, and load-bearing for correctness, not
-#     (in associate_companions)    just durability: page N's links must be visible to page N+1's
-#                                  ``NOT IN`` subquery. Deferring or batching commits would make the
-#                                  next page recompute pairs it already inserted.
+#     (in _associate_agent)        just durability: it is the atomicity boundary of the page's link
+#                                  replacements, so a failure never leaves half a companion's link set.
 #
 # nested_loop_with_io is the one finding this bead changed rather than merely ruled on. It read the
 # chunked insert as a database call inside a nested loop (O(n*m) round trips). The O(companions x
@@ -339,22 +380,21 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 
 
 async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: int, outcome: AssociationOutcome) -> None:
-    """Decide every pending companion of one agent: those beside media in a first keyset walk, the rest in a second."""
+    """Re-derive every current-features companion of one agent: those beside media in a first keyset walk, the rest in a second."""
     index: AgentMediaIndex | None = None
+    linked: set[str] = set()
     for beside_media in (True, False):
         after: uuid.UUID | None = None
         while True:
-            page = await _pending_page(session, agent_id, after=after, limit=batch_size)
+            page = await _companion_page(session, agent_id, after=after, limit=batch_size)
             if not page:
                 break
             after = page[-1].id
             if index is None:
                 index = await _media_index(session, agent_id)
-            this_pass = [pending for pending in page if bool(index.in_folder(str(PurePosixPath(pending.path).parent))) is beside_media]
-            if this_pass and (rows := _link_rows(await _decide_page(session, agent_id, index, this_pass, outcome))):
-                outcome.links_created += await _insert_links(session, rows)
-            # This PAGE's commit boundary -- see _insert_links for what it does and does not make
-            # atomic, and associate_companions' PAGING note for why each page commits before the next.
+            this_pass = [companion for companion in page if bool(index.in_folder(str(PurePosixPath(companion.path).parent))) is beside_media]
+            await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome)
+            # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
             await session.commit()
             if len(page) < batch_size:
                 break
@@ -363,41 +403,35 @@ async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: 
 
 
 async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE) -> AssociationOutcome:
-    """Link every unlinked companion the linking chain resolves, and remove the links of junk companions.
+    """Re-derive the links of every companion with current content features (module docstring).
 
-    Per agent holding stored features: junk links are removed (one statement, committed), then every
-    unlinked companion with current features is decided by
+    Per agent holding stored features, every such companion is decided by
     :func:`phaze.services.companion_linking.link_companion` against that agent's media -- companions
-    beside media first, then the rest (module docstring) -- and the links it returns are inserted.
-    Companions without current features are counted, never decided.
+    beside media first, then the rest -- and its links are replaced by exactly the chain's answer.
+    Companions without current features are counted, never decided, and keep their links.
 
-    Idempotent: running twice produces no duplicate links, including under CONCURRENT invocations (e.g.
-    an HTMX double-submit of POST /associate) -- the insert is ON CONFLICT DO NOTHING against
-    uq_file_companions_pair, so a pair the other request already committed is silently skipped instead
-    of raising IntegrityError and rolling back the whole page. A companion the chain leaves unlinked is
-    re-decided on the next run, which is what lets media that arrives later pick it up.
+    Idempotent: a second run derives the same links, so it deletes and inserts nothing (pinned by the
+    tests). Under CONCURRENT runs (e.g. an HTMX double-submit of POST /associate) the insert is ON
+    CONFLICT DO NOTHING against uq_file_companions_pair, so a pair the other run committed first is
+    skipped instead of raising IntegrityError, and deleting a link the other run already deleted is a
+    no-op.
 
-    PAGING (phaze-yiwq5): pending companions are read in keyset pages of *batch_size*, ordered by
+    PAGING (phaze-yiwq5): companions are read in keyset pages of *batch_size*, ordered by
     ``FileRecord.id`` -- never materialized in one unbounded ``.scalars().all()``. Each page commits
-    its own links before the next page is read, so a companion an earlier page linked is excluded from
-    later pages by both the ``NOT EXISTS`` link test and the ``id > cursor`` bound. A failure mid-sweep
-    leaves whatever earlier pages committed in place, which is safe because the function is idempotent.
-    Peak memory is one page's companions plus the agent's :class:`AgentMediaIndex`
-    (:func:`_media_index` gives the measured size), which is linear in that agent's media and
-    independent of the backlog.
+    its replacements before the next page is read. A failure mid-sweep leaves earlier pages committed,
+    which is safe because the function is idempotent. Peak memory is one page's companions plus the
+    agent's :class:`AgentMediaIndex` (:func:`_media_index` gives the measured size) and the set of
+    fingerprints linked this run, all linear in that agent's files and independent of the backlog.
 
     SERIAL AWAITS (phaze-bk9el.25): every ``await`` below is deliberately serial and none may be
-    converted to ``asyncio.gather``. Every read, insert and commit runs on ONE ``AsyncSession``, whose
+    converted to ``asyncio.gather``. Every read, write and commit runs on ONE ``AsyncSession``, whose
     concurrent use upstream does not support and which, measured, does not overlap statements anyway
     -- see the RULING block directly above for the numbers and for why "it raises" is the wrong reason
     to give. Beyond that, the loop is a keyset walk: page N+1's ``id > after`` bound is not known until
-    page N has been read, and page N's ``commit()`` is what makes its links visible to page N+1's link
-    test and to the duplicate veto's read. The serialization IS the paging.
+    page N has been read. The serialization IS the paging.
     """
     outcome = AssociationOutcome()
     for agent_id in await _agents_with_features(session):
-        outcome.links_removed += await _remove_junk_links(session, agent_id)
-        await session.commit()
         await _associate_agent(session, agent_id, batch_size=batch_size, outcome=outcome)
     outcome.awaiting_features = await _count_awaiting_features(session)
     return outcome
