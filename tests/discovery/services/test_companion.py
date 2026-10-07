@@ -81,6 +81,19 @@ def _companion(path: str, *references: str, **kwargs: object) -> tuple[FileRecor
     return record, _features(record, *references, **kwargs)  # type: ignore[arg-type]
 
 
+def _stamp_elsewhere(fingerprint: str, suffix: str = "txt") -> list[FileRecord | CompanionContentFeatures]:
+    """Two more copies of a known stamp, each beside its own recording: what makes the content a stamp at all.
+
+    Association re-decides every stamp verdict on the stored files before deciding links
+    (phaze-4x319.5), so a lone ``known_stamp`` row with no such group behind it is cleared.
+    """
+    rows: list[FileRecord | CompanionContentFeatures] = []
+    for name in ("elsewhere-a", "elsewhere-b"):
+        copy = _make_file(f"/music/{name}/site.{suffix}", suffix, sha256_hash=fingerprint)
+        rows += [_make_file(f"/music/{name}/{name}.mp3", "mp3"), copy, _features(copy, junk_class="known_stamp")]
+    return rows
+
+
 async def _link_pairs(session: AsyncSession) -> set[tuple[uuid.UUID, uuid.UUID]]:
     result = await session.execute(select(FileCompanion))
     return {(link.companion_id, link.media_id) for link in result.scalars().all()}
@@ -340,14 +353,14 @@ async def test_junk_companions_are_never_linked_and_their_old_links_are_removed(
     stamp, stamp_features = _companion("/music/set/site.nfo", junk_class="known_stamp")
     empty, empty_features = _companion("/music/set/empty.txt", junk_class="empty")
     real, real_features = _companion("/music/set/live.cue", "live.mp3")
-    await _seed(session, media, stamp, stamp_features, empty, empty_features, real, real_features)
+    await _seed(session, media, stamp, stamp_features, empty, empty_features, real, real_features, *_stamp_elsewhere(stamp.sha256_hash, "nfo"))
     await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=stamp.id, media_id=media.id))
 
     outcome = await associate_companions(session)
 
     assert outcome.links_removed == 1
     assert outcome.links_created == 1
-    assert outcome.decided == {"junk": 2, "reference": 1}
+    assert outcome.decided == {"junk": 4, "reference": 1}
     assert await _link_pairs(session) == {(real.id, media.id)}
 
 
@@ -434,11 +447,13 @@ async def test_a_head_only_junk_verdict_does_not_veto_but_a_known_stamp_does(ses
     big_ad_features.truncated = True
     big_stamp_features = _features(big_stamp, junk_class="known_stamp")
     big_stamp_features.truncated = True
-    await _seed(session, media, big_ad, big_stamp, big_ad_features, big_stamp_features, small_ad, small_ad_features)
+    await _seed(
+        session, media, big_ad, big_stamp, big_ad_features, big_stamp_features, small_ad, small_ad_features, *_stamp_elsewhere(big_stamp.sha256_hash)
+    )
 
     outcome = await associate_companions(session)
 
-    assert outcome.decided == {"folder": 1, "junk": 2}
+    assert outcome.decided == {"folder": 1, "junk": 4}
     assert await _link_pairs(session) == {(big_ad.id, media.id)}
 
 
@@ -627,3 +642,32 @@ async def test_a_run_for_one_agent_decides_and_counts_only_that_agent(session: A
     assert (only_b.links_created, only_b.awaiting_features, only_b.decided) == (1, 1, {"folder": 1})
     assert await _link_pairs(session) == {(nfo_b.id, media_b.id)}
     assert (nobody.links_created, nobody.awaiting_features, nobody.decided) == (0, 0, {})
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_decides_on_the_stamp_verdict_the_run_would_write(session: AsyncSession) -> None:
+    """phaze-4x319.5: a group stamped while its folders held no media is re-decided on the media stored now.
+
+    The same recording has since landed beside every copy, so the copies are no stamp. A dry run
+    reports exactly the links the run creates, without writing the verdict or the links.
+    """
+    shared = "d" * 64
+    rows: list[FileRecord | CompanionContentFeatures] = []
+    copies = []
+    for name in ("Release One", "release-two", "Release.Three"):
+        copy = _make_file(f"/music/{name}/info.nfo", "nfo", sha256_hash=shared)
+        copies.append(copy)
+        rows += [_make_file(f"/music/{name}/set.mp3", "mp3"), copy, _features(copy, junk_class="known_stamp")]
+    await _seed(session, *rows)
+
+    dry = await associate_companions(session, apply=False)
+
+    assert (dry.decided, dry.links_created) == ({"folder": 3}, 3)
+    stored = select(CompanionContentFeatures.junk_class).execution_options(populate_existing=True)
+    assert set((await session.execute(stored)).scalars()) == {"known_stamp"}
+    assert await _link_pairs(session) == set()
+
+    applied = await associate_companions(session)
+
+    assert (applied.decided, applied.links_created) == ({"folder": 3}, 3)
+    assert set((await session.execute(stored)).scalars()) == {None}

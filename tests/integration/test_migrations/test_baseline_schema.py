@@ -354,6 +354,7 @@ def test_baseline_is_the_only_migration() -> None:
         "078_tracklist_lookup_retry_url.py",
         "079_companion_content_features.py",
         "080_companion_junk_review.py",
+        "081_files_agent_folder_index.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -382,10 +383,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (080: companion junk review)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (081: files by agent and folder)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "080"
+    assert version == "081"
 
 
 @pytest.mark.asyncio
@@ -711,7 +712,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "080"
+        assert version == "081"
     finally:
         if engine is not None:
             await engine.dispose()

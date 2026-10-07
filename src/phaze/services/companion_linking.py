@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 import unicodedata
 
 from phaze.constants import EXTENSION_MAP, FileCategory, companion_match_key
-from phaze.services.companion_content import folder_name_key, never_link_reason
+from phaze.services.companion_content import folder_name_key, media_folder, never_link_reason
 
 
 if TYPE_CHECKING:
@@ -121,10 +121,6 @@ def _nfc(name: str) -> str:
 
 def _stem(name: str) -> str:
     return PurePosixPath(name).stem
-
-
-def _parent(path: str) -> str:
-    return str(PurePosixPath(path).parent)
 
 
 # --- names: the spike's tag-stripping, tokens, similarity and dates (§2, method (d)) -----------------
@@ -252,7 +248,7 @@ class AgentMediaIndex:
         if self._close is not None:
             msg = "the close-name index is already built"
             raise RuntimeError(msg)
-        folder, name = _parent(path), _nfc(PurePosixPath(path).name)
+        folder, name = media_folder(path), _nfc(PurePosixPath(path).name)
         if (folder_ordinal := self._folder_ordinals.get(folder)) is None:
             folder_ordinal = self._folder_ordinals[folder] = len(self._folders)
             self._folders.append(folder)
@@ -273,7 +269,12 @@ class AgentMediaIndex:
         return self._ids[ordinal]
 
     def in_folder(self, folder: str) -> list[tuple[str, uuid.UUID]]:
-        """``(NFC name, id)`` of the media directly in ``folder``."""
+        """``(NFC name, id)`` of the media directly in ``folder`` (a :func:`media_folder`).
+
+        The chain's answer to "does this folder hold media"; the stamp grouping and the junk-review
+        detector get the same answer from the same rows through
+        :func:`phaze.services.companion_content.media_in_folders`.
+        """
         folder_ordinal = self._folder_ordinals.get(folder)
         if folder_ordinal is None:
             return []
@@ -375,7 +376,7 @@ def _own_folder_hits(name: str, source: str, media: Sequence[tuple[str, uuid.UUI
 
 def resolve_references(companion: LinkInput, index: AgentMediaIndex) -> list[uuid.UUID]:
     """Step 2: the media the companion's stored references name, own folder first, then the whole agent."""
-    folder = _parent(companion.path)
+    folder = media_folder(companion.path)
     media = index.in_folder(folder)
     own = [media_id for name, source in companion.references for media_id in _own_folder_hits(_nfc(name), source, media)]
     if own:
@@ -398,12 +399,12 @@ def own_folder_stem(companion: LinkInput, index: AgentMediaIndex) -> list[uuid.U
     key = companion_match_key(_stem(companion.path))
     if not key:
         return []
-    return [media_id for name, media_id in index.in_folder(_parent(companion.path)) if companion_match_key(_stem(name)) == key]
+    return [media_id for name, media_id in index.in_folder(media_folder(companion.path)) if companion_match_key(_stem(name)) == key]
 
 
 def release_folder_twin(companion: LinkInput, index: AgentMediaIndex) -> list[uuid.UUID]:
     """Step 5: a media-less folder's single same-named twin folder, all of its media."""
-    folder = _parent(companion.path)
+    folder = media_folder(companion.path)
     if index.in_folder(folder) or len(folder_name_key(folder)) < TWIN_MIN_KEY:
         return []
     twins = index.twin_folders(folder)
@@ -455,7 +456,7 @@ def close_name(companion: LinkInput, index: AgentMediaIndex) -> list[uuid.UUID]:
 
 def link_companion(companion: LinkInput, index: AgentMediaIndex) -> LinkDecision:
     """Run the chain for one companion: the first step that returns anything decides (module docstring)."""
-    own_media = index.in_folder(_parent(companion.path))
+    own_media = index.in_folder(media_folder(companion.path))
     vetoed = never_link_reason(companion.junk_class, folder_has_media=bool(own_media), identical_copy_linked=companion.identical_copy_linked)
     if vetoed is not None:
         return LinkDecision("duplicate" if vetoed == "duplicate" else "junk")
