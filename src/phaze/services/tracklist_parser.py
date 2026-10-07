@@ -39,6 +39,14 @@ _LABEL_SELECTOR = ".trackLabel"
 _CUE_SELECTOR = ".cue"
 _MASHUP_CLASS = "mashupTrack"
 
+# The site's own placeholder for a track nobody has identified yet: a row whose visible text is
+# literally "ID - ID". It is a statement ("not identified"), not an artist or a title. The page marks
+# identified rows with `data-isided="true"`; both recorded captures show the placeholder rows
+# lacking it (10 of 52, 2 of 12 -- docs/spikes/phaze-gakqn-parser-gap-audit.md), so the placeholder
+# is only recognised when BOTH signals agree, which leaves every other row parsing exactly as before.
+_UNRESOLVED_PLACEHOLDER = "ID"
+_IDENTIFIED_ATTRIBUTE = "data-isided"
+
 # phaze-7zoh established this same shape of defense for TracklistTrack.timestamp (String(20)):
 # validate the extracted text looks like a cue time before trusting it, rather than persisting
 # whatever text a drifted selector happened to land on. "H:MM:SS" or "M:SS", one or two digits in
@@ -66,6 +74,20 @@ class TracklistTrackPayload:
     is_mashup: bool = False
     remix_info: str | None = None
     confidence: float | None = None
+    is_unresolved: bool = False
+    """True for a row the site itself lists as unidentified ("ID - ID").
+
+    The representation is deliberately NOT a new column: an unresolved row is stored with
+    ``artist`` and ``title`` both NULL (plus whatever position, label and timestamp the row
+    carries). No other writer produces a track with neither, because a container yielding neither
+    raises ``TracklistParseError`` below, so NULL/NULL is an unambiguous, existing-column marker.
+    Every consumer of stored tracks already treats a NULL artist/title as "absent" -- the CUE
+    writer omits the TITLE/PERFORMER lines, the Discogs matcher skips the row, the review UI
+    renders an em dash -- which is the correct behaviour for an unidentified track and the reason
+    a placeholder string would have been wrong: each of them would have treated "ID" as a real
+    artist. This flag exists so the parser's callers can count and test unresolved rows; it is not
+    persisted.
+    """
 
 
 class TracklistParseError(RuntimeError):
@@ -134,7 +156,10 @@ def _parse_track_container(container: Tag, fallback_position: int) -> TracklistT
     position = _parse_position(container, fallback_position)
     artist, title, remix_info = _parse_artist_title_remix(container)
 
-    if not artist and not title:
+    unresolved = _is_unresolved_placeholder(container, artist, title, remix_info)
+    if unresolved:
+        artist = title = None
+    elif not artist and not title:
         return None
 
     return TracklistTrackPayload(
@@ -145,7 +170,15 @@ def _parse_track_container(container: Tag, fallback_position: int) -> TracklistT
         timestamp=_parse_timestamp(container),
         is_mashup=_parse_is_mashup(container),
         remix_info=remix_info,
+        is_unresolved=unresolved,
     )
+
+
+def _is_unresolved_placeholder(container: Tag, artist: str | None, title: str | None, remix_info: str | None) -> bool:
+    """True for the site's "ID - ID" placeholder row: not marked identified AND artist/title are both "ID"."""
+    if container.get(_IDENTIFIED_ATTRIBUTE) == "true":
+        return False
+    return artist == _UNRESOLVED_PLACEHOLDER and title == _UNRESOLVED_PLACEHOLDER and remix_info is None
 
 
 def _parse_position(container: Tag, fallback_position: int) -> int:

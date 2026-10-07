@@ -1306,3 +1306,24 @@ class TestQueueFileOutcomesUnderATarget:
         answered = await build_drain_queue(session, target_file_ids=[target.id], now=NOW)
         assert answered.entries == ()
         assert [(o.file_id, o.outcome) for o in answered.file_outcomes()] == [(target.id, TracklistFileOutcome.NOT_FOUND)]
+
+
+# phaze-8yvb0: unresolved rows through the real drain path
+
+
+class TestUnresolvedRowsThroughTheDrain:
+    async def test_unresolved_rows_are_stored_with_null_artist_and_title_never_id(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+        search, renderer = anchor_lookup()
+        attempt = await perform_lookup(candidate, search=search, renderer=renderer)
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        rows = (await session.execute(select(TracklistTrack).order_by(TracklistTrack.position))).scalars().all()
+        assert len(rows) == ANCHOR_TRACKS
+        unresolved = [r for r in rows if r.artist is None and r.title is None]
+        assert len(unresolved) == 10
+        assert not [r for r in rows if r.artist == "ID" or r.title == "ID"]
+        assert 5 in {r.position for r in unresolved}, "the unresolved row keeps its position"
