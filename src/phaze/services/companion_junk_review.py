@@ -21,6 +21,15 @@ THE DETECTOR (:func:`detect_junk_reviews`) reads STORED facts only -- ``companio
    gets its current reason, size and file id, a pending row that is no longer a candidate is
    withdrawn (deleted -- a pending row is no decision), and a decided row is left alone.
 
+WHICH DUPLICATES. Only copies of an already-LINKED companion, in a folder with no media of their own.
+Operator decision 2026-10-07 (dispatch session, AskUserQuestion; durable record: a comment on bead
+phaze-bk5jp). Question as put: "Junk review, duplicates: your decision 1 was about 2,797 orphan
+companions that are byte-identical copies of an IMPORTED companion (333 of them junk). phaze-bk5jp's
+acceptance criterion narrowed that to copies of an already-LINKED companion, in a folder with no media
+of their own. Replayed on the survey data, that queues 99 duplicates (4,760 review rows in total).
+Which rule should the junk review use?" Answer as given (selected label): "Linked copies only
+(Recommended)".
+
 LINKS CHANGE UNDER THE QUEUE. "Duplicate" is a fact about the links stored when it is judged, and
 the linking chain re-derives every link (phaze-rmhfr). So a duplicate is re-judged twice: on every
 detector pass (a pending row whose reason no longer holds is withdrawn) and at the moment the operator
