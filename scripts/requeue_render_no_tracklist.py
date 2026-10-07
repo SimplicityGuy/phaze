@@ -27,11 +27,10 @@ SELECTOR (re-derived from the live schema, not from the bead wording)::
 rows (a different ``detail``), FOUND rows and every other outcome are never touched. Rows already
 expired are excluded: they are due already, and excluding them makes a second run select 0.
 
-The same transaction records the re-queued ``set_key`` values in ``tracklist_requeue_c9go7`` (set
-key and timestamp only) so the FOUND / NOT_FOUND / BLOCKED split after the drain re-looks them up
-can be reported as a measurement (``--report``). Drop it when the measurement is done::
-
-    DROP TABLE tracklist_requeue_c9go7;
+No table is created and nothing else is written: the production write is ONLY the guarded UPDATE of
+``expires_at``. Consequently nothing records which rows were re-queued, and the real false-negative
+rate stays an UPPER BOUND (the selected count, 116 when written): a genuine empty page stores the
+same detail, and after the drain re-looks a set up its row is simply rewritten.
 
 DEPLOY CONDITION -- DO NOT RUN BEFORE THIS HOLDS
 ------------------------------------------------
@@ -47,7 +46,8 @@ It must print ``True``.
 
 OPERATOR APPROVAL (recorded 2026-10-07, bead phaze-c9go7): "you have my approval for the database
 write for phaze-c9go7". That approval covers running this write ONCE, and does not lift the deploy
-condition above.
+condition above. Also on 2026-10-07, asked whether a side table recording the re-queued sets was
+acceptable, the operator chose "No table: drop that part (Recommended)".
 
 USAGE
 -----
@@ -83,24 +83,9 @@ if TYPE_CHECKING:
 SELECTOR: str = "outcome = 'not_found' AND starts_with(detail, 'render no_tracklist') AND (expires_at IS NULL OR expires_at > now())"
 """The one place the in-scope rows are defined; every statement below embeds this exact text."""
 
-SIDE_TABLE: str = "tracklist_requeue_c9go7"
-
 COUNT_SQL: str = f"SELECT count(*) FROM tracklist_lookup_cache WHERE {SELECTOR}"  # noqa: S608 -- module constants only, no external input
 
-CREATE_SIDE_TABLE_SQL: str = f"CREATE TABLE IF NOT EXISTS {SIDE_TABLE} (set_key varchar(64) PRIMARY KEY, requeued_at timestamptz NOT NULL)"
-
-RECORD_SQL: str = (
-    f"INSERT INTO {SIDE_TABLE} (set_key, requeued_at) SELECT set_key, now() FROM tracklist_lookup_cache WHERE {SELECTOR} "  # noqa: S608
-    "ON CONFLICT (set_key) DO UPDATE SET requeued_at = EXCLUDED.requeued_at"
-)
-
 UPDATE_SQL: str = f"UPDATE tracklist_lookup_cache SET expires_at = now(), updated_at = now() WHERE {SELECTOR}"  # noqa: S608 -- module constants only
-
-REPORT_SQL: str = (
-    "SELECT CASE WHEN c.last_attempted_at < r.requeued_at THEN 'not_yet_looked_up_again' ELSE c.outcome END AS result, count(*) "  # noqa: S608
-    f"FROM {SIDE_TABLE} r JOIN tracklist_lookup_cache c ON c.set_key = r.set_key GROUP BY 1 ORDER BY 1"
-)
-"""Counts per outcome of the re-queued sets. ``last_attempted_at < requeued_at`` = the drain has not re-looked it up yet."""
 
 
 def guard_sql(expect_count: int) -> str:
@@ -116,7 +101,7 @@ def guard_sql(expect_count: int) -> str:
 
 def apply_statements(expect_count: int) -> tuple[str, ...]:
     """The write, in execution order. Built once; both ``--apply`` and the psql script come from this."""
-    return (guard_sql(expect_count), CREATE_SIDE_TABLE_SQL, RECORD_SQL, UPDATE_SQL)
+    return (guard_sql(expect_count), UPDATE_SQL)
 
 
 def psql_script(expect_count: int) -> str:
@@ -144,23 +129,10 @@ async def apply_requeue(session: AsyncSession, expect_count: int) -> tuple[int, 
     return before, await count_in_scope(session)
 
 
-async def report(session: AsyncSession) -> dict[str, int]:
-    """Counts per result for the re-queued sets (empty when nothing was ever re-queued)."""
-    exists = (await session.execute(text(f"SELECT to_regclass('{SIDE_TABLE}') IS NOT NULL"))).scalar_one()
-    if not exists:
-        return {}
-    rows = (await session.execute(text(REPORT_SQL))).all()
-    return {str(result): int(count) for result, count in rows}
-
-
 async def _run(args: argparse.Namespace) -> int:
     from phaze.database import async_session  # noqa: PLC0415 -- keep `--help` and imports free of app settings
 
     async with async_session() as session:
-        if args.report:
-            for result, count in (await report(session)).items():
-                print(f"{result}: {count}")  # noqa: T201
-            return 0
         if not args.apply:
             count = await count_in_scope(session)
             print(f"selector: {SELECTOR}")  # noqa: T201
@@ -184,7 +156,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0] if __doc__ else None)
     parser.add_argument("--apply", action="store_true", help="perform the write (default is a read-only dry run)")
     parser.add_argument("--expect-count", type=int, default=None, help="refuse to apply unless the live in-scope count equals this")
-    parser.add_argument("--report", action="store_true", help="after the drain has run: counts per outcome of the re-queued sets")
     return asyncio.run(_run(parser.parse_args(argv)))
 
 

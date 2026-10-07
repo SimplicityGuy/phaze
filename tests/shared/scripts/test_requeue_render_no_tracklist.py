@@ -136,7 +136,7 @@ async def test_dry_run_changes_no_row(session: AsyncSession, monkeypatch: pytest
             return None
 
     monkeypatch.setattr("phaze.database.async_session", lambda: _Factory())
-    assert await tool._run(tool.argparse.Namespace(apply=False, expect_count=None, report=False)) == 0
+    assert await tool._run(tool.argparse.Namespace(apply=False, expect_count=None)) == 0
 
     assert await _snapshot(session) == before
     out = capsys.readouterr().out
@@ -144,7 +144,6 @@ async def test_dry_run_changes_no_row(session: AsyncSession, monkeypatch: pytest
     assert "UPDATE tracklist_lookup_cache" in out
     for key in (*IN_SCOPE, *OUT_OF_SCOPE):
         assert key not in out  # counts only: no set keys
-    assert (await session.execute(text(f"SELECT to_regclass('{tool.SIDE_TABLE}') IS NULL"))).scalar_one()
 
 
 @pytest.mark.asyncio
@@ -156,7 +155,6 @@ async def test_expect_count_mismatch_changes_nothing(session: AsyncSession) -> N
         await tool.apply_requeue(session, len(IN_SCOPE) + 1)
 
     assert await _snapshot(session) == before
-    assert (await session.execute(text(f"SELECT to_regclass('{tool.SIDE_TABLE}') IS NULL"))).scalar_one()
 
 
 @pytest.mark.asyncio
@@ -172,21 +170,11 @@ async def test_sql_guard_aborts_on_a_wrong_count_when_run_through_psql(session: 
 
 
 @pytest.mark.asyncio
-async def test_requeue_is_idempotent_and_report_splits_outcomes(session: AsyncSession) -> None:
+async def test_requeue_is_idempotent(session: AsyncSession) -> None:
     await _seed(session)
-    assert await tool.report(session) == {}
     await tool.apply_requeue(session, len(IN_SCOPE))
     assert await tool.count_in_scope(session) == 0
     assert await tool.apply_requeue(session, 0) == (0, 0)
-    assert await tool.report(session) == {"not_yet_looked_up_again": len(IN_SCOPE)}
-
-    # The drain re-looks one up and finds it, one is still empty, one is blocked.
-    for key, outcome in (("zk-in-1", LookupOutcome.FOUND), ("zk-in-2", LookupOutcome.NOT_FOUND), ("zk-in-3", LookupOutcome.BLOCKED)):
-        await session.execute(
-            text("UPDATE tracklist_lookup_cache SET outcome = :o, last_attempted_at = now() + interval '1 minute' WHERE set_key = :k"),
-            {"o": outcome.value, "k": key},
-        )
-    assert await tool.report(session) == {"found": 1, "not_found": 1, "blocked": 1}
 
 
 def test_psql_script_is_the_same_text_apply_executes() -> None:
@@ -196,4 +184,4 @@ def test_psql_script_is_the_same_text_apply_executes() -> None:
     for statement in tool.apply_statements(116):
         assert statement in script
     assert "116" in tool.apply_statements(116)[0]
-    assert all(tool.SELECTOR in s for s in (tool.COUNT_SQL, tool.RECORD_SQL, tool.UPDATE_SQL))
+    assert all(tool.SELECTOR in s for s in (tool.COUNT_SQL, tool.UPDATE_SQL))
