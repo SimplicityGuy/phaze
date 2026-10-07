@@ -79,6 +79,31 @@ def test_full_dates_take_either_order_and_the_guard_needs_the_same_day() -> None
     assert dates_agree(set(), full_dates("b 2012.03.31"))  # an undated companion is never guarded
 
 
+@pytest.mark.parametrize("year", [2019, 2020, 2023, 2024])
+@pytest.mark.parametrize("month", [1, 12])
+def test_the_same_date_agrees_in_either_order_on_every_day_of_the_month(year: int, month: int) -> None:
+    """phaze-4x319.5: ``2019-01-25`` once failed the guard against ``25.01.2019`` (a day >= 19 read as a year)."""
+    for day in range(1, 32):
+        iso = full_dates(f"Set {year}-{month:02d}-{day:02d}")
+        dotted = full_dates(f"Set {day:02d}.{month:02d}.{year}")
+        assert iso == dotted == full_dates(f"Set {day}.{month}.{year}")
+        assert {date.year for date in iso} == {year}
+        assert dates_agree(iso, dotted), (year, month, day)
+        assert dates_agree(dotted, iso), (year, month, day)
+        other_day = day % 28 + 1
+        assert not dates_agree(iso, full_dates(f"Set {other_day:02d}.{month:02d}.{year}")), (year, month, day)
+        assert not dates_agree(iso, full_dates(f"Set {day:02d}.{month:02d}.{year + 1}")), (year, month, day)
+
+
+def test_a_day_month_swapped_date_agrees_and_a_day_never_reads_as_a_year() -> None:
+    # 03.04 is 3 April or 4 March: day/month order is free, so either spelling agrees.
+    assert dates_agree(full_dates("a 2019-03-04"), full_dates("b 03.04.2019"))
+    assert dates_agree(full_dates("a 2019-03-04"), full_dates("b 04.03.2019"))
+    # A day of 25 with month 19+ never forms a "year": only the 4-digit group is the year.
+    assert not dates_agree(full_dates("a 2019-01-25"), full_dates("b 2501-01-19"))
+    assert not dates_agree(full_dates("a 2019-01-25"), full_dates("b 25.01.2020"))
+
+
 def test_a_collection_is_dated_files_sharing_no_date() -> None:
     episodes = ["2011 03 05 Show #279 Part 1.mp3", "2011 03 05 Show #279 Part 2.mp3", "2011 03 12 Show #280 Part 1.mp3"]
     assert is_collection_folder(episodes)

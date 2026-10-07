@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import PurePosixPath
 import re
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 import unicodedata
 
 from phaze.constants import EXTENSION_MAP, FileCategory, companion_match_key
@@ -141,7 +141,6 @@ _SCENE_INDEX = re.compile(r"^\d{1,3}[\s_.\-]+")
 _BRACKETS = re.compile(r"[\[\](){}]")
 _NON_WORD = re.compile(r"\W+")
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})[-_. ](\d{1,2})[-_. ](\d{1,2})(?!\d)|(?<!\d)(\d{1,2})[-_. ](\d{1,2})[-_. ](\d{4})(?!\d)")
-_YEAR_FLOOR: Final = 1900
 
 
 def name_tokens(name: str) -> list[str]:
@@ -167,8 +166,16 @@ def name_similarity(first: Sequence[str], second: Sequence[str]) -> float:
     return max(jaccard, SequenceMatcher(None, " ".join(first), " ".join(second)).ratio())
 
 
-FullDate = frozenset[int]
-"""A full date as ``{year, month*100+day, day*100+month}``: day/month order is free (spike §2, (dw))."""
+class FullDate(NamedTuple):
+    """One full date: the year from its 4-digit group, and its other two numbers as an unordered pair.
+
+    Day/month order is free (spike §2, (dw)), so ``2012-03-04`` and ``04.03.2012`` are one date and
+    so are ``03.04.2012``; the year is never inferred from the numbers' size, because a day of 19 or
+    more read as ``day*100+month`` is larger than any year floor (phaze-4x319.5).
+    """
+
+    year: int
+    day_month: frozenset[int]
 
 
 def full_dates(name: str) -> set[FullDate]:
@@ -179,20 +186,13 @@ def full_dates(name: str) -> set[FullDate]:
             year, first, second = match.group(1), match.group(2), match.group(3)
         else:
             year, first, second = match.group(6), match.group(4), match.group(5)
-        found.add(frozenset({int(year), int(first) * 100 + int(second), int(second) * 100 + int(first)}))
+        found.add(FullDate(int(year), frozenset({int(first), int(second)})))
     return found
 
 
 def dates_agree(companion: Collection[FullDate], media: Collection[FullDate]) -> bool:
     """The date guard: a companion naming a full date only matches media naming the same one (spike §2, (dw))."""
-    if not companion:
-        return True
-    for ours in companion:
-        our_year = [part for part in ours if part > _YEAR_FLOOR]
-        for theirs in media:
-            if our_year == [part for part in theirs if part > _YEAR_FLOOR] and (ours & theirs) - set(our_year):
-                return True
-    return False
+    return not companion or not set(companion).isdisjoint(media)
 
 
 def is_collection_folder(media_names: Iterable[str]) -> bool:
