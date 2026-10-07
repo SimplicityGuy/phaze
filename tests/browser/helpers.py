@@ -26,9 +26,21 @@ async def open_shell(page: Any, path: str = "/s/summary") -> None:
     Deliberately NOT ``wait_until="networkidle"``. The shell holds a 5s stats poll and opens SSE
     streams, so the network is never idle and that wait blocks until the timeout.
     """
-    await page.goto(path, wait_until="domcontentloaded")
-    await page.wait_for_selector("#stage-workspace", state="attached")
-    await page.wait_for_function("() => window.Alpine !== undefined && window.htmx !== undefined")
+    from playwright.async_api import Error as PlaywrightError
+
+    response = await page.goto(path, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_selector("#stage-workspace", state="attached", timeout=15_000)
+        await page.wait_for_function("() => window.Alpine !== undefined && window.htmx !== undefined", timeout=15_000)
+    except PlaywrightError as exc:
+        # A bare selector timeout says nothing about WHICH half of the shell never arrived. Name the
+        # status, the script globals and the start of the document so a flake is diagnosable from CI.
+        html = await page.content()
+        globals_seen = await page.evaluate("() => ({alpine: typeof window.Alpine, htmx: typeof window.htmx, ready: document.readyState})")
+        raise AssertionError(
+            f"shell never became interactive at {path}: status={response.status if response else None} globals={globals_seen} "
+            f"document_length={len(html)} head={html[:600]!r}"
+        ) from exc
 
 
 async def wait_for_stage(page: Any, document_title: str) -> None:

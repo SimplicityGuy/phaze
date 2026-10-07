@@ -43,6 +43,31 @@
             this.loaded = false;
             this.open = true;
             this.takeFocus();
+            this.ensureFetch(el);
+        },
+        // phaze-fak5d: the opener pairs an Alpine click handler (this show(), wired the instant the
+        // row is inserted) with an htmx hx-get that htmx only wires in its deferred SETTLE task,
+        // roughly 20 ms after a swap inserts the row. A click landing in that gap opened this panel
+        // and then fetched nothing, leaving the skeleton up forever (measured: a click fired from
+        // the MutationObserver callback that sees the row, htmx-internal-data absent, htmx-settling
+        // and htmx-added both present, zero requests to /record/). htmx runs its own click handler
+        // in the same event dispatch as this one, so after a zero-delay timeout either it has
+        // started the request (beforeRequest named the opener) or it never will for this click, and
+        // we issue the identical GET ourselves. The target and swap are the ones every record
+        // opener declares. No literal double-quote characters in this comment: x-data is delimited
+        // by them.
+        ensureFetch(el) {
+            const url = el && el.getAttribute ? el.getAttribute('hx-get') : null;
+            if (!url || url.indexOf('/record/') !== 0 || !window.htmx) return;
+            let started = false;
+            const note = (e) => { if (e.detail && e.detail.elt === el) started = true; };
+            document.body.addEventListener('htmx:beforeRequest', note);
+            setTimeout(() => {
+                document.body.removeEventListener('htmx:beforeRequest', note);
+                if (!started && this.open && !this.loaded) {
+                    window.htmx.ajax('GET', url, { target: '#record-body', swap: 'innerHTML' });
+                }
+            }, 0);
         },
         // phaze-x1cv5: the drawer must take the keyboard the moment it opens, not when the record
         // fetch lands. Until then the opener (a Details button) kept focus while the background was
