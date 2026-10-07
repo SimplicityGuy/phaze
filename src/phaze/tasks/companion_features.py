@@ -24,8 +24,7 @@ from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_companion_features import CompanionFeaturesChunk
 from phaze.schemas.agent_tasks import ExtractCompanionFeaturesPayload
 from phaze.services.companion_features_report import read_companion_records
-from phaze.services.containment import resolve_and_check_containment
-from phaze.services.media_path_resolve import resolve_media_path
+from phaze.services.containment import resolve_contained_twin
 
 
 if TYPE_CHECKING:
@@ -38,17 +37,15 @@ logger = structlog.get_logger(__name__)
 def _contained(paths: list[str], scan_roots: list[str]) -> list[tuple[str, str]]:
     """``(row_key, read path)`` for every path whose OPENED form is inside ``scan_roots``; an escape is logged and dropped.
 
-    Containment applies to the exact path that gets opened. The NFD-twin lookup runs FIRST, then
-    the containment check resolves ITS result, and the resolved path -- symlink-free at check time --
-    is what the caller opens (with ``O_NOFOLLOW``). The opposite order would resolve the control-plane
-    string, then let ``resolve_media_path`` walk down from an existing ancestor and pick a twin
-    through a symlinked DIRECTORY that was never checked; ``O_NOFOLLOW`` guards only the final
-    component. The row key stays the original string so the features land on their ``files`` row.
+    Containment applies to the exact path that gets opened: :func:`resolve_contained_twin` looks up
+    the NFC/NFD twin FIRST and checks ITS resolved form (phaze-2tei9), and that resolved path --
+    symlink-free at check time -- is what the caller opens (with ``O_NOFOLLOW``). The row key stays
+    the original string so the features land on their ``files`` row.
     """
     kept: list[tuple[str, str]] = []
     for path in paths:
         try:
-            resolved, _owning_root = resolve_and_check_containment(resolve_media_path(path), scan_roots)
+            resolved, _owning_root = resolve_contained_twin(path, scan_roots)
         except ValueError:
             logger.warning("companion features: containment escape skipped", path=path)
             continue

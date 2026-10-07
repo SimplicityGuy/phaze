@@ -334,6 +334,7 @@ def test_an_nfd_twin_reached_through_a_symlinked_directory_is_refused(tmp_path: 
     test does not depend on the machine's filesystem: checking the raw string (it resolves lexically,
     inside the root) and then opening the twin would read outside the roots.
     """
+    from phaze.services import containment
     from phaze.services.companion_features_report import read_companion_records
     from phaze.tasks import companion_features as task
 
@@ -345,7 +346,8 @@ def test_an_nfd_twin_reached_through_a_symlinked_directory_is_refused(tmp_path: 
     (root / "link").symlink_to(outside, target_is_directory=True)
     stored = str(root / "Cafe-nfc" / "notes.nfo")  # does not exist byte-exact
     twin = str(root / "link" / "notes.nfo")  # what the NFD walk would pick
-    monkeypatch.setattr(task, "resolve_media_path", lambda path: twin if path == stored else path)
+    # The twin lookup lives in the shared helper the task calls (phaze-spd83): substitute it there.
+    monkeypatch.setattr(containment, "resolve_media_path", lambda path: twin if path == stored else path)
 
     targets = task._contained([stored], [str(root)])
 
