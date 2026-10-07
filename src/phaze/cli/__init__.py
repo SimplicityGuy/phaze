@@ -12,6 +12,7 @@ Command groups:
     phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
     phaze backfill companion-features [--apply] [--page-size <n>]
     phaze backfill junk-review [--apply]
+    phaze backfill companion-links [--apply]
     phaze junk quarantine [--apply]
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
@@ -57,6 +58,17 @@ transaction. That is the dry run, and the default. With `--apply` it dispatches 
 to `executing` and one meta-lane `quarantine_companion` job goes to its owning agent, which re-checks
 the file and moves it (phaze-lwuf6, `phaze.services.junk_quarantine`). Only rows in the `approved`
 status are ever listed or moved.
+
+`backfill companion-links` is the phaze-spd83 one-off that links the companions ingested while
+association ran only when the operator asked for it (phaze-bniuk): it runs the same unit the
+automatic run does, per agent -- re-derive every link of the companions with current content
+features, then refresh the junk-review queue. Without `--apply` it only counts, per agent, the links
+a run would add, remove and keep, by chain step, and the companions still awaiting features -- in a
+READ ONLY transaction, with the junk-review refresh skipped (its duplicates read the stored links).
+With `--apply` it writes, one committed page at a time, under the agent's association lock (an agent
+whose automatic run holds the lock is reported and skipped). Idempotent: a second run writes nothing.
+Run it after `backfill companion-features --apply` has finished (phaze-rmhfr's deploy order).
+Rules live in `phaze.services.companion` and `phaze.services.companion_autolink`.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -107,6 +119,7 @@ from phaze.routers.agent_auth import hash_token
 from phaze.schemas.agent_tasks import CompanionFeaturesTarget, ExtractCompanionFeaturesPayload
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.cloud_attempts_reset import ResetScope, apply_reset, preview_reset
+from phaze.services.companion_autolink import agent_association_lock, run_agent_association
 from phaze.services.companion_content import count_backfill, select_backfill_page
 from phaze.services.companion_junk_review import detect_junk_reviews
 from phaze.services.junk_quarantine import enqueue_quarantine, plan_quarantine
@@ -416,6 +429,15 @@ def _build_parser() -> argparse.ArgumentParser:
     junk_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
     junk_mode.add_argument("--apply", dest="apply", action="store_true", help="Write the pending rows. Without it nothing is written.")
     junk.set_defaults(apply=False)
+    # phaze-spd83: link the companions association never reached while it ran only on demand.
+    links = backfill_sub.add_parser(
+        "companion-links",
+        help="Count the companion links an association run would add, remove and keep per agent; --apply runs it (phaze-spd83).",
+    )
+    links_mode = links.add_mutually_exclusive_group()
+    links_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
+    links_mode.add_argument("--apply", dest="apply", action="store_true", help="Write the links. Without it nothing is written.")
+    links.set_defaults(apply=False)
     mode = reset.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
@@ -516,6 +538,8 @@ def _main_backfill(args: argparse.Namespace) -> int:
         return asyncio.run(_run_companion_features(apply=args.apply, page_size=args.page_size))
     if args.backfill_command == "junk-review":
         return asyncio.run(_run_junk_review(apply=args.apply))
+    if args.backfill_command == "companion-links":
+        return asyncio.run(_run_companion_links(apply=args.apply))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -739,6 +763,47 @@ async def _run_junk_quarantine(*, apply: bool) -> int:
         enqueued = await enqueue_quarantine(session, [item.review_id for item in plan])
     print(f"APPLIED: {enqueued} of {len(plan)} moves dispatched; each row turns quarantined or failed as its agent reports.")
     return 0 if enqueued == len(plan) else 1
+
+
+async def _run_companion_links(*, apply: bool) -> int:
+    """Run ``phaze backfill companion-links`` (phaze-spd83). Returns a process exit code.
+
+    One session per agent: READ ONLY and rolled back on a dry run. With ``--apply`` the agent's run
+    holds its association lock; an agent whose lock is taken (an automatic run in flight) is skipped
+    and the command exits 1, so a re-run finishes it.
+    """
+    async with async_session() as session:
+        agent_ids = list((await session.execute(select(Agent.id).order_by(Agent.id))).scalars())
+    totals: Counter[str] = Counter()
+    skipped = 0
+    for agent_id in agent_ids:
+        async with async_session() as session:
+            if not apply:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                association, detection = await run_agent_association(session, agent_id, apply=False)
+                await session.rollback()
+            else:
+                async with agent_association_lock(session, agent_id) as acquired:
+                    if not acquired:
+                        skipped += 1
+                        print(f"  {agent_id}: SKIPPED: an automatic association run holds this agent's lock; re-run to finish it")
+                        continue
+                    association, detection = await run_agent_association(session, agent_id, apply=True)
+        totals.update(
+            added=association.links_created, removed=association.links_removed, kept=association.links_kept, awaiting=association.awaiting_features
+        )
+        by_step = " ".join(f"{step}={count}" for step, count in sorted(association.decided.items())) or "none"
+        junk = f"; junk review: new pending={sum(detection.created.values())} withdrawn={detection.withdrawn}" if detection else ""
+        print(
+            f"  {agent_id}: decided by step: {by_step}; links added={association.links_created} removed={association.links_removed} "
+            f"kept={association.links_kept}; awaiting features={association.awaiting_features}{junk}"
+        )
+    print(f"summary: links added={totals['added']} removed={totals['removed']} kept={totals['kept']} awaiting features={totals['awaiting']}")
+    if not apply:
+        print("DRY RUN: nothing written; the junk-review refresh runs only with --apply. Re-run with --apply to write the links.")
+        return 0
+    print("APPLIED: links re-derived and the junk-review queue refreshed" + (f"; {skipped} agent(s) skipped, re-run to finish" if skipped else ""))
+    return 1 if skipped else 0
 
 
 async def _enqueue_companion_feature_pages(task_router: AgentTaskRouter, agent_id: str, page_size: int) -> tuple[int, int, str | None]:

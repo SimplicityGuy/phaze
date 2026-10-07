@@ -584,3 +584,46 @@ async def test_the_media_index_reads_every_media_row_of_the_agent_across_keyset_
 
     assert len(index) == 5
     assert {media_id for folder in {f"/music/set {i}" for i in range(5)} for _name, media_id in index.in_folder(folder)} == {row.id for row in media}
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_counts_exactly_what_a_run_then_writes_and_writes_nothing(session: AsyncSession) -> None:
+    """phaze-spd83: ``apply=False`` (the backfill's dry run) reports the run's added / removed / kept links and leaves the table alone."""
+    mix1 = _make_file("/music/mixes/Mix 01.mp3", "mp3")
+    mix2 = _make_file("/music/mixes/Mix 02.mp3", "mp3")
+    tracklist, tracklist_features = _companion("/music/mixes/Mix 02.txt", is_tracklist=True)
+    cue, cue_features = _companion("/music/mixes/mix.cue", "Mix 01.mp3")
+    waiting = _make_file("/music/mixes/later.nfo", "nfo")
+    await _seed(session, mix1, mix2, tracklist, tracklist_features, cue, cue_features, waiting)
+    for companion, media in ((tracklist, mix1), (tracklist, mix2)):
+        await session.execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=companion.id, media_id=media.id))
+    before = await _link_pairs(session)
+
+    dry = await associate_companions(session, apply=False)
+
+    assert await _link_pairs(session) == before
+    applied = await associate_companions(session)
+    assert (dry.links_created, dry.links_removed, dry.links_kept, dry.awaiting_features) == (1, 1, 1, 1)
+    assert (applied.links_created, applied.links_removed, applied.links_kept, applied.awaiting_features) == (1, 1, 1, 1)
+    assert dry.decided == applied.decided == {"stem": 1, "reference": 1}
+    assert await _link_pairs(session) == {(tracklist.id, mix2.id), (cue.id, mix1.id)}
+
+
+@pytest.mark.asyncio
+async def test_a_run_for_one_agent_decides_and_counts_only_that_agent(session: AsyncSession) -> None:
+    """phaze-spd83: the automatic run's unit is one agent; another agent's companions are neither decided nor counted."""
+    session.add(Agent(id="test-fileserver-b", name="test-fileserver-b", kind="fileserver", scan_roots=[]))
+    await session.flush()
+    media_a = _make_file("/data/show1/set.mp3", "mp3")
+    nfo_a, nfo_a_features = _companion("/data/show1/info.nfo")
+    media_b = _make_file("/data/show1/set.mp3", "mp3", agent_id="test-fileserver-b")
+    nfo_b = _make_file("/data/show1/info.nfo", "nfo", agent_id="test-fileserver-b")
+    waiting_b = _make_file("/data/show1/later.nfo", "nfo", agent_id="test-fileserver-b")
+    await _seed(session, media_a, nfo_a, nfo_a_features, media_b, nfo_b, _features(nfo_b), waiting_b)
+
+    only_b = await associate_companions(session, agent_id="test-fileserver-b")
+    nobody = await associate_companions(session, agent_id="no-such-agent")
+
+    assert (only_b.links_created, only_b.awaiting_features, only_b.decided) == (1, 1, {"folder": 1})
+    assert await _link_pairs(session) == {(nfo_b.id, media_b.id)}
+    assert (nobody.links_created, nobody.awaiting_features, nobody.decided) == (0, 0, {})

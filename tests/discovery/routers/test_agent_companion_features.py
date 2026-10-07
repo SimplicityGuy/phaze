@@ -110,3 +110,20 @@ async def test_malformed_records_are_rejected_at_the_edge(authenticated_client: 
 
 async def test_an_empty_chunk_is_rejected(authenticated_client: AsyncClient) -> None:
     assert (await authenticated_client.post(_ROUTE, json={"features": []})).status_code == 422
+
+
+async def test_only_a_chunk_that_stored_features_requests_association(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-spd83: stored features make a companion decidable; a chunk that stored none requests no run."""
+    agent, _token = seed_test_agent
+    controller = authenticated_client._transport.app.state.controller_queue  # type: ignore[attr-defined]
+
+    unknown_only = await authenticated_client.post(_ROUTE, json={"features": [_record("/test/music/rel/unknown.cue")]})
+    assert unknown_only.json()["stored"] == 0
+    assert [task for task, _kwargs in controller.captured] == []
+
+    await _companion(session, agent.id, "/test/music/rel/set.cue")
+    stored = await authenticated_client.post(_ROUTE, json={"features": [_record("/test/music/rel/set.cue")]})
+    assert stored.json()["stored"] == 1
+    assert [(task, kwargs["agent_id"]) for task, kwargs in controller.captured] == [("associate_agent_companions", agent.id)]

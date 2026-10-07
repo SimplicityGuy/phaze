@@ -17,6 +17,8 @@ Handler ordering (the ORDER is part of the contract, per T-27-01):
      mutating fields are set (zero DB writes; matches Phase 26 D-08 invariant).
   4. 409 if `body.status` is a transition not in `_SCAN_TRANSITIONS[cur]`.
   5. Apply partial fields via `model_dump(exclude_unset=True)` and commit.
+  6. After the commit, a transition to COMPLETED or FAILED requests the agent's automatic
+     companion association run (phaze-spd83, `services/companion_autolink.py`).
 
 This module deliberately omits `from __future__ import annotations` so FastAPI
 can resolve `Annotated[AsyncSession, Depends(get_session)]` at app-build time
@@ -27,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
@@ -35,6 +37,7 @@ from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
+from phaze.services.companion_autolink import request_association
 
 
 router = APIRouter(prefix="/api/internal/agent/scan-batches", tags=["agent-internal"])
@@ -127,6 +130,7 @@ def _pre_mutation_guard(batch: ScanBatch, cur: ScanStatus, body: ScanBatchPatch,
 async def patch_scan_batch(
     batch_id: uuid.UUID,
     body: ScanBatchPatch,
+    request: Request,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ScanBatchPatchResponse:
@@ -186,9 +190,16 @@ async def patch_scan_batch(
     # returned at step 3 (so a same-state PATCH never stamps it); LIVE is
     # rejected at step 4; RUNNING is non-terminal. Guarding on `completed_at is
     # None` keeps it idempotent across repeated terminal PATCHes (first wins).
-    if body.status is not None and ScanStatus(body.status) in _TERMINAL_SCAN_STATUSES and batch.completed_at is None:
+    reached_terminal = body.status is not None and ScanStatus(body.status) in _TERMINAL_SCAN_STATUSES
+    if reached_terminal and batch.completed_at is None:
         batch.completed_at = datetime.now(UTC)
 
     await session.commit()
     await session.refresh(batch)
+    # 8. phaze-spd83: a scan that reached a terminal state requests the agent's automatic companion
+    # association run. Runs requested by the scan's own chunks were deferred while it ran
+    # (services/companion_autolink.py); this is the run that decides what the scan brought in. A
+    # FAILED scan may still have ingested files, so it requests one too.
+    if reached_terminal:
+        await request_association(request.app.state, agent.id)
     return _row_to_response(batch)

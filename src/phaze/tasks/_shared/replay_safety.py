@@ -65,6 +65,10 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         # against a clock. A replay re-checks every one on disk, and a move already done is
         # recognised from the quarantine copy.
         "quarantine_companion",
+        # phaze-spd83: the payload is an agent id and the coalescing window that named the job's key.
+        # The run reads the agent's companions, features and media at RUN time; a row replayed a week
+        # later re-derives the links as they should be then, which is all a re-derive can mean.
+        "associate_agent_companions",
     }
 )
 """Keyed producers whose stored payload is TIME-INVARIANT -- safe to replay verbatim, forever.

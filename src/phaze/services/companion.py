@@ -176,15 +176,17 @@ async def _agents_with_features(session: AsyncSession) -> list[str]:
     return list(result.scalars())
 
 
-async def _count_awaiting_features(session: AsyncSession) -> int:
+async def _count_awaiting_features(session: AsyncSession, agent_id: str | None) -> int:
     """Companions association cannot decide yet (no stored features, or features of older bytes); their links stay as they are."""
-    result = await session.execute(
+    statement = (
         select(func.count())
         .select_from(FileRecord)
         .outerjoin(CompanionContentFeatures, _current_features())
         .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None))
     )
-    return int(result.scalar_one())
+    if agent_id is not None:
+        statement = statement.where(FileRecord.agent_id == agent_id)
+    return int((await session.execute(statement)).scalar_one())
 
 
 def _decide_page(
@@ -230,10 +232,12 @@ _DELETE_CHUNK = 10_000
 """Link ids per DELETE statement: one bind each, well under the 32,767 cap."""
 
 
-async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uuid.UUID]], outcome: AssociationOutcome) -> None:
+async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uuid.UUID]], outcome: AssociationOutcome, *, apply: bool) -> None:
     """Make each companion's links exactly its target set: delete the rest, insert the missing. Does NOT commit.
 
     Runs inside the page's transaction, so every companion's replacement lands whole or not at all.
+    Without ``apply`` nothing is written: the links that would be removed and created are counted
+    from the same read, so a dry run reports exactly what a run would do (phaze-spd83).
     """
     if not targets:
         return
@@ -247,6 +251,10 @@ async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uu
         outcome.links_kept += len(wanted & held.keys())
         if absent := [media_id for media_id in media_ids if media_id not in held]:
             missing[companion_id] = absent
+    if not apply:
+        outcome.links_removed += len(stale)
+        outcome.links_created += sum(len(media_ids) for media_ids in missing.values())
+        return
     for start in range(0, len(stale), _DELETE_CHUNK):
         deleted = cast(
             "CursorResult[Any]", await session.execute(delete(FileCompanion).where(FileCompanion.id.in_(stale[start : start + _DELETE_CHUNK])))
@@ -379,7 +387,7 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # no longer exists.
 
 
-async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: int, outcome: AssociationOutcome) -> None:
+async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: int, outcome: AssociationOutcome, apply: bool) -> None:
     """Re-derive every current-features companion of one agent: those beside media in a first keyset walk, the rest in a second."""
     index: AgentMediaIndex | None = None
     linked: set[str] = set()
@@ -393,17 +401,26 @@ async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: 
             if index is None:
                 index = await _media_index(session, agent_id)
             this_pass = [companion for companion in page if bool(index.in_folder(str(PurePosixPath(companion.path).parent))) is beside_media]
-            await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome)
-            # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
-            await session.commit()
+            await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome, apply=apply)
+            if apply:
+                # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
+                await session.commit()
             if len(page) < batch_size:
                 break
         if index is None:
             return
 
 
-async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE) -> AssociationOutcome:
+async def associate_companions(
+    session: AsyncSession, *, agent_id: str | None = None, batch_size: int = DEFAULT_ASSOCIATE_BATCH_SIZE, apply: bool = True
+) -> AssociationOutcome:
     """Re-derive the links of every companion with current content features (module docstring).
+
+    ``agent_id`` limits the run, and its ``awaiting_features`` count, to that one agent: the unit the
+    automatic run (``tasks/companion_association.py``) and ``phaze backfill companion-links`` work in
+    (phaze-spd83). A run over one agent decides exactly what a run over all agents decides for it,
+    because nothing here crosses agents. ``apply=False`` writes and commits nothing and reports the
+    links a run would remove, create and keep.
 
     Per agent holding stored features, every such companion is decided by
     :func:`phaze.services.companion_linking.link_companion` against that agent's media -- companions
@@ -431,7 +448,10 @@ async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAU
     page N has been read. The serialization IS the paging.
     """
     outcome = AssociationOutcome()
-    for agent_id in await _agents_with_features(session):
-        await _associate_agent(session, agent_id, batch_size=batch_size, outcome=outcome)
-    outcome.awaiting_features = await _count_awaiting_features(session)
+    agents = await _agents_with_features(session)
+    if agent_id is not None:
+        agents = [agent for agent in agents if agent == agent_id]
+    for agent in agents:
+        await _associate_agent(session, agent, batch_size=batch_size, outcome=outcome, apply=apply)
+    outcome.awaiting_features = await _count_awaiting_features(session, agent_id)
     return outcome

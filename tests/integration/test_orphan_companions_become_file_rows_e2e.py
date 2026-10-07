@@ -113,8 +113,9 @@ async def test_media_less_companions_become_file_rows_and_the_scans_page_shows_n
     assert linked_companion is not None
     assert linked_companion.original_path == str(tmp_path / "mixed" / "song.cue")
 
-    # Admitting companions enqueues nothing: they are never metadata, analysis or proposal work.
-    assert controller_queue.captured == []
+    # Admitting companions enqueues no metadata, analysis or proposal work. The one control-plane job is
+    # the automatic association run the ingest requests (phaze-spd83), and nothing goes to an agent.
+    assert {task for task, _kwargs in controller_queue.captured} == {"associate_agent_companions"}
     assert task_router.captures == []
     assert (await session.execute(select(func.count()).select_from(FileMetadata))).scalar_one() == 0
     assert (await session.execute(select(func.count()).select_from(AnalysisResult))).scalar_one() == 0

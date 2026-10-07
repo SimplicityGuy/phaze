@@ -89,6 +89,10 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         # cron), needs ctx["async_session"], so like the drain it MUST be routable.
         "learn_filename_conventions",
         "submit_cloud_job",  # Control-plane producer; kube credentials stay here.
+        # phaze-spd83: the automatic companion association run. The api requests it after every
+        # event that can change a companion's links (services/companion_autolink.py), so it MUST be
+        # routable; a deferred run re-requests itself on the same queue.
+        "associate_agent_companions",
     }
 )
 """Fileless tasks the application-server controller worker consumes.
