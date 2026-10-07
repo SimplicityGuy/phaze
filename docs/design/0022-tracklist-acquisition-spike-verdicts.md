@@ -6,13 +6,17 @@ Date: 2026-10-07. Bead: phaze-i5sp6 (decision bead, epic phaze-5d0wg). Status: a
 
 One verdict per spike-gated path. Each cites its spike doc by filename and the measured quantity that decided it.
 
-| # | Path | Verdict | Authority | Spike doc |
-|---|---|---|---|---|
-| 1 | Looser event+date set merging | **NO-GO** | operator | `docs/spikes/phaze-5rhjq-collapse-ratio.md` |
-| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **GO** | operator | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
-| 3 | MixesDB as a second source | **GO**, two conditions | operator | `docs/spikes/phaze-2ov24-mixesdb-viability.md` |
-| 4 | Parser fixes (mark unresolved `ID - ID` rows; row-count canary) | **GO** | operator | `docs/spikes/phaze-gakqn-parser-gap-audit.md` |
-| 5 | Deferred items (below) | **DEFERRED, not decided, not a NO-GO** | implementer / planner | various |
+| # | Path | Verdict | Operator selected (phaze-i5sp6, 2026-10-06, question and answers recorded below) | Spike recommendation (not operator-decided) | Spike doc |
+|---|---|---|---|---|---|
+| 1 | Looser event+date set merging | **NO-GO** | operator ruled NO-GO ("NO-GO (Recommended)") | n/a (the operator's ruling is the verdict) | `docs/spikes/phaze-5rhjq-collapse-ratio.md` |
+| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **GO** | operator selected "ajax JSON search" to carry forward | spike: the JSON search works for an honest client | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
+| 3 | MixesDB as a second source | **GO**, two conditions | operator selected "MixesDB source" to carry forward | spike: the two conditions, measure real archive coverage first and use the REST API only | `docs/spikes/phaze-2ov24-mixesdb-viability.md` |
+| 4 | Parser fixes (mark unresolved `ID - ID` rows; row-count canary) | **GO** | operator selected "Parser fixes" to carry forward | spike: the specifics, mark unresolved `ID - ID` rows and add a row-count canary against numTracks | `docs/spikes/phaze-gakqn-parser-gap-audit.md` |
+| 5 | Deferred items (below) | **DEFERRED, not decided, not a NO-GO** | not selected | implementer / planner deferral | various |
+
+The operator's authority in this table is limited to the NO-GO ruling in row 1 and the selection of which paths to carry forward in rows 2 to 4.
+The MixesDB conditions and the parser-fix specifics are the recommendations of `docs/spikes/phaze-2ov24-mixesdb-viability.md` and
+`docs/spikes/phaze-gakqn-parser-gap-audit.md`, per CLAUDE.md rule 2 and `docs/design/0012-verification-fidelity-and-operator-attribution.md`.
 
 ### 1. Looser event+date set merging: NO-GO
 
