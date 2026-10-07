@@ -10,11 +10,14 @@ the archive -- it can neither follow a symlink nor prove one is absent. Only the
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from phaze.services.companion_read import read_companion_bounded_sync
 from phaze.tasks.companion_read import read_companion_files
+from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
 if TYPE_CHECKING:
@@ -277,3 +280,82 @@ class TestReadCompanionFilesTask:
 
         to_thread.assert_awaited_once()
         assert to_thread.await_args.args[0].__name__ == "_read_all_sync"
+
+
+class TestTwinContainment:
+    """phaze-2tei9: containment covers the NFC/NFD twin that is OPENED, not the stored string.
+
+    The escape case substitutes the twin lookup (``substituted_twin_lookup``): on macOS the real
+    lookup cannot reproduce it, because ``realpath`` matches the NFC string to the NFD entry and
+    follows the symlink anyway. The legitimate case runs the real lookup on byte-exact ``exists``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_twin_through_a_symlinked_directory_out_of_the_root_is_refused_and_never_read(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "notes.nfo").write_text("LLM_API_KEY=<redacted>", encoding="utf-8")
+        nfd_dir = unicodedata.normalize("NFD", "Hör")
+        (archive_root / nfd_dir).symlink_to(outside, target_is_directory=True)
+        stored = archive_root / "stored-nfc" / "notes.nfo"
+        twin = archive_root / nfd_dir / "notes.nfo"
+
+        with (
+            patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, twin)),
+            patch("phaze.tasks.companion_read.read_companion_bounded_sync", wraps=read_companion_bounded_sync) as read,
+        ):
+            contents = await _run([{"filename": "notes.nfo", "path": str(stored)}], [str(archive_root)])
+
+        assert contents == []
+        read.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legitimate_nfd_twin_is_still_read(self, tmp_path: Path) -> None:
+        nfd_name = unicodedata.normalize("NFD", "Hör.nfo")
+        nfc_name = unicodedata.normalize("NFC", "Hör.nfo")
+        assert nfd_name != nfc_name, "fixture must actually exercise two distinct byte forms"
+        (tmp_path / nfd_name).write_text("Artist: DJ Test", encoding="utf-8")
+
+        with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists):
+            contents = await _run([{"filename": nfc_name, "path": str(tmp_path / nfc_name)}], [str(tmp_path)])
+
+        assert contents == [{"filename": nfc_name, "content": "Artist: DJ Test"}]
+
+    @pytest.mark.asyncio
+    async def test_the_checked_path_is_opened_without_following_a_final_symlink(self, tmp_path: Path) -> None:
+        """A final component swapped for a symlink AFTER the check is refused, not followed (``O_NOFOLLOW``).
+
+        The swap is simulated by making the containment check return a path that is (now) a symlink.
+        """
+        secret = tmp_path / "secret.txt"
+        secret.write_text("LLM_API_KEY=<redacted>", encoding="utf-8")
+        swapped = tmp_path / "notes.nfo"
+        swapped.symlink_to(secret)
+
+        with patch("phaze.tasks.companion_read.resolve_contained_twin", return_value=(swapped, tmp_path)):
+            contents = await _run([{"filename": "notes.nfo", "path": str(swapped)}], [str(tmp_path)])
+
+        assert contents == []
+
+
+class TestBoundedReadNoFollow:
+    def test_no_follow_refuses_a_symlink(self, tmp_path: Path) -> None:
+        target = tmp_path / "target.nfo"
+        target.write_text("x", encoding="utf-8")
+        link = tmp_path / "link.nfo"
+        link.symlink_to(target)
+
+        with pytest.raises(OSError):
+            read_companion_bounded_sync(str(link), 10, follow_symlinks=False)
+        assert read_companion_bounded_sync(str(link), 10) == "x"
+
+    @pytest.mark.parametrize(
+        ("name", "raw", "expected"), [("a.nfo", "╔═╗".encode("cp437"), "╔═╗"), ("a.m3u", b"\xc9x", "\ufffdx"), ("a.nfo", b"plain", "plain")]
+    )
+    def test_no_follow_keeps_every_decode_path(self, tmp_path: Path, name: str, raw: bytes, expected: str) -> None:
+        companion = tmp_path / name
+        companion.write_bytes(raw)
+
+        assert read_companion_bounded_sync(str(companion), 10, follow_symlinks=False) == expected

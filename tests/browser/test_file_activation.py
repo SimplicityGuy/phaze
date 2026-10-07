@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from tests.browser.helpers import open_shell, settled, settled_focus, swap_settles
+from tests.browser.helpers import open_shell, settled, swap_settles, wait_for_focus_on
 
 
 pytestmark = pytest.mark.browser
@@ -23,8 +23,7 @@ async def _wait_for_record(page: Any, file_id: Any) -> None:
 async def _close_and_expect_opener(page: Any, opener: str) -> None:
     await page.keyboard.press("Escape")
     await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
-    await settled_focus(page)
-    assert await page.evaluate("selector => document.activeElement === document.querySelector(selector)", opener)
+    await wait_for_focus_on(page, opener)
 
 
 async def _record_request_counter(page: Any, file_id: Any) -> None:
@@ -335,7 +334,8 @@ async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_go
 
     await page.keyboard.press("Escape")
     await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
-    await settled_focus(page)
+    # The landing element (the stage heading) is id-less, so wait on the post-condition itself.
+    await page.wait_for_function("() => document.activeElement !== document.body", timeout=15_000)
 
     stranded_on_body = await page.evaluate("() => document.activeElement === document.body")
     assert not stranded_on_body, "focus was stranded on <body> after Escape closed a drawer whose opener had gone stale"

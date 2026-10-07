@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -44,3 +45,23 @@ def byte_exact_exists(path: Path) -> bool:
         return any(entry.name == path.name for entry in parent.iterdir())
     except OSError:
         return False
+
+
+def substituted_twin_lookup(stored: Path, twin: Path) -> Callable[[str], str]:
+    """A `resolve_media_path` stand-in that maps the stored path *stored* to the on-disk *twin* (phaze-2tei9).
+
+    Patched in at ``phaze.services.containment.resolve_media_path``, the one twin lookup every
+    containment-checked agent task goes through. It exists because the escape it pins cannot be
+    reproduced honestly on macOS: there an NFC stored name and its NFD on-disk entry are the SAME
+    entry to ``realpath``, so ``Path.resolve()`` follows a symlinked NFD directory even from the
+    NFC string and the wrong check order looks safe. On Linux (byte-exact) the NFC tail stays
+    lexical, passes the check, and the real lookup then walks through the symlink. Substituting
+    the twin reproduces that on every host: *stored* must not exist, so it resolves lexically
+    inside the root, exactly like the NFC string on Linux. The limit: these tests do not run the
+    real directory walk; ``tests/shared/test_containment.py`` does, and is discriminating on Linux only.
+    """
+
+    def lookup(path: str) -> str:
+        return str(twin) if path == str(stored) else path
+
+    return lookup

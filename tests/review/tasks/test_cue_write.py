@@ -7,12 +7,14 @@ so its ``write_cue_file`` call raised ``FileNotFoundError`` for every CUE sheet,
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
 
 from phaze.tasks.cue_write import write_cue_sheet
+from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
 if TYPE_CHECKING:
@@ -98,6 +100,52 @@ class TestWriteCueSheetTask:
             await write_cue_sheet({}, **_kwargs(audio))
 
         assert not (outside / "<set-01>.cue").exists()
+
+    @pytest.mark.asyncio
+    async def test_twin_through_a_symlinked_directory_out_of_the_root_is_refused(self, tmp_path: Path) -> None:
+        """phaze-2tei9: the sheet is written beside the twin, so containment must cover the twin.
+
+        The stored path does not exist, so on its own it resolves lexically inside the root; the twin
+        it maps to runs through an NFD directory that is a symlink out of the root. The lookup is
+        substituted (``substituted_twin_lookup``): macOS's ``realpath`` would follow the symlink from
+        the NFC string anyway and hide the bug; on Linux the real lookup does exactly this.
+        """
+        roots = tmp_path / "roots"
+        roots.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "<set-01>.mp3").write_text("fake audio")
+        nfd_dir = unicodedata.normalize("NFD", "Hör")
+        (roots / nfd_dir).symlink_to(outside, target_is_directory=True)
+        stored = roots / "stored-nfc" / "<set-01>.mp3"
+
+        with (
+            patch("phaze.tasks.cue_write.get_settings", return_value=_agent_settings([str(roots)])),
+            patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, roots / nfd_dir / "<set-01>.mp3")),
+            pytest.raises(ValueError, match="escapes all scan_roots"),
+        ):
+            await write_cue_sheet({}, **_kwargs(stored))
+
+        assert sorted(p.name for p in outside.iterdir()) == ["<set-01>.mp3"]
+
+    @pytest.mark.asyncio
+    async def test_legitimate_nfd_twin_gets_its_sheet_beside_it(self, tmp_path: Path) -> None:
+        """phaze-9pg11, kept by phaze-2tei9: the stored NFC path finds the NFD file, and FILE names it."""
+        nfd_dir = unicodedata.normalize("NFD", "Hör")
+        nfc_dir = unicodedata.normalize("NFC", "Hör")
+        assert nfd_dir != nfc_dir, "fixture must actually exercise two distinct byte forms"
+        (tmp_path / nfd_dir).mkdir()
+        (tmp_path / nfd_dir / "<set-01>.mp3").write_text("fake audio")
+
+        with (
+            patch("phaze.tasks.cue_write.get_settings", return_value=_agent_settings([str(tmp_path)])),
+            patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists),
+        ):
+            result = await write_cue_sheet({}, **_kwargs(tmp_path / nfc_dir / "<set-01>.mp3"))
+
+        assert result["cue_filename"] == "<set-01>.cue"
+        assert [p.name for p in tmp_path.iterdir()] == [nfd_dir]
+        assert (tmp_path / nfd_dir / "<set-01>.cue").read_text(encoding="utf-8-sig") == _CUE
 
     @pytest.mark.asyncio
     async def test_no_scan_roots_refuses_everything(self, tmp_path: Path) -> None:
