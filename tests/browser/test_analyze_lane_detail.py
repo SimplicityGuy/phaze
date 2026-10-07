@@ -58,13 +58,30 @@ async def _reach_analyze(page: Any, seed: Any) -> None:
     await settled(page)
 
 
-async def _open_lane(page: Any) -> None:
-    await page.click(_TRIGGER)
-    await page.wait_for_selector(f'#detail-pane [data-lane-id="{_LANE}"]')
+async def _wait_for_open_chrome(page: Any) -> None:
+    """Wait until the pane's Alpine-driven chrome has FINISHED opening, not merely started.
+
+    ``open`` fans out to three bindings that do not land together: the ``:class`` slide
+    (``translate-x-0``) is written synchronously, but ``x-show`` -- the ✕ Close button appearing and
+    the resting empty state hiding -- is applied from a ``requestAnimationFrame`` callback. Measured
+    on a loaded runner (phaze-zp0i4): the class flip led the display flip by 0-100 ms, and a run
+    that read in between saw "No lane selected" still visible over an open pane, a ✕ that was not
+    visible, and ``focus()`` on the still-``display: none`` ✕ silently do nothing -- which then read as
+    "a refresh moved focus back to the heading". The product is correct (one frame, and the pane's
+    state is already ``open``); a test that acts on the pane has to wait for the frame.
+    """
     await page.wait_for_function(
         """sel => document.querySelector(sel).className.includes('translate-x-0')""",
         arg=_PANE_SECTION,
     )
+    await page.wait_for_selector(f'{_PANE_SECTION} button[aria-label="Close detail"]', state="visible")
+    await page.locator(f"{_PANE_SECTION} >> text=No lane selected").wait_for(state="hidden")
+
+
+async def _open_lane(page: Any) -> None:
+    await page.click(_TRIGGER)
+    await page.wait_for_selector(f'#detail-pane [data-lane-id="{_LANE}"]')
+    await _wait_for_open_chrome(page)
 
 
 async def test_opening_a_lane_slides_the_detail_pane_in_and_deep_links_it(page: Any, seed: Any) -> None:
@@ -187,7 +204,7 @@ async def test_a_deep_linked_lane_opens_the_pane_on_a_cold_load(page: Any, seed:
     await page.wait_for_function("() => window.Alpine !== undefined && window.htmx !== undefined")
 
     await page.wait_for_selector(f'#detail-pane [data-lane-id="{_LANE}"]')
-    await page.wait_for_function("""sel => document.querySelector(sel).className.includes('translate-x-0')""", arg=_PANE_SECTION)
+    await _wait_for_open_chrome(page)
 
     assert await page.locator('button[aria-label="Close detail"]').is_visible(), "the deep-linked pane offers no way to close itself"
     assert await page.get_attribute(_TRIGGER, "aria-current") == "true", "a deep-linked lane is open but its trigger is not marked current"
