@@ -52,9 +52,8 @@ from phaze.config import AgentSettings, get_settings
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotPayload, TagWriteResultPayload
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
-from phaze.services.containment import resolve_and_check_containment
+from phaze.services.containment import resolve_contained_twin
 from phaze.services.hashing import compute_sha256
-from phaze.services.media_path_resolve import resolve_media_path
 from phaze.services.tag_write_disk import _extract_before_tags, write_and_verify_sync
 
 
@@ -128,7 +127,11 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     cfg = get_settings()
     scan_roots = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
     try:
-        resolved_path, _owning_root = resolve_and_check_containment(payload.file_path, scan_roots)
+        # phaze-9pg11: `file_path` (FileRecord.current_path) is stored NFC-normalized (the identity/
+        # dedup key); the real directory entry can be NFD. phaze-2tei9: the on-disk twin is looked up
+        # FIRST and containment is checked on IT, so the write lands only on a path that was itself
+        # checked -- never on one reached through an unchecked symlinked directory.
+        resolved_path, _owning_root = resolve_contained_twin(payload.file_path, scan_roots)
     except ValueError as exc:
         # A path that escapes scan_roots will not resolve differently on a SAQ retry, so this must
         # NOT raise and burn the retry budget leaving the row stranded ``queued`` -- report a
@@ -146,11 +149,7 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         result = TagWriteResultPayload(status=TagWriteStatus.FAILED, before_tags={}, error_message=str(exc)[:_ERROR_MESSAGE_MAX])
         await api.patch_tag_write(payload.log_id, result)
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
-    # phaze-9pg11: `file_path` (FileRecord.current_path) is stored NFC-normalized (the identity/
-    # dedup key); resolve it against the real on-disk entry -- an NFD-named file's stored path
-    # otherwise never matches its own directory entry. Applied AFTER containment so the fallback
-    # can only ever pick another entry in the SAME already-contained directory.
-    file_path = resolve_media_path(str(resolved_path))
+    file_path = str(resolved_path)
 
     # phaze-anrw4: capture + durably report the pre-write snapshot in its own thread offload and
     # HTTP round trip, BEFORE the mutating write below -- see the module docstring. Best-effort:

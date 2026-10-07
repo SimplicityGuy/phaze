@@ -31,8 +31,7 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_tasks import ReadCompanionFilesPayload
 from phaze.services.companion_read import read_companion_bounded_sync
-from phaze.services.containment import resolve_and_check_containment
-from phaze.services.media_path_resolve import resolve_media_path
+from phaze.services.containment import resolve_contained_twin
 
 
 logger = structlog.get_logger(__name__)
@@ -49,17 +48,17 @@ def _read_all_sync(items: list[tuple[str, str]], max_chars: int, scan_roots: lis
     """
     contents: list[dict[str, str]] = []
     for filename, path in items:
+        # phaze-9pg11 + phaze-2tei9: the path can be derived from a stored NFC-normalized filename.
+        # The on-disk twin is looked up FIRST and containment is checked on IT, so the check covers
+        # the exact path opened below -- checking the stored string and swapping in the twin after
+        # let the lookup walk through a symlinked directory that was never checked.
         try:
-            resolved, _owning_root = resolve_and_check_containment(path, scan_roots)
+            resolved, _owning_root = resolve_contained_twin(path, scan_roots)
         except ValueError:
             logger.warning("companion_containment_escape", companion_path=path)
             continue
-        # phaze-9pg11: the companion path can be derived from a stored NFC-normalized filename;
-        # resolve it against the real on-disk entry -- applied AFTER containment so the fallback
-        # can only ever pick another entry in the SAME already-contained directory.
-        resolved_str = resolve_media_path(str(resolved))
         try:
-            contents.append({"filename": filename, "content": read_companion_bounded_sync(resolved_str, max_chars)})
+            contents.append({"filename": filename, "content": read_companion_bounded_sync(str(resolved), max_chars, follow_symlinks=False)})
         except OSError:
             logger.warning("companion_read_failed", companion_path=path, exc_info=True)
             continue

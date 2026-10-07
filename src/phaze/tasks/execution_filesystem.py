@@ -21,19 +21,18 @@ from dataclasses import dataclass
 import errno
 import hashlib
 import os
-from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, Literal, Protocol
 import uuid
 
 import structlog
 
-from phaze.services.containment import resolve_and_check_containment
-from phaze.services.media_path_resolve import resolve_media_path
+from phaze.services.containment import resolve_contained_twin
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from phaze.schemas.agent_tasks import ExecuteBatchProposalItem
 
@@ -129,15 +128,13 @@ class LocalFilesystemPrimitives:
         self._dir_fsync_unsupported: set[Path] = set()
 
     def resolve_containment(self, candidate: str, roots: list[str]) -> tuple[Path, Path]:
-        resolved, owning_root = resolve_and_check_containment(candidate, roots)
         # phaze-9pg11: `candidate` (FileRecord.current_path for a move SOURCE, or a proposed
         # destination) can be stored NFC-normalized (the identity/dedup key); resolve the SOURCE
         # case against the real on-disk entry -- an NFD-named file's stored path otherwise never
-        # matches its own directory entry. Applied AFTER containment so the fallback can only ever
-        # pick another entry in the SAME already-contained directory. A no-op for a destination
-        # path that legitimately does not exist yet (no on-disk entry's NFC form matches it, so
-        # `resolve_media_path` returns it unchanged).
-        return Path(resolve_media_path(str(resolved))), owning_root
+        # matches its own directory entry. A no-op for a destination path that legitimately does
+        # not exist yet (no on-disk entry's NFC form matches it). phaze-2tei9: the twin is looked
+        # up FIRST and containment is checked on IT, so the move touches only a checked path.
+        return resolve_contained_twin(candidate, roots)
 
     def resolve_destination(
         self,
