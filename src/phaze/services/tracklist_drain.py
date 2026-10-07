@@ -585,7 +585,7 @@ def _render_outcome(render: RenderResult) -> LookupOutcome:
     """Map a non-OK render onto the lookup taxonomy, keeping "blocked" out of "not found"."""
     if render.outcome is RenderOutcome.NO_TRACKLIST:
         return LookupOutcome.NOT_FOUND
-    if render.outcome is RenderOutcome.INTERSTITIAL_PERSISTED:
+    if render.outcome in {RenderOutcome.INTERSTITIAL_PERSISTED, RenderOutcome.CAPTCHA_BLOCKED}:
         return LookupOutcome.BLOCKED
     return LookupOutcome.RENDER_FAILED
 

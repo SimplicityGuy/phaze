@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 
 from phaze.enums.stage import Stage
 from phaze.enums.tracklist_candidate import (
+    TRANSIENT_MAX_ATTEMPTS,
     TRANSIENT_OUTCOMES,
     CacheDecision,
     DuplicateConfidence,
@@ -71,7 +72,7 @@ from phaze.services.tracklist_lookup_cache import (
     record_outcome,
 )
 from phaze.services.tracklist_query import derive_query
-from phaze.services.tracklist_render import RenderOutcome, RenderResult
+from phaze.services.tracklist_render import RenderOutcome, RenderResult, _classify
 from phaze.services.tracklist_result_scorer import SELECTION_THRESHOLD
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistScraper, TracklistSearchResult
 
@@ -307,6 +308,7 @@ class TestPerformLookupHonesty:
         [
             (RenderOutcome.NO_TRACKLIST, LookupOutcome.NOT_FOUND),
             (RenderOutcome.INTERSTITIAL_PERSISTED, LookupOutcome.BLOCKED),
+            (RenderOutcome.CAPTCHA_BLOCKED, LookupOutcome.BLOCKED),
             (RenderOutcome.TIMEOUT, LookupOutcome.RENDER_FAILED),
             (RenderOutcome.NAVIGATION_FAILED, LookupOutcome.RENDER_FAILED),
         ],
@@ -504,6 +506,39 @@ class TestPersistence:
         assert verdict.entry.outcome == LookupOutcome.BLOCKED.value
         assert verdict.decision is CacheDecision.BACKOFF, "a block earns a backoff, never the negative TTL"
         assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+
+    async def test_captcha_outcome_is_never_cached_as_not_found(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-a6n3e: the site's captcha is transient, backs off, writes no negative and no tracks, and parks at the cap."""
+        file = await make_file(original_filename=ANCHOR_FILENAME)
+        candidate = candidate_for(ANCHOR_FILENAME, files=[(file.id, file.sha256_hash)])
+        captcha_html = (RENDER_FIXTURES / "25fhn7c9-captcha.html").read_text(encoding="utf-8")
+        # Through the real classifier first: the captcha page must reach the drain as CAPTCHA_BLOCKED.
+        classified = _classify(captcha_html, container_found=False)
+        assert classified is RenderOutcome.CAPTCHA_BLOCKED
+
+        attempt = await perform_lookup(candidate, search=FakeSearch("time-warp-2024"), renderer=FakeRenderer(outcome=classified, html=captcha_html))
+        assert attempt.outcome is LookupOutcome.BLOCKED
+        assert attempt.outcome.is_transient
+        assert not attempt.outcome.is_definitive_negative
+
+        await persist_lookup(session, candidate, attempt, now=NOW)
+        await session.flush()
+
+        verdict = await lookup(session, candidate.set_key, now=NOW)
+        assert verdict.entry is not None
+        assert verdict.entry.outcome == LookupOutcome.BLOCKED.value
+        assert verdict.entry.outcome != LookupOutcome.NOT_FOUND.value
+        assert verdict.decision is CacheDecision.BACKOFF
+        assert (await session.execute(select(func.count()).select_from(Tracklist))).scalar_one() == 0
+        assert (await session.execute(select(func.count()).select_from(TracklistTrack))).scalar_one() == 0
+
+        # Repeated captchas park the set after the existing cap, never converting to a negative.
+        for _ in range(TRANSIENT_MAX_ATTEMPTS - 1):
+            await persist_lookup(session, candidate, attempt, now=NOW)
+            await session.flush()
+        parked = await lookup(session, candidate.set_key, now=NOW)
+        assert parked.decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert not parked.decision.should_query
 
     async def test_a_far_off_low_confidence_search_is_held_for_the_negative_ttl_not_suppressed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=NO_MATCH_FILENAME)
