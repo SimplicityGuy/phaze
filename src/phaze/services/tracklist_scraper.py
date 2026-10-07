@@ -535,6 +535,21 @@ class TracklistScraper:
         return artist_part.strip(), rest.strip() or None
 
     @classmethod
+    def detail_url_external_id(cls, url: str) -> str | None:
+        """The 1001Tracklists id of a detail-page ``url``, or ``None`` when it is not a usable one.
+
+        ``None`` for a URL off the host allow-list (or not https) and for one carrying no
+        ``/tracklist/<id>`` segment. This is the public form of the two checks a persisted retry hint
+        must pass before it is rendered (phaze-3ekjl): callers outside this module have no business
+        reaching for ``_is_allowed_url`` or ``_EXTERNAL_ID_PATTERN``. The id is bounded to the
+        ``Tracklist.external_id`` column width exactly as a searched row's is.
+        """
+        if not cls._is_allowed_url(url):
+            return None
+        match = cls._EXTERNAL_ID_PATTERN.search(url)
+        return match.group(1)[: cls._EXTERNAL_ID_MAX_LEN] if match is not None else None
+
+    @classmethod
     def detail_page_result(cls, html: str, url: str) -> TracklistSearchResult | None:
         """Read a rendered DETAIL page's own headline as a search-row-shaped result (phaze-w5fni).
 
