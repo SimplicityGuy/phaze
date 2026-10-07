@@ -344,6 +344,24 @@ class ExtractCompanionFeaturesPayload(WirePayload):
     targets: list[CompanionFeaturesTarget] = Field(min_length=1, max_length=1000)
 
 
+class QuarantineCompanionPayload(WirePayload):
+    """SAQ job: move ONE approved junk companion into its root's quarantine directory (phaze-lwuf6).
+
+    ``review_id`` is the ``companion_junk_review`` row the operator approved; the agent reports the
+    outcome against it. ``source_path`` is that row's ``original_path``, and ``sha256`` / ``size`` are
+    the values the operator approved: the agent re-hashes the file and refuses to move bytes that
+    differ from them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: uuid.UUID
+    agent_id: str = Field(min_length=1, max_length=64)
+    source_path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+
+
 class ExecuteApprovedBatchPayload(WirePayload):
     """SAQ job: per-agent sub-batch of an approved-proposal execution dispatch.
 

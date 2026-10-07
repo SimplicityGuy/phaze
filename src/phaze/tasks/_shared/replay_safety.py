@@ -61,6 +61,10 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         # week later recomputes against the corpus as it stands then, which is the only thing a
         # full-refresh cache could ever mean.
         "learn_filename_conventions",
+        # phaze-lwuf6: review id, path, approved SHA-256 and size -- identity, nothing minted
+        # against a clock. A replay re-checks every one on disk, and a move already done is
+        # recognised from the quarantine copy.
+        "quarantine_companion",
     }
 )
 """Keyed producers whose stored payload is TIME-INVARIANT -- safe to replay verbatim, forever.

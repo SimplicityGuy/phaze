@@ -46,6 +46,7 @@
     "GET /tags/",
     "GET /tracklists/",
     "PATCH /api/internal/agent/execution-log/{execution_log_id}",
+    "PATCH /api/internal/agent/junk-quarantine/{review_id}",
     "PATCH /api/internal/agent/proposals/{proposal_id}/state",
     "PATCH /api/internal/agent/scan-batches/{batch_id}",
     "PATCH /api/internal/agent/tag-writes/{log_id}",

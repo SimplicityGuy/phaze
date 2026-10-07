@@ -70,6 +70,7 @@ from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
 from phaze.tasks.heartbeat import _config_poll_loop, _heartbeat_loop
+from phaze.tasks.junk_quarantine import quarantine_companion
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
@@ -561,6 +562,8 @@ _FUNCTIONS_BY_NAME: dict[str, Any] = {
     "read_companion_files": read_companion_files,
     # phaze-osy6j: the backfill's per-page companion content read. MUST mirror LANE_TASKS["meta"].
     "extract_companion_features": extract_companion_features,
+    # phaze-lwuf6: the junk quarantine move. MUST mirror LANE_TASKS["meta"].
+    "quarantine_companion": quarantine_companion,
     "push_file": push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
     # Phase 53: fileserver httpx multipart-PUT upload to presigned S3 URLs. Registered under the
     # explicit SAQ name "s3_upload" (a (name, func) tuple) so the control-plane producer enqueues
@@ -577,6 +580,7 @@ _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "write_cue_sheet",
     "read_companion_files",
     "extract_companion_features",
+    "quarantine_companion",
     "push_file",
     "s3_upload",
 )

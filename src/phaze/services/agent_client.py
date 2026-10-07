@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
+    from phaze.schemas.agent_junk_quarantine import JunkQuarantineResultPayload, JunkQuarantineResultResponse
     from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
     from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
@@ -654,6 +655,20 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return CompanionFeaturesResponse.model_validate(response.json())
+
+    async def report_junk_quarantine(self, review_id: uuid.UUID, payload: JunkQuarantineResultPayload) -> JunkQuarantineResultResponse:
+        """PATCH /api/internal/agent/junk-quarantine/{review_id} -- the outcome of one quarantine move (phaze-lwuf6).
+
+        Idempotent on ``review_id``: a retry whose report already landed gets 200 with ``applied=false``.
+        """
+        from phaze.schemas.agent_junk_quarantine import JunkQuarantineResultResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/junk-quarantine/{review_id}",
+            json=payload.model_dump(mode="json"),
+        )
+        return JunkQuarantineResultResponse.model_validate(response.json())
 
     async def post_exec_batch_progress(
         self,

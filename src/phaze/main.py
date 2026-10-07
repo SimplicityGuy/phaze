@@ -26,6 +26,7 @@ from phaze.routers import (
     agent_files,
     agent_heartbeat,
     agent_identity,
+    agent_junk_quarantine,
     agent_metadata,
     agent_orphan_companions,
     agent_proposals,
@@ -282,6 +283,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     # api container has no media mount, so the mutagen write runs on the owning agent's meta lane
     # and its result reaches the tag_write_log audit table only through this callback.
     agent_tag_writes.router,
+    # phaze-lwuf6: the outcome of an on-agent junk quarantine move (the meta-lane quarantine_companion task).
+    agent_junk_quarantine.router,
     # HTMX poll partial, Recent
     # Scans table and the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.
