@@ -6,9 +6,10 @@ cross-product from it in memory before a single INSERT/commit at the end. On an 
 large never-associated companion backlog that is an unbounded allocation in the api process,
 reachable from an operator-triggered ``POST /associate``.
 
-The fix pages the unlinked-companion read by ``FileRecord.id`` (``LIMIT batch_size`` + a keyset
-cursor), bounding peak memory to one page's companions plus the media cross-product for the
-directories that page touches, and commits after each page rather than once for the whole run.
+The fix pages the pending-companion read by ``FileRecord.id`` (``LIMIT batch_size`` + a keyset
+cursor), bounding each page's companions regardless of the backlog, and commits after each page
+rather than once for the whole run. Since phaze-rmhfr a companion is decided only with current content
+features, so every companion here is seeded with them (``_with_features``).
 These tests exercise the paging itself (multiple pages, correctness preserved across page
 boundaries, one page's commit count) rather than re-covering the bind-parameter chunking already
 covered by ``test_companion_bind_param_cap.py``.
@@ -23,6 +24,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.companion import COMPANION_TYPES, MEDIA_TYPES, associate_companions
@@ -50,6 +52,22 @@ def _make_file(original_path: str, file_type: str, agent_id: str = "test-fileser
     )
 
 
+def _with_features(companions: list[FileRecord]) -> list[CompanionContentFeatures]:
+    """Current features naming nothing: each companion is decided by the own-folder rule (chain step 4)."""
+    return [
+        CompanionContentFeatures(
+            file_id=companion.id,
+            agent_id=companion.agent_id,
+            fingerprint=companion.sha256_hash,
+            encoding="ascii",
+            byte_size=100,
+            is_tracklist=False,
+            extractor_version=1,
+        )
+        for companion in companions
+    ]
+
+
 @pytest.mark.asyncio
 async def test_associate_companions_commits_once_per_keyset_page(
     session: AsyncSession,
@@ -67,6 +85,8 @@ async def test_associate_companions_commits_once_per_keyset_page(
         media.append(_make_file(f"/music/dir_{i}/media.{media_exts[i % len(media_exts)]}", media_exts[i % len(media_exts)]))
     session.add_all(companions + media)
     await session.flush()
+    session.add_all(_with_features(companions))
+    await session.flush()
 
     real_commit = session.commit
     commit_calls = 0
@@ -79,10 +99,12 @@ async def test_associate_companions_commits_once_per_keyset_page(
     monkeypatch.setattr(session, "commit", _counting_commit)
 
     batch_size = 5
-    count = await associate_companions(session, batch_size=batch_size)
+    outcome = await associate_companions(session, batch_size=batch_size)
 
-    assert count == num_directories, "one companion x one media per directory -> one link each"
-    assert commit_calls == math.ceil(num_directories / batch_size), (
+    assert outcome.links_created == num_directories, "one companion x one media per directory -> one link each"
+    # One commit for the junk-link removal, then one per keyset page of the beside-media walk; the second
+    # walk's first read finds every companion already linked and commits nothing.
+    assert commit_calls == 1 + math.ceil(num_directories / batch_size), (
         "paging by batch_size must produce one commit per page, not one commit for the whole run"
     )
 
@@ -108,12 +130,14 @@ async def test_associate_companions_correct_when_one_directory_spans_multiple_pa
     media = [_make_file(f"/music/bigdir/media_{i}.{media_exts[i % len(media_exts)]}", media_exts[i % len(media_exts)]) for i in range(num_media)]
     session.add_all(companions + media)
     await session.flush()
+    session.add_all(_with_features(companions))
+    await session.flush()
 
     # batch_size smaller than num_companions guarantees this one directory's companions are split
     # across at least two keyset pages.
-    count = await associate_companions(session, batch_size=4)
+    outcome = await associate_companions(session, batch_size=4)
 
-    assert count == num_companions * num_media
+    assert outcome.links_created == num_companions * num_media
     result = await session.execute(select(func.count()).select_from(FileCompanion))
     assert result.scalar_one() == num_companions * num_media
 
@@ -126,12 +150,14 @@ async def test_associate_companions_paged_run_is_idempotent(session: AsyncSessio
     media = [_make_file("/music/idem/media.flac", "flac")]
     session.add_all(companions + media)
     await session.flush()
+    session.add_all(_with_features(companions))
+    await session.flush()
 
-    first_count = await associate_companions(session, batch_size=3)
-    second_count = await associate_companions(session, batch_size=3)
+    first = await associate_companions(session, batch_size=3)
+    second = await associate_companions(session, batch_size=3)
 
-    assert first_count == len(companions)
-    assert second_count == 0
+    assert first.links_created == len(companions)
+    assert second.links_created == 0
     result = await session.execute(select(func.count()).select_from(FileCompanion))
     assert result.scalar_one() == len(companions)
 
@@ -140,5 +166,5 @@ async def test_associate_companions_paged_run_is_idempotent(session: AsyncSessio
 async def test_associate_companions_no_backlog_returns_zero_without_querying_media(session: AsyncSession) -> None:
     """The empty-backlog case (first page returns nothing) must return 0 immediately -- a
     regression guard for the removed early-return special case now folded into the page loop."""
-    count = await associate_companions(session)
-    assert count == 0
+    outcome = await associate_companions(session)
+    assert outcome.links_created == 0

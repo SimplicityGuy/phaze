@@ -112,7 +112,7 @@ async def test_ingested_sibling_cue_reaches_proposal_prompt_and_tracklist_source
     media = by_type["mp3"]
     cue = by_type["cue"]
 
-    assert await associate_companions(session) == 1
+    assert (await associate_companions(session)).links_created == 1
     link = (await session.execute(select(FileCompanion))).scalar_one()
     assert (link.companion_id, link.media_id) == (cue.id, media.id)
 

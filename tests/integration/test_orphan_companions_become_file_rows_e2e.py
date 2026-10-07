@@ -52,7 +52,7 @@ def _fixture_tree(root: Path) -> tuple[list[Path], list[Path], Path]:
 
     ingestible = [
         _write(mixed / "song.mp3", b"synthetic music"),
-        _write(mixed / "song.cue", b'TITLE "Synthetic"'),
+        _write(mixed / "song.cue", b'TITLE "Synthetic Set"\nFILE "song.mp3" MP3\n  TRACK 01 AUDIO\n    TITLE "Opening"\n'),
         _write(media_only / "set.mp4", b"synthetic video"),
     ]
     orphaned_companions = [_write(orphaned / f"orphan-{index:03}.nfo", f"synthetic notes {index}".encode()) for index in range(52)]
@@ -105,9 +105,9 @@ async def test_media_less_companions_become_file_rows_and_the_scans_page_shows_n
     assert str(excluded) not in record_paths
     assert (await session.execute(select(func.count()).select_from(OrphanCompanionDiagnostic))).scalar_one() == 0
 
-    # Association is unchanged by this bead: only song.cue has media beside it, and the former orphans
-    # stay unlinked file rows for the content-first linking chain (phaze-rmhfr) to decide.
-    assert await associate_companions(session) == 1
+    # The linking chain (phaze-rmhfr) links song.cue by its FILE reference. The former orphans name no
+    # media and have none beside them, so they stay unlinked file rows (their few bytes are also junk).
+    assert (await associate_companions(session)).links_created == 1
     link = (await session.execute(select(FileCompanion))).scalar_one()
     linked_companion = await session.get(FileRecord, link.companion_id)
     assert linked_companion is not None

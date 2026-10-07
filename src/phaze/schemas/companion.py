@@ -9,6 +9,10 @@ class AssociateResponse(BaseModel):
     """Response from companion association endpoint."""
 
     new_associations: int
+    removed_associations: int = 0
+    """Links removed because their companion's current content features say junk."""
+    awaiting_features: int = 0
+    """Unlinked companions not decided because they have no current content features yet."""
     message: str
 
 

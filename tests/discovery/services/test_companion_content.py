@@ -17,12 +17,14 @@ from sqlalchemy import select
 from phaze.models.agent import Agent
 from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
 from phaze.schemas.agent_companion_features import CompanionFeaturesRecord
 from phaze.services.companion_content import (
     BackfillCounts,
     count_backfill,
     folder_name_key,
     is_known_stamp,
+    linked_copy_fingerprints,
     refresh_known_stamps,
     select_backfill_page,
     store_companion_features,
@@ -273,3 +275,31 @@ async def test_removing_the_only_copy_beside_media_can_make_the_rest_a_stamp(ses
     await invalidate_content_state(session, beside.id)  # its old bytes' features leave the group
 
     assert [(await _features(session, row.id)).junk_class for row in bare] == ["known_stamp"] * 3
+
+
+async def test_linked_copy_fingerprints_counts_only_a_current_linked_copy_on_the_same_agent(session: AsyncSession, tmp_path: Path) -> None:
+    """The duplicate veto's read (phaze-rmhfr): which contents already have a linked companion carrying them."""
+    session.add(Agent(id="test-fileserver-b", name="test-fileserver-b", kind="fileserver", scan_roots=[]))
+    await session.flush()
+    notes = b"Release notes for the set, long enough to be real content.\n"
+    linked = await _release(session, tmp_path, "linked", "set.mp3", notes)
+    media = await _row(session, tmp_path / "linked" / "set.mp3")
+    unlinked = await _release(session, tmp_path, "unlinked", "other.mp3", b"Different notes, also long enough to count as content.\n")
+    other_agent = await _row(session, _put(tmp_path / "b" / "copy.nfo", notes), agent_id="test-fileserver-b")
+    await store_companion_features(session, _AGENT, [_record(tmp_path / "linked" / "site.nfo"), _record(tmp_path / "unlinked" / "site.nfo")])
+    await store_companion_features(session, "test-fileserver-b", [_record(tmp_path / "b" / "copy.nfo")])
+    session.add(FileCompanion(companion_id=linked.id, media_id=media.id))
+    await session.flush()
+    linked_fp = (await _features(session, linked.id)).fingerprint
+    unlinked_fp = (await _features(session, unlinked.id)).fingerprint
+
+    assert await linked_copy_fingerprints(session, _AGENT, {linked_fp, unlinked_fp}) == {linked_fp}
+    assert await linked_copy_fingerprints(session, _AGENT, {linked_fp}, exclude_file_ids=[linked.id]) == set()
+    # The same bytes on another agent are not a copy here; the link is on agent A only.
+    assert await linked_copy_fingerprints(session, "test-fileserver-b", {linked_fp}) == set()
+    assert other_agent.sha256_hash == linked_fp
+
+    # Features of older bytes do not count: the linked file changed since it was read.
+    linked.sha256_hash = "0" * 64
+    await session.flush()
+    assert await linked_copy_fingerprints(session, _AGENT, {linked_fp}) == set()

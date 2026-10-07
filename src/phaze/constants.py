@@ -86,15 +86,19 @@ _DUPLICATE_MARKER_SUFFIX = re.compile(r"\s*\(\d{1,2}\)$")
 
 
 def companion_match_key(name: str) -> str:
-    """Normalize a folder name or file stem for pairing a sub-folder companion with parent media (phaze-ehryj).
+    """Normalize a file stem for the linking chain's own-folder stem step (phaze-rmhfr; key from phaze-ehryj).
 
-    A companion with no media in its own directory pairs with a parent-directory media file only when
-    this key of the media's stem equals the key of the companion's sub-folder name or of its own stem
-    (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj), or of the parent directory's own
-    name (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). ``services/companion.py``'s
-    association calls THIS function. The scan no longer does: since bead phaze-gafl9 it admits every
-    approved companion wherever it sits (operator decision 6, 2026-10-07, "Yes, include them
-    (Recommended)"; epic phaze-4x319), so linking alone decides.
+    ``services/companion_linking.py``'s step 3 links a companion to the media in its OWN folder whose
+    stem has the same key as the companion's own stem (phaze-9aker method (s): it narrows a
+    multi-media folder to the file the companion is named after). This is the only caller.
+
+    Until phaze-rmhfr this key also paired a companion with no media of its own with media in its
+    PARENT folder whose stem matched the companion's sub-folder name, its own stem, or the parent
+    folder's own name (phaze-ehryj, operator decisions 2026-10-06 "Match by name" and "Add
+    parent-folder name"). That fallback is retired, scan side (phaze-gafl9) and association side
+    (phaze-rmhfr): operator decision 8, 2026-10-07, "Yes, file it (Recommended)"; epic phaze-4x319.
+    phaze-9aker measured it at link precision 0.125-0.345 with 7 of 8 links into the archive's flat
+    dump folder wrong (``docs/spikes/phaze-9aker-companion-matching-accuracy.md`` §4.4-§4.5).
 
     A trailing duplicate-copy marker (`` (1)``, `` (12)``) is dropped first, so a download saved as
     ``<release> (1).mkv`` still matches its ``<release>`` folder (operator decision 2026-10-06,
