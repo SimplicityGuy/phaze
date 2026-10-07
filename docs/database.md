@@ -253,10 +253,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-077)
+### Post-baseline chain (040-078)
 
-`alembic/versions/` holds **39** files: the `039` baseline plus a linear chain to the current
-head, **`077`**.
+`alembic/versions/` holds **40** files: the `039` baseline plus a linear chain to the current
+head, **`078`**.
 
 | Rev | Change |
 |-----|--------|
@@ -297,7 +297,8 @@ head, **`077`**.
 | `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table |
 | `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
 | `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt |
-| `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results — **head** |
+| `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results |
+| `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

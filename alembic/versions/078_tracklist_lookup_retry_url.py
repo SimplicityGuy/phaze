@@ -20,6 +20,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Nullable, no backfill: existing rows have no hint, so the first retry searches as before."""
     op.add_column("tracklist_lookup_cache", sa.Column("retry_url", sa.Text(), nullable=True))
+    op.execute("ANALYZE tracklist_lookup_cache")
 
 
 def downgrade() -> None:
