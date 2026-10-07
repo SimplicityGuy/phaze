@@ -341,3 +341,33 @@ async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_go
     assert not stranded_on_body, "focus was stranded on <body> after Escape closed a drawer whose opener had gone stale"
     landed_in_workspace = await page.evaluate("() => document.getElementById('stage-workspace').contains(document.activeElement)")
     assert landed_in_workspace, "focus did not fall back into the stage workspace when the opener was gone"
+
+
+async def test_escape_returns_focus_to_the_equivalent_row_when_a_swap_replaced_the_opener(page: Any, seed: Any) -> None:
+    """phaze-ozqbk: a REPLACED opener (re-rendered for the same file) gets focus back, not the stage heading.
+
+    An htmx swap (paging, filtering) re-inserts an identical row for the same file; the element the
+    drawer captured is then detached. ``hide()`` must re-find the equivalent control (same tag, same
+    ``hx-get``) instead of stranding the keyboard operator on the stage heading or ``<body>``. The
+    precondition is forced directly: the opener is replaced by a clone while the drawer is open.
+    """
+    target = await seed.file(filename="<set-01>.mp3")
+    await open_shell(page, "/s/files")
+    row = f'#files-table-view tr[hx-get="/record/{target.id}"]'
+    await page.wait_for_selector(row)
+    await page.locator(row).focus()
+    async with swap_settles(page):
+        await page.keyboard.press("Enter")
+    await _wait_for_record(page, target.id)
+
+    await page.evaluate(
+        """selector => {
+            const old = document.querySelector(selector);
+            window.__oldOpener = old;
+            old.replaceWith(old.cloneNode(true));
+        }""",
+        row,
+    )
+    assert await page.evaluate("() => !window.__oldOpener.isConnected"), "the opener is still connected -- the precondition was not forced"
+
+    await _close_and_expect_opener(page, row)
