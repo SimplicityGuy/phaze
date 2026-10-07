@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-1wvb: the BOUNDED, paged per-set Tracklist coverage table (D-07/D-08).
 
    The Tracklist workspace used to render one row per Tracklist inline and unbounded
@@ -76,9 +77,8 @@
 {% if rows %}
     {% include "pipeline/partials/_file_table.html" %}
 {% else %}
-    {% import "ui/primitives.html" as ui %}
     {% call ui.state("empty", "No tracklists yet", "Lookup is the required first step. Start a bounded provider-safe batch, then return here to inspect matches.") %}
-        <a href="/s/tracklist#tracklist-lookup" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Go to Lookup</a>
+        <a href="/s/tracklist#tracklist-lookup" class="{{ ui.btn('primary', 'md') }}">Go to Lookup</a>
     {% endcall %}
 {% endif %}
 
@@ -88,7 +88,7 @@
        sort forward via sort.query_state(), so Prev/Next stays inside the operator's chosen order
        instead of silently snapping back to the default mid-scan. Empty when unsorted. #}
     {% set _qs = '&page_size=' ~ sets_page.page_size ~ (sort.query_state() if sort else '') %}
-    {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
+    {% set _pbtn = ui.btn('secondary', 'sm') %}
     {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed' %}
     <nav aria-label="Tracklist sets pagination" class="flex items-center justify-between mt-4 px-6 pb-4">
         <p class="text-sm text-muted ">Page {{ sets_page.page }}</p>

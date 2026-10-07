@@ -12,9 +12,9 @@
    The nine-fact list is deliberately NOT here: the full page renders it in the sidebar and the
    drawer in its own header block, so this subtree renders byte-identically in both
    presentations -- which is what `test_record_full_page.py`'s text-equality assertion pins. #}
+{% import "ui/primitives.html" as ui %}
 {% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-muted ' %}
 {% set _panel = 'rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel' %}
-{% set _summary = 'flex cursor-pointer items-center gap-2 font-jura text-[11px] font-medium uppercase tracking-wider text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500' %}
 <div data-record-content class="space-y-6 px-6 py-5">
         {# 1 — Changes needing review for THIS file: a COUNT plus a link into Changes Review.
            Approval is intentionally centralized (ADR-0008 (changes review approval boundary): Changes Review is the ONLY UI workspace
@@ -30,10 +30,10 @@
                operator reads were still on the pre-ADR term. #}
             <p class="font-jura text-[11px] font-medium uppercase tracking-wider {% if pending_rows %}text-warn{% else %}text-muted{% endif %} ">Changes needing review for this file</p>
             {% if pending_rows %}
-            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
+            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ (pending_rows | length) | thousands }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
             <a href="/s/rename?status=needs_review"
                {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
-               class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
+               class="{{ ui.btn('primary', 'md', 'mt-3') }}">Open Changes Review</a>
             {% else %}
             <p class="mt-2 text-sm text-gray-600 dark:text-gray-300"><span class="text-ok" aria-hidden="true">✓</span> This file is up to date — nothing needs review.</p>
             {% endif %}
@@ -46,7 +46,7 @@
         <section id="analysis" data-set-panel class="scroll-mt-4 {{ _panel }}" aria-labelledby="analysis-heading">
             <p id="analysis-heading" class="{{ _eyebrow }} mb-3">Set panel · windowed analysis</p>
             <div class="relative min-w-0 overflow-x-auto"><table class="w-full table-fixed"><tbody><tr id="timeline-{{ file.id }}">
-                {% include "proposals/partials/analysis_timeline.html" %}
+                {% with timeline_embedded = true %}{% include "proposals/partials/analysis_timeline.html" %}{% endwith %}
             </tr></tbody></table></div>
         </section>
 
@@ -80,8 +80,7 @@
            phaze-x1qr3.8: it is a fold, but one that ships OPEN — troubleshooting is the second
            reason a record gets opened at all, and the trace buttons must be reachable without a
            click that a keyboard user has to discover first. #}
-        <details data-stage-eligibility open class="{{ _panel }}">
-            <summary class="{{ _summary }}">Stage eligibility · click a stage to trace</summary>
+        {% call ui.disclosure("Stage eligibility · click a stage to trace", attrs={"data-stage-eligibility": ""}, open=true) %}
             <div class="mt-3 space-y-2">
             {% for stage_value, stage_label, is_enrich in [
                     ('metadata', 'Metadata', true), ('analyze', 'Analyze', true),
@@ -151,7 +150,7 @@
                 </div>
             {% endfor %}
             </div>
-        </details>
+        {% endcall %}
 
         {# 5 — Extracted metadata (phaze-tuy9m): the FileMetadata tag row -- artist/title/album/
            year/genre/track/bitrate/duration, plus the raw tag dict in its own inner fold. Named
@@ -185,17 +184,15 @@
                 <p class="text-sm text-muted ">No tag fields were extracted.</p>
                 {% endif %}
                 {% if metadata_card.raw_tags_json %}
-                <details data-metadata-raw-tags class="mt-3">
-                    <summary class="cursor-pointer text-xs text-muted ">Raw tags</summary>
+                {% call ui.disclosure("Raw tags", attrs={"data-metadata-raw-tags": ""}, panel=false, quiet=true) %}
                     <pre class="relative mt-2 max-h-64 overflow-auto rounded-md bg-gray-100 p-2 text-xs dark:bg-black/30">{{ metadata_card.raw_tags_json }}</pre>
-                </details>
+                {% endcall %}
                 {% endif %}
             </div>
         </section>
 
         {# 6 — Metadata diff + Identity, folded: reference the operator consults, not reads. #}
-        <details data-metadata-identity class="{{ _panel }}">
-            <summary class="{{ _summary }}">Metadata &amp; identity</summary>
+        {% call ui.disclosure("Metadata & identity", attrs={"data-metadata-identity": ""}) %}
             <div class="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <div>
                     <p class="{{ _eyebrow }} mb-2">Metadata</p>
@@ -216,11 +213,10 @@
                     {% endif %}
                 </div>
             </div>
-        </details>
+        {% endcall %}
 
         {# 7 — History: read-only per-file event list (ExecutionLog + TagWriteLog), folded. #}
-        <details id="history" data-history class="scroll-mt-4 {{ _panel }}">
-            <summary class="{{ _summary }}">History</summary>
+        {% call ui.disclosure("History", attrs={"id": "history", "data-history": ""}) %}
             {% if history %}
             <ul class="mt-3 space-y-1 font-mono text-xs text-muted ">
                 {% for h in history %}
@@ -235,5 +231,5 @@
             {% else %}
             <p class="mt-3 text-sm text-muted ">No recorded events yet.</p>
             {% endif %}
-        </details>
+        {% endcall %}
 </div>

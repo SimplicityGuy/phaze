@@ -210,7 +210,7 @@ async def test_dashboard_renders_trigger_scan_card(
     response = await ac.get("/s/discover", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="trigger-scan-heading"' in response.text
-    assert ">Trigger Scan</h2>" in response.text
+    assert ">Trigger Scan</h3>" in response.text
     assert '<select id="scan-agent"' in response.text
     assert 'id="scan-path-picker"' in response.text
     # Agent option populated as "{name} ({id})" per CONTEXT D-Discretion.
@@ -408,8 +408,8 @@ async def test_get_recent_scans_partial_renders_table(
     # Known cells from the seeded row.
     assert "Test Agent" in response.text
     assert "/data/music/live-scan/" in response.text
-    assert "5500" in response.text
-    assert "9000" in response.text
+    assert "5,500" in response.text
+    assert "9,000" in response.text
 
 
 @pytest.mark.asyncio

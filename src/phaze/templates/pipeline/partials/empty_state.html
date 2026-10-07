@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 61 (61-05, RECORD-04): the first-run empty-state guide.
 
    Content-only fragment swapped into #stage-workspace when the file count is exactly 0
@@ -18,7 +19,7 @@
    card binds to $store.pipeline (refreshed by the single chrome poll's OOB seeds). NO
    self-poll trigger and NO JS timer are added here — no second loop.
 #}
-{% set _scan_btn = 'inline-flex items-center justify-center h-9 px-4 rounded-lg bg-action-brand text-white hover:bg-action-brand-hover font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _scan_btn = ui.btn('primary', 'md') %}
 <div data-empty-state class="grid place-items-center p-6" x-data>
     <div class="w-[560px] flex flex-col items-center text-center gap-6">
         {# Wave logo (64×64, brand blue) — the brand mark. Static inline SVG, no external fetch. #}

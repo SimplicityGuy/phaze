@@ -45,7 +45,7 @@
 {% elif unreplayable %}
     <div id="discover-recover-status">
         <span class="inline-flex items-center gap-2 text-sm text-warn font-medium">
-            Recovery finished — {{ reenqueued }} re-enqueued, but {{ unreplayable }} item{{ '' if unreplayable == 1 else 's' }} could NOT be recovered and {{ 'was' if unreplayable == 1 else 'were' }} skipped.
+            Recovery finished — {{ reenqueued | thousands }} re-enqueued, but {{ unreplayable | thousands }} item{{ '' if unreplayable == 1 else 's' }} could NOT be recovered and {{ 'was' if unreplayable == 1 else 'were' }} skipped.
         </span>
         <span class="block mt-1 text-xs text-muted ">
             Skipped: {{ unreplayable_stages|join(', ') }}. Their queued work carried credentials that had expired and could not be regenerated
@@ -56,7 +56,7 @@
 {% else %}
     <div id="discover-recover-status">
         <span class="inline-flex items-center gap-2 text-sm text-ok font-medium">
-            Recovery complete — {{ reenqueued }} re-enqueued, {{ already_running }} already running.
+            Recovery complete — {{ reenqueued | thousands }} re-enqueued, {{ already_running | thousands }} already running.
         </span>
         <span class="block mt-1 text-xs text-muted ">
             {% if errored %}{{ errored }} row{{ '' if errored == 1 else 's' }} hit a transient error and stayed in the ledger for the next pass. {% endif %}

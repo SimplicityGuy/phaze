@@ -33,12 +33,12 @@
     {% if not oob %}<p class="hidden" aria-hidden="true" x-init="$store.pipeline.analyzeRunning = {{ _running_total if _running_total is not none else 'null' }}; $store.pipeline.analyzeWaiting = {{ _waiting_total if _waiting_total is not none else 'null' }}"></p>{% endif %}
     <div class="flex flex-col gap-1 px-4 pt-3 sm:flex-row sm:items-end sm:justify-between">
         <h2 id="analyze-queue-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Running now</h2>
-        <p class="text-xs text-muted "><span class="font-mono tabular-nums">{{ _running_total if _running_total is not none else "—" }}</span> running · <span class="font-mono tabular-nums">{{ _waiting_total if _waiting_total is not none else "—" }}</span> waiting</p>
+        <p class="text-xs text-muted "><span class="font-mono tabular-nums">{{ _running_total | thousands }}</span> running · <span class="font-mono tabular-nums">{{ _waiting_total | thousands }}</span> waiting</p>
     </div>
     {% if _rows is none %}
         <p role="status" class="px-4 py-3 text-sm text-muted ">Running analyses could not be read this cycle. It refreshes on the next update.</p>
     {% elif not _rows %}
-        <p role="status" class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total }} file(s) are waiting for a slot.{% endif %}</p>
+        <p role="status" class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total | thousands }} file(s) are waiting for a slot.{% endif %}</p>
     {% else %}
     {% call ui.data_table("Analyses running now", id="analyze-running-table") %}
         <thead class="table-head">
@@ -65,10 +65,10 @@
                         {% set pct = work if work is not none and total is not none and total > 0 else window_pct %}
                         <div class="min-w-0">
                             <div class="mb-1 text-[10px] font-jura font-medium uppercase tracking-wider text-muted">{{ tier }}</div>
-                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} {{ 'work' if work is not none else 'windows analyzed' }} for {{ run.label }}" aria-valuemin="0"{% if work is not none %} aria-valuemax="100" aria-valuenow="{{ pct }}"{% elif total is not none %} aria-valuemax="{{ total }}"{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ [done, total]|min }}"{% else %} aria-valuetext="Progress unavailable"{% endif %}{% else %} aria-valuetext="Sizing windows"{% endif %}>
+                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} {{ 'work' if work is not none else 'windows analyzed' }} for {{ run.label }}" aria-valuemin="0"{% if work is not none %} aria-valuemax="100" aria-valuenow="{{ pct }}"{% elif total is not none %} aria-valuemax="{{ total | thousands }}"{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ ([done, total]|min) | thousands }}"{% else %} aria-valuetext="Progress unavailable"{% endif %}{% else %} aria-valuetext="Sizing windows"{% endif %}>
                                 <div class="h-full rounded-full {{ fill }}" style="width: {{ pct }}%"></div>
                             </div>
-                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done if done is not none else "—" }}/{{ total if total is not none else "—" }}{% if work is not none and known %} · {{ pct }}% work{% elif known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
+                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done | thousands }}/{{ total | thousands }}{% if work is not none and known %} · {{ pct }}% work{% elif known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
                         </div>
                         {% endfor %}
                     </div>

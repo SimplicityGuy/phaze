@@ -31,6 +31,6 @@
 </span>
 {% else %}
 <span class="text-sm text-ok font-medium">
-    Re-queued {{ count }} failed file(s) for analysis.
+    Re-queued {{ count | thousands }} failed file(s) for analysis.
 </span>
 {% endif %}

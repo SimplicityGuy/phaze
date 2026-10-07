@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# phaze-37i1.3: the per-entry audit-log detail, as an EXPANDED ROW beneath its trigger row --
    same shape as proposals/partials/row_detail.html (file identity + AI reasoning) and the
    Agents-table expanded row (admin/partials/_agent_detail_row.html): a table's detail reads as
@@ -23,7 +24,7 @@
                 onclick="var row = document.getElementById('audit-detail-{{ log.id }}'); if (row) { row.classList.add('hidden'); row.innerHTML = ''; }
                          var trigger = document.getElementById('audit-details-trigger-{{ log.id }}'); if (trigger) { trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }"
                 aria-label="Close details"
-                class="rounded-lg px-2 py-0.5 text-sm text-muted hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-100">
+                class="{{ ui.btn('ghost', 'sm') }}">
             &#10005;<span class="sr-only"> Close</span>
         </button>
     </div>

@@ -39,8 +39,8 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
 {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary) operator vocabulary: "needing review", not "pending review". #}
-{% set subcount = "'" ~ preflight.total ~ " ready to execute · " ~ stats.pending ~ " still needing review'" %}
-{% set _apply_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-warn hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set subcount = "'" ~ (preflight.total | thousands) ~ " ready to execute · " ~ (stats.pending | thousands) ~ " still needing review'" %}
+{% set _apply_btn = ui.btn('primary', 'md') %}
 {% set _eyebrow = 'font-jura text-[11px] uppercase tracking-[0.2em] text-muted ' %}
 {% set actions %}
     {# R-4 mass-action guard. The button no longer dispatches directly: it opens the shared
@@ -53,7 +53,7 @@
             disabled
             aria-describedby="apply-blocked-reason"
             {% endif %}
-            aria-label="Review and execute {{ preflight.total }} approved operation{{ '' if preflight.total == 1 else 's' }}"
+            aria-label="Review and execute {{ preflight.total | thousands }} approved operation{{ '' if preflight.total == 1 else 's' }}"
             class="{{ _apply_btn }}">EXECUTE APPROVED</button>
 {% endset %}
 {% call ws.workspace(title=page_name('apply'), subcount=subcount, actions=actions) %}
@@ -87,7 +87,7 @@
                     {% for dest, count in preflight.conflicts %}
                     <tr class="border-t border-red-200 dark:border-red-900">
                         <td class="break-all px-3 py-2 font-mono text-gray-800 dark:text-gray-200">{{ dest }}</td>
-                        <td class="px-3 py-2 text-right tabular-nums text-danger ">{{ count }}</td>
+                        <td class="px-3 py-2 text-right tabular-nums text-danger ">{{ count | thousands }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -98,13 +98,13 @@
 
     {% if preflight.operations %}
     <div class="px-6 pt-4">
-        <p class="{{ _eyebrow }} mb-2">Will run — {{ preflight.total }} operation{{ '' if preflight.total == 1 else 's' }}</p>
+        <p class="{{ _eyebrow }} mb-2">Will run — {{ preflight.total | thousands }} operation{{ '' if preflight.total == 1 else 's' }}</p>
         <ul class="space-y-2">
             {% for op in preflight.operations %}
             <li class="rounded-lg border border-gray-200 p-3 dark:border-phaze-border">
                 <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
                     <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ op.label }}</span>
-                    <span class="font-jura text-sm tabular-nums text-ok ">{{ op.count }}</span>
+                    <span class="font-jura text-sm tabular-nums text-ok ">{{ op.count | thousands }}</span>
                 </div>
                 <p class="mt-1 text-xs text-muted ">{{ op.consequence }}</p>
                 <p class="mt-1 text-xs text-muted "><span class="font-semibold">Reversibility:</span> {{ op.reversibility }}</p>
@@ -121,7 +121,7 @@
             {% for agent in preflight.agents %}
             <li class="inline-flex items-center gap-2 rounded-md border border-gray-200 px-2.5 py-1 text-xs dark:border-phaze-border">
                 <span class="text-gray-800 dark:text-gray-200">{{ agent.name }}</span>
-                <span class="tabular-nums text-muted ">{{ agent.count }}</span>
+                <span class="tabular-nums text-muted ">{{ agent.count | thousands }}</span>
             </li>
             {% endfor %}
         </ul>
@@ -133,7 +133,7 @@
         {# phaze-tzy6s.17: the "+" is not decoration. One contributing row (tag writes) can only be
            counted by a capped scan, so when it saturates this total is a FLOOR and says so. An
            exact-looking total sitting above a row openly marked "N+" is the worse of the two. #}
-        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
+        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total | thousands }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
         <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
@@ -151,7 +151,7 @@
                             {{ exclusion.label }}
                             {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-danger ">blocking</span>{% endif %}
                         </td>
-                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count }}{{ "+" if exclusion.at_least }}</td>
+                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count | thousands }}{{ "+" if exclusion.at_least }}</td>
                         <td class="px-3 py-2 align-top text-muted ">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
                     </tr>
                     {% endfor %}
@@ -169,19 +169,19 @@
         <p class="{{ _eyebrow }} mb-2">Not dispatched by this control</p>
         <p class="text-xs text-muted ">
             EXECUTE APPROVED runs approved filename and destination changes only.
-            Tag writes are authorized and dispatched separately (ADR-0008 (changes review approval boundary)); this control does not run them.
+            Tag writes are authorized and dispatched separately; this control does not run them.
             Dispatch them from the Tag Changes section of Changes Review.
             Duplicate resolution is its own decision, taken in Duplicates.
             Cue sheets are generated artifacts, written on the Cue sheets stage.
         </p>
     </div>
 
-    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-7">
-        <div>
-            <span class="{{ _eyebrow }}">Total</span>
-            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
-        </div>
-        {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): these are proposal statuses, so they carry the operator
+    <div class="px-6 pt-4">
+        {# phaze-nwmsu: the status strip is the shared ui.metric_strip / ui.metric (framed, dividers, mono values), and a
+           metric with no data renders an em dash. `stats.avg_confidence` is None when there are no proposals to average. #}
+        {% call ui.metric_strip("Proposal status counts") %}
+            {{ ui.metric("Total", stats.total) }}
+            {# phaze-tzy6s.17 / ADR-0008 (changes review approval boundary): these are proposal statuses, so they carry the operator
            vocabulary -- `pending` reads "Needs Review".
 
            phaze-te2g3 FIXED the accounting hole .17 filed here. `stats.approved` still counts ONLY
@@ -194,45 +194,28 @@
 
            phaze-5uh4u adds `stats.failed` (operator vocabulary: Blocked) below, the last missing
            term -- the five status numbers now sum to Total unconditionally. #}
-        <div>
-            <span class="{{ _eyebrow }}">Needs Review</span>
-            <p class="text-xl font-semibold text-warn ">{{ stats.pending }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Approved</span>
-            <p class="text-xl font-semibold text-ok ">{{ stats.approved }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Executed</span>
-            <p class="text-xl font-semibold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Blocked</span>
-            <p class="text-xl font-semibold text-danger ">{{ stats.failed }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Rejected</span>
-            <p class="text-xl font-semibold text-danger ">{{ stats.rejected }}</p>
-        </div>
-        <div>
-            <span class="{{ _eyebrow }}">Avg confidence</span>
-            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
-        </div>
+            {{ ui.metric("Needs Review", stats.pending, tone="attention") }}
+            {{ ui.metric("Approved", stats.approved, tone="success") }}
+            {{ ui.metric("Executed", stats.executed) }}
+            {{ ui.metric("Blocked", stats.failed, tone="danger") }}
+            {{ ui.metric("Rejected", stats.rejected, tone="danger") }}
+            {{ ui.metric("Avg confidence", ("%.0f%%" | format((stats.avg_confidence or 0) * 100)) if stats.avg_confidence is not none else "—") }}
+        {% endcall %}
     </div>
 
     {% if preflight.can_execute %}
     {{ ui.confirmation(
         id="apply-confirm",
-        title="Execute " ~ preflight.total ~ " approved operation" ~ ("" if preflight.total == 1 else "s") ~ "?",
+        title="Execute " ~ (preflight.total | thousands) ~ " approved operation" ~ ("" if preflight.total == 1 else "s") ~ "?",
         message="Files are copied to their proposed destination, verified, then the original is deleted. Originals survive until"
                 ~ " verification succeeds, and every operation is written to the audit log. "
-                ~ preflight.excluded_total ~ ("+" if preflight.excluded_total_at_least else "")
+                ~ (preflight.excluded_total | thousands) ~ ("+" if preflight.excluded_total_at_least else "")
                 ~ " item" ~ ("" if preflight.excluded_total == 1 and not preflight.excluded_total_at_least else "s")
                 ~ " listed above are excluded and will not be touched."
                 ~ (" The excluded figure is a lower bound: the tag-write queue scan is capped." if preflight.excluded_total_at_least else ""),
         action="/execution/start",
         target="#apply-execute-response",
-        confirm_label="Execute " ~ preflight.total,
+        confirm_label="Execute " ~ (preflight.total | thousands),
         cancel_label="Cancel",
         tone="attention") }}
     {% endif %}

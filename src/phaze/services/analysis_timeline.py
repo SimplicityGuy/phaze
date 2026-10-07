@@ -18,6 +18,7 @@ from phaze.services.set_projection import (
     flicker_filtered_key_runs,
     placeable_key_runs,
 )
+from phaze.utils.humanize import format_duration
 
 
 if TYPE_CHECKING:
@@ -211,13 +212,8 @@ def bpm_segments(
 
 
 def format_elapsed_time(seconds: float) -> str:
-    """Format an elapsed-time axis value without implying a wall-clock time."""
-    whole = max(0, round(seconds))
-    hours, remainder = divmod(whole, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
+    """Format an elapsed-time axis value without implying a wall-clock time (the shared duration format)."""
+    return format_duration(seconds)
 
 
 def elapsed_time_ticks(total_sec: float, *, target_intervals: int = 6) -> list[dict[str, float | str]]:

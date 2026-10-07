@@ -13,6 +13,7 @@ from phaze.database import get_session
 from phaze.routers.pipeline._common import _background_tasks, logger, router, templates
 from phaze.services import enqueue_router
 from phaze.services.pipeline import get_proposal_busy_count, get_proposal_pending_batches
+from phaze.utils.humanize import format_count
 
 
 if TYPE_CHECKING:
@@ -91,7 +92,7 @@ async def trigger_proposals(
     return {
         "enqueued_batches": len(batches),
         "total_files": total_files,
-        "message": f"Enqueued {len(batches)} batches ({total_files} files) for proposal generation",
+        "message": f"Enqueued {format_count(len(batches))} batches ({format_count(total_files)} files) for proposal generation",
     }
 
 

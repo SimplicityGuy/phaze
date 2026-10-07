@@ -14,9 +14,12 @@ from types import SimpleNamespace
 from fastapi.templating import Jinja2Templates
 import pytest
 
+from phaze.web.template_globals import register_format_filters
+
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "src" / "phaze" / "templates"
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_format_filters(_templates.env)
 _MACRO_FILE = TEMPLATES_DIR / "ui" / "primitives.html"
 
 # A pill-shaped span (buttons and links are controls, not status pills): an opening tag (any whitespace, newlines included) that is `rounded-full` AND has horizontal

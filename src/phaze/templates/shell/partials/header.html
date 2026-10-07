@@ -92,11 +92,11 @@
                   :class="$store.pipeline.seedKnown && ($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
         </span>
         <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-           :aria-label="$store.pipeline.seedKnown ? $store.pipeline.agentOnline + ' agents online; ' + $store.pipeline.computeLanesActive + ' compute lanes active' : 'Agent and compute lane counts loading'"
+           :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online; ' + formatCount($store.pipeline.computeLanesActive) + ' compute lanes active' : 'Agent and compute lane counts loading'"
            class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-             <span>Agents online&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? $store.pipeline.agentOnline : '—'">{{ pipeline_seed.agentOnline if pipeline_seed else '—' }}</span></span>
+             <span>Agents online&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'">{{ (pipeline_seed.agentOnline if pipeline_seed else '—') | thousands }}</span></span>
              <span aria-hidden="true" class="text-muted">·</span>
-             <span>Lanes active&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? $store.pipeline.computeLanesActive : '—'">{{ pipeline_seed.computeLanesActive if pipeline_seed else '—' }}</span></span>
+             <span>Lanes active&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.computeLanesActive) : '—'">{{ (pipeline_seed.computeLanesActive if pipeline_seed else '—') | thousands }}</span></span>
         </a>
     </div>
 

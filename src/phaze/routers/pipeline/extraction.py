@@ -24,6 +24,7 @@ from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.pipeline import get_file_stage_buckets, get_metadata_failed_files, get_metadata_pending_files
+from phaze.utils.humanize import format_count
 
 
 if TYPE_CHECKING:
@@ -106,9 +107,9 @@ async def trigger_metadata_extraction(
         task.add_done_callback(_background_tasks.discard)
 
     enqueued = sum(len(group) for _, group in routed_groups)
-    message = f"Enqueued {enqueued} files for metadata extraction"
+    message = f"Enqueued {format_count(enqueued)} files for metadata extraction"
     if skipped_files:
-        message += f" ({len(skipped_files)} skipped: owning agent offline)"
+        message += f" ({format_count(len(skipped_files))} skipped: owning agent offline)"
     return {"enqueued": enqueued, "message": message}
 
 

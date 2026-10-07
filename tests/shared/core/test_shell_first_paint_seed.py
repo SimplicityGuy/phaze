@@ -84,12 +84,17 @@ async def test_initial_html_carries_the_real_counts_not_zero(client: AsyncClient
     assert seed["notYetEnriched"] == _FILES
 
     # What the browser paints BEFORE Alpine boots: the static fallback text, not the old "0".
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? \$store\.pipeline\.agentOnline[^>]*>([^<]*)</span>') == "2"
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? \$store\.pipeline\.computeLanesActive[^>]*>([^<]*)</span>') == str(
+    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.agentOnline\)[^>]*>([^<]*)</span>') == "2"
+    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.computeLanesActive\)[^>]*>([^<]*)</span>') == str(
         seed["computeLanesActive"]
     )
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? \$store\.pipeline\.discovered : [^>]*>([^<]*)</span>') == str(_FILES)
-    assert _text_of(body, r"""x-text="\$store\.pipeline\.seedKnown \? `\$\{\$store\.pipeline\.analyzeDone\}[^>]*>([^<]*)</span>""") == f"0 / {_FILES}"
+    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.discovered\) : [^>]*>([^<]*)</span>') == str(
+        _FILES
+    )
+    assert (
+        _text_of(body, r"""x-text="\$store\.pipeline\.seedKnown \? `\$\{formatCount\(\$store\.pipeline\.analyzeDone\)\}[^>]*>([^<]*)</span>""")
+        == f"0 / {_FILES}"
+    )
 
 
 @pytest.mark.asyncio
@@ -106,9 +111,12 @@ async def test_unmeasurable_seed_renders_em_dash_placeholders(client: AsyncClien
     body = resp.text
 
     assert _seed_in_html(body) == {}
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? \$store\.pipeline\.agentOnline[^>]*>([^<]*)</span>') == "—"
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? \$store\.pipeline\.discovered : [^>]*>([^<]*)</span>') == "—"
-    assert _text_of(body, r"""x-text="\$store\.pipeline\.seedKnown \? `\$\{\$store\.pipeline\.analyzeDone\}[^>]*>([^<]*)</span>""") == "— / —"
+    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.agentOnline\)[^>]*>([^<]*)</span>') == "—"
+    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.discovered\) : [^>]*>([^<]*)</span>') == "—"
+    assert (
+        _text_of(body, r"""x-text="\$store\.pipeline\.seedKnown \? `\$\{formatCount\(\$store\.pipeline\.analyzeDone\)\}[^>]*>([^<]*)</span>""")
+        == "— / —"
+    )
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
@@ -24,6 +25,11 @@ from phaze.services.pagination import MIN_PAGE_SIZE
 if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _tabs(html: str) -> str:
+    """The audit tab strip with each count chip folded back to the ``Label (N)`` text the assertions read (phaze-gmh3f)."""
+    return re.sub(r"\s*<span[^>]*count chip[^>]*>([^<]*)</span>", r" (\1)", html)
 
 
 async def create_test_execution_log(
@@ -266,7 +272,12 @@ async def test_audit_log_never_run_surfaces_convergence_gate_count_and_generate_
     assert response.status_code == 200
     assert "2 files ready for proposal generation" in response.text
     assert 'href="/s/propose"' in response.text
-    assert "Generate Proposals" in response.text
+    # phaze-9v49r: the CTA is a navigation link named for the page it opens, never a "Generate Proposals" verb.
+    assert "Generate Proposals" not in response.text
+    link = re.search(r'<a href="/s/propose"[^>]*>([^<]*)</a>', response.text)
+    assert link is not None
+    assert link.group(1) == "Open Propose changes"
+    assert "hx-post" not in link.group(0)
     # No new trigger: the audit page must not post an enqueue of its own.
     assert "/pipeline/proposals" not in response.text
 
@@ -326,11 +337,11 @@ async def test_audit_log_empty_state_tab_counts_stay_truthful(client: AsyncClien
 
     response = await client.get("/audit/?status=failed", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "All (1)" in response.text
-    assert "Completed (1)" in response.text
-    assert "Failed (0)" in response.text
-    assert "In flight · running (0)" in response.text
-    assert "In flight · queued (0)" in response.text
+    assert "All (1)" in _tabs(response.text)
+    assert "Completed (1)" in _tabs(response.text)
+    assert "Failed (0)" in _tabs(response.text)
+    assert "In flight · running (0)" in _tabs(response.text)
+    assert "In flight · queued (0)" in _tabs(response.text)
 
 
 @pytest.mark.asyncio
@@ -338,14 +349,15 @@ async def test_audit_pending_filter_is_complete_and_invalid_status_normalizes_to
     await create_test_execution_log(session, status=ExecutionStatus.PENDING, source_path="/music/pending.mp3")
 
     pending = await client.get("/audit/?status=pending", headers={"HX-Request": "true"})
-    assert "In flight · queued (1)" in pending.text
+    assert "In flight · queued (1)" in _tabs(pending.text)
     assert (
-        'aria-pressed="true"' in pending.text[pending.text.index("In flight · queued (1)") - 500 : pending.text.index("In flight · queued (1)") + 100]
+        'aria-pressed="true"'
+        in _tabs(pending.text)[_tabs(pending.text).index("In flight · queued (1)") - 500 : _tabs(pending.text).index("In flight · queued (1)") + 100]
     )
 
     invalid = await client.get("/audit/?status=not-a-status", headers={"HX-Request": "true"})
     assert invalid.status_code == 200
-    assert "In flight · queued (1)" in invalid.text
+    assert "In flight · queued (1)" in _tabs(invalid.text)
     assert "No entries match this filter" not in invalid.text
 
 
@@ -379,7 +391,7 @@ async def test_audit_degraded_stats_do_not_render_fabricated_zero_tab_totals(cli
     assert "Audit history unavailable" in response.text
     for label in ("All", "In flight · queued", "Completed", "Failed", "In flight · running"):
         assert label in response.text
-        assert f"{label} (0)" not in response.text
+        assert f"{label} (0)" not in _tabs(response.text)
 
 
 @pytest.mark.asyncio
@@ -460,9 +472,9 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
     response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Should show total of 3 and 2 completed
-    assert "All (3)" in response.text
-    assert "Completed (2)" in response.text
-    assert "Failed (1)" in response.text
+    assert "All (3)" in _tabs(response.text)
+    assert "Completed (2)" in _tabs(response.text)
+    assert "Failed (1)" in _tabs(response.text)
     assert 'aria-pressed="true"' in response.text
 
 

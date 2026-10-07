@@ -5,7 +5,7 @@
    existing file-unit endpoints + their copy-asserting tests keep using it. #}
 {% if count > 0 %}
 <span class="text-sm text-ok font-medium">
-    Enqueued {{ count }} tracklists for {{ action }}.
+    Enqueued {{ count | thousands }} tracklists for {{ action }}.
 </span>
 {% else %}
 <span class="text-sm text-muted ">No tracklists ready for {{ action }}.</span>

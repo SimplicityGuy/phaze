@@ -1,7 +1,7 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
 {% set eligible_count = cue_cards | selectattr('eligible') | list | length %}
-{% set subcount = "'" ~ eligible_count ~ " artifacts ready to generate'" %}
+{% set subcount = "'" ~ (eligible_count | thousands) ~ " artifacts ready to generate'" %}
 {% call ws.workspace(title=page_name('cue'), subcount=subcount) %}
     <div class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
         <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Cue sheets are generated outputs written beside their source audio. Preview the exact content here, then explicitly queue generation.</p>
@@ -35,7 +35,7 @@
     </div>
     {% else %}
         {% call ui.state("empty", "No cue artifacts yet", "Apply a file, approve its tracklist, and provide per-track timestamps before a cue sheet can be previewed.") %}
-            <a href="/s/tracklist" class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300">Open Tracklists</a>
+            <a href="/s/tracklist" class="{{ ui.btn('secondary', 'md') }}">Open Tracklists</a>
         {% endcall %}
     {% endif %}
 {% endcall %}

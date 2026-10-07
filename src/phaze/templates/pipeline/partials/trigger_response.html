@@ -12,7 +12,7 @@
    fileserver are merely skipped (no state change), so the awaiting==0 case keeps the original copy. #}
 <span class="text-sm text-warn font-medium">
     {%- if awaiting %}
-    No compute agent online — {{ awaiting }} held awaiting cloud{% if skipped %}, {{ skipped }} skipped (no local agent){% endif %}. Held files release automatically when a compute agent connects.
+    No compute agent online — {{ awaiting | thousands }} held awaiting cloud{% if skipped %}, {{ skipped | thousands }} skipped (no local agent){% endif %}. Held files release automatically when a compute agent connects.
     {%- else %}
     No active agent available — start an agent worker and retry. 0 files enqueued for {{ action }}.
     {%- endif %}
@@ -22,11 +22,11 @@
    short/null -> local, long-with-no-compute -> held (awaiting cloud), short/null-with-no-
    fileserver -> skipped. All values are server-computed ints (no operator free-text). #}
 <span class="text-sm text-ok font-medium">
-    Enqueued {{ local }} local, {{ cloud }} cloud, {{ awaiting }} awaiting cloud for {{ action }}{% if skipped %} — {{ skipped }} skipped (no local agent){% endif %}.
+    Enqueued {{ local | thousands }} local, {{ cloud | thousands }} cloud, {{ awaiting | thousands }} awaiting cloud for {{ action }}{% if skipped %} — {{ skipped | thousands }} skipped (no local agent){% endif %}.
 </span>
 {% elif count > 0 %}
 <span class="text-sm text-ok font-medium">
-    Enqueued {{ count }} files for {{ action }}{% if batches %} in {{ batches }} batches{% endif %}.
+    Enqueued {{ count | thousands }} files for {{ action }}{% if batches %} in {{ batches }} batches{% endif %}.
 </span>
 {% else %}
 <span class="text-sm text-muted ">No files ready for {{ action }}.</span>

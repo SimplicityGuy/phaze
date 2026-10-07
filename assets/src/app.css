@@ -134,6 +134,28 @@ body { font-family: 'Inter', sans-serif; }
         @apply inline-flex items-center gap-1 rounded-sm uppercase tracking-[0.2em] hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-300;
     }
 }
+/* phaze-gmh3f: ONE expand glyph for every disclosure. Each <summary> shows a right-pointing triangle that turns
+ * down when its <details> is open. It is drawn HERE, once, rather than per template because three different
+ * glyphs (a native triangle, a tiny chevron, a right-hand caret) had accumulated, and because a `display:flex`
+ * summary removes the browser's own marker -- the record page's Metadata & identity and History showed none.
+ * The native marker is suppressed so the two cannot both paint. `ui.disclosure` is the macro that composes a
+ * summary with this glyph; tests/shared/ui/test_disclosure_markers.py fails the build on a second glyph. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+    content: "\25B6\FE0E";
+    display: inline-block;
+    flex: none;
+    margin-right: 0.5rem;
+    font-size: 0.6rem;
+    line-height: 1;
+    color: var(--phaze-text-muted);
+    transition: transform 150ms;
+}
+details[open] > summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+    details > summary::before { transition: none; }
+}
 .htmx-indicator { opacity: 0; transition: opacity 200ms; }
 .htmx-request .htmx-indicator { opacity: 1; }
 /* Refresh labels use display, not opacity, so only the current message exists

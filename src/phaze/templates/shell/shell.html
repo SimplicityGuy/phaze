@@ -37,6 +37,9 @@
 
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
+    {# phaze-dwevc: the count formatter (window.formatCount) every x-text count binding calls. NOT deferred, and it sits before
+       Alpine: a deferred Alpine evaluates its first x-text after this has run, so no binding can see an undefined formatter. #}
+    <script src="{{ static_url('js/format_count.js') }}"></script>
     <script defer src="{{ static_url('js/analysis_timeline.js') }}"></script>
 
     <!-- HTMX SSE extension -->

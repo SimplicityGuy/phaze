@@ -185,7 +185,7 @@ async def test_recover_status_reads_as_success_when_everything_recovered(client:
 
     body = (await client.get("/pipeline/recover/status")).text
     assert "Recovery complete" in body
-    assert "2512" in body
+    assert "2,512" in body
     assert "could NOT be recovered" not in body
 
 

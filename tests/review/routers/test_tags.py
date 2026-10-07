@@ -1342,7 +1342,7 @@ async def test_bulk_write_toast_reports_noop_and_failed_together(session: AsyncS
     ``client.post`` would mean standing up three separate files per test; the function is pure, so
     a direct call is the more honest test of its own branches.
     """
-    assert _bulk_write_toast(0, 0, 0) == "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+    assert _bulk_write_toast(0, 0, 0) == "Nothing matched — no executed files qualify for a no-discrepancy bulk write right now."
     assert _bulk_write_toast(1, 0, 0) == "1 tag write queued on the file server. Outcomes land in the audit log as each agent reports back."
     noop_only = _bulk_write_toast(0, 2, 0)
     assert "2 already correct (nothing to write)" in noop_only

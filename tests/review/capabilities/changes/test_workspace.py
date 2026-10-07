@@ -385,9 +385,10 @@ async def test_apply_counter_row_accounts_for_executed_proposals(
     body = (await client.get("/s/apply", headers={"HX-Request": "true"})).text
 
     def metric(label: str) -> int:
-        after = body.split(f">{label}</span>", 1)
+        # phaze-nwmsu: the counters are ui.metric tiles -- a <dt> label followed by a <dd> value.
+        after = body.split(f">{label}</dt>", 1)
         assert len(after) == 2, f"the Execute counter row has no {label!r} metric"
-        return int(after[1].split(">", 2)[1].split("<")[0].strip())
+        return int(after[1].split(">", 1)[1].split("<")[0].strip())
 
     assert metric("Executed") == 1, "an executed proposal must have its own visible count"
     assert metric("Approved") == 1, "Approved must NOT absorb executed rows -- Execute reads it as 'still to dispatch'"
@@ -421,9 +422,10 @@ async def test_apply_counter_row_accounts_for_failed_proposals(
     body = (await client.get("/s/apply", headers={"HX-Request": "true"})).text
 
     def metric(label: str) -> int:
-        after = body.split(f">{label}</span>", 1)
+        # phaze-nwmsu: the counters are ui.metric tiles -- a <dt> label followed by a <dd> value.
+        after = body.split(f">{label}</dt>", 1)
         assert len(after) == 2, f"the Execute counter row has no {label!r} metric"
-        return int(after[1].split(">", 2)[1].split("<")[0].strip())
+        return int(after[1].split(">", 1)[1].split("<")[0].strip())
 
     assert metric("Blocked") == 1, "a failed proposal must have its own visible count"
     assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected")) == metric("Total"), (

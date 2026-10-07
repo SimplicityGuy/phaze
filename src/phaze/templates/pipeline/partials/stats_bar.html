@@ -8,23 +8,23 @@
    legitimately differ post-cutover -- the cross-stage deadlock dissolving, not a regression. #}
 <div class="grid grid-cols-5 gap-4">
     <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-info ">{{ stats.discovered }}</p>
+        <p class="text-2xl font-bold text-info ">{{ stats.discovered | thousands }}</p>
         <p class="text-sm text-info ">Discovered</p>
     </div>
     <div class="bg-yellow-50 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-yellow-700 dark:text-yellow-400">{{ stats.analyzed }}</p>
+        <p class="text-2xl font-bold text-yellow-700 dark:text-yellow-400">{{ stats.analyzed | thousands }}</p>
         <p class="text-sm text-yellow-600 dark:text-yellow-400">Analyzed</p>
     </div>
     <div class="bg-purple-50 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-purple-700 dark:text-purple-400">{{ stats.proposal_generated }}</p>
+        <p class="text-2xl font-bold text-purple-700 dark:text-purple-400">{{ stats.proposal_generated | thousands }}</p>
         <p class="text-sm text-purple-600 dark:text-purple-400">Proposed</p>
     </div>
     <div class="bg-green-50 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-ok ">{{ stats.approved }}</p>
+        <p class="text-2xl font-bold text-ok ">{{ stats.approved | thousands }}</p>
         <p class="text-sm text-ok ">Approved</p>
     </div>
     <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
+        <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ stats.executed | thousands }}</p>
         <p class="text-sm text-muted ">Executed</p>
     </div>
 </div>
@@ -48,9 +48,9 @@
    count un-disables the buttons without clobbering their loading state. These three carry a
    "files ready" text node (kept hidden) for backward-compatible polling assertions. #}
 {% if oob_counts %}
-<p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden">{{ stats.discovered }} files ready</p>
-<p id="metadata-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted }} files ready</p>
-<p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden">{{ stats.analyzed }} files ready</p>
+<p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden">{{ stats.discovered | thousands }} files ready</p>
+<p id="metadata-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted | thousands }} files ready</p>
+<p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden">{{ stats.analyzed | thousands }} files ready</p>
 {# Live queue-depth seeds: on each 5s poll, re-push the agent/controller busy counts into
    $store.pipeline so the trigger :disabled bindings (agentBusy gates Metadata/Analyze;
    controllerBusy gates Proposals) react to in-flight work. Hidden (no visible

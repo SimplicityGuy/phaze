@@ -60,7 +60,7 @@
         {# Quota-pending count — mirrors _lane_detail.html's kueue-only quota_wait row, but here it is
            kind-agnostic: any lane can carry waiting-on-quota jobs while ComputeLane.waiting > 0. #}
         {% if lane.waiting > 0 %}
-        <p class="text-xs text-warn ">{{ lane.waiting }} waiting on quota</p>
+        <p class="text-xs text-warn ">{{ lane.waiting | thousands }} waiting on quota</p>
         {% endif %}
 
         {# Running workloads — the drill-down itself (phaze-2u8v.5 acceptance): identifies the FILES
@@ -68,7 +68,7 @@
         <div>
             <p class="text-xs font-semibold uppercase tracking-wide text-muted ">
                 Running workloads
-                {% if running_jobs %}<span class="normal-case font-normal">({{ running_jobs | length }})</span>{% endif %}
+                {% if running_jobs %}<span class="normal-case font-normal">({{ (running_jobs | length) | thousands }})</span>{% endif %}
             </p>
             {% if running_jobs %}
             <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">

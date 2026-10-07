@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 {# Phase 27 Component 1 (UI-SPEC lines 135-208): the Trigger Scan card.
 
    Form layout: vertical stack. Agent dropdown triggers an HTMX swap into
@@ -16,7 +17,8 @@
 #}
 <section aria-labelledby="trigger-scan-heading"
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-4">
-    <h2 id="trigger-scan-heading" class="text-lg font-semibold">Trigger Scan</h2>
+    {# phaze-gmh3f: a SUB-heading. The section it sits in is already headed by Discover's "SCAN FILES" eyebrow, so this is no longer an 18px bold h2 competing with it. #}
+    <h3 id="trigger-scan-heading" class="text-sm font-semibold text-gray-900 dark:text-gray-100">Trigger Scan</h3>
     <p class="text-sm text-muted ">
         Walk a directory on a registered agent and ingest discovered files.
     </p>
@@ -54,7 +56,7 @@
                through to a native GET and the scan is never enqueued. `disabled` + `data-hx-guard`;
                released by shell.html's htmx:load listener. #}
             <button type="submit" disabled data-hx-guard
-                    class="px-4 py-2 bg-action-brand text-white rounded-md hover:bg-action-brand-hover disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg">
+                    class="{{ ui.btn('primary', 'md') }}">
                 Start Scan
             </button>
             <span id="scan-submit-spinner" class="htmx-indicator ml-2 text-sm text-muted ">Enqueuing…</span>

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 import uuid
 
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.set_profile import SetProfile
 from phaze.services.analysis_timeline import (
+    BpmSpark,
     bpm_segments,
     bpm_spark,
     build_analysis_timeline_context,
@@ -17,6 +19,10 @@ from phaze.services.analysis_timeline import (
     resolve_inspection,
     rounded_bpm_bounds,
 )
+
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _window(
@@ -218,3 +224,28 @@ def test_the_rest_position_falls_back_to_the_live_argmax_when_the_stored_peak_is
     context = build_analysis_timeline_context(windows, set_profile=set_profile)
 
     assert context["timeline_inspection"]["peak_sec"] == 30.0  # type: ignore[index]
+
+
+def test_bpm_spark_is_empty_when_the_bounds_cannot_be_derived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows pass the validity filter but ``rounded_bpm_bounds`` still declines: no spark, never a half-drawn one."""
+    monkeypatch.setattr("phaze.services.analysis_timeline.rounded_bpm_bounds", lambda _values: None)
+
+    spark = bpm_spark([_window(0, 0.0, 30.0, bpm=120.0)], 30.0, 1000.0, 120.0)
+
+    assert spark == BpmSpark("", None, None, 0)
+
+
+def test_ticks_for_a_span_beyond_the_largest_calendar_step_use_a_decimal_step() -> None:
+    """Past 6 x 86400 s no named step fits, so the step falls through to a 1/2/5/10 x power-of-ten magnitude."""
+    ticks = elapsed_time_ticks(10_000_000.0)
+
+    assert len(ticks) >= 2
+    assert ticks[0]["label"] == "0:00"
+
+
+def test_inspection_before_any_window_resolves_no_candidate() -> None:
+    windows = [_window(0, 30.0, 60.0, bpm=120.0)]
+
+    result = resolve_inspection(windows, 5.0, 120.0)
+
+    assert result["fine"] is None

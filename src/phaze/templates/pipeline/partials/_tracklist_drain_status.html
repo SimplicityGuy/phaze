@@ -40,7 +40,7 @@
         <div>
             <p class="font-jura text-[10px] font-medium uppercase tracking-[0.18em] text-muted ">Lookup state</p>
             {% if arm.armed %}
-                <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Running: {{ '{:,}'.format(status.queued) }} remaining</p>
+                <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-300">Running: {{ status.queued | thousands }} remaining</p>
             {% elif arm.disarmed_reason == "failures" %}
                 <p class="mt-1">{{ ui.status_badge("Lookup", "Stopped after repeated failures", "danger", "✕") }}</p>
             {% else %}
@@ -52,14 +52,14 @@
                     hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
                     hx-confirm="Run tracklist lookups against the live 1001Tracklists host? They will keep running, paced by the host's own budget, until the queue empties or you stop them."
                     aria-label="Run tracklist lookups against 1001Tracklists"
-                    class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    class="{{ ui.btn('secondary', 'sm') }}">
                 Run tracklist lookups
             </button>
             {% if arm.armed %}
                 <button type="button"
                         hx-post="/pipeline/disarm-tracklist-drain" hx-target="#tracklist-drain-status" hx-swap="outerHTML"
                         aria-label="Stop the running 1001Tracklists lookups"
-                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-phaze-panel text-danger hover:bg-red-50 dark:hover:bg-red-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500">
+                        class="{{ ui.btn('destructive', 'sm') }}">
                     Stop
                 </button>
             {% endif %}
@@ -69,41 +69,41 @@
 
     <div id="tracklist-queue-diagnostics" hx-swap-oob="true" class="border-t border-gray-200 p-4 sm:p-6 dark:border-phaze-border">
         <details class="group rounded-lg border border-gray-200 bg-white/70 dark:border-phaze-border dark:bg-phaze-bg/30">
-            <summary class="cursor-pointer list-none rounded-lg px-3 py-2 font-jura text-[11px] font-medium uppercase tracking-[0.16em] text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">
-                <span class="inline-flex items-center gap-2"><span aria-hidden="true" class="transition-transform group-open:rotate-90">›</span> Operator queue diagnostics</span>
+            <summary class="flex cursor-pointer items-center rounded-lg px-3 py-2 font-jura text-[11px] font-medium uppercase tracking-[0.16em] text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">
+                Operator queue diagnostics
             </summary>
             <div class="border-t border-gray-200 p-3 dark:border-phaze-border">
                 <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     <div>
                         <dt class="text-xs text-muted ">Queued</dt>
-                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.queued) }}</dd>
+                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ status.queued | thousands }}</dd>
                         <dd class="text-xs text-muted ">unique sets awaiting a lookup</dd>
                     </div>
                     <div>
                         <dt class="text-xs text-muted ">Prioritized</dt>
-                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.flagged_queued) }}</dd>
+                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ status.flagged_queued | thousands }}</dd>
                         <dd class="text-xs text-muted ">
                             operator-flagged, still queued
                             {% if status.flagged_total > status.flagged_queued %}
-                            ({{ '{:,}'.format(status.flagged_total - status.flagged_queued) }} more flagged file{{ 's' if status.flagged_total - status.flagged_queued != 1 else '' }} already answered or ineligible)
+                            ({{ (status.flagged_total - status.flagged_queued) | thousands }} more flagged file{{ 's' if status.flagged_total - status.flagged_queued != 1 else '' }} already answered or ineligible)
                             {% endif %}
                         </dd>
                     </div>
                     <div>
                         <dt class="text-xs text-muted ">Answered by cache / parked</dt>
-                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.cached) }}</dd>
+                        <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ status.cached | thousands }}</dd>
                         <dd class="text-xs text-muted ">
-                            {{ '{:,}'.format(status.cached_positive) }} found ·
-                            {{ '{:,}'.format(status.cached_negative) }} confirmed absent ·
-                            {{ '{:,}'.format(status.cached_backoff) }} retrying ·
-                            {{ '{:,}'.format(status.cached_exhausted) }} parked after retry exhaustion ·
-                            {{ '{:,}'.format(status.cached_low_confidence) }} held after a low-confidence search
+                            {{ status.cached_positive | thousands }} found ·
+                            {{ status.cached_negative | thousands }} confirmed absent ·
+                            {{ status.cached_backoff | thousands }} retrying ·
+                            {{ status.cached_exhausted | thousands }} parked after retry exhaustion ·
+                            {{ status.cached_low_confidence | thousands }} held after a low-confidence search
                         </dd>
                     </div>
                     <div>
                         <dt class="text-xs text-muted ">Collapse ratio</dt>
                         <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '%.2f' | format(status.collapse_ratio) }}</dd>
-                        <dd class="text-xs text-muted ">files served per lookup -- dedup is a small lever, not a big one</dd>
+                        <dd class="text-xs text-muted ">files served per lookup — dedup is a small lever, not a big one</dd>
                     </div>
                 </dl>
 
@@ -112,18 +112,18 @@
                     <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Parked:</strong> cached sets whose retries are exhausted; they remain visible but do not consume the active lookup queue.</p>
                     <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Collapse ratio:</strong> files represented by each unique-set lookup. {{ '%.2f' | format(status.collapse_ratio) }} means about {{ '%.2f' | format(status.collapse_ratio) }} files per request, not {{ '%.0f' | format((1 - (1 / status.collapse_ratio if status.collapse_ratio else 1)) * 100) }}% completion.</p>
                     <p>
-                        <strong class="text-gray-900 dark:text-gray-100">Crawl delay and throughput ceiling:</strong> the provider's whole-host request spacing limits Phaze to ~{{ '{:,}'.format(daily_ceiling) }} lookups/day. Adding workers cannot raise this ceiling.
+                        <strong class="text-gray-900 dark:text-gray-100">Crawl delay and throughput ceiling:</strong> the provider's whole-host request spacing limits Phaze to ~{{ daily_ceiling | thousands }} lookups/day. Adding workers cannot raise this ceiling.
                     </p>
                     <p class="mt-1">
                         Projected drain at the current queue depth: <strong class="text-gray-900 dark:text-gray-100">~{{ '%.1f' | format(status.projected_days) }} days</strong>.
-                        Without dedup or the cache it would be ~{{ '%.1f' | format(status.days_without_dedup) }} days -- the gap between
+                        Without dedup or the cache it would be ~{{ '%.1f' | format(status.days_without_dedup) }} days — the gap between
                         those two numbers IS what dedup buys, and at a {{ '%.2f' | format(status.collapse_ratio) }} collapse ratio it is a
                         few percent, not a shortcut.
                     </p>
                     {% if arm.armed %}
                     <p class="mt-1">
                         That ~{{ '%.1f' | format(status.projected_days) }} days is also this running pass's projected completion --
-                        it is the same host-budget-bound figure, since the {{ '{:,}'.format(tracklist_drain_cooldown_sec) }}s
+                        it is the same host-budget-bound figure, since the {{ tracklist_drain_cooldown_sec | thousands }}s
                         cooldown between slices is far shorter than one slice's own pacing at the default settings. A cooldown
                         configured longer than a slice takes would add idle time this figure does not account for.
                     </p>

@@ -50,12 +50,12 @@
             <h3 class="text-sm font-semibold text-orange-800 dark:text-orange-300">Some proposals skipped</h3>
         </div>
         <p class="text-sm text-orange-700 dark:text-orange-400 mt-1">
-            {{ skipped_revoked }} approved proposal{{ 's' if skipped_revoked != 1 else '' }} could not be dispatched because {{ 'their agents have' if skipped_revoked != 1 else 'its agent has' }} been revoked. Re-route or re-propose these files to dispatch them.
+            {{ skipped_revoked | thousands }} approved proposal{{ 's' if skipped_revoked != 1 else '' }} could not be dispatched because {{ 'their agents have' if skipped_revoked != 1 else 'its agent has' }} been revoked. Re-route or re-propose these files to dispatch them.
         </p>
         {% if revoked_agents %}
         <ul class="list-disc ml-4 mt-2">
             {% for agent in revoked_agents %}
-            <li class="text-sm text-orange-700 dark:text-orange-400">{{ agent.name }} (<span class="font-mono text-xs">{{ agent.agent_id }}</span>) -- {{ agent.count }} proposal{{ 's' if agent.count != 1 else '' }} skipped</li>
+            <li class="text-sm text-orange-700 dark:text-orange-400">{{ agent.name }} (<span class="font-mono text-xs">{{ agent.agent_id }}</span>) — {{ agent.count | thousands }} proposal{{ 's' if agent.count != 1 else '' }} skipped</li>
             {% endfor %}
         </ul>
         {% endif %}
@@ -69,22 +69,22 @@
 
     {# Dispatch summary heading (sse-swap="dispatch_summary" — first-connect SSE event replaces inner text). #}
     <span sse-swap="dispatch_summary" class="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-4 block">
-        Dispatched {{ total }} proposal{{ 's' if total != 1 else '' }} across {{ agents|length }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})
+        Dispatched {{ total | thousands }} proposal{{ 's' if total != 1 else '' }} across {{ (agents|length) | thousands }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})
     </span>
 
     {# Aggregate counter row (sse-swap="progress" — preserves Phase 25 event name). #}
     <span sse-swap="progress" class="flex items-baseline gap-8">
         <div>
             <div class="text-xs font-semibold uppercase text-muted ">Total</div>
-            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total }}</div>
+            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total | thousands }}</div>
         </div>
         <div>
             <div class="text-xs font-semibold uppercase text-muted ">Completed</div>
-            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed }}</div>
+            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed | thousands }}</div>
         </div>
         <div>
             <div class="text-xs font-semibold uppercase text-muted ">Failed</div>
-            <div class="text-xl font-semibold {% if failed > 0 %}text-danger {% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
+            <div class="text-xl font-semibold {% if failed > 0 %}text-danger {% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed | thousands }}</div>
         </div>
     </span>
 

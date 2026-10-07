@@ -139,7 +139,7 @@
         <h3 class="text-xs font-semibold uppercase tracking-wide text-muted mb-2">Queue depth by lane</h3>
         <p class="text-sm text-gray-700 dark:text-gray-300">
             {% for _lane, _depth in (queue_depths | default({})).items() %}
-            <span class="mr-1">{{ _lane }} <span class="font-semibold">{{ _depth }}</span></span>{% if not loop.last %}<span class="text-muted mr-1">·</span>{% endif %}
+            <span class="mr-1">{{ _lane }} <span class="font-semibold">{{ _depth | thousands }}</span></span>{% if not loop.last %}<span class="text-muted mr-1">·</span>{% endif %}
             {% else %}
             <span class="text-muted ">Lane depths unavailable — retrying on the next tick.</span>
             {% endfor %}

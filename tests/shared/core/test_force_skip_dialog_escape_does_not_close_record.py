@@ -35,6 +35,8 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 
+from phaze.web.template_globals import register_format_filters
+
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _RECORD_HOST = "shell/partials/record_host.html"
@@ -42,7 +44,9 @@ _FORCE_SKIP_DIALOG = "pipeline/partials/_force_skip_dialog.html"
 
 
 def _env() -> Environment:
-    return Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    _env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_format_filters(_env)
+    return _env
 
 
 def _render_force_skip_dialog() -> str:

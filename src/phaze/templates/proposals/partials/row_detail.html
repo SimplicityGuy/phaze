@@ -24,7 +24,7 @@
                         <dd class="text-gray-700 dark:text-gray-300">
                             {{ proposal.context_used[key] }}
                             {% if key == "date" and date_convention and date_convention.get("source") == "release_group_convention" %}
-                            <span class="mt-1 block text-xs italic text-muted " data-testid="date-convention-provenance">date inferred from release-group convention ({{ date_convention.get("convention_value") }} — {{ "{:,}".format(date_convention.get("supporting_count", 0)) }} supporting, {{ "{:,}".format(date_convention.get("contradicting_count", 0)) }} contradicting)</span>
+                            <span class="mt-1 block text-xs italic text-muted " data-testid="date-convention-provenance">date inferred from release-group convention ({{ date_convention.get("convention_value") }} — {{ (date_convention.get("supporting_count", 0)) | thousands }} supporting, {{ (date_convention.get("contradicting_count", 0)) | thousands }} contradicting)</span>
                             {% endif %}
                         </dd>
                     </div>

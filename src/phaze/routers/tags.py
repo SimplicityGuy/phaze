@@ -54,6 +54,7 @@ from phaze.services.tag_comparison import (
 )
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import TagWriteAlreadyQueuedError, enqueue_tag_write
+from phaze.utils.humanize import format_count
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
@@ -566,14 +567,14 @@ def _bulk_write_toast(queued: int, noop: int, failed: int) -> str:
     here.
     """
     if not (queued or noop or failed):
-        return "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+        return "Nothing matched — no executed files qualify for a no-discrepancy bulk write right now."
 
-    parts = [f"{queued} tag write{'s' if queued != 1 else ''} queued on the file server"]
+    parts = [f"{format_count(queued)} tag write{'s' if queued != 1 else ''} queued on the file server"]
     extras: list[str] = []
     if noop:
-        extras.append(f"{noop} already correct (nothing to write)")
+        extras.append(f"{format_count(noop)} already correct (nothing to write)")
     if failed:
-        extras.append(f"{failed} could not be dispatched")
+        extras.append(f"{format_count(failed)} could not be dispatched")
     if extras:
         return f"{parts[0]}; {', '.join(extras)}. Outcomes land in the audit log as each agent reports back."
     return f"{parts[0]}. Outcomes land in the audit log as each agent reports back."
@@ -806,7 +807,7 @@ async def _bulk_write_response(
     from phaze.services.review import get_tagwrite_review_page  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
 
     remaining_page = await get_tagwrite_review_page(session)
-    remaining = f"{len(remaining_page.rows)}{'+' if remaining_page.partial else ''}"
+    remaining = f"{format_count(len(remaining_page.rows))}{'+' if remaining_page.partial else ''}"
     subcount = f"{remaining} awaiting approval · the file server writes these tags"
     return templates.TemplateResponse(
         request=request,
