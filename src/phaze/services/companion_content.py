@@ -37,12 +37,13 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func, select, tuple_, update
+from sqlalchemy import case, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.constants import INGESTIBLE_COMPANION_EXTENSIONS
 from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
 from phaze.services.companion_features import EXTRACTOR_VERSION
 
@@ -103,6 +104,61 @@ def _effective_junk_class(content_junk_class: Any, stamp: Any) -> Any:
         (stamp, "known_stamp"),
         else_=content_junk_class,
     )
+
+
+def never_link_reason(junk_class: str | None, *, folder_has_media: bool, identical_copy_linked: bool) -> str | None:
+    """Why a companion must never be linked to a recording: its junk class, ``"duplicate"``, or None.
+
+    The ONE definition the linking chain's veto (``services/companion_linking.py``) and the junk
+    review's detector share, so a file the review queues is never also linked, and vice versa:
+
+    - **Junk** -- any effective ``junk_class`` (empty, all-NUL, known stamp, site ad). The operator
+      agreed that a stamp, advert or empty file beside a recording describes nothing (phaze-9aker
+      §4.2, convention 1) and noted such files "can be marked for deletion".
+    - **Duplicate orphan** -- a byte-identical copy (same agent, same fingerprint) of a companion that
+      IS linked, sitting in a folder with no media of its own. Operator decision 1, 2026-10-07, "Junk
+      review (Recommended)" (epic ``phaze-4x319``): such copies go to the junk review, not to a second
+      link. The spike measured that 2,379 of 2,380 resolvable ones name exactly the recording their
+      linked copy already carries (phaze-9aker §4.6). A copy beside media is never a duplicate here:
+      the same release downloaded twice keeps a companion beside each copy of the media.
+    """
+    if junk_class is not None:
+        return junk_class
+    if identical_copy_linked and not folder_has_media:
+        return "duplicate"
+    return None
+
+
+async def linked_copy_fingerprints(
+    session: AsyncSession, agent_id: str, fingerprints: Collection[str], *, exclude_file_ids: Collection[uuid.UUID] = ()
+) -> set[str]:
+    """The ``fingerprints`` that some OTHER current companion of ``agent_id`` carries while linked in ``file_companions``.
+
+    "Current" means its stored fingerprint still equals ``files.sha256_hash``, so a copy whose bytes
+    changed since it was read does not count. ``exclude_file_ids`` are never counted as the copy (the
+    caller's own companions). One indexed read per page of :data:`_FINGERPRINT_PAGE` fingerprints, plus
+    the excluded ids as binds: callers pass at most one association page of them.
+    """
+    found: set[str] = set()
+    ordered = sorted(set(fingerprints))
+    excluded = list(exclude_file_ids)
+    for start in range(0, len(ordered), _FINGERPRINT_PAGE):
+        page = ordered[start : start + _FINGERPRINT_PAGE]
+        statement = (
+            select(CompanionContentFeatures.fingerprint)
+            .join(FileRecord, FileRecord.id == CompanionContentFeatures.file_id)
+            .where(
+                CompanionContentFeatures.agent_id == agent_id,
+                CompanionContentFeatures.fingerprint.in_(page),
+                CompanionContentFeatures.fingerprint == FileRecord.sha256_hash,
+                exists().where(FileCompanion.companion_id == CompanionContentFeatures.file_id),
+            )
+            .distinct()
+        )
+        if excluded:
+            statement = statement.where(CompanionContentFeatures.file_id.not_in(excluded))
+        found.update((await session.execute(statement)).scalars())
+    return found
 
 
 async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprints: Collection[str]) -> set[str]:

@@ -11,6 +11,7 @@ Command groups:
     phaze backfill moved-twin-candidates --agent <id> > candidates.json
     phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
     phaze backfill companion-features [--apply] [--page-size <n>]
+    phaze backfill junk-review [--apply]
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -40,6 +41,14 @@ those rows on the owning agent, which reads them off its mount and reports them 
 route ingest uses. Idempotent: a row whose features are current is never selected again. Selection
 lives in `phaze.services.companion_content`. Upgrade the agents before `--apply`: an agent image that
 predates the task fails the jobs (nothing is written), and the rows stay selected for the next run.
+
+`backfill junk-review` runs the phaze-bk5jp junk-companion detector over every agent: companion
+rows that are junk by their stored content features, or byte-identical orphan copies of an
+already-linked companion (operator decision 1 of 2026-10-07, epic phaze-4x319), plus quarantined
+identities that came back (decision 4). Without `--apply` it only counts, per agent and reason, the pending rows a pass would
+create, keep or withdraw -- in a READ ONLY transaction. With `--apply` it writes them and commits.
+Nothing is ever approved here: every row it creates is pending. Rules live in
+`phaze.services.companion_junk_review`.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -79,7 +88,7 @@ import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from phaze.config import get_settings
@@ -91,6 +100,7 @@ from phaze.schemas.agent_tasks import CompanionFeaturesTarget, ExtractCompanionF
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.cloud_attempts_reset import ResetScope, apply_reset, preview_reset
 from phaze.services.companion_content import count_backfill, select_backfill_page
+from phaze.services.companion_junk_review import detect_junk_reviews
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 from phaze.services.reanalysis_backfill import (
@@ -388,6 +398,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Companion rows per agent job (1-1000, default {COMPANION_FEATURES_PAGE_SIZE}).",
     )
     features.set_defaults(apply=False)
+    # phaze-bk5jp: the junk-companion detector.
+    junk = backfill_sub.add_parser(
+        "junk-review",
+        help="Count the pending junk-review rows the detector would create per agent and reason; --apply writes them (phaze-bk5jp).",
+    )
+    junk_mode = junk.add_mutually_exclusive_group()
+    junk_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
+    junk_mode.add_argument("--apply", dest="apply", action="store_true", help="Write the pending rows. Without it nothing is written.")
+    junk.set_defaults(apply=False)
     mode = reset.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
@@ -473,6 +492,8 @@ def _main_backfill(args: argparse.Namespace) -> int:
             print(f"error: --page-size must be between 1 and {COMPANION_FEATURES_PAGE_MAX}", file=sys.stderr)
             return 1
         return asyncio.run(_run_companion_features(apply=args.apply, page_size=args.page_size))
+    if args.backfill_command == "junk-review":
+        return asyncio.run(_run_junk_review(apply=args.apply))
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
 
@@ -640,6 +661,37 @@ async def _run_companion_features(*, apply: bool, page_size: int) -> int:
         await task_router.close()
     print("APPLIED: the agents report features as the jobs run; re-run without --apply to watch pending fall.")
     return 1 if failed else 0
+
+
+async def _run_junk_review(*, apply: bool) -> int:
+    """Run ``phaze backfill junk-review`` (phaze-bk5jp). Returns a process exit code.
+
+    One transaction per agent: READ ONLY and rolled back on a dry run, committed on ``--apply``.
+    """
+    async with async_session() as session:
+        agent_ids = list((await session.execute(select(Agent.id).order_by(Agent.id))).scalars())
+    totals: Counter[str] = Counter()
+    for agent_id in agent_ids:
+        async with async_session() as session:
+            if not apply:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+            outcome = await detect_junk_reviews(session, agent_id, apply=apply)
+            if apply:
+                await session.commit()
+            else:
+                await session.rollback()
+        totals.update(outcome.created)
+        by_reason = " ".join(f"{reason}={count}" for reason, count in sorted(outcome.created.items())) or "none"
+        print(
+            f"  {agent_id}: new pending: {by_reason} (reappeared={outcome.reappeared}); kept pending={outcome.refreshed} "
+            f"withdrawn={outcome.withdrawn} already decided={outcome.decided} skipped rejected content={outcome.rejected_content}"
+        )
+    print(f"summary: new pending={sum(totals.values())} " + " ".join(f"{reason}={count}" for reason, count in sorted(totals.items())))
+    if not apply:
+        print("DRY RUN: nothing written. Re-run with --apply to create the pending rows.")
+    else:
+        print("APPLIED: pending rows written; nothing is approved until the operator decides.")
+    return 0
 
 
 async def _enqueue_companion_feature_pages(task_router: AgentTaskRouter, agent_id: str, page_size: int) -> tuple[int, int, str | None]:
