@@ -416,6 +416,16 @@ def _update_retry_url(outcome: LookupOutcome, hint: str | None) -> Any:
     return case((_next_attempts_on_conflict(outcome) >= TRANSIENT_MAX_ATTEMPTS, None), else_=hint)
 
 
+def _usable_hint_entry(verdict: CacheVerdict) -> TracklistLookupCache | None:
+    """The row whose retry hint a lookup may act on, or ``None``; the one place that rule lives."""
+    entry = verdict.entry
+    if verdict.decision is not CacheDecision.TRANSIENT_RETRY_READY or entry is None or not entry.retry_url:
+        return None
+    if _parse_outcome(entry.outcome) not in RETRY_HINT_OUTCOMES:
+        return None
+    return entry
+
+
 def retry_hint_for(verdict: CacheVerdict) -> str | None:
     """The detail-page URL a retry of this set may render directly, or ``None`` to search afresh.
 
@@ -425,12 +435,19 @@ def retry_hint_for(verdict: CacheVerdict) -> str | None:
     whose stored outcome is in :data:`RETRY_HINT_OUTCOMES`. A hint is advisory: the caller must still
     check the rendered page against the query (see ``tracklist_drain.perform_lookup``).
     """
-    entry = verdict.entry
-    if verdict.decision is not CacheDecision.TRANSIENT_RETRY_READY or entry is None or not entry.retry_url:
-        return None
-    if _parse_outcome(entry.outcome) not in RETRY_HINT_OUTCOMES:
-        return None
-    return entry.retry_url
+    entry = _usable_hint_entry(verdict)
+    return entry.retry_url if entry is not None else None
+
+
+def retry_confidence_for(verdict: CacheVerdict) -> int | None:
+    """The score the ORIGINAL search stored next to a usable hint, or ``None`` (phaze-3ekjl).
+
+    ``result_confidence`` is not a second copy of anything: the transient write that left the hint is
+    the same write that stored the chosen row's score, so the row's own column already holds it. It
+    only needs to be carried through the next attempt, which rewrites the whole row.
+    """
+    entry = _usable_hint_entry(verdict)
+    return entry.result_confidence if entry is not None else None
 
 
 def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_days: int, *, best_score: int | None = None) -> Any:

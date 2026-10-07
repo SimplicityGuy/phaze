@@ -48,6 +48,7 @@ from phaze.services.tracklist_lookup_cache import (
     lookup_many,
     record_file_outcomes,
     record_outcome,
+    retry_confidence_for,
     retry_hint_for,
     verdict_for,
 )
@@ -406,7 +407,14 @@ class LookupAttempt:
         return self.outcome is LookupOutcome.FOUND
 
 
-async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, renderer: DetailRenderer, retry_url: str | None = None) -> LookupAttempt:
+async def perform_lookup(
+    candidate: DrainCandidate,
+    *,
+    search: SearchClient,
+    renderer: DetailRenderer,
+    retry_url: str | None = None,
+    retry_confidence: int | None = None,
+) -> LookupAttempt:
     """Run search -> score -> render -> parse for one unique set. No database, never raises.
 
     Every failure is converted into a :class:`LookupOutcome` rather than an exception, because an
@@ -433,7 +441,8 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
 
     ``retry_url`` (phaze-w5fni) is the hint a previous ``BLOCKED`` / ``RENDER_FAILED`` attempt left;
     see :func:`_lookup_via_hint` for how it is rendered, verified and, when it fails verification,
-    discarded in favour of the normal search below.
+    discarded in favour of the normal search below. ``retry_confidence`` is the score that earlier
+    search stored with it; a hint retry that fails before its page can be re-scored writes it back.
 
     Two of those deserve their reasoning stated rather than implied:
 
@@ -468,7 +477,7 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     # `spent` carries what a discarded hint already cost into every host_requests below.
     spent = 0
     if retry_url:
-        attempt, spent = await _lookup_via_hint(candidate, base, url=retry_url, renderer=renderer)
+        attempt, spent = await _lookup_via_hint(candidate, base, url=retry_url, confidence=retry_confidence, renderer=renderer)
         if attempt is not None:
             return attempt
 
@@ -503,7 +512,9 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     return await _render_and_classify(candidate, base, chosen=selection.selected, reason=selection.reason, renderer=renderer, spent=spent + 1)
 
 
-async def _lookup_via_hint(candidate: DrainCandidate, base: LookupAttempt, *, url: str, renderer: DetailRenderer) -> tuple[LookupAttempt | None, int]:
+async def _lookup_via_hint(
+    candidate: DrainCandidate, base: LookupAttempt, *, url: str, confidence: int | None, renderer: DetailRenderer
+) -> tuple[LookupAttempt | None, int]:
     """Render a persisted retry hint directly; return ``(attempt, requests_spent)``.
 
     ``attempt`` is ``None`` when the hint must be DISCARDED and the caller must search afresh --
@@ -514,44 +525,26 @@ async def _lookup_via_hint(candidate: DrainCandidate, base: LookupAttempt, *, ur
 
     The hint is never itself a result. A rendered page that matches still goes through the decoy
     check and the parser exactly as a searched one does, so it can become ``FOUND`` only by the same
-    route. A render that fails transiently keeps the hint (the outcome mapping is shared), because
-    the choice of page is still the only thing known.
+    route. A render that fails before the page can be re-scored is mapped by the SAME helpers the
+    searched path uses (:func:`_render_raised_attempt`, :func:`_render_failed_attempt`), with
+    ``confidence`` -- the score the original search stored -- standing in for the row score that a
+    search would have just produced (phaze-3ekjl). That is what keeps the transient write from
+    erasing it, and what keeps the two paths from drifting apart again.
     """
-    if not TracklistScraper._is_allowed_url(url):
-        logger.warning("tracklist drain discarded a retry hint off the host allow-list", set_key=candidate.set_key)
+    external_id = TracklistScraper.detail_url_external_id(url)
+    if external_id is None:
+        logger.warning("tracklist drain discarded a retry hint off the host allow-list or without a readable id", set_key=candidate.set_key)
         return None, 0
+    target = _RenderTarget(external_id=external_id, url=url, confidence=confidence)
     try:
         render = await renderer.render(url)
     except Exception as exc:
-        # Same reasoning as the searched path: a raise is OUR failure, so transient, hint retained.
         logger.exception("tracklist drain render raised", set_key=candidate.set_key, url=url)
-        match = TracklistScraper._EXTERNAL_ID_PATTERN.search(url)
-        return (
-            replace(
-                base,
-                outcome=LookupOutcome.RENDER_FAILED,
-                external_id=match.group(1) if match else None,
-                source_url=url,
-                detail=f"render raised {type(exc).__name__}: {exc}",
-                host_requests=1,
-            ),
-            1,
-        )
+        return _render_raised_attempt(base, target, exc, spent=0), 1
     spent = max(render.attempts, 1)
 
     if render.outcome is not RenderOutcome.OK and render.outcome is not RenderOutcome.NO_TRACKLIST:
-        match = TracklistScraper._EXTERNAL_ID_PATTERN.search(url)
-        return (
-            replace(
-                base,
-                outcome=_render_outcome(render),
-                external_id=match.group(1) if match else None,
-                source_url=url,
-                detail=f"render {render.outcome.value}: {render.error or 'no detail'}",
-                host_requests=spent,
-            ),
-            spent,
-        )
+        return _render_failed_attempt(base, target, render, requests=spent), spent
 
     page = TracklistScraper.detail_page_result(render.html, url)
     selection = select_result(candidate.derived, [page]) if page is not None else None
@@ -568,6 +561,47 @@ async def _lookup_via_hint(candidate: DrainCandidate, base: LookupAttempt, *, ur
     return attempt, spent
 
 
+@dataclass(frozen=True, slots=True)
+class _RenderTarget:
+    """The page a render was aimed at: what a failed render records about it."""
+
+    external_id: str
+    url: str
+    confidence: int | None
+
+
+def _render_raised_attempt(base: LookupAttempt, target: _RenderTarget, exc: Exception, *, spent: int) -> LookupAttempt:
+    """The attempt for a render that RAISED -- always ``RENDER_FAILED``, always transient.
+
+    ``render`` converts navigation problems into outcomes itself, so reaching here means a
+    DisallowedScrapeHostError (the href left the allow-list), an XvfbError (no virtual display in
+    this deployment), or a genuine bug. All three are OUR failure, never evidence about whether the
+    set is on 1001Tracklists. Shared by the searched and the hint path (phaze-3ekjl).
+    """
+    return replace(
+        base,
+        outcome=LookupOutcome.RENDER_FAILED,
+        external_id=target.external_id,
+        source_url=target.url,
+        result_confidence=target.confidence,
+        detail=f"render raised {type(exc).__name__}: {exc}",
+        host_requests=spent + 1,
+    )
+
+
+def _render_failed_attempt(base: LookupAttempt, target: _RenderTarget, render: RenderResult, *, requests: int) -> LookupAttempt:
+    """The attempt for a render that finished with a non-OK outcome. Shared by both paths (phaze-3ekjl)."""
+    return replace(
+        base,
+        outcome=_render_outcome(render),
+        external_id=target.external_id,
+        source_url=target.url,
+        result_confidence=target.confidence,
+        detail=f"render {render.outcome.value}: {render.error or 'no detail'}",
+        host_requests=requests,
+    )
+
+
 async def _render_and_classify(
     candidate: DrainCandidate, base: LookupAttempt, *, chosen: ScoredResult, reason: str, renderer: DetailRenderer, spent: int
 ) -> LookupAttempt:
@@ -579,20 +613,9 @@ async def _render_and_classify(
     try:
         render = await renderer.render(chosen.result.url)
     except Exception as exc:
-        # `render` converts navigation problems into outcomes itself, so reaching here means a
-        # DisallowedScrapeHostError (the selected href left the allow-list), an XvfbError (no
-        # virtual display in this deployment), or a genuine bug. All three are OUR failure, never
-        # evidence about whether the set is on 1001Tracklists, so all three are transient.
         logger.exception("tracklist drain render raised", set_key=candidate.set_key, url=chosen.result.url)
-        return replace(
-            base,
-            outcome=LookupOutcome.RENDER_FAILED,
-            external_id=chosen.result.external_id,
-            source_url=chosen.result.url,
-            result_confidence=chosen.confidence,
-            detail=f"render raised {type(exc).__name__}: {exc}",
-            host_requests=spent + 1,
-        )
+        target = _RenderTarget(external_id=chosen.result.external_id, url=chosen.result.url, confidence=chosen.confidence)
+        return _render_raised_attempt(base, target, exc, spent=spent)
     return await _classify_render(candidate, base, chosen=chosen, render=render, spent=spent + max(render.attempts, 1), reason=reason)
 
 
@@ -603,15 +626,8 @@ async def _classify_render(
     requests = spent
 
     if render.outcome is not RenderOutcome.OK:
-        return replace(
-            base,
-            outcome=_render_outcome(render),
-            external_id=chosen.result.external_id,
-            source_url=chosen.result.url,
-            result_confidence=chosen.confidence,
-            detail=f"render {render.outcome.value}: {render.error or 'no detail'}",
-            host_requests=requests,
-        )
+        target = _RenderTarget(external_id=chosen.result.external_id, url=chosen.result.url, confidence=chosen.confidence)
+        return _render_failed_attempt(base, target, render, requests=requests)
 
     # phaze-y5fc7: a flagged client is served real layout with randomised names. Such a page parses
     # cleanly, so this check runs BEFORE the parse -- a decoy must never reach `_found`, whose
@@ -1163,7 +1179,9 @@ async def drain_once(
             report.skipped_cached += 1
             continue
 
-        attempt = await perform_lookup(candidate, search=search, renderer=renderer, retry_url=retry_hint_for(verdict))
+        attempt = await perform_lookup(
+            candidate, search=search, renderer=renderer, retry_url=retry_hint_for(verdict), retry_confidence=retry_confidence_for(verdict)
+        )
 
         async with session_factory() as session:
             persisted = await persist_lookup(session, candidate, attempt, propagation_min=propagation_min)
