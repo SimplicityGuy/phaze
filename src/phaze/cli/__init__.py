@@ -12,6 +12,7 @@ Command groups:
     phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
     phaze backfill companion-features [--apply] [--page-size <n>]
     phaze backfill junk-review [--apply]
+    phaze junk quarantine [--apply]
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -49,6 +50,13 @@ identities that came back (decision 4). Without `--apply` it only counts, per ag
 create, keep or withdraw -- in a READ ONLY transaction. With `--apply` it writes them and commits.
 Nothing is ever approved here: every row it creates is pending. Rules live in
 `phaze.services.companion_junk_review`.
+
+`junk quarantine` lists every APPROVED junk-review row -- agent, reason, size, path and the
+destination the agent would move it to, `<root>/.phaze-quarantine/<relative path>` -- in a READ ONLY
+transaction. That is the dry run, and the default. With `--apply` it dispatches them: each row moves
+to `executing` and one meta-lane `quarantine_companion` job goes to its owning agent, which re-checks
+the file and moves it (phaze-lwuf6, `phaze.services.junk_quarantine`). Only rows in the `approved`
+status are ever listed or moved.
 
 `backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
 re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
@@ -101,6 +109,7 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.cloud_attempts_reset import ResetScope, apply_reset, preview_reset
 from phaze.services.companion_content import count_backfill, select_backfill_page
 from phaze.services.companion_junk_review import detect_junk_reviews
+from phaze.services.junk_quarantine import enqueue_quarantine, plan_quarantine
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 from phaze.services.reanalysis_backfill import (
@@ -411,6 +420,17 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
     reset.set_defaults(apply=False)
+    # phaze-lwuf6: dispatch the APPROVED junk companions to the quarantine move.
+    junk_grp = subcommands.add_parser("junk", help="Junk-companion review actions.")
+    junk_sub = junk_grp.add_subparsers(dest="junk_command", required=True)
+    quarantine = junk_sub.add_parser(
+        "quarantine",
+        help="List the approved junk companions and where each would be moved; --apply dispatches the moves (phaze-lwuf6).",
+    )
+    quarantine_mode = quarantine.add_mutually_exclusive_group()
+    quarantine_mode.add_argument("--dry-run", dest="apply", action="store_false", help="List only, read-only (the default).")
+    quarantine_mode.add_argument("--apply", dest="apply", action="store_true", help="Dispatch the moves. Without it nothing is moved.")
+    quarantine.set_defaults(apply=False)
     return parser
 
 
@@ -444,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_queue_status(args)
     if args.group == "backfill":
         return _main_backfill(args)
+    if args.group == "junk":
+        return asyncio.run(_run_junk_quarantine(apply=args.apply))
     return _main_agents_add(args)
 
 
@@ -692,6 +714,31 @@ async def _run_junk_review(*, apply: bool) -> int:
     else:
         print("APPLIED: pending rows written; nothing is approved until the operator decides.")
     return 0
+
+
+async def _run_junk_quarantine(*, apply: bool) -> int:
+    """Run ``phaze junk quarantine`` (phaze-lwuf6). Returns a process exit code.
+
+    The listing is read in a READ ONLY transaction. ``--apply`` then dispatches exactly the listed
+    rows; one approved after the listing waits for the next run.
+    """
+    async with async_session() as session:
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        plan = await plan_quarantine(session)
+        await session.rollback()
+    by_agent: Counter[str] = Counter()
+    for item in plan:
+        by_agent[item.agent_id] += 1
+        destination = item.destination_path or "REFUSED: outside every scan root of the agent"
+        print(f"  {item.agent_id} {item.reason} {item.size} bytes: {item.source_path} -> {destination}")
+    print(f"summary: approved={len(plan)} " + " ".join(f"{agent}={count}" for agent, count in sorted(by_agent.items())))
+    if not apply:
+        print("DRY RUN: nothing moved. Re-run with --apply to dispatch these moves to their agents.")
+        return 0
+    async with async_session() as session:
+        enqueued = await enqueue_quarantine(session, [item.review_id for item in plan])
+    print(f"APPLIED: {enqueued} of {len(plan)} moves dispatched; each row turns quarantined or failed as its agent reports.")
+    return 0 if enqueued == len(plan) else 1
 
 
 async def _enqueue_companion_feature_pages(task_router: AgentTaskRouter, agent_id: str, page_size: int) -> tuple[int, int, str | None]:
