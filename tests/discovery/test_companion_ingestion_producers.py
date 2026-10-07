@@ -13,7 +13,7 @@ import hashlib
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import aliased
 from watchdog.events import FileCreatedEvent
 
@@ -100,13 +100,13 @@ def _assert_media_rows_are_byte_exact(rows: list[FileRecord], media_paths: list[
         assert row.sha256_hash == hashlib.sha256(payload).hexdigest()
 
 
-async def test_scan_directory_persists_only_sibling_companions(
+async def test_scan_directory_persists_every_approved_companion_including_orphans(
     tmp_path: Path,
     authenticated_client: AsyncClient,
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """The real scan writes six approved sibling types and skips orphans/exclusions."""
+    """The real scan writes six approved types wherever they sit, orphans included, and skips exclusions (phaze-gafl9)."""
     tree = _fixture_tree(tmp_path)
     agent, _token = seed_test_agent
     batch = ScanBatch(agent_id=agent.id, scan_path=str(tmp_path), status=ScanStatus.RUNNING.value, total_files=0, processed_files=0)
@@ -122,11 +122,11 @@ async def test_scan_directory_persists_only_sibling_companions(
 
     rows = await _persisted_rows(session)
     names = {row.original_filename for row in rows}
-    assert result == {"status": "completed", "files_posted": 8}
+    assert result == {"status": "completed", "files_posted": 14}
     assert {row.file_type for row in rows if row.file_type in _ACCEPTED} == set(_ACCEPTED)
     assert {path.name for path in tree["accepted"]} <= names
     assert names.isdisjoint(path.name for path in tree["excluded"])
-    assert names.isdisjoint(path.name for path in tree["orphaned"])
+    assert {path.name for path in tree["orphaned"]} <= names
     assert {path.name for path in tree["media"]} <= names  # Positive control: this producer persisted media.
     _assert_media_rows_are_byte_exact(rows, tree["media"])
 
@@ -231,8 +231,8 @@ async def _linked_names(session: AsyncSession) -> set[tuple[str, str]]:
     return {(row[0], row[1]) for row in result.all()}
 
 
-# Identical for both producers: the scan never admits 011.txt or the two-levels-down cue, and the
-# watcher admits them but association leaves them unlinked; bonus.cue's own-directory media wins.
+# Identical for both producers: both admit 011.txt and the two-levels-down cue (phaze-gafl9), and
+# association leaves them unlinked; bonus.cue's own-directory media wins.
 _RELEASE_LINKS = {
     ("00-live_set_2019.nfo", "Live Set 2019.mp3"),
     ("site.txt", "Live Set 2019.mp3"),
@@ -247,7 +247,7 @@ async def test_scan_admits_and_links_companions_in_a_media_folders_subfolder(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """phaze-ehryj: the real scan ingests only name-matched sub-folder companions, and association links each one."""
+    """The real scan ingests every sub-folder companion (phaze-gafl9); association links the name-matched ones (phaze-ehryj)."""
     tree = _release_tree(tmp_path)
     agent, _token = seed_test_agent
     batch = ScanBatch(agent_id=agent.id, scan_path=str(tmp_path), status=ScanStatus.RUNNING.value, total_files=0, processed_files=0)
@@ -261,14 +261,15 @@ async def test_scan_admits_and_links_companions_in_a_media_folders_subfolder(
         agent_id=agent.id,
     )
 
-    assert result == {"status": "completed", "files_posted": 7}
+    assert result == {"status": "completed", "files_posted": 9}
     names = {row.original_filename for row in await _persisted_rows(session)}
-    assert names == {path.name for key, path in tree.items() if key not in {"unmatched", "too_deep"}}
+    assert names == {path.name for path in tree.values()}
     await associate_companions(session)
     links = await _linked_names(session)
     assert links == _RELEASE_LINKS
-    # Every companion the scan admitted is one association linked: the two sides agree.
-    assert {companion for companion, _media in links} == {name for name in names if not name.endswith((".mp3", ".mkv"))}
+    # Admitted is no longer the same as linked: the two companions nothing names stay unlinked file rows.
+    unlinked = {name for name in names if not name.endswith((".mp3", ".mkv"))} - {companion for companion, _media in links}
+    assert unlinked == {tree["unmatched"].name, tree["too_deep"].name}
 
 
 async def test_watcher_links_companions_in_a_media_folders_subfolder_like_the_scan(
@@ -277,7 +278,7 @@ async def test_watcher_links_companions_in_a_media_folders_subfolder_like_the_sc
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """phaze-ehryj: the watcher admits every companion, and association yields the scan's exact link set."""
+    """The watcher admits every companion, as the scan now does, and association yields the scan's exact link set."""
     tree = _release_tree(tmp_path)
     agent, _token = seed_test_agent
     session.add(ScanBatch(agent_id=agent.id, scan_path="<watcher>", status=ScanStatus.LIVE.value, total_files=0, processed_files=0))
@@ -298,3 +299,78 @@ async def test_watcher_links_companions_in_a_media_folders_subfolder_like_the_sc
     assert names == {path.name for path in tree.values()}
     await associate_companions(session)
     assert await _linked_names(session) == _RELEASE_LINKS
+
+
+async def _ingest_with_scan(root: Path, agent: Agent, client: AsyncClient, session: AsyncSession) -> None:
+    batch = ScanBatch(agent_id=agent.id, scan_path=str(root), status=ScanStatus.RUNNING.value, total_files=0, processed_files=0)
+    session.add(batch)
+    await session.commit()
+    result = await scan_directory({"api_client": _agent_api(client)}, scan_path=str(root), batch_id=str(batch.id), agent_id=agent.id)
+    assert result["status"] == "completed"
+
+
+async def _ingest_with_watcher(paths: list[Path], agent: Agent, client: AsyncClient, session: AsyncSession) -> None:
+    """Fire a created event for EVERY file on disk -- the watcher's own filter decides, exactly as in production."""
+    session.add(ScanBatch(agent_id=agent.id, scan_path="<watcher>", status=ScanStatus.LIVE.value, total_files=0, processed_files=0))
+    await session.commit()
+    poster = Poster(client=_agent_api(client), agent_id=agent.id)
+    debouncer = Debouncer()
+    handler = WatcherEventHandler(loop=asyncio.get_running_loop(), debouncer_touch=debouncer.touch)
+    for path in paths:
+        handler.on_created(FileCreatedEvent(src_path=str(path)))
+    await asyncio.sleep(0)
+    ready, evicted = debouncer.sweep(settle_period=0.0, max_pending=3600.0)
+    assert evicted == []
+    for path in ready:
+        await poster.post_one(path)
+
+
+def _parity_tree(root: Path) -> list[Path]:
+    """Every admission shape at once: siblings, orphans, deep and dump-folder companions, exclusions, quarantine."""
+    tree = _fixture_tree(root)
+    release = _release_tree(root)
+    quarantine = root / ".phaze-quarantine" / "orphaned"
+    quarantine.mkdir(parents=True)
+    quarantined = [
+        _write(quarantine / "junk.nfo", b"quarantined-junk"),
+        _write(quarantine / "stray.mp3", b"quarantined-music"),
+        _write(root / ".phaze-quarantine" / "top.txt", b"quarantined-top"),
+    ]
+    return [path for paths in tree.values() for path in paths] + list(release.values()) + quarantined
+
+
+async def test_scan_and_watcher_admit_exactly_the_same_files(
+    tmp_path: Path,
+    authenticated_client: AsyncClient,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-gafl9: on one tree, both REAL producers persist the identical set of rows, byte for byte.
+
+    The two used to differ by design (the scan withheld media-less companions). The set compared is
+    (original_path, sha256, size, type) as Postgres holds it after each producer's authenticated upsert,
+    and it is compared against an independent expectation too, so two producers that agreed on a WRONG
+    set (e.g. both ingesting quarantine) would still fail.
+    """
+    all_paths = _parity_tree(tmp_path)
+    agent, _token = seed_test_agent
+
+    def snapshot(rows: list[FileRecord]) -> set[tuple[str, str, int, str]]:
+        return {(row.original_path, row.sha256_hash, row.file_size, row.file_type) for row in rows}
+
+    await _ingest_with_scan(tmp_path, agent, authenticated_client, session)
+    scanned = snapshot(await _persisted_rows(session))
+    await session.execute(delete(FileRecord))
+    await session.commit()
+    assert await _persisted_rows(session) == []  # The watcher pass starts from an empty table.
+
+    await _ingest_with_watcher(all_paths, agent, authenticated_client, session)
+    watched = snapshot(await _persisted_rows(session))
+
+    expected = {
+        (str(path), hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size, path.suffix.lstrip("."))
+        for path in all_paths
+        if ".phaze-quarantine" not in path.parts and path.suffix.lstrip(".") in {*_ACCEPTED, "mp3", "mp4", "mkv"}
+    }
+    assert len(expected) == 23  # 14 from the mixed tree + 9 from the release tree; none of the 3 quarantined files
+    assert scanned == watched == expected

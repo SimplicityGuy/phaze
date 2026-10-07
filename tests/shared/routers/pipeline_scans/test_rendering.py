@@ -11,10 +11,7 @@ workspace mount of the Recent Scans table (phaze-8f9j).
 
 from __future__ import annotations
 
-import csv
 from datetime import UTC, datetime, timedelta
-import io
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from phaze.models.orphan_companion_diagnostic import OrphanCompanionDiagnostic
@@ -369,8 +366,8 @@ async def test_router_registered_in_main_app() -> None:
     # All handlers must be reachable on the production app.
     assert "/pipeline/scans" in paths
     assert "/pipeline/scans/{batch_id}" in paths
-    assert "/pipeline/scans/{batch_id}/orphan-companions" in paths
-    assert "/pipeline/scans/{batch_id}/orphan-companions/download" in paths
+    assert "/pipeline/scans/{batch_id}/orphan-companions" not in paths  # retired by phaze-gafl9
+    assert "/pipeline/scans/{batch_id}/orphan-companions/download" not in paths
     assert "/pipeline/scans/agent-roots" in paths
     assert "/pipeline/scans/recent" in paths
 
@@ -627,33 +624,30 @@ async def test_recent_path_not_shadowed_by_batch_id_route(
 
 
 @pytest.mark.asyncio
-async def test_recent_scans_links_only_nonempty_orphan_diagnostics(
+async def test_recent_scans_shows_no_retired_orphan_inventory(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """The aggregate is one quiet, batch-scoped affordance; zero never renders as noise."""
+    """phaze-gafl9: a scan's leftover orphan diagnostics never surface, and the inventory routes are gone.
+
+    Since the scan admits every approved companion, each surviving diagnostic row names a file the next
+    re-scan ingests, so a "N orphan companions" badge on an older scan would claim files are missing that
+    are not. The rows themselves stay in the table until it is dropped; the scans page must not read them.
+    """
     ac, _ = smoke
-    nonempty = ScanBatch(
+    batch = ScanBatch(
         id=uuid.uuid4(),
         agent_id="test-agent",
-        scan_path="/synthetic/nonempty",
+        scan_path="/synthetic/archive",
         status=ScanStatus.COMPLETED.value,
         total_files=1,
         processed_files=1,
     )
-    empty = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/empty",
-        status=ScanStatus.COMPLETED.value,
-        total_files=1,
-        processed_files=1,
-    )
-    session.add_all([nonempty, empty])
+    session.add(batch)
     await session.flush()
     session.add(
         OrphanCompanionDiagnostic(
-            batch_id=nonempty.id,
+            batch_id=batch.id,
             configured_root="/synthetic/archive",
             companion_extension=".nfo",
             normalized_path="/synthetic/archive/orphan.nfo",
@@ -664,311 +658,11 @@ async def test_recent_scans_links_only_nonempty_orphan_diagnostics(
     response = await ac.get("/pipeline/scans/recent")
 
     assert response.status_code == 200
-    assert "1 orphan companion" in response.text
-    assert f"/pipeline/scans/{nonempty.id}/orphan-companions" in response.text
-    assert f"/pipeline/scans/{empty.id}/orphan-companions" not in response.text
-    assert "0 orphan companions" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_orphan_companion_detail_groups_filters_and_pages_deterministically(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """Root/type filters compose in SQL, preserve state, and return a stable bounded page."""
-    ac, _ = smoke
-    batch = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/archive/subpath",
-        configured_root="/synthetic/archive",
-        status=ScanStatus.COMPLETED.value,
-        total_files=0,
-        processed_files=0,
-    )
-    session.add(batch)
-    await session.flush()
-    diagnostics = [
-        OrphanCompanionDiagnostic(
-            batch_id=batch.id,
-            configured_root="/synthetic/archive",
-            companion_extension=".nfo",
-            normalized_path=f"/synthetic/archive/orphan-{index:03}.nfo",
-        )
-        for index in reversed(range(52))
-    ]
-    diagnostics.extend(
-        [
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/archive",
-                companion_extension=".m3u",
-                normalized_path="/synthetic/archive/playlist.m3u",
-            ),
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/video",
-                companion_extension=".nfo",
-                normalized_path="/synthetic/video/notes.nfo",
-            ),
-        ]
-    )
-    session.add_all(diagnostics)
-    await session.commit()
-
-    response = await ac.get(
-        f"/pipeline/scans/{batch.id}/orphan-companions",
-        params={"root": "/synthetic/archive", "type": ".nfo", "page": "2"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert 'id="orphan-companion-detail"' in response.text
-    assert "54 accepted companion files" in response.text
-    assert 'data-root-count="53"' in response.text
-    assert 'data-root-count="1"' in response.text
-    assert 'data-extension-count="53"' in response.text
-    assert 'data-extension-count="1"' in response.text
-    assert "orphan-050.nfo" in response.text
-    assert "orphan-051.nfo" in response.text
-    assert "orphan-049.nfo" not in response.text
-    assert response.text.index("orphan-050.nfo") < response.text.index("orphan-051.nfo")
-    assert "Showing 51-52 of 52 · Page 2" in response.text
-    preserved = "root=%2Fsynthetic%2Farchive&amp;type=.nfo&amp;page=1"
-    assert preserved in response.text
-    assert f"/pipeline/scans/{batch.id}/orphan-companions/download?root=%2Fsynthetic%2Farchive&amp;type=.nfo" in response.text
-
-
-@pytest.mark.asyncio
-async def test_orphan_companion_detail_invalid_view_values_fall_back_safely(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """Hand-edited display preferences degrade to page one and no filter, never a 422."""
-    ac, _ = smoke
-    batch = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/archive",
-        status=ScanStatus.COMPLETED.value,
-        total_files=0,
-        processed_files=0,
-    )
-    session.add(batch)
-    await session.flush()
-    session.add_all(
-        [
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/archive",
-                companion_extension=".nfo",
-                normalized_path="/synthetic/archive/a.nfo",
-            ),
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/video",
-                companion_extension=".m3u",
-                normalized_path="/synthetic/video/b.m3u",
-            ),
-        ]
-    )
-    await session.commit()
-
-    response = await ac.get(f"/pipeline/scans/{batch.id}/orphan-companions?root=%2Funknown&type=.exe&page=banana")
-
-    assert response.status_code == 200, response.text
-    assert "/synthetic/archive/a.nfo" in response.text
-    assert "/synthetic/video/b.m3u" in response.text
-    assert "Showing 1-2 of 2 · Page 1" in response.text
-    assert "/unknown" not in response.text
-    assert ".exe" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_orphan_companion_detail_empty_deleted_and_escaped_paths(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """Empty is quiet, deleted is a swappable alert, and database paths remain escaped."""
-    ac, _ = smoke
-    empty = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/empty",
-        status=ScanStatus.COMPLETED.value,
-        total_files=0,
-        processed_files=0,
-    )
-    escaped = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/escaped",
-        status=ScanStatus.COMPLETED.value,
-        total_files=0,
-        processed_files=0,
-    )
-    session.add_all([empty, escaped])
-    await session.flush()
-    session.add(
-        OrphanCompanionDiagnostic(
-            batch_id=escaped.id,
-            configured_root="/synthetic/<root>&",
-            companion_extension=".nfo",
-            normalized_path='/synthetic/<script>alert("escaped")</script>&.nfo',
-        )
-    )
-    await session.commit()
-
-    empty_response = await ac.get(f"/pipeline/scans/{empty.id}/orphan-companions")
-    assert empty_response.status_code == 200
-    assert "No skipped orphan companions" in empty_response.text
-
-    escaped_response = await ac.get(f"/pipeline/scans/{escaped.id}/orphan-companions")
-    assert escaped_response.status_code == 200
-    assert "<script>" not in escaped_response.text
-    assert "&lt;script&gt;" in escaped_response.text
-    assert "&lt;root&gt;&amp;" in escaped_response.text
-
-    await session.delete(empty)
-    await session.commit()
-    deleted_response = await ac.get(f"/pipeline/scans/{empty.id}/orphan-companions")
-    assert deleted_response.status_code == 200
-    assert 'id="orphan-companion-detail"' in deleted_response.text
-    assert 'role="alert"' in deleted_response.text
-    assert "already gone" in deleted_response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_orphan_companion_download_streams_the_filtered_metadata(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """CSV uses the active batch/root/type filters and preserves quoted path metadata."""
-    ac, _ = smoke
-    batch = ScanBatch(
-        id=uuid.uuid4(),
-        agent_id="test-agent",
-        scan_path="/synthetic/archive",
-        status=ScanStatus.COMPLETED.value,
-        total_files=0,
-        processed_files=0,
-    )
-    session.add(batch)
-    await session.flush()
-    included_path = "/synthetic/archive/orphan, quoted.nfo"
-    session.add_all(
-        [
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/archive",
-                companion_extension=".nfo",
-                normalized_path=included_path,
-            ),
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/archive",
-                companion_extension=".m3u",
-                normalized_path="/synthetic/archive/excluded.m3u",
-            ),
-            OrphanCompanionDiagnostic(
-                batch_id=batch.id,
-                configured_root="/synthetic/video",
-                companion_extension=".nfo",
-                normalized_path="/synthetic/video/excluded.nfo",
-            ),
-        ]
-    )
-    await session.commit()
-
-    response = await ac.get(
-        f"/pipeline/scans/{batch.id}/orphan-companions/download",
-        params={"root": "/synthetic/archive", "type": ".nfo"},
-    )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/csv")
-    assert f"scan-{batch.id}-orphan-companions.csv" in response.headers["content-disposition"]
-    assert list(csv.reader(io.StringIO(response.text))) == [
-        ["batch_id", "configured_root", "companion_extension", "normalized_path"],
-        [str(batch.id), "/synthetic/archive", ".nfo", included_path],
-    ]
-
-
-@pytest.mark.asyncio
-async def test_download_orphan_companions_unknown_batch_renders_alert_not_dropped_404(
-    smoke: tuple[AsyncClient, AsyncMock],
-) -> None:
-    """GET .../orphan-companions/download for an unknown batch renders the alert fragment (200),
-    mirroring the sibling ``orphan_companion_detail`` handler's vanished-row guard just above,
-    rather than a bare 404 htmx's default responseHandling would silently drop.
-    """
-    from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
-
-    ac, _ = smoke
-    unknown_id = uuid.uuid4()
-
-    response = await ac.get(f"/pipeline/scans/{unknown_id}/orphan-companions/download")
-
-    assert response.status_code == RENDERABLE_ALERT_STATUS
-    assert 'role="alert"' in response.text
-    assert "already gone" in response.text.lower()
-
-
-def test_orphan_companion_view_state_query_omits_absent_filters() -> None:
-    """``.query()``/``.filters_query()`` with root AND extension both unset -- the bare-page case
-    every unfiltered pagination link degrades to. Every HTTP-level test exercises a FILTERED view
-    (root and/or extension set); this is the direct unit-level complement covering the other side
-    of each ``is not None`` guard.
-    """
-    from phaze.routers.pipeline_scans import OrphanCompanionViewState
-
-    view = OrphanCompanionViewState(root=None, extension=None, page=2)
-
-    assert view.query() == "page=2"
-    assert view.query(page=3) == "page=3"
-    assert view.filters_query() == ""
-
-
-@pytest.mark.asyncio
-async def test_orphan_companion_csv_iterator_requests_bounded_streaming(session: AsyncSession) -> None:
-    """The exhaustive download yields rows incrementally with a bounded server cursor."""
-    from phaze.routers.pipeline_scans import _stream_orphan_companion_csv
-
-    diagnostics = [
-        SimpleNamespace(
-            batch_id=uuid.UUID(int=index),
-            configured_root="/synthetic/archive",
-            companion_extension=".nfo",
-            normalized_path=f"/synthetic/archive/{index}.nfo",
-        )
-        for index in (1, 2)
-    ]
-
-    class FakeStream:
-        def __aiter__(self):  # type: ignore[no-untyped-def]
-            self._rows = iter(diagnostics)
-            return self
-
-        async def __anext__(self):  # type: ignore[no-untyped-def]
-            try:
-                return next(self._rows)
-            except StopIteration as exc:
-                raise StopAsyncIteration from exc
-
-    class FakeSession:
-        execution_options: dict[str, object]
-
-        async def stream_scalars(self, stmt):  # type: ignore[no-untyped-def]
-            self.execution_options = dict(stmt.get_execution_options())
-            return FakeStream()
-
-    fake_session = FakeSession()
-    chunks = [chunk async for chunk in _stream_orphan_companion_csv(fake_session, select(OrphanCompanionDiagnostic))]  # type: ignore[arg-type]
-
-    assert fake_session.execution_options["yield_per"] == 250
-    assert len(chunks) == 3
-    assert chunks[0].startswith("batch_id,configured_root")
-    assert chunks[1].endswith("/synthetic/archive/1.nfo\r\n")
-    assert chunks[2].endswith("/synthetic/archive/2.nfo\r\n")
+    assert "/synthetic/archive" in response.text  # Positive control: the scan with diagnostics rendered.
+    assert "orphan companion" not in response.text
+    assert "orphan-companion" not in response.text
+    for path in (f"/pipeline/scans/{batch.id}/orphan-companions", f"/pipeline/scans/{batch.id}/orphan-companions/download"):
+        assert (await ac.get(path)).status_code == 404
 
 
 # OOB stage-card "files ready" counts piggybacked on the /pipeline/stats poll

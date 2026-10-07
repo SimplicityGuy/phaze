@@ -133,8 +133,8 @@ async def _link_targets(session: AsyncSession, dir_groups: dict[tuple[str, str],
     paired by proximity alone.
 
     Own-directory media WINS -- a group with any is never matched against its parent -- and the
-    fallback is exactly one level. ``tasks/scan.py`` admits a companion by the same key, so the scan
-    ingests exactly the companions this can link.
+    fallback is exactly one level. Since phaze-gafl9 ``tasks/scan.py`` admits every approved companion
+    wherever it sits, so a companion this cannot link is an unlinked file row, never a skipped file.
 
     Two reads, never one widened read: the parent read runs only for the groups the first left
     without media, and each stays within :func:`_media_directly_in`'s per-key bind budget, so the

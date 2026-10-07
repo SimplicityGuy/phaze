@@ -1,4 +1,10 @@
-"""Persist bounded metadata-only orphan COMPANION diagnostics from an owning agent."""
+"""Persist bounded metadata-only orphan COMPANION diagnostics from an owning agent.
+
+RETIRED PRODUCER (phaze-gafl9): the scan admits every approved companion, so a current agent never
+calls this. It stays registered only so an agent still on an older image finishes its scan rather than
+aborting on a 404 after its files are upserted; nothing reads what it writes. It goes with the
+``orphan_companion_diagnostics`` table in that table's drop.
+"""
 
 from __future__ import annotations
 
