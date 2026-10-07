@@ -227,6 +227,16 @@ _QUERYABLE_DECISIONS: frozenset[CacheDecision] = frozenset(
     }
 )
 
+RETRY_HINT_OUTCOMES: frozenset[LookupOutcome] = frozenset({LookupOutcome.BLOCKED, LookupOutcome.RENDER_FAILED})
+"""The transient outcomes whose chosen detail-page URL is persisted as a retry HINT (phaze-w5fni).
+
+Exactly the two where the page itself was never fetched successfully, so the attempt's only durable
+finding is WHICH page the scorer chose; the retry can then spend one render instead of a search plus
+a render. Every other transient is excluded on purpose: ``DECOY`` -- the site served a flagged-client
+page for that URL, and offering it again would re-ask for the same decoy; ``PARSE_FAILED`` -- the page
+was fetched and our selectors failed, which a fresh render of the same URL cannot be assumed to fix;
+``SEARCH_FAILED`` -- no page was ever chosen."""
+
 TRANSIENT_MAX_ATTEMPTS: int = 5
 """Attempts after which a persistently-transient set stops being retried automatically.
 

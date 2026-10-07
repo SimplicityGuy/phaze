@@ -84,6 +84,18 @@ class TracklistLookupCache(TimestampMixin, Base):
     NEVER a claim that the tracklist matches the audio -- with fingerprinting removed there is no
     way to check that, and none is planned (epic phaze-fq9h, second amendment, point 3)."""
 
+    retry_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """A HINT, never a result: the detail-page URL the last attempt chose before its render failed.
+
+    Set ONLY for :data:`~phaze.enums.tracklist_candidate.RETRY_HINT_OUTCOMES` (``BLOCKED`` and
+    ``RENDER_FAILED`` -- the page itself was never fetched successfully, so the choice of page is the
+    one thing the attempt learned) and cleared by every other write: a ``FOUND`` (the answer lives in
+    ``external_id`` / ``source_url``), a negative, a ``DECOY`` (the site served a flagged-client page
+    for that URL, so it must not be offered again), and a park at the transient attempt cap. The retry
+    renders it directly instead of repeating the search, then discards it if the rendered page fails
+    the result scoring. Deliberately separate from ``source_url``, which keeps its diagnostic meaning on
+    every transient row."""
+
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Short failure detail for the transient outcomes, so a recurring block is diagnosable."""
 
