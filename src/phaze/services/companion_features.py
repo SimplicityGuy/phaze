@@ -59,7 +59,7 @@ import unicodedata
 from phaze.constants import EXTENSION_MAP, FileCategory
 
 
-EXTRACTOR_VERSION: Final = 1
+EXTRACTOR_VERSION: Final = 2
 """Bump when a rule below changes, so ``phaze backfill companion-features`` re-extracts older rows."""
 
 MAX_FEATURE_BYTES: Final = 1_048_576
@@ -114,6 +114,9 @@ _AD_WORD = re.compile(
     r"download|visit|forum|torrent|join us|upload|free &|irc|support us|donate|sponsor|subscribe|ripped by|encoded by|greetz|greets",
     re.IGNORECASE,
 )
+_COLLECTION = re.compile(r"\bcollection\b", re.IGNORECASE)
+_MIXTAPE = re.compile(r"\bmixtapes?\b", re.IGNORECASE)
+_MIX_CREDIT = re.compile(r"\bmixed by\b", re.IGNORECASE)
 _BOX_DRAWING = re.compile("[─-▟]")
 _NON_ASCII = re.compile(r"[^\x00-\x7f]")
 _CUE_KEYWORD = re.compile(r"^\s*(FILE|TRACK|TITLE)\b(.*)$", re.IGNORECASE)
@@ -370,6 +373,11 @@ def _has_release_block(stripped: list[str]) -> bool:
     return len(names & _RELEASE_FIELDS) >= _RELEASE_MIN_FIELDS
 
 
+def _has_collection_credits(lines: list[str]) -> bool:
+    """A collection overview crediting its mixes contains recording context even without filenames."""
+    return any(_COLLECTION.search(line) for line in lines) and any(_MIXTAPE.search(line) and _MIX_CREDIT.search(line) for line in lines)
+
+
 def extract_content_features(raw: bytes, suffix: str) -> ContentFeatures:
     """Extract the content features of one companion from its bytes and its (lowercased) extension."""
     suffix = suffix.lower()
@@ -399,7 +407,7 @@ def extract_content_features(raw: bytes, suffix: str) -> ContentFeatures:
         len(nonblank) <= _SITE_AD_MAX_LINES
         and any(_has_url(line) for line in nonblank)
         and _AD_WORD.search(decision)
-        and not (track_like or references or _has_release_block(stripped))
+        and not (track_like or references or _has_release_block(stripped) or _has_collection_credits(nonblank))
     ):
         junk_class = "site_ad"
 

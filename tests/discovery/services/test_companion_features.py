@@ -377,3 +377,27 @@ def test_the_linear_rewrites_agree_with_the_survey_patterns() -> None:
         assert companion_features._is_artist_title(line) == bool(survey_artist_title.search(line)), line
         assert bool(companion_features._TS_LINE.match(line)) == bool(survey_ts.match(line)), line
         assert bool(companion_features._NUM_LINE.match(line)) == bool(survey_num.match(line)), line
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".nfo"])
+def test_a_collection_readme_with_mix_credits_and_download_urls_is_not_a_site_advert(tmp_path: Path, suffix: str) -> None:
+    """The checked collection-overview shape has recording context despite having no filename references."""
+    payload = (
+        b"The Example Mixtape Collection\r\n"
+        b"Compiled for https://example-community.test/\r\n"
+        b"Almost all of the mixtapes are mixed by Example DJ, except numbers 001 (Other DJ), 004 (Third DJ).\r\n"
+        b"Check out these artists: https://example-music.test/artist\r\n"
+        b"Check out the label: https://example-label.test/label\r\n"
+        b"NOTE: This collection is incomplete: numbers 002 and 018 could not be found.\r\n"
+        b"Not every mixtape was a free download; some were stream rips.\r\n"
+    )
+    reading = read_companion(str(_write(tmp_path / ("readme" + suffix), payload)))
+    assert reading.features.junk_class is None
+    assert reading.features.references == ()
+    assert not reading.features.is_tracklist
+
+
+@pytest.mark.parametrize("context", [b"Download our mixtape collection!", b"This mixtape is mixed by Example DJ."])
+def test_collection_or_mix_credit_alone_does_not_exempt_a_site_advert(context: bytes) -> None:
+    payload = _STAMP + context
+    assert extract_content_features(payload, ".txt").junk_class == "site_ad"
