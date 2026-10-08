@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 import structlog
 
 from phaze.constants import QUARANTINE_DIRNAME
@@ -103,9 +103,9 @@ async def _release_unsent(session: AsyncSession, review_ids: Collection[uuid.UUI
             update(CompanionJunkReview)
             .where(CompanionJunkReview.id.in_(ids[start : start + _ID_PAGE]), CompanionJunkReview.status == JunkReviewStatus.EXECUTING)
             .values(status=JunkReviewStatus.APPROVED.value, updated_at=func.now())
-            .returning(CompanionJunkReview.id)
         )
-        released += len(result.all())
+        # An UPDATE's rowcount is the rows it changed (asyncpg reports the command tag), so nothing is fetched.
+        released += cast("CursorResult[Any]", result).rowcount
     await session.commit()
     return released
 

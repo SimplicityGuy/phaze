@@ -126,6 +126,35 @@ def test_the_table_has_no_foreign_key_and_no_actor_column() -> None:
     }
 
 
+async def test_the_live_identity_index_is_the_index_migration_080_builds(session: AsyncSession) -> None:
+    """The model's partial-index predicate is a column expression; Postgres stores the same index from it as from the migration's SQL.
+
+    The compiled DDL differs only by one pair of parentheses around the predicate, so the comparison
+    is made on what Postgres keeps (``pg_get_indexdef``): both statements are run against a scratch
+    copy of the table, under two names.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    model = next(index for index in CompanionJunkReview.__table__.indexes if index.name == "uq_companion_junk_review_live_identity")
+    from_model = str(CreateIndex(model).compile(dialect=postgresql.dialect()))
+    assert "status NOT IN ('failed', 'quarantined')" in from_model  # values rendered as literals, never binds
+    from_migration = (
+        "CREATE UNIQUE INDEX uq_companion_junk_review_live_identity ON companion_junk_review (agent_id, original_path, sha256_hash) "
+        "WHERE status NOT IN ('failed', 'quarantined')"
+    )
+    await session.execute(text("CREATE TEMP TABLE scratch_review (LIKE companion_junk_review)"))
+    stored = []
+    for name, ddl in (("from_model", from_model), ("from_migration", from_migration)):
+        await session.execute(
+            text(ddl.replace("uq_companion_junk_review_live_identity", name).replace("ON companion_junk_review ", "ON scratch_review "))
+        )
+        definition = (await session.execute(text(f"SELECT pg_get_indexdef('{name}'::regclass)"))).scalar_one()
+        stored.append(definition.replace(name, "<index>"))
+    assert stored[0] == stored[1], stored
+
+
 def test_no_transition_leaves_a_terminal_status() -> None:
     assert set(TRANSITIONS) == set(JunkReviewStatus)
     for status in TERMINAL_STATUSES:

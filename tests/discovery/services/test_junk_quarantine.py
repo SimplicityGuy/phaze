@@ -24,6 +24,7 @@ from phaze.schemas.agent_junk_quarantine import JunkQuarantineResultPayload
 from phaze.schemas.agent_tasks import QuarantineCompanionPayload
 from phaze.services import junk_quarantine
 from phaze.services.agent_task_router import AmbiguousEnqueueError
+from phaze.services.companion_junk_review import transition_review
 from phaze.services.junk_quarantine import (
     QUARANTINE_TASK,
     QuarantineReportRefused,
@@ -220,6 +221,18 @@ async def test_a_release_never_touches_a_row_an_agent_already_reported(session: 
 
     assert await junk_quarantine._release_unsent(session, {rows[0].id, rows[1].id}) == 0
     assert [(await _status(session, row.id)).status for row in rows[:2]] == ["quarantined", "approved"]
+
+
+async def test_a_release_counts_exactly_the_rows_it_moved_across_pages(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The count is the UPDATE's rowcount, never fetched rows: two executing rows move, an approved one does not count."""
+    monkeypatch.setattr(junk_quarantine, "_ID_PAGE", 1)
+    rows = await _three_approved(session)
+    for row in rows[:2]:
+        await transition_review(session, row.id, JunkReviewStatus.EXECUTING)
+    await session.commit()
+
+    assert await junk_quarantine._release_unsent(session, [row.id for row in rows]) == 2
+    assert [(await _status(session, row.id)).status for row in rows] == ["approved"] * 3
 
 
 async def _claim_and_finish(session: AsyncSession, review_id: uuid.UUID) -> None:
