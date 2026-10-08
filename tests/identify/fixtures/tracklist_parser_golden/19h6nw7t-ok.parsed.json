@@ -1,0 +1,122 @@
+[
+  {
+    "artist": "ID",
+    "confidence": null,
+    "is_mashup": false,
+    "label": null,
+    "position": 1,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "ID"
+  },
+  {
+    "artist": "Alex Bau",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "COCOON",
+    "position": 2,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Antidot"
+  },
+  {
+    "artist": "Voodoos & Taboos",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "BORDELLO A PARIGI",
+    "position": 3,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Animae"
+  },
+  {
+    "artist": "Paul Mac",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "EPM",
+    "position": 4,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Nothing Remains"
+  },
+  {
+    "artist": "Phuture",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "TRAX(PHUTURE TRAX)",
+    "position": 5,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Your Only Friend"
+  },
+  {
+    "artist": "Adam Beyer & Raxon",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "TRUESOUL",
+    "position": 6,
+    "remix_info": "Day Mix",
+    "timestamp": null,
+    "title": "The Signal"
+  },
+  {
+    "artist": "Symbiosis",
+    "confidence": null,
+    "is_mashup": false,
+    "label": null,
+    "position": 7,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Terra"
+  },
+  {
+    "artist": "Ferdinger",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "ARTS",
+    "position": 8,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Under My Spell"
+  },
+  {
+    "artist": "Ferdinger",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "LIFE IN PATTERNS",
+    "position": 9,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Heart Break"
+  },
+  {
+    "artist": "Len Faki",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "FIGURE",
+    "position": 10,
+    "remix_info": "\u00d8 [Phase] Remix",
+    "timestamp": null,
+    "title": "Temple"
+  },
+  {
+    "artist": "Levzon",
+    "confidence": null,
+    "is_mashup": false,
+    "label": "FRENZY",
+    "position": 11,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "Bang The Drums"
+  },
+  {
+    "artist": "ID",
+    "confidence": null,
+    "is_mashup": false,
+    "label": null,
+    "position": 12,
+    "remix_info": null,
+    "timestamp": null,
+    "title": "ID"
+  }
+]
