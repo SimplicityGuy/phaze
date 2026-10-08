@@ -151,7 +151,7 @@ class LocalFilesystemPrimitives:
     def sha256_of_file(self, path: Path) -> str:
         """Hash a file without loading it into memory."""
         digest = hashlib.sha256()
-        with path.open("rb") as handle:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
             for chunk in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest()
@@ -226,17 +226,18 @@ class LocalFilesystemPrimitives:
 
     def streamed_copy(self, src: Path, dst: Path) -> None:
         """Copy in bounded chunks to an exclusively created, fsynced destination."""
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with src.open("rb") as source, os.fdopen(fd, "wb") as destination:
-            shutil.copyfileobj(source, destination, length=COPY_CHUNK_BYTES)
-            destination.flush()
-            os.fsync(destination.fileno())
+        with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, "wb") as destination:
+                shutil.copyfileobj(source, destination, length=COPY_CHUNK_BYTES)
+                destination.flush()
+                os.fsync(destination.fileno())
         shutil.copystat(src, dst)
 
     def claim_destination_by_link(self, src: Path, dst: Path) -> bool:
         """Atomically claim ``dst``; return false only when links are unsupported."""
         try:
-            os.link(src, dst)
+            os.link(src, dst, follow_symlinks=False)
         except FileExistsError:
             raise
         except OSError as exc:

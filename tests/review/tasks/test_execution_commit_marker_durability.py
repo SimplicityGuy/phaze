@@ -94,8 +94,8 @@ async def test_marker_and_directory_are_fsynced_after_publish_and_before_source_
         events.append(("fsync-dir" if stat.S_ISDIR(st.st_mode) else "fsync-file", st.st_ino))
         real_fsync(fd)
 
-    def spy_link(src: object, dst: object) -> None:
-        real_link(src, dst)  # type: ignore[arg-type]
+    def spy_link(src: object, dst: object, *, follow_symlinks: bool = True) -> None:
+        real_link(src, dst, follow_symlinks=follow_symlinks)  # type: ignore[arg-type]
         events.append(("link", Path(str(dst))))
 
     def spy_unlink(path: object, *args: object, **kwargs: object) -> None:

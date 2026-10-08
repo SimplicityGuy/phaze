@@ -31,6 +31,7 @@ import pytest
 
 from phaze.config import AgentSettings
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.media_path_resolve import resolve_media_path
 import phaze.tasks.execution as execmod
 from phaze.tasks.execution import _same_filesystem, _streamed_copy, execute_approved_batch
 from phaze.tasks.execution_filesystem import FilesystemMoveRequest, LocalExecutionFilesystemEngine, LocalFilesystemPrimitives, MoveStep
@@ -82,9 +83,9 @@ async def test_same_filesystem_move_is_o1_and_never_streams(tmp_path: Path, monk
     calls = {"link": 0, "stream": 0}
     real_link = execmod.os.link
 
-    def spy_link(src: object, dst: object) -> None:
+    def spy_link(src: object, dst: object, *, follow_symlinks: bool = True) -> None:
         calls["link"] += 1
-        real_link(src, dst)  # type: ignore[arg-type]
+        real_link(src, dst, follow_symlinks=follow_symlinks)  # type: ignore[arg-type]
 
     monkeypatch.setattr(execmod.os, "link", spy_link)
     primitives = LocalFilesystemPrimitives()
@@ -433,7 +434,7 @@ async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(
     dst = tmp_path / "dst" / "<track-03>.mp3"
     dst.parent.mkdir(parents=True, exist_ok=True)
 
-    def _no_links(_s: object, _d: object) -> None:
+    def _no_links(_s: object, _d: object, *, follow_symlinks: bool = True) -> None:
         raise OSError(link_errno, "operation not supported")
 
     monkeypatch.setattr(execmod.os, "link", _no_links)
@@ -742,7 +743,8 @@ async def test_cross_fs_copy_post_publish_hash_mismatch_fails_loudly_without_del
     assert api.patch_execution_log.await_args.args[1].error_message.startswith("verify:")
 
 
-async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("facade", [False, True], ids=["local", "production-facade"])
+async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_path: Path, facade: bool) -> None:
     """phaze-9pg11: ``item.source_path`` (``FileRecord.current_path``) is stored NFC-normalized
     (the identity/dedup key), but the real directory entry can be NFD-decomposed. The executor
     must move the ACTUAL on-disk file, not the never-matching stored path.
@@ -768,12 +770,19 @@ async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_pat
     on_disk.write_bytes(content)
     stored_nfc_source = str(orig_dir / nfc_name)
 
-    primitives = LocalFilesystemPrimitives()
-    with patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists):
-        result = await LocalExecutionFilesystemEngine(primitives).move(
+    engine = execmod._filesystem_engine() if facade else LocalExecutionFilesystemEngine()
+    with (
+        patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists),
+        patch("phaze.services.containment.resolve_media_path", wraps=resolve_media_path) as lookup,
+    ):
+        result = await engine.move(
             FilesystemMoveRequest(item=_item(stored_nfc_source, "moved", nfc_name), scan_roots=[str(tmp_path)]),
             MoveStep(),
         )
+    # The macOS syscall can open NFC directly: a successful move alone would not catch a facade
+    # that bypassed the resolver. The real lookup must see both the source and destination.
+    lookup.assert_any_call(stored_nfc_source)
+    lookup.assert_any_call(str(tmp_path / "moved" / nfc_name))
 
     assert result.committed_now is True
     dest = tmp_path / "moved" / nfc_name
@@ -782,7 +791,8 @@ async def test_move_resolves_nfd_on_disk_file_via_stored_nfc_source_path(tmp_pat
     assert not on_disk.exists()
 
 
-async def test_move_refuses_a_source_twin_reached_through_a_symlinked_directory(tmp_path: Path) -> None:
+@pytest.mark.parametrize("facade", [False, True], ids=["local", "production-facade"])
+async def test_move_refuses_a_source_twin_reached_through_a_symlinked_directory(tmp_path: Path, facade: bool) -> None:
     """phaze-2tei9: containment covers the NFC/NFD twin that is MOVED, not the stored source string.
 
     The stored source does not exist, so on its own it resolves lexically inside the root; the twin it
@@ -804,10 +814,68 @@ async def test_move_refuses_a_source_twin_reached_through_a_symlinked_directory(
         patch("phaze.services.containment.resolve_media_path", substituted_twin_lookup(stored, root / nfd_dir / "Hör.mp3")),
         pytest.raises(ValueError, match="escapes all scan_roots"),
     ):
-        await LocalExecutionFilesystemEngine(LocalFilesystemPrimitives()).move(
+        engine = execmod._filesystem_engine() if facade else LocalExecutionFilesystemEngine()
+        await engine.move(
             FilesystemMoveRequest(item=_item(stored, "moved", "Hör.mp3"), scan_roots=[str(root)]),
             MoveStep(),
         )
 
     assert victim.read_bytes() == b"not yours"
     assert not (root / "moved").exists()
+
+
+async def test_production_facade_refuses_an_existing_nfd_destination(tmp_path: Path) -> None:
+    """The proposed NFC name must find an NFD occupant and retain the no-clobber contract."""
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"source")
+    destination_dir = tmp_path / "moved"
+    destination_dir.mkdir()
+    occupant = destination_dir / unicodedata.normalize("NFD", "Hör.mp3")
+    occupant.write_bytes(b"occupant")
+    with (
+        patch("phaze.services.media_path_resolve.Path.exists", byte_exact_exists),
+        pytest.raises(FileExistsError, match="refusing to overwrite"),
+    ):
+        await execmod._filesystem_engine().move(FilesystemMoveRequest(item=_item(source, "moved", "Hör.mp3"), scan_roots=[str(tmp_path)]), MoveStep())
+    assert source.read_bytes() == b"source"
+    assert occupant.read_bytes() == b"occupant"
+
+
+async def test_production_facade_moves_a_byte_exact_source(tmp_path: Path) -> None:
+    """Normal production moves continue to use the checked source and no-clobber destination."""
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"source")
+    result = await execmod._filesystem_engine().move(
+        FilesystemMoveRequest(item=_item(source, "moved", "normal.mp3"), scan_roots=[str(tmp_path)]), MoveStep()
+    )
+    assert result.committed_now is True
+    assert result.proposed.read_bytes() == b"source"
+    assert not source.exists()
+
+
+@pytest.mark.parametrize("operation", ["hash", "copy"])
+def test_production_facade_refuses_to_read_a_final_symlink(tmp_path: Path, operation: str) -> None:
+    """A resolved source swapped for a final symlink must not be followed by either read path."""
+    victim = tmp_path / "victim.mp3"
+    victim.write_bytes(b"not yours")
+    source = tmp_path / "source.mp3"
+    source.symlink_to(victim)
+    with pytest.raises(OSError) as exc:
+        if operation == "hash":
+            execmod._sha256_of_file(source)
+        else:
+            execmod._streamed_copy(source, tmp_path / "copy.mp3")
+    assert exc.value.errno == errno.ELOOP
+    assert not (tmp_path / "copy.mp3").exists()
+
+
+def test_production_facade_link_claim_does_not_follow_a_final_symlink(tmp_path: Path) -> None:
+    """The move claim links the resolved entry itself, never a post-check symlink's target."""
+    victim = tmp_path / "victim.mp3"
+    victim.write_bytes(b"not yours")
+    source = tmp_path / "source.mp3"
+    source.symlink_to(victim)
+    destination = tmp_path / "destination.mp3"
+    assert execmod._claim_destination_by_link(source, destination)
+    assert destination.is_symlink()
+    assert victim.read_bytes() == b"not yours"
