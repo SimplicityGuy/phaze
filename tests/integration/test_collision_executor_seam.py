@@ -31,28 +31,13 @@ inventory (row D1) to live on SMB / exFAT / CIFS mounts, which are typically cas
 regime a given proposal's destination actually falls in therefore depends on the MOUNT, not the
 kernel, and this suite cannot see the production mount from here.
 
-Rather than assume a regime, each test PROBES the real ``tmp_path`` volume for the specific property
-(case- or normalization-sensitivity) it needs and asserts the outcome the probed regime predicts:
-  * case-insensitive / normalization-insensitive (this machine's APFS default; matches a
-    case-insensitive archive mount): the SECOND proposal's destination collides with the FIRST's
-    published file at the OS level, so it must be refused -- ``error_count == 1`` and BOTH files'
-    content survive uncorrupted (the loser's source is untouched, the winner's destination holds
-    exactly one of the two contents, never a mix).
-  * case-sensitive / normalization-sensitive (verified separately below to be REACHABLE on this same
-    machine via a real "Case-sensitive APFS" volume for the case axis -- see
-    ``test_case_only_pair_is_not_even_a_collision_on_a_real_case_sensitive_volume``; genuine byte-sensitive
-    Unicode normalization is NOT reachable on any macOS-native volume -- APFS normalizes lookups for
-    comparison regardless of its case-sensitivity flag, confirmed by direct probe on a
-    "Case-sensitive APFS" test volume, so the NFC/NFD test's case-sensitive branch is exercised only
-    when CI actually runs this file on a byte-sensitive filesystem, e.g. Linux ext4): the two
-    destination strings are genuinely different directory entries, so BOTH proposals succeed
-    independently -- ``error_count == 0`` and each destination holds its own file's content. This is
-    not a "bug" in that regime; the two proposals were never colliding physical destinations there.
-
-Either branch satisfies this bead's acceptance criterion ("blocked by the detector, or fails safe in
-the executor with no overwrite") -- the detector never blocks either pair (asserted directly below,
-against the real SQL), so the branch actually exercised on a run is always the executor's fail-safe
-path. What differs by filesystem is only WHETHER that path is needed at all.
+The case-only tests probe the real volume: case-insensitive destinations must refuse the second
+proposal, while case-sensitive destinations can publish both. Unicode twins now have a stronger
+application-level invariant (phaze-6s4me): the production containment facade resolves an existing
+NFC/NFD twin on EVERY filesystem, including byte-sensitive Linux filesystems. The SQL detector
+still compares byte-exact proposal strings, so it clears the pair; the executor must publish one
+file and refuse the second while preserving the losing source's bytes. The Unicode seam therefore
+asserts that same fail-safe outcome on every platform without skipping the Linux path.
 
 THE SYMLINK CASE IS FILESYSTEM-PERSONALITY-INDEPENDENT
 ========================================================
@@ -177,16 +162,6 @@ def _fs_is_case_insensitive(directory: Path) -> bool:
     probe.write_bytes(b"x")
     try:
         return probe.with_name(probe.name.upper()).exists()
-    finally:
-        probe.unlink(missing_ok=True)
-
-
-def _fs_is_normalization_insensitive(directory: Path, nfc_name: str, nfd_name: str) -> bool:
-    """Probe THIS directory's actual volume for NFC/NFD lookup aliasing."""
-    probe = directory / nfc_name
-    probe.write_bytes(b"x")
-    try:
-        return (directory / nfd_name).exists()
     finally:
         probe.unlink(missing_ok=True)
 
@@ -394,33 +369,20 @@ async def test_nfc_nfd_only_destination_pair_the_detector_clears_the_executor_fa
     result = await _run_batch(session, agent_id, monkeypatch, scan_root)
 
     dest_dir = scan_root / "Sets"
-    normalization_insensitive = _fs_is_normalization_insensitive(scan_root, _NFC_NAME, _NFD_NAME)
-
-    if normalization_insensitive:
-        # This machine's real APFS volume: the NFC and NFD spellings name ONE directory entry.
-        # (Measured separately, module docstring: even a case-SENSITIVE APFS volume is still
-        # normalization-insensitive -- this axis cannot be forced onto any macOS-native filesystem,
-        # unlike the case axis above. This branch is what runs on every macOS developer machine.)
-        assert result["error_count"] == 1
-        assert result["status"] == "completed_with_errors"
-        surviving = list(dest_dir.iterdir())
-        assert len(surviving) == 1, f"expected exactly one physical entry at {dest_dir}, found {surviving!r}"
-        winner_content = surviving[0].read_bytes()
-        assert winner_content in (b"CONTENT-A", b"CONTENT-B")
-        if winner_content == b"CONTENT-A":
-            assert not src_a.exists()
-            assert src_b.exists()
-            assert src_b.read_bytes() == b"CONTENT-B"
-        else:
-            assert not src_b.exists()
-            assert src_a.exists()
-            assert src_a.read_bytes() == b"CONTENT-A"
+    # The real production facade finds the first destination's normalization twin even when
+    # the OS itself would allow two byte-distinct entries (Linux ext4, for example).
+    assert result["error_count"] == 1
+    assert result["status"] == "completed_with_errors"
+    surviving = list(dest_dir.iterdir())
+    assert len(surviving) == 1, f"expected exactly one physical entry at {dest_dir}, found {surviving!r}"
+    winner_content = surviving[0].read_bytes()
+    assert winner_content in (b"CONTENT-A", b"CONTENT-B")
+    if winner_content == b"CONTENT-A":
+        assert not src_a.exists()
+        assert src_b.read_bytes() == b"CONTENT-B"
     else:
-        # A genuinely byte-sensitive filesystem (e.g. Linux ext4 in CI): these were never colliding
-        # physical destinations.
-        assert result["error_count"] == 0
-        assert (dest_dir / _NFC_NAME).read_bytes() == b"CONTENT-A"
-        assert (dest_dir / _NFD_NAME).read_bytes() == b"CONTENT-B"
+        assert not src_b.exists()
+        assert src_a.read_bytes() == b"CONTENT-A"
 
 
 # ---------------------------------------------------------------------------
