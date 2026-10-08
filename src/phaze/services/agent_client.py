@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         AnalysisWriteResponse,
         PresignDownloadMetadata,
     )
+    from phaze.schemas.agent_companion_features import CompanionFeaturesChunk, CompanionFeaturesResponse
     from phaze.schemas.agent_config import AgentConfigResponse
 
     # D-06 execution-batch schema.
@@ -58,8 +59,8 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
+    from phaze.schemas.agent_junk_quarantine import JunkQuarantineResultPayload, JunkQuarantineResultResponse
     from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
-    from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionChunkResponse
     from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
         ProposalStateResponse,
@@ -644,20 +645,30 @@ class PhazeAgentClient:
         )
         return ScanBatchPatchResponse.model_validate(response.json())
 
-    async def post_orphan_companions(
-        self,
-        batch_id: uuid.UUID,
-        payload: OrphanCompanionChunk,
-    ) -> OrphanCompanionChunkResponse:
-        """POST one bounded, retry-safe orphan-COMPANION diagnostic chunk."""
-        from phaze.schemas.agent_orphan_companions import OrphanCompanionChunkResponse  # noqa: PLC0415
+    async def post_companion_features(self, payload: CompanionFeaturesChunk) -> CompanionFeaturesResponse:
+        """POST /api/internal/agent/companion-features -- one chunk of companion content features (phaze-osy6j)."""
+        from phaze.schemas.agent_companion_features import CompanionFeaturesResponse  # noqa: PLC0415
 
         response = await self._request(
             "POST",
-            f"/api/internal/agent/scan-batches/{batch_id}/orphan-companions",
+            "/api/internal/agent/companion-features",
             json=payload.model_dump(mode="json"),
         )
-        return OrphanCompanionChunkResponse.model_validate(response.json())
+        return CompanionFeaturesResponse.model_validate(response.json())
+
+    async def report_junk_quarantine(self, review_id: uuid.UUID, payload: JunkQuarantineResultPayload) -> JunkQuarantineResultResponse:
+        """PATCH /api/internal/agent/junk-quarantine/{review_id} -- the outcome of one quarantine move (phaze-lwuf6).
+
+        Idempotent on ``review_id``: a retry whose report already landed gets 200 with ``applied=false``.
+        """
+        from phaze.schemas.agent_junk_quarantine import JunkQuarantineResultResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/junk-quarantine/{review_id}",
+            json=payload.model_dump(mode="json"),
+        )
+        return JunkQuarantineResultResponse.model_validate(response.json())
 
     async def post_exec_batch_progress(
         self,

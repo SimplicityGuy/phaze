@@ -673,6 +673,9 @@ async def authenticated_client(
         base_url="http://test",
         headers=headers,
     ) as ac:
+        # phaze-spd83: the ingest routes request the automatic companion association run on the
+        # controller queue, so wire the same default fakes as ``client`` (see its docstring).
+        install_fake_queues(ac)
         yield ac
 
 

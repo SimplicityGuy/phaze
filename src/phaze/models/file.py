@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -106,4 +106,8 @@ class FileRecord(TimestampMixin, Base):
         # ``original_filename`` is a GIN trgm one, which can serve neither an ordered scan nor a row
         # range -- so every batch re-scanned and re-sorted the whole table without this.
         Index("ix_files_original_filename_id", "original_filename", "id"),
+        # phaze-4x319.5 (migration 081): "which media sit in these folders" for the stamp grouping and
+        # the junk-review detector (services.companion_content.media_in_folders). The expression is
+        # FOLDER_OF_PATH there, byte for byte, or the planner cannot use it.
+        Index("ix_files_agent_id_folder", "agent_id", text("regexp_replace(original_path, '/[^/]*$', '')")),
     )

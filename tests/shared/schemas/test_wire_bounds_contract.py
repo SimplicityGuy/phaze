@@ -41,6 +41,7 @@ from phaze.models import (
     Agent,
     AnalysisResult,
     AnalysisWindow,
+    CompanionContentFeatures,
     ExecutionLog,
     FileMetadata,
     FileRecord,
@@ -48,6 +49,7 @@ from phaze.models import (
     ScanBatch,
 )
 from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
+from phaze.schemas.agent_companion_features import CompanionFeaturesRecord
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_files import FileUpsertRecord
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
@@ -69,6 +71,7 @@ SCHEMA_BINDINGS: dict[type[BaseModel], type] = {
     AnalysisWindowPayload: AnalysisWindow,
     ProposalStatePatch: RenameProposal,
     ScanBatchPatch: ScanBatch,
+    CompanionFeaturesRecord: CompanionContentFeatures,
 }
 
 # Fields of a bound schema that intentionally match no column of that schema's model.
@@ -89,6 +92,11 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "effective domain is int8 headroom-capped: Field(ge=0, le=QUEUE_DEPTH_MAX) in "
         "schemas/agent_heartbeat.py (phaze-s4r0), not 'no width to match'",
         "lane": "-> Agent.last_status['lanes'] JSONB key, no scalar column",
+    },
+    CompanionFeaturesRecord: {
+        # phaze-osy6j: the resolution key, matched against FileRecord.original_path (Text) for the
+        # authenticated agent and never stored on companion_content_features -- unbounded (rule 2).
+        "original_path": "-> resolves FileRecord.original_path Text, not stored on this model; unbounded (rule 2)",
     },
     ProposalStatePatch: {
         # This schema patches a proposal but writes these two ACROSS models -- both to Text columns,
@@ -241,6 +249,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
     ("/duplicates/review-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
+    # phaze-l1j35: each element is a junk-review token -- length-capped in-route, decoded and matched
+    # against the group's live rows before any write; never stored.
+    ("/junk-review/bulk", "review_tokens"): "list[str] Form; each element length-capped, decoded and validated against live rows in-route",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
     # phaze-oldp: ``agent_id`` no longer needs an entry here -- it now carries an explicit

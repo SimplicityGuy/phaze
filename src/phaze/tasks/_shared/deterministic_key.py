@@ -133,6 +133,14 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # Postgres-free agent boundary (test_task_split). ``test_learner_key_matches_the_learner_module``
     # asserts the two agree, so the duplication cannot drift silently.
     "learn_filename_conventions": lambda _kwargs: "release_group:date_order",
+    # phaze-lwuf6: keyed on the junk-review row. A second dispatch of the same approved row dedups to
+    # a no-op; the row's own status machine already refuses a second claim.
+    "quarantine_companion": lambda k: str(k["review_id"]),
+    # phaze-spd83: one automatic companion association run per agent per coalescing WINDOW. Every
+    # request in a window collapses onto this key while it is queued; a request made after the run
+    # started falls in a later window and so gets its own key instead of being dropped against the
+    # active one (services/companion_autolink.py, "COALESCING").
+    "associate_agent_companions": lambda k: f"{k['agent_id']}:{k['window']}",
 }
 
 

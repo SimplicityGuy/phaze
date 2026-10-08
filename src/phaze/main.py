@@ -19,12 +19,14 @@ from phaze.routers import (
     admin_agents,
     admin_runtime_config,
     agent_analysis,
+    agent_companion_features,
     agent_config,
     agent_exec_batches,
     agent_execution,
     agent_files,
     agent_heartbeat,
     agent_identity,
+    agent_junk_quarantine,
     agent_metadata,
     agent_orphan_companions,
     agent_proposals,
@@ -39,6 +41,7 @@ from phaze.routers import (
     duplicates,
     execution,
     health,
+    junk_review,
     pipeline,
     pipeline_scans,
     pipeline_stages,
@@ -232,6 +235,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     execution.router,
     preview.router,
     duplicates.router,
+    # phaze-l1j35: the junk review's group decisions (approve / reject / undo / bulk) and its excerpt.
+    junk_review.router,
     tracklists.router,
     pipeline.router,
     # SHELL-01: the v7.0 shell router owns GET / (Analyze default) + GET
@@ -270,6 +275,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_proposals.router,
     agent_scan_batches.router,
     agent_orphan_companions.router,
+    # phaze-osy6j: what the agent read inside each companion (references, tracklist flag, junk class).
+    agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
     agent_scratch.router,
@@ -279,6 +286,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     # api container has no media mount, so the mutagen write runs on the owning agent's meta lane
     # and its result reaches the tag_write_log audit table only through this callback.
     agent_tag_writes.router,
+    # phaze-lwuf6: the outcome of an on-agent junk quarantine move (the meta-lane quarantine_companion task).
+    agent_junk_quarantine.router,
     # HTMX poll partial, Recent
     # Scans table and the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.

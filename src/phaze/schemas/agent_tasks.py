@@ -321,6 +321,47 @@ class ReadCompanionFilesPayload(WirePayload):
     max_chars: int = Field(gt=0, le=1_000_000)
 
 
+class CompanionFeaturesTarget(WirePayload):
+    """One companion row the features backfill asks its agent to read (phaze-osy6j)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: uuid.UUID
+    original_path: str = Field(min_length=1)
+
+
+class ExtractCompanionFeaturesPayload(WirePayload):
+    """SAQ job: one page of the companion-features backfill, read on the owning agent (phaze-osy6j).
+
+    The agent re-checks every path against ITS OWN scan roots before opening it (the
+    ``ReadCompanionFilesPayload`` precedent) and reports through the same route the scan and the
+    watcher use. ``max_length`` mirrors the default ``agent_file_chunk_max`` the report chunk is held to.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    targets: list[CompanionFeaturesTarget] = Field(min_length=1, max_length=1000)
+
+
+class QuarantineCompanionPayload(WirePayload):
+    """SAQ job: move ONE approved junk companion into its root's quarantine directory (phaze-lwuf6).
+
+    ``review_id`` is the ``companion_junk_review`` row the operator approved; the agent reports the
+    outcome against it. ``source_path`` is that row's ``original_path``, and ``sha256`` / ``size`` are
+    the values the operator approved: the agent re-hashes the file and refuses to move bytes that
+    differ from them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: uuid.UUID
+    agent_id: str = Field(min_length=1, max_length=64)
+    source_path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+
+
 class ExecuteApprovedBatchPayload(WirePayload):
     """SAQ job: per-agent sub-batch of an approved-proposal execution dispatch.
 

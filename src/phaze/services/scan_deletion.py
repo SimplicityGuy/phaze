@@ -40,6 +40,7 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
@@ -53,6 +54,7 @@ from phaze.models.set_profile import SetProfile
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.companion_content import refresh_stamp_groups, stamp_groups_in
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.services.stage_status import cloud_busy_clause
 from phaze.telemetry.pipeline import record_transition
@@ -149,6 +151,9 @@ def _file_descendant_steps(file_scope: ColumnElement[bool]) -> list[tuple[str, D
         # reads to see what a scan deletion actually took. Deleting a file legitimately erases its cloud
         # budget history: a re-scanned file is a NEW files.id and has genuinely never spent a cloud budget.
         (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id.in_(files_in_scope))),
+        # phaze-osy6j: companion content features. ON DELETE CASCADE like cloud_budget, deleted
+        # explicitly for the same rowcount-report reason.
+        (CompanionContentFeatures.__tablename__, delete(CompanionContentFeatures).where(CompanionContentFeatures.file_id.in_(files_in_scope))),
         # StageSkip (force-skip sidecar) FKs files.id with NO ON DELETE and is not deferrable. It is
         # the ONLY file sidecar with no undo/reaper, so a force-skipped file leaves a live stage_skip
         # row that blocks the files delete (ForeignKeyViolation -> 500 -> batch permanently undeletable).
@@ -283,7 +288,10 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
 
+    # phaze-osy6j: a removed companion copy re-decides the stamp verdict of the copies that remain.
+    stamp_groups = await stamp_groups_in(session, FileRecord.batch_id == batch_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     logger.info("scan cascade deleted", batch_id=str(batch_id), **counts)
     return counts
 
@@ -302,7 +310,9 @@ async def delete_file_cascade(session: AsyncSession, file_id: uuid.UUID) -> dict
         *_file_descendant_steps(FileRecord.id == file_id),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.id == file_id)),
     ]
+    stamp_groups = await stamp_groups_in(session, FileRecord.id == file_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     logger.info("file cascade deleted", file_id=str(file_id), **counts)
     return counts
 
@@ -380,6 +390,8 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
       the caller holds the file row's lock) and ``cloud_budget``: a
       SUCCEEDED burst reads as analyzed, and budget spent failing on a truncated file must not
       ration the final file's analysis.
+    - ``companion_content_features``: what a companion's OLD bytes contained; the watcher reports
+      the new content right after the move lands (phaze-osy6j).
     - ``scheduling_ledger`` rows keyed to this file: cleared through the guarded
       :func:`~phaze.services.scheduling_ledger.clear_ledger_entry`, so a row whose job is still
       live in ``saq_jobs`` is left for that job (it was enqueued with the old path and fails or
@@ -401,8 +413,11 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
         (RenameProposal.__tablename__, delete(RenameProposal).where(RenameProposal.id.in_(pending_proposals))),
         (CloudJob.__tablename__, delete(CloudJob).where(CloudJob.file_id == file_id)),
         (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id == file_id)),
+        (CompanionContentFeatures.__tablename__, delete(CompanionContentFeatures).where(CompanionContentFeatures.file_id == file_id)),
     ]
+    stamp_groups = await stamp_groups_in(session, FileRecord.id == file_id)
     counts = await _execute_ordered(session, ordered)
+    await refresh_stamp_groups(session, stamp_groups)
     ledger_keys = (
         (await session.execute(select(SchedulingLedger.key).where(SchedulingLedger.payload["file_id"].astext == str(file_id)))).scalars().all()
     )

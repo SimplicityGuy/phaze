@@ -13,6 +13,7 @@ Five behaviors mirror 27-PATTERNS.md lines 1211-1215:
 4. Thread bridge: dispatch goes through ``loop.call_soon_threadsafe`` and
    NEVER calls debouncer.touch directly on the watchdog thread (Pitfall 2).
 5. Handler subscribes to BOTH ``on_created`` and ``on_modified`` (SCAN-03).
+6. Nothing under a ``.phaze-quarantine`` directory is ever dispatched (phaze-gafl9).
 """
 
 from __future__ import annotations
@@ -427,3 +428,44 @@ def test_event_handler_on_moved_decodes_bytes_paths() -> None:
     assert loop.call_soon_threadsafe.call_count == 1
     args, _ = loop.call_soon_threadsafe.call_args
     assert args[1] == "/music/a.mp3"
+
+
+# phaze-gafl9 (operator decision 9, 2026-10-07, "Hidden dir per scan root (Recommended)"; epic phaze-4x319): approved junk is moved into
+# ``<root>/.phaze-quarantine/<original relative path>``. The watcher must never post anything there,
+# whatever the event, or a quarantined file would come straight back as a file row.
+
+
+def test_event_handler_drops_created_and_modified_events_under_phaze_quarantine() -> None:
+    loop = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=MagicMock())
+
+    handler.on_created(FileCreatedEvent(src_path="/music/.phaze-quarantine/rel/junk.nfo"))
+    handler.on_modified(FileModifiedEvent(src_path=b"/music/.phaze-quarantine/rel/set.mp3"))
+    handler.on_created(FileCreatedEvent(src_path="/music/rel/info/.phaze-quarantine/deep.txt"))
+    loop.call_soon_threadsafe.assert_not_called()
+
+    # Positive control: a sibling whose NAME merely starts that way is not a quarantine directory.
+    handler.on_created(FileCreatedEvent(src_path="/music/rel/.phaze-quarantine-notes.txt"))
+    assert loop.call_soon_threadsafe.call_count == 1
+
+
+def test_event_handler_drops_a_move_into_phaze_quarantine() -> None:
+    """The quarantine task's own rename never re-posts the file at its quarantined path."""
+    loop = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=MagicMock(), debouncer_move=MagicMock())
+
+    handler.on_moved(FileMovedEvent(src_path="/music/rel/junk.nfo", dest_path="/music/.phaze-quarantine/rel/junk.nfo"))
+
+    loop.call_soon_threadsafe.assert_not_called()
+
+
+def test_event_handler_on_moved_out_of_phaze_quarantine_is_a_plain_dest_touch() -> None:
+    """Nothing under quarantine was ever posted, so a restore re-points no lineage: a plain touch of dest."""
+    loop = MagicMock()
+    touch = MagicMock()
+    move = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch, debouncer_move=move)
+
+    handler.on_moved(FileMovedEvent(src_path="/music/.phaze-quarantine/rel/notes.nfo", dest_path="/music/rel/notes.nfo"))
+
+    loop.call_soon_threadsafe.assert_called_once_with(touch, "/music/rel/notes.nfo")

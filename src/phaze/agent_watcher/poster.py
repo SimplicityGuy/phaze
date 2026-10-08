@@ -56,6 +56,7 @@ from phaze.services.agent_client import (
     AgentApiServerError,
     PhazeAgentClient,
 )
+from phaze.services.companion_features_report import report_companion_features
 from phaze.services.hashing import compute_sha256
 
 
@@ -113,15 +114,17 @@ class Poster:
             file_size=file_size,
         )
         try:
-            if previous_paths and await self._moved(record, previous_paths):
-                return
-            await self._client.upsert_files(FileUpsertChunk(files=[record]))  # D-18: batch_id omitted; controller resolves LIVE.
+            if not (previous_paths and await self._moved(record, previous_paths)):
+                await self._client.upsert_files(FileUpsertChunk(files=[record]))  # D-18: batch_id omitted; controller resolves LIVE.
         except AgentApiClientError:
             logger.exception("watcher: 4xx posting path=%s; dropping", path)
         except AgentApiServerError:
             logger.exception("watcher: 5xx posting path=%s; dropping (will recover via manual scan)", path)
         except AgentApiError:
             logger.exception("watcher: unknown error posting path=%s; dropping", path)
+        else:
+            # phaze-osy6j: what the companion contains, once its row exists. Best-effort -- never raises.
+            await report_companion_features(self._client, [record.original_path])
 
     async def _moved(self, record: FileUpsertRecord, previous_paths: Sequence[str]) -> bool:
         """POST ``record`` as a move; ``False`` means the control plane refused it and the caller should upsert.

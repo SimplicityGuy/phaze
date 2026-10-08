@@ -23,6 +23,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
 | `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
 | `file_companions`     | Many-to-many: companion files to media files                          |
+| `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
+| `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
 | `tracklists`          | Tracklist metadata (sourced from `1001tracklists`; audio-fingerprint sourcing was removed, phaze-0jpe) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
@@ -78,10 +80,11 @@ highest averaged score; record views and similarity use that single label.
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
 deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with their `files` row
-(`ON DELETE CASCADE`), as does `cloud_budget`. `orphan_companion_diagnostics` cascades with its
+(`ON DELETE CASCADE`), as do `cloud_budget` and `companion_content_features`. `orphan_companion_diagnostics` cascades with its
 `scan_batches` row; the remaining per-file sidecars (`metadata`,
 `analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
-tracklist chain use the default restricting FK (no cascade).
+tracklist chain use the default restricting FK (no cascade). `companion_junk_review` carries no foreign
+key at all, so neither scan nor file deletion can be blocked by it or erase it (phaze-bk5jp).
 
 ```mermaid
 erDiagram
@@ -107,6 +110,8 @@ erDiagram
     files ||--o| cloud_budget : "0..1 durable budget (CASCADE)"
     %% evidence: src/phaze/models/file_companion.py
     files ||--o{ file_companions : "CASCADE"
+    %% evidence: src/phaze/models/companion_content.py
+    files ||--o| companion_content_features : "content features (CASCADE)"
     %% evidence: src/phaze/models/tracklist.py
     tracklists ||--o{ tracklist_versions : "versions"
     %% evidence: src/phaze/models/tracklist.py
@@ -253,10 +258,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-078)
+### Post-baseline chain (040-081)
 
-`alembic/versions/` holds **40** files: the `039` baseline plus a linear chain to the current
-head, **`078`**.
+`alembic/versions/` holds **43** files: the `039` baseline plus a linear chain to the current
+head, **`081`**.
 
 | Rev | Change |
 |-----|--------|
@@ -298,9 +303,12 @@ head, **`078`**.
 | `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
 | `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt |
 | `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results |
-| `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search — **head** |
+| `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search |
+| `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
+| `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) |
+| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) — **head** |
 
-**Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
+**Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
 the same three load-bearing properties:**
 
