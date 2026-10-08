@@ -25,7 +25,9 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.scan_batch import ScanBatch
 from phaze.schemas.agent_companion_features import CompanionFeaturesRecord
-from phaze.services.companion_content import store_companion_features
+from phaze.services.companion import _media_index
+from phaze.services.companion_autolink import run_agent_association
+from phaze.services.companion_content import linked_copy_fingerprints, store_companion_features
 from phaze.services.companion_features import read_companion
 from phaze.services.companion_junk_review import (
     DUPLICATE_REASON,
@@ -35,6 +37,7 @@ from phaze.services.companion_junk_review import (
     detect_junk_reviews,
     transition_review,
 )
+from phaze.services.companion_linking import LinkInput, link_companion
 from phaze.services.scan_deletion import delete_file_cascade, delete_scan_cascade
 
 
@@ -121,6 +124,35 @@ def test_the_table_has_no_foreign_key_and_no_actor_column() -> None:
         "created_at",
         "updated_at",
     }
+
+
+async def test_the_live_identity_index_is_the_index_migration_080_builds(session: AsyncSession) -> None:
+    """The model's partial-index predicate is a column expression; Postgres stores the same index from it as from the migration's SQL.
+
+    The compiled DDL differs only by one pair of parentheses around the predicate, so the comparison
+    is made on what Postgres keeps (``pg_get_indexdef``): both statements are run against a scratch
+    copy of the table, under two names.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    model = next(index for index in CompanionJunkReview.__table__.indexes if index.name == "uq_companion_junk_review_live_identity")
+    from_model = str(CreateIndex(model).compile(dialect=postgresql.dialect()))
+    assert "status NOT IN ('failed', 'quarantined')" in from_model  # values rendered as literals, never binds
+    from_migration = (
+        "CREATE UNIQUE INDEX uq_companion_junk_review_live_identity ON companion_junk_review (agent_id, original_path, sha256_hash) "
+        "WHERE status NOT IN ('failed', 'quarantined')"
+    )
+    await session.execute(text("CREATE TEMP TABLE scratch_review (LIKE companion_junk_review)"))
+    stored = []
+    for name, ddl in (("from_model", from_model), ("from_migration", from_migration)):
+        await session.execute(
+            text(ddl.replace("uq_companion_junk_review_live_identity", name).replace("ON companion_junk_review ", "ON scratch_review "))
+        )
+        definition = (await session.execute(text(f"SELECT pg_get_indexdef('{name}'::regclass)"))).scalar_one()
+        stored.append(definition.replace(name, "<index>"))
+    assert stored[0] == stored[1], stored
 
 
 def test_no_transition_leaves_a_terminal_status() -> None:
@@ -214,7 +246,7 @@ async def test_duplicate_linked_then_detect(session: AsyncSession, tmp_path: Pat
     await _link(session, linked, media)
     orphan = await _companion(session, tmp_path / "leftover" / "info.nfo", _INFO)
     beside_media = tmp_path / "copy" / "info.nfo"
-    _put(tmp_path / "copy" / "set.mp3", b"audio")
+    await _row(session, _put(tmp_path / "copy" / "set.mp3", b"audio"))
     await _companion(session, beside_media, _INFO)  # a duplicated release beside its own media: not junk
     await _companion(session, tmp_path / "other-agent" / "info.nfo", _INFO, agent_id=await _other_agent(session, tmp_path))
 
@@ -224,6 +256,87 @@ async def test_duplicate_linked_then_detect(session: AsyncSession, tmp_path: Pat
     assert outcome.created == {DUPLICATE_REASON: 1}
     assert (await _reviews(session))[0].file_id == orphan.id
     assert (await detect_junk_reviews(session, _OTHER, apply=True)).created == {}  # the twin is linked on ANOTHER agent
+
+
+async def _junk_classes(session: AsyncSession, *rows: FileRecord) -> list[str | None]:
+    statement = select(CompanionContentFeatures).where(CompanionContentFeatures.file_id.in_([row.id for row in rows]))
+    by_id = {
+        features.file_id: features.junk_class for features in (await session.execute(statement.execution_options(populate_existing=True))).scalars()
+    }
+    return [by_id[row.id] for row in rows]
+
+
+_RELEASES = ("Release One", "release-two (web)", "Release.Three.FM")
+"""Three differently named folders: the folder-name half of the stamp rule holds for any content in them."""
+
+
+async def test_a_release_nfo_stamped_before_its_media_arrives_is_un_stamped_and_its_reviews_withdrawn(session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-4x319.5: the watcher posts a companion before its media, so its folders first hold none.
+
+    A release NFO copied beside the same recording in three differently named folders reads as a
+    stamp while no folder holds media yet. Once the recording lands beside every copy, the media
+    sets intersect: the association run requested by those inserts re-decides the group on the
+    media stored NOW, links each copy to its own recording, and the pending rows are withdrawn.
+    """
+    copies = [await _companion(session, tmp_path / name / "info.nfo", _INFO) for name in _RELEASES]
+    assert await _junk_classes(session, *copies) == ["known_stamp"] * 3  # no folder holds media yet
+    await run_agent_association(session, _AGENT, apply=True)
+    assert set((await _pending(session)).values()) == {"known_stamp"}
+
+    media = [await _row(session, _put(tmp_path / name / "set.mp3", b"audio")) for name in _RELEASES]
+    await run_agent_association(session, _AGENT, apply=True)
+
+    assert await _junk_classes(session, *copies) == [None, None, None]
+    assert await _pending(session) == {}
+    links = set((await session.execute(select(FileCompanion.companion_id, FileCompanion.media_id))).tuples())
+    assert links == {(copy.id, recording.id) for copy, recording in zip(copies, media, strict=True)}
+
+
+async def test_media_landing_beside_one_copy_un_stamps_the_group_and_the_rest_become_duplicates(session: AsyncSession, tmp_path: Path) -> None:
+    """Some media, but fewer than three distinct sets: no stamp (survey rule 2). The copy beside media links;
+    the media-less copies are then byte-identical copies of a linked companion (operator decision 1, 2026-10-07,
+    epic phaze-4x319), so their rows stay pending under that reason."""
+    copies = [await _companion(session, tmp_path / name / "info.nfo", _INFO) for name in _RELEASES]
+    await run_agent_association(session, _AGENT, apply=True)
+    assert len(await _pending(session)) == 3
+
+    await _row(session, _put(tmp_path / _RELEASES[0] / "set.mp3", b"audio"))
+    await run_agent_association(session, _AGENT, apply=True)
+
+    assert await _junk_classes(session, *copies) == [None, None, None]
+    assert await _pending(session) == {f"{name}/info.nfo": DUPLICATE_REASON for name in _RELEASES[1:]}
+
+
+async def test_the_detector_never_calls_duplicate_what_the_linker_would_not(session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-4x319.5: one stored state, two readers, one answer to "does this folder hold media".
+
+    A tracklist read before its episodes arrived carries an agent listing of NO media; the episodes
+    are now stored beside it. The detector once judged it from that listing and proposed it as a
+    duplicate while the linker saw the media. A genuine orphan copy (no media, ever) is the positive
+    control: both must call it a duplicate.
+    """
+    _put(tmp_path / "keep" / "episode.mp3", b"audio")
+    kept = await _companion(session, tmp_path / "keep" / "list.txt", _TRACKLIST)
+    await _link(session, kept, await _row(session, tmp_path / "keep" / "episode.mp3"))
+    early = await _companion(session, tmp_path / "early" / "list.txt", _TRACKLIST)  # read while "early" held no media
+    await _row(session, _put(tmp_path / "early" / "episode.mp3", b"audio"))  # the episode lands afterwards
+    orphan = await _companion(session, tmp_path / "orphan" / "list.txt", _TRACKLIST)
+    assert (await session.get(CompanionContentFeatures, early.id)).folder_media_count == 0  # type: ignore[union-attr]
+
+    await detect_junk_reviews(session, _AGENT, apply=True)
+    detected = {row.file_id for row in await _reviews(session, reason=DUPLICATE_REASON)}
+
+    index = await _media_index(session, _AGENT)
+    linker: dict[uuid.UUID, str] = {}
+    for row in (kept, early, orphan):
+        others_linked = await linked_copy_fingerprints(session, _AGENT, {row.sha256_hash}, exclude_file_ids=[row.id])
+        decision = link_companion(
+            LinkInput(path=row.original_path, references=(), junk_class=None, is_tracklist=True, identical_copy_linked=bool(others_linked)), index
+        )
+        linker[row.id] = decision.step
+    assert detected == {orphan.id}
+    assert detected <= {file_id for file_id, step in linker.items() if step == DUPLICATE_REASON}
+    assert linker[early.id] == "folder"
 
 
 async def test_duplicate_detect_then_linked_then_withdrawn(session: AsyncSession, tmp_path: Path) -> None:

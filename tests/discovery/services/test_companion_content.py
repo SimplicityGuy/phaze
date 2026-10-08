@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects import postgresql
 
 from phaze.models.agent import Agent
 from phaze.models.companion_content import CompanionContentFeatures
@@ -20,11 +21,17 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.agent_companion_features import CompanionFeaturesRecord
 from phaze.services.companion_content import (
+    FOLDER_OF_PATH,
     BackfillCounts,
+    agent_media_rows,
     count_backfill,
+    effective_junk_class,
     folder_name_key,
     is_known_stamp,
     linked_copy_fingerprints,
+    media_folder,
+    media_in_folders,
+    refresh_agent_stamps,
     refresh_known_stamps,
     select_backfill_page,
     store_companion_features,
@@ -78,8 +85,8 @@ async def _features(session: AsyncSession, file_id: uuid.UUID) -> CompanionConte
 
 
 async def _release(session: AsyncSession, root: Path, name: str, media: str, companion: bytes, filename: str = "site.nfo") -> FileRecord:
-    """A release folder holding one media file and one companion; returns the companion's row."""
-    _put(root / name / media, b"audio")
+    """A release folder holding one media file and one companion, both ingested; returns the companion's row."""
+    await _row(session, _put(root / name / media, b"audio"))
     return await _row(session, _put(root / name / filename, companion))
 
 
@@ -283,7 +290,7 @@ async def test_linked_copy_fingerprints_counts_only_a_current_linked_copy_on_the
     await session.flush()
     notes = b"Release notes for the set, long enough to be real content.\n"
     linked = await _release(session, tmp_path, "linked", "set.mp3", notes)
-    media = await _row(session, tmp_path / "linked" / "set.mp3")
+    media = (await session.execute(select(FileRecord).where(FileRecord.original_path == str(tmp_path / "linked" / "set.mp3")))).scalar_one()
     unlinked = await _release(session, tmp_path, "unlinked", "other.mp3", b"Different notes, also long enough to count as content.\n")
     other_agent = await _row(session, _put(tmp_path / "b" / "copy.nfo", notes), agent_id="test-fileserver-b")
     await store_companion_features(session, _AGENT, [_record(tmp_path / "linked" / "site.nfo"), _record(tmp_path / "unlinked" / "site.nfo")])
@@ -303,3 +310,109 @@ async def test_linked_copy_fingerprints_counts_only_a_current_linked_copy_on_the
     linked.sha256_hash = "0" * 64
     await session.flush()
     assert await linked_copy_fingerprints(session, _AGENT, {linked_fp}) == set()
+
+
+# "Does this folder hold media": read from files at decision time (phaze-4x319.5).
+
+
+def _file(path: str, *, agent_id: str = _AGENT) -> FileRecord:
+    return FileRecord(
+        agent_id=agent_id,
+        sha256_hash=uuid.uuid4().hex * 2,
+        original_path=path,
+        original_filename=path.rsplit("/", 1)[-1],
+        current_path=path,
+        file_type=path.rsplit(".", 1)[-1],
+        file_size=1,
+    )
+
+
+async def test_media_in_folders_reads_only_the_agents_media_directly_in_each_folder(session: AsyncSession) -> None:
+    session.add(Agent(id="other-fileserver", name="other-fileserver", token_hash=uuid.uuid4().hex * 2, scan_roots=["/r"]))
+    session.add_all(
+        [
+            _file("/r/a_b/x.mp3"),
+            _file("/r/a_b/y.mkv"),
+            _file("/r/a_b/sub/deeper.mp3"),  # a subfolder's media is not the folder's
+            _file("/r/a_b/notes.nfo"),  # a companion is not media
+            _file("/r/aXb/wildcard.mp3"),  # "_" is no wildcard here
+            _file("/r/a_b/theirs.mp3", agent_id="other-fileserver"),
+        ]
+    )
+    await session.flush()
+
+    assert await media_in_folders(session, _AGENT, ["/r/a_b", "/r/empty", "/r/a_b/sub"]) == {
+        "/r/a_b": frozenset({"x.mp3", "y.mkv"}),
+        "/r/a_b/sub": frozenset({"deeper.mp3"}),
+    }
+    assert await media_in_folders(session, _AGENT, []) == {}
+
+
+async def test_media_folder_is_the_sql_folder_and_the_read_matches_its_index(session: AsyncSession) -> None:
+    """The Python and SQL folder identities agree byte for byte, and the read's predicate is the index's expression.
+
+    The planner can serve the read from ``ix_files_agent_id_folder`` only when the query's expression
+    parses to the index's own, so the deparsed predicate in the plan must contain the deparsed index
+    expression. Which index the planner then PICKS depends on table statistics, so it is not asserted.
+    """
+    paths = ["/r/a/b.mp3", "/b.mp3", "b.mp3", "/r/a b.c/d.e.mp3", "/r/x\ny/z.mp3", "/r//double/z.mp3"]
+    session.add_all([_file(path) for path in paths])
+    await session.flush()
+
+    rows = (await session.execute(select(FileRecord.original_path, FOLDER_OF_PATH).where(FileRecord.original_path.in_(paths)))).all()
+    assert dict(rows) == {path: media_folder(path) for path in paths}
+
+    definition = (await session.execute(text("SELECT pg_get_indexdef('ix_files_agent_id_folder'::regclass)"))).scalar_one()
+    expression = definition.split("(agent_id, ", 1)[1].removesuffix(")")
+    assert expression.startswith("regexp_replace(original_path"), definition
+    statement = agent_media_rows(_AGENT).where(FOLDER_OF_PATH.in_(["/r/a", "/r/a b.c"]))
+    # The pattern is SQL text, never a bind: a bound pattern is not the index's constant under a generic plan.
+    assert "regexp_replace(files.original_path, '/[^/]*$', '')" in str(statement.compile(dialect=postgresql.dialect()))
+    compiled = statement.compile(compile_kwargs={"literal_binds": True})
+    plan = "\n".join((await session.execute(text(f"EXPLAIN {compiled}"))).scalars())
+    assert f"{expression} = ANY" in plan, plan
+
+
+async def test_the_agent_stamp_refresh_re_decides_only_groups_that_are_or_could_be_stamps(session: AsyncSession, tmp_path: Path) -> None:
+    bare = [await _row(session, _put(tmp_path / f"bare-{index}" / "site.nfo", _STAMP)) for index in range(3)]
+    pair = [await _row(session, _put(tmp_path / f"pair-{index}" / "notes.txt", _TRACKLIST)) for index in range(2)]
+    await store_companion_features(
+        session,
+        _AGENT,
+        [_record(tmp_path / f"bare-{index}" / "site.nfo") for index in range(3)]
+        + [_record(tmp_path / f"pair-{index}" / "notes.txt") for index in range(2)],
+    )
+    assert {(await _features(session, row.id)).junk_class for row in bare} == {"known_stamp"}
+    for index in range(3):
+        await _row(session, _put(tmp_path / f"bare-{index}" / "set.mp3", b"audio"))  # the same recording lands beside every copy
+
+    rechecked, stamps = await refresh_agent_stamps(session, _AGENT, apply=False)
+    assert (rechecked, stamps) == ({bare[0].sha256_hash}, set())  # a two-copy group can never be a stamp
+    assert {(await _features(session, row.id)).junk_class for row in bare} == {"known_stamp"}  # a dry run writes nothing
+
+    await refresh_agent_stamps(session, _AGENT)
+    assert {(await _features(session, row.id)).junk_class for row in bare} == {"site_ad"}
+    assert pair[0].sha256_hash == pair[1].sha256_hash
+
+
+async def test_the_agent_stamp_refresh_pages_through_every_group(session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("phaze.services.companion_content._FINGERPRINT_PAGE", 1)
+    contents = [_STAMP, _STAMP + b"Second release site.\r\n"]
+    for which, payload in enumerate(contents):
+        for index in range(3):
+            await _row(session, _put(tmp_path / f"c{which}-{index}" / "site.nfo", payload))
+    paths = [tmp_path / f"c{which}-{index}" / "site.nfo" for which in range(2) for index in range(3)]
+    await store_companion_features(session, _AGENT, [_record(path) for path in paths])
+
+    rechecked, stamps = await refresh_agent_stamps(session, _AGENT)
+
+    assert len(rechecked) == 2
+    assert stamps == rechecked
+
+
+def test_the_python_effective_class_matches_the_sql_precedence() -> None:
+    assert effective_junk_class("all_nul", stamp=True) == "all_nul"
+    assert effective_junk_class("empty", stamp=False) == "empty"
+    assert effective_junk_class("site_ad", stamp=True) == "known_stamp"
+    assert effective_junk_class("site_ad", stamp=False) == "site_ad"
+    assert effective_junk_class(None, stamp=False) is None

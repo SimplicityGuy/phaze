@@ -61,7 +61,7 @@ from phaze.models.companion_junk_review import LIVE_IDENTITY_WHERE, CompanionJun
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
-from phaze.services.companion_content import COMPANION_FILE_TYPES, linked_copy_fingerprints, never_link_reason
+from phaze.services.companion_content import COMPANION_FILE_TYPES, linked_copy_fingerprints, media_folder, media_in_folders, never_link_reason
 
 
 if TYPE_CHECKING:
@@ -128,7 +128,6 @@ def _features_columns() -> tuple[Any, ...]:
         FileRecord.file_size,
         CompanionContentFeatures.junk_class,
         CompanionContentFeatures.truncated,
-        CompanionContentFeatures.folder_media_count,
     )
 
 
@@ -148,8 +147,12 @@ def _fresh_companions(agent_id: str) -> Any:
 async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) -> list[tuple[Any, str]]:
     """``(row, reason)`` for every row of one page that is a candidate, judged on the links stored NOW.
 
-    The verdict is :func:`never_link_reason` -- THE definition the linking chain's veto shares. Two
-    guards are added here because they are about DELETING a file, which linking never does:
+    The verdict is :func:`never_link_reason` -- THE definition the linking chain's veto shares -- asked
+    with the chain's own inputs: whether the companion's folder holds media comes from
+    :func:`media_in_folders`, the ``files`` rows as they are now, exactly as the chain's media index
+    reads them, never from the listing the agent took when it read the companion (that listing is
+    frozen at ingest, and media usually arrives after its companion; phaze-4x319.5). Two guards are
+    added here because they are about DELETING a file, which linking never does:
 
     - **A per-file class on a truncated read is not trusted.** ``empty`` / ``all_nul`` / ``site_ad``
       describe only the first ``MAX_FEATURE_BYTES`` of a larger file, so the predicate is asked with
@@ -162,6 +165,7 @@ async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) ->
     ids = [row.id for row in rows]
     linked = set((await session.execute(select(FileCompanion.companion_id).where(FileCompanion.companion_id.in_(ids)).distinct())).scalars())
     linked_fingerprints = await linked_copy_fingerprints(session, agent_id, {row.sha256_hash for row in rows})
+    media = await media_in_folders(session, agent_id, {media_folder(row.original_path) for row in rows})
     out: list[tuple[Any, str]] = []
     for row in rows:
         if is_quarantined(row.original_path):
@@ -169,7 +173,7 @@ async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) ->
         junk_class = None if row.truncated and row.junk_class in _PER_FILE_JUNK else row.junk_class
         reason = never_link_reason(
             junk_class,
-            folder_has_media=row.folder_media_count > 0,
+            folder_has_media=media_folder(row.original_path) in media,
             # An unlinked row is never its own linked copy, so membership means ANOTHER copy is linked.
             identical_copy_linked=row.sha256_hash in linked_fingerprints,
         )

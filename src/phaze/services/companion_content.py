@@ -25,9 +25,15 @@ three) and when a copy leaves (a scan or file deletion, or a content change: ``s
 scan_deletion.py`` calls :func:`stamp_groups_in` before and :func:`refresh_stamp_groups` after), so no
 copy keeps a stale flag. Readers take ``junk_class`` as stored.
 
-Folder names compare alphanumeric-only and case-folded, as the survey did. Folder media are what the
-agent listed beside the companion when it read it; a folder listed before its media arrived reads as
-holding none, which can only make a stamp verdict less likely, never more.
+Folder names compare alphanumeric-only and case-folded, as the survey did. Folder media are read
+from the control plane's ``files`` rows WHEN THE VERDICT IS DECIDED (:func:`media_in_folders`), the
+one source the linking chain and the junk-review detector also read -- never the listing the agent
+took beside the companion when it read it (phaze-4x319.5). That listing is frozen at ingest, and a
+watcher companion usually arrives BEFORE its media: read from it, a release NFO copied into three
+differently named folders would hold "no media anywhere" and be stamped for good. Because media
+arriving later can un-stamp a group, every association run re-decides the agent's multi-copy groups
+(:func:`refresh_agent_stamps`); association is requested whenever a media row is inserted
+(``services/companion_autolink.py``).
 """
 
 from __future__ import annotations
@@ -37,10 +43,10 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, exists, func, select, tuple_, update
+from sqlalchemy import case, exists, func, literal_column, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.constants import INGESTIBLE_COMPANION_EXTENSIONS
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
 from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
@@ -62,6 +68,14 @@ STAMP_MIN_FOLDERS = 3
 
 COMPANION_FILE_TYPES: frozenset[str] = frozenset(ext.lstrip(".") for ext in INGESTIBLE_COMPANION_EXTENSIONS)
 
+MEDIA_FILE_TYPES: frozenset[str] = frozenset(
+    ext.lstrip(".") for ext, category in EXTENSION_MAP.items() if category in (FileCategory.MUSIC, FileCategory.VIDEO)
+)
+"""The ``files.file_type`` values that are media: what "a folder holds media" counts, for every reader."""
+
+FOLDER_OF_PATH: Any = func.regexp_replace(FileRecord.original_path, literal_column("'/[^/]*$'"), literal_column("''"))
+"""SQL for :func:`media_folder` over ``files.original_path``; ``ix_files_agent_id_folder`` indexes exactly this expression."""
+
 _BYTES_JUNK: tuple[str, ...] = ("empty", "all_nul")
 """Per-file classes that outrank a stamp verdict: empty bytes are junk whatever else holds them."""
 
@@ -82,8 +96,51 @@ def folder_name_key(directory: str) -> str:
     return "".join(char for char in PurePosixPath(directory).name.casefold() if char.isalnum())
 
 
+def media_folder(path: str) -> str:
+    """The folder a file sits in: everything before its last ``/``, exactly as :data:`FOLDER_OF_PATH` computes it in SQL.
+
+    The ONE folder identity the linking chain's media index, the stamp grouping and the junk-review
+    detector use, so "the companion's folder" and "the media's folder" can never be computed two ways.
+    """
+    return path.rsplit("/", 1)[0]
+
+
+def agent_media_rows(agent_id: str) -> Any:
+    """``SELECT id, original_path`` of every media row of ``agent_id``: the rows every folder-media answer is built from."""
+    return select(FileRecord.id, FileRecord.original_path).where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(MEDIA_FILE_TYPES))
+
+
+async def media_in_folders(session: AsyncSession, agent_id: str, folders: Collection[str]) -> dict[str, frozenset[str]]:
+    """``folder -> media basenames`` for the ``folders`` that hold media on ``agent_id``, read from ``files`` NOW.
+
+    "Does this folder hold media" for the stamp grouping (:func:`refresh_known_stamps`) and the
+    junk-review detector, from the same rows (:func:`agent_media_rows`) and folder identity
+    (:func:`media_folder`) the linking chain's media index is built from (``services/companion.py``),
+    so all three decide on one input (phaze-4x319.5). A folder holding no media is absent. One read
+    per page of :data:`_FINGERPRINT_PAGE` folders, on the ``ix_files_agent_id_folder`` expression
+    index; only ``original_path`` is read.
+    """
+    found: dict[str, set[str]] = defaultdict(set)
+    ordered = sorted(set(folders))
+    for start in range(0, len(ordered), _FINGERPRINT_PAGE):
+        page = ordered[start : start + _FINGERPRINT_PAGE]
+        statement = agent_media_rows(agent_id).with_only_columns(FileRecord.original_path).where(FOLDER_OF_PATH.in_(page))
+        for path in (await session.execute(statement)).scalars():
+            folder, _slash, name = path.rpartition("/")
+            found[folder].add(name)
+    return {folder: frozenset(names) for folder, names in found.items()}
+
+
 def is_known_stamp(members: Iterable[tuple[str, Collection[str]]]) -> bool:
-    """Decide whether one content is a stamp, from ``(folder, media names in that folder)`` per copy."""
+    """Decide whether one content is a stamp, from ``(folder, media names in that folder)`` per copy.
+
+    True when the copies sit in at least :data:`STAMP_MIN_FOLDERS` differently named folders and
+    EITHER the folders holding media hold at least that many distinct media sets with nothing common
+    to all of them, OR no folder holds any media at all. So a group no copy of which sits beside media
+    IS a stamp (survey rule 2) -- which is why the media must be read when the verdict is decided, not
+    from a listing taken before the media arrived (module docstring). Some media but fewer than
+    :data:`STAMP_MIN_FOLDERS` distinct sets is not a stamp.
+    """
     names: set[str] = set()
     media_sets: list[frozenset[str]] = []
     for directory, media in members:
@@ -161,36 +218,85 @@ async def linked_copy_fingerprints(
     return found
 
 
-async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprints: Collection[str]) -> set[str]:
+async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprints: Collection[str], *, apply: bool = True) -> set[str]:
     """Re-decide the stamp verdict for ``fingerprints`` on ``agent_id`` and rewrite ``junk_class``; returns the stamps.
 
-    Reads every stored copy of each fingerprint (one indexed read per page of fingerprints) and
-    updates them all, so a verdict that changes -- a third folder arrives, a copy is replaced --
-    lands on every copy at once. Does NOT commit.
+    Reads every stored copy of each fingerprint (one indexed read per page of fingerprints) and the
+    media in their folders as ``files`` holds them now (:func:`media_in_folders`), and updates every
+    copy whose effective class changes, so a verdict that changes -- a third folder arrives, a copy
+    is replaced, media lands beside a copy -- lands on every copy at once. Without ``apply`` nothing
+    is written and the stamps are only returned. Does NOT commit.
     """
     stamps: set[str] = set()
     ordered = sorted(fingerprints)
     for start in range(0, len(ordered), _FINGERPRINT_PAGE):
         page = ordered[start : start + _FINGERPRINT_PAGE]
         rows = await session.execute(
-            select(CompanionContentFeatures.fingerprint, FileRecord.original_path, CompanionContentFeatures.folder_media)
+            select(CompanionContentFeatures.fingerprint, FileRecord.original_path)
             .join(FileRecord, FileRecord.id == CompanionContentFeatures.file_id)
             .where(CompanionContentFeatures.agent_id == agent_id, CompanionContentFeatures.fingerprint.in_(page))
         )
-        groups: dict[str, list[tuple[str, list[str]]]] = defaultdict(list)
-        for fingerprint, original_path, media in rows.all():
-            groups[fingerprint].append((str(PurePosixPath(original_path).parent), media))
-        page_stamps = {fingerprint for fingerprint, members in groups.items() if is_known_stamp(members)}
+        groups: dict[str, list[str]] = defaultdict(list)
+        for fingerprint, original_path in rows.all():
+            groups[fingerprint].append(media_folder(original_path))
+        media = await media_in_folders(session, agent_id, {folder for folders in groups.values() for folder in folders})
+        page_stamps = {
+            fingerprint for fingerprint, folders in groups.items() if is_known_stamp((folder, media.get(folder, ())) for folder in folders)
+        }
         stamps |= page_stamps
+        if not apply:
+            continue
+        effective = _effective_junk_class(CompanionContentFeatures.content_junk_class, CompanionContentFeatures.fingerprint.in_(page_stamps))
         await session.execute(
             update(CompanionContentFeatures)
-            .where(CompanionContentFeatures.agent_id == agent_id, CompanionContentFeatures.fingerprint.in_(page))
-            .values(
-                junk_class=_effective_junk_class(CompanionContentFeatures.content_junk_class, CompanionContentFeatures.fingerprint.in_(page_stamps)),
-                updated_at=func.now(),
+            .where(
+                CompanionContentFeatures.agent_id == agent_id,
+                CompanionContentFeatures.fingerprint.in_(page),
+                CompanionContentFeatures.junk_class.is_distinct_from(effective),
             )
+            .values(junk_class=effective, updated_at=func.now())
         )
     return stamps
+
+
+async def refresh_agent_stamps(session: AsyncSession, agent_id: str, *, apply: bool = True) -> tuple[set[str], set[str]]:
+    """Re-decide every content group of ``agent_id`` that is or could be a stamp; returns ``(re-decided, stamps)``.
+
+    A group could be a stamp when it has at least :data:`STAMP_MIN_FOLDERS` copies, and IS one when a
+    copy carries the verdict. Run at the start of every association (``services/companion.py``),
+    which is requested whenever media is inserted, so a group stamped while its folders held no media
+    is un-stamped once the media arrives (phaze-4x319.5). The groups are read by keyset page on
+    ``(agent_id, fingerprint)``. Without ``apply`` nothing is written. Does NOT commit.
+    """
+    rechecked: set[str] = set()
+    stamps: set[str] = set()
+    after: str | None = None
+    while True:
+        statement = (
+            select(CompanionContentFeatures.fingerprint)
+            .where(CompanionContentFeatures.agent_id == agent_id)
+            .group_by(CompanionContentFeatures.fingerprint)
+            .having(or_(func.count() >= STAMP_MIN_FOLDERS, func.bool_or(CompanionContentFeatures.junk_class == "known_stamp")))
+            .order_by(CompanionContentFeatures.fingerprint)
+            .limit(_FINGERPRINT_PAGE)
+        )
+        if after is not None:
+            statement = statement.where(CompanionContentFeatures.fingerprint > after)
+        page = list((await session.execute(statement)).scalars())
+        if not page:
+            return rechecked, stamps
+        rechecked.update(page)
+        stamps |= await refresh_known_stamps(session, agent_id, page, apply=apply)
+        if len(page) < _FINGERPRINT_PAGE:
+            return rechecked, stamps
+        after = page[-1]
+
+
+def effective_junk_class(content_junk_class: str | None, *, stamp: bool) -> str | None:
+    """:func:`_effective_junk_class` in Python, for a verdict decided but not yet written (a dry run)."""
+    if content_junk_class in _BYTES_JUNK:
+        return content_junk_class
+    return "known_stamp" if stamp else content_junk_class
 
 
 async def stamp_groups_in(session: AsyncSession, file_scope: Any) -> dict[str, set[str]]:

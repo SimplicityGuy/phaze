@@ -258,10 +258,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-080)
+### Post-baseline chain (040-081)
 
-`alembic/versions/` holds **42** files: the `039` baseline plus a linear chain to the current
-head, **`080`**.
+`alembic/versions/` holds **43** files: the `039` baseline plus a linear chain to the current
+head, **`081`**.
 
 | Rev | Change |
 |-----|--------|
@@ -305,9 +305,10 @@ head, **`080`**.
 | `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results |
 | `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search |
 | `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
-| `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) — **head** |
+| `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) |
+| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) — **head** |
 
-**Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
+**Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
 the same three load-bearing properties:**
 

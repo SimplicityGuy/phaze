@@ -11,7 +11,7 @@ from datetime import datetime  # noqa: TC003 -- SQLAlchemy resolves Mapped[] ann
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, Text, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, Text, column
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,8 +35,11 @@ def _sql_list(values: Iterable[str]) -> str:
 _COMPANION_TYPES = [ext.lstrip(".") for ext in INGESTIBLE_COMPANION_EXTENSIONS]
 _TERMINAL_SQL = _sql_list(TERMINAL_STATUSES)
 
-LIVE_IDENTITY_WHERE = text(f"status NOT IN ({_TERMINAL_SQL})")
-"""The partial-index predicate: at most one NON-terminal row per natural identity."""
+LIVE_IDENTITY_WHERE = column("status").not_in(sorted(str(status) for status in TERMINAL_STATUSES))
+"""The partial-index predicate: at most one NON-terminal row per natural identity.
+
+A column expression, not formatted SQL text: DDL and ``ON CONFLICT ... WHERE`` render its values as
+literals, emitting exactly migration 080's ``status NOT IN ('failed', 'quarantined')``."""
 
 
 class CompanionJunkReview(TimestampMixin, Base):

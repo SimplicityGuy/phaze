@@ -104,7 +104,8 @@ async def test_associate_companions_commits_once_per_keyset_page(
     assert outcome.links_created == num_directories, "one companion x one media per directory -> one link each"
     # One commit per keyset page, in each of the two walks (companions beside media, then the rest);
     # phaze-rmhfr re-derives every companion, so the second walk pages the same companions again.
-    assert commit_calls == 2 * math.ceil(num_directories / batch_size), (
+    # Plus one for the agent's stamp re-decision, before the first page (phaze-4x319.5).
+    assert commit_calls == 1 + 2 * math.ceil(num_directories / batch_size), (
         "paging by batch_size must produce one commit per page, not one commit for the whole run"
     )
 

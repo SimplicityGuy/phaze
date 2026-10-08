@@ -26,6 +26,12 @@ which companions to decide, the agent's media they are decided against, and the 
   and answering from the links this run has derived so far (never from links an earlier run left on a
   companion not yet re-derived), makes the outcome a function of the archive alone: a re-run derives
   the same links, whatever the ingest order or the previous state.
+- **Stamp verdicts are re-decided first, on the media stored now.** A content stamped while none of
+  its folders held media is no stamp once media lands beside it, so each agent's run starts with
+  :func:`phaze.services.companion_content.refresh_agent_stamps` (phaze-4x319.5). "Does this folder
+  hold media" is one answer everywhere: the media index here and
+  :func:`phaze.services.companion_content.media_in_folders` read the same rows with the same folder
+  identity.
 - **Head-only junk verdicts do not veto.** A per-file class (empty, all-NUL, site ad) the agent reached
   on a TRUNCATED read judged only the first ``MAX_FEATURE_BYTES``; a large file whose head looks like an
   advert may be a real tracklist, so it does not veto a link. A known stamp is a whole-file
@@ -35,19 +41,24 @@ which companions to decide, the agent's media they are decided against, and the 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
-from phaze.services.companion_content import COMPANION_FILE_TYPES
+from phaze.services.companion_content import (
+    COMPANION_FILE_TYPES,
+    MEDIA_FILE_TYPES,
+    agent_media_rows,
+    effective_junk_class,
+    media_folder,
+    refresh_agent_stamps,
+)
 from phaze.services.companion_linking import AgentMediaIndex, LinkInput, LinkStep, link_companion
 
 
@@ -57,10 +68,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-MEDIA_CATEGORIES: set[FileCategory] = {FileCategory.MUSIC, FileCategory.VIDEO}
 COMPANION_TYPES: frozenset[str] = COMPANION_FILE_TYPES
 """The companion types association decides: the ingestible ones, the only ones that carry content features."""
-MEDIA_TYPES: set[str] = {ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in MEDIA_CATEGORIES}
+MEDIA_TYPES: frozenset[str] = MEDIA_FILE_TYPES
 
 DEFAULT_ASSOCIATE_BATCH_SIZE = 2_000
 """Pending companions read per keyset page in :func:`associate_companions` (phaze-yiwq5). The pre-fix
@@ -117,12 +127,7 @@ async def _media_index(session: AsyncSession, agent_id: str, *, page_size: int =
     index = AgentMediaIndex()
     after: str | None = None
     while True:
-        statement = (
-            select(FileRecord.id, FileRecord.original_path)
-            .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(MEDIA_TYPES))
-            .order_by(FileRecord.original_path)
-            .limit(page_size)
-        )
+        statement = agent_media_rows(agent_id).order_by(FileRecord.original_path).limit(page_size)
         if after is not None:
             statement = statement.where(FileRecord.original_path > after)
         rows = (await session.execute(statement)).all()
@@ -138,14 +143,23 @@ def _current_features() -> Any:
     return (CompanionContentFeatures.file_id == FileRecord.id) & (CompanionContentFeatures.fingerprint == FileRecord.sha256_hash)
 
 
-async def _companion_page(session: AsyncSession, agent_id: str, *, after: uuid.UUID | None, limit: int) -> list[_Companion]:
-    """One keyset page of ``agent_id``'s companions that carry current features, linked or not, by ``FileRecord.id``."""
+async def _companion_page(
+    session: AsyncSession, agent_id: str, *, after: uuid.UUID | None, limit: int, stamps: tuple[set[str], set[str]] | None = None
+) -> list[_Companion]:
+    """One keyset page of ``agent_id``'s companions that carry current features, linked or not, by ``FileRecord.id``.
+
+    ``stamps`` is :func:`refresh_agent_stamps`' ``(re-decided, stamps)``: a re-decided content takes
+    the verdict decided this run, which a dry run has not written (an applied run has, so the two
+    agree there).
+    """
+    rechecked, stamped = stamps or (set(), set())
     statement = (
         select(
             FileRecord.id,
             FileRecord.original_path,
             CompanionContentFeatures.fingerprint,
             CompanionContentFeatures.junk_class,
+            CompanionContentFeatures.content_junk_class,
             CompanionContentFeatures.truncated,
             CompanionContentFeatures.is_tracklist,
             CompanionContentFeatures.media_references,
@@ -162,7 +176,10 @@ async def _companion_page(session: AsyncSession, agent_id: str, *, after: uuid.U
             id=row.id,
             path=row.original_path,
             fingerprint=row.fingerprint,
-            junk_class=linking_junk_class(row.junk_class, truncated=row.truncated),
+            junk_class=linking_junk_class(
+                effective_junk_class(row.content_junk_class, stamp=row.fingerprint in stamped) if row.fingerprint in rechecked else row.junk_class,
+                truncated=row.truncated,
+            ),
             is_tracklist=row.is_tracklist,
             references=tuple((str(reference["name"]), str(reference["source"])) for reference in row.media_references),
         )
@@ -389,18 +406,23 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 
 async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: int, outcome: AssociationOutcome, apply: bool) -> None:
     """Re-derive every current-features companion of one agent: those beside media in a first keyset walk, the rest in a second."""
+    # Stamp verdicts first, on the media stored NOW: media that arrived since a group was decided can
+    # un-stamp it, and the veto below reads the verdict (phaze-4x319.5).
+    stamps = await refresh_agent_stamps(session, agent_id, apply=apply)
+    if apply:
+        await session.commit()
     index: AgentMediaIndex | None = None
     linked: set[str] = set()
     for beside_media in (True, False):
         after: uuid.UUID | None = None
         while True:
-            page = await _companion_page(session, agent_id, after=after, limit=batch_size)
+            page = await _companion_page(session, agent_id, after=after, limit=batch_size, stamps=stamps)
             if not page:
                 break
             after = page[-1].id
             if index is None:
                 index = await _media_index(session, agent_id)
-            this_pass = [companion for companion in page if bool(index.in_folder(str(PurePosixPath(companion.path).parent))) is beside_media]
+            this_pass = [companion for companion in page if bool(index.in_folder(media_folder(companion.path))) is beside_media]
             await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome, apply=apply)
             if apply:
                 # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
