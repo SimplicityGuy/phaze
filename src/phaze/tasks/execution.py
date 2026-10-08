@@ -26,7 +26,7 @@ from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_proposals import ProposalStatePatch
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
-from phaze.services.containment import resolve_and_check_containment as _resolve_and_check_containment
+from phaze.services.containment import resolve_contained_twin as _resolve_and_check_containment
 from phaze.tasks import execution_filesystem as _filesystem
 
 
