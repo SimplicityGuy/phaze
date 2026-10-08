@@ -61,7 +61,15 @@ from phaze.models.companion_junk_review import LIVE_IDENTITY_WHERE, CompanionJun
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
-from phaze.services.companion_content import COMPANION_FILE_TYPES, linked_copy_fingerprints, media_folder, media_in_folders, never_link_reason
+from phaze.services.companion_content import (
+    COMPANION_FILE_TYPES,
+    effective_junk_class,
+    linked_copy_fingerprints,
+    media_folder,
+    media_in_folders,
+    never_link_reason,
+    refresh_agent_stamps,
+)
 
 
 if TYPE_CHECKING:
@@ -127,6 +135,7 @@ def _features_columns() -> tuple[Any, ...]:
         FileRecord.file_type,
         FileRecord.file_size,
         CompanionContentFeatures.junk_class,
+        CompanionContentFeatures.content_junk_class,
         CompanionContentFeatures.truncated,
     )
 
@@ -144,7 +153,9 @@ def _fresh_companions(agent_id: str) -> Any:
     )
 
 
-async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) -> list[tuple[Any, str]]:
+async def _reasons(
+    session: AsyncSession, agent_id: str, rows: Sequence[Any], *, stamps: tuple[set[str], set[str]] | None = None
+) -> list[tuple[Any, str]]:
     """``(row, reason)`` for every row of one page that is a candidate, judged on the links stored NOW.
 
     The verdict is :func:`never_link_reason` -- THE definition the linking chain's veto shares -- asked
@@ -166,11 +177,15 @@ async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) ->
     linked = set((await session.execute(select(FileCompanion.companion_id).where(FileCompanion.companion_id.in_(ids)).distinct())).scalars())
     linked_fingerprints = await linked_copy_fingerprints(session, agent_id, {row.sha256_hash for row in rows})
     media = await media_in_folders(session, agent_id, {media_folder(row.original_path) for row in rows})
+    rechecked, stamped = stamps or (set(), set())
     out: list[tuple[Any, str]] = []
     for row in rows:
         if is_quarantined(row.original_path):
             continue
-        junk_class = None if row.truncated and row.junk_class in _PER_FILE_JUNK else row.junk_class
+        junk_class = (
+            effective_junk_class(row.content_junk_class, stamp=row.sha256_hash in stamped) if row.sha256_hash in rechecked else row.junk_class
+        )
+        junk_class = None if row.truncated and junk_class in _PER_FILE_JUNK else junk_class
         reason = never_link_reason(
             junk_class,
             folder_has_media=media_folder(row.original_path) in media,
@@ -183,7 +198,7 @@ async def _reasons(session: AsyncSession, agent_id: str, rows: Sequence[Any]) ->
     return out
 
 
-async def _content_candidates(session: AsyncSession, agent_id: str) -> dict[Identity, dict[str, Any]]:
+async def _content_candidates(session: AsyncSession, agent_id: str, *, stamps: tuple[set[str], set[str]]) -> dict[Identity, dict[str, Any]]:
     """Step 1: every fresh-featured companion row :func:`_reasons` names, keyed by identity."""
     candidates: dict[Identity, dict[str, Any]] = {}
     after: uuid.UUID | None = None
@@ -195,7 +210,7 @@ async def _content_candidates(session: AsyncSession, agent_id: str) -> dict[Iden
         if not page:
             return candidates
         after = page[-1].id
-        for row, reason in await _reasons(session, agent_id, page):
+        for row, reason in await _reasons(session, agent_id, page, stamps=stamps):
             candidates[(row.original_path, row.sha256_hash)] = _row_values(agent_id, row, reason)
 
 
@@ -306,7 +321,10 @@ async def _live_rows(session: AsyncSession, agent_id: str) -> dict[Identity, tup
 async def detect_junk_reviews(session: AsyncSession, agent_id: str, *, apply: bool) -> DetectionOutcome:
     """Run the detector over one agent (see the module docstring); write only when ``apply``. Does NOT commit."""
     outcome = DetectionOutcome(agent_id=agent_id)
-    candidates = await _content_candidates(session, agent_id)
+    # The standalone CLI can precede association after media arrives. Decide stamps NOW; the
+    # overlay also gives a dry run the applied verdict without writing any feature or review row.
+    stamps = await refresh_agent_stamps(session, agent_id, apply=apply)
+    candidates = await _content_candidates(session, agent_id, stamps=stamps)
     reappeared = await _reappeared(session, agent_id, candidates)
 
     rejected = await _rejected_hashes(session, {sha for _, sha in candidates})

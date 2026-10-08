@@ -292,6 +292,24 @@ async def test_a_release_nfo_stamped_before_its_media_arrives_is_un_stamped_and_
     assert links == {(copy.id, recording.id) for copy, recording in zip(copies, media, strict=True)}
 
 
+@pytest.mark.parametrize("apply", [False, True])
+async def test_standalone_detector_refreshes_stamps_after_media_arrives_without_association(
+    session: AsyncSession, tmp_path: Path, apply: bool
+) -> None:
+    """Decision-time inputs must agree even when ingest and association have not met yet."""
+    copies = [await _companion(session, tmp_path / name / "info.nfo", _INFO) for name in _RELEASES]
+    assert await _junk_classes(session, *copies) == ["known_stamp"] * 3
+    for name in _RELEASES:
+        await _row(session, _put(tmp_path / name / "set.mp3", b"audio"))
+
+    outcome = await detect_junk_reviews(session, _AGENT, apply=apply)
+
+    assert outcome.created == {}
+    assert await _pending(session) == {}
+    assert await _junk_classes(session, *copies) == ([None] * 3 if apply else ["known_stamp"] * 3)
+    assert list((await session.execute(select(FileCompanion))).scalars()) == []
+
+
 async def test_media_landing_beside_one_copy_un_stamps_the_group_and_the_rest_become_duplicates(session: AsyncSession, tmp_path: Path) -> None:
     """Some media, but fewer than three distinct sets: no stamp (survey rule 2). The copy beside media links;
     the media-less copies are then byte-identical copies of a linked companion (operator decision 1, 2026-10-07,
