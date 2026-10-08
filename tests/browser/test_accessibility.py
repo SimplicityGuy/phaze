@@ -42,6 +42,7 @@ async def _populate(seed: Seeder) -> None:
     await seed.proposal(status=ProposalStatus.APPROVED, filename="<set-02>.mp3", confidence=0.42)
     await seed.proposal(status=ProposalStatus.REJECTED, filename="<set-03>.mp3", confidence=None)
     await seed.duplicate_group(count=3)
+    await seed.junk_group(count=2)
     from datetime import timedelta
 
     from phaze.models.scan_batch import ScanStatus
@@ -51,7 +52,7 @@ async def _populate(seed: Seeder) -> None:
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-@pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "discover"])
+@pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "junk", "discover"])
 async def test_a_populated_workspace_has_no_automated_accessibility_violations(open_page: Any, seed: Seeder, stage: str, theme: str) -> None:
     """The gate: each populated workspace, in both themes, at desktop width.
 
@@ -70,7 +71,7 @@ async def test_a_populated_workspace_has_no_automated_accessibility_violations(o
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-@pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "discover"])
+@pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "junk", "discover"])
 async def test_a_populated_workspace_meets_wcag_aa_contrast(open_page: Any, seed: Seeder, stage: str, theme: str) -> None:
     """The computed-contrast check ADR-0009 (responsive accessibility baseline) requested, across every seeded workspace."""
     await _populate(seed)

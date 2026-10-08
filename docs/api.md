@@ -242,6 +242,34 @@ live caller of the offset plumbing in `services/dedup.py` — do not delete that
 > (`pipeline/partials/dedupe_workspace.html`) renders each group's files inline on the card, so
 > there was no caller left for a separate compare view.
 
+## Junk review (`/junk-review`)
+
+The page is the shell workspace `/s/junk`; these routes are its excerpt fragment and its actions.
+
+| Method | Path                               | Description                        |
+|--------|------------------------------------|------------------------------------|
+| GET    | `/junk-review/{sha256_hash}/excerpt` | Bounded, escaped content excerpt of one copy, read on its owning agent (read-only) |
+| POST   | `/junk-review/{sha256_hash}/approve` | Mark every pending copy of one content group approved; nothing moves yet, and Undo still applies |
+| POST   | `/junk-review/{sha256_hash}/reject`  | Reject the group: every identical copy, on every agent, is kept and not proposed again |
+| POST   | `/junk-review/{sha256_hash}/undo`    | Return the group's approved-but-not-run and rejected copies to pending |
+| POST   | `/junk-review/{sha256_hash}/quarantine` | The run step: queue quarantine for the group's approved copies; shows the enqueued count |
+| POST   | `/junk-review/bulk`                | `approve`, `reject` or `quarantine` (`action`) every selected group (`review_tokens`), all or nothing |
+
+**Approve, then run.** Approving only marks a group approved; the separate `quarantine` action is the
+only caller of `services/junk_quarantine.enqueue_quarantine`, and it dispatches only approved copies.
+Once a copy is handed to quarantine it can no longer be undone. Operator decision 2026-10-07
+(dispatch session, AskUserQuestion), recorded as a comment on bead `phaze-l1j35`: asked how approve
+and undo should work given that approval queued the moves immediately, the operator chose "Approve,
+then a separate Run step (Recommended)".
+
+**Every action carries the card's review token**, the tags review's optimistic-concurrency
+pattern: the route recomputes a digest of the group's live `companion_junk_review` rows and answers
+a mismatch with **409** and the refreshed card, applying nothing; a bulk submit with any stale token
+applies nothing at all. A malformed token, or one for a different group, is **422** (the
+`routers/request_guards.py` envelope rule; the tags review predates it and answers 400). The target
+status comes from the route, never from the form, and the decisions are
+`services/companion_junk_review.decide_content_group`.
+
 ## Tracklists (`/tracklists`)
 
 The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s6); the tracklist workflow now lives in the shell's Tracklists workspace (`/s/tracklist`). A single legacy route remains:
@@ -347,3 +375,4 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | POST   | `/api/internal/agent/scratch/live`                    | Compute-scratch janitor liveness probe — answers "is a durable job still claiming this scratch entry?" off `saq_jobs` (phaze-5cvbz) |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued` (phaze-anrw4) |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`** (phaze-6bkk DIST-01) |
+| PATCH  | `/api/internal/agent/junk-quarantine/{review_id}`     | Outcome of an on-agent junk quarantine move: `quarantined` marks the `executing` review row and retires the moved file's `files` row, `failed` records the agent's reason; only the owning agent's rows, idempotent (phaze-lwuf6) |

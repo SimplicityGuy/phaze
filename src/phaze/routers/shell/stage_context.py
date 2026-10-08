@@ -41,6 +41,7 @@ from phaze.routers.shell.summary import _build_summary_context
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.dedup import GROUP_PAGE_SIZE, count_duplicate_groups
 from phaze.services.execution_preflight import get_execution_preflight
+from phaze.services.junk_review_page import GROUP_PAGE_SIZE as JUNK_GROUP_PAGE_SIZE, count_open_groups, list_open_groups
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
@@ -427,6 +428,27 @@ async def _dedupe_stage_context(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _junk_stage_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+    """The Junk review stage: one page of open content groups -- awaiting a decision or the quarantine run (phaze-l1j35).
+
+    ``junk_total_groups`` is one COUNT(DISTINCT) over the open rows of ``companion_junk_review`` --
+    the review queue, not the corpus (thousands of rows at the measured population, epic
+    phaze-4x319), paid once per visit like ``_dedupe_stage_context``'s group count, so the page can
+    say how many groups wait and whether a next page exists. ``?page=`` is clamped, never trusted.
+    """
+    try:
+        page = clamp_page(int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * JUNK_GROUP_PAGE_SIZE
+    return {
+        "junk_groups": await list_open_groups(session, offset=offset, limit=JUNK_GROUP_PAGE_SIZE),
+        "junk_total_groups": await count_open_groups(session),
+        "junk_page": page,
+        "junk_page_size": JUNK_GROUP_PAGE_SIZE,
+    }
+
+
 async def _cue_stage_context(session: AsyncSession) -> dict[str, Any]:
     """The Cue stage's eligible + gated preview cards, built IN MEMORY (no disk write).
 
@@ -536,6 +558,7 @@ _STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession, str], Awaita
     "tagwrite": lambda request, session, _stage: build_changes_review_context(request, session),
     "propose": lambda request, session, _stage: build_propose_list_context(request, session),
     "dedupe": lambda _request, session, _stage: _dedupe_stage_context(session),
+    "junk": lambda request, session, _stage: _junk_stage_context(request, session),
     "cue": lambda _request, session, _stage: _cue_stage_context(session),
     "apply": lambda _request, session, _stage: _apply_stage_context(session),
     "audit": lambda request, session, _stage: _audit_stage_context(request, session),

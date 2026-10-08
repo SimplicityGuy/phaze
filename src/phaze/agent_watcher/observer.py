@@ -26,10 +26,11 @@ asyncio-owned :class:`Debouncer`. It:
    (phaze-oxn2m). ``src_path`` itself is never debounced or posted.
 2. Filters by ``EXTENSION_MAP`` -- MUSIC/VIDEO and the six operator-approved
    COMPANION extensions enter the debouncer (SCAN-03). This matches
-   ``scan_directory`` by extension but deliberately not by directory context:
-   the watcher admits companions unconditionally because phaze-j8hjn measured
-   that 96.5% arrive before their last media sibling (Phase 27 CR-01, amended
-   by D6-D8).
+   ``scan_directory`` exactly: both admit a companion wherever it sits
+   (phaze-j8hjn D6-D8 for the watcher; for the scan, operator decision 6, 2026-10-07, "Yes, include them (Recommended)"; epic phaze-4x319,
+   bead phaze-gafl9). Any path under a ``.phaze-quarantine``
+   directory is dropped, as the scan prunes it, so a quarantined file is never
+   re-ingested.
 3. Dispatches the RAW OS path (whatever Unicode normalization form the
    filesystem handed watchdog) through, unchanged. It is later used
    verbatim as the filesystem handle for ``stat``/hashing in
@@ -60,7 +61,7 @@ from typing import TYPE_CHECKING
 import structlog
 from watchdog.events import FileSystemEventHandler
 
-from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory, is_quarantined
 
 
 if TYPE_CHECKING:
@@ -104,7 +105,7 @@ class WatcherEventHandler(FileSystemEventHandler):
 
     @staticmethod
     def _decode_ingestible(src_path: bytes | str) -> str | None:
-        """Return ``src_path`` as a raw ``str`` if it carries an ingestible extension, else ``None``."""
+        """Return ``src_path`` as a raw ``str`` if it carries an ingestible extension outside quarantine, else ``None``."""
         # watchdog types ``src_path`` as ``bytes | str`` (some platforms emit
         # bytes for non-UTF-8 filesystem names). Decode via ``os.fsdecode`` so
         # the system's filesystem encoding (``sys.getfilesystemencoding()``) is
@@ -124,7 +125,7 @@ class WatcherEventHandler(FileSystemEventHandler):
         else:
             path_str = src_path
         ext = "." + Path(path_str).suffix.lower().lstrip(".")
-        if ext not in _INGESTIBLE_EXTENSIONS:
+        if ext not in _INGESTIBLE_EXTENSIONS or is_quarantined(path_str):
             return None
         return path_str
 
@@ -161,7 +162,9 @@ class WatcherEventHandler(FileSystemEventHandler):
         already posted under, so the pair goes to :meth:`Debouncer.move`, which carries it as
         the dest's lineage (phaze-oxn2m). A non-ingestible ``src_path`` -- rsync's
         ``.name.XXXXXX`` temp file -- can never have been posted, so that move is a plain touch
-        of ``dest_path``, exactly as before. As documented on the module docstring, a move that crosses the
+        of ``dest_path``, exactly as before. Quarantine follows the same rule (phaze-gafl9): a move
+        INTO ``.phaze-quarantine`` is dropped, and a move OUT of it is a plain touch, since nothing
+        beneath it is ever posted. As documented on the module docstring, a move that crosses the
         watched-tree boundary in either direction never reaches this method
         at all -- watchdog's inotify emitter degrades those to a plain
         ``FileCreatedEvent``/``FileDeletedEvent`` before ``on_moved`` is

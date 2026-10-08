@@ -1,6 +1,7 @@
 """Constants for file discovery and ingestion."""
 
 import enum
+from pathlib import PurePath
 import re
 import unicodedata
 
@@ -65,19 +66,39 @@ This is the operator-approved D6 subset of the COMPANION entries in
 ``EXTENSION_MAP``. Artwork and checksum companions remain intentionally excluded.
 """
 
+QUARANTINE_DIRNAME: str = ".phaze-quarantine"
+"""The hidden per-scan-root directory approved junk companions are moved into.
+
+Operator decision 9, 2026-10-07, "Hidden dir per scan root (Recommended)"; epic phaze-4x319: the
+quarantine task places it at ``<root>/.phaze-quarantine/``, mirroring each file's original relative
+path. Neither producer ingests anything beneath it: ``tasks/scan.py`` prunes it from the walk and the
+watcher drops its events, so a quarantined file is never re-ingested (bead phaze-gafl9).
+"""
+
+
+def is_quarantined(path: str) -> bool:
+    """True when any component of ``path`` is :data:`QUARANTINE_DIRNAME` -- the scan and watcher share this test."""
+    return QUARANTINE_DIRNAME in PurePath(path).parts
+
+
 _SCENE_INDEX_PREFIX = re.compile(r"^\d{1,3}[\s_.\-]+")
 _DUPLICATE_MARKER_SUFFIX = re.compile(r"\s*\(\d{1,2}\)$")
 
 
 def companion_match_key(name: str) -> str:
-    """Normalize a folder name or file stem for pairing a sub-folder companion with parent media (phaze-ehryj).
+    """Normalize a file stem for the linking chain's own-folder stem step (phaze-rmhfr; key from phaze-ehryj).
 
-    A companion with no media in its own directory pairs with a parent-directory media file only when
-    this key of the media's stem equals the key of the companion's sub-folder name or of its own stem
-    (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj), or of the parent directory's own
-    name (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj). The scan's admission and
-    ``services/companion.py``'s association both call THIS function, so a companion the scan admits is
-    exactly one association can link.
+    ``services/companion_linking.py``'s step 3 links a companion to the media in its OWN folder whose
+    stem has the same key as the companion's own stem (phaze-9aker method (s): it narrows a
+    multi-media folder to the file the companion is named after). This is the only caller.
+
+    Until phaze-rmhfr this key also paired a companion with no media of its own with media in its
+    PARENT folder whose stem matched the companion's sub-folder name, its own stem, or the parent
+    folder's own name (phaze-ehryj, operator decisions 2026-10-06 "Match by name" and "Add
+    parent-folder name"). That fallback is retired, scan side (phaze-gafl9) and association side
+    (phaze-rmhfr): operator decision 8, 2026-10-07, "Yes, file it (Recommended)"; epic phaze-4x319.
+    phaze-9aker measured it at link precision 0.125-0.345 with 7 of 8 links into the archive's flat
+    dump folder wrong (``docs/spikes/phaze-9aker-companion-matching-accuracy.md`` §4.4-§4.5).
 
     A trailing duplicate-copy marker (`` (1)``, `` (12)``) is dropped first, so a download saved as
     ``<release> (1).mkv`` still matches its ``<release>`` folder (operator decision 2026-10-06,

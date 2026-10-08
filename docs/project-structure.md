@@ -20,13 +20,13 @@ a module makes the inventory fail until this page is reconciled.
 | Package area | Python files | Responsibility |
 | ------------ | -----------: | -------------- |
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
-| `cli/` | 1 | Operator commands, including agent management and projection backfill |
-| `enums/` | 5 | DB-free shared stage, execution, tag-write, and tracklist vocabulary |
-| `models/` | 30 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics |
-| `routers/` | 57 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 23 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 133 | Business rules and infrastructure adapters; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 48 | SAQ controller/agent jobs and shared queue policy |
+| `cli/` | 1 | Operator commands, including agent management, projection backfill and the junk quarantine dispatch |
+| `enums/` | 6 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
+| `models/` | 32 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
+| `routers/` | 60 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 25 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 142 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 51 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 40 migrations (`039` baseline through head
-`078`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 43 migrations (`039` baseline through head
+`081`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 
@@ -163,6 +163,7 @@ template path.
 | `/s/propose` | `pipeline/partials/propose_workspace.html` |
 | `/s/rename`, `/s/tagwrite`, `/s/move` | Compatibility aliases for `pipeline/partials/changes_workspace.html` |
 | `/s/dedupe`, `/s/cue` | `pipeline/partials/dedupe_workspace.html`, `cue_workspace.html` |
+| `/s/junk` | `pipeline/partials/junk_workspace.html` (decisions: `routers/junk_review.py`) |
 | `/s/apply` | `pipeline/partials/apply_workspace.html` |
 | `/s/audit`, `/s/agents`, `/s/runtime-config` | Utility panes under shell, execution, and admin templates; Config (`/s/runtime-config`) opens from the header gear, and `/s/operations` 307-redirects to it |
 

@@ -1,0 +1,8 @@
+{# phaze-l1j35: a bounded look at one copy's bytes (services/junk_review_page.read_group_excerpt).
+   File content is autoescaped inside <pre>; never `| safe`. #}
+{% if excerpt.text is not none %}
+<pre class="relative max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-gray-50 p-3 font-mono text-[11px] leading-relaxed text-gray-700 dark:bg-phaze-bg dark:text-gray-300">{{ excerpt.text }}</pre>
+<p class="mt-1 text-[11px] text-muted">{{ excerpt.note }}{% if excerpt.truncated %} The file continues past this point.{% endif %}</p>
+{% else %}
+<p class="text-xs text-muted">{{ excerpt.note }}</p>
+{% endif %}

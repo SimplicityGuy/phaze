@@ -22,25 +22,24 @@ import asyncio
 import os
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 import unicodedata
 
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, FileCategory, companion_match_key
+from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, QUARANTINE_DIRNAME, FileCategory, is_quarantined
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
-from phaze.schemas.agent_orphan_companions import OrphanCompanionChunk, OrphanCompanionRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.services.agent_client import AgentApiServerError
+from phaze.services.companion_features_report import report_companion_features
 from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from phaze.schemas.agent_orphan_companions import CompanionExtension
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -60,98 +59,36 @@ _MEDIA_CATEGORIES: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, File
 _INGESTIBLE_EXTENSIONS: frozenset[str] = frozenset(
     extension for extension, category in EXTENSION_MAP.items() if category in _MEDIA_CATEGORIES or extension in INGESTIBLE_COMPANION_EXTENSIONS
 )
-"""Extensions that scan_directory may ingest (Phase 27 CR-01, amended by phaze-j8hjn D6-D8).
+"""Extensions that scan_directory may ingest (Phase 27 CR-01, amended by phaze-j8hjn D6-D8 and phaze-gafl9).
 
-The scan and watcher accept the same extensions, including the six approved
-COMPANION extensions. They deliberately differ by directory context: a settled-tree
-scan admits a companion only beside MUSIC/VIDEO in its own directory or beside a parent
-media file its name matches (phaze-ehryj), while the watcher admits it unconditionally because 96.5% of companions
-arrive before their last media sibling. Both paths then reach the same
-``services/companion.py::associate_companions``, which applies the same own-then-name-matched-parent rule.
+The scan and watcher accept the same extensions, including the six approved COMPANION
+extensions, and since phaze-gafl9 the same files: a companion is admitted wherever it sits,
+with or without media beside or above it (operator decision 6, 2026-10-07, "Yes, include them (Recommended)"; epic phaze-4x319). Where it
+sits no longer decides anything at ingest; ``services/companion.py::associate_companions``
+decides what it links to. Both producers skip everything under ``.phaze-quarantine``.
 """
 
 
-def _classify(filename: str) -> FileCategory:
-    """Classify a filename by extension. Mirrors services.ingestion.classify_file but
-    is duplicated here to keep the agent task module's import graph Postgres-free
-    (services.ingestion transitively imports phaze.models).
+def _walk_files(scan_root: Path, errors: list[OSError]) -> Iterator[Path]:
+    """Yield the full path of every ingestible file under ``scan_root``, without stat or hashing.
+
+    Admission is by extension alone. A ``.phaze-quarantine`` directory is pruned from the walk, so
+    nothing beneath it is ever listed, let alone ingested; a scan rooted inside one yields nothing.
     """
-    return EXTENSION_MAP.get(Path(filename).suffix.lower(), FileCategory.UNKNOWN)
-
-
-def _has_media(filenames: list[str]) -> bool:
-    """True when any of ``filenames`` is MUSIC or VIDEO."""
-    return any(_classify(filename) in _MEDIA_CATEGORIES for filename in filenames)
-
-
-_NO_PARENT_MEDIA: frozenset[str] = frozenset()
-
-
-def _split_companions(directory: Path, filenames: list[str], parent_media_keys: frozenset[str]) -> tuple[list[str], list[str]]:
-    """Split this directory's files into ``(ingestible, orphan_companions)`` under the scan's companion rule.
-
-    Media is always ingestible. An approved companion is ingestible beside media in its own
-    directory; failing that, it is ingestible only when its sub-folder name or its own stem names a
-    media file directly in its PARENT directory (operator decision 2026-10-06, "Match by name"; bead phaze-ehryj),
-    or when that parent directory's OWN name does -- a release folder holding its media beside an
-    "info" sub-folder (operator decision 2026-10-06, "Add parent-folder name"; bead phaze-ehryj),
-    all compared by :func:`phaze.constants.companion_match_key` -- the same key
-    ``services/companion.py::associate_companions`` links by, so the scan admits exactly the
-    companions association can link. Every other approved companion is an orphan diagnostic.
-    Exactly one level: a grandparent's media is never consulted.
-    """
-    own_media = _has_media(filenames)
-    folder_matches = bool(parent_media_keys) and (
-        companion_match_key(directory.name) in parent_media_keys or companion_match_key(directory.parent.name) in parent_media_keys
-    )
-    ingestible: list[str] = []
-    orphans: list[str] = []
-    for filename in filenames:
-        extension = Path(filename).suffix.lower()
-        if extension not in _INGESTIBLE_EXTENSIONS:
-            continue
-        admitted = EXTENSION_MAP[extension] in _MEDIA_CATEGORIES or own_media or folder_matches
-        if admitted or (parent_media_keys and companion_match_key(Path(filename).stem) in parent_media_keys):
-            ingestible.append(filename)
-        else:
-            orphans.append(filename)
-    return ingestible, orphans
-
-
-def _media_keys(filenames: list[str]) -> frozenset[str]:
-    """The :func:`companion_match_key` of every media file's stem in one directory listing."""
-    return frozenset(key for filename in filenames if _classify(filename) in _MEDIA_CATEGORIES and (key := companion_match_key(Path(filename).stem)))
-
-
-def _walk_with_parent_media(scan_root: Path, errors: list[OSError]) -> Iterator[tuple[Path, list[str], frozenset[str]]]:
-    """Yield ``(directory, filenames, parent_media_keys)`` for every directory under ``scan_root``.
-
-    phaze-ehryj: the companion rule needs the PARENT's media names, which os.walk has already
-    listed by the time it reaches a child (top-down order). Rather than retain every media
-    directory's names, a directory with media registers its own sub-directories in ``pending``,
-    all sharing ONE frozenset of its media keys, and each sub-directory removes itself when
-    visited. ``pending`` therefore holds only children not yet walked -- the frontier of the
-    depth-first walk -- and a parent's key set is released once its last child has been visited,
-    never kept for the whole tree. A sub-directory os.walk never descends into (a symlink, an
-    unreadable directory) stays in ``pending``, bounded by the number of such directories.
-    """
-    pending: dict[Path, frozenset[str]] = {}
+    if is_quarantined(str(scan_root)):
+        return
     for dirpath, dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
+        dirnames[:] = [dirname for dirname in dirnames if dirname != QUARANTINE_DIRNAME]
         directory = Path(dirpath)
-        parent_media_keys = pending.pop(directory, _NO_PARENT_MEDIA)
-        if dirnames and (media_keys := _media_keys(filenames)):
-            pending.update(dict.fromkeys((directory / dirname for dirname in dirnames), media_keys))
-        yield directory, filenames, parent_media_keys
+        yield from (directory / filename for filename in filenames if Path(filename).suffix.lower() in _INGESTIBLE_EXTENSIONS)
 
 
-def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[Path], list[OSError]]:
+def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[OSError]]:
     """Authoritative walk over `scan_root`, run entirely off the event loop (phaze-j54q).
 
     Walks the tree once WITHOUT stat or hashing, collecting the full path of every file
-    whose extension is ingestible, accepted companions skipped because they have no media beside
-    them and none in their parent that their name matches, and any directory-read OSError raised by os.walk.
-    Returns ``(paths, orphan_companions, errors)``; the caller stats/hashes only the
-    ingestible paths and reports orphan paths as metadata-only diagnostics.
+    whose extension is ingestible and any directory-read OSError raised by os.walk.
+    Returns ``(paths, errors)``; the caller stats/hashes the paths.
 
     Mirrors ``_count_ingestible`` (phaze-bfd1), which moved the pre-count walk off-loop for
     exactly this reason but left this, the authoritative hashing walk, iterating os.walk
@@ -160,24 +97,19 @@ def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[Path], list[OSEr
     with no await at all, so a companion-heavy subtree (or a stalled network mount) could
     monopolize the loop with zero yields -- the same starvation shape phaze-bfd1 diagnosed,
     just on the second walk. Dispatched via asyncio.to_thread so the full synchronous os.walk
-    never runs back-to-back on the agent worker's event loop. Only ingestible paths and accepted
-    orphan-companion paths are retained, rather than every file in the tree.
+    never runs back-to-back on the agent worker's event loop. Only ingestible paths are
+    retained, rather than every file in the tree.
     """
     errors: list[OSError] = []
-    paths: list[Path] = []
-    orphan_companions: list[Path] = []
-    for directory, filenames, parent_media_keys in _walk_with_parent_media(scan_root, errors):
-        ingestible, orphans = _split_companions(directory, filenames, parent_media_keys)
-        paths.extend(directory / filename for filename in ingestible)
-        orphan_companions.extend(directory / filename for filename in orphans)
-    return paths, orphan_companions, errors
+    paths = list(_walk_files(scan_root, errors))
+    return paths, errors
 
 
 def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     """Pre-count pass over `scan_root`, run entirely off the event loop (phaze-bfd1).
 
-    Walks the tree once WITHOUT stat or hashing, counting only files whose extension
-    is ingestible under the same directory rule as the hashing walk, and collecting any directory-read OSError raised by
+    Walks the tree once WITHOUT stat or hashing, counting exactly the files the hashing walk
+    collects, and collecting any directory-read OSError raised by
     os.walk. Returns ``(count, errors)``; the caller logs the collected errors back
     on the loop.
 
@@ -192,9 +124,7 @@ def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     sha256 via asyncio.to_thread.
     """
     errors: list[OSError] = []
-    count = 0
-    for directory, filenames, parent_media_keys in _walk_with_parent_media(scan_root, errors):
-        count += len(_split_companions(directory, filenames, parent_media_keys)[0])
+    count = sum(1 for _path in _walk_files(scan_root, errors))
     return count, errors
 
 
@@ -245,7 +175,7 @@ class _ScanProgress:
 async def _publish_precount(api: PhazeAgentClient, payload: ScanDirectoryPayload, scan_root: Path) -> None:
     """Populate ``ScanBatch.total_files`` up front from a hash-free name-only walk (best-effort UX)."""
     # Pre-count pass (UX denominator): walk the tree once WITHOUT stat or hashing,
-    # counting only files whose extension is ingestible under the scan sibling rule. This populates
+    # counting only files whose extension is ingestible. This populates
     # ScanBatch.total_files up front so the Recent Scans "N / Z" progress widget shows a
     # real denominator during a RUNNING scan instead of "—" (which previously only
     # filled in at the terminal success PATCH). Counting names is cheap even on a large
@@ -329,6 +259,7 @@ async def _hash_and_post_chunks(
         logger.debug("file discovered", path=record.original_path, size=record.file_size, ext=record.file_type)
         if len(batch) >= chunk_size:
             await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+            await report_companion_features(api, [posted.original_path for posted in batch])  # phaze-osy6j
             await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
             logger.info("scan progress", batch_id=str(payload.batch_id), processed=progress.total)
             batch = []
@@ -336,25 +267,8 @@ async def _hash_and_post_chunks(
     # Flush final partial chunk.
     if batch:
         await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+        await report_companion_features(api, [posted.original_path for posted in batch])  # phaze-osy6j
         await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
-
-
-async def _post_orphan_chunks(
-    api: PhazeAgentClient,
-    payload: ScanDirectoryPayload,
-    orphan_paths: list[Path],
-    chunk_size: int,
-) -> None:
-    """Report accepted companions skipped by D7 without reading or ingesting them."""
-    for offset in range(0, len(orphan_paths), chunk_size):
-        diagnostics = [
-            OrphanCompanionRecord(
-                normalized_path=unicodedata.normalize("NFC", str(path)),
-                companion_extension=cast("CompanionExtension", Path(path.name).suffix.lower()),
-            )
-            for path in orphan_paths[offset : offset + chunk_size]
-        ]
-        await api.post_orphan_companions(payload.batch_id, OrphanCompanionChunk(diagnostics=diagnostics))
 
 
 async def _fail_zero_access(
@@ -502,14 +416,13 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # os.walk) runs OFF the event loop via asyncio.to_thread, mirroring the pre-count
     # walk above (phaze-bfd1). Only the per-file stat/hash below still run on the loop,
     # each individually offloaded via asyncio.to_thread.
-    candidate_paths, orphan_paths, walk_errors = await asyncio.to_thread(_walk_ingestible, scan_root)
+    candidate_paths, walk_errors = await asyncio.to_thread(_walk_ingestible, scan_root)
     for walk_error in walk_errors:
         logger.warning("scan_directory: cannot read directory during walk: %s", walk_error)
 
     progress = _ScanProgress()
     try:
         await _hash_and_post_chunks(api, payload, candidate_paths, chunk_size, progress)
-        await _post_orphan_chunks(api, payload, orphan_paths, chunk_size)
         return await _finish_scan(api, payload, walk_errors, progress, started_at)
     except AgentApiServerError as exc:
         return await _abort_on_controller_error(api, payload, exc, progress)

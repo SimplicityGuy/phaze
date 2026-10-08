@@ -142,7 +142,7 @@ def test_every_wire_payload_dumps_json_native() -> None:
     # Nested item models are exercised through their parents rather than standalone; name them so the
     # gap is explicit rather than something a reader has to infer from the count.
     nested_only = {m.__name__ for m in declared - instantiated}
-    assert nested_only <= {"ExecuteBatchProposalItem", "CompanionReadItem"}, (
+    assert nested_only <= {"ExecuteBatchProposalItem", "CompanionReadItem", "CompanionFeaturesTarget"}, (
         f"WirePayload subclass(es) with no representative instance and not a known nested item: {sorted(nested_only)}. "
         f"Add one to _representative_payloads() in tests/integration/test_pg_payload_type_fidelity.py."
     )

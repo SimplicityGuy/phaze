@@ -2,9 +2,12 @@
 
 phaze-6igef: the batched media lookup repeated the invariant ``MEDIA_TYPES`` predicate inside every
 per-directory OR clause. A default 2,000-companion page spread across 2,000 directories therefore
-rendered 38,000 binds and failed before association reached its already-chunked INSERT. The first
-test below exercises that exact page-width query against PostgreSQL while keeping the fixture cheap:
-the query need not match rows for asyncpg to bind all of its arguments.
+rendered 38,000 binds and failed before association reached its already-chunked INSERT. phaze-rmhfr
+replaced that per-page, per-directory read with one keyset-paged read of the agent's media, whose
+binds do not grow with the page; the read that DOES carry one bind per companion of a page is the
+duplicate veto's linked-copy lookup, and the first test below drives it at a full default page of
+distinct fingerprints against PostgreSQL. The fixture stays cheap: the query need not match rows for
+asyncpg to bind all of its arguments.
 
 phaze-p3qr: the bulk INSERT had a separate bind-cap failure. That history and its regression tests
 follow below.
@@ -35,6 +38,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import PG_MAX_BIND_PARAMS
@@ -42,9 +46,9 @@ from phaze.services.companion import (
     COMPANION_TYPES,
     DEFAULT_ASSOCIATE_BATCH_SIZE,
     MEDIA_TYPES,
-    _media_in_directories,
     associate_companions,
 )
+from phaze.services.companion_content import linked_copy_fingerprints
 
 
 if TYPE_CHECKING:
@@ -55,16 +59,14 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_default_page_media_lookup_stays_below_bind_param_cap(session: AsyncSession) -> None:
-    """A maximally dispersed default page must execute without exceeding asyncpg's bind cap."""
-    dir_groups: dict[tuple[str, str], list[FileRecord]] = {
-        ("test-fileserver", f"/music/album_{index}"): [] for index in range(DEFAULT_ASSOCIATE_BATCH_SIZE)
-    }
-
+async def test_default_page_linked_copy_lookup_stays_below_bind_param_cap(session: AsyncSession) -> None:
+    """A default page of media-less companions, every fingerprint distinct, plus as many excluded ids, executes."""
     old_bind_count = DEFAULT_ASSOCIATE_BATCH_SIZE * (len(MEDIA_TYPES) + 3)
-    assert old_bind_count > PG_MAX_BIND_PARAMS, "the fixture must cross the pre-fix media-query break"
+    assert old_bind_count > PG_MAX_BIND_PARAMS, "the pre-fix media read crossed the cap at this page size"
 
-    assert await _media_in_directories(session, dir_groups) == {}
+    fingerprints = {f"{index:064x}" for index in range(DEFAULT_ASSOCIATE_BATCH_SIZE)}
+    excluded = [uuid.uuid4() for _ in range(DEFAULT_ASSOCIATE_BATCH_SIZE)]
+    assert await linked_copy_fingerprints(session, "test-fileserver", fingerprints, exclude_file_ids=excluded) == set()
 
 
 def _make_file(original_path: str, file_type: str, agent_id: str = "test-fileserver") -> FileRecord:
@@ -92,6 +94,22 @@ _EXPECTED_PAIRS = _NUM_COMPANIONS * _NUM_MEDIA
 assert _EXPECTED_PAIRS > 10_922, "the fixture must actually cross the pre-fix break"
 
 
+def _with_features(companions: list[FileRecord]) -> list[CompanionContentFeatures]:
+    """Current features naming nothing: every companion links by the own-folder rule (chain step 4)."""
+    return [
+        CompanionContentFeatures(
+            file_id=companion.id,
+            agent_id=companion.agent_id,
+            fingerprint=companion.sha256_hash,
+            encoding="ascii",
+            byte_size=100,
+            is_tracklist=False,
+            extractor_version=1,
+        )
+        for companion in companions
+    ]
+
+
 def _seed_one_big_directory() -> tuple[list[FileRecord], list[FileRecord]]:
     """Build ``_NUM_COMPANIONS`` companions + ``_NUM_MEDIA`` media files in ONE directory (so every
     companion links to every media file -- the full cross-product ``associate_companions`` builds)."""
@@ -115,10 +133,12 @@ async def test_associate_companions_past_bind_param_cap_creates_every_pair(sessi
     companions, media = _seed_one_big_directory()
     session.add_all(companions + media)
     await session.flush()
+    session.add_all(_with_features(companions))
+    await session.flush()
 
-    count = await associate_companions(session)
+    outcome = await associate_companions(session)
 
-    assert count == _EXPECTED_PAIRS
+    assert outcome.links_created == _EXPECTED_PAIRS
     result = await session.execute(select(func.count()).select_from(FileCompanion))
     assert result.scalar_one() == _EXPECTED_PAIRS
 
@@ -149,10 +169,12 @@ async def test_associate_companions_chunks_the_insert_into_multiple_statements(
     companions, media = _seed_one_big_directory()
     session.add_all(companions + media)
     await session.flush()
+    session.add_all(_with_features(companions))
+    await session.flush()
 
-    count = await associate_companions(session)
+    outcome = await associate_companions(session)
 
-    assert count == _EXPECTED_PAIRS
+    assert outcome.links_created == _EXPECTED_PAIRS
     assert len(seen_chunk_sizes) > 1, "an unchunked single statement would have raised before reaching here"
     assert sum(seen_chunk_sizes) == _EXPECTED_PAIRS
     # bulk_insert.py's MAX_ROWS_PER_STATEMENT soft cap (1000) is well under the 10,922-row bind
@@ -188,6 +210,8 @@ async def test_associate_companions_chunked_insert_is_atomic_on_mid_write_failur
 
     companions, media = _seed_one_big_directory()
     session.add_all(companions + media)
+    await session.flush()
+    session.add_all(_with_features(companions))
     await session.flush()
 
     with pytest.raises(RuntimeError, match="simulated mid-write failure"):

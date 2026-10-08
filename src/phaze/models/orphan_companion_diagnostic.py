@@ -1,4 +1,9 @@
-"""Metadata-only inventory of companion files skipped by a scan."""
+"""Metadata-only inventory of companion files skipped by a scan.
+
+No longer written by a current scan and no longer read by the scans page (phaze-gafl9): the scan admits
+every approved companion. Existing rows are inert history, still cascaded by scan deletion, until the
+table is dropped.
+"""
 
 import uuid
 

@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
@@ -85,6 +86,7 @@ _EXPECTED_COUNTS = {
     # rowcount report an operator reads. Deleting a file legitimately erases its cloud budget history:
     # a re-scanned file is a NEW files.id and has genuinely never spent a cloud budget.
     "cloud_budget": 0,
+    "companion_content_features": 1,
     # phaze-u5dn: the full-graph seed creates no scheduling_ledger rows either -- exercised
     # separately by test_cascade_purges_scheduling_ledger_rows_for_its_files below.
     "scheduling_ledger": 0,
@@ -146,6 +148,18 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
         )
     )
     session.add(FileCompanion(id=uuid.uuid4(), companion_id=companion.id, media_id=media.id))
+    # phaze-osy6j: the companion's content-features sidecar (FK ON DELETE CASCADE, deleted explicitly).
+    session.add(
+        CompanionContentFeatures(
+            file_id=companion.id,
+            agent_id=companion.agent_id,
+            fingerprint=companion.sha256_hash,
+            encoding="ascii",
+            byte_size=companion.file_size,
+            is_tracklist=False,
+            extractor_version=1,
+        )
+    )
     # phaze-6l74: the force-skip sidecar. Its FK to files.id has no ON DELETE, so before the cascade
     # cleared it the files delete raised ForeignKeyViolation -> the batch was permanently undeletable.
     session.add(StageSkip(id=uuid.uuid4(), file_id=media.id, stage="metadata", reason="operator force-skip"))

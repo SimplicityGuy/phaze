@@ -546,7 +546,24 @@ async def _lookup_via_hint(
     if render.outcome is not RenderOutcome.OK and render.outcome is not RenderOutcome.NO_TRACKLIST:
         return _render_failed_attempt(base, target, render, requests=spent), spent
 
-    page = TracklistScraper.detail_page_result(render.html, url)
+    try:
+        page = TracklistScraper.detail_page_result(render.html, url)
+    except Exception as exc:
+        # phaze-r87rh: an unexpected exception scoring the page is OUR failure, so it neither discards the hint
+        # (that would read the page as a mismatch) nor aborts the pass; it is the same transient PARSE_FAILED.
+        logger.exception("tracklist drain page analysis raised", set_key=candidate.set_key, step="page scoring")
+        return (
+            replace(
+                base,
+                outcome=LookupOutcome.PARSE_FAILED,
+                external_id=target.external_id,
+                source_url=url,
+                result_confidence=confidence,
+                detail=f"page scoring raised {type(exc).__name__}",
+                host_requests=spent,
+            ),
+            spent,
+        )
     selection = select_result(candidate.derived, [page]) if page is not None else None
     if selection is None or selection.selected is None:
         logger.warning(
@@ -632,7 +649,10 @@ async def _classify_render(
     # phaze-y5fc7: a flagged client is served real layout with randomised names. Such a page parses
     # cleanly, so this check runs BEFORE the parse -- a decoy must never reach `_found`, whose
     # FOUND is cached forever, nor be read as a negative, which would hide the real tracklist.
-    decoy = assess_decoy(render.html)
+    try:
+        decoy = assess_decoy(render.html)
+    except Exception as exc:
+        return _analysis_raised_attempt(candidate, base, chosen=chosen, exc=exc, requests=requests, step="decoy check")
     if decoy.is_decoy:
         logger.warning(
             "tracklist drain rejected a decoy detail page",
@@ -663,6 +683,8 @@ async def _classify_render(
             detail=str(exc),
             host_requests=requests,
         )
+    except Exception as exc:
+        return _analysis_raised_attempt(candidate, base, chosen=chosen, exc=exc, requests=requests, step="parse")
 
     if not tracks:
         return replace(
@@ -676,6 +698,30 @@ async def _classify_render(
         )
 
     return _found(base, chosen=chosen, reason=reason, render_requests=requests, tracks=tracks)
+
+
+def _analysis_raised_attempt(
+    candidate: DrainCandidate, base: LookupAttempt, *, chosen: ScoredResult, exc: Exception, requests: int, step: str
+) -> LookupAttempt:
+    """The attempt for an UNEXPECTED exception from the post-render analysis -- a transient ``PARSE_FAILED``.
+
+    A defensive backstop (phaze-r87rh): no input is known to trigger it. Without it one bad page would
+    propagate out of :func:`perform_lookup`, abort the whole drain pass and record nothing, so the same
+    set would be hit again next pass. It is OUR failure, never evidence about the set, so it is never
+    ``FOUND`` and never a negative; the existing backoff and the cap that parks the set apply unchanged.
+    The traceback and ``set_key`` go to the log; ``detail`` names the exception TYPE only, because the
+    message of an exception raised while parsing third-party HTML can quote that page.
+    """
+    logger.exception("tracklist drain page analysis raised", set_key=candidate.set_key, step=step)
+    return replace(
+        base,
+        outcome=LookupOutcome.PARSE_FAILED,
+        external_id=chosen.result.external_id,
+        source_url=chosen.result.url,
+        result_confidence=chosen.confidence,
+        detail=f"{step} raised {type(exc).__name__}",
+        host_requests=requests,
+    )
 
 
 def _found(base: LookupAttempt, *, chosen: ScoredResult, reason: str, render_requests: int, tracks: Sequence[TracklistTrackPayload]) -> LookupAttempt:

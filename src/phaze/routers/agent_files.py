@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import Executable, Row, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,8 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
 from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertRecord, FileUpsertResponse
 from phaze.services import backend_breaker, s3_staging
+from phaze.services.companion import MEDIA_TYPES
+from phaze.services.companion_autolink import request_association
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.scan_deletion import delete_file_cascade, invalidate_content_state, retention_blockers
 from phaze.services.text_repair import repair_mojibake
@@ -181,6 +183,7 @@ async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]])
 @router.post("", status_code=status.HTTP_200_OK, response_model=FileUpsertResponse)
 async def upsert_files(
     body: FileUpsertChunk,
+    request: Request,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FileUpsertResponse:
@@ -194,10 +197,16 @@ async def upsert_files(
     - Phase 35 (D-06): does NOT auto-enqueue the metadata-extraction task. The
       `enqueued` count is always 0 (metadata extraction is operator-triggered only).
     - Returns `(upserted, inserted, enqueued)` counts.
+    - phaze-spd83: a chunk that INSERTED a media row requests the agent's automatic companion
+      association run, after the commit: a new media path may be what a waiting companion
+      references, or the stem, folder, twin or close name it links by. A re-upsert of a known
+      path changes nothing association reads (it reads paths only), so it requests nothing.
     """
     resolved_batch_id = await _resolve_batch_id(session, agent, body.batch_id)
     rows = await _upsert_rows(session, [_record_row(r, agent.id, resolved_batch_id) for r in body.files])
     await session.commit()
+    if any(row.inserted and row.file_type in MEDIA_TYPES for row in rows):
+        await request_association(request.app.state, agent.id)
 
     # Phase 35 (D-06): NO auto-enqueue of the metadata-extraction task. Discovery persists
     # rows; metadata extraction is operator-triggered only (MANUAL-META). `enqueued` is
@@ -213,6 +222,7 @@ async def upsert_files(
 @router.post("/move", status_code=status.HTTP_200_OK, response_model=FileMoveResponse)
 async def move_file(
     body: FileMoveRequest,
+    request: Request,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FileMoveResponse:
@@ -243,6 +253,9 @@ async def move_file(
     re-pointed or retired: it is logged and left in place. When it is the row that would have been
     re-pointed, ``file`` is upserted as its own row -- what every watcher move did before this
     endpoint existed -- and the outcome is ``kept_reviewed``.
+
+    Every outcome leaves a file at a new path, which can change what a companion links to, so each
+    requests the agent's automatic companion association run after the commit (phaze-spd83).
     """
     resolved_batch_id = await _resolve_batch_id(session, agent, None)
     row = _record_row(body.file, agent.id, resolved_batch_id)
@@ -317,6 +330,7 @@ async def move_file(
         await delete_file_cascade(session, record.id)
         retired += 1
     await session.commit()
+    await request_association(request.app.state, agent.id)
     logger.info("move_file", agent_id=agent.id, file_id=str(file_id), outcome=outcome, content_changed=content_changed, retired=retired)
     return FileMoveResponse(agent_id=agent.id, file_id=file_id, outcome=outcome, content_changed=content_changed, retired=retired)
 
