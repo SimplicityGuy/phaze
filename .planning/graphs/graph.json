@@ -18684,12 +18684,12 @@
       "id": "test_cue_rationale_316"
     },
     {
-      "label": "GET /cue/ sorts fingerprint-sourced tracklists before 1001tracklists.",
+      "label": "GET /cue/ sorts fingerprint-sourced tracklists before retired external source.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/tests/test_routers/test_cue.py",
       "source_location": "L325",
       "community": 0,
-      "norm_label": "get /cue/ sorts fingerprint-sourced tracklists before 1001tracklists.",
+      "norm_label": "get /cue/ sorts fingerprint-sourced tracklists before retired external source.",
       "id": "test_cue_rationale_325"
     },
     {
@@ -37584,12 +37584,12 @@
       "norm_label": "_render_tracklist_list()"
     },
     {
-      "label": "Tracklists admin UI router -- 1001Tracklists and fingerprint tracklist managemen",
+      "label": "Tracklists admin UI router -- retired external source and fingerprint tracklist managemen",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/routers/tracklists.py",
       "source_location": "L1",
       "community": 0,
-      "norm_label": "tracklists admin ui router -- 1001tracklists and fingerprint tracklist managemen",
+      "norm_label": "tracklists admin ui router -- retired external source and fingerprint tracklist managemen",
       "id": "tracklists_rationale_1"
     },
     {
@@ -40347,12 +40347,12 @@
       "norm_label": "refresh_tracklists()"
     },
     {
-      "label": "Tracklist models for 1001Tracklists and fingerprint-sourced tracklists.",
+      "label": "Tracklist models for retired external source and fingerprint-sourced tracklists.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/models/tracklist.py",
       "source_location": "L1",
       "community": 0,
-      "norm_label": "tracklist models for 1001tracklists and fingerprint-sourced tracklists.",
+      "norm_label": "tracklist models for retired external source and fingerprint-sourced tracklists.",
       "id": "tracklist_rationale_1"
     },
     {
@@ -40365,12 +40365,12 @@
       "id": "tracklist_rationale_31"
     },
     {
-      "label": "Search 1001Tracklists for a file and store/link matching results.      Per D-16:",
+      "label": "Search retired external source for a file and store/link matching results.      Per D-16:",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/tasks/tracklist.py",
       "source_location": "L112",
       "community": 5,
-      "norm_label": "search 1001tracklists for a file and store/link matching results.      per d-16:",
+      "norm_label": "search retired external source for a file and store/link matching results.      per d-16:",
       "id": "tracklist_rationale_112"
     },
     {
@@ -41337,12 +41337,12 @@
       "norm_label": "tracklisttrack"
     },
     {
-      "label": "A tracklist linked to a file.      Sources: '1001tracklists' (scraped from 1001T",
+      "label": "A tracklist linked to a file.      Sources: 'retired external source' (scraped from retired provider",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/models/tracklist.py",
       "source_location": "L21",
       "community": 0,
-      "norm_label": "a tracklist linked to a file.      sources: '1001tracklists' (scraped from 1001t",
+      "norm_label": "a tracklist linked to a file.      sources: 'retired external source' (scraped from retired provider",
       "id": "tracklist_rationale_21"
     },
     {
@@ -47529,21 +47529,21 @@
       "norm_label": ".close()"
     },
     {
-      "label": "Scraper service for 1001Tracklists.com search and tracklist extraction.",
+      "label": "Scraper service for retired external source search and tracklist extraction.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/services/tracklist_scraper.py",
       "source_location": "L1",
       "community": 5,
-      "norm_label": "scraper service for 1001tracklists.com search and tracklist extraction.",
+      "norm_label": "scraper service for retired external source search and tracklist extraction.",
       "id": "tracklist_scraper_rationale_1"
     },
     {
-      "label": "A single result from a 1001Tracklists search.",
+      "label": "A single result from a retired external source search.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/services/tracklist_scraper.py",
       "source_location": "L21",
       "community": 5,
-      "norm_label": "a single result from a 1001tracklists search.",
+      "norm_label": "a single result from a retired external source search.",
       "id": "tracklist_scraper_rationale_21"
     },
     {
@@ -47556,21 +47556,21 @@
       "id": "tracklist_scraper_rationale_32"
     },
     {
-      "label": "Scraped tracklist data from a 1001Tracklists detail page.",
+      "label": "Scraped tracklist data from a retired external source detail page.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/services/tracklist_scraper.py",
       "source_location": "L45",
       "community": 5,
-      "norm_label": "scraped tracklist data from a 1001tracklists detail page.",
+      "norm_label": "scraped tracklist data from a retired external source detail page.",
       "id": "tracklist_scraper_rationale_45"
     },
     {
-      "label": "Async scraper for 1001Tracklists.com with rate limiting.",
+      "label": "Async scraper for retired external source with rate limiting.",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/services/tracklist_scraper.py",
       "source_location": "L57",
       "community": 5,
-      "norm_label": "async scraper for 1001tracklists.com with rate limiting.",
+      "norm_label": "async scraper for retired external source with rate limiting.",
       "id": "tracklist_scraper_rationale_57"
     },
     {
@@ -47592,12 +47592,12 @@
       "id": "tracklist_scraper_rationale_97"
     },
     {
-      "label": "Search 1001Tracklists for tracklists matching query.          Returns empty list",
+      "label": "Search retired external source for tracklists matching query.          Returns empty list",
       "file_type": "rationale",
       "source_file": "<scratch>/phaze/src/phaze/services/tracklist_scraper.py",
       "source_location": "L102",
       "community": 5,
-      "norm_label": "search 1001tracklists for tracklists matching query.          returns empty list",
+      "norm_label": "search retired external source for tracklists matching query.          returns empty list",
       "id": "tracklist_scraper_rationale_102"
     },
     {
@@ -50600,7 +50600,7 @@
       "id": "concept_cue_sheet"
     },
     {
-      "label": "1001Tracklists source (domain concept)",
+      "label": "retired external source source (domain concept)",
       "file_type": "document",
       "source_file": "src/phaze/templates/tracklists/partials/search_results.html",
       "source_location": null,
@@ -50609,8 +50609,8 @@
       "author": null,
       "contributor": null,
       "community": 19,
-      "norm_label": "1001tracklists source (domain concept)",
-      "id": "concept_1001tracklists"
+      "norm_label": "retired external source source (domain concept)",
+      "id": "concept_retired external source"
     },
     {
       "label": "GET /tracklists/?filter (list endpoint)",
@@ -269646,9 +269646,9 @@
       "source_location": null,
       "weight": 1.0,
       "_src": "search_results",
-      "_tgt": "concept_1001tracklists",
+      "_tgt": "concept_retired external source",
       "source": "search_results",
-      "target": "concept_1001tracklists"
+      "target": "concept_retired external source"
     },
     {
       "relation": "semantically_similar_to",
@@ -269694,9 +269694,9 @@
       "source_location": null,
       "weight": 1.0,
       "_src": "source_badge",
-      "_tgt": "concept_1001tracklists",
+      "_tgt": "concept_retired external source",
       "source": "source_badge",
-      "target": "concept_1001tracklists"
+      "target": "concept_retired external source"
     },
     {
       "relation": "semantically_similar_to",

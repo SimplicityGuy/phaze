@@ -1,5 +1,8 @@
 # S2 — Can phaze's existing essentia models emit usable embeddings?
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 - **Bead:** `phaze-ytgo.2` (epic `phaze-ytgo` — AudioMuse-AI: clean-room vs sidecar, per purpose)
 - **Date:** 2026-07-25
 - **Tree:** branch `wt/bead/issue/phaze-ytgo.2`, forked at `b051b3b`
@@ -156,7 +159,7 @@ estimate is not.
    with an operator marking top-10 results. This corpus contains **six distinct works**. There is
    no operator and no plausible seed set. P2 quality is **unmeasured**, exactly as S1's open
    question O3 anticipated.
-3. **P3's accuracy bar is unmeasured.** S1 requires "≥ 70% of scraped 1001Tracklists tracks
+3. **P3's accuracy bar is unmeasured.** S1 requires "≥ 70% of scraped retired external source tracks
    located within ±30 s". Neither long set has scraped tracklist ground truth, and no populated
    phaze database was reachable. The P3 evidence below measures the *shape and cost* of the
    signal, never its accuracy.
@@ -603,7 +606,7 @@ ______________________________________________________________________
 | - | -------- | -------------- | ------------------- |
 | S2-O1 | Does effnet separability hold on **homogeneous same-genre negatives** at archive scale? | R@P95 fell 1.00 → 0.60 against the class-F proxy, whose confounds pull both ways (E4/4). | The P1 implementation molecule, against a populated archive. |
 | S2-O2 | Measured P2/P4 quality, embedding vs EFB. | No operator, six distinct works (Method). Closes S1's O3 too. | An operator + S1's 20-seed blind A/B. |
-| S2-O3 | Does the 1 Hz novelty peak land within ±30 s of a real track boundary? | No scraped tracklist ground truth for either long set (E6/4). | A P3 spike against files that have `Tracklist.source='1001tracklists'` rows. |
+| S2-O3 | Does the 1 Hz novelty peak land within ±30 s of a real track boundary? | No scraped tracklist ground truth for either long set (E6/4). | A P3 spike against files that have `Tracklist.source='retired external source'` rows. |
 | S2-O4 | Quality cost of PCA 1280-d → ~200-d. | Not attempted; decides whether P3 storage is 0.6 TB or 0.1 TB. | `phaze-ytgo.6`. |
 | S2-O5 | Is a contiguous single decode cheaper than ≤ 30 strided deep seeks on a multi-hour file? | Observed 259 s for one deep-seek excerpt (E6) but not measured head-to-head. | `phaze-ytgo.6`. |
 | S2-O6 | Do the 22 fine-tuned musicnn backbones diverge enough to matter? | phaze holds no canonical MusiCNN backbone, only classifiers (E1 caveat). Only relevant if effnet is rejected. | Only if a 200-d native option is needed. |

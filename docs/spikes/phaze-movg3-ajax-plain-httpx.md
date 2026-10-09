@@ -1,11 +1,14 @@
 # phaze-movg3: does `/ajax/search_tracklist.php` answer plain httpx with no browser session?
 
+> Superseded: external acquisition and all proposed follow-ups are canceled. Recommendations and method descriptions below are historical measurements, not instructions or authorization. See `docs/design/0024-tracklist-source-retirement.md`.
+
+
 Date: 2026-10-07. Follow-up to `docs/spikes/phaze-gnbct-ajax-endpoints.md`, which only exercised the endpoint inside a
 browser session that had already navigated to a detail page (and drawn an image captcha there).
 
 ## Question
 
-Does `https://www.1001tracklists.com/ajax/search_tracklist.php` answer a **plain httpx** request carrying only the honest
+Does `https://example.invalid/retired-source` answer a **plain httpx** request carrying only the honest
 `phaze/<version> (+<contact url>)` User-Agent, with no browser, no cookies from a browser session and no prior page
 navigation, and return its JSON without a challenge page?
 
@@ -73,7 +76,7 @@ that had navigated to a detail page, is contradicted for this endpoint.
 
 A build bead can implement the search leg in plain httpx, with no Patchright for search. It would need:
 
-- `GET https://www.1001tracklists.com/ajax/search_tracklist.php` with params `p=<query>`, `noIDFieldCheck=true`,
+- `GET https://example.invalid/retired-source` with params `p=<query>`, `noIDFieldCheck=true`,
   `fixedMode=true`, `sf=p`; the honest UA only (what `TracklistScraper` already sends); httpx default `Accept`; no cookies,
   no Referer needed.
 - Pacing through `reserve_host_request_slot()` like every other request to the host.

@@ -1,4 +1,4 @@
-"""Add ``tracklist_file_lookups`` -- the per-file record of what the 1001TL drain did for each file (phaze-o71bf).
+"""Add ``tracklist_file_lookups`` -- the per-file record of what the retired external provider drain did for each file (phaze-o71bf).
 
 The drain's cache (``tracklist_lookup_cache``) is keyed by a runtime hash of a derived query plus a
 duration bucket, so nothing in the database linked a FILE to its lookup: the Files page and the

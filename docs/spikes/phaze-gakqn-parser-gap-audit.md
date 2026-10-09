@@ -1,5 +1,8 @@
 # phaze-gakqn — what the detail parser misses versus the fields other tools extract
 
+> Historical evidence only. The acquisition implementation, parser, captures and follow-up work are retired. Counts below describe the original measurements; referenced source artifacts no longer exist. See `docs/design/0024-tracklist-source-retirement.md`.
+
+
 - **Bead:** `phaze-gakqn` (epic `phaze-5d0wg`), a spike. **Docs-only; no product code changed.**
 - **Date:** 2026-10-06
 - **Feeds:** `phaze-i5sp6` (which spike-gated paths to build — parser extras).

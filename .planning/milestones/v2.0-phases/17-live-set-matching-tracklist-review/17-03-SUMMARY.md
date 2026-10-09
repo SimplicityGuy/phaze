@@ -16,7 +16,7 @@ provides:
   - Approve/reject tracklist status transition endpoints
   - Bulk reject low-confidence tracks endpoint
   - Fingerprint track detail template with confidence badges and inline editing
-  - Template routing by tracklist source (fingerprint vs 1001tracklists)
+  - Template routing by tracklist source (fingerprint vs retired external source)
 
 affects: []
 
@@ -53,6 +53,9 @@ requirements-completed: [FPRINT-04]
 duration: 9min
 completed: 2026-04-02
 ---
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 
 # Phase 17 Plan 03: Review Flow UI Summary
 

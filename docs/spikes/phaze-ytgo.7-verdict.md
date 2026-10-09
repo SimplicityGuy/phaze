@@ -1,5 +1,8 @@
 # D1 — Per-purpose verdict matrix: clean-room, sidecar, hybrid or not worth it
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 - **Bead:** `phaze-ytgo.7` (epic `phaze-ytgo` — AudioMuse-AI: clean-room vs sidecar, per purpose)
 - **Date:** 2026-07-27
 - **Tree:** branch `wt/bead/issue/phaze-ytgo.7`, forked off `wt/bead/epic/phaze-ytgo` at `6b25c20`
@@ -172,7 +175,7 @@ Each purpose resolved to **exactly one** token.
 | --- | --- | --- | --- | --- |
 | **Verdict** | **insufficient evidence** | **clean-room** *(staged; stage 1 is a quality gate that can kill the cell)* | **insufficient evidence** *(one variant affirmatively closed)* | **not worth it** |
 | **Shape, if it is ever built** | clean-room — the sidecar is eliminated for this purpose independently | **clean-room** — decisively, not marginally | clean-room, and only in the **boundary-detection** form | n/a — use the existing-features baseline phaze already stores |
-| **What settles it** | S1's P1 bar on **≥ 50 operator-labelled** near-duplicate pairs from the real archive, with **same-genre** negatives | already committed: S1's **20-seed blind A/B with the mandatory EFB arm**, run as stage 1 before any surface ships | S1's P3 bar: **≥ 70 % of scraped 1001Tracklists tracks within ±30 s**, at ≤ 1 false segment per 10 true, **restricted to the sub-corpus fingerprinting could not identify** | nothing — the evidential burden was assigned to the embedding side by S1 and was not discharged |
+| **What settles it** | S1's P1 bar on **≥ 50 operator-labelled** near-duplicate pairs from the real archive, with **same-genre** negatives | already committed: S1's **20-seed blind A/B with the mandatory EFB arm**, run as stage 1 before any surface ships | S1's P3 bar: **≥ 70 % of scraped retired external source tracks within ±30 s**, at ≤ 1 false segment per 10 true, **restricted to the sub-corpus fingerprinting could not identify** | nothing — the evidential burden was assigned to the embedding side by S1 and was not discharged |
 | **Headline evidence** | `.2` E4: effnet is the only space with a positive hard margin (+0.0752) and the only one that expresses a remaster (0.064–0.083 vs different-work floor 0.1373) where EFB provably cannot (0.0023–0.0110 astride its floor 0.0028) — **but** R@P95 collapses **1.00 → 0.60** against same-genre negatives, and 44 of 45 positives are constructed. `.6` E7: no ANN index needed; exact all-pairs is ≈ 6 min. `.4` E7: the sidecar's only strength is the identity share phaze already owns. | `.6` E6/E10: **REAL** vectors, HNSW recall@10 **0.991 at p50 2.4 ms**; the index-free alternative measurably **fails** S1's 200 ms bar (seq scan p50 538 ms `vector`, p50 196 / p95 207 ms `halfvec`). `.2` E2: the embedding is **+1.6 %** marginal on a model phaze already runs. `.4` E5/E8: the sidecar answers this question for 14.1 % of the archive after a ~25-day ingest and a permanent shim. | `.6` verdict table: **725 M vectors ≈ 644 GB even at PCA-200 `halfvec`** against **47 GB free** — a *storage* verdict, so no alternative ANN engine rescues it. `.2` E6: the boundary signal is real (peak-to-median **8.74×** on a DJ set vs 3.12× within a track) and **never validated against ground truth**. `.4` E6: sidecar `BLOCKED` three ways. | S1: P4's value is largely reachable **today** over columns phaze already stores; even the 2-D map is a projection of a vector phaze already has. `.3` E6: PCA fits 200k × 200 in **0.11 s** vs UMAP's **189 s** plus a `numba`/`llvmlite` dependency class phaze has zero of. `.6`: P4 issues **no** interactive top-k query at all. `.4` E5: sidecar-derived outliers on phaze's most important files would be **artefacts of truncation**. |
 
 ### 2.1 — There are no `hybrid` cells, and that is a finding
@@ -409,7 +412,7 @@ tracklist.
 
 **The measurement that settles it:**
 
-> Run the 1 Hz novelty curve over files that carry `Tracklist.source='1001tracklists'` rows and
+> Run the 1 Hz novelty curve over files that carry `Tracklist.source='retired external source'` rows and
 > score the detected peaks against `TracklistTrack.timestamp`. Bar (S1): **≥ 70 % of scraped
 > tracks located within ±30 s**, at **≤ 1 false segment per 10 true**. ±30 s is
 > `analysis_fine_window_sec`, the finest temporal resolution anything else in phaze commits to.
@@ -508,7 +511,7 @@ of these authorises building the capability it measures.**
 | # | Measurement | Converts | Effort | Note |
 | - | ----------- | -------- | ------ | ---- |
 | **1** | S1's 20-seed blind A/B, EFB arm mandatory | P2 stage 1 → stage 2 | ~half a day of operator time, once stage 1 lands | Already inside item 1 above; listed for completeness |
-| **2** | P3 boundary-detection accuracy vs scraped 1001Tracklists, ±30 s, restricted to the fingerprint-negative sub-corpus | P3 | CPU only (0.193 s/audio-minute), **stores nothing**, objective ground truth already in the database | The only bar in this molecule that does not need an operator's judgement. Cheapest honest decision available. |
+| **2** | P3 boundary-detection accuracy vs scraped retired external source, ±30 s, restricted to the fingerprint-negative sub-corpus | P3 | CPU only (0.193 s/audio-minute), **stores nothing**, objective ground truth already in the database | The only bar in this molecule that does not need an operator's judgement. Cheapest honest decision available. |
 | **3** | P1 accuracy on ≥ 50 operator-labelled archive pairs with same-genre negatives | P1 | Operator labelling is the cost; needs stage 1's column | The labelling, not the compute, is the expensive part |
 
 ### 4.3 — Adjacent work this molecule unblocks but does not own
@@ -561,7 +564,7 @@ effort here.**
 | --- | --- | --- |
 | **P1** | Same recording, different encode / bitrate / container / trim. audfprint + Panako do exactly this, and `combined_query` is wired to nothing but tracklists | Live vs studio rendition of the same work; differently-EQ'd or differently-mastered rips; covers and remixes — all of which degrade or defeat fingerprinting |
 | **P2** | — none — | all of it |
-| **P3** | **Most of it.** Locating a known track inside a set at an offset is precisely Panako and precisely `phaze-vprd`. The uncollapsed repeat-occurrence path is a known limitation `phaze-vprd` already owns | Narrow and specific: **(a)** segmenting a set when its constituent tracks are **not** in the fingerprint DB (unreleased IDs, live edits, mashups); **(b)** corroborating a scraped 1001Tracklists ordering where fingerprinting returned nothing |
+| **P3** | **Most of it.** Locating a known track inside a set at an offset is precisely Panako and precisely `phaze-vprd`. The uncollapsed repeat-occurrence path is a known limitation `phaze-vprd` already owns | Narrow and specific: **(a)** segmenting a set when its constituent tracks are **not** in the fingerprint DB (unreleased IDs, live edits, mashups); **(b)** corroborating a scraped retired external source ordering where fingerprinting returned nothing |
 | **P4** | — none — | all of it |
 
 **Four non-duplication rules, binding on any implementation molecule filed off this epic:**
@@ -610,7 +613,7 @@ verdicts above, not to a fixed bead list.
 | ---- | ------------ |
 | **Wire the existing fingerprint engines into the dedup surface** | The identity share; needs no embeddings, ANN index, dependency or licence analysis. Likely the largest available P1 win. Filing it inside an AudioMuse molecule would make it hostage to a verdict it does not depend on |
 | **Panako licence remediation** (P1 priority) | A present-tense conveying obligation in phaze's tree today. Zero dependency on any AudioMuse decision |
-| **P3 boundary-detection accuracy measurement** | It is a **spike**, not implementation, and it gates a cell that is `insufficient evidence`. Filing it inside the implementation molecule would imply P3 has a GO. It does not. Scope: novelty curve over `Tracklist.source='1001tracklists'` files, restricted to the fingerprint-negative sub-corpus, scored at ±30 s against `TracklistTrack.timestamp`, bar ≥ 70 % at ≤ 1 false segment per 10 true. **Stores nothing** |
+| **P3 boundary-detection accuracy measurement** | It is a **spike**, not implementation, and it gates a cell that is `insufficient evidence`. Filing it inside the implementation molecule would imply P3 has a GO. It does not. Scope: novelty curve over `Tracklist.source='retired external source'` files, restricted to the fingerprint-negative sub-corpus, scored at ±30 s against `TracklistTrack.timestamp`, bar ≥ 70 % at ≤ 1 false segment per 10 true. **Stores nothing** |
 | **P1 accuracy measurement** | Same reasoning. Needs bead 2's column plus ≥ 50 operator-labelled archive pairs with same-genre negatives |
 | **CLAP free-text search** | `.3`'s separability finding: it must never gate any other purpose. Deferrable indefinitely. If ever built: `laion/clap-htsat-unfused` (Apache-2.0) |
 
@@ -689,7 +692,7 @@ ______________________________________________________________________
 > ANN engine rescues it; sidecar `BLOCKED` three ways and priced at 3.8 years). The
 > boundary-detection form is open: the novelty signal is real (8.74× vs 3.12×) and never
 > validated against the only objective ground truth in this molecule. Settled by scoring peaks
-> against scraped 1001Tracklists timestamps at ±30 s, restricted to the fingerprint-negative
+> against scraped retired external source timestamps at ±30 s, restricted to the fingerprint-negative
 > sub-corpus so it cannot score `phaze-vprd`'s identity win as its own.
 >
 > **P4 `not worth it`** — `REDUNDANT` against the existing-features baseline. S1 assigned the

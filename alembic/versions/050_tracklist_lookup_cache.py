@@ -1,12 +1,12 @@
-"""Create ``tracklist_lookup_cache`` -- the persisted positive/negative 1001TL lookup cache (phaze-fq9h.3).
+"""Create ``tracklist_lookup_cache`` -- the persisted positive/negative retired external provider lookup cache (phaze-fq9h.3).
 
-The 1001Tracklists drain is capped by an external politeness ceiling (robots.txt crawl-delay 8,
+The retired external provider drain is capped by an external politeness ceiling (robots.txt crawl-delay 8,
 applied per HOST) at ~10,800 requests/day for the entire system -- ~4,300 lookups. It therefore
 runs for months, and it restarts. This table is what stops a restart from re-asking questions the
 system has already paid for, and it is the storage half of the acceptance criterion "the cache
 prevents re-querying a set (positive or negative) on re-run".
 
-``outcome`` is a string, not a boolean, and that is the whole design: "1001TL genuinely has no
+``outcome`` is a string, not a boolean, and that is the whole design: "retired external provider genuinely has no
 tracklist for this set" and "a Turnstile interstitial survived our retry loop" are both "no
 tracklist" and must NEVER share a representation. Caching the second as the first would silently
 remove sets from the queue for the negative TTL because of a flaky browser -- data loss with no

@@ -1,5 +1,8 @@
 # Phase 17: Live Set Matching & Tracklist Review - Research
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Researched:** 2026-04-01
 **Domain:** Audio fingerprint querying, tracklist model extension, HTMX inline editing, arq task patterns
 **Confidence:** HIGH
@@ -21,7 +24,7 @@ All infrastructure exists. The fingerprint service already has `combined_query()
 - D-03: Scanning is async via arq task. User triggers scan, task runs in background, results appear when done.
 - D-04: Reuse existing Tracklist model. Fingerprint scan creates Tracklist + TracklistVersion + TracklistTracks with `source='fingerprint'`.
 - D-05: Per-track confidence scores. Nullable Float `confidence` column on TracklistTrack. NULL for scraped tracks, 0-100 for fingerprint matches.
-- D-06: Source field on Tracklist model -- string column with values `'1001tracklists'` or `'fingerprint'`.
+- D-06: Source field on Tracklist model -- string column with values `'retired external source'` or `'fingerprint'`.
 - D-07: Source badge on tracklist cards. Filter tabs work with source filter. Cards expand to show per-track confidence for fingerprint-sourced tracklists.
 - D-08: Proposed -> Approved/Rejected status flow. Fingerprint tracklists start as 'proposed'. Individual tracks can be edited before approval.
 - D-09: Color-coded confidence badges per track -- green (90%+), yellow (70-89%), red (<70%).
@@ -86,7 +89,7 @@ src/phaze/
       scan_progress.html   # NEW: scan in-progress indicator
       fingerprint_track_detail.html  # NEW: track detail with confidence + inline edit
       inline_edit_field.html         # NEW: HTMX inline edit partial
-      source_badge.html    # NEW: source badge (1001Tracklists / Fingerprint)
+      source_badge.html    # NEW: source badge (retired external source / Fingerprint)
       confidence_badge.html # NEW: per-track confidence badge
       bulk_actions.html    # NEW: reject all low confidence button
 alembic/versions/
@@ -101,7 +104,7 @@ tests/
 
 **What:** Add `source` (String), `status` (String) to Tracklist; `confidence` (Float, nullable) to TracklistTrack.
 **When to use:** When adding columns to existing tables that already have data.
-**Key concern:** Backfill existing rows. All existing Tracklist rows must get `source='1001tracklists'` and `status='approved'` (they were already reviewed via scraping). Existing TracklistTrack rows keep `confidence=NULL` (scraped tracks have implicit 100% confidence).
+**Key concern:** Backfill existing rows. All existing Tracklist rows must get `source='retired external source'` and `status='approved'` (they were already reviewed via scraping). Existing TracklistTrack rows keep `confidence=NULL` (scraped tracks have implicit 100% confidence).
 
 ```python
 # alembic/versions/008_add_tracklist_source_status_confidence.py
@@ -110,7 +113,7 @@ import sqlalchemy as sa
 
 def upgrade() -> None:
     # Add source column with default for backfill
-    op.add_column("tracklists", sa.Column("source", sa.String(30), nullable=False, server_default="1001tracklists"))
+    op.add_column("tracklists", sa.Column("source", sa.String(30), nullable=False, server_default="retired external source"))
     # Add status column with default for backfill
     op.add_column("tracklists", sa.Column("status", sa.String(20), nullable=False, server_default="approved"))
     # Add confidence to tracks (nullable -- NULL means scraped/100%)
@@ -269,12 +272,12 @@ When "Scan" tab is active, swap the main content area to show the batch file sel
 ### Pitfall 2: Backfill Migration for Existing Rows
 **What goes wrong:** Adding `source` and `status` as NOT NULL columns without defaults breaks the migration on existing data.
 **Why it happens:** Forgetting that the tracklists table already has rows from Phase 15.
-**How to avoid:** Use `server_default` in the migration. Existing rows get `source='1001tracklists'` and `status='approved'`. After backfill, optionally remove the server_default if you want application-level control.
+**How to avoid:** Use `server_default` in the migration. Existing rows get `source='retired external source'` and `status='approved'`. After backfill, optionally remove the server_default if you want application-level control.
 **Warning signs:** `IntegrityError` during migration.
 
 ### Pitfall 3: external_id Uniqueness for Fingerprint Tracklists
 **What goes wrong:** The Tracklist model has `unique=True` on `external_id`. Fingerprint-generated tracklists need unique external IDs too.
-**Why it happens:** `external_id` was designed for 1001tracklists URLs. Fingerprint results need a different ID scheme.
+**Why it happens:** `external_id` was designed for retired external source URLs. Fingerprint results need a different ID scheme.
 **How to avoid:** Use a deterministic ID format like `fp-{file_id_hex[:12]}` for fingerprint tracklists. If a file is re-scanned, either update the existing tracklist or generate a new version.
 **Warning signs:** `UniqueViolation` on second scan of the same file.
 
@@ -422,7 +425,7 @@ Step 2.6: SKIPPED (no external dependencies -- this phase is purely code/config/
 - `src/phaze/tasks/fingerprint.py` -- existing arq task pattern for fingerprint_file
 - `src/phaze/tasks/worker.py` -- WorkerSettings registration pattern
 - `src/phaze/templates/tracklists/` -- all existing templates (card, filter tabs, track detail)
-- `.planning/phases/15-1001tracklists-integration/15-UI-SPEC.md` -- confidence color tiers, card layout specs
+- Original source-specific reference for confidence color tiers and card layout specs is retired; `docs/design/0024-tracklist-source-retirement.md` records the retirement boundary.
 - `.planning/phases/17-live-set-matching-tracklist-review/17-CONTEXT.md` -- all locked decisions D-01 through D-12
 - `alembic/versions/` -- existing migration numbering (007 is latest, next is 008)
 

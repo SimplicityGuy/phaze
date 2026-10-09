@@ -81,7 +81,7 @@ def parse_timestamp_string(ts: str | None) -> float | None:
         - "123.45" -> raw seconds as float
 
     Total function (phaze-97u7): ``ts`` is unvalidated free-form text -- scraped verbatim from
-    1001Tracklists markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
+    retired provider markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
     writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
     ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
     contract, NOT raise -- callers (``phaze.services.cue_review.build_cue_tracks_for_versions``, both single and batch

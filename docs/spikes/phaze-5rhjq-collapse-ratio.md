@@ -1,5 +1,8 @@
 # phaze-5rhjq — unique-set collapse ratio, zero-signal share, and what looser merging would buy
 
+> Historical evidence only. The acquisition implementation, parser, captures and follow-up work are retired. Counts below describe the original measurements; referenced source artifacts no longer exist. See `docs/design/0024-tracklist-source-retirement.md`.
+
+
 - **Bead:** `phaze-5rhjq` (spike, epic `phaze-5d0wg`)
 - **Date:** 2026-10-07
 - **Status:** measurement only. **No product code changed.** Counts and ratios only; no filename, directory, digest, UUID or host name from the archive appears below.

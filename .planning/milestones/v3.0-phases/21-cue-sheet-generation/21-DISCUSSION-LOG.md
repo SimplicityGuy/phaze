@@ -1,5 +1,8 @@
 # Phase 21: CUE Sheet Generation - Discussion Log
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 > **Audit trail only.** Do not use as input to planning, research, or execution agents.
 > Decisions are captured in CONTEXT.md -- this log preserves the alternatives considered.
 
@@ -15,7 +18,7 @@
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| MM:SS | Minutes and seconds, like 1001tracklists uses | |
+| MM:SS | Minutes and seconds, like retired external source uses | |
 | Seconds (decimal) | Decimal seconds from fingerprint engine offset | |
 | HH:MM:SS | Hours, minutes, seconds format | |
 | You decide | Claude inspects fingerprint service response | |

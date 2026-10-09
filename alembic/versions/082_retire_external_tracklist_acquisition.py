@@ -29,7 +29,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Restore empty acquisition tables, disarmed; removed lookup history is not recoverable."""
-    op.alter_column("tracklists", "source", server_default="1001tracklists")
+    op.alter_column("tracklists", "source", server_default="manual")
     op.create_table(
         "tracklist_lookup_cache",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
