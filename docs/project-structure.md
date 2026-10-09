@@ -44,7 +44,7 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `logging_config.py` | Shared structured logging setup |
 
 Outside the package, `alembic/versions/` contains 44 migrations (`039` baseline through head
-`083`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+`084`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

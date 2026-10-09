@@ -153,6 +153,7 @@ async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]])
             "updated_at": func.now(),
             # phaze-5rfev: a file reported at this path again is, by definition, not missing.
             "missing_at": None,
+            "companion_ambiguous_at": None,
         },
     ).returning(
         FileRecord.id,

@@ -77,6 +77,7 @@ from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist
 from phaze.schemas.agent_files import FileUpsertRecord
 from phaze.services.agent_upsert import file_row, repoint_file
+from phaze.services.companion_content import COMPANION_FILE_TYPES
 from phaze.services.like_escape import LIKE_ESCAPE_CHAR, escape_like
 from phaze.services.scan_deletion import delete_file_cascade, retention_blockers
 from phaze.services.scheduling_ledger import clear_ledger_entry
@@ -151,22 +152,23 @@ async def stale_row_candidates(session: AsyncSession, agent_id: str, under: str 
     if under is not None:
         prefix = under.rstrip("/")
         stmt = stmt.where((FileRecord.current_path == prefix) | FileRecord.current_path.like(f"{escape_like(prefix)}/%", escape=LIKE_ESCAPE_CHAR))
-    rows = (await session.execute(stmt.order_by(FileRecord.current_path))).all()
+    rows = await session.stream(stmt.order_by(FileRecord.current_path).execution_options(yield_per=500))
     return {
         "agent_id": agent_id,
         "scan_roots": list(agent.scan_roots or []),
         "under": under,
-        "rows": [{"id": str(row.id), "path": row.current_path, "sha256": row.sha256_hash, "size": row.file_size} for row in rows],
+        "rows": [{"id": str(row.id), "path": row.current_path, "sha256": row.sha256_hash, "size": row.file_size} async for row in rows],
     }
 
 
-def _target(row: dict[str, Any], found: list[FileUpsertRecord]) -> tuple[FileUpsertRecord | None, list[str]]:
+def _target(row: dict[str, Any], found: list[FileUpsertRecord], *, strict: bool = False) -> tuple[FileUpsertRecord | None, list[str]]:
     """The one found file a gone row moved to, or ``None`` and the candidate paths when there is not exactly one.
 
     Several copies of the same bytes are narrowed to those that kept the row's filename (a moved
-    release keeps its track names); anything still plural is the operator's call.
+    release keeps its track names); anything still plural is the operator's call. Companions use
+    ``strict=True``: a matching filename never establishes a unique destination among byte copies.
     """
-    if len(found) > 1:
+    if len(found) > 1 and not strict:
         name = PurePosixPath(row["path"]).name
         found = [record for record in found if record.original_filename == name] or found
     if len(found) == 1:
@@ -179,7 +181,7 @@ async def reconcile_stale_rows(session: AsyncSession, agent_id: str, located: di
     if located.get("agent_id") != agent_id:
         msg = f"the located document is for agent {located.get('agent_id')!r}, not {agent_id!r}"
         raise ValueError(msg)
-    await _agent(session, agent_id)
+    agent = await _agent(session, agent_id)
     report = ReconcileReport(walk_errors=int(located.get("walk_errors") or 0))
 
     gone: list[tuple[dict[str, Any], FileUpsertRecord | None, list[str]]] = []
@@ -197,25 +199,74 @@ async def reconcile_stale_rows(session: AsyncSession, agent_id: str, located: di
                     RowAction(Verdict.CHANGED, uuid.UUID(row["id"]), row["path"], detail=[f"invalid found record: {exc.error_count()} error(s)"])
                 )
                 continue
-            gone.append((row, *_target(row, found)))
+            record = await session.get(FileRecord, uuid.UUID(row["id"]))
+            strict = record is not None and record.file_type in COMPANION_FILE_TYPES
+            gone.append((row, *_target(row, found, strict=strict)))
     await _restore_present(session, agent_id, present, report, apply=apply)
     claims = Counter(target.original_path for _row, target, _paths in gone if target is not None)
     for row, target, paths in gone:
-        file_id = uuid.UUID(row["id"])
+        if not await _companion_walk_complete(session, agent_id, agent, row, located, report):
+            continue
         if target is None and paths:
-            report.actions.append(RowAction(Verdict.AMBIGUOUS, file_id, row["path"], detail=paths))
+            await _mark_ambiguous(session, agent_id, row, report, paths, apply=apply)
         elif target is None:
             await _mark_missing(session, agent_id, row, report, apply=apply)
         elif claims[target.original_path] > 1:
-            report.actions.append(RowAction(Verdict.AMBIGUOUS, file_id, row["path"], target.original_path, detail=["claimed by several gone rows"]))
+            await _mark_ambiguous(session, agent_id, row, report, ["claimed by several gone rows"], apply=apply, target_path=target.original_path)
         else:
             await _move(session, agent_id, row, target, report, apply=apply)
     return report
 
 
+async def _companion_walk_complete(
+    session: AsyncSession, agent_id: str, agent: Agent, row: dict[str, Any], located: dict[str, Any], report: ReconcileReport
+) -> bool:
+    """Companion absence needs the complete configured-root search, not just an empty found list.
+
+    Non-companion reconciliation retains its existing behavior. The document is the owning agent's
+    locate output; a partial walk cannot certify absence or uniqueness for new companion state.
+    """
+    record = await session.get(FileRecord, uuid.UUID(row["id"]))
+    if record is None or record.agent_id != agent_id or record.file_type not in COMPANION_FILE_TYPES:
+        return True
+    roots = {root.rstrip("/") for root in agent.scan_roots or []}
+    walked = {root.rstrip("/") for root in located.get("walked_roots") or []}
+    covered = any(row["path"] == root or row["path"].startswith(root + "/") for root in roots)
+    if roots and roots == walked and covered and located.get("walk_errors") == 0:
+        return True
+    report.unverifiable += 1
+    return False
+
+
+async def _mark_ambiguous(
+    session: AsyncSession,
+    agent_id: str,
+    row: dict[str, Any],
+    report: ReconcileReport,
+    details: list[str],
+    *,
+    apply: bool,
+    target_path: str | None = None,
+) -> None:
+    """Retain the absent row and history; persist only companion ambiguity after guarded locate."""
+    file_id = uuid.UUID(row["id"])
+    records = await _locked(session, agent_id, FileRecord.id == file_id, apply=apply)
+    if not records or records[0].current_path != row["path"] or records[0].sha256_hash != row["sha256"] or records[0].file_size != row["size"]:
+        report.actions.append(RowAction(Verdict.CHANGED, file_id, row["path"]))
+        return
+    record = records[0]
+    report.actions.append(RowAction(Verdict.AMBIGUOUS, file_id, row["path"], target_path, detail=details))
+    if apply and record.file_type in COMPANION_FILE_TYPES:
+        record.missing_at = None
+        if record.companion_ambiguous_at is None:
+            record.companion_ambiguous_at = datetime.now(UTC)
+        await _clear_ledger(session, file_id)
+
+
 async def _locked(session: AsyncSession, agent_id: str, *predicates: Any, apply: bool) -> list[FileRecord]:
     """The agent's rows matching any predicate, locked ``FOR UPDATE`` in ``original_path`` order when applying (phaze-zfxy6)."""
-    query = select(FileRecord).where(FileRecord.agent_id == agent_id, or_(*predicates)).order_by(FileRecord.original_path)
+    # Callers select one id, or that id plus one unique (agent_id, original_path) destination.
+    query = select(FileRecord).where(FileRecord.agent_id == agent_id, or_(*predicates)).order_by(FileRecord.original_path).limit(2)
     return list((await session.execute(query.with_for_update() if apply else query)).scalars().all())
 
 
@@ -231,24 +282,35 @@ async def _restore_present(
     ids = list(present)
     for start in range(0, len(ids), _ID_PAGE):
         page = ids[start : start + _ID_PAGE]
-        marked += (await session.execute(select(FileRecord.id).where(FileRecord.id.in_(page), FileRecord.missing_at.isnot(None)))).scalars().all()
+        marked += (
+            (
+                await session.execute(
+                    select(FileRecord.id).where(
+                        FileRecord.id.in_(page), (FileRecord.missing_at.isnot(None) | FileRecord.companion_ambiguous_at.isnot(None))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
     report.present += len(present) - len(marked)
     for file_id in marked:
         path = present[file_id]["path"]
         records = await _locked(session, agent_id, FileRecord.id == file_id, apply=apply)
-        if not records or records[0].missing_at is None or records[0].current_path != path:
+        if not records or (records[0].missing_at is None and records[0].companion_ambiguous_at is None) or records[0].current_path != path:
             report.actions.append(RowAction(Verdict.CHANGED, file_id, path))
             continue
         report.actions.append(RowAction(Verdict.RESTORED, file_id, path))
         if apply:
             records[0].missing_at = None
+            records[0].companion_ambiguous_at = None
             logger.info("reconcile_stale_rows: file is back; clearing missing", agent_id=agent_id, file_id=str(file_id), path=path)
 
 
 async def _mark_missing(session: AsyncSession, agent_id: str, row: dict[str, Any], report: ReconcileReport, *, apply: bool) -> None:
     file_id = uuid.UUID(row["id"])
     records = await _locked(session, agent_id, FileRecord.id == file_id, apply=apply)
-    if not records or records[0].current_path != row["path"] or records[0].sha256_hash != row["sha256"]:
+    if not records or records[0].current_path != row["path"] or records[0].sha256_hash != row["sha256"] or records[0].file_size != row["size"]:
         report.actions.append(RowAction(Verdict.CHANGED, file_id, row["path"]))
         return
     record = records[0]
@@ -259,6 +321,7 @@ async def _mark_missing(session: AsyncSession, agent_id: str, row: dict[str, Any
     if apply:
         logger.warning("reconcile_stale_rows: marking missing", agent_id=agent_id, file_id=str(file_id), path=row["path"])
         record.missing_at = datetime.now(UTC)
+        record.companion_ambiguous_at = None
         await _clear_ledger(session, file_id)
 
 
@@ -272,6 +335,9 @@ async def _move(session: AsyncSession, agent_id: str, row: dict[str, Any], targe
     duplicate = next((record for record in records if record.id != file_id), None)
     if stale is None or stale.current_path != row["path"] or stale.sha256_hash != row["sha256"] or wire["sha256_hash"] != stale.sha256_hash:
         report.actions.append(RowAction(Verdict.CHANGED, file_id, row["path"], new_path))
+        return
+    if stale.file_type in COMPANION_FILE_TYPES and (stale.file_size != row["size"] or wire["file_size"] != stale.file_size):
+        report.actions.append(RowAction(Verdict.CHANGED, file_id, row["path"], new_path, detail=["size changed since locate"]))
         return
     if duplicate is not None and duplicate.sha256_hash != stale.sha256_hash:
         report.actions.append(RowAction(Verdict.CHANGED, file_id, row["path"], new_path, duplicate.id, ["the row at the new path has other content"]))
@@ -317,8 +383,10 @@ async def _reset_metadata_failure(session: AsyncSession, file_id: uuid.UUID) -> 
 
 async def _clear_ledger(session: AsyncSession, file_id: uuid.UUID) -> None:
     """Clear the file's scheduling-ledger rows through the guarded clear (a row whose job is still live is left to it)."""
-    keys = (await session.execute(select(SchedulingLedger.key).where(SchedulingLedger.payload["file_id"].astext == str(file_id)))).scalars().all()
-    for key in keys:
+    keys = await session.stream_scalars(
+        select(SchedulingLedger.key).where(SchedulingLedger.payload["file_id"].astext == str(file_id)).execution_options(yield_per=500)
+    )
+    async for key in keys:
         await clear_ledger_entry(session, key)
 
 
@@ -385,16 +453,14 @@ async def _merge_children(session: AsyncSession, *, keep: uuid.UUID, drop: uuid.
 
 async def _merge_companion_links(session: AsyncSession, *, keep: uuid.UUID, drop: uuid.UUID) -> None:
     """Re-target ``drop``'s companion links to ``keep``, skipping a pair ``keep`` already has (uq_file_companions_pair) or one onto itself."""
-    links = (
-        (await session.execute(select(FileCompanion).where((FileCompanion.media_id == drop) | (FileCompanion.companion_id == drop)))).scalars().all()
+    links = await session.stream_scalars(
+        select(FileCompanion).where((FileCompanion.media_id == drop) | (FileCompanion.companion_id == drop)).execution_options(yield_per=500)
     )
-    existing = {
-        (link.companion_id, link.media_id)
-        for link in (
-            await session.execute(select(FileCompanion).where((FileCompanion.media_id == keep) | (FileCompanion.companion_id == keep)))
-        ).scalars()
-    }
-    for link in links:
+    kept = await session.stream_scalars(
+        select(FileCompanion).where((FileCompanion.media_id == keep) | (FileCompanion.companion_id == keep)).execution_options(yield_per=500)
+    )
+    existing = {(link.companion_id, link.media_id) async for link in kept}
+    async for link in links:
         pair = (keep if link.companion_id == drop else link.companion_id, keep if link.media_id == drop else link.media_id)
         if pair[0] == pair[1] or pair in existing:
             continue

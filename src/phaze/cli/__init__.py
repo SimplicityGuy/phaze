@@ -785,11 +785,17 @@ async def _run_companion_features(*, apply: bool, page_size: int) -> int:
     for row in counts:
         print(
             f"  {row.agent_id}: companions={row.companions} current={row.current} missing={row.missing} "
-            f"stale_content={row.stale_content} stale_extractor={row.stale_extractor}"
+            f"stale_content={row.stale_content} stale_extractor={row.stale_extractor} "
+            f"unavailable_missing={row.unavailable_missing} unavailable_ambiguous={row.unavailable_ambiguous}"
         )
     pending = sum(row.pending for row in counts)
     jobs = sum(-(-row.pending // page_size) for row in counts)
     print(f"summary: companions={sum(row.companions for row in counts)} pending={pending} jobs={jobs} page_size={page_size}")
+    print(
+        f"availability: unavailable_missing={sum(row.unavailable_missing for row in counts)} "
+        f"unavailable_ambiguous={sum(row.unavailable_ambiguous for row in counts)}; "
+        "unavailable inventory is retained, not extracted; unmarked inventory is not verified readable"
+    )
     if not apply:
         print(f"DRY RUN: nothing enqueued; {pending} companion row(s) would be read in {jobs} job(s). Re-run with --apply to enqueue.")
         return 0
@@ -891,15 +897,24 @@ async def _run_companion_links(*, apply: bool) -> int:
                         continue
                     association, detection = await run_agent_association(session, agent_id, apply=True)
         totals.update(
-            added=association.links_created, removed=association.links_removed, kept=association.links_kept, awaiting=association.awaiting_features
+            added=association.links_created,
+            removed=association.links_removed,
+            kept=association.links_kept,
+            awaiting=association.awaiting_features,
+            unavailable_missing=association.unavailable_missing,
+            unavailable_ambiguous=association.unavailable_ambiguous,
         )
         by_step = " ".join(f"{step}={count}" for step, count in sorted(association.decided.items())) or "none"
         junk = f"; junk review: new pending={sum(detection.created.values())} withdrawn={detection.withdrawn}" if detection else ""
         print(
             f"  {agent_id}: decided by step: {by_step}; links added={association.links_created} removed={association.links_removed} "
-            f"kept={association.links_kept}; awaiting features={association.awaiting_features}{junk}"
+            f"kept={association.links_kept}; awaiting features={association.awaiting_features}; "
+            f"unavailable_missing={association.unavailable_missing} unavailable_ambiguous={association.unavailable_ambiguous}{junk}"
         )
-    print(f"summary: links added={totals['added']} removed={totals['removed']} kept={totals['kept']} awaiting features={totals['awaiting']}")
+    print(
+        f"summary: links added={totals['added']} removed={totals['removed']} kept={totals['kept']} awaiting features={totals['awaiting']} "
+        f"unavailable_missing={totals['unavailable_missing']} unavailable_ambiguous={totals['unavailable_ambiguous']}"
+    )
     if not apply:
         print("DRY RUN: nothing written; the junk-review refresh runs only with --apply. Re-run with --apply to write the links.")
         return 0

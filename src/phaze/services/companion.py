@@ -51,6 +51,7 @@ from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
+from phaze.services.companion_availability import available_companion_clause, count_unavailable_companions
 from phaze.services.companion_content import (
     COMPANION_FILE_TYPES,
     MEDIA_FILE_TYPES,
@@ -91,6 +92,8 @@ class AssociationOutcome:
     links_removed: int = 0
     links_kept: int = 0
     awaiting_features: int = 0
+    unavailable_missing: int = 0
+    unavailable_ambiguous: int = 0
     decided: dict[LinkStep, int] = field(default_factory=dict)
     """Companions decided this run, by the chain step that decided them."""
 
@@ -165,7 +168,7 @@ async def _companion_page(
             CompanionContentFeatures.media_references,
         )
         .join(CompanionContentFeatures, _current_features())
-        .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(COMPANION_TYPES))
+        .where(FileRecord.agent_id == agent_id, FileRecord.file_type.in_(COMPANION_TYPES), available_companion_clause())
         .order_by(FileRecord.id)
         .limit(limit)
     )
@@ -199,7 +202,7 @@ async def _count_awaiting_features(session: AsyncSession, agent_id: str | None) 
         select(func.count())
         .select_from(FileRecord)
         .outerjoin(CompanionContentFeatures, _current_features())
-        .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None))
+        .where(FileRecord.file_type.in_(COMPANION_TYPES), CompanionContentFeatures.file_id.is_(None), available_companion_clause())
     )
     if agent_id is not None:
         statement = statement.where(FileRecord.agent_id == agent_id)
@@ -476,4 +479,7 @@ async def associate_companions(
     for agent in agents:
         await _associate_agent(session, agent, batch_size=batch_size, outcome=outcome, apply=apply)
     outcome.awaiting_features = await _count_awaiting_features(session, agent_id)
+    unavailable = await count_unavailable_companions(session, agent_id)
+    outcome.unavailable_missing = unavailable.missing
+    outcome.unavailable_ambiguous = unavailable.ambiguous
     return outcome
