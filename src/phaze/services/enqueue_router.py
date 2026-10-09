@@ -76,17 +76,6 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
     {
         "generate_proposals",
         "match_tracklist_to_discogs",
-        # phaze-2akf: an operator-triggered re-arm of the drain for specific pages. It was a
-        # monthly cron; it is now enqueued from the admin UI, which is why it stays routable.
-        "refresh_tracklists",
-        # phaze-fq9h.7: the drain slice and its request-free status read. Both are controller
-        # tasks -- they need ctx["async_session"] and the headful browser phaze-fq9h.5 puts in the
-        # worker image -- and both are operator-enqueued (no cron), so unlike reap_stalled_scans
-        # they MUST be routable.
-        "drain_tracklists",
-        "tracklist_drain_status",
-        # phaze-5fta.3: the corpus-learned filename-convention full refresh. Operator-enqueued (no
-        # cron), needs ctx["async_session"], so like the drain it MUST be routable.
         "learn_filename_conventions",
         "submit_cloud_job",  # Control-plane producer; kube credentials stay here.
         # phaze-spd83: the automatic companion association run. The api requests it after every

@@ -1,12 +1,11 @@
-"""phaze-5ergb: the tracklist swap routes and the record page/poster must not pay for
+"""phaze-5ergb: the record page, drawer and poster must not pay for
 ``AnalysisWindow.features``.
 
-``routers/pipeline/tracklists.py``'s ``_track_segments_for`` and ``routers/record.py``'s
-``build_file_record_context`` both load every ``AnalysisWindow`` row for a file to compute a
+``routers/record.py``'s ``build_file_record_context`` loads every ``AnalysisWindow`` row for a file to compute a
 few medians (``build_track_segments`` / ``build_analysis_timeline_context`` /
 ``build_harmonic_journey`` -- tier/start/end/bpm/musical_key/energy/mood_scores, plus the
 read-time ``camelot`` property those derive from ``musical_key`` since migration 066,
-phaze-6r3eh). Neither ever reads the ``features`` column: it is the ~5 KB per-coarse-window
+phaze-6r3eh). It never reads the ``features`` column: it is the ~5 KB per-coarse-window
 JSONB the narrow projection columns exist specifically so no viewer surface has to decode (see
 the ``AnalysisWindow`` docstring in ``models/analysis.py``). A 12 h set carries ~240 coarse
 windows, so an undeferred load transfers and decodes 1-2 MB on every single-file button click.
@@ -58,23 +57,6 @@ async def _capture_get(
     event.listen(sync_conn, "before_cursor_execute", _capture)
     try:
         response = await client.get(url, headers={"HX-Request": "true"} if htmx else None)
-    finally:
-        event.remove(sync_conn, "before_cursor_execute", _capture)
-    assert response.status_code == 200
-    return statements
-
-
-async def _capture_post(client: AsyncClient, connection: AsyncConnection, url: str) -> list[str]:
-    """POST ``url``, returning every statement the app issued serving it."""
-    statements: list[str] = []
-
-    def _capture(conn, cursor, statement: str, parameters, context, executemany) -> None:  # type: ignore[no-untyped-def]
-        statements.append(statement)
-
-    sync_conn = connection.sync_connection
-    event.listen(sync_conn, "before_cursor_execute", _capture)
-    try:
-        response = await client.post(url)
     finally:
         event.remove(sync_conn, "before_cursor_execute", _capture)
     assert response.status_code == 200
@@ -149,50 +131,4 @@ async def test_poster_window_scan_never_selects_features(
     statements = await _capture_get(client, _db_connection, f"/files/{file_rec.id}/poster.svg")
 
     assert _window_selects(statements), "expected the poster to issue an analysis_window SELECT"
-    assert _features_selects(statements) == [], f"no statement may name analysis_window.features, saw: {_features_selects(statements)}"
-
-
-@pytest.mark.asyncio
-async def test_prioritize_swap_window_scan_never_selects_features(
-    client: AsyncClient,
-    session: AsyncSession,
-    make_file,
-    _db_connection: AsyncConnection,  # type: ignore[no-untyped-def]
-) -> None:
-    """POST .../prioritize re-renders the same tracklist fragment via ``_track_segments_for``."""
-    file_rec = await _seed_set_with_tracklist_and_windows(make_file, session)
-
-    statements = await _capture_post(client, _db_connection, f"/pipeline/tracklists/{file_rec.id}/prioritize")
-
-    assert _window_selects(statements), "expected the swap to issue an analysis_window SELECT"
-    assert _features_selects(statements) == [], f"no statement may name analysis_window.features, saw: {_features_selects(statements)}"
-
-
-@pytest.mark.asyncio
-async def test_refresh_swap_window_scan_never_selects_features(
-    client: AsyncClient,
-    session: AsyncSession,
-    make_file,
-    _db_connection: AsyncConnection,  # type: ignore[no-untyped-def]
-) -> None:
-    file_rec = await _seed_set_with_tracklist_and_windows(make_file, session)
-
-    statements = await _capture_post(client, _db_connection, f"/pipeline/tracklists/{file_rec.id}/refresh")
-
-    assert _window_selects(statements), "expected the swap to issue an analysis_window SELECT"
-    assert _features_selects(statements) == [], f"no statement may name analysis_window.features, saw: {_features_selects(statements)}"
-
-
-@pytest.mark.asyncio
-async def test_unprioritize_swap_window_scan_never_selects_features(
-    client: AsyncClient,
-    session: AsyncSession,
-    make_file,
-    _db_connection: AsyncConnection,  # type: ignore[no-untyped-def]
-) -> None:
-    file_rec = await _seed_set_with_tracklist_and_windows(make_file, session)
-
-    statements = await _capture_post(client, _db_connection, f"/pipeline/tracklists/{file_rec.id}/unprioritize")
-
-    assert _window_selects(statements), "expected the swap to issue an analysis_window SELECT"
     assert _features_selects(statements) == [], f"no statement may name analysis_window.features, saw: {_features_selects(statements)}"

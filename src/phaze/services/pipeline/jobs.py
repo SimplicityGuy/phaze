@@ -101,10 +101,6 @@ async def get_live_job_keys(session: AsyncSession) -> set[str]:
 # _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
 # split_part, the status allowlist, and the function-name constant below; T-41-01).
 #
-# phaze-2akf: the sibling _SEARCH_BUSY_FUNCTION / _SCRAPE_BUSY_FUNCTION gates are GONE with the
-# legacy scrape path they gated. They counted saq_jobs rows for two functions that no longer exist,
-# so they were structurally pinned at 0 -- a "not busy" signal that could never become busy. The
-# drain's own progress surface (GET /pipeline/tracklist-drain-status) replaces them.
 _MATCH_BUSY_FUNCTION = "match_tracklist_to_discogs"
 
 

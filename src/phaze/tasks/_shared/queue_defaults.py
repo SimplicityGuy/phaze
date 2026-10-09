@@ -84,12 +84,6 @@ _SAQ_DEFAULT_TIMEOUT = 10
 _SAQ_DEFAULT_RETRIES = 1
 _SAQ_DEFAULT_TTL = 600
 
-# A paced 100-lookup drain slice takes roughly 40 minutes. Keep a finite two-hour
-# backstop, without changing its lookup budget, crawl pacing, or four-retry ceiling.
-# The continuation cron shares this policy so it cannot declare a live slice stale
-# using the generic ten-minute job timeout.
-TRACKLIST_DRAIN_JOB_POLICY = (7200, 4)
-
 # phaze-plpnf: per-function policy -- ``{function: (timeout, max_retries)}``.
 # Enforced AFTER the generic "still at SAQ default" fill above, unconditionally on every
 # enqueue of that function (independent of producer/replay path). ``timeout`` is PINNED
@@ -110,7 +104,6 @@ _FUNCTION_JOB_POLICY: dict[str, tuple[int, int]] = {
     # ``docs/design/0007-windowed-analysis.md`` §7 -- plus the
     # locked 1-2 retry band that kills long-file re-analysis churn).
     "process_file": (0, 2),
-    "drain_tracklists": TRACKLIST_DRAIN_JOB_POLICY,
 }
 
 # Functions whose ``heartbeat`` this hook must also pin, and from which setting.
@@ -191,4 +184,4 @@ async def apply_project_job_defaults(job: Job) -> None:
         job.heartbeat = getattr(_runtime_config.current(), heartbeat_field)
 
 
-__all__ = ["TRACKLIST_DRAIN_JOB_POLICY", "apply_project_job_defaults"]
+__all__ = ["apply_project_job_defaults"]

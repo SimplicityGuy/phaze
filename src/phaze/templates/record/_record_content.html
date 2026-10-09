@@ -50,15 +50,15 @@
             </tr></tbody></table></div>
         </section>
 
-        {# 3 — The TRACKLIST INDEX (phaze-x1qr3.6): the scraped 1001Tracklists rows as an index
+        {# 3 — The TRACKLIST INDEX (phaze-x1qr3.6): the stored tracklist rows as an index
            into the window projection, each carrying the median BPM, modal key, argmax mood and
            mean energy of the windows inside its own time segment. Renders the SAME partial the
            Prioritize/Un-prioritize and Refresh POST responses swap back in, so first render and
            post-action render can never drift into two different presentations. #}
         <section id="tracklist" data-tracklist-index class="scroll-mt-4 {{ _panel }}" aria-labelledby="tracklist-heading">
-            <p id="tracklist-heading" class="{{ _eyebrow }} mb-2">Tracklist index · 1001Tracklists</p>
+            <p id="tracklist-heading" class="{{ _eyebrow }} mb-2">Tracklist index</p>
             <div id="tracklist-review-{{ file.id }}">
-                {% with review=tracklist_review, just_queued=False, just_refreshed=False %}
+                {% with review=tracklist_review %}
                     {% include "record/partials/_tracklist_review_body.html" %}
                 {% endwith %}
             </div>
@@ -105,7 +105,7 @@
                         <span id="stage-pill-{{ stage_value }}-{{ file.id }}" class="inline-flex">
                         {# phaze-yyfax: Tracklist is worded by its lookup outcome in the Files matrix, so it takes the matrix's own pill. #}
                         {% if stage_value == 'tracklist' %}
-                            {% with bucket=stage_buckets[stage_value], lookup=tracklist_lookup %}
+                            {% with bucket=stage_buckets[stage_value] %}
                                 {% include "pipeline/partials/_tracklist_pill.html" %}
                             {% endwith %}
                         {% else %}

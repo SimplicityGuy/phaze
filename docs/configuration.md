@@ -87,26 +87,7 @@ flowchart TD
 | `MODELS_PATH`                     | No       | `/models` (config default; `.env.example` uses `./models`) | Essentia audio-analysis model directory, mounted read-only and validated at worker boot; phaze never downloads models (phaze-ynv6w). Point it at the consolidated set, or provision one with `just download-models <dir>`. |
 | `OUTPUT_PATH`                     | No       | `/data/output`                                           | Destination directory for executed file moves.                             |
 | `PHAZE_ENABLE_SAQ_UI` (or `enable_saq_ui`) | No | `true`                                          | Mount SAQ's built-in queue-monitoring dashboard at `/saq` in the `phaze-api` app (reusing the lifespan SAQ `PostgresQueue` instances; no extra broker, no extra port). Set `false` to skip the mount entirely. See [api.md](api.md) → SAQ Monitoring UI. |
-| `PHAZE_SCRAPER_CONTACT_URL` (or `scraper_contact_url`) | No | `https://github.com/SimplicityGuy/phaze` | Contact URL embedded in the honest 1001Tracklists scraper User-Agent (phaze-hu8v). Lives on `BaseSettings`. |
 
-### 1001Tracklists detail-page rendering (phaze-fq9h.1)
-
-1001Tracklists DETAIL pages deliver their track listing via JS behind a Cloudflare Turnstile
-widget, so they are rendered by a real headful browser (`services/tracklist_render.py`) rather
-than fetched with httpx. Headless fails the interstitial outright, and Turnstile is flaky rather
-than deterministic (spike phaze-dmvs measured ~6/8 pages clearing on first navigation), so a
-bounded reload/retry loop is the difference between a usable yield and a quarter of the corpus
-silently unreachable.
-
-| Variable                       | Required | Default | Description                                          |
-|--------------------------------|----------|---------|------------------------------------------------------|
-| `PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL` (or `tracklist_render_browser_channel`) | No | `chrome` | Patchright browser channel. `chrome` uses a real installed Google Chrome (Patchright's most convincing configuration); empty string falls back to Patchright's bundled patched Chromium. |
-| `PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS` (or `tracklist_render_turnstile_attempts`) | No | `4` | Hard cap on navigations per detail page when Turnstile keeps serving its interstitial. Every attempt spends one whole-host request from the crawl-delay budget, so this is a politeness bound as much as a timeout. Range `[1, 10]`. |
-| `PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS` (or `tracklist_render_page_timeout_seconds`) | No | `90.0` | Hard wall-clock ceiling for rendering ONE detail page, covering every retry attempt and the pacing waits between them, so a hung browser page can never stall a months-long drain. |
-| `PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS` (or `tracklist_render_selector_timeout_seconds`) | No | `20.0` | Per-attempt wait for the track container to appear before the attempt is judged interstitial-or-empty. |
-| `PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS` (or `tracklist_render_retry_backoff_seconds`) | No | `5.0` | Base for the exponential backoff added on top of the shared crawl-delay pacing between Turnstile retries. Zero disables the extra backoff; the crawl-delay floor still applies. |
-| `PHAZE_TRACKLIST_RENDER_XVFB` (or `tracklist_render_xvfb`) | No | `auto` | Whether to start an Xvfb virtual display for the headful browser: `auto` \| `always` \| `never`. `auto` starts one only on Linux with no `DISPLAY` already set — exactly the headless-worker case. |
-| `PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC` (or `tracklist_drain_cooldown_sec`) | No | `600` | Seconds the continuous-drain cron waits after one **armed** slice finishes before enqueueing the next (phaze-6nrrf). Operator-tunable pacing, **distinct from** the whole-host politeness budget enforced in `reserve_host_request_slot` — this one leaves headroom for other controller-queue work between slices, without a redeploy. It is also what `clear_stale_in_flight` measures a stuck `in_flight` slice against, and what `tracklist_drain_arm_state.next_eligible_at` records. Surfaced live in the drain-status partial. Bounded `gt=0, lt=86400`, so a misconfigured value fails fast at startup rather than reaching the cron. |
 
 ## Worker / task queue settings (all roles)
 

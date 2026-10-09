@@ -92,14 +92,6 @@ Every currently displayed Settings key is listed below. A reader is the first so
 | `scan_path` | Keep: read at startup | `src/phaze/routers/agent_orphan_companions.py` |
 | `scan_roots` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
 | `scan_stall_seconds` | Keep: read at startup | `src/phaze/routers/pipeline_scans.py` |
-| `scraper_contact_url` | Keep: read at startup | `src/phaze/services/tracklist_scraper.py` |
-| `tracklist_drain_cooldown_sec` | Keep: read at startup | `src/phaze/routers/pipeline/tracklists.py` |
-| `tracklist_render_browser_channel` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
-| `tracklist_render_page_timeout_seconds` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
-| `tracklist_render_retry_backoff_seconds` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
-| `tracklist_render_selector_timeout_seconds` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
-| `tracklist_render_turnstile_attempts` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
-| `tracklist_render_xvfb` | Keep: read at startup | `src/phaze/services/tracklist_render.py` |
 | `watcher_max_pending_seconds` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
 | `watcher_polling_mode` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
 | `watcher_settle_seconds` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |

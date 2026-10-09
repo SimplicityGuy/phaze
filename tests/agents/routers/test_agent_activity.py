@@ -44,8 +44,6 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.stage_skip import StageSkip
-from phaze.models.tracklist import Tracklist
-from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.routers import admin_agents
 
 
@@ -348,34 +346,3 @@ async def test_owned_files_table_wrapped_in_reachable_overflow_not_hard_clip(smo
     assert "overflow-x-auto" in wrapper_tag, f"expected a reachable overflow-x-auto scrollport, got {wrapper_tag!r}"
     assert "overflow-hidden" not in wrapper_tag
     assert "max-w-" not in wrapper_tag, "a fixed narrow max-width here is exactly the old panel's clipping shape"
-
-
-@pytest.mark.asyncio
-async def test_tracklist_row_counts_the_per_file_lookup_record(session: AsyncSession) -> None:
-    """phaze-o71bf: "Owned files by stage" carries a Tracklist row whose counts come from the lookup record.
-
-    One file per outcome that has its own bucket: a tracklist row (done), queued (in flight), a
-    transient (failed), not found and not eligible (both skipped), and a file the drain never saw
-    (not started). Counts are read off the derived-truth aria-labels, so each bucket is checked by
-    its own number rather than by the label merely existing.
-    """
-    session.add(Agent(id=_AGENT_ID, name="TracklistBox", scan_roots=[], last_seen_at=datetime.now(UTC), kind="fileserver"))
-    await session.flush()
-    matched = await _file(session)
-    session.add(Tracklist(external_id=uuid.uuid4().hex[:12], source_url="https://example.invalid/tl", file_id=matched.id))
-    for outcome in ("queued", "retry_pending", "not_found", "not_eligible"):
-        f = await _file(session)
-        session.add(TracklistFileLookup(file_id=f.id, outcome=outcome))
-    await _file(session)
-    await session.flush()
-
-    app = _make_smoke_app(session)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        body = (await ac.get(f"/admin/agents/{_AGENT_ID}/_activity")).text
-
-    assert ">Tracklist<" in body
-    assert 'aria-label="Tracklist done: 1"' in body
-    assert 'aria-label="Tracklist in flight: 1"' in body
-    assert 'aria-label="Tracklist failed: 1"' in body
-    assert 'aria-label="Tracklist skipped: 2"' in body
-    assert 'aria-label="Tracklist not started: 1"' in body

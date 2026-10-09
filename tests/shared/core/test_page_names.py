@@ -21,7 +21,6 @@ from phaze.web.template_globals import PAGE_NAMES, PALETTE_PAGE_KEYS, open_label
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 # Aliases render the Changes Review workspace but have no rail node of their own.
@@ -174,44 +173,3 @@ def test_last_stage_has_one_name_in_the_record_and_files_matrix() -> None:
     assert f"('{name}', 'apply')" in matrix
     assert f"('apply', '{name}', false)" in record
     assert re.search(r"Execute approved|'Apply'", matrix + record) is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("outcome", "expected_bucket"),
-    [(None, "not_started"), ("queued", "in_flight"), ("retry_pending", "failed"), ("not_found", "skipped")],
-)
-async def test_record_stage_eligibility_lists_tracklist_in_the_files_matrix_state(
-    client: AsyncClient,
-    session: AsyncSession,
-    make_file,  # type: ignore[no-untyped-def]
-    outcome: str | None,
-    expected_bucket: str,
-) -> None:
-    """The record's Stage eligibility carries a Tracklist pill showing the SAME state the Files matrix shows."""
-    from phaze.models.tracklist_lookup_cache import TracklistFileLookup
-
-    file = await make_file(original_filename="stage-order-check.mp3")
-    if outcome is not None:
-        session.add(TracklistFileLookup(file_id=file.id, outcome=outcome))
-        await session.commit()
-
-    record = BeautifulSoup((await client.get(f"/record/{file.id}", headers={"HX-Request": "true"})).text, "html.parser")
-    section = record.select_one("[data-stage-eligibility]")
-    assert section is not None
-    # Stage order matches the matrix columns, with Tracklist between Analyze and Propose.
-    buttons = [b.get_text(strip=True) for b in section.select("button[hx-get*='/trace/']")]
-    assert buttons == ["Metadata", "Analyze", "Tracklist", "Propose", "Review", PAGE_NAMES["apply"]]
-    pill = section.select_one(f"#stage-pill-tracklist-{file.id} [aria-label]")
-    assert pill is not None
-
-    matrix = BeautifulSoup((await client.get("/pipeline/files", headers={"HX-Request": "true"})).text, "html.parser")
-    row_pills = [
-        el
-        for el in matrix.select("[aria-label^='Tracklist: ']")
-        if el.find_parent(attrs={"data-file-id": str(file.id)}) is not None or "stage-order-check.mp3" in str(el.find_parent("tr") or "")
-    ]
-    assert row_pills, "the Files matrix rendered no Tracklist pill for the file"
-    assert pill.get("aria-label") == row_pills[0].get("aria-label")
-    # ...and it is the state we seeded, not a coincidental default.
-    assert pill.get("aria-label") != "Tracklist: not started" or expected_bucket == "not_started"

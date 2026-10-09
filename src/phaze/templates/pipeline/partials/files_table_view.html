@@ -277,7 +277,7 @@
                         {% if key == 'tracklist' %}
                         {# phaze-o71bf: the lookup outcome, not the bare bucket -- "not found" and "not
                            eligible" share the skipped bucket but mean different things to the operator. #}
-                        {% with bucket=row.buckets[key], lookup=row.tracklist_lookup %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}
+                        {% with bucket=row.buckets[key] %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}
                         {% else %}
                         {% with file_id=row.file.id, bucket=row.buckets[key], surface='table', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}
                         {% endif %}
@@ -317,7 +317,7 @@
                         {% for stage_label, key in _stage_cols %}
                         <div class="flex items-center justify-between gap-3">
                             <dt class="text-xs text-gray-600 dark:text-gray-300">{{ stage_label }}</dt>
-                            <dd>{% if key == 'tracklist' %}{% with bucket=row.buckets[key], lookup=row.tracklist_lookup %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}{% else %}{% with file_id=row.file.id, bucket=row.buckets[key], surface='mobile', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}{% endif %}</dd>
+                            <dd>{% if key == 'tracklist' %}{% with bucket=row.buckets[key] %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}{% else %}{% with file_id=row.file.id, bucket=row.buckets[key], surface='mobile', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}{% endif %}</dd>
                         </div>
                         {% endfor %}
                     </dl>

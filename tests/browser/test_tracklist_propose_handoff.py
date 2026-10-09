@@ -149,7 +149,7 @@ async def test_going_back_from_the_handoff_restores_a_working_tracklist_workspac
     assert await page.locator('aside[aria-label="Pipeline navigation"]').count() == 1, "the restore produced a fragment, not the shell"
     assert await page.locator(_CONTINUE).count() == 1, "the restored Tracklist workspace lost the handoff affordance"
 
-    for panel, placeholder in (("#tracklist-drain-status-view", "Loading lookup state"), ("#tracklist-sets-view", "Loading sets")):
+    for panel, placeholder in (("#tracklist-sets-view", "Loading sets"),):
         await page.wait_for_function(
             "args => !document.querySelector(args[0]).innerText.includes(args[1])",
             arg=[panel, placeholder],

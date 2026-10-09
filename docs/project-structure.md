@@ -21,12 +21,12 @@ a module makes the inventory fail until this page is reconciled.
 | ------------ | -----------: | -------------- |
 | `agent_watcher/` | 5 | Standalone filesystem observer and HTTP poster; no ORM imports |
 | `cli/` | 1 | Operator commands, including agent management, projection backfill and the junk quarantine dispatch |
-| `enums/` | 6 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
-| `models/` | 32 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
+| `enums/` | 5 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
+| `models/` | 29 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
 | `routers/` | 60 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 25 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 142 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 51 | SAQ controller/agent jobs and shared queue policy |
+| `services/` | 131 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `tasks/` | 48 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
@@ -44,7 +44,7 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `logging_config.py` | Shared structured logging setup |
 
 Outside the package, `alembic/versions/` contains 43 migrations (`039` baseline through head
-`081`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+`082`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

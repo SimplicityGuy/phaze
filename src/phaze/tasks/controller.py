@@ -3,10 +3,6 @@
 Control role: runs the application server's SAQ worker pool. Fileless tasks only, e.g.:
 - generate_proposals (LLM-driven rename suggestions)
 - match_tracklist_to_discogs (Discogsography HTTP API)
-- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated via
-  "Run tracklist lookups", which also arms continued pacing; the underlying job has NO cron of its
-  own -- see ``continue_armed_tracklist_drain`` below)
-- refresh_tracklists (operator-initiated re-arm of the drain for specific pages -- NO cron)
 - reap_stalled_scans, recover_orphaned_work, stage_cloud_window, submit_cloud_job,
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
   authoritative, current ``functions`` / ``cron_jobs`` list)
@@ -74,9 +70,6 @@ from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.staging_cleanup import reap_expired_staging
 from phaze.tasks.submit_cloud_job import submit_cloud_job
-from phaze.tasks.tracklist import refresh_tracklists
-from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
-from phaze.tasks.tracklist_drain_control import continue_armed_tracklist_drain, record_drain_slice_completion
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
 from phaze.telemetry.saq import after_process_chain, before_process as telemetry_before_process
@@ -448,42 +441,11 @@ settings = {
     # `after_process` is a Worker constructor kwarg (NOT a register_* call) -- it goes in
     # the settings dict the SAQ CLI hands to Worker.__init__. A list runs every hook in order
     # (mirrors agent_worker.py's `[repark_if_stage_paused, increment_completed]`).
-    # phaze-6nrrf: record_drain_slice_completion is the continuous-drain cron's own after_process
-    # half -- see tasks/tracklist_drain_control.py.
-    # phaze-m1drf.1 acceptance 3: the telemetry hook runs LAST so the duration it records
-    # covers the other hooks' work too -- a ledger clear that becomes slow is part of what
-    # the job cost. Both telemetry hooks swallow every exception; they run in SAQ's own
-    # `finally` alongside the ledger clear and must not be able to displace it.
-    #
-    # phaze-24dl8: "last in the list" was not enough. SAQ's `_after_process` is a bare loop
-    # and `Worker.process` only logs its exception, so a raise from `record_drain_slice_completion`
-    # abandoned the telemetry hook -- leaking the job's span and dropping its duration and
-    # outcome. `after_process_chain` appends the telemetry hook in a `finally` instead; the
-    # two hooks below keep their order and their abort-on-first-raise relationship.
     "before_process": telemetry_before_process,
-    "after_process": [after_process_chain(increment_completed, record_drain_slice_completion)],
+    "after_process": [after_process_chain(increment_completed)],
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,
-        # phaze-2akf: the legacy search_tracklist / scrape_and_store_tracklist pair is GONE (its
-        # detail-page selectors matched zero nodes and it had no browser to clear Turnstile with).
-        # What remains of that module is refresh_tracklists, now an operator-triggered re-arm of the
-        # drain for specific pages -- registered here as an enqueueable function with NO CronJob.
-        refresh_tracklists,
-        # phaze-fq9h.7: one BOUNDED SLICE of the resumable 1001Tracklists drain, plus its
-        # request-free status read. Registered as operator-enqueueable functions with NO CronJob,
-        # deliberately -- the epic's ethics bound makes the drain operator-initiated rather than a
-        # blanket pipeline stage (residential IP, headful browser, a public host's published
-        # crawl-delay budget). The admin UI (phaze-fq9h.8) is the intended trigger.
-        drain_tracklists,
-        tracklist_drain_status,
-        # phaze-6nrrf: the continuous-drain cron body. Registered here (Worker functions) AND in
-        # cron_jobs below, mirroring reap_stalled_scans -- it is CRON-ONLY, never operator/API
-        # enqueued directly, so it is NOT in enqueue_router.CONTROLLER_TASKS. See
-        # tasks/tracklist_drain_control.py's module docstring for why this is not the forbidden
-        # general auto-advance cron pattern warned about elsewhere in this file: it only ever
-        # CONTINUES a pass the operator explicitly armed, never starts one on its own.
-        continue_armed_tracklist_drain,
         reap_expired_staging,
         # phaze-5fta.3: one full refresh of the corpus-learned release-group date-order
         # conventions. Operator-enqueueable with NO CronJob, deliberately (see the task module):
@@ -536,28 +498,6 @@ settings = {
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
-        # phaze-2akf: there is deliberately NO refresh_tracklists CronJob any more. The monthly
-        # "re-fetch everything older than 90 days" sweep that used to live here contradicted the
-        # drain's cache -- which is built on "a published tracklist does not change" and therefore
-        # never re-fetches -- and was a second, unbounded consumer of a whole-host budget of ~1
-        # request / 8 s. Operator decision (2026-08-03): the drain keeps never re-fetching, and
-        # refresh becomes on-demand and targeted. It is registered in `functions` above so the admin
-        # UI can enqueue it; nothing schedules it.
-        #
-        # phaze-6nrrf: there is STILL no `drain_tracklists` CronJob (test_the_drain_has_no_cron_job
-        # asserts it) -- the ethics bound is unchanged, nothing may start crawling on container
-        # boot. `continue_armed_tracklist_drain` below is a DIFFERENT function: it is a narrow
-        # continuation gate that only re-enqueues a slice when the durable
-        # `tracklist_drain_arm_state` row already reads armed=true, which is set ONLY by the
-        # operator's "Run tracklist lookups" click (phaze-5sj7k,
-        # services.tracklist_drain_arm.arm_if_not_running) -- never by this cron, never by
-        # boot/deploy. (The standalone Arm endpoint that used to set this directly is GONE, once
-        # no served template linked to it any more -- test_no_orphaned_ui_route.) Every-minute
-        # cadence matches this file's other reapers; a full slice's
-        # own host-budget pacing (~1 req/8s) is far coarser than one minute, so this cadence only
-        # bounds how quickly the NEXT slice starts after the previous one's cooldown elapses, never
-        # how fast requests fire.
-        CronJob(continue_armed_tracklist_drain, cron="* * * * *"),  # type: ignore[type-var]
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]

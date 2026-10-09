@@ -638,7 +638,7 @@ test-file FILE:
 #
 # Playwright is pinned in pyproject.toml's development-only `browser` dependency group. Keeping the
 # runner and browser revision in uv.lock prevents the browser toolchain from changing under an
-# unchanged commit; Patchright remains the separate runtime browser dependency. Browser binaries
+# unchanged commit. Browser binaries
 # are a one-off install:
 #
 #     just test-browser-install     # once per machine

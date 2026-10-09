@@ -203,8 +203,8 @@ async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewp
     keyboard, and a palette reachable only via a chord the platform does not produce is unreachable
     for the operator who needs it most.
     """
-    # Imported here, not at module scope: playwright is not a project dependency (only Patchright
-    # is), and this suite runs under `uv run --with playwright`. A top-level import would break
+    # Imported here, not at module scope: playwright is an optional browser dependency,
+    # and this suite runs under `uv run --with playwright`. A top-level import would break
     # collection of the whole tests/ tree for anyone running the default suite.
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 

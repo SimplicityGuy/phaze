@@ -283,15 +283,11 @@ async def test_one_file_is_the_same_record_from_files_analyze_tracklists_and_sea
         )
 
 
-async def test_an_unmatched_file_states_its_own_lookup_status_without_leaking_the_matched_one(page: Any, seed: Seeder) -> None:
-    """A file with no tracklist must say so honestly, and offer the lookup for ITSELF.
+async def test_an_unmatched_file_states_its_stored_tracklist_status_without_leaking_the_matched_one(page: Any, seed: Seeder) -> None:
+    """An unmatched file displays its empty state across the drawer and canonical page.
 
-    Two failure modes share one symptom here and only a real browser separates them. The drawer is a
-    single persistent host reused by every open, so a second file's record can inherit the first
-    file's tracklist through a stale panel (phaze-7yet) -- and the exact-file lookup control can be
-    wired to the wrong id while still rendering perfectly, which is the misattributed-lookup shape
-    .3's design calls out by name. Asserting the button's own ``hx-post`` target is what distinguishes
-    "a Look up now button exists" from "a Look up now button that would look up THIS file".
+    The drawer is a persistent host reused by every open, so a second file's record must not
+    inherit the first file's tracklist through a stale panel (phaze-7yet).
     """
     matched = await _seed_matched_file(seed)
     unmatched = await seed.file(filename=_UNMATCHED_FILENAME)
@@ -311,25 +307,18 @@ async def test_an_unmatched_file_states_its_own_lookup_status_without_leaking_th
     await _wait_for_record(page, unmatched.id)
 
     drawer_tracklist = await page.locator("#record-body #tracklist").inner_text()
-    assert "No matched 1001Tracklists tracklist yet." in drawer_tracklist, (
-        f"the unmatched file does not state its empty tracklist status: {drawer_tracklist!r}"
-    )
-    assert "Not yet looked up." in drawer_tracklist, "an unattempted file must not be described as anything other than never looked up"
+    assert "No stored tracklist." in drawer_tracklist, f"the unmatched file does not state its empty tracklist status: {drawer_tracklist!r}"
     assert "Opening Track" not in drawer_tracklist, "the previous file's tracklist is still on screen under the second record (phaze-7yet)"
     assert "Closing Track" not in drawer_tracklist
 
-    lookup = page.locator('#record-body button[aria-label="Look up this file now on 1001Tracklists"]')
-    assert await lookup.count() == 1, "the eligible unmatched file offers no exact-file lookup action"
-    assert await lookup.get_attribute("hx-post") == f"/pipeline/tracklists/{unmatched.id}/prioritize", (
-        "the lookup control would queue a different file than the record it is rendered in"
-    )
+    assert await page.locator('#record-body button[hx-post$="/prioritize"]').count() == 0
 
     # The full page is the second presentation of the same state and must not diverge from it.
     await page.locator(f'#record-body a[href="/files/{unmatched.id}"]').click()
     await page.wait_for_url(f"**/files/{unmatched.id}")
     page_tracklist = await page.locator("main #tracklist").inner_text()
     assert page_tracklist == drawer_tracklist, "the canonical page states a different tracklist status than the drawer"
-    assert await page.locator(f'main button[hx-post="/pipeline/tracklists/{unmatched.id}/prioritize"]').count() == 1
+    assert await page.locator(f'main button[hx-post="/pipeline/tracklists/{unmatched.id}/prioritize"]').count() == 0
 
 
 async def test_the_canonical_page_is_addressable_on_reload_and_without_htmx(page: Any, seed: Seeder) -> None:

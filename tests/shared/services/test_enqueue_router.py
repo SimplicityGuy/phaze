@@ -85,7 +85,7 @@ def test_task_sets_are_disjoint_frozensets() -> None:
     assert CONTROLLER_TASKS.isdisjoint(AGENT_TASKS)
     # Spot-check the registered functions from controller.py / agent_worker.py.
     assert "generate_proposals" in CONTROLLER_TASKS
-    assert "refresh_tracklists" in CONTROLLER_TASKS
+    assert "refresh_tracklists" not in CONTROLLER_TASKS
     assert "process_file" in AGENT_TASKS
     assert "scan_directory" in AGENT_TASKS
 

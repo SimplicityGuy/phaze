@@ -411,20 +411,6 @@ class ControlSettings(BaseSettings):
         ),
     )
 
-    # This cooldown leaves room between slices; the independent whole-host ceiling remains
-    # approximately 1 request per 8 s in ``reserve_host_request_slot``.
-    tracklist_drain_cooldown_sec: int = Field(
-        default=600,
-        gt=0,
-        lt=86400,
-        validation_alias=AliasChoices("PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC", "tracklist_drain_cooldown_sec"),
-        description=(
-            "Seconds the continuous-drain cron waits after one armed slice finishes before enqueueing the next "
-            "(phaze-6nrrf). Operator-tunable pacing, distinct from the host politeness budget enforced in "
-            "reserve_host_request_slot. Default 600 (10 min); bounded gt=0, lt=86400."
-        ),
-    )
-
 
 # Keep the supported class identity rooted at the public facade even though implementation
 # ownership lives here.

@@ -324,10 +324,7 @@ lifespan as `app.state.task_router`.
 ### Worker roles
 
 - **Control role** (`tasks/controller.py`) runs the fileless queue `controller`:
-  `generate_proposals`, the 1001Tracklists scrape/search/refresh jobs (operator-triggered,
-  no cron — see **[1001Tracklists Scraping](tracklist-scraping.md)** for the SSRF
-  allow-list, the shared whole-host rate limiter, the render engine's Turnstile handling,
-  and the caches), and Discogs matching. It also owns the **cloud/backend control plane**:
+  `generate_proposals` and Discogs matching over stored tracklists. It also owns the **cloud/backend control plane**:
   `stage_cloud_window` (the tiered-drain top-up cron, `tasks/release_awaiting_cloud.py`), `submit_cloud_job`
   (Kueue Job submission), and `reconcile_cloud_jobs` (the every-minute in-flight cloud-job
   reconcile cron). It further registers the control-only reapers and recovery producer:

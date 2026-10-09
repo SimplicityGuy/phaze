@@ -151,7 +151,7 @@ async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed:
 
 
 async def test_record_drawer_and_full_page_show_the_same_complete_latest_tracklist(page: Any, seed: Any) -> None:
-    """The one shared record partial keeps track order and provenance identical in both views."""
+    """The shared record partial keeps stored track order identical in both views."""
     from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
     target = await seed.file(filename="<set-01>.mp3")
@@ -193,8 +193,8 @@ async def test_record_drawer_and_full_page_show_the_same_complete_latest_trackli
     await _wait_for_record(page)
 
     drawer_text = await page.locator("#record-body #tracklist").inner_text()
-    assert "Scraped from 1001Tracklists" in drawer_text
-    assert "match confidence 94" in drawer_text
+    assert "Stored tracklist" in drawer_text
+    assert "match confidence" not in drawer_text
     assert "2 tracks" in drawer_text
     assert drawer_text.index("Opening Track") < drawer_text.index("Closing Track")
     assert all(value in drawer_text for value in ("00:00", "04:32", "mashup", "Synthetic Remix", "Second Label"))

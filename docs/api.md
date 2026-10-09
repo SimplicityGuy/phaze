@@ -47,13 +47,6 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 | POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
 | POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
 | POST   | `/pipeline/match-tracklists`   | HTMX trigger for bulk Discogs matching over the pending set (Phase 41) |
-| GET    | `/pipeline/tracklist-drain-status` | Drain queue depth, whole-host ceiling and ETA (spends no host request) |
-| POST   | `/pipeline/run-tracklist-drain` | Enqueue ONE bounded `drain_tracklists` slice |
-| POST   | `/pipeline/arm-tracklist-drain` | Persistently arm continuous bounded drain slices |
-| POST   | `/pipeline/disarm-tracklist-drain` | Disarm continuous drain after the current slice |
-| POST   | `/pipeline/tracklists/{file_id}/prioritize` | Flag a file so the next drain slice answers it first |
-| POST   | `/pipeline/tracklists/{file_id}/unprioritize` | Clear that flag |
-| POST   | `/pipeline/tracklists/{file_id}/refresh` | On-demand re-read of a file's tracklist page (phaze-2akf) |
 | POST   | `/pipeline/recover`            | HTMX trigger for manual restart/queue-loss recovery across all stages (Phase 42) |
 | GET    | `/pipeline/recover/status`     | Poll the outcome of the most recent `/pipeline/recover` run (`{running, result, failed}`; process-local, non-durable) |
 
@@ -80,7 +73,7 @@ still bounded.
 
 **`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
 
-**Tracklist lookup is the drain, not a bulk fan-out (phaze-2akf).** The `POST /pipeline/search-tracklists` and `POST /pipeline/scrape-tracklists` triggers, and the `search_tracklist` / `scrape_and_store_tracklist` tasks behind them, are **removed**. They fanned one job out per file / per tracklist against a host that publishes a whole-system budget of ~1 request per 8s, with no cache, no queue and no resumption — and the httpx detail-scrape they ultimately called had no browser to clear Turnstile with and per-track selectors that matched zero nodes, so every job produced an empty tracklist. The replacement is `POST /pipeline/run-tracklist-drain`, which enqueues **one bounded slice** of the resumable drain (`drain_tracklists`, default 100 lookups), and `GET /pipeline/tracklist-drain-status`, which reports queue depth, collapse ratio and an honest ETA **without spending a request**. Per-file control is `POST /pipeline/tracklists/{file_id}/prioritize` (answer this next) and `POST /pipeline/tracklists/{file_id}/refresh` (re-read a page we already have). Both are operator-initiated; there is no cron for any of them.
+**External tracklist acquisition has been removed (phaze-7muoo).** Stored tracklists remain available for review, Discogs matching and cue generation.
 
 **Bulk match (Phase 41).** `POST /pipeline/match-tracklists` enqueues one `match_tracklist_to_discogs` job per **pending match** tracklist (every tracklist **not** reachable from `discogs_links` via the `version → track → link` walk — the complement of `match.done`). It is a **controller** task (Phase-30 rule), routed through `enqueue_router.resolve_queue_for_task` to the **controller** queue — never the consumer-less default queue — and it never raises `NoActiveAgentError` (no agent empty-state). Already-linked tracklists are skipped, and the deterministic key `match_tracklist_to_discogs:<tracklist_id>` dedups in-flight replays, so a double-click/refresh cannot multiply the backlog. The button is gated disabled: **"Needs tracklist"** until at least one tracklist exists (`matchTotal === 0`); **"Matching…"** while a batch is in flight (`matchBusy > 0`, checked **before** the nothing-pending state so a running batch is always visible); and **"All matched"** once the pending set is empty. The endpoint enqueues nothing and returns 200 (rendering `No tracklists ready for matching`) when the pending set is empty. Manual only — no auto-trigger.
 

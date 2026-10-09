@@ -55,7 +55,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Analysis Evaluation Report Template](analysis-evaluation-report-template.md)** | 📝 Comparable baseline and candidate measurements, coverage, and quality evidence |
 | **[Pipeline Stats Performance](pipeline-stats-performance.md)** | ⏱️ Current poll baseline, skip-probe diagnosis, and post-deployment verification |
 | **[Postgres JIT](postgres-jit.md)** | 🧮 Measured JIT cost vs benefit across every admin and worker statement, the 500,000-cost cliff, and the read-only host-prod confirmation script |
-| **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |
+| **[Tracklist Acquisition Retirement](tracklist-scraping.md)** | Removal decision and upgrade instructions |
 | **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
 | **[Historical Evidence Audit](historical-evidence-audit-2026-09-11.md)** | 🧾 Reproducible identifier, numeric-equivalence, archive-boundary, link, Mermaid, and graph-reference reconciliation |
 | **[Stranded Analysis Recovery](stranded-analysis-recovery.md)** | 🔄 Diagnosis, measured replay cost, and the scoped operator command for orphaned fine-tier analyses |
@@ -109,8 +109,6 @@ Idea backlog only — nothing here is a decision or a commitment; each idea need
 | **[Spike Archive Boundary](spikes/README.md)** | 🧪 How to read retained spike evidence and unresolved historical links |
 | **[Specification Archive Boundary](superpowers/specs/README.md)** | 📜 Status of retained design specifications |
 | **[Telemetry Measurement Boundary](telemetry/measurements/README.md)** | 📏 Status and interpretation of retained telemetry measurements |
-| **[Rendered Tracklist Fixtures](../tests/identify/fixtures/tracklist_render/README.md)** | 🧩 Provenance and maintenance rules for rendered-page fixtures |
-| **[Tracklist Search Fixtures](../tests/identify/fixtures/tracklist_search/README.md)** | 🔍 Provenance and maintenance rules for search-page fixtures |
 
 ______________________________________________________________________
 

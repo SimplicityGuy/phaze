@@ -116,24 +116,14 @@ def test_no_auto_advance_cron() -> None:
 
 
 def test_cron_does_not_regress_existing_jobs() -> None:
-    """The reap_stalled_scans cron must remain -- and refresh_tracklists must NOT be one.
-
-    phaze-2akf inverted the second half of this assertion deliberately, so read it as the record of
-    a decision rather than as a relaxation. The monthly ``refresh_tracklists`` cron re-fetched every
-    tracklist older than 90 days, which directly contradicts the drain's cache ("a published
-    tracklist does not change, so never re-fetch") and made a second, unbounded consumer of a
-    whole-host budget of ~1 request / 8 s. The operator decision (2026-08-03, phaze-2akf) was: the
-    drain keeps never re-fetching, and refresh becomes on-demand and targeted. Re-adding the cron
-    re-opens that, which is why the absence is asserted rather than merely un-asserted.
-    """
+    """The scan-reaper cron remains while retired acquisition stays unregistered."""
     from phaze.tasks import controller
     from phaze.tasks.scan_reaper import reap_stalled_scans
-    from phaze.tasks.tracklist import refresh_tracklists
 
     cron_functions = {cj.function for cj in controller.settings["cron_jobs"]}
     assert reap_stalled_scans in cron_functions, "reap_stalled_scans cron regressed (missing)"
-    assert refresh_tracklists not in cron_functions, "refresh_tracklists must stay on-demand -- never a cron (phaze-2akf)"
-    assert refresh_tracklists in controller.settings["functions"], "refresh_tracklists must stay operator-enqueueable"
+    assert all(function.__name__ != "refresh_tracklists" for function in cron_functions)
+    assert all(function.__name__ != "refresh_tracklists" for function in controller.settings["functions"])
 
 
 @pytest.mark.asyncio
