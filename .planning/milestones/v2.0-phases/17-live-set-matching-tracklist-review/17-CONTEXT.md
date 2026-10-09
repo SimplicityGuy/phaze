@@ -1,5 +1,8 @@
 # Phase 17: Live Set Matching & Tracklist Review - Context
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Gathered:** 2026-04-01
 **Status:** Ready for planning
 
@@ -19,12 +22,12 @@ Scan live set recordings against the fingerprint database to identify tracks wit
 - **D-03:** Scanning is async via arq task. User triggers scan, task runs in background, results appear when done.
 
 ### Match Result Model
-- **D-04:** Reuse the existing Tracklist model from Phase 15. Fingerprint scan creates a Tracklist + TracklistVersion + TracklistTracks, marked with `source='fingerprint'` instead of `source='1001tracklists'`. Same data model, same review flow.
+- **D-04:** Reuse the existing Tracklist model from Phase 15. Fingerprint scan creates a Tracklist + TracklistVersion + TracklistTracks, marked with `source='fingerprint'` instead of `source='retired external source'`. Same data model, same review flow.
 - **D-05:** Per-track confidence scores. Nullable Float `confidence` column on TracklistTrack. NULL for scraped tracks (100% by definition), 0-100 for fingerprint matches.
-- **D-06:** Source field on Tracklist model — string column with values like `'1001tracklists'` or `'fingerprint'`. Filter tabs and cards can distinguish source. Alembic migration to add column.
+- **D-06:** Source field on Tracklist model — string column with values like `'retired external source'` or `'fingerprint'`. Filter tabs and cards can distinguish source. Alembic migration to add column.
 
 ### Review UI & Actions
-- **D-07:** Source badge on tracklist cards — shows '1001Tracklists' or 'Fingerprint' badge. Existing filter tabs work with source filter. Cards expand to show per-track confidence for fingerprint-sourced tracklists.
+- **D-07:** Source badge on tracklist cards — shows 'retired external source' or 'Fingerprint' badge. Existing filter tabs work with source filter. Cards expand to show per-track confidence for fingerprint-sourced tracklists.
 - **D-08:** Proposed → Approved/Rejected status flow. Fingerprint tracklists start as 'proposed'. User reviews and approves/rejects the whole tracklist. Individual tracks can be edited before approval. Consistent with proposal pattern.
 - **D-09:** Color-coded confidence badges per track — reuse Phase 15 UI-SPEC confidence color tiers: green (90%+), yellow (70-89%), red (<70%). Badge next to each track in expanded view.
 - **D-10:** "Reject All Low Confidence" bulk action — button to remove all tracks below a configurable confidence threshold (e.g., <50%). Quick cleanup for noisy scan results.
@@ -61,10 +64,10 @@ Scan live set recordings against the fingerprint database to identify tracks wit
 - `src/phaze/tasks/worker.py` — WorkerSettings, task registration
 
 ### UI Design References
-- `.planning/phases/15-1001tracklists-integration/15-UI-SPEC.md` — Confidence color tiers, card layout, spacing, typography (reuse for consistency)
+- `docs/design/0024-tracklist-source-retirement.md` — Confidence color tiers, card layout, spacing, typography (reuse for consistency)
 
 ### Prior Phase Context
-- `.planning/phases/15-1001tracklists-integration/15-CONTEXT.md` — Tracklist model decisions (D-01 through D-23), card layout, filter tabs, actions
+- `docs/design/0024-tracklist-source-retirement.md` — Tracklist model decisions (D-01 through D-23), card layout, filter tabs, actions
 - `.planning/phases/16-fingerprint-service-batch-ingestion/16-CONTEXT.md` — Fingerprint service architecture, Protocol adapters, scoring (D-01 through D-18)
 
 </canonical_refs>
@@ -100,7 +103,7 @@ Scan live set recordings against the fingerprint database to identify tracks wit
 ## Specific Ideas
 
 - Batch scan UI on the Tracklists page as a new tab — not a separate page
-- Fingerprint-generated tracklists share the exact same Tracklist model and card UI as 1001tracklists ones, just with `source='fingerprint'` and per-track confidence
+- Fingerprint-generated tracklists share the exact same Tracklist model and card UI as retired external source ones, just with `source='fingerprint'` and per-track confidence
 - Inline editing for quick corrections — no modal or separate page
 - "Reject All Low Confidence" button for efficient cleanup of noisy scan results
 

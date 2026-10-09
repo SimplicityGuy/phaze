@@ -1,5 +1,8 @@
 # Graph Report - <scratch>/phaze  (2026-06-12)
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 ## Corpus Check
 - 317 files · ~405,642 words
 - Verdict: corpus is large enough that graph structure adds value.
@@ -321,7 +324,7 @@ Nodes (80): create_app(), Create and configure the FastAPI application., empty_s
 
 ### Community 19 - "Community 19"
 Cohesion: 0.03
-Nodes (82): base.html layout template, bulk_actions.html partial, 1001Tracklists source (domain concept), Agent (file-server agent) domain concept, Confidence score (domain concept), CUE sheet (domain concept), Discogs match candidate domain concept, Discogs match (domain concept) (+74 more)
+Nodes (82): base.html layout template, bulk_actions.html partial, retired external source source (domain concept), Agent (file-server agent) domain concept, Confidence score (domain concept), CUE sheet (domain concept), Discogs match candidate domain concept, Discogs match (domain concept) (+74 more)
 
 ### Community 20 - "Community 20"
 Cohesion: 0.04

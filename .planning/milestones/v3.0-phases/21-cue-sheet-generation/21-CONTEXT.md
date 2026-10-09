@@ -1,12 +1,15 @@
 # Phase 21: CUE Sheet Generation - Context
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Gathered:** 2026-04-03
 **Status:** Ready for planning
 
 <domain>
 ## Phase Boundary
 
-Generate .cue companion files from tracklist data. Prefer fingerprint timestamps over 1001tracklists positions. Enrich CUE files with Discogs metadata via REM comments. Provide CUE generation from the tracklist detail page and a dedicated CUE management page for batch operations. Write .cue files to the filesystem next to destination audio files.
+Generate .cue companion files from tracklist data. Prefer fingerprint timestamps over retired external source positions. Enrich CUE files with Discogs metadata via REM comments. Provide CUE generation from the tracklist detail page and a dedicated CUE management page for batch operations. Write .cue files to the filesystem next to destination audio files.
 
 </domain>
 
@@ -14,9 +17,9 @@ Generate .cue companion files from tracklist data. Prefer fingerprint timestamps
 ## Implementation Decisions
 
 ### Timestamp Resolution
-- **D-01:** CUE timestamps use MM:SS:FF format at 75 frames per second per the CUE sheet specification. All source timestamps (fingerprint or 1001tracklists) must be converted to this format.
-- **D-02:** Fingerprint timestamps always take priority over 1001tracklists timestamps when both exist for the same track.
-- **D-03:** Tracks without any timestamp (no fingerprint offset, no 1001tracklists time) are omitted from the generated CUE file entirely.
+- **D-01:** CUE timestamps use MM:SS:FF format at 75 frames per second per the CUE sheet specification. All source timestamps (fingerprint or retired external source) must be converted to this format.
+- **D-02:** Fingerprint timestamps always take priority over retired external source timestamps when both exist for the same track.
+- **D-03:** Tracks without any timestamp (no fingerprint offset, no retired external source time) are omitted from the generated CUE file entirely.
 
 ### CUE Generation Trigger
 - **D-04:** "Generate CUE" button on the tracklist detail page (inline, alongside existing actions like Match to Discogs). Primary per-tracklist action.
@@ -81,10 +84,10 @@ Generate .cue companion files from tracklist data. Prefer fingerprint timestamps
 ## Existing Code Insights
 
 ### Reusable Assets
-- `TracklistTrack.timestamp` (String(20)): Source timestamps from fingerprint or 1001tracklists
+- `TracklistTrack.timestamp` (String(20)): Source timestamps from fingerprint or retired external source
 - `TracklistTrack.position` (Integer): Track ordering within tracklist
 - `DiscogsLink` model: Denormalized Discogs metadata (label, year, artist, title) per track
-- `Tracklist.source` field: Distinguishes 'fingerprint' vs '1001tracklists' source
+- `Tracklist.source` field: Distinguishes 'fingerprint' vs 'retired external source' source
 - HTMX inline action buttons: Pattern from tracklist page (Match to Discogs, Bulk-link)
 - Nav tab pattern: Used by /search, /tags, /tracklists
 

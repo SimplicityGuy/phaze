@@ -1,19 +1,19 @@
 # ADR-0023: Tracklist acquisition phase 2 verdicts (parser fixes, ajax JSON search, MixesDB, captcha re-queue)
 
-Date: 2026-10-07. Bead: phaze-rs4x6 (decision bead, epic phaze-4mdi7). Status: accepted.
+Date: 2026-10-07. Bead: phaze-rs4x6 (decision bead, epic phaze-4mdi7). Status: superseded for external acquisition by `docs/design/0024-tracklist-source-retirement.md`.
 
 This follows `docs/design/0022-tracklist-acquisition-spike-verdicts.md`, which selected four paths to carry forward. The phase 2 spikes
 have now run. This ADR records one verdict per path, each citing its spike doc by filename and the measured quantity that decided it.
-Nothing here is product code.
+Nothing here is product code. All acquisition decisions below are historical; the 2026-10-08 cancellation takes precedence.
 
 ## Decision
 
 | # | Path | Verdict | Authority (phaze-rs4x6, 2026-10-07) | Spike doc |
 |---|---|---|---|---|
 | 1 | Parser fixes (mark unresolved `ID - ID` rows; row-count canary against `numTracks`) | **DONE** | shipped work, no decision needed | `docs/spikes/phaze-gakqn-parser-gap-audit.md` |
-| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **DEFERRED**, nothing built | the operator (see "Operator decisions") | `docs/spikes/phaze-movg3-ajax-plain-httpx.md` |
+| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **CANCELED**; historically deferred, nothing built | the operator (see "Operator decisions") | `docs/spikes/phaze-movg3-ajax-plain-httpx.md` |
 | 3 | MixesDB as a second source | **BACKLOG** for a deeper investigation (bead phaze-cwyuq); neither GO nor NO-GO | the operator (see "Operator decisions") | `docs/spikes/phaze-q2v7w-mixesdb-archive-coverage.md` |
-| 4 | Captcha re-queue (script merged in PR #678, bead phaze-c9go7) | **Running it is deferred** until after the next release | the operator (see "Operator decisions") | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
+| 4 | Captcha re-queue (script merged in PR #678, bead phaze-c9go7) | **CANCELED**; earlier release deferral superseded | the operator (see "Operator decisions") | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
 
 The operator's authority (phaze-rs4x6, 2026-10-07) is limited to the three timing and scope statements quoted below. The evidence summaries, the correction in
 section 2 and the standing conditions in section 4 are the planner's and the spikes', not the operator's.
@@ -34,22 +34,19 @@ Shipped in beads phaze-8yvb0 and phaze-xtwjg, merged into the phase 2 epic branc
 Its rate over the other detail pages the drain stores is unmeasured. The unresolved-row rate over the full archive is likewise unmeasured
 (12 rows in 64, from two public captures).
 
-### 2. ajax JSON search: DEFERRED, nothing built
+### 2. ajax JSON search: CANCELED
 
-Evidence, from `docs/spikes/phaze-movg3-ajax-plain-httpx.md`: plain `httpx` with the honest User-Agent, no browser, no cookies and no
-prior navigation was served the JSON in **2 of 2** requests (`success: true`, 20 entries, 4851 bytes each, byte-identical), 0 of 2
-met a challenge. The sample is tiny (2 requests, about 10 s apart, one IP, one minute), and the HTTP status line and `content-type` value
-were lost from the record by a `tail` in the wrapper. The spike's own limits say it cannot bound the rate at which a challenge would appear.
+The operator canceled this path on 2026-10-08; the original words are preserved in phaze-1soo9
+and phaze-tqoty. See `docs/design/0024-tracklist-source-retirement.md`. Nothing was built and no
+revival condition remains.
 
-**Planner's correction (a finding, not the operator's).** The spike and the planner described the benefit as "takes the browser out of
-the search step". That premise does not hold against the code. The drain's search leg is already plain `httpx`: it POSTs to
-`/search/result.php` (`SEARCH_URL`) in `src/phaze/services/tracklist_scraper.py`, and only the detail page uses the browser. The JSON
-search would also not reduce the number of host requests per set, which stays one search plus one detail fetch. Its only effect would be to
-swap scraped HTML for a smaller structured response. With the claimed benefit gone, the case for building it is a marginal one.
+Historical evidence from `docs/spikes/phaze-movg3-ajax-plain-httpx.md`: 2 of 2 requests returned
+`success: true`, 20 entries, 4851 bytes each, byte-identical; 0 of 2 met a challenge. Requests were
+about 10 s apart, from one IP in one minute. HTTP status and content type were lost by a wrapper.
+Those measurements establish only that session's behavior, not permission to acquire data.
 
-What would revive it: the HTML search markup breaking (the parser no longer matching `/search/result.php`), or the HTML search starting to
-be challenged while the JSON endpoint still answers plain `httpx`. Either needs a fresh rate-bounded probe first, because 2 requests cannot
-say how many the endpoint tolerates. Nothing was built.
+The planner's historical correction remains: search already used plain `httpx`; JSON would not
+reduce the one-search-plus-one-detail request count. This is the planner's finding (phaze-rs4x6, 2026-10-07), not an attributed selection.
 
 ### 3. MixesDB as a second source: BACKLOG, neither GO nor NO-GO
 
@@ -69,17 +66,17 @@ The spike's own verdict was "GO, narrowly" for tracklist content but not cues, a
 not adopt it. The "MixesDB source" selection in `docs/design/0022-tracklist-acquisition-spike-verdicts.md` (its section 3 and decision-table
 row 3) is **superseded for now** by this deferral. The coverage figures are a floor and a sample estimate, not a decision.
 
-### 4. Captcha re-queue: running it is deferred
+### 4. Captcha re-queue: CANCELED
 
-The re-queue script merged in PR #678 (bead phaze-c9go7). The operator deferred running it until after the next release. Standing
-conditions (the planner's, derived from the bug that motivates the script, not the operator's wording):
+The operator canceled this acquisition-only support on 2026-10-08. The earlier release timing is
+superseded and gives no permission to run a re-queue. The script, originally merged in PR #678, and runtime support are removed.
+Authority: phaze-1soo9 and phaze-tqoty; see `docs/design/0024-tracklist-source-retirement.md`.
 
-1. The captcha fix must be deployed to the running drain. As of 2026-10-07 the containers were at image revision 110b7f98, built
-   2026-10-05, which lacks `looks_like_captcha`. Running the re-queue against that image would re-fetch pages and classify the captcha
-   again as "no tracklist".
-2. The operator must give an explicit go at run time. The deferral above is not a standing authorisation to run.
+Historical deployment observation: on 2026-10-07 the containers were at image revision 110b7f98,
+built 2026-10-05, without the then-proposed captcha classifier. This is an observation about that
+image, not a current deployment check or a remaining action.
 
-## Operator decisions (phaze-rs4x6, 2026-10-07, session crossed midnight UTC)
+## Historical operator decisions (phaze-rs4x6, 2026-10-07, session crossed midnight UTC)
 
 Durable record: this section, per `docs/design/0012-verification-fidelity-and-operator-attribution.md` rule 2. Only the operator's own words
 are quoted as answers. The attribution extends no further than the words.
@@ -120,7 +117,6 @@ not established in this ADR; it is recorded so the next reader does not assume t
 - **A limit stated to a developer must be enforced inside the request loop, not trusted to the caller.** The MixesDB 0.52 s breach came from
   restarting a process whose last-request time was lost; a 5 s spacing held only in the runner's memory does not survive a restart.
   General form: a persisted per-host throttle that a restart must wait out, which the spike already recommends for the build.
-- **A deferral records its revival condition.** Section 2 names what would revive the ajax search so that "deferred" is not read as
-  "rejected" or as "forgotten". General form: a deferred path states the evidence that reopens it, or it is an unrecorded NO-GO.
+- **A cancellation replaces a deferral.** The canceled acquisition paths have no remaining revival conditions.
 - **A small clean sample is a claim about one session.** 2 of 2 plain `httpx` requests served says nothing about a rate. See
   `docs/design/0016-transferred-model-verification.md` and the matching lesson in `docs/design/0022-tracklist-acquisition-spike-verdicts.md`.

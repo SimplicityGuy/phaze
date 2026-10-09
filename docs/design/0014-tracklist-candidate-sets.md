@@ -1,16 +1,22 @@
-# ADR-0014 — Candidate sets for the 1001Tracklists drain: classify, dedup, cache
+# ADR-0014 — Candidate sets for the retired external source drain: classify, dedup, cache
+
+> Superseded: external acquisition and all proposed follow-ups are canceled. Recommendations and method descriptions below are historical measurements, not instructions or authorization. See `docs/design/0024-tracklist-source-retirement.md`.
+
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 
 **Bead:** phaze-fq9h.3 (epic phaze-fq9h) · **Status:** implemented · **Date:** 2026-08-02
 
 ## The constraint, restated because it drives every decision below
 
-The 1001Tracklists scrape is not CPU-bound and cannot be parallelized out of existence. Its
+The retired external source scrape is not CPU-bound and cannot be parallelized out of existence. Its
 robots.txt asks for an **8-second crawl-delay applied to the whole host**, so the entire system —
 every worker, every process, every restart — shares one budget:
 
 | Quantity | Value | Source |
 |---|---|---|
-| Crawl-delay | 8 s / request / host | 1001TL robots.txt (phaze-hu8v) |
+| Crawl-delay | 8 s / request / host | retired external source robots.txt (phaze-hu8v) |
 | Host requests per day | **10,800** | 86,400 / 8 |
 | Host requests per lookup | ~2.5 | search + detail render + fractional Turnstile reload (spike phaze-dmvs) |
 | **Lookups per day** | **~4,320** | 10,800 / 2.5 |
@@ -157,7 +163,7 @@ a boolean**, and that is the whole design. Four different things produce "no tra
 | Outcome | Meaning | Cache effect |
 |---|---|---|
 | `found` | Located and persisted | Never re-queried (a past event's tracklist does not change) |
-| `not_found` | The search ran cleanly; 1001TL has nothing | Suppressed for the **negative TTL** (180 days), then re-checked |
+| `not_found` | The search ran cleanly; retired external source has nothing | Suppressed for the **negative TTL** (180 days), then re-checked |
 | `blocked` | Turnstile interstitial survived the retry loop | Short exponential backoff, then back in the queue |
 | `render_failed` / `search_failed` / `parse_failed` | Our browser or our selectors | Short exponential backoff, then back in the queue |
 
@@ -168,7 +174,7 @@ to run. Turnstile failed ~2 of 8 attempts in spike phaze-dmvs, so this is not a 
 
 A set that keeps failing transiently is **parked** (`TRANSIENT_EXHAUSTED`) after 5 attempts rather
 than retried forever — and pointedly *not* rewritten as a negative, because we still do not know
-whether it is on 1001TL. Unknown outcome strings (a row from a newer version) fall through to
+whether it is on retired external source. Unknown outcome strings (a row from a newer version) fall through to
 "re-query": a wasted request is recoverable, a silently dropped set is not.
 
 The negative TTL is 180 days: long enough not to turn the drain into a treadmill re-asking answered

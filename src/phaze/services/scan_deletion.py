@@ -400,7 +400,7 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
     Dedup needs no reset: duplicate groups are computed from ``files.sha256_hash``, which the
     caller has just rewritten, and a ``dedup_resolution`` blocks the re-point. Deliberately KEPT:
     ``stage_skip`` (an operator's skip decision), ``file_companions`` (directory pairing, not
-    content), and the tracklist tables (matched from names and the 1001TL catalogue, and an
+    content), and the tracklist tables (matched from names and the retired provider catalogue, and an
     approved tracklist is operator state). Does NOT commit.
     """
     pending_proposals = select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.PENDING.value)

@@ -1,5 +1,8 @@
 # ADR-0002 — Remove audio fingerprinting entirely
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 | | |
 | --- | --- |
 | **Status** | Accepted — removed |
@@ -38,7 +41,7 @@ the persisted `fingerprint_results` table, and every configuration knob
 a soft-disable** — no feature flag, no dormant adapter, no skipped test survives.
 
 This does **not** remove tracklist lookup (epic `phaze-fq9h`), which is an independent
-capability sourced from 1001tracklists rather than from audio matching, and is unaffected.
+capability sourced from retired external source rather than from audio matching, and is unaffected.
 
 Reinstatement is **not abandoned** — it is deferred to `phaze-oof3`, a spike-gated epic filed
 alongside this removal that carries the full quantitative record below (and more) so a future
@@ -162,9 +165,9 @@ should not be re-proposed as cleanup work, and docs must not describe its retent
 ### Accepted
 
 - phaze has no audio-fingerprinting or fingerprint-based deduplication/identification
-  capability. Tracklist identification for concert sets now relies solely on 1001tracklists
+  capability. Tracklist identification for concert sets now relies solely on retired external source
   lookup (`search_tracklist`, epic `phaze-fq9h`); the sibling `scan_live_set` audio-matching
-  producer is gone, so a set with no 1001tracklists match has no fallback identification path.
+  producer is gone, so a set with no retired external source match has no fallback identification path.
 - File-level deduplication is unaffected: it was always driven by the discovery-time SHA-256
   hash (`services/dedup.py`), not by either fingerprinting engine.
 - The `fingerprint` agent-worker lane (2 of 6 CPU-bound concurrency slots) is retired; the

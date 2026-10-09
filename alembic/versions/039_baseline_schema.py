@@ -304,7 +304,7 @@ CREATE TABLE public.tracklists (
     latest_version_id uuid,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    source character varying(30) DEFAULT '1001tracklists'::character varying NOT NULL,
+    source character varying(30) DEFAULT 'manual'::character varying NOT NULL,
     status character varying(20) DEFAULT 'approved'::character varying NOT NULL,
     search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, ((COALESCE(artist, ''::text) || ' '::text) || COALESCE(event, ''::text)))) STORED
 );

@@ -1,5 +1,8 @@
 # Phase 17: Live Set Matching & Tracklist Review - Discussion Log
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 > **Audit trail only.** Do not use as input to planning, research, or execution agents.
 > Decisions are captured in CONTEXT.md — this log preserves the alternatives considered.
 
@@ -74,7 +77,7 @@
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Source field on Tracklist | String column: '1001tracklists' or 'fingerprint'. | ✓ |
+| Source field on Tracklist | String column: 'retired external source' or 'fingerprint'. | ✓ |
 | Source on TracklistVersion only | Track source per version. | |
 | Separate flag | Boolean 'is_fingerprint_generated'. | |
 
@@ -101,7 +104,7 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Source badge on cards | Each card shows source badge. Filter tabs add source filter. | ✓ |
-| Separate source filter tab | Add 'Fingerprint' and '1001Tracklists' filter tabs. | |
+| Separate source filter tab | Add 'Fingerprint' and 'retired external source' filter tabs. | |
 | Combined with color coding | Source indicated by card color/accent. | |
 
 **User's choice:** Source badge on cards

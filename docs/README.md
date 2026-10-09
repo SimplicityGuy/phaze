@@ -55,7 +55,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Analysis Evaluation Report Template](analysis-evaluation-report-template.md)** | 📝 Comparable baseline and candidate measurements, coverage, and quality evidence |
 | **[Pipeline Stats Performance](pipeline-stats-performance.md)** | ⏱️ Current poll baseline, skip-probe diagnosis, and post-deployment verification |
 | **[Postgres JIT](postgres-jit.md)** | 🧮 Measured JIT cost vs benefit across every admin and worker statement, the 500,000-cost cliff, and the read-only host-prod confirmation script |
-| **[Tracklist Acquisition Retirement](tracklist-scraping.md)** | Removal decision and upgrade instructions |
+| **[Tracklist Acquisition Retirement](tracklist-retirement.md)** | Removal decision and upgrade instructions |
 | **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
 | **[Historical Evidence Audit](historical-evidence-audit-2026-09-11.md)** | 🧾 Reproducible identifier, numeric-equivalence, archive-boundary, link, Mermaid, and graph-reference reconciliation |
 | **[Stranded Analysis Recovery](stranded-analysis-recovery.md)** | 🔄 Diagnosis, measured replay cost, and the scoped operator command for orphaned fine-tier analyses |

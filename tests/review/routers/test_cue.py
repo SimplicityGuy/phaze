@@ -39,7 +39,7 @@ async def _create_approved_tracklist_with_file(
     applied: bool = True,
     with_timestamps: bool = True,
     track_count: int = 3,
-    source: str = "1001tracklists",
+    source: str = "manual",
 ) -> tuple[Tracklist, FileRecord]:
     """Create an approved tracklist with an applied file and timestamped tracks.
 
@@ -79,7 +79,7 @@ async def _create_approved_tracklist_with_file(
     tracklist = Tracklist(
         id=tracklist_id,
         external_id=f"ext-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://www.1001tracklists.com/tracklist/{uuid.uuid4().hex[:6]}",
+        source_url=f"https://example.invalid/tracklist/{uuid.uuid4().hex[:6]}",
         file_id=file_id,
         match_confidence=95,
         artist=artist,
@@ -341,7 +341,7 @@ async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSess
         file_id=file_id,
         artist="Test",
         latest_version_id=uuid.uuid4(),
-        source="1001tracklists",
+        source="manual",
         status="proposed",  # Not approved
     )
     session.add(tracklist)
@@ -511,7 +511,7 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
         file_id=file_id,
         artist="Test",
         latest_version_id=None,  # No version
-        source="1001tracklists",
+        source="manual",
         status="approved",
     )
     session.add(tracklist)

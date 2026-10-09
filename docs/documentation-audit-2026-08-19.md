@@ -698,16 +698,16 @@ the fact; known drift is logged here instead, dated, without touching the rows t
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-UI-SPEC.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-VALIDATION.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-VERIFICATION.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-01-PLAN.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-01-SUMMARY.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-02-PLAN.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-02-SUMMARY.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-CONTEXT.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-DISCUSSION-LOG.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-RESEARCH.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-UI-SPEC.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-VALIDATION.md` | historical planning evidence | unchanged |
-| `.planning/milestones/v2.0-phases/15-1001tracklists-integration/15-VERIFICATION.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-01-PLAN.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-01-SUMMARY.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-02-PLAN.md` | historical planning evidence | unchanged |
@@ -1522,7 +1522,7 @@ the fact; known drift is logged here instead, dated, without touching the rows t
 | `docs/superpowers/specs/2026-07-07-agent-queue-lanes-design.md` | dated design evidence | unchanged |
 | `docs/superpowers/specs/2026-07-14-alembic-baseline-flatten-design.md` | dated design evidence | unchanged |
 | `docs/superpowers/specs/README.md` | archive boundary | changed |
-| `docs/tracklist-scraping.md` | current documentation | unchanged |
+| `docs/tracklist-retirement.md` | current documentation | unchanged |
 | `docs/ui-design-reference.md` | current documentation | changed |
 | `docs/ui-reference-fixtures.html` | current documentation | unchanged |
 | `src/phaze/agent_watcher/README.md` | embedded documentation | changed |

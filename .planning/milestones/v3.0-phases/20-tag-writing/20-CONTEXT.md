@@ -1,5 +1,8 @@
 # Phase 20: Tag Writing - Context
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Gathered:** 2026-04-03
 **Status:** Ready for planning
 
@@ -14,7 +17,7 @@ Write corrected metadata tags to destination file copies (never originals). Show
 ## Implementation Decisions
 
 ### Tag Source & Proposal Logic
-- **D-01:** Tag sources are FileMetadata (existing tags from file), filename parsing, and 1001tracklists data (artist, event from Tracklist model). NOT Discogs — DiscogsLinks are per-track within a tracklist, not per-file. Discogs data is for CUE sheets (Phase 21).
+- **D-01:** Tag sources are FileMetadata (existing tags from file), filename parsing, and retired external source data (artist, event from Tracklist model). NOT Discogs — DiscogsLinks are per-track within a tracklist, not per-file. Discogs data is for CUE sheets (Phase 21).
 - **D-02:** Priority cascade for merging: tracklist data wins over FileMetadata wins over filename parsing. Each field resolved independently.
 - **D-03:** Only EXECUTED files (with destination copies) are eligible for tag writing.
 

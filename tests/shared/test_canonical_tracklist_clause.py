@@ -11,7 +11,7 @@ site re-spelled ``Tracklist.propagated_from_set_key.is_(None)`` by hand. One of 
 copies (``tasks/tracklist.py``'s file-id resolution) ANDed the canonical filter directly onto a
 file-id predicate where the row in scope was itself a propagated projection -- so the intersection
 was always empty. ``refreshed`` stayed 0, no exception was raised, and the "Refresh from
-1001Tracklists" button on every propagated file silently did nothing. Nothing but code review
+manual" button on every propagated file silently did nothing. Nothing but code review
 enforced the rule, and code review missed it.
 
 The fix (phaze-97pkq) gives the invariant a Python SEAM -- ``Tracklist.is_canonical()`` /

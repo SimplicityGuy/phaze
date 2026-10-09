@@ -1,4 +1,7 @@
 <!-- GSD:DOC -->
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 # UI Redesign — DAG-Centric Hybrid Console (v7.0)
 
 **Date:** 2026-06-28
@@ -101,7 +104,7 @@ Each rail node loads a workspace with a Jura header (title + live sub-count + st
 - **Fingerprint** — chromaprint/AcoustID status. Reuses `/pipeline/fingerprint`.
 - **Analyze** — three **lane summary cards** (local 8/8 · A1 2/4 · k8s 12-pending with Kueue quota note) + the in-flight file queue with a per-file lane badge. Actions: Route rules, Pause stage. Surfaces the Phase 54 **Inadmissible** alert inline.
 - **Track-ID** — AcoustID → MusicBrainz recording match + confidence.
-- **Tracklist** — the 1001Tracklists sub-chain shown as an inline 3-step (Search ✓ → Scrape ✓ → Match ⏳) + per-set match progress.
+- **Tracklist** — the retired external source sub-chain shown as an inline 3-step (Search ✓ → Scrape ✓ → Match ⏳) + per-set match progress.
 - **Propose** — AI rename/path proposals with model + confidence.
 
 ## 7. Review & Apply (the approval gate)

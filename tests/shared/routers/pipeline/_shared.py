@@ -421,7 +421,7 @@ def _link_tracklist(file_rec: FileRecord) -> Tracklist:
     uid = uuid.uuid4()
     return Tracklist(
         external_id=uid.hex,
-        source_url=f"https://www.1001tracklists.com/tracklist/{uid.hex}/x.html",
+        source_url="https://example.invalid/tracklist",
         file_id=file_rec.id,
     )
 
@@ -437,7 +437,7 @@ def _link_propagated_tracklist(file_rec: FileRecord, *, external_id: str, set_ke
     """
     return Tracklist(
         external_id=external_id,
-        source_url=f"https://www.1001tracklists.com/tracklist/{external_id}/x.html",
+        source_url="https://example.invalid/tracklist",
         file_id=file_rec.id,
         propagated_from_set_key=set_key,
         propagation_confidence="exact",

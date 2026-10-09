@@ -1,5 +1,8 @@
 # Phase 19: Discogs Cross-Service Linking - Research
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Researched:** 2026-04-02
 **Domain:** Cross-service data linking, fuzzy matching, HTMX inline UI, search extension
 **Confidence:** HIGH
@@ -302,7 +305,7 @@ discogs_q = (
 
 ### Pitfall 1: Missing Artist/Title on Tracks
 **What goes wrong:** Sending empty queries to discogsography returns garbage results.
-**Why it happens:** Some tracklist tracks have NULL artist or title (e.g., ID-only tracks from 1001Tracklists).
+**Why it happens:** Some tracklist tracks have NULL artist or title (e.g., ID-only tracks from retired external source).
 **How to avoid:** D-02 mandates filtering: only match tracks where BOTH artist AND title are non-null and non-empty.
 **Warning signs:** High candidate counts with low confidence scores across the board.
 

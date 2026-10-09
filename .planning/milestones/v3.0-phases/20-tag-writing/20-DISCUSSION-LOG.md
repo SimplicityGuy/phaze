@@ -1,5 +1,8 @@
 # Phase 20: Tag Writing - Discussion Log
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 > **Audit trail only.** Do not use as input to planning, research, or execution agents.
 > Decisions are captured in CONTEXT.md — this log preserves the alternatives considered.
 
@@ -18,9 +21,9 @@
 | FileMetadata + Discogs | Start from FileMetadata, enrich with DiscogsLink data. | |
 | AI-generated proposals | Use litellm to generate corrected tags. | |
 | Manual editing only | User types corrected values manually. | |
-| FileMetadata + Filename + 1001tracklists | (User's choice via Other) | ✓ |
+| FileMetadata + Filename + retired external source | (User's choice via Other) | ✓ |
 
-**User's choice:** FileMetadata + filename parsing + 1001tracklists data
+**User's choice:** FileMetadata + filename parsing + retired external source data
 **Notes:** Discogs data doesn't apply to file-level tags — DiscogsLinks are per-track within a tracklist, the file is the full live set. Discogs is for CUE sheets (Phase 21).
 
 ### Should Discogs data be included as a tag source?
@@ -28,7 +31,7 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Yes, include Discogs | Pull genre, label, year from accepted DiscogsLinks. | |
-| No, skip Discogs | Only FileMetadata + filename + 1001tracklists. | ✓ |
+| No, skip Discogs | Only FileMetadata + filename + retired external source. | ✓ |
 
 **User's choice:** No — Discogs is per-track, not per-file
 **Notes:** One live set/concert maps to many DiscogsLinks. Can't use per-track data for file-level tags.

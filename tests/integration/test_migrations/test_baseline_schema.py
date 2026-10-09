@@ -271,7 +271,7 @@ def test_baseline_is_the_only_migration() -> None:
     the tighter `node_loss_redrives` ceiling; 058 (phaze-5c6i2) adds a partial btree ON
     `analysis.analysis_completed_at` for the lane cards' rolling-24h/lifetime PROCESSED counts;
     059 (phaze-6nrrf) creates tracklist_drain_arm_state, the durable operator ARM/DISARM flag for
-    the continuous 1001Tracklists drain, seeded disarmed (DEFAULT OFF); 060 (phaze-w55w1) drops
+    the continuous retired acquisition drain, seeded disarmed (DEFAULT OFF); 060 (phaze-w55w1) drops
     analysis.sampled, which could only ever describe a window-capping policy the code no longer
         implements now that every file is analyzed exhaustively (ADR-0007 (windowed analysis) §7); 061 adds durable,
         opaque duplicate review plans that bind a canonical choice to complete reviewed membership;
@@ -351,7 +351,7 @@ def test_baseline_is_the_only_migration() -> None:
         "079_companion_content_features.py",
         "080_companion_junk_review.py",
         "081_files_agent_folder_index.py",
-        "082_remove_1001tracklists.py",
+        "082_retire_external_tracklist_acquisition.py",
         "083_files_missing_at.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
@@ -395,7 +395,7 @@ async def test_tracklist_version_unique_constraint_enforced(migrated_engine: Asy
         await conn.execute(
             text(
                 "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
-                "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+                "VALUES (:id, :ext, :url, false, 'manual', 'approved', NOW(), NOW())"
             ),
             {"id": tracklist_id, "ext": f"race-{tracklist_id}", "url": "https://example.com/tl"},
         )
@@ -420,7 +420,7 @@ async def test_discogs_link_one_accepted_per_track_enforced(migrated_engine: Asy
         await conn.execute(
             text(
                 "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
-                "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+                "VALUES (:id, :ext, :url, false, 'manual', 'approved', NOW(), NOW())"
             ),
             {"id": tracklist_id, "ext": f"d07-{tracklist_id}", "url": "https://example.com/tl"},
         )
@@ -833,7 +833,7 @@ async def test_migration_041_dedupes_preexisting_duplicate_versions() -> None:
             await conn.execute(
                 text(
                     "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, latest_version_id, created_at, updated_at) "
-                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', :latest, NOW(), NOW())"
+                    "VALUES (:id, :ext, :url, false, 'manual', 'approved', :latest, NOW(), NOW())"
                 ),
                 {"id": tracklist_id, "ext": f"dedupe-{tracklist_id}", "url": "https://example.com/tl", "latest": winner_id},
             )
@@ -987,7 +987,7 @@ async def test_migration_049_preserves_existing_timestamp_values_as_utc() -> Non
             await conn.execute(
                 text(
                     "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
-                    "VALUES (:id, :ext, 'https://example.com/tl', false, '1001tracklists', 'approved', :ts, :ts)"
+                    "VALUES (:id, :ext, 'https://example.com/tl', false, 'manual', 'approved', :ts, :ts)"
                 ),
                 {"id": tracklist_id, "ext": f"tz-{tracklist_id}", "ts": seeded_dt},
             )
@@ -1281,7 +1281,7 @@ async def test_migration_051_downgrade_deletes_discogs_links_before_tracklist_tr
             await conn.execute(
                 text(
                     "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
-                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+                    "VALUES (:id, :ext, :url, false, 'manual', 'approved', NOW(), NOW())"
                 ),
                 {"id": canonical_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-canon"},
             )
@@ -1306,7 +1306,7 @@ async def test_migration_051_downgrade_deletes_discogs_links_before_tracklist_tr
                 text(
                     "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, "
                     "propagated_from_set_key, propagation_confidence, created_at, updated_at) "
-                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', :set_key, 'exact', NOW(), NOW())"
+                    "VALUES (:id, :ext, :url, false, 'manual', 'approved', :set_key, 'exact', NOW(), NOW())"
                 ),
                 {"id": propagated_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-prop", "set_key": "set-psa96"},
             )

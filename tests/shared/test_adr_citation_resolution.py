@@ -340,6 +340,6 @@ class TestDetectorMechanics:
         assert colon is not None and colon.group(1) == "0008"
 
     def test_an_h1_naming_the_wrong_number_is_detectable(self) -> None:
-        match = _H1_RE.match("# ADR-0004 — Candidate sets for the 1001Tracklists drain")
+        match = _H1_RE.match("# ADR-0004 — Candidate sets for the retired acquisition drain")
         assert match is not None
         assert match.group(1) != "0014"

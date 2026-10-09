@@ -1,6 +1,6 @@
 # Tracklist acquisition retirement
 
-1001Tracklists support was removed in phaze-7muoo after the operator received an explicit response that scraping is not allowed and no programmatic API is offered.
+The external acquisition support was removed in phaze-7muoo after the operator received an explicit response that scraping is not allowed and no programmatic API is offered.
 
 Search, detail rendering, parsing, automatic drain continuation, refresh/prioritization endpoints, captured provider fixtures and acquisition scripts are removed. The production image no longer installs Patchright, Chrome or Xvfb. Playwright remains a development-only browser testing dependency.
 
@@ -8,4 +8,4 @@ Stored tracklists, source provenance, local cue companions, embedded tags, Disco
 
 Stop the old controller worker before upgrading, so an already-running old process cannot finish a provider request. Deploy the new image to the API and controller, then run the normal startup migration. Migration 082 drops the retired lookup cache, per-file outcomes, priority flags and drain arm state; it preserves tracklists, versions, tracks and Discogs links. New tracklists default to the manual source. Old queued acquisition jobs have no registered handler in the new worker and cannot issue requests. A downgrade recreates empty acquisition tables with the drain disarmed; removed lookup history is not restored.
 
-Historical planning and spike records describe the retired implementation and do not authorize renewed acquisition.
+Ajax JSON search and captcha re-queue are canceled. See `docs/design/0024-tracklist-source-retirement.md` for the operator authority and superseded decisions. Historical planning and spike records do not authorize renewed acquisition.

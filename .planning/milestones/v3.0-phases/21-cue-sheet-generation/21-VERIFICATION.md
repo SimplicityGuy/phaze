@@ -7,7 +7,7 @@ re_verification:
   previous_status: gaps_found
   previous_score: 11/13
   gaps_closed:
-    - "Fingerprint timestamps take priority over 1001tracklists timestamps — source badge now shown in CUE management rows, fingerprint sorted first"
+    - "Fingerprint timestamps take priority over retired external source timestamps — source badge now shown in CUE management rows, fingerprint sorted first"
     - "Tracklist card Generate CUE button transitions to Regenerate CUE — cue_version context passed from router, HX-Target detection routes response to correct partial"
   gaps_remaining: []
   regressions: []
@@ -15,10 +15,13 @@ human_verification:
   - test: "Generate CUE from tracklist card and verify button changes to Regenerate CUE"
     expected: "After generating a CUE, the card should show 'Regenerate CUE' button and a CUE vN badge"
     why_human: "Requires live app with an EXECUTED tracklist; button state depends on runtime cue_version from filesystem scan"
-  - test: "File with both fingerprint and 1001tracklists tracklists — verify fingerprint badge appears in indigo and sorts first"
-    expected: "Fingerprint row appears above 1001tracklists row on /cue page with an indigo-coloured source badge"
+  - test: "File with both fingerprint and retired external source tracklists — verify fingerprint badge appears in indigo and sorts first"
+    expected: "Fingerprint row appears above retired external source row on /cue page with an indigo-coloured source badge"
     why_human: "Requires seeded database with both source types for the same file"
 ---
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 
 # Phase 21: CUE Sheet Generation Verification Report
 
@@ -34,7 +37,7 @@ human_verification:
 | #  | Truth | Status | Evidence |
 |----|-------|--------|---------|
 | 1  | CUE content generated from tracklist data with correct MM:SS:FF timestamps at 75fps | VERIFIED | `seconds_to_cue_timestamp` in cue_generator.py:46-60; 44 unit tests pass |
-| 2  | Fingerprint timestamps take priority over 1001tracklists timestamps | VERIFIED | `_get_eligible_tracklist_query` ORDER BY places `(Tracklist.source == "fingerprint").desc()` first (cue.py lines 48-53); source badge shown in cue_row.html lines 4-7; `test_cue_list_fingerprint_first` verifies ordering |
+| 2  | Fingerprint timestamps take priority over retired external source timestamps | VERIFIED | `_get_eligible_tracklist_query` ORDER BY places `(Tracklist.source == "fingerprint").desc()` first (cue.py lines 48-53); source badge shown in cue_row.html lines 4-7; `test_cue_list_fingerprint_first` verifies ordering |
 | 3  | Tracks without any timestamp are omitted from the CUE output | VERIFIED | `generate_cue_content` filters `t.timestamp_seconds is not None` at line 111; `test_tracks_without_timestamp_omitted` passes |
 | 4  | CUE files include per-track REM GENRE, REM LABEL, REM YEAR from accepted DiscogsLinks | VERIFIED | `_build_cue_tracks` populates label/year from accepted DiscogsLink; REM tests pass. REM GENRE is always None per D-09 — DiscogsLink has no genre field, documented in code. |
 | 5  | Tracks without accepted DiscogsLink have no REM comments | VERIFIED | `test_no_discogs_metadata` and `test_mixed_tracks_with_and_without_discogs` pass |
@@ -71,7 +74,7 @@ human_verification:
 | `src/phaze/routers/tracklists.py` | `src/phaze/routers/cue.py` | `from phaze.routers.cue import _get_cue_version` | VERIFIED | Line 20 of tracklists.py; used in list_tracklists and approve_tracklist |
 | `src/phaze/templates/tracklists/partials/tracklist_card.html` | `cue_version context` | `{% set cv = tracklist._cue_version ... %}` | VERIFIED | Lines 96-113: reads `_cue_version` attribute (set by list_tracklists) or `cue_version` context var (set by single-card endpoints); button text and badge conditional on cv |
 | `src/phaze/routers/cue.py generate_cue` | `tracklists/partials/tracklist_card.html` | `HX-Target header detection` | VERIFIED | Lines 285-297: `hx_target.startswith("tracklist-")` routes to tracklist_card.html with `cue_version` context; `test_generate_cue_returns_tracklist_card_when_target_is_tracklist` verifies round-trip |
-| `src/phaze/templates/cue/partials/cue_row.html` | `tracklist.source` | template conditional | VERIFIED | Lines 4-7: indigo badge for fingerprint, gray for 1001tracklists |
+| `src/phaze/templates/cue/partials/cue_row.html` | `tracklist.source` | template conditional | VERIFIED | Lines 4-7: indigo badge for fingerprint, gray for retired external source |
 
 ### Data-Flow Trace (Level 4)
 
@@ -105,7 +108,7 @@ Note: Router tests require PostgreSQL. They are substantive and correct — the 
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |------------|------------|-------------|--------|---------|
-| CUE-01 | 21-01, 21-02, 21-03 | System generates .cue companion files from tracklist data, preferring fingerprint timestamps with 1001tracklists fallback | SATISFIED | CUE generation end-to-end works. Fingerprint preference now surfaced via: (a) fingerprint-first ORDER BY in `_get_eligible_tracklist_query`, (b) source badge in cue_row.html distinguishing source types. User can identify and prefer fingerprint row. REQUIREMENTS.md marks CUE-01 as `[x]`. |
+| CUE-01 | 21-01, 21-02, 21-03 | System generates .cue companion files from tracklist data, preferring fingerprint timestamps with retired external source fallback | SATISFIED | CUE generation end-to-end works. Fingerprint preference now surfaced via: (a) fingerprint-first ORDER BY in `_get_eligible_tracklist_query`, (b) source badge in cue_row.html distinguishing source types. User can identify and prefer fingerprint row. REQUIREMENTS.md marks CUE-01 as `[x]`. |
 | CUE-02 | 21-01, 21-02 | CUE files use correct 75fps frame conversion and UTF-8 with BOM encoding | SATISFIED | `seconds_to_cue_timestamp` verified by 9 tests; `utf-8-sig` encoding verified; BOM bytes EF BB BF confirmed by test. REQUIREMENTS.md marks CUE-02 as `[x]`. |
 | CUE-03 | 21-01, 21-02 | CUE files include REM comments with Discogs metadata (genre, label, catalog number, year) | SATISFIED with note | REM LABEL and REM YEAR implemented from accepted DiscogsLinks. REM GENRE always None (DiscogsLink has no genre field — documented as D-09). No catalog number field on DiscogsLink. Requirements text lists fields the model does not expose; code handles what exists. REQUIREMENTS.md marks CUE-03 as `[x]`. |
 
@@ -129,15 +132,15 @@ No TODO/FIXME/placeholder comments. No stub returns. No hardcoded empty data flo
 
 #### 2. Source Badge Rendering on CUE Management Page (live app)
 
-**Test:** Seed a file with both a fingerprint and a 1001tracklists tracklist (both approved, both with timestamped tracks). Visit /cue/.
-**Expected:** Fingerprint row appears first with an indigo badge reading "fingerprint"; 1001tracklists row appears second with a gray badge reading "1001tracklists".
+**Test:** Seed a file with both a fingerprint and a retired external source tracklist (both approved, both with timestamped tracks). Visit /cue/.
+**Expected:** Fingerprint row appears first with an indigo badge reading "fingerprint"; retired external source row appears second with a gray badge reading "retired external source".
 **Why human:** Requires seeded database with two tracklists for the same file from different sources.
 
 ### Gaps Summary
 
 Both gaps from the initial verification are now closed:
 
-**Gap 1 — Fingerprint priority (resolved):** The CUE management page now surfaces source type via a badge on each row (indigo for fingerprint, gray for 1001tracklists). The `_get_eligible_tracklist_query` ORDER BY sorts fingerprint-sourced tracklists first. Two new tests (`test_cue_list_shows_source_badge`, `test_cue_list_fingerprint_first`) verify both behaviors. CUE-01 is now fully satisfied.
+**Gap 1 — Fingerprint priority (resolved):** The CUE management page now surfaces source type via a badge on each row (indigo for fingerprint, gray for retired external source). The `_get_eligible_tracklist_query` ORDER BY sorts fingerprint-sourced tracklists first. Two new tests (`test_cue_list_shows_source_badge`, `test_cue_list_fingerprint_first`) verify both behaviors. CUE-01 is now fully satisfied.
 
 **Gap 2 — Tracklist card regenerate state (resolved):** The `list_tracklists` endpoint now computes `tl._cue_version` for every approved+EXECUTED tracklist via `_get_cue_version`. The `approve_tracklist` endpoint computes and passes `cue_version` in context. `tracklist_card.html` uses `{% set cv = tracklist._cue_version if ... else (cue_version if ... else 0) %}` to read from whichever context source is available, then renders "Regenerate CUE" + "CUE v{{ cv }}" badge when cv > 0. The `generate_cue` endpoint detects `HX-Target: tracklist-{id}` headers and returns the tracklist card partial (instead of cue_row.html), with `cue_version` in context. A new test (`test_generate_cue_returns_tracklist_card_when_target_is_tracklist`) verifies the round-trip.
 

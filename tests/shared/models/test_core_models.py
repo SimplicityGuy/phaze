@@ -40,7 +40,7 @@ def test_all_tables_defined() -> None:
         "dedup_review_plan",  # Opaque reviewed decision required before a dedup resolution commit.
         "deployments",  # Host-observed Phaze container versions (migration 074).
         "stage_skip",  # Phase 87 (87-01, D-13): force-skip marker sidecar (migration 037)
-        # phaze-fq9h.3 (migration 049): persisted positive/negative 1001TL lookup cache, so the
+        # phaze-fq9h.3 (migration 049): persisted positive/negative manual lookup cache, so the
         # rate-capped drain never re-spends a request on a set it has already asked about.
         # phaze-fq9h.8 (migration 052): persisted operator "answer this file first" priority flag,
         # so it survives past the single drain job it was originally passed into.
@@ -48,7 +48,7 @@ def test_all_tables_defined() -> None:
         # (scope, scope_value, convention_kind) with a DB-derived confidence column.
         "filename_convention",
         # phaze-6nrrf (migration 059): the durable operator ARM/DISARM flag for the continuous
-        # 1001Tracklists drain -- one singleton row, seeded disarmed (DEFAULT OFF).
+        # retired acquisition drain -- one singleton row, seeded disarmed (DEFAULT OFF).
         # phaze-x1qr3.1 (migration 063): the per-file set projection -- mean_vector, arc, glyph,
         # camelot_modal, harmonic_discipline, peak_sec, projection_version, 1:1 with files.
         "set_profile",

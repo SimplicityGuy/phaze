@@ -119,7 +119,7 @@ async def test_batched_lookups_pick_the_same_rows_as_the_per_file_helpers(sessio
                 file_id=file_id,
                 artist="Tie Artist",
                 latest_version_id=version_id,
-                source="1001tracklists",
+                source="manual",
                 status="approved",
                 match_confidence=confidence,
             )

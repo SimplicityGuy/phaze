@@ -18,7 +18,7 @@ async def test_retry_url_migration_preserves_rows_and_downgrades_cleanly() -> No
             await connection.execute(
                 text(
                     "INSERT INTO tracklist_lookup_cache (id, set_key, query_text, outcome, source_url, attempts) "
-                    "VALUES (gen_random_uuid(), :key, 'synthetic query', 'blocked', 'https://www.1001tracklists.com/tracklist/abc/x.html', 2)"
+                    "VALUES (gen_random_uuid(), :key, 'synthetic query', 'blocked', 'https://example.invalid/tracklist', 2)"
                 ),
                 {"key": "k" * 64},
             )

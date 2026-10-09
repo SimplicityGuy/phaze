@@ -1,15 +1,15 @@
 # ADR-0022: Tracklist acquisition spike verdicts (looser merging, ajax search, MixesDB, parser fixes)
 
-Date: 2026-10-07. Bead: phaze-i5sp6 (decision bead, epic phaze-5d0wg). Status: accepted.
+Date: 2026-10-07. Bead: phaze-i5sp6 (decision bead, epic phaze-5d0wg). Status: historical; external acquisition superseded by `docs/design/0024-tracklist-source-retirement.md`.
 
-## Decision
+## Historical decision
 
 One verdict per spike-gated path. Each cites its spike doc by filename and the measured quantity that decided it.
 
 | # | Path | Verdict | Operator selected (phaze-i5sp6, 2026-10-06, question and answers recorded below) | Spike recommendation (not operator-decided) | Spike doc |
 |---|---|---|---|---|---|
 | 1 | Looser event+date set merging | **NO-GO** | operator ruled NO-GO ("NO-GO (Recommended)") | n/a (the operator's ruling is the verdict) | `docs/spikes/phaze-5rhjq-collapse-ratio.md` |
-| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **GO** | operator selected "ajax JSON search" to carry forward | spike: the JSON search works for an honest client | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
+| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **CANCELED** (formerly GO) | operator selected "ajax JSON search" to carry forward | spike: the JSON search works for an honest client | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
 | 3 | MixesDB as a second source | **GO**, two conditions | operator selected "MixesDB source" to carry forward | spike: the two conditions, measure real archive coverage first and use the REST API only | `docs/spikes/phaze-2ov24-mixesdb-viability.md` |
 | 4 | Parser fixes (mark unresolved `ID - ID` rows; row-count canary) | **GO** | operator selected "Parser fixes" to carry forward | spike: the specifics, mark unresolved `ID - ID` rows and add a row-count canary against numTracks | `docs/spikes/phaze-gakqn-parser-gap-audit.md` |
 | 5 | Deferred items (below) | **DEFERRED, not decided, not a NO-GO** | not selected | implementer / planner deferral | various |
@@ -35,7 +35,7 @@ Deciding evidence, from `docs/spikes/phaze-5rhjq-collapse-ratio.md`:
 The risk is not paid for by the saving. Do not build event+date or event-only merging. The narrower duration-tolerance lever the spike
 mentions (1,936 same-query splits, 3,394 extra sets) is **not** decided here; see section 5.
 
-### 2. ajax JSON search: GO
+### 2. ajax JSON search: CANCELED (historical GO evidence)
 
 Evidence from `docs/spikes/phaze-gnbct-ajax-endpoints.md`: `search_tracklist.php` returned valid JSON on 2 of 2 requests with 0
 challenges (all 8 of 8 `/ajax/` calls answered HTTP 200 JSON, 10 of 30 budgeted live requests spent). Each result carries `id_unique`,
@@ -74,11 +74,11 @@ From `docs/spikes/phaze-gakqn-parser-gap-audit.md`, two items:
 - **Add a row-count check against `itemprop=numTracks`** as a markup-drift canary. It equals the container count in both captures
   (52 and 12), and an under-matching selector with all rows parseable passes today.
 
-The representation of an unresolved row is a design choice for the build bead; the spike notes it "needs a decision on representation".
+These source-parser recommendations are retired. Stored unresolved rows remain supported. Historically, the representation of an unresolved row was a design choice for the build bead; the spike notes it "needs a decision on representation".
 
 ### 5. Deferred: explicitly not decided, and not a NO-GO
 
-These are the **implementer's and planner's deferral** (phaze-i5sp6, 2026-10-07), not operator decisions. Each is open and can be revived by the evidence named.
+These are the **implementer's and planner's deferral** (phaze-i5sp6, 2026-10-07), not operator decisions. All retired-provider paths are now canceled; the descriptions below are historical evidence, not revival conditions.
 
 - **ajax media links (`/ajax/get_medialink.php`).** The spike verdict was GO (5 of 5 valid JSON, 4 with data, 1 `noLinkFound`), but the
   operator did not select it in the question recorded below, so it is not carried into the implementation molecule.
@@ -91,7 +91,7 @@ These are the **implementer's and planner's deferral** (phaze-i5sp6, 2026-10-07)
 - **A wider duration tolerance for same-query sets** (1,936 splits, 3,394 extra sets), which `docs/spikes/phaze-5rhjq-collapse-ratio.md`
   says only counts the splits and does not show the folded pairs are the same recording. Not filed or decided.
 
-## Operator decisions (phaze-i5sp6, 2026-10-06/07, session crossed midnight)
+## Historical operator decisions (phaze-i5sp6, 2026-10-06/07, session crossed midnight)
 
 Durable record: this section, per [ADR-0012](0012-verification-fidelity-and-operator-attribution.md) rule 2. Only the selected option
 labels are quoted as answers. The attribution extends no further than the questions asked.

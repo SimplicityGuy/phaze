@@ -63,7 +63,7 @@ class TestTracklistModel:
         """phaze-fq9h.7 narrowed a GLOBAL unique to a PARTIAL one, and both halves matter.
 
         The drain looks a unique set up once and propagates the tracklist to the set's duplicate
-        files, so one 1001TL page legitimately has several rows -- the propagated projections carry
+        files, so one historical provider page legitimately has several rows -- the propagated projections carry
         the page's own ``external_id``. What the old global UNIQUE really encoded, though, was "one
         row per page that we SCRAPED", and that survives verbatim as the partial index's predicate.
 
