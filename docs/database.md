@@ -259,7 +259,7 @@ of the `039` baseline rather than the retired `001`-`039` chain.
 
 ### Post-baseline chain (040-084)
 
-`alembic/versions/` holds **44** files: the `039` baseline plus a linear chain to the current
+`alembic/versions/` holds **46** files: the `039` baseline plus a linear chain to the current
 head, **`084`**.
 
 | Rev | Change |

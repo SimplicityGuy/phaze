@@ -32,7 +32,7 @@ reconciliation apply, feature enqueue, or association apply approval.
    deployment from source or a PR state.
 2. Produce a scoped `phaze backfill stale-row-candidates <agent>` document. Keep actual archive
    identities, hashes and paths in private scratch only; scope the document to the reviewed rows.
-3. On the owning agent, pass that document to `python -m phaze.agent_watcher locate-stale`. Confirm
+3. On the owning agent, pass that document to `uv run --no-sync python -m phaze.agent_watcher locate-stale`. Confirm
    **every configured scan root** is mounted and appears in `walked_roots`, with `walk_errors=0`.
    Companion reads resolve and containment-check the exact NFC/NFD twin opened with no-follow and
    nonblocking flags, require a regular file, and cap full-byte destination verification at 1,048,576
