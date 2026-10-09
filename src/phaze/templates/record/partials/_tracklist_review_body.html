@@ -1,5 +1,17 @@
-{% if review and review.tracklist %}
+{% if review is none %}
+<p class="text-sm text-muted">File not found.</p>
+{% else %}
+{% if review.local_sources %}
+<p class="mb-2 text-sm">Local tracklist sources: {{ review.local_sources | join(', ') }}. Source content is available to proposals. Recognition does not create stored track rows.</p>
+{% endif %}
+{% if review.tracklist %}
 <p class="mb-2 text-sm font-medium">Stored tracklist · {{ review.tracks | length }} tracks{% if review.is_propagated %} · inherited from a duplicate{% endif %}</p>
+<dl class="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+    <div><dt>Set artist</dt><dd>{{ review.tracklist.artist or '—' }}</dd></div>
+    <div><dt>Set / event</dt><dd>{{ review.tracklist.event or '—' }}</dd></div>
+    <div><dt>Date</dt><dd>{{ review.tracklist.date.isoformat() if review.tracklist.date else '—' }}</dd></div>
+    <div><dt>Latest version</dt><dd>{% if review.latest_version %}{{ review.latest_version.version_number }} · imported {{ review.latest_version.scraped_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</dd></div>
+</dl>
         {% if review.tracks %}
         {# ONE pass over the segments, keyed by position, instead of a `selectattr` per ROW.
            `selectattr(...) | list | first` walks the whole segment list for every track, which is
@@ -85,5 +97,6 @@
         {% endif %}
 
 {% else %}
-<p class="text-sm text-muted">No stored tracklist. Local cue companions and embedded tags remain available.</p>
+<p class="text-sm text-muted">No stored tracklist.{% if not review.local_sources %} No local tracklist source has been recognized.{% endif %}</p>
+{% endif %}
 {% endif %}
