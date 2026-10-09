@@ -8,11 +8,13 @@ How should a future MixesDB provider expose capped search, fuzzy/body matches an
 
 ## Method
 
-Review historical search evidence and walk synthetic examples through the proposed provider contract. No archive queries were used. Fresh public REST examples were planned but **not requested** because the [access investigation stopped](phaze-6ehg6-mixesdb-rest-access.md) after two policy requests. The cases below are authored design walkthroughs, not live search results or executed adapter tests.
+Review historical search evidence and walk synthetic examples through the proposed provider contract. No archive queries were used. The initial [access investigation stopped](phaze-6ehg6-mixesdb-rest-access.md) after two policy requests. After the recorded scope amendment, four public REST search requests were completed: three with limit 5 and one with limit 100. The synthetic cases below remain authored design walkthroughs, not executed adapter tests.
 
 ## Evidence
 
 Historical artist-only fallback consumed 118 requests and produced zero new matches. The 63 capped results among 148 sampled sets establish incomplete discovery, not absence. Historical title review left three of 25 matches based on artist alone; there was no measured precision ground truth. Full-text search can rank body matches above the intended set.
+
+Fresh public evidence confirms that distinction: one narrow artist/event/year search returned 3 results for limit 5, of which one title names the intended public event and two titles name other events whose excerpts contain the searched terms. This is title consistency evidence, not ground-truth precision measurement. Two broader limit-5 searches each returned 5 results; one of those responses consisted of one category and four file-namespace entries. Their referenced images were never requested. The limit-100 artist response returned 100 records, with only `pages` at the top level and no total/continuation field. No unsupported pagination parameter was probed.
 
 | Synthetic scenario | Evidence preserved | Required outcome |
 |---|---|---|
@@ -38,7 +40,7 @@ No undocumented offset, continuation token or pagination parameter may be invent
 
 ## Verdict
 
-The proposed candidate batch and core-owned association boundary handle the observed risks. Live ranking behavior, documented pagination and corrected slash routes remain unverified after the access stop. Matching precision and recall are unknown.
+The proposed candidate batch and core-owned association boundary handle the observed risks, including now-observed body-match false candidates and non-tracklist namespaces. Limited live ranking behavior was observed; exhaustive discovery, documented pagination and corrected slash routes remain unverified. Matching precision and recall are unknown.
 
 ## Recommendation
 
