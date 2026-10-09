@@ -86,6 +86,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | -------- | ------- |
 | **[Deployment Guide](deployment.md)** | 🐳 Docker Compose deploy, image pipeline, and remote agents |
 | **[Operator Runbook](runbook.md)** | 🛠️ Force-local incident revert, reading the N backend lanes, spillover, and per-backend `_FILE` secrets |
+| **[Companion Availability](operations/companion-availability.md)** | Guarded reconciliation, missing/ambiguous reporting, retained history, and separate production authorization |
 | **[Cloud Burst](cloud-burst.md)** | ☁️ OCI A1 compute-agent deploy, Tailscale ACL, broker role, enabled via a `kind="compute"` entry in `backends.toml` |
 | **[Multi-Compute Agents](multi-compute.md)** | ⚙️ Add a 2nd+ compute agent, mixed arm64/x86 rank/cap cost-tiering, per-agent compose, N-lane read-out |
 | **[Agent Queue Lanes](agent-queue-lanes.md)** | 🛤️ Per-lane file-server workers (analyze/meta/io), core budget + thread pinning, per-lane heartbeats, legacy-queue drain runbook |

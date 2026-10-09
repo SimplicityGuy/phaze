@@ -51,6 +51,7 @@ from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
+from phaze.services.companion_availability import available_companion_clause
 from phaze.services.companion_features import EXTRACTOR_VERSION
 
 
@@ -208,6 +209,7 @@ async def linked_copy_fingerprints(
                 CompanionContentFeatures.agent_id == agent_id,
                 CompanionContentFeatures.fingerprint.in_(page),
                 CompanionContentFeatures.fingerprint == FileRecord.sha256_hash,
+                available_companion_clause(),
                 exists().where(FileCompanion.companion_id == CompanionContentFeatures.file_id),
             )
             .distinct()
@@ -231,13 +233,14 @@ async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprint
     ordered = sorted(fingerprints)
     for start in range(0, len(ordered), _FINGERPRINT_PAGE):
         page = ordered[start : start + _FINGERPRINT_PAGE]
-        rows = await session.execute(
+        rows = await session.stream(
             select(CompanionContentFeatures.fingerprint, FileRecord.original_path)
             .join(FileRecord, FileRecord.id == CompanionContentFeatures.file_id)
-            .where(CompanionContentFeatures.agent_id == agent_id, CompanionContentFeatures.fingerprint.in_(page))
+            .where(CompanionContentFeatures.agent_id == agent_id, CompanionContentFeatures.fingerprint.in_(page), available_companion_clause())
+            .execution_options(yield_per=500)
         )
         groups: dict[str, list[str]] = defaultdict(list)
-        for fingerprint, original_path in rows.all():
+        async for fingerprint, original_path in rows:
             groups[fingerprint].append(media_folder(original_path))
         media = await media_in_folders(session, agent_id, {folder for folders in groups.values() for folder in folders})
         page_stamps = {
@@ -253,6 +256,7 @@ async def refresh_known_stamps(session: AsyncSession, agent_id: str, fingerprint
                 CompanionContentFeatures.agent_id == agent_id,
                 CompanionContentFeatures.fingerprint.in_(page),
                 CompanionContentFeatures.junk_class.is_distinct_from(effective),
+                CompanionContentFeatures.file_id.in_(select(FileRecord.id).where(available_companion_clause())),
             )
             .values(junk_class=effective, updated_at=func.now())
         )
@@ -423,6 +427,8 @@ class BackfillCounts:
     missing: int
     stale_content: int
     stale_extractor: int
+    unavailable_missing: int = 0
+    unavailable_ambiguous: int = 0
 
     @property
     def pending(self) -> int:
@@ -451,9 +457,12 @@ def _companions_with_features() -> Any:
 
 async def count_backfill(session: AsyncSession) -> list[BackfillCounts]:
     """Per agent: companion rows, and how many have current features, none, stale bytes or an older extractor."""
-    missing = CompanionContentFeatures.file_id.is_(None)
-    stale_content = ~missing & (CompanionContentFeatures.fingerprint != FileRecord.sha256_hash)
-    stale_extractor = ~missing & ~stale_content & (CompanionContentFeatures.extractor_version < EXTRACTOR_VERSION)
+    available = available_companion_clause()
+    missing = available & CompanionContentFeatures.file_id.is_(None)
+    stale_content = available & CompanionContentFeatures.file_id.isnot(None) & (CompanionContentFeatures.fingerprint != FileRecord.sha256_hash)
+    stale_extractor = (
+        available & CompanionContentFeatures.file_id.isnot(None) & ~stale_content & (CompanionContentFeatures.extractor_version < EXTRACTOR_VERSION)
+    )
     result = await session.execute(
         _companions_with_features()
         .add_columns(
@@ -462,6 +471,8 @@ async def count_backfill(session: AsyncSession) -> list[BackfillCounts]:
             func.count().filter(missing),
             func.count().filter(stale_content),
             func.count().filter(stale_extractor),
+            func.count().filter(FileRecord.missing_at.isnot(None)),
+            func.count().filter(FileRecord.missing_at.is_(None), FileRecord.companion_ambiguous_at.isnot(None)),
         )
         .group_by(FileRecord.agent_id)
         .order_by(FileRecord.agent_id)
@@ -470,12 +481,14 @@ async def count_backfill(session: AsyncSession) -> list[BackfillCounts]:
         BackfillCounts(
             agent_id=agent_id,
             companions=total,
-            current=total - n_missing - n_content - n_extractor,
+            current=total - n_missing - n_content - n_extractor - n_unavailable - n_ambiguous,
             missing=n_missing,
             stale_content=n_content,
             stale_extractor=n_extractor,
+            unavailable_missing=n_unavailable,
+            unavailable_ambiguous=n_ambiguous,
         )
-        for agent_id, total, n_missing, n_content, n_extractor in result.all()
+        for agent_id, total, n_missing, n_content, n_extractor, n_unavailable, n_ambiguous in result
     ]
 
 
@@ -486,7 +499,7 @@ async def select_backfill_page(
     statement = (
         _companions_with_features()
         .add_columns(FileRecord.id, FileRecord.original_path)
-        .where(FileRecord.agent_id == agent_id, _needs_features())
+        .where(FileRecord.agent_id == agent_id, _needs_features(), available_companion_clause())
         .order_by(FileRecord.original_path, FileRecord.id)
         .limit(limit)
     )

@@ -61,6 +61,7 @@ from phaze.models.companion_junk_review import LIVE_IDENTITY_WHERE, CompanionJun
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.bulk_insert import chunk_rows
+from phaze.services.companion_availability import available_companion_clause
 from phaze.services.companion_content import (
     COMPANION_FILE_TYPES,
     effective_junk_class,
@@ -148,6 +149,7 @@ def _fresh_companions(agent_id: str) -> Any:
         .where(
             FileRecord.agent_id == agent_id,
             FileRecord.file_type.in_(COMPANION_FILE_TYPES),
+            available_companion_clause(),
             CompanionContentFeatures.fingerprint == FileRecord.sha256_hash,
         )
     )
@@ -241,6 +243,7 @@ async def _reappeared(session: AsyncSession, agent_id: str, candidates: dict[Ide
                 CompanionJunkReview.agent_id == agent_id,
                 CompanionJunkReview.status == JunkReviewStatus.QUARANTINED,
                 FileRecord.file_type.in_(COMPANION_FILE_TYPES),
+                available_companion_clause(),
             )
             .order_by(CompanionJunkReview.id)
             .limit(DETECT_PAGE_SIZE)
@@ -304,7 +307,12 @@ async def _live_rows(session: AsyncSession, agent_id: str) -> dict[Identity, tup
                 CompanionJunkReview.file_size,
                 CompanionJunkReview.file_type,
             )
-            .where(CompanionJunkReview.agent_id == agent_id, CompanionJunkReview.status.not_in(TERMINAL_STATUSES))
+            .outerjoin(FileRecord, FileRecord.id == CompanionJunkReview.file_id)
+            .where(
+                CompanionJunkReview.agent_id == agent_id,
+                CompanionJunkReview.status.not_in(TERMINAL_STATUSES),
+                FileRecord.id.is_(None) | available_companion_clause(),
+            )
             .order_by(CompanionJunkReview.id)
             .limit(DETECT_PAGE_SIZE)
         )

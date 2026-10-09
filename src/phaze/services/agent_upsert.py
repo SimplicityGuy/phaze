@@ -103,3 +103,4 @@ def repoint_file(record: FileRecord, row: dict[str, Any]) -> None:
     ):
         setattr(record, column, row[column])
     record.missing_at = None
+    record.companion_ambiguous_at = None

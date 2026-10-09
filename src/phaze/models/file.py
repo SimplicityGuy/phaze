@@ -86,6 +86,9 @@ class FileRecord(TimestampMixin, Base):
     # retry sets (services/pipeline/pending.py) so it stops failing FileNotFoundError on every
     # Extract all. Cleared by any upsert of the same path (the file came back) and by a re-point.
     missing_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # phaze-st1ty: current path absent, but several verified destinations prevent a safe re-point.
+    # History remains visible; NULL does not certify presence. Cleared with missing_at on reappearance.
+    companion_ambiguous_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")
     # phaze-x1qr3.1 (migration 063): the per-file set projection, 1:1 and deleted with the file.
