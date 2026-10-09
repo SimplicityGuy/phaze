@@ -28,7 +28,7 @@ One investigator owns transport. Narrow same-host policy reads precede REST sear
 | Historical cues | 10/24 minute offsets; 0/24 second offsets judged usable | First-mark magnitude alone is insufficient to prove clock time. Preserve ambiguous interpretation. |
 | Historical pacing | One 0.52-second gap; remaining 296 gaps at least 5.3 seconds | Lost clock across restart caused the breach. Persist the clock across every worker and retry. |
 
-Historical extrapolations and GO recommendations are not fresh measurements or operator decisions. In particular, the historical suggestion to file a build bead is superseded by the current investigation/specification scope.
+Historical extrapolations and GO recommendations represent the prior authors' judgements, not fresh measurements. For phaze-ypcx6 on 2026-10-08, the current scope is investigation/specification; the historical suggestion to file a build bead is outside that scope.
 
 Fresh policy reads and the conservative stop are recorded in [REST access and pacing](phaze-6ehg6-mixesdb-rest-access.md). Matching and completeness are in [search semantics](phaze-s19tp-mixesdb-search-semantics.md); source interpretation is in [parsing and provenance](phaze-vwcsv-mixesdb-parsing-provenance.md).
 

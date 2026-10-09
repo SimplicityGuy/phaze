@@ -8,7 +8,7 @@ Should MixesDB proceed to a separately approved adapter plan, given historical y
 
 ## Method
 
-Synthesize the [baseline](phaze-py7ls-mixesdb-investigation-baseline.md), [access/pacing evidence](phaze-6ehg6-mixesdb-rest-access.md), [search semantics](phaze-s19tp-mixesdb-search-semantics.md) and [parsing/provenance assessment](phaze-vwcsv-mixesdb-parsing-provenance.md). Preserve the difference between measured evidence, specification and operator decisions.
+Synthesize the [baseline](phaze-py7ls-mixesdb-investigation-baseline.md), [access/pacing evidence](phaze-6ehg6-mixesdb-rest-access.md), [search semantics](phaze-s19tp-mixesdb-search-semantics.md) and [parsing/provenance assessment](phaze-vwcsv-mixesdb-parsing-provenance.md). Preserve the difference between measured evidence, specification and pending review.
 
 ## Evidence
 
@@ -40,4 +40,4 @@ Offline transport checks passed for explicit retry charging, before-send durable
 
 Review the evidence and choose whether to defer/drop MixesDB or authorize a later adapter planning step after access clarification. If continuing, decide how the challenge-platform marker should be treated under a new or clarified access scope. No answer is inferred from operator unavailability, historical recommendations or remaining request budget.
 
-No adapter molecule, production code, migrations, queue activation, merge or deployment is created by this batch. The documentation branch is submitted for human review. The subsequent operator decision must be recorded before adapter planning or implementation proceeds.
+No adapter molecule, production code, migrations, queue activation, merge or deployment is created by this batch. The documentation branch is submitted for human review. Adapter planning or implementation requires a later recorded approval.
