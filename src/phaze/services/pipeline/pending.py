@@ -77,6 +77,7 @@ async def get_discovered_files_with_duration(session: AsyncSession) -> list[tupl
             FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
             eligible_clause(Stage.ANALYZE),
             ~dedup_resolved_clause(),
+            FileRecord.missing_at.is_(None),
             ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
         )
     )
@@ -124,7 +125,9 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortSta
     selection = (
         _metadata_pending_stmt()
         if stage is Stage.METADATA
-        else select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause())
+        else select(FileRecord).where(
+            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause(), FileRecord.missing_at.is_(None)
+        )
     )
     return paged_stmt(
         selection,
@@ -187,6 +190,7 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
     stmt = select(FileRecord).where(
         exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))),
         ~skipped_clause(Stage.METADATA),
+        FileRecord.missing_at.is_(None),
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -240,6 +244,9 @@ def _metadata_pending_stmt() -> Select[Any]:
         FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
         eligible_clause(Stage.METADATA),
         ~dedup_resolved_clause(),
+        # phaze-5rfev: a row a reconcile found gone from its agent's disk would only fail
+        # FileNotFoundError again. It stays a row (and shows "Missing" on Files); it is just not work.
+        FileRecord.missing_at.is_(None),
     )
 
 

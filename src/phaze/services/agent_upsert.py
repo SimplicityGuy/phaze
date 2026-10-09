@@ -13,11 +13,26 @@ that divergence: ``agent_analysis.py`` falls back to ``ON CONFLICT DO NOTHING`` 
 clears the failure marker even on an empty PUT (an empty-body success PUT after a failure still
 means extraction ran). That is a real, individually-documented difference between the two write
 paths, not accidental duplication -- see each router's own comment at its empty-body branch.
+
+It also holds the ``files`` row shape the agent file routes build from a wire record
+(:func:`file_row`) and the in-place re-point of a moved file (:func:`repoint_file`), shared with the
+stale-row reconcile (phaze-5rfev) so the two can never derive a moved row's columns differently.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+import unicodedata
+import uuid
 
 from sqlalchemy import func
+
+from phaze.services.text_repair import repair_mojibake
+
+
+if TYPE_CHECKING:
+    from phaze.models.file import FileRecord
+    from phaze.schemas.agent_files import FileUpsertRecord
 
 
 def build_field_lww_set_clause(stmt: Any, dumped: dict[str, Any]) -> dict[str, Any]:
@@ -45,3 +60,46 @@ def build_field_lww_set_clause(stmt: Any, dumped: dict[str, Any]) -> dict[str, A
         "error_message": None,
         "updated_at": func.now(),
     }
+
+
+def file_row(record: FileUpsertRecord, agent_id: str, batch_id: uuid.UUID | None) -> dict[str, Any]:
+    """Build one ``files`` row from a wire record, with every server-owned column stamped here.
+
+    Shared by the agent file upsert and move routes (``routers/agent_files.py``) and the stale-row
+    reconcile (``services/stale_rows.py``, phaze-5rfev), so a re-pointed row derives its columns
+    exactly as an upserted one does.
+    """
+    data = record.model_dump()
+    # RESEARCH Pitfall 7: NFC-normalize defensively
+    data["original_path"] = unicodedata.normalize("NFC", data["original_path"])
+    data["agent_id"] = agent_id  # AUTH-01 -- stamped from auth, NEVER from body
+    data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
+    data["batch_id"] = batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
+    # phaze-x4ux: populate the derived, mojibake-repaired filename ONCE at ingest.
+    # `original_filename` itself is left untouched (byte-faithful record of the on-disk
+    # name); `original_filename_repaired` is what search/matching/rename-proposal code
+    # should read instead. Always set (even when the repair is a no-op, in which case it
+    # equals `original_filename`) so NULL unambiguously means "not yet backfilled" for
+    # pre-phaze-x4ux rows (see services/text_repair_backfill.py).
+    data["original_filename_repaired"] = repair_mojibake(data["original_filename"])
+    return data
+
+
+def repoint_file(record: FileRecord, row: dict[str, Any]) -> None:
+    """Point ``record`` at a moved file: every column :func:`file_row` derives from the wire, never its id or tenancy.
+
+    Used by the watcher move route (phaze-oxn2m) and the stale-row reconcile (phaze-5rfev). The
+    file is, by construction, present at the new path, so the missing marker is cleared too.
+    """
+    for column in (
+        "original_path",
+        "original_filename",
+        "original_filename_repaired",
+        "current_path",
+        "file_type",
+        "file_size",
+        "sha256_hash",
+        "batch_id",
+    ):
+        setattr(record, column, row[column])
+    record.missing_at = None

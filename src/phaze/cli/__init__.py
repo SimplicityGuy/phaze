@@ -10,6 +10,8 @@ Command groups:
     phaze backfill reset-cloud-attempts --backend <id> --window-start <ts> --window-end <ts> --attempts-floor <n> [--apply]
     phaze backfill moved-twin-candidates --agent <id> > candidates.json
     phaze backfill retire-moved-twins --agent <id> [--apply] < checked.json
+    phaze backfill stale-row-candidates --agent <id> [--under <path>] > candidates.json
+    phaze backfill reconcile-stale-rows --agent <id> [--apply] < located.json
     phaze backfill companion-features [--apply] [--page-size <n>]
     phaze backfill junk-review [--apply]
     phaze backfill companion-links [--apply]
@@ -33,6 +35,18 @@ under the new one). Only the agent can say whether a path still exists, so it ru
 
 Run the check in the watcher container: it sees the scan roots at the same paths the rows were posted
 with. Selection and retirement rules live in `phaze.services.scan_deletion.retire_moved_twins`.
+
+`backfill stale-row-candidates` / `reconcile-stale-rows` are the phaze-5rfev reconcile of rows whose
+file is no longer at its recorded path: re-point a row whose bytes moved, merge it with the row a
+later scan made for the same bytes (keeping the older row and all of both rows' history), or mark it
+missing (never deleted). Same three-step shape, with the content search on the agent:
+
+    docker compose exec -T api phaze backfill stale-row-candidates --agent <id> [--under <root>] > candidates.json
+    docker compose -f docker-compose.agent.yml exec -T watcher uv run python -m phaze.agent_watcher locate-stale < candidates.json > located.json
+    docker compose exec -T api phaze backfill reconcile-stale-rows --agent <id> < located.json            # dry run
+    docker compose exec -T api phaze backfill reconcile-stale-rows --agent <id> --apply < located.json    # the operator's call
+
+Verdicts and merge rules live in `phaze.services.stale_rows`.
 
 `backfill companion-features` is the phaze-osy6j one-off that covers the companion rows ingested
 before the agents reported content features (references, tracklist flag, junk class, encoding) at
@@ -134,6 +148,7 @@ from phaze.services.reanalysis_backfill import (
 )
 from phaze.services.scan_deletion import moved_twin_candidates, retire_moved_twins
 from phaze.services.set_projection_backfill import run_backfill
+from phaze.services.stale_rows import Verdict, reconcile_stale_rows, stale_row_candidates
 from phaze.services.stranded_analysis_recovery import select_stranded_analysis_keys
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -404,6 +419,29 @@ def _build_parser() -> argparse.ArgumentParser:
     retire_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     retire_mode.add_argument("--apply", dest="apply", action="store_true", help="Delete the stale rows. Without it nothing is written.")
     retire.set_defaults(apply=False)
+    # phaze-5rfev: the candidates -> agent locate -> reconcile pipeline (module docstring).
+    stale = backfill_sub.add_parser(
+        "stale-row-candidates",
+        help="Print, as JSON, an agent's rows for the agent-side `locate-stale` check (phaze-5rfev step 1 of 3).",
+    )
+    stale.add_argument("--agent", dest="agent_id", required=True, help="The fileserver agent whose rows to check.")
+    stale.add_argument("--under", dest="under", default=None, help="Only rows whose current path is at or below this path.")
+    reconcile = backfill_sub.add_parser(
+        "reconcile-stale-rows",
+        help="Re-point, merge or mark missing the rows `locate-stale` found gone, from its JSON on stdin (phaze-5rfev step 3). "
+        "Dry run unless --apply.",
+        description=(
+            "Reads the document `python -m phaze.agent_watcher locate-stale` printed on the agent. A gone row whose bytes are at "
+            "exactly one other path is re-pointed there, or merged with the row a scan already made for that path (the older row "
+            "is kept with both rows' history). A gone row whose bytes are nowhere is marked missing, never deleted. A row "
+            "carrying operator-reviewed state is reported and left alone. Without --apply it runs READ ONLY."
+        ),
+    )
+    reconcile.add_argument("--agent", dest="agent_id", required=True, help="The agent the located document was produced for.")
+    reconcile_mode = reconcile.add_mutually_exclusive_group()
+    reconcile_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Classify only, read-only (the default).")
+    reconcile_mode.add_argument("--apply", dest="apply", action="store_true", help="Write the verdicts. Without it nothing is written.")
+    reconcile.set_defaults(apply=False)
     # phaze-osy6j: companion content features for rows ingested before the agents reported them.
     features = backfill_sub.add_parser(
         "companion-features",
@@ -531,6 +569,10 @@ def _main_backfill(args: argparse.Namespace) -> int:
         return asyncio.run(_run_moved_twin_candidates(args.agent_id))
     if args.backfill_command == "retire-moved-twins":
         return asyncio.run(_run_retire_moved_twins(args.agent_id, sys.stdin.read(), apply=args.apply))
+    if args.backfill_command == "stale-row-candidates":
+        return asyncio.run(_run_stale_row_candidates(args.agent_id, args.under))
+    if args.backfill_command == "reconcile-stale-rows":
+        return asyncio.run(_run_reconcile_stale_rows(args.agent_id, sys.stdin.read(), apply=args.apply))
     if args.backfill_command == "companion-features":
         if not 1 <= args.page_size <= COMPANION_FEATURES_PAGE_MAX:
             print(f"error: --page-size must be between 1 and {COMPANION_FEATURES_PAGE_MAX}", file=sys.stderr)
@@ -667,6 +709,65 @@ async def _run_retire_moved_twins(agent_id: str, checked_json: str, *, apply: bo
             return 0
         await session.commit()
     print(f"APPLIED: {len(report.retire)} row(s) retired")
+    return 0
+
+
+async def _run_stale_row_candidates(agent_id: str, under: str | None) -> int:
+    """Print ``phaze backfill stale-row-candidates``' JSON document on stdout (phaze-5rfev). Read-only."""
+    async with async_session() as session:
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        try:
+            document = await stale_row_candidates(session, agent_id, under)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    print(json.dumps(document))
+    print(f"{len(document['rows'])} row(s) for agent {agent_id!r}", file=sys.stderr)
+    return 0
+
+
+async def _run_reconcile_stale_rows(agent_id: str, located_json: str, *, apply: bool) -> int:
+    """Run ``phaze backfill reconcile-stale-rows`` (phaze-5rfev). Returns a process exit code.
+
+    The dry run opens its transaction READ ONLY, so Postgres itself refuses a write. One line per row
+    that needs (or blocks) a change, then the counts; ``--apply`` writes in one transaction and commits
+    at the end.
+    """
+    try:
+        located = json.loads(located_json)
+    except json.JSONDecodeError as exc:
+        print(f"error: stdin is not the located JSON document: {exc}", file=sys.stderr)
+        return 1
+    async with async_session() as session:
+        if not apply:
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+        try:
+            report = await reconcile_stale_rows(session, agent_id, located, apply=apply)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        for action in report.actions:
+            line = f"  {action.verdict.value.upper():<13} {action.file_id}  {action.path}"
+            if action.target_path is not None:
+                line += f"  -> {action.target_path}"
+            if action.target_id is not None:
+                line += f"  (merge into row {action.target_id})" if action.verdict is Verdict.MERGE else f"  (row {action.target_id})"
+            if action.detail:
+                line += f"  [{'; '.join(action.detail)}]"
+            print(line)
+        counts = report.counts()
+        print(
+            "summary: "
+            + " ".join(f"{verdict}={count}" for verdict, count in counts.items())
+            + f" already_missing={report.already_missing} present={report.present} unverifiable={report.unverifiable} walk_errors={report.walk_errors}"
+        )
+        writes = sum(counts[verdict.value] for verdict in (Verdict.REPOINT, Verdict.MERGE, Verdict.MISSING, Verdict.RESTORED))
+        if not apply:
+            await session.rollback()
+            print(f"DRY RUN: nothing written; {writes} row(s) would change. Re-run with --apply to write.")
+            return 0
+        await session.commit()
+    print(f"APPLIED: {writes} row(s) changed")
     return 0
 
 

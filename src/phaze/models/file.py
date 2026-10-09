@@ -9,10 +9,11 @@ irreversible column drop shipped in migration ``039_drop_files_state_column``.
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003 -- SQLAlchemy resolves Mapped[] annotations at runtime
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -79,6 +80,12 @@ class FileRecord(TimestampMixin, Base):
         ForeignKey("agents.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # phaze-5rfev (migration 083): when a reconcile found no file with this row's content anywhere
+    # under its agent's scan roots. NULL means "not known to be missing" -- never "verified present".
+    # The row is kept, never deleted (its history stays), and it leaves the enrich pending and
+    # retry sets (services/pipeline/pending.py) so it stops failing FileNotFoundError on every
+    # Extract all. Cleared by any upsert of the same path (the file came back) and by a re-point.
+    missing_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")
     # phaze-x1qr3.1 (migration 063): the per-file set projection, 1:1 and deleted with the file.
