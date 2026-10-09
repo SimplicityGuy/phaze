@@ -8,12 +8,12 @@ Nothing here is product code. All acquisition decisions below are historical; th
 
 ## Decision
 
-| # | Path | Verdict | Authority (phaze-rs4x6, 2026-10-07) | Spike doc |
+| # | Path | Verdict | Historical authority / current cancellation record | Spike doc |
 |---|---|---|---|---|
 | 1 | Parser fixes (mark unresolved `ID - ID` rows; row-count canary against `numTracks`) | **DONE** | shipped work, no decision needed | `docs/spikes/phaze-gakqn-parser-gap-audit.md` |
-| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **CANCELED**; historically deferred, nothing built | the operator (see "Operator decisions") | `docs/spikes/phaze-movg3-ajax-plain-httpx.md` |
+| 2 | ajax JSON search (`/ajax/search_tracklist.php`) | **CANCELED**; historically deferred, nothing built | 2026-10-08, phaze-1soo9 and phaze-tqoty; historical deferral quoted below | `docs/spikes/phaze-movg3-ajax-plain-httpx.md` |
 | 3 | MixesDB as a second source | **BACKLOG** for a deeper investigation (bead phaze-cwyuq); neither GO nor NO-GO | the operator (see "Operator decisions") | `docs/spikes/phaze-q2v7w-mixesdb-archive-coverage.md` |
-| 4 | Captcha re-queue (script merged in PR #678, bead phaze-c9go7) | **CANCELED**; earlier release deferral superseded | the operator (see "Operator decisions") | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
+| 4 | Captcha re-queue (script merged in PR #678, bead phaze-c9go7) | **CANCELED**; earlier release deferral superseded | 2026-10-08, phaze-1soo9 and phaze-tqoty; historical timing quoted below | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
 
 The operator's authority (phaze-rs4x6, 2026-10-07) is limited to the three timing and scope statements quoted below. The evidence summaries, the correction in
 section 2 and the standing conditions in section 4 are the planner's and the spikes', not the operator's.
@@ -94,9 +94,9 @@ backlog. i want to do a deeper investigation there".
 **Re-queue timing.** In answer to the planner's open question about when the captcha re-queue write should run. Operator statement,
 verbatim: "we can do the re-queue after the next release."
 
-What is **not** operator-decided (phaze-rs4x6, 2026-10-07): the planner's correction in section 2, the revival conditions in section 2, the evidence summaries, the
+What is **not** operator-decided (phaze-rs4x6, 2026-10-07): the planner's correction in section 2, the former revival and deployment conditions (now removed), the evidence summaries, the
 statement that section 3 supersedes the earlier selection (the operator moved the item; the supersession is the implementer's reading of
-what that does to the earlier record), the standing conditions in section 4, and the whole of the findings below.
+what that does to the earlier record), and the whole of the findings below.
 
 ## Findings (not decisions)
 

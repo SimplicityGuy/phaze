@@ -5,10 +5,12 @@ Date: 2026-10-08. Status: accepted. Durable operator record: beads phaze-1soo9 a
 ## Decision and authority
 
 The operator volunteered the removal instruction; no new question was put. The original statements,
-including the provider's response and the operator's full removal scope, are preserved verbatim in
+including the operator's reason and full removal scope, are preserved verbatim in
 phaze-1soo9 and phaze-tqoty. They contain source identifiers that the operator explicitly requires
 absent from tracked files, so this document points to that durable record rather than altering a quote.
-Source-neutral statement, verbatim: "also, remember we have the tracklists that live alongside some files."
+Source-neutral excerpt, verbatim: "also, remember we have the tracklists that live alongside some files."
+The provider's scraping restriction is operator-provided evidence; this follow-up did not independently
+verify site terms or make any site requests.
 
 The retired provider's integration, calls, references, captcha handling, render support and acquisition
 scripts are removed. Ajax JSON search is **CANCELED**, not deferred. Captcha re-queue is **CANCELED**,
@@ -44,3 +46,16 @@ versions and track rows are preserved. Changing the baseline default affects fre
 not existing production values. No production database writes are part of this follow-up.
 
 Tracked-tree content and filenames are audited independently. Git history is unchanged.
+
+## Historical evidence guard
+
+The original completed identifier scrub is still verified against an immutable snapshot: 1,313
+historical files, 202 scrubbed files and 319,770 numeric tokens. The retired source-only phase had
+10 plans; the current corpus measures 1,314 historical files, including additions since the original
+scrub baseline. Its explicit retirement checkpoint
+retains the same exact-transform, numeric-evidence, archive-boundary and population checks for future
+changes. The five original host/account identities remain forbidden in the live corpus, including
+new files. Negative tests demonstrate rejection of a changed numeric value, an unapproved deletion
+and a reintroduced identity. The production audit's accepted substitutions are unchanged; there are
+no file-level exclusions. This checkpoint arrangement is the implementer's mechanism for reconciling
+the source removal with the historical evidence guard, not an additional operator-selected design.
