@@ -33,13 +33,13 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
-from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertRecord, FileUpsertResponse
+from phaze.schemas.agent_files import FileMoveRequest, FileMoveResponse, FileUpsertChunk, FileUpsertResponse
 from phaze.services import backend_breaker, s3_staging
+from phaze.services.agent_upsert import file_row, repoint_file
 from phaze.services.companion import MEDIA_TYPES
 from phaze.services.companion_autolink import request_association
 from phaze.services.live_sentinel import ensure_live_sentinel
 from phaze.services.scan_deletion import delete_file_cascade, invalidate_content_state, retention_blockers
-from phaze.services.text_repair import repair_mojibake
 
 
 if TYPE_CHECKING:
@@ -110,24 +110,6 @@ async def _resolve_batch_id(session: AsyncSession, agent: Agent, batch_id: uuid.
     return await ensure_live_sentinel(session, agent.id)
 
 
-def _record_row(record: FileUpsertRecord, agent_id: str, batch_id: uuid.UUID) -> dict[str, Any]:
-    """Build one ``files`` row from a wire record, with every server-owned column stamped here."""
-    data = record.model_dump()
-    # RESEARCH Pitfall 7: NFC-normalize defensively
-    data["original_path"] = unicodedata.normalize("NFC", data["original_path"])
-    data["agent_id"] = agent_id  # AUTH-01 -- stamped from auth, NEVER from body
-    data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
-    data["batch_id"] = batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
-    # phaze-x4ux: populate the derived, mojibake-repaired filename ONCE at ingest.
-    # `original_filename` itself is left untouched (byte-faithful record of the on-disk
-    # name); `original_filename_repaired` is what search/matching/rename-proposal code
-    # should read instead. Always set (even when the repair is a no-op, in which case it
-    # equals `original_filename`) so NULL unambiguously means "not yet backfilled" for
-    # pre-phaze-x4ux rows (see services/text_repair_backfill.py).
-    data["original_filename_repaired"] = repair_mojibake(data["original_filename"])
-    return data
-
-
 async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]]) -> Sequence[Row[Any]]:
     """``INSERT ... ON CONFLICT DO UPDATE`` the rows on ``(agent_id, original_path)``; returns ``(id, file_type, original_path, inserted)``."""
     # RESEARCH Pitfall 4: same-chunk dedup on (original_path) -- last write wins.
@@ -169,6 +151,8 @@ async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]])
             # CONFLICT DO UPDATE path -- stamp it explicitly so a rescan bumps updated_at instead
             # of freezing it at first discovery (phaze-c8nz). created_at stays pinned.
             "updated_at": func.now(),
+            # phaze-5rfev: a file reported at this path again is, by definition, not missing.
+            "missing_at": None,
         },
     ).returning(
         FileRecord.id,
@@ -203,7 +187,7 @@ async def upsert_files(
       path changes nothing association reads (it reads paths only), so it requests nothing.
     """
     resolved_batch_id = await _resolve_batch_id(session, agent, body.batch_id)
-    rows = await _upsert_rows(session, [_record_row(r, agent.id, resolved_batch_id) for r in body.files])
+    rows = await _upsert_rows(session, [file_row(r, agent.id, resolved_batch_id) for r in body.files])
     await session.commit()
     if any(row.inserted and row.file_type in MEDIA_TYPES for row in rows):
         await request_association(request.app.state, agent.id)
@@ -258,7 +242,7 @@ async def move_file(
     requests the agent's automatic companion association run after the commit (phaze-spd83).
     """
     resolved_batch_id = await _resolve_batch_id(session, agent, None)
-    row = _record_row(body.file, agent.id, resolved_batch_id)
+    row = file_row(body.file, agent.id, resolved_batch_id)
     new_path: str = row["original_path"]
     previous_paths = list(dict.fromkeys(p for p in (unicodedata.normalize("NFC", p) for p in body.previous_paths) if p != new_path))
 
@@ -305,7 +289,7 @@ async def move_file(
                 new_path=new_path,
                 content_changed=content_changed,
             )
-            _repoint(keeper, row)
+            repoint_file(keeper, row)
             await session.flush()
             if content_changed:
                 await invalidate_content_state(session, keeper.id)
@@ -347,21 +331,6 @@ def _plausibly_same_file(record: FileRecord, row: dict[str, Any]) -> bool:
     return bool(
         record.original_filename == row["original_filename"] or record.file_size == row["file_size"] or record.sha256_hash == row["sha256_hash"]
     )
-
-
-def _repoint(record: FileRecord, row: dict[str, Any]) -> None:
-    """Point ``record`` at the moved file: every column ``_record_row`` derives from the wire, never its id or tenancy."""
-    for column in (
-        "original_path",
-        "original_filename",
-        "original_filename_repaired",
-        "current_path",
-        "file_type",
-        "file_size",
-        "sha256_hash",
-        "batch_id",
-    ):
-        setattr(record, column, row[column])
 
 
 async def _close_breaker_on_presign(session: AsyncSession, backend_id: str) -> None:

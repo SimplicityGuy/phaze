@@ -511,6 +511,29 @@ async def test_move_repoints_the_existing_row_in_place(authenticated_client: Asy
 
 
 @pytest.mark.asyncio
+async def test_a_file_reported_again_at_its_path_is_no_longer_missing(authenticated_client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-5rfev: ``files.missing_at`` means "gone from disk"; the agent posting the path again disproves it.
+
+    Covers both writers: the plain upsert (a rescan or the watcher finding the file back at its path)
+    and the move route's re-point, which lands the row on a path the file is known to be at.
+    """
+    for path, sha in ((_FINAL, "1"), (_INCOMPLETE, "2")):
+        r = await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(path, sha=sha)]})
+        assert r.status_code == 200, r.text
+    await session.execute(update(FileRecord).values(missing_at=datetime.now(UTC)))
+    await session.commit()
+
+    r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_FINAL, sha="1")]})
+    r2 = await authenticated_client.post(
+        "/api/internal/agent/files/move", json={"previous_paths": [_INCOMPLETE], "file": _hashed("/test/music/rel2/a.mp3", sha="2")}
+    )
+
+    assert (r1.status_code, r2.status_code) == (200, 200), (r1.text, r2.text)
+    assert r2.json()["outcome"] == "moved"
+    assert [(row.original_path, row.missing_at) for row in await _rows(session)] == [(_FINAL, None), ("/test/music/rel2/a.mp3", None)]
+
+
+@pytest.mark.asyncio
 async def test_move_logs_the_repoint_with_agent_id_and_both_paths(
     authenticated_client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -9,7 +9,8 @@ shutdown: sweep loop exits, every root observer's stop() + join() drain its watc
 thread, and the HTTP client is closed.
 
 ``python -m phaze.agent_watcher check-paths`` is a one-shot instead: the agent-side step of the
-phaze-oxn2m stale-row cleanup (see :func:`check_paths`).
+phaze-oxn2m stale-row cleanup (see :func:`check_paths`). ``locate-stale`` is the agent-side step of
+the phaze-5rfev reconcile (``phaze.agent_watcher.locate``).
 
 Import-graph invariant:
     This module MUST NOT import ``phaze.tasks.agent_worker``,
@@ -33,6 +34,7 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from phaze.agent_watcher.debouncer import Debouncer
+from phaze.agent_watcher.locate import is_under, locate_stale
 from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
@@ -43,6 +45,8 @@ from phaze.telemetry import configure_telemetry, shutdown_telemetry
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from watchdog.observers.api import BaseObserver
 
 
@@ -264,11 +268,6 @@ async def main() -> None:
         shutdown_telemetry()
 
 
-def _is_under(path: str, root: str) -> bool:
-    root = root.rstrip("/")
-    return path == root or path.startswith(root + "/")
-
-
 def check_paths(document: dict[str, Any]) -> dict[str, Any]:
     """Annotate ``phaze backfill moved-twin-candidates``' document with ``exists`` per member (phaze-oxn2m).
 
@@ -281,12 +280,12 @@ def check_paths(document: dict[str, Any]) -> dict[str, Any]:
     for group in document["groups"]:
         for member in group:
             path = member["path"]
-            member["exists"] = Path(resolve_media_path(path)).exists() if any(_is_under(path, root) for root in roots) else None
+            member["exists"] = Path(resolve_media_path(path)).exists() if any(is_under(path, root) for root in roots) else None
     return document
 
 
-def _main_check_paths() -> int:
-    """``python -m phaze.agent_watcher check-paths``: stdin JSON -> annotated JSON on stdout. No settings, no network.
+def _main_check_paths(annotate: Callable[[dict[str, Any]], dict[str, Any]] = check_paths) -> int:
+    """``python -m phaze.agent_watcher check-paths|locate-stale``: stdin JSON -> annotated JSON on stdout. No settings, no network.
 
     Logs go to stderr: ``resolve_media_path`` logs every NFC/NFD resolution, and structlog's
     unconfigured default prints to stdout, which corrupted the JSON on the first run against a
@@ -294,14 +293,16 @@ def _main_check_paths() -> int:
     """
     structlog.reset_defaults()
     structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
-    sys.stdout.write(json.dumps(check_paths(json.load(sys.stdin))) + "\n")
+    sys.stdout.write(json.dumps(annotate(json.load(sys.stdin))) + "\n")
     return 0
 
 
 def _entrypoint(argv: list[str]) -> None:
-    """Dispatch ``python -m phaze.agent_watcher [check-paths]``: the one-shot check, else the watcher."""
+    """Dispatch ``python -m phaze.agent_watcher [check-paths|locate-stale]``: a one-shot check, else the watcher."""
     if argv == ["check-paths"]:
         sys.exit(_main_check_paths())
+    if argv == ["locate-stale"]:
+        sys.exit(_main_check_paths(locate_stale))
     asyncio.run(main())
 
 

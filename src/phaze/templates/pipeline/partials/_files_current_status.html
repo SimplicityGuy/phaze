@@ -16,7 +16,11 @@
         {% endif %}
     {% endfor %}
 {% endfor %}
-{% if current.key %}
+{# phaze-5rfev: a row a reconcile found gone from its agent's disk (files.missing_at). It is kept with its history and
+   left out of every enrich pending set, so its stage buckets no longer say what is wrong with it -- this does. #}
+{% if missing %}
+{{ ui.status_badge('File', 'missing', 'danger', '✕', aria_label='File missing on disk since ' ~ missing.strftime('%Y-%m-%d')) }}
+{% elif current.key %}
 <span class="inline-flex flex-wrap items-center gap-2">
     <span class="font-jura text-[10px] font-medium uppercase tracking-[0.15em] text-gray-600 dark:text-gray-300">{{ current.label }}</span>
     {% with stage_label=current.label, bucket=current.bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
