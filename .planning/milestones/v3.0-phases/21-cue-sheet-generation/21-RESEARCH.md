@@ -1,12 +1,15 @@
 # Phase 21: CUE Sheet Generation - Research
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Researched:** 2026-04-03
 **Domain:** CUE sheet file format, string-based file generation, timestamp conversion
 **Confidence:** HIGH
 
 ## Summary
 
-CUE sheet generation is a well-defined problem with a stable specification (CDRWIN format, unchanged since the late 1990s). The phase requires no new dependencies -- it is pure string formatting plus filesystem write. The core technical challenges are: (1) correctly converting source timestamps (HH:MM:SS from 1001tracklists or seconds-as-string from fingerprint services) to CUE's MM:SS:FF format at 75 frames per second, (2) mapping audio file extensions to CUE FILE type keywords, and (3) writing UTF-8 with BOM encoding.
+CUE sheet generation is a well-defined problem with a stable specification (CDRWIN format, unchanged since the late 1990s). The phase requires no new dependencies -- it is pure string formatting plus filesystem write. The core technical challenges are: (1) correctly converting source timestamps (HH:MM:SS from retired external source or seconds-as-string from fingerprint services) to CUE's MM:SS:FF format at 75 frames per second, (2) mapping audio file extensions to CUE FILE type keywords, and (3) writing UTF-8 with BOM encoding.
 
 The existing codebase provides strong patterns to follow. The `tag_writer.py` service demonstrates synchronous file operations with verify-after-write, and the `tags.py` router demonstrates a dedicated management page with HTMX partials and stats. The tracklist card template shows how to add inline action buttons. The data model already has all required fields: `TracklistTrack.timestamp` for source times, `DiscogsLink` with accepted status for Discogs metadata enrichment, and `FileRecord.current_path` for determining the CUE output location.
 
@@ -17,8 +20,8 @@ The existing codebase provides strong patterns to follow. The `tag_writer.py` se
 
 ### Locked Decisions
 - **D-01:** CUE timestamps use MM:SS:FF format at 75 frames per second per the CUE sheet specification
-- **D-02:** Fingerprint timestamps always take priority over 1001tracklists timestamps when both exist for the same track
-- **D-03:** Tracks without any timestamp (no fingerprint offset, no 1001tracklists time) are omitted from the generated CUE file entirely
+- **D-02:** Fingerprint timestamps always take priority over retired external source timestamps when both exist for the same track
+- **D-03:** Tracks without any timestamp (no fingerprint offset, no retired external source time) are omitted from the generated CUE file entirely
 - **D-04:** "Generate CUE" button on the tracklist detail page (inline, alongside existing actions like Match to Discogs)
 - **D-05:** Dedicated CUE management page (/cue nav tab) listing all tracklists with CUE generation status. Supports batch generation.
 - **D-06:** Only tracklists with status='approved' are eligible for CUE generation
@@ -48,7 +51,7 @@ None -- discussion stayed within phase scope.
 
 | ID | Description | Research Support |
 |----|-------------|------------------|
-| CUE-01 | System generates .cue companion files from tracklist data, preferring fingerprint timestamps with 1001tracklists fallback | CUE format spec researched, timestamp priority logic defined (D-02), omission rule for missing timestamps (D-03), FILE/TRACK/INDEX command syntax documented |
+| CUE-01 | System generates .cue companion files from tracklist data, preferring fingerprint timestamps with retired external source fallback | CUE format spec researched, timestamp priority logic defined (D-02), omission rule for missing timestamps (D-03), FILE/TRACK/INDEX command syntax documented |
 | CUE-02 | CUE files use correct 75fps frame conversion and UTF-8 with BOM encoding | Frame conversion formula documented (seconds to MM:SS:FF at 75fps), UTF-8 BOM byte sequence identified (EF BB BF / `\ufeff`), Python `codecs` approach verified |
 | CUE-03 | CUE files include REM comments with Discogs metadata (genre, label, catalog number, year) | DiscogsLink model has discogs_label, discogs_year fields; REM syntax is `REM KEY value`; per-track placement after TRACK command, before INDEX |
 </phase_requirements>
@@ -150,7 +153,7 @@ def seconds_to_cue_timestamp(total_seconds: float) -> str:
     return f"{minutes:02d}:{seconds:02d}:{frames:02d}"
 ```
 
-**Conversion from HH:MM:SS or MM:SS string (1001tracklists format):**
+**Conversion from HH:MM:SS or MM:SS string (retired external source format):**
 ```python
 def parse_timestamp_string(ts: str) -> float:
     """Parse HH:MM:SS or MM:SS to total seconds."""
@@ -290,7 +293,7 @@ Python's `utf-8-sig` encoding automatically prepends the BOM (EF BB BF bytes) on
 
 ### Pitfall 2: Timestamp Format Ambiguity
 **What goes wrong:** Treating a "3:45" timestamp as "3 minutes 45 seconds" when it might be "3 hours 45 minutes" from a long DJ set.
-**Why it happens:** 1001tracklists timestamps for long sets can exceed 60 minutes.
+**Why it happens:** retired external source timestamps for long sets can exceed 60 minutes.
 **How to avoid:** Parse strictly: if 3 parts, treat as HH:MM:SS. If 2 parts, treat as MM:SS. If 1 part, treat as raw seconds. Document the convention.
 **Warning signs:** Track timestamps exceeding the audio file duration.
 
@@ -405,7 +408,7 @@ async def generate_cue(
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
 | CUE-01 | Generate CUE from tracklist with fingerprint timestamp priority | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestCueGeneration -x` | Wave 0 |
-| CUE-01 | Fallback to 1001tracklists timestamp when no fingerprint | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestTimestampPriority -x` | Wave 0 |
+| CUE-01 | Fallback to retired external source timestamp when no fingerprint | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestTimestampPriority -x` | Wave 0 |
 | CUE-01 | Omit tracks without any timestamp | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestTrackOmission -x` | Wave 0 |
 | CUE-02 | 75fps frame conversion correctness | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestTimestampConversion -x` | Wave 0 |
 | CUE-02 | UTF-8 BOM encoding in written file | unit | `uv run pytest tests/test_services/test_cue_generator.py::TestFileWriting -x` | Wave 0 |

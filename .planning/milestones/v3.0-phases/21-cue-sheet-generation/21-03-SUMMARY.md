@@ -8,7 +8,7 @@ requires:
   - phase: 21-cue-sheet-generation (plans 01-02)
     provides: CUE generator service, CUE router with management page, generate endpoint
 provides:
-  - Source badge on CUE management rows (fingerprint vs 1001tracklists)
+  - Source badge on CUE management rows (fingerprint vs retired external source)
   - Fingerprint-first sorting in CUE eligible list
   - Regenerate CUE button state on tracklist card
   - HX-Target detection for cross-page CUE generation
@@ -42,6 +42,9 @@ duration: 8min
 completed: 2026-04-03
 ---
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 # Phase 21 Plan 03: CUE Gap Closure Summary
 
 **Source badges on CUE management rows with fingerprint-first sorting, and Regenerate CUE button state on tracklist cards via HX-Target detection**
@@ -55,7 +58,7 @@ completed: 2026-04-03
 - **Files modified:** 5
 
 ## Accomplishments
-- CUE management page rows now show source badge (indigo for fingerprint, gray for 1001tracklists)
+- CUE management page rows now show source badge (indigo for fingerprint, gray for retired external source)
 - Fingerprint-sourced tracklists sort first in CUE eligible list per D-02 preference
 - Tracklist card Generate CUE button shows "Regenerate CUE" with CUE vN badge after CUE exists
 - CUE generate endpoint detects HX-Target header and returns appropriate partial (tracklist_card.html or cue_row.html)

@@ -1,5 +1,8 @@
 # Phaze
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 > **Historical planning snapshot (2026-07-29).** This file is not the current product brief or
 > backlog. See [`.planning/README.md`](README.md) for the archive boundary and the repository
 > [`README.md`](../README.md) for shipped behavior.
@@ -213,7 +216,7 @@ Single-host enrichment milestone: unified FTS search with faceted filtering, Dis
 <details>
 <summary>v2.0 shipped 2026-04-02</summary>
 
-Metadata enrichment & tracklist integration. Audio tag extraction (mutagen), AI destination paths with collision detection, duplicate resolution UI, 1001Tracklists integration with monthly cron, dual fingerprint service (audfprint + Panako) with batch ingestion.
+Metadata enrichment & tracklist integration. Audio tag extraction (mutagen), AI destination paths with collision detection, duplicate resolution UI, retired external source integration with monthly cron, dual fingerprint service (audfprint + Panako) with batch ingestion.
 
 - 6 phases, 16 plans, 538 tests passing
 - ~5,966 lines of Python added
@@ -261,7 +264,7 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Shared async engine pool replacing per-invocation engine creation — v2.0 Phase 12
 - ✓ AI destination path proposals with collision detection and directory tree preview — v2.0 Phase 13
 - ✓ Duplicate resolution UI with auto-scoring, side-by-side comparison, resolve/undo — v2.0 Phase 14
-- ✓ 1001Tracklists integration with search, scrape, fuzzy match, periodic refresh — v2.0 Phase 15
+- ✓ retired external source integration with search, scrape, fuzzy match, periodic refresh — v2.0 Phase 15
 - ✓ Dual fingerprint service (audfprint + Panako) with batch ingestion — v2.0 Phase 16
 - ✓ Live set scanning with tracklist review, inline editing, approve/reject — v2.0 Phase 17
 
@@ -357,7 +360,7 @@ Separate remaining ship step (not a milestone): the `2026.7.1` release tag push 
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
 - FileMetadata fully populated via mutagen tag extraction (ID3/Vorbis/MP4/FLAC/OPUS)
 - No audio fingerprinting: the dual audfprint + Panako service was **removed 2026-07-28** (ADR-0002, phaze-0jpe). Deduplication rests on metadata and content digests
-- 1001tracklists integration operational with monthly refresh cron (runs on app-server controller worker)
+- retired external source integration operational with monthly refresh cron (runs on app-server controller worker)
 - This is a personal tool running on a private home LAN, not a multi-user SaaS
 
 ## Constraints

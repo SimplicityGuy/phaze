@@ -1,5 +1,8 @@
 # Database
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 phaze persists all state in PostgreSQL (18+) accessed asynchronously via SQLAlchemy 2.0
 (`postgresql+asyncpg://`). Models live in `src/phaze/models/`; schema changes are managed
 by Alembic using the async template (`alembic/`). All models inherit a `created_at` /
@@ -271,7 +274,7 @@ head, **`083`**.
 | `047` | Drop `analysis.fingerprint` |
 | `048` | `files (original_filename, id)` btree |
 | `049` | Convert every remaining naive timestamp column to `timestamptz` (phaze-cz3m) |
-| `050` | Create `tracklist_lookup_cache` — persisted positive/negative 1001TL lookup cache (phaze-fq9h.3) |
+| `050` | Create `tracklist_lookup_cache` — persisted positive/negative retired external source lookup cache (phaze-fq9h.3) |
 | `051` | Add tracklist propagation columns — one scraped tracklist propagated to a unique set's duplicates (phaze-fq9h.7) |
 | `052` | Create `tracklist_priority_flags` — persisted operator lookup-priority flag (phaze-fq9h.8) |
 | `053` | Create `filename_convention` — generic corpus-learned convention store (phaze-5fta.2) |
@@ -303,7 +306,7 @@ head, **`083`**.
 | `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
 | `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) |
 | `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) |
-| `082` | Retire 1001Tracklists acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) |
+| `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) |
 | `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill (phaze-5rfev) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX

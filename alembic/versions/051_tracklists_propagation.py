@@ -1,7 +1,7 @@
 """Let one scraped tracklist be PROPAGATED to a unique set's duplicate files (phaze-fq9h.7).
 
 The drain's whole tractability argument is "look a unique set up ONCE and propagate the answer to
-its duplicates": the 1001Tracklists host budget is ~1 request / 8 s for the entire system, and a
+its duplicates": the retired external provider host budget is ~1 request / 8 s for the entire system, and a
 re-query per duplicate file spends a request the archive can never get back.
 
 Propagation has to produce a REAL ``tracklists`` row per duplicate file, because ``file_id`` is
@@ -11,7 +11,7 @@ propagation in a side table would leave those files reading as un-tracklisted, a
 operator "search all" would spend a live request on each of them, which is precisely the cost
 propagation exists to avoid.
 
-That collides with the old global ``UNIQUE (external_id)``: the propagated rows are the SAME 1001TL
+That collides with the old global ``UNIQUE (external_id)``: the propagated rows are the SAME retired external provider
 page as the canonical scrape and must carry the same id. The invariant that constraint actually
 encoded, though, was narrower -- *one row per page that we scraped* -- so it is re-expressed as a
 PARTIAL unique index over the canonical rows, and propagated rows are exempted by carrying a

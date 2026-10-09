@@ -23,7 +23,7 @@ def test_dag_enrich_stages_have_no_upstream() -> None:
 
 def test_dag_downstream_topology() -> None:
     # phaze-0jpe: TRACKLIST is upstream-INDEPENDENT. It used to be gated on (Stage.FINGERPRINT,);
-    # with fingerprinting removed, tracklists come from 1001tracklists and were never a function of
+    # with fingerprinting removed, tracklists come from manual and were never a function of
     # audio matching, so the empty tuple is the correct end state, not a dangling upstream.
     assert ELIGIBILITY_DAG[Stage.TRACKLIST] == ()
     assert ELIGIBILITY_DAG[Stage.PROPOSE] == (Stage.METADATA, Stage.ANALYZE)

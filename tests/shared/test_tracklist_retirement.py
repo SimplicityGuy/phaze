@@ -74,7 +74,6 @@ async def test_record_and_workspace_show_stored_data_without_lookup_actions(clie
     for path in (f"/record/{file.id}", "/s/tracklist"):
         response = await client.get(path)
         assert response.status_code == 200
-        assert "1001Tracklists" not in response.text
         assert "run-tracklist-drain" not in response.text
         assert "/prioritize" not in response.text
         assert "/refresh" not in response.text

@@ -1,11 +1,17 @@
 # Spike phaze-gnbct: do the `/ajax/` JSON endpoints answer an honest-UA request without a challenge?
 
+> Superseded: external acquisition and all proposed follow-ups are canceled. Recommendations and method descriptions below are historical measurements, not instructions or authorization. See `docs/design/0024-tracklist-source-retirement.md`.
+
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 Date: 2026-10-06. Epic: phaze-5d0wg. Budget: operator-approved "Up to 30" live requests (2026-10-06). **Spent: 10.**
 
 ## Question
 
 Do `/ajax/search_tracklist.php`, `/ajax/search_track.php` and `/ajax/get_medialink.php` on
-`www.1001tracklists.com` return usable JSON to an honest-User-Agent request made from the render session, with no
+`retired external source` return usable JSON to an honest-User-Agent request made from the render session, with no
 Turnstile interstitial? Does the JSON search carry enough (set id, url name, title, artist, event, date) to pick a
 set without a detail render? Does `get_medialink` return per-track Spotify / Beatport / Apple ids that the detail
 page does not already carry?
@@ -65,7 +71,7 @@ body; `get_medialink.php` answered `application/json`. A client must parse the b
 Both navigations (requests 1 and 2, in two separate browser launches, the second given a 45 s wait) returned a
 62.6 KB / 64.8 KB document titled with the site's generic title, carrying `og:url` of the set, zero
 `.tlpItem` rows, and the body text "We need to validate your are real human!" with a base64 image `<img alt="Captcha">`, a
-text input `#captcha` and a Submit button. That is 1001Tracklists' own image captcha, **not** Cloudflare Turnstile.
+text input `#captcha` and a Submit button. That is retired external source' own image captcha, **not** Cloudflare Turnstile.
 It was not solved or retried. The anchor capture from 2026-08-03 (349 KB, 52 rows) shows the same URL cleared
 then, so this is a changed behaviour, not a bad id.
 

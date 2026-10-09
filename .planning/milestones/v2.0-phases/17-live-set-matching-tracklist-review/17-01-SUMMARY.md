@@ -10,7 +10,7 @@ requires:
   - phase: 15-tracklist-integration
     provides: Tracklist, TracklistVersion, TracklistTrack models
 provides:
-  - Tracklist source/status columns for distinguishing fingerprint vs 1001tracklists data
+  - Tracklist source/status columns for distinguishing fingerprint vs retired external source data
   - TracklistTrack confidence column for fingerprint match scores
   - QueryMatch/CombinedMatch timestamp and resolved metadata fields
   - scan_live_set arq task for fingerprint-to-tracklist pipeline
@@ -45,6 +45,9 @@ requirements-completed: [FPRINT-03]
 duration: 8min
 completed: 2026-04-02
 ---
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 
 # Phase 17 Plan 01: Backend Data Layer & Scan Task Summary
 
@@ -114,7 +117,7 @@ None - all data flows are wired end-to-end within the scan task.
 ## Next Phase Readiness
 - Backend data layer complete for plans 02 (scan API endpoint + results UI) and 03 (tracklist review/approval UI)
 - scan_live_set task registered and testable via arq
-- Tracklist model supports both source types (1001tracklists, fingerprint) with appropriate status defaults
+- Tracklist model supports both source types (retired external source, fingerprint) with appropriate status defaults
 
 ---
 *Phase: 17-live-set-matching-tracklist-review*

@@ -209,7 +209,7 @@ const SCREENS = {
       ['unknown — 03 untitled.wav','<span class="text-gray-500">no match</span>','—','—'],
     ]);},
 
-  tracklist(){return head('Tracklist','9,402 sets matched · 1001Tracklists',['SEARCH','SCRAPE','MATCH'])
+  tracklist(){return head('Tracklist','9,402 sets matched · retired external source',['SEARCH','SCRAPE','MATCH'])
     + `<div class="px-6 pt-4"><div class="flex items-center gap-2 text-xs jura tracking-wider text-gray-500">
         <span class="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">1 · SEARCH ✓</span><span>→</span>
         <span class="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">2 · SCRAPE ✓</span><span>→</span>
@@ -354,7 +354,7 @@ function recordHTML(){
       <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Metadata</div>
         ${kv2('artist','«empty»','deadmau5')}${kv2('title','«empty»','Live @ Coachella 2024')}${kv2('date','—','2024-04-13')}</div>
       <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Identity</div>
-        ${kv('Track-ID','live set — n/a')}${kv('Tracklist (1001)','matched · 38/42 tracks')}${kv('Proposed name','deadmau5 @ Coachella 2024-04-13')}</div></div>
+        ${kv('Track-ID','live set — n/a')}${kv('Tracklist','matched · 38/42 tracks')}${kv('Proposed name','deadmau5 @ Coachella 2024-04-13')}</div></div>
     <div class="rounded-xl bg-amber-500/[0.06] border border-amber-500/25 p-4">
       <div class="jura text-[11px] uppercase tracking-[0.2em] text-amber-400/80 mb-3">Pending approvals for this file</div>
       <div class="space-y-2 text-sm">

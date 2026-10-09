@@ -1,5 +1,8 @@
 # Project Retrospective
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 > **Historical planning archive.** This retrospective preserves milestone evidence through its
 > last recorded update; it is not a statement of current architecture. See
 > [`.planning/README.md`](README.md).
@@ -63,7 +66,7 @@
 - Audio tag extraction (mutagen) populating FileMetadata with artist, title, album, year, genre, track number, duration, bitrate, raw JSONB dump
 - AI destination path proposals with collision detection, directory tree preview, and execution gate
 - Duplicate resolution UI with auto-scoring (bitrate > tags > path), side-by-side comparison, resolve/undo workflow
-- 1001Tracklists integration: async scraper, fuzzy matcher (rapidfuzz), monthly refresh cron
+- retired external source integration: async scraper, fuzzy matcher (rapidfuzz), monthly refresh cron
 - Dual fingerprint service (audfprint + Panako) as Docker containers with HTTP APIs and batch ingestion
 - Live set scanning with tracklist review: inline editing, approve/reject, bulk reject, confidence badges
 

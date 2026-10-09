@@ -44,9 +44,7 @@ async def _seed_set_with_tracklist_and_windows(make_file, session: AsyncSession)
     """
     file_rec = await make_file(original_filename=LIVE_SET_FILENAME)
     session.add(FileMetadata(file_id=file_rec.id, duration=DURATION))
-    tracklist = Tracklist(
-        external_id="ext-seg", source_url="https://www.1001tracklists.com/tracklist/ext-seg", file_id=file_rec.id, match_confidence=95
-    )
+    tracklist = Tracklist(external_id="ext-seg", source_url="https://example.invalid/tracklist", file_id=file_rec.id, match_confidence=95)
     session.add(tracklist)
     await session.flush()
     version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
@@ -144,7 +142,7 @@ async def test_a_file_with_no_windows_renders_the_table_exactly_as_before(client
     """Nothing analyzed yet: four em-dash cells, the tracklist itself unchanged and no error."""
     file_rec = await make_file(original_filename=LIVE_SET_FILENAME)
     session.add(FileMetadata(file_id=file_rec.id, duration=DURATION))
-    tracklist = Tracklist(external_id="ext-bare", source_url="https://www.1001tracklists.com/tracklist/ext-bare", file_id=file_rec.id)
+    tracklist = Tracklist(external_id="ext-bare", source_url="https://example.invalid/tracklist", file_id=file_rec.id)
     session.add(tracklist)
     await session.flush()
     version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)

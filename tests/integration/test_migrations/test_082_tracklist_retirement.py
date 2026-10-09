@@ -22,7 +22,7 @@ async def test_retirement_preserves_tracklists_and_downgrades_disarmed() -> None
             await connection.execute(
                 text(
                     "INSERT INTO tracklists (id, external_id, source_url, source, auto_linked, status) "
-                    "VALUES (:id, 'synthetic-set', 'https://example.invalid/set', '1001tracklists', false, 'approved')"
+                    "VALUES (:id, 'synthetic-set', 'https://example.invalid/set', 'historical-provider', false, 'approved')"
                 ),
                 {"id": tracklist_id},
             )
@@ -47,7 +47,7 @@ async def test_retirement_preserves_tracklists_and_downgrades_disarmed() -> None
             stored = (
                 await connection.execute(text("SELECT source, source_url, latest_version_id FROM tracklists WHERE id = :id"), {"id": tracklist_id})
             ).one()
-            assert tuple(stored) == ("1001tracklists", "https://example.invalid/set", version_id)
+            assert tuple(stored) == ("historical-provider", "https://example.invalid/set", version_id)
             assert (await connection.execute(text("SELECT title FROM tracklist_tracks WHERE id = :id"), {"id": track_id})).scalar_one() == "Opening"
             for table in ("tracklist_lookup_cache", "tracklist_file_lookups", "tracklist_priority_flags", "tracklist_drain_arm_state"):
                 assert (await connection.execute(text("SELECT to_regclass(:table)"), {"table": table})).scalar_one() is None
@@ -61,6 +61,19 @@ async def test_retirement_preserves_tracklists_and_downgrades_disarmed() -> None
         async with engine.connect() as connection:
             assert tuple((await connection.execute(text("SELECT armed, in_flight FROM tracklist_drain_arm_state"))).one()) == (False, False)
             assert (await connection.execute(text("SELECT count(*) FROM tracklist_lookup_cache"))).scalar_one() == 0
+            default = (
+                await connection.execute(
+                    text("SELECT column_default FROM information_schema.columns WHERE table_name = 'tracklists' AND column_name = 'source'")
+                )
+            ).scalar_one()
+            assert "manual" in default
+            assert tuple(
+                (
+                    await connection.execute(
+                        text("SELECT source, source_url, latest_version_id FROM tracklists WHERE id = :id"), {"id": tracklist_id}
+                    )
+                ).one()
+            ) == ("historical-provider", "https://example.invalid/set", version_id)
         await asyncio.to_thread(upgrade_to, cfg, "082")
     finally:
         await engine.dispose()

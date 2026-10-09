@@ -129,7 +129,7 @@ async def test_tracklists_and_companion_links_block_only_a_retirement(session: A
     companion = await _file(session, file_type="cue")
     session.add_all(
         [
-            Tracklist(external_id=uuid.uuid4().hex, source_url="https://1001.tl/x", file_id=record.id),
+            Tracklist(external_id=uuid.uuid4().hex, source_url="https://manual/x", file_id=record.id),
             FileCompanion(companion_id=companion.id, media_id=record.id),
         ]
     )
@@ -168,7 +168,7 @@ async def test_invalidate_content_state_drops_exactly_the_state_derived_from_the
             # Kept: an operator force-skip and state that is not derived from the bytes.
             StageSkip(file_id=file_id, stage="analyze", reason="operator force-skip"),
             FileCompanion(companion_id=companion.id, media_id=file_id),
-            Tracklist(external_id=uuid.uuid4().hex, source_url="https://1001.tl/x", file_id=file_id),
+            Tracklist(external_id=uuid.uuid4().hex, source_url="https://manual/x", file_id=file_id),
             # A neighbour's rows are never touched.
             FileMetadata(file_id=neighbour.id, artist="other"),
             SchedulingLedger(key=f"process_file:{neighbour.id}", function="process_file", routing="agent", payload={"file_id": str(neighbour.id)}),

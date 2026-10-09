@@ -60,6 +60,9 @@ duration: 40min
 completed: 2026-04-01
 ---
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 # Phase 14 Plan 02: Duplicate Resolution UI Summary
 
 **FastAPI router + 9 Jinja2 templates delivering full duplicate resolution workflow: card-per-group layout, expandable comparison tables with green best-value highlighting, radio pre-selection, resolve/undo via HTMX OOB swaps, 10-second undo toast, bulk Accept All, and nav integration**
@@ -124,7 +127,7 @@ None - no external service configuration required.
 ## Next Phase Readiness
 - Duplicate resolution UI complete and verified
 - Phase 14 fully complete (both plans 01 and 02 delivered)
-- Ready for Phase 15 (1001Tracklists integration) or Phase 16 (audio fingerprinting)
+- Ready for Phase 15 (retired external source integration) or Phase 16 (audio fingerprinting)
 - Note: Research flags remain for Phase 15 (endpoint validation) and Phase 16 (audfprint Python 3.13 compatibility)
 
 ---

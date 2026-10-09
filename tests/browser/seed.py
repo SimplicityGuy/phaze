@@ -453,7 +453,7 @@ class Seeder:
         artist: str = "Example Artist",
         external_id: str | None = None,
     ) -> Tracklist:
-        """Insert one matched set or unmatched 1001Tracklists candidate for a browser journey."""
+        """Insert one matched set or unmatched manual candidate for a browser journey."""
         record = Tracklist(
             id=uuid.uuid4(),
             external_id=external_id or f"ext-{uuid.uuid4().hex[:12]}",

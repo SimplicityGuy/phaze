@@ -1,6 +1,6 @@
 """The scraped tracklist as an INDEX into the window projection (``phaze-x1qr3.6``).
 
-A 1001Tracklists tracklist gives a set structure the audio alone does not: named tracks with
+A stored tracklist gives a set structure the audio alone does not: named tracks with
 cue times. The windows give measurement the tracklist does not: BPM, key, mood, energy every
 30 s and every 180 s. This module is the join -- consecutive scraped timestamps become half-open
 time segments, and each segment collects the windows whose MIDPOINT falls inside it, so a
@@ -151,7 +151,7 @@ class _MidpointIndex:
     tiers were scanned separately (PR #556 review, finding 6).
 
     Deliberately does NOT assume the segments themselves are ordered. A non-monotonic pair of
-    scraped timestamps is a real 1001Tracklists defect this module already handles, so a moving
+    scraped timestamps is a real historical provider defect this module already handles, so a moving
     cursor over the segments would be a new assumption bought for nothing; two bisects per
     segment cost the same and assume only what is actually true.
 
@@ -241,7 +241,7 @@ def build_track_segments(
 
     Segments are half-open ``[start, end)`` and consecutive: track *i* ends where the next
     TIMESTAMPED track begins, and the last ends at ``duration_sec``. A non-monotonic pair of
-    scraped timestamps (a real 1001Tracklists defect, not a hypothetical) is clamped to a
+    scraped timestamps (a real historical provider defect, not a hypothetical) is clamped to a
     zero-length segment rather than a negative one -- it then intersects nothing and reads as
     em dashes, which is the correct answer for a boundary we cannot trust.
 

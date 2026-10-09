@@ -26,7 +26,7 @@ _DATABASE = _REPO_ROOT / "docs" / "database.md"
 _API = _REPO_ROOT / "docs" / "api.md"
 _PROJECT_STRUCTURE = _REPO_ROOT / "docs" / "project-structure.md"
 _ESSENTIA_ANALYSIS = _REPO_ROOT / "docs" / "essentia-analysis.md"
-_TRACKLIST_SCRAPING = _REPO_ROOT / "docs" / "tracklist-scraping.md"
+_TRACKLIST_RETIREMENT = _REPO_ROOT / "docs" / "tracklist-retirement.md"
 _UI_DESIGN_REFERENCE = _REPO_ROOT / "docs" / "ui-design-reference.md"
 _QUICK_START = _REPO_ROOT / "docs" / "quick-start.md"
 
@@ -36,7 +36,7 @@ _MAINTAINED_ARCHITECTURE_DOCS: tuple[Path, ...] = (
     _API,
     _PROJECT_STRUCTURE,
     _ESSENTIA_ANALYSIS,
-    _TRACKLIST_SCRAPING,
+    _TRACKLIST_RETIREMENT,
     _UI_DESIGN_REFERENCE,
 )
 _PACKAGE_AREAS: tuple[str, ...] = ("agent_watcher", "cli", "enums", "models", "routers", "schemas", "services", "tasks", "telemetry", "utils", "web")
