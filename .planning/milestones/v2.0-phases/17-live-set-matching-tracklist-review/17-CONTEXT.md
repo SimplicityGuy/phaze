@@ -64,10 +64,10 @@ Scan live set recordings against the fingerprint database to identify tracks wit
 - `src/phaze/tasks/worker.py` — WorkerSettings, task registration
 
 ### UI Design References
-- `docs/design/0024-tracklist-source-retirement.md` — Confidence color tiers, card layout, spacing, typography (reuse for consistency)
+- Original source-specific reference for confidence color tiers, card layout, spacing and typography is retired. `docs/design/0024-tracklist-source-retirement.md` records the retirement boundary.
 
 ### Prior Phase Context
-- `docs/design/0024-tracklist-source-retirement.md` — Tracklist model decisions (D-01 through D-23), card layout, filter tabs, actions
+- Original source-specific reference for tracklist model decisions (D-01 through D-23), card layout, filter tabs and actions is retired. `docs/design/0024-tracklist-source-retirement.md` records the retirement boundary.
 - `.planning/phases/16-fingerprint-service-batch-ingestion/16-CONTEXT.md` — Fingerprint service architecture, Protocol adapters, scoring (D-01 through D-18)
 
 </canonical_refs>

@@ -698,16 +698,16 @@ the fact; known drift is logged here instead, dated, without touching the rows t
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-UI-SPEC.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-VALIDATION.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/14-duplicate-resolution-ui/14-VERIFICATION.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
-| `docs/design/0024-tracklist-source-retirement.md` | historical planning evidence | unchanged |
+| Retired acquisition artifact 01 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 02 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 03 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 04 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 05 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 06 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 07 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 08 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 09 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
+| Retired acquisition artifact 10 | historical planning evidence | deleted by operator direction, 2026-10-08; boundary: `docs/design/0024-tracklist-source-retirement.md` |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-01-PLAN.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-01-SUMMARY.md` | historical planning evidence | unchanged |
 | `.planning/milestones/v2.0-phases/16-fingerprint-service-batch-ingestion/16-02-PLAN.md` | historical planning evidence | unchanged |

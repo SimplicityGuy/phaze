@@ -425,7 +425,7 @@ Step 2.6: SKIPPED (no external dependencies -- this phase is purely code/config/
 - `src/phaze/tasks/fingerprint.py` -- existing arq task pattern for fingerprint_file
 - `src/phaze/tasks/worker.py` -- WorkerSettings registration pattern
 - `src/phaze/templates/tracklists/` -- all existing templates (card, filter tabs, track detail)
-- `docs/design/0024-tracklist-source-retirement.md` -- confidence color tiers, card layout specs
+- Original source-specific reference for confidence color tiers and card layout specs is retired; `docs/design/0024-tracklist-source-retirement.md` records the retirement boundary.
 - `.planning/phases/17-live-set-matching-tracklist-review/17-CONTEXT.md` -- all locked decisions D-01 through D-12
 - `alembic/versions/` -- existing migration numbering (007 is latest, next is 008)
 
