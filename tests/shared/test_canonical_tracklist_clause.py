@@ -22,7 +22,7 @@ promise: a new hand-spelled copy fails the build instead of waiting for the next
 WHAT MUST NOT BE FLAGGED
 -------------------------
 
-``services/tracklist_priority.py:262`` reads ``tracklist.propagated_from_set_key is not None`` --
+``services/tracklist_review.py:262`` reads ``tracklist.propagated_from_set_key is not None`` --
 a plain Python ``is not`` check on an already-loaded INSTANCE, not a SQL predicate built for a
 query. Rewriting it as ``Tracklist.is_propagated()`` would not even type-check: that classmethod
 returns a SQL expression (``ColumnElement[bool]``), not a ``bool``. The detector below is keyed on
@@ -75,10 +75,7 @@ _THIS_FILE = Path(__file__).resolve()
 _MODEL_FILE = (REPO_ROOT / "src" / "phaze" / "models" / "tracklist.py").resolve()
 
 # The two production modules that carried the four hand-spelled call sites this bead fixed.
-_KNOWN_CALL_SITES = (
-    "src/phaze/tasks/tracklist.py",
-    "src/phaze/services/tracklist_drain.py",
-)
+_KNOWN_CALL_SITES = ("src/phaze/services/tracklist_review.py",)
 
 # A hand-spelled SQL predicate against the column: `.is_(None)` / `.is_not(None)`, however the
 # call is reached (`Tracklist.propagated_from_set_key.is_(...)`, `cls....is_not(...)`, an
@@ -213,7 +210,7 @@ def test_the_scan_actually_reaches_the_known_call_sites() -> None:
 
 
 def test_an_instance_attribute_check_is_not_flagged() -> None:
-    """``services/tracklist_priority.py:262`` must never be flagged or rewritten.
+    """``services/tracklist_review.py:262`` must never be flagged or rewritten.
 
     ``tracklist.propagated_from_set_key is not None`` is a plain Python ``is not`` check on an
     already-loaded row, not a SQL predicate -- keying the detector on the SQLAlchemy method-call
@@ -224,12 +221,12 @@ def test_an_instance_attribute_check_is_not_flagged() -> None:
     real_line = "is_propagated=tracklist.propagated_from_set_key is not None,"
     assert _CLAUSE_RE.search(real_line) is None, "a plain `is not` check must not match the SQL-method regex"
 
-    priority_module = REPO_ROOT / "src" / "phaze" / "services" / "tracklist_priority.py"
+    priority_module = REPO_ROOT / "src" / "phaze" / "services" / "tracklist_review.py"
     text = priority_module.read_text(encoding="utf-8")
     assert "tracklist.propagated_from_set_key is not None" in text, (
-        "the real acquittal case moved or was rewritten in services/tracklist_priority.py -- update this pin"
+        "the real acquittal case moved or was rewritten in services/tracklist_review.py -- update this pin"
     )
-    assert not _hand_spelled_occurrences(text), "services/tracklist_priority.py must be acquitted by the guard"
+    assert not _hand_spelled_occurrences(text), "services/tracklist_review.py must be acquitted by the guard"
 
 
 def test_a_prose_mention_of_the_hand_spelled_shape_is_not_flagged() -> None:

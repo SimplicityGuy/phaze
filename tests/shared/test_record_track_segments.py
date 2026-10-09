@@ -13,7 +13,6 @@ silently falsy -- which is exactly the failure mode a pure-service test cannot s
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-import uuid
 
 import pytest
 
@@ -137,7 +136,7 @@ async def test_the_four_columns_render_on_both_record_presentations(client: Asyn
         # Every existing column survives.
         assert "Opener" in body
         assert "Untimed" in body
-        assert "Scraped from 1001Tracklists" in body
+        assert "Stored tracklist" in body
 
 
 @pytest.mark.asyncio
@@ -160,38 +159,10 @@ async def test_a_file_with_no_windows_renders_the_table_exactly_as_before(client
 
     assert response.status_code == 200
     assert "Opener" in response.text
-    assert "Scraped from 1001Tracklists" in response.text
+    assert "Stored tracklist" in response.text
     # The segment exists (the track IS timestamped) but measures nothing, so every one of the
     # four values is an explicit absence -- not a zero, which would read as a silent track.
     assert context is not None
     segments = context["track_segments"]
     assert isinstance(segments, list)
     assert (segments[0].bpm, segments[0].camelot, segments[0].mood, segments[0].energy) == (None, None, None, None)
-
-
-@pytest.mark.asyncio
-async def test_the_prioritize_and_unprioritize_endpoints_keep_the_columns_populated(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
-    """The HTMX re-renders carry the same segments, so a button click never blanks the columns.
-
-    The failure this catches is invisible to a service test and to the GET path: those three
-    endpoints build their own context dict, and a missing ``track_segments`` key there would
-    swap in a tracklist whose measurements had silently vanished the moment the operator
-    touched it.
-    """
-    file_rec = await _seed_set_with_tracklist_and_windows(make_file, session)
-
-    unprioritized = await client.post(f"/pipeline/tracklists/{file_rec.id}/unprioritize")
-    refreshed = await client.post(f"/pipeline/tracklists/{file_rec.id}/refresh")
-
-    for response in (unprioritized, refreshed):
-        assert response.status_code == 200
-        assert "A minor · 8A" in response.text
-        assert "128.0" in response.text
-
-
-@pytest.mark.asyncio
-async def test_a_vanished_file_still_renders_the_not_found_fragment(client: AsyncClient) -> None:
-    """The phaze-9xyjp vanished-file response also carries the key, so it renders rather than 500s."""
-    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
-
-    assert "File not found." in response.text

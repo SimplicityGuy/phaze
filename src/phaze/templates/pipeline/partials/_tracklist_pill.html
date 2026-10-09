@@ -1,36 +1,6 @@
-{# phaze-o71bf: the Files table's Tracklist cell -- the derived TRACKLIST bucket, worded by the lookup outcome.
-
-   The bucket (stage_status_case(TRACKLIST), the same value the column sorts and filters on) decides the
-   tone and glyph, so the pill can never show a status the filter disagrees with. The per-file lookup
-   record only supplies the WORD inside the bucket: "skipped" alone would put "not found" and "not
-   eligible" behind one label, and they ask different things of the operator (wait for the retry date
-   vs. nothing to do). Same token geometry and WCAG 1.4.1 discipline as _stage_pill.html: every branch
-   carries a glyph and a word, never colour alone.
-
-   Params (set by the caller via {% with %}):
-     * bucket -- the derived TRACKLIST bucket ('done' | 'in_flight' | 'failed' | 'skipped' | 'not_started').
-     * lookup -- the file's TracklistFileLookup row, or none when no drain slice has seen the file.
-
-   Pure template: no HTMX, no self-poll. Every interpolated value is an enum word or a date. #}
 {% import "ui/primitives.html" as ui %}
-{% set _outcome = lookup.outcome if lookup else none %}
-{% set _retry = lookup.next_eligible_at.strftime('%Y-%m-%d') if lookup and lookup.next_eligible_at else none %}
 {% if bucket == 'done' %}
-{{ ui.status_badge('Tracklist', 'matched', 'success', '✓') }}
-{% elif bucket == 'in_flight' %}
-{{ ui.status_badge('Tracklist', 'queued', 'accent', '●') }}
-{% elif bucket == 'failed' %}
-{{ ui.status_badge('Tracklist', 'retry pending · ' ~ (_retry or 'parked'), 'danger', '✕') }}
-{% elif bucket == 'skipped' %}
-{% if _outcome == 'not_found' %}
-{{ ui.status_badge('Tracklist', 'not found · retry ' ~ (_retry or '—'), 'skipped', '⊘') }}
-{% elif _outcome == 'low_confidence' %}
-{{ ui.status_badge('Tracklist', 'low confidence · retry ' ~ (_retry or '—'), 'skipped', '⊘') }}
-{% elif _outcome == 'matched' %}
-{{ ui.status_badge('Tracklist', 'set matched · not linked', 'skipped', '⊘') }}
+{{ ui.status_badge('Tracklist', 'stored', 'success', '✓') }}
 {% else %}
-{{ ui.status_badge('Tracklist', 'not eligible', 'neutral', '⊘') }}
-{% endif %}
-{% else %}
-{{ ui.status_badge('Tracklist', 'not started', 'neutral', '—') }}
+{{ ui.status_badge('Tracklist', 'no stored tracklist', 'neutral', '—') }}
 {% endif %}

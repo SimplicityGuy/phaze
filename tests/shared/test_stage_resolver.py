@@ -183,36 +183,3 @@ def test_stage_module_stays_db_free() -> None:
 
 
 # phaze-o71bf -- TRACKLIST's per-file lookup record feeds its in_flight / failed / skipped buckets.
-@pytest.mark.parametrize(
-    ("outcome", "row_present", "expected"),
-    [
-        ("queued", False, Status.IN_FLIGHT),
-        ("queued", True, Status.IN_FLIGHT),  # in_flight ≻ done: a forced refresh is running
-        ("matched", True, Status.DONE),
-        ("matched", False, Status.SKIPPED),  # set matched, this file withheld by the propagation gate
-        ("not_found", False, Status.SKIPPED),
-        ("low_confidence", False, Status.SKIPPED),
-        ("not_eligible", False, Status.SKIPPED),
-        ("not_found", True, Status.DONE),  # done ≻ skipped
-        ("retry_pending", False, Status.FAILED),
-        ("retry_pending", True, Status.DONE),  # done ≻ failed
-        (None, False, Status.NOT_STARTED),
-        ("from_the_future", False, Status.NOT_STARTED),
-    ],
-)
-def test_tracklist_lookup_outcome_ladder(outcome: str | None, row_present: bool, expected: Status) -> None:
-    assert resolve_status(Stage.TRACKLIST, {"row_present": row_present, "lookup_outcome": outcome}) is expected
-
-
-def test_tracklist_outcome_sets_partition_every_outcome() -> None:
-    """Each per-file outcome lands in exactly one bucket set -- none silently reads not_started."""
-    from phaze.enums.tracklist_candidate import (
-        TRACKLIST_FAILED_OUTCOMES,
-        TRACKLIST_INFLIGHT_OUTCOMES,
-        TRACKLIST_SKIPPED_OUTCOMES,
-        TracklistFileOutcome,
-    )
-
-    sets = (TRACKLIST_INFLIGHT_OUTCOMES, TRACKLIST_FAILED_OUTCOMES, TRACKLIST_SKIPPED_OUTCOMES)
-    for outcome in TracklistFileOutcome:
-        assert sum(outcome in bucket for bucket in sets) == 1, outcome

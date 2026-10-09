@@ -28,7 +28,6 @@ from phaze.services.proposal_context import (
 )
 from phaze.services.proposal_parsing import BatchProposalResponse
 from phaze.services.proposal_provider import generate_batch
-from phaze.services.tracklist_candidate_queue import build_candidate_queue
 from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.scan import scan_directory
 
@@ -149,9 +148,3 @@ async def test_ingested_sibling_cue_reaches_proposal_prompt_and_tracklist_source
     rendered_prompt = captured["messages"][0]["content"]
     assert '"companions": [' in rendered_prompt
     assert json.dumps(cue_content) in rendered_prompt
-
-    candidate_queue = await build_candidate_queue(session)
-    assert candidate_queue.stats.media_files == 1
-    assert candidate_queue.stats.skipped_cue == 1
-    assert candidate_queue.stats.already_tracklisted == 1
-    assert candidate_queue.stats.queued == 0

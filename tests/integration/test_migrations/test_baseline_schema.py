@@ -118,11 +118,7 @@ _EXPECTED_TABLES = frozenset(
         "set_profile",
         "stage_skip",
         "tag_write_log",
-        "tracklist_drain_arm_state",
         # phaze-o71bf (migration 070): the per-file edge to the set-keyed cache above.
-        "tracklist_file_lookups",
-        "tracklist_lookup_cache",
-        "tracklist_priority_flags",
         "tracklist_tracks",
         "tracklist_versions",
         "tracklists",
@@ -355,6 +351,7 @@ def test_baseline_is_the_only_migration() -> None:
         "079_companion_content_features.py",
         "080_companion_junk_review.py",
         "081_files_agent_folder_index.py",
+        "082_remove_1001tracklists.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -386,7 +383,7 @@ async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
     """A bare ``upgrade head`` on an empty DB lands at the current head (081: files by agent and folder)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "081"
+    assert version == "082"
 
 
 @pytest.mark.asyncio
@@ -712,7 +709,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "081"
+        assert version == "082"
     finally:
         if engine is not None:
             await engine.dispose()

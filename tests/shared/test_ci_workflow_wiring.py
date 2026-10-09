@@ -493,12 +493,6 @@ def _assert_browser_group_is_exactly_pinned_playwright(browser_group: list[str])
     deliberate playwright bump passes it without editing this test -- only a widened,
     dropped, or diluted pin trips it.
 
-    Contrast with Patchright's own cap a few lines away in `pyproject.toml`
-    (`patchright>=1.62.1,<1.63.0`), which IS the litellm shape: it pins an exact patched
-    browser build that must stay in lockstep with the worker image's
-    ``patchright install chrome`` (see the comment there). Two version caps on sibling
-    browser-automation libraries, a few lines apart, are different kinds of thing -- do
-    not "fix" Patchright's cap to match this one.
     """
     assert len(browser_group) == 1, f"`browser` dependency-group must hold exactly one requirement; got {browser_group!r}"
     requirement = Requirement(browser_group[0])
@@ -513,8 +507,7 @@ def test_browser_toolchain_is_exactly_pinned_in_an_optional_group() -> None:
     """The browser runner cannot float independently of the reviewed lockfile.
 
     Playwright is a development-only dependency group, deliberately isolated from the
-    runtime dependency set (pyproject.toml:225-227) -- Patchright, not Playwright, is the
-    real runtime browser dependency (the 1001Tracklists render path). See
+    runtime dependency set. See
     `_assert_browser_group_is_exactly_pinned_playwright` for why the check is structural
     rather than a duplicated literal.
     """

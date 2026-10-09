@@ -31,25 +31,8 @@ from phaze.tasks._shared.queue_defaults import (
     _SAQ_DEFAULT_RETRIES,
     _SAQ_DEFAULT_TIMEOUT,
     _SAQ_DEFAULT_TTL,
-    TRACKLIST_DRAIN_JOB_POLICY,
     apply_project_job_defaults,
 )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("timeout", [10, 600, 7200, 0])
-@pytest.mark.parametrize("retries", [0, 1, 4, 9])
-async def test_drain_policy_covers_default_and_replayed_jobs(monkeypatch: pytest.MonkeyPatch, timeout: int, retries: int) -> None:
-    """Every producer gets enough time for a paced slice, with no added retry churn."""
-    monkeypatch.setattr("phaze.config.get_settings", lambda: MagicMock(worker_job_timeout=600, worker_max_retries=4, worker_keep_result=3600))
-    job = Job(function="drain_tracklists", timeout=timeout, retries=retries)
-
-    await apply_project_job_defaults(job)
-
-    drain_timeout, retry_ceiling = TRACKLIST_DRAIN_JOB_POLICY
-    assert job.timeout == drain_timeout == 7200
-    assert job.retries == min(4 if retries == 1 else retries, retry_ceiling)
-    assert job.timeout > 40 * 60
 
 
 # Behaviour 1: hook applies project defaults to a Job at SAQ defaults

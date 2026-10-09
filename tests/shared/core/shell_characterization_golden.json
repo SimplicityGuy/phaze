@@ -34,7 +34,6 @@
     "GET /pipeline/scans/recent",
     "GET /pipeline/scans/{batch_id}",
     "GET /pipeline/stats",
-    "GET /pipeline/tracklist-drain-status",
     "GET /pipeline/tracklist-sets",
     "GET /preview/",
     "GET /proposals/",
@@ -93,7 +92,6 @@
     "POST /pipeline/analysis-failed/retry",
     "POST /pipeline/analyze",
     "POST /pipeline/backfill-cloud",
-    "POST /pipeline/disarm-tracklist-drain",
     "POST /pipeline/extract-metadata",
     "POST /pipeline/files/{file_id}/analysis-failed/retry",
     "POST /pipeline/files/{file_id}/metadata-failed/retry",
@@ -103,14 +101,10 @@
     "POST /pipeline/proposals",
     "POST /pipeline/recover",
     "POST /pipeline/routing/force-local",
-    "POST /pipeline/run-tracklist-drain",
     "POST /pipeline/scans",
     "POST /pipeline/stages/{stage}/pause",
     "POST /pipeline/stages/{stage}/priority",
     "POST /pipeline/stages/{stage}/resume",
-    "POST /pipeline/tracklists/{file_id}/prioritize",
-    "POST /pipeline/tracklists/{file_id}/refresh",
-    "POST /pipeline/tracklists/{file_id}/unprioritize",
     "POST /tags/bulk-write-no-discrepancies",
     "POST /tags/{file_id}/undo",
     "POST /tags/{file_id}/write",
@@ -2773,11 +2767,6 @@
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
-      ],
-      [
-        "div",
-        "tracklist-drain-status-view",
-        "{\"hx-get\": \"/pipeline/tracklist-drain-status\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load, drain-refresh from:body\"}"
       ],
       [
         "div",

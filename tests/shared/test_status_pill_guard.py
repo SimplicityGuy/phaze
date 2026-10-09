@@ -29,7 +29,6 @@ _PILL_SET = re.compile(r"\{%\s*set\s+\w+\s*=\s*'[^']*rounded-full[^']*'", re.S)
 
 # Files that carry a pill-shaped span the shared macro cannot yet render. Each entry is a follow-up, not a license.
 _PENDING_FOLLOW_UP = {
-    "record/partials/_tracklist_review_body.html": "record/* is owned by the column-width bead's developer; outcome badges are status pills -> convert after it lands",
     "record/partials/_record_facts.html": "mood chips (label + percentage with a hue swatch), not a status",
 }
 

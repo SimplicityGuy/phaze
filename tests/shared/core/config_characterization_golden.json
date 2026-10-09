@@ -52,13 +52,6 @@
       "/data/videos"
     ],
     "scan_stall_seconds": 86400,
-    "scraper_contact_url": "https://github.com/SimplicityGuy/phaze",
-    "tracklist_render_browser_channel": "chrome",
-    "tracklist_render_page_timeout_seconds": 90.0,
-    "tracklist_render_retry_backoff_seconds": 5.0,
-    "tracklist_render_selector_timeout_seconds": 20.0,
-    "tracklist_render_turnstile_attempts": 4,
-    "tracklist_render_xvfb": "auto",
     "watcher_max_pending_seconds": 3600,
     "watcher_polling_mode": false,
     "watcher_settle_seconds": 10,
@@ -262,34 +255,6 @@
       "PHAZE_SCAN_STALL_SECONDS",
       "SCAN_STALL_SECONDS",
       "scan_stall_seconds"
-    ],
-    "scraper_contact_url": [
-      "PHAZE_SCRAPER_CONTACT_URL",
-      "scraper_contact_url"
-    ],
-    "tracklist_render_browser_channel": [
-      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
-      "tracklist_render_browser_channel"
-    ],
-    "tracklist_render_page_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
-      "tracklist_render_page_timeout_seconds"
-    ],
-    "tracklist_render_retry_backoff_seconds": [
-      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
-      "tracklist_render_retry_backoff_seconds"
-    ],
-    "tracklist_render_selector_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
-      "tracklist_render_selector_timeout_seconds"
-    ],
-    "tracklist_render_turnstile_attempts": [
-      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
-      "tracklist_render_turnstile_attempts"
-    ],
-    "tracklist_render_xvfb": [
-      "PHAZE_TRACKLIST_RENDER_XVFB",
-      "tracklist_render_xvfb"
     ],
     "watcher_max_pending_seconds": [
       "PHAZE_WATCHER_MAX_PENDING_SECONDS",
@@ -501,34 +466,6 @@
       "SCAN_STALL_SECONDS",
       "scan_stall_seconds"
     ],
-    "scraper_contact_url": [
-      "PHAZE_SCRAPER_CONTACT_URL",
-      "scraper_contact_url"
-    ],
-    "tracklist_render_browser_channel": [
-      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
-      "tracklist_render_browser_channel"
-    ],
-    "tracklist_render_page_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
-      "tracklist_render_page_timeout_seconds"
-    ],
-    "tracklist_render_retry_backoff_seconds": [
-      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
-      "tracklist_render_retry_backoff_seconds"
-    ],
-    "tracklist_render_selector_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
-      "tracklist_render_selector_timeout_seconds"
-    ],
-    "tracklist_render_turnstile_attempts": [
-      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
-      "tracklist_render_turnstile_attempts"
-    ],
-    "tracklist_render_xvfb": [
-      "PHAZE_TRACKLIST_RENDER_XVFB",
-      "tracklist_render_xvfb"
-    ],
     "worker_job_timeout": [
       "worker_job_timeout"
     ],
@@ -644,14 +581,6 @@
     "s3_presign_put_ttl_sec": 3600,
     "scan_path": "/data/music",
     "scan_stall_seconds": 86400,
-    "scraper_contact_url": "https://github.com/SimplicityGuy/phaze",
-    "tracklist_drain_cooldown_sec": 600,
-    "tracklist_render_browser_channel": "chrome",
-    "tracklist_render_page_timeout_seconds": 90.0,
-    "tracklist_render_retry_backoff_seconds": 5.0,
-    "tracklist_render_selector_timeout_seconds": 20.0,
-    "tracklist_render_turnstile_attempts": 4,
-    "tracklist_render_xvfb": "auto",
     "worker_job_timeout": 600,
     "worker_keep_result": 3600,
     "worker_max_jobs": 8,
@@ -906,38 +835,6 @@
       "PHAZE_SCAN_STALL_SECONDS",
       "SCAN_STALL_SECONDS",
       "scan_stall_seconds"
-    ],
-    "scraper_contact_url": [
-      "PHAZE_SCRAPER_CONTACT_URL",
-      "scraper_contact_url"
-    ],
-    "tracklist_drain_cooldown_sec": [
-      "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC",
-      "tracklist_drain_cooldown_sec"
-    ],
-    "tracklist_render_browser_channel": [
-      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
-      "tracklist_render_browser_channel"
-    ],
-    "tracklist_render_page_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
-      "tracklist_render_page_timeout_seconds"
-    ],
-    "tracklist_render_retry_backoff_seconds": [
-      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
-      "tracklist_render_retry_backoff_seconds"
-    ],
-    "tracklist_render_selector_timeout_seconds": [
-      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
-      "tracklist_render_selector_timeout_seconds"
-    ],
-    "tracklist_render_turnstile_attempts": [
-      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
-      "tracklist_render_turnstile_attempts"
-    ],
-    "tracklist_render_xvfb": [
-      "PHAZE_TRACKLIST_RENDER_XVFB",
-      "tracklist_render_xvfb"
     ],
     "worker_job_timeout": [
       "worker_job_timeout"
@@ -1228,22 +1125,6 @@
     "PHAZE_SCAN_CHUNK_SIZE_FILE",
     "PHAZE_SCAN_STALL_SECONDS",
     "PHAZE_SCAN_STALL_SECONDS_FILE",
-    "PHAZE_SCRAPER_CONTACT_URL",
-    "PHAZE_SCRAPER_CONTACT_URL_FILE",
-    "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC",
-    "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC_FILE",
-    "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
-    "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL_FILE",
-    "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
-    "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS_FILE",
-    "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
-    "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS_FILE",
-    "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
-    "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS_FILE",
-    "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
-    "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS_FILE",
-    "PHAZE_TRACKLIST_RENDER_XVFB",
-    "PHAZE_TRACKLIST_RENDER_XVFB_FILE",
     "PHAZE_WATCHER_MAX_PENDING_SECONDS",
     "PHAZE_WATCHER_MAX_PENDING_SECONDS_FILE",
     "PHAZE_WATCHER_POLLING_MODE",
@@ -1296,22 +1177,6 @@
     "SCAN_ROOTS_FILE",
     "SCAN_STALL_SECONDS",
     "SCAN_STALL_SECONDS_FILE",
-    "SCRAPER_CONTACT_URL",
-    "SCRAPER_CONTACT_URL_FILE",
-    "TRACKLIST_DRAIN_COOLDOWN_SEC",
-    "TRACKLIST_DRAIN_COOLDOWN_SEC_FILE",
-    "TRACKLIST_RENDER_BROWSER_CHANNEL",
-    "TRACKLIST_RENDER_BROWSER_CHANNEL_FILE",
-    "TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
-    "TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS_FILE",
-    "TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
-    "TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS_FILE",
-    "TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
-    "TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS_FILE",
-    "TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
-    "TRACKLIST_RENDER_TURNSTILE_ATTEMPTS_FILE",
-    "TRACKLIST_RENDER_XVFB",
-    "TRACKLIST_RENDER_XVFB_FILE",
     "WATCHER_MAX_PENDING_SECONDS",
     "WATCHER_MAX_PENDING_SECONDS_FILE",
     "WATCHER_POLLING_MODE",

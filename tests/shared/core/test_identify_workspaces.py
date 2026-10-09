@@ -48,7 +48,6 @@ from phaze.services.pipeline import (
     get_tracklist_sets_page,
     get_untracked_files,
 )
-from tests._queue_fakes import wire_fakes
 
 
 if TYPE_CHECKING:
@@ -212,153 +211,6 @@ async def test_identify_single_poll_discipline(client: AsyncClient) -> None:
 
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 59-VALIDATION.md / 59-RESEARCH.md Test Map)
-
-
-@pytest.mark.asyncio
-async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) -> None:
-    """IDENT-02 / D-05 / D-06, reworked by phaze-2akf -- LOOKUP (the drain) then MATCH.
-
-    This used to assert THREE step cards (Search / Scrape / Match), each posting to its own bulk
-    endpoint. Two of those three are gone with the legacy scrape path:
-
-    * SEARCH and SCRAPE were separate only because the legacy path searched in one job and fetched
-      the detail page in another. The drain collapses derive -> search -> score -> render -> parse
-      -> persist into ONE operation, so neither the split nor its two bulk fan-out triggers
-      describe anything the system does.
-    * Their endpoints (``/pipeline/search-tracklists``, ``/pipeline/scrape-tracklists``) are
-      deleted, so this test now asserts their ABSENCE -- re-adding a bulk fan-out at a host that
-      publishes ~1 request / 8 s must fail loudly rather than pass silently.
-
-    What remains is the drain panel (phaze-fq9h.8's status fragment, which carries its own bounded
-    "run a slice" trigger) and the MATCH card, which is still a real, separate stage.
-    """
-    resp = await client.get("/s/tracklist", headers={"HX-Request": "true"})
-    assert resp.status_code == 200
-    body = resp.text
-    # The LOOKUP stage IS the drain fragment -- one status surface, not a third one.
-    assert 'hx-get="/pipeline/tracklist-drain-status"' in body
-    assert body.index("1 · Lookup") < body.index("2 · Match") < body.index("Matched-set coverage")
-    assert 'aria-label="Tracklist preparation workflow"' in body
-    assert body.count("Prerequisite") == 2 and body.count("Next action") == 2 and body.count("Current state") == 2
-    # phaze-5sj7k: the Lookup step's Prerequisite/Current state/Next action prose is trimmed to
-    # one short line each (was two dense sentences per dt).
-    assert "Live sets not already answered by tags, a .cue file, or a pending lookup." in body
-    assert "files have a tracklist." in body
-    assert "Run lookups below — they keep going until the queue is empty." in body
-    assert "artist and event metadata" not in body
-    assert "pending only while no Discogs link exists for any track on any version" in body
-    assert "one link of any status removes it from pending" in body
-    assert "Matching checks only latest-version tracks with both artist and title" in body
-    assert "skipped or unmatched tracks leave the tracklist pending" not in body
-    # MATCH survives as the one remaining bulk trigger, still R-4 guarded.
-    assert 'hx-post="/pipeline/match-tracklists"' in body
-    assert ':disabled="$store.pipeline.matchBusy > 0"' in body
-    assert "MATCH ALL" in body
-    assert body.count("hx-confirm=") >= 1
-    # phaze-2akf: the retired bulk fan-outs must not come back.
-    assert "/pipeline/search-tracklists" not in body
-    assert "/pipeline/scrape-tracklists" not in body
-    assert "SEARCH ALL" not in body
-    assert "SCRAPE ALL" not in body
-    assert "searchBusy" not in body
-    assert "scrapeBusy" not in body
-    # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
-    assert "run-chain" not in body
-    # phaze-5sj7k: "Operator queue diagnostics" moves OFF the Lookup card -- a placeholder near
-    # the bottom of the page, after Matched-set coverage, filled via hx-swap-oob from the same
-    # GET /pipeline/tracklist-drain-status response that fills the Lookup card itself.
-    assert body.index("Matched-set coverage") < body.index('id="tracklist-queue-diagnostics"')
-    assert "RUN CHAIN" not in body
-
-
-@pytest.mark.asyncio
-async def test_tracklist_queue_diagnostics_are_defined_and_progressively_disclosed(client: AsyncClient) -> None:
-    """Preparation leads with Lookup/Match while provider queue mechanics stay available on demand."""
-    response = await client.get("/pipeline/tracklist-drain-status")
-    assert response.status_code == 200
-    body = response.text
-
-    assert "<details" in body and "Operator queue diagnostics" in body
-    for term in ("Drain:", "Parked:", "Collapse ratio:", "Crawl delay and throughput ceiling:"):
-        assert term in body
-    assert 'hx-post="/pipeline/run-tracklist-drain"' in body
-    assert "1001Tracklists" in body
-    # phaze-5sj7k: the workspace's ARM/DISARM buttons and badge are gone -- "Run tracklist
-    # lookups" now arms the drain itself, and the diagnostics carry no Arm/Disarm control of
-    # their own (they moved off the Lookup card via hx-swap-oob, but this endpoint's response is
-    # still the one that carries them).
-    assert 'hx-post="/pipeline/arm-tracklist-drain"' not in body
-    assert "Arm" not in body
-    assert "Disarm" not in body
-    # The diagnostics carry their own hx-swap-oob target so they render at the bottom of the
-    # page rather than on the Lookup card.
-    assert 'id="tracklist-queue-diagnostics" hx-swap-oob="true"' in body
-
-
-@pytest.mark.asyncio
-async def test_tracklist_drain_status_refreshes_after_running_a_slice(client: AsyncClient) -> None:
-    """phaze-k2ob4: the drain-status panel refreshes after "Run a drain slice", not just on mount.
-
-    The panel's host div is `hx-trigger="load"`-only (fetched exactly once) and the panel itself
-    carries no self-poll (WORK-05/R-2 forbids a second `hx-trigger="every"` loop on this surface --
-    see `test_identify_single_poll_discipline`), so before this fix Queued/Answered-by-cache/
-    Prioritized/ETA froze at first render for the life of the tab even though
-    `_run_drain_response.html` promised the operator checks the outcome "on its own refresh". The
-    sanctioned fix is an event-driven, bounded, ONE-shot re-fetch per click -- never an interval:
-    POST /pipeline/run-tracklist-drain sets `HX-Trigger: drain-refresh` on its response, and the
-    host div listens for that event bubbling to `<body>`.
-    """
-    workspace = await client.get("/s/tracklist", headers={"HX-Request": "true"})
-    assert workspace.status_code == 200
-    ws_body = workspace.text
-    assert 'hx-trigger="load, drain-refresh from:body"' in ws_body
-    # WORK-05 / R-2: still no interval anywhere on this fragment (the sanctioned fix, not the
-    # rejected one -- see the router endpoint's docstring).
-    assert 'hx-trigger="every' not in ws_body
-    assert "setInterval" not in ws_body
-
-    wire_fakes(client)
-    response = await client.post("/pipeline/run-tracklist-drain")
-    assert response.status_code == 200
-    assert response.headers.get("HX-Trigger") == "drain-refresh"
-
-
-@pytest.mark.asyncio
-async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSession) -> None:
-    """IDENT-02 / D-07 / D-08 -- per-set coverage rows open the exact linked FileRecord.
-
-    Seed a linked tracklist with a version + N confident / M total tracks, then assert the per-set
-    table below the aggregate cards renders the ``N/M`` coverage from ``TracklistTrack.confidence``
-    and carries the linked file id into the canonical record drawer.
-    """
-    file = await _seed_file(session, original_filename="set.mp3")
-    file_id = file.id
-    tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
-    version = await _seed_tracklist_version(session, tl.id)
-    await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
-    await _seed_tracklist_track(session, version.id, position=2, confidence=None)
-    # D-08: the per-set table's HOST still sits below the aggregates (aggregate on top, detail
-    # below) -- phaze-1wvb moved the ROWS into the bounded fragment, not the layout, and phaze-2akf
-    # replaced the three-card grid with the drain panel + the MATCH card without moving the table.
-    shell = await client.get("/s/tracklist", headers={"HX-Request": "true"})
-    assert shell.status_code == 200
-    assert shell.text.index('id="tracklist-drain-status-view"') < shell.text.index('id="tracklist-sets-view"')
-    assert shell.text.index("MATCH ALL") < shell.text.index('id="tracklist-sets-view"')
-
-    resp = await client.get("/pipeline/tracklist-sets")
-    assert resp.status_code == 200
-    body = resp.text
-    assert "tracklist-set-table" in body
-    tbl = body[body.index('id="tracklist-set-table"') :]
-    # D-07: N/M track-level coverage from TracklistTrack.confidence (1 confident of 2 total).
-    assert "1/2" in tbl
-    # D-04/D-08: a file-linked tracklist reads "file linked" (phaze-roug5: NOT "matched" -- that word
-    # belongs to the Match card's Discogs-link definition).
-    assert "file linked" in tbl
-    # R-1 / D-06: this linked row opens only its exact FileRecord at the Tracklist section.
-    tbody = tbl[tbl.index("<tbody") :]
-    assert f'hx-get="/record/{file_id}"' in tbody
-    assert 'data-record-section="tracklist"' in tbody
 
 
 # Read-only row-assembly helper unit tests (Plan 59-01 Task 2).
@@ -859,18 +711,37 @@ async def test_match_card_and_per_row_discogs_match_agree(client: AsyncClient, s
 
 
 @pytest.mark.asyncio
-async def test_stopped_after_failures_lookup_state_renders_as_a_danger_badge(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-roug5 -- "Stopped after repeated failures" uses ui.status_badge's danger tone, not plain mono text."""
-    from phaze.services import tracklist_drain_arm
+async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSession) -> None:
+    """IDENT-02 / D-07 / D-08 -- per-set coverage rows open the exact linked FileRecord.
 
-    await tracklist_drain_arm.arm_if_not_running(session)
-    await tracklist_drain_arm.disarm_drain(session, reason="failures")
-    await session.commit()
+    Seed a linked tracklist with a version + N confident / M total tracks, then assert the per-set
+    table below the aggregate cards renders the ``N/M`` coverage from ``TracklistTrack.confidence``
+    and carries the linked file id into the canonical record drawer.
+    """
+    file = await _seed_file(session, original_filename="set.mp3")
+    file_id = file.id
+    tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
+    version = await _seed_tracklist_version(session, tl.id)
+    await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
+    await _seed_tracklist_track(session, version.id, position=2, confidence=None)
+    # D-08: the per-set table's HOST still sits below the aggregates (aggregate on top, detail
+    # below) -- phaze-1wvb moved the ROWS into the bounded fragment, not the layout, and phaze-2akf
+    # replaced the three-card grid with the drain panel + the MATCH card without moving the table.
+    shell = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    assert shell.status_code == 200
+    assert shell.text.index("MATCH ALL") < shell.text.index('id="tracklist-sets-view"')
 
-    body = (await client.get("/pipeline/tracklist-drain-status")).text
-    soup = BeautifulSoup(body, "html.parser")
-    badge = next(
-        el for el in soup.find_all("span") if "Stopped after repeated failures" in el.get_text() and "rounded-full" in " ".join(el.get("class") or [])
-    )
-    assert "text-danger" in badge["class"]
-    assert badge.get("aria-label") == "Lookup: Stopped after repeated failures"
+    resp = await client.get("/pipeline/tracklist-sets")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "tracklist-set-table" in body
+    tbl = body[body.index('id="tracklist-set-table"') :]
+    # D-07: N/M track-level coverage from TracklistTrack.confidence (1 confident of 2 total).
+    assert "1/2" in tbl
+    # D-04/D-08: a file-linked tracklist reads "file linked" (phaze-roug5: NOT "matched" -- that word
+    # belongs to the Match card's Discogs-link definition).
+    assert "file linked" in tbl
+    # R-1 / D-06: this linked row opens only its exact FileRecord at the Tracklist section.
+    tbody = tbl[tbl.index("<tbody") :]
+    assert f'hx-get="/record/{file_id}"' in tbody
+    assert 'data-record-section="tracklist"' in tbody

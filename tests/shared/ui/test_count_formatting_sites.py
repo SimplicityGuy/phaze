@@ -139,7 +139,7 @@ def test_metric_tiles_and_tab_chips_format_numbers_but_leave_text_alone() -> Non
 
 
 def test_the_drain_status_uses_the_shared_filter_not_its_own_format_spec() -> None:
-    source = _SKIP.sub(" ", _template("pipeline/partials/_tracklist_drain_status.html"))
+    source = _SKIP.sub(" ", _template("pipeline/partials/tracklist_workspace.html"))
     row_detail = _SKIP.sub(" ", _template("proposals/partials/row_detail.html"))
 
     for text in (source, row_detail):

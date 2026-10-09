@@ -154,7 +154,7 @@ async def test_prepare_workspaces_keep_narrow_layout_actions_accessible(
     tracklist = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text
     propose = (await client.get("/s/propose", headers={"HX-Request": "true"})).text
 
-    assert "grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6" in tracklist
+    assert "grid gap-4 px-4 py-4 sm:px-6" in tracklist
     assert "flex flex-col items-start gap-2 sm:flex-row sm:items-center" in tracklist
     assert "flex flex-col gap-3 rounded-lg" in propose and "sm:flex-row" in propose
     # phaze-mrg1c: matched as a class TOKEN, not as the whole attribute. The scroll container now also

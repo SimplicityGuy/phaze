@@ -1,99 +1,18 @@
-{# Phase 59 (59-03, IDENT-02): the Tracklist stage workspace.
-
-   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
-   (_workspace_scaffold.html): its single focus-target heading + a live sub-count bound to
-   $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2).
-
-   phaze-2akf REWORKED THE STAGE DISPLAY. This used to be THREE step cards -- SEARCH · SCRAPE ·
-   MATCH -- each with its own bulk "ALL" trigger, its own progress count and its own busy gate,
-   modelling the legacy two-step name-search-then-scrape path. Two of those three no longer
-   describe anything real:
-
-   * SEARCH and SCRAPE were separate because the legacy path searched in one job and fetched the
-     detail page in another. The drain (phaze-fq9h.7) collapses derive -> search -> score ->
-     render -> parse -> persist into ONE operation per unique set, so there is no "searched but
-     not yet scraped" state for a row to sit in. ``scrape.done / scrape.total`` was consequently a
-     tautology -- every row the drain writes gets its first version in the same transaction -- so
-     the bar read 100% always and measured nothing.
-   * Their bulk triggers fanned one job out per file / per tracklist against a host that publishes
-     a whole-system budget of ~1 request / 8 s, with no cache, no queue and no resumption.
-
-   Body (a) is now the drain panel itself (_tracklist_drain_status.html, phaze-fq9h.8) -- a plain
-   running/idle/stopped state and the "Run tracklist lookups" / "Stop" controls (phaze-5sj7k). It
-   is the lookup stage; no second status surface is invented here. Its queue diagnostics render
-   further down this same fragment, in the `#tracklist-queue-diagnostics` placeholder near
-   Matched-set coverage below -- moved off this card, still fed by the same GET response via
-   `hx-swap-oob` (see that template's own comment).
-
-   Body (b) -- the MATCH step card, which is unchanged and still real: Discogs matching is a
-   genuinely separate stage over already-stored tracklists, with its own pending set and its own
-   busy gate (matchBusy).
-
-   Body (c) -- the per-set table (D-08: aggregates on top, per-set detail below). phaze-1wvb: an
-   EMPTY host div that hx-gets the BOUNDED, paged GET /pipeline/tracklist-sets fragment on load
-   (_tracklist_sets.html, over get_tracklist_sets_page) -- nothing is server-rendered inline.
-#}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = '`${formatCount($store.pipeline.tracklistDone)} sets matched · 1001Tracklists`' %}
+{% set subcount = '`${formatCount($store.pipeline.tracklistDone)} sets matched`' %}
 {% set _btn = ui.btn('secondary', 'md') %}
 {% call ws.workspace(title=page_name('tracklist'), subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
-        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Find a source tracklist first, then match its tracks to analyzed files. Complete the steps in order; queue diagnostics are available further down the page.</p>
+        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Review stored tracklists and link their tracks to Discogs. Local cue companions and embedded tags remain available.</p>
     </div>
-    {# (a) 1 · LOOKUP -- the drain. An EMPTY host div hx-gets the fragment on load, mirroring the
-       per-set table's own load-on-mount pattern below. "The fragment carries its own trigger"
-       refers to the Run-a-slice BUTTON inside it (_tracklist_drain_status.html), not a self-poll
-       -- WORK-05/R-2 forbids a second `hx-trigger="every"` loop here (test_identify_workspaces.py
-       asserts its absence on this exact fragment).
-
-       phaze-k2ob4: `load` alone means this view is fetched EXACTLY ONCE per mount and never
-       again -- Queued/Answered-by-cache/Prioritized/ETA froze at first render for the life of the
-       tab, contradicting _run_drain_response.html's promise that the operator checks the outcome
-       here "on its own refresh". The sanctioned fix (NOT a poll interval, which would fight the
-       R-2 rule above even though it technically dodges this fragment's own assertion) is the
-       action's-own-response re-fetch every other bulk trigger in this app already uses: the
-       `drain-refresh` event, fired via the `HX-Trigger` response header on POST
-       /pipeline/run-tracklist-drain (see that endpoint), bubbles to `<body>` and this listener
-       re-GETs the panel exactly once per "Run a drain slice" click -- no interval, no second loop. #}
-    <ol aria-label="Tracklist preparation workflow" class="grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6">
-        <li id="tracklist-lookup" class="min-w-0 rounded-xl border border-blue-200 bg-blue-50/40 p-4 dark:border-blue-900 dark:bg-blue-950/20">
-            <div class="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-info ">1 · Lookup</p>
-                    <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Find source tracklists</h2>
-                </div>
-                {{ ui.status_badge("Lookup", tracklist_steps.tracklist.done ~ " found", "accent", "●") }}
-            </div>
-            <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-                <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Prerequisite</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Live sets not already answered by tags, a .cue file, or a pending lookup.</dd>
-                </div>
-                <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done | thousands }} files have a tracklist.</dd>
-                </div>
-                <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run lookups below — they keep going until the queue is empty.</dd>
-                </div>
-            </dl>
-            <div id="tracklist-drain-status-view"
-                 class="mt-4"
-                 hx-get="/pipeline/tracklist-drain-status"
-                 hx-trigger="load, drain-refresh from:body"
-                 hx-swap="innerHTML">
-                <p class="py-6 text-center text-sm text-muted ">Loading lookup state…</p>
-            </div>
-        </li>
-
-        {# (b) 2 · MATCH -- POST /pipeline/match-tracklists (returns trigger_tracklist_response.html:
+    <ol aria-label="Tracklist preparation workflow" class="grid gap-4 px-4 py-4 sm:px-6">
+        {# Match -- POST /pipeline/match-tracklists (returns trigger_tracklist_response.html:
            match_tracklist_to_discogs is a CONTROLLER task, so there is no no-active-agent branch). #}
         <li id="tracklist-match" class="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
             <div class="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-600 dark:text-gray-300">2 · Match</p>
+                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-600 dark:text-gray-300">Match</p>
                     <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Link tracks to Discogs</h2>
                 </div>
                 {% if tracklist_match_pending > 0 %}
@@ -148,10 +67,5 @@
         </div>
     </div>
 
-    {# phaze-5sj7k: the Lookup card's "Operator queue diagnostics" collapsible moved here, off the
-       main card. This div starts empty and is filled by an hx-swap-oob element carried in the
-       SAME GET /pipeline/tracklist-drain-status response that fills #tracklist-drain-status-view
-       above (_tracklist_drain_status.html) -- one source of truth, no second fetch, no second
-       poll. #}
-    <div id="tracklist-queue-diagnostics"></div>
+
 {% endcall %}

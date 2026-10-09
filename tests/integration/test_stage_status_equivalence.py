@@ -51,7 +51,6 @@ from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
-from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.services.backends import ComputeAgentBackend, KueueBackend
 from phaze.services.pipeline import get_pushed_count, get_pushing_count
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
@@ -237,58 +236,6 @@ async def seed_tracklist_done(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
-async def _seed_tracklist_lookup(session: AsyncSession, outcome: str, *, with_row: bool = False) -> uuid.UUID:
-    """phaze-o71bf: a per-file ``tracklist_file_lookups`` record, optionally beside a ``tracklists`` row."""
-    fid = await seed_tracklist_done(session) if with_row else await _new_file(session)
-    session.add(TracklistFileLookup(file_id=fid, outcome=outcome, set_key="k" * 64))
-    await session.flush()
-    return fid
-
-
-async def seed_tracklist_queued(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "queued")
-
-
-async def seed_tracklist_queued_over_row(session: AsyncSession) -> uuid.UUID:
-    """A forced refresh: the file HAS a tracklist and is queued again -- in_flight ≻ done."""
-    return await _seed_tracklist_lookup(session, "queued", with_row=True)
-
-
-async def seed_tracklist_matched_with_row(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "matched", with_row=True)
-
-
-async def seed_tracklist_matched_without_row(session: AsyncSession) -> uuid.UUID:
-    """A duplicate withheld by the propagation gate: its set matched, it carries no tracklist -- skipped."""
-    return await _seed_tracklist_lookup(session, "matched")
-
-
-async def seed_tracklist_not_found(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "not_found")
-
-
-async def seed_tracklist_low_confidence(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "low_confidence")
-
-
-async def seed_tracklist_not_eligible(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "not_eligible")
-
-
-async def seed_tracklist_retry_pending(session: AsyncSession) -> uuid.UUID:
-    return await _seed_tracklist_lookup(session, "retry_pending")
-
-
-async def seed_tracklist_retry_pending_over_row(session: AsyncSession) -> uuid.UUID:
-    """A refresh that failed transiently still has its old tracklist -- done ≻ failed."""
-    return await _seed_tracklist_lookup(session, "retry_pending", with_row=True)
-
-
-async def seed_tracklist_unknown_outcome(session: AsyncSession) -> uuid.UUID:
-    """An outcome string this version does not know matches no clause in EITHER twin -- not_started."""
-    return await _seed_tracklist_lookup(session, "from_the_future")
-
-
 async def seed_propose_none(session: AsyncSession) -> uuid.UUID:
     return await _new_file(session)
 
@@ -362,16 +309,6 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
     (Stage.TRACKLIST, seed_tracklist_none, "not_started"),
     (Stage.TRACKLIST, seed_tracklist_done, "done"),
     # tracklist per-file lookup record (phaze-o71bf)
-    (Stage.TRACKLIST, seed_tracklist_queued, "in_flight"),
-    (Stage.TRACKLIST, seed_tracklist_queued_over_row, "in_flight"),  # precedence: in_flight ≻ done
-    (Stage.TRACKLIST, seed_tracklist_matched_with_row, "done"),
-    (Stage.TRACKLIST, seed_tracklist_matched_without_row, "skipped"),
-    (Stage.TRACKLIST, seed_tracklist_not_found, "skipped"),
-    (Stage.TRACKLIST, seed_tracklist_low_confidence, "skipped"),
-    (Stage.TRACKLIST, seed_tracklist_not_eligible, "skipped"),
-    (Stage.TRACKLIST, seed_tracklist_retry_pending, "failed"),
-    (Stage.TRACKLIST, seed_tracklist_retry_pending_over_row, "done"),  # precedence: done ≻ failed
-    (Stage.TRACKLIST, seed_tracklist_unknown_outcome, "not_started"),
     # propose (downstream presence)
     (Stage.PROPOSE, seed_propose_none, "not_started"),
     (Stage.PROPOSE, seed_propose_done, "done"),
@@ -428,8 +365,7 @@ async def load_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) 
         }
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
-        outcome = (await session.execute(select(TracklistFileLookup.outcome).where(TracklistFileLookup.file_id == file_id))).scalar_one_or_none()
-        return {"row_present": present, "lookup_outcome": outcome, "failed": False, "inflight": inflight}
+        return {"row_present": present, "failed": False, "inflight": inflight}
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
         failed = (

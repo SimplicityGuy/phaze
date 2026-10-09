@@ -11,17 +11,14 @@ An unresolved ("ID - ID") row is stored with artist and title both NULL (see
 * Discogs matcher -- ``discogs_matcher.match_track_to_discogs`` (``test_discogs_*``)
 * Segment join    -- ``track_segments.build_track_segments`` (``test_segment_*``)
 
-Rows come from the REAL parser over the real 52-row capture, so these are the 10 genuine unresolved rows.
+Rows are synthetic stored tracklists; no provider pages or parser are needed.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 import uuid
-
-import pytest
 
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.cue_generator import generate_cue_content
@@ -29,7 +26,6 @@ from phaze.services.cue_review import build_cue_tracks_for_versions
 from phaze.services.discogs_matcher import match_track_to_discogs
 from phaze.services.tag_proposal import compute_proposed_tags
 from phaze.services.track_segments import build_track_segments
-from phaze.services.tracklist_parser import parse_tracklist_tracks
 
 
 if TYPE_CHECKING:
@@ -37,12 +33,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-ANCHOR_HTML = (Path(__file__).parent.parent / "fixtures" / "tracklist_render" / "25fhn7c9-ok.html").read_text(encoding="utf-8")
 UNRESOLVED_POSITION = 5
 
 
 async def _store(session: AsyncSession, file_id: uuid.UUID | None = None, *, timestamped: bool = False) -> tuple[Tracklist, TracklistVersion]:
-    """Persist the real parser's output the way the drain does (same column mapping)."""
+    """Persist a synthetic tracklist containing an unresolved row."""
     tracklist = Tracklist(
         external_id=uuid.uuid4().hex[:8], source_url="https://example.invalid/t", file_id=file_id, artist="Some Artist", event="Some Event"
     )
@@ -52,17 +47,17 @@ async def _store(session: AsyncSession, file_id: uuid.UUID | None = None, *, tim
     session.add(version)
     await session.flush()
     tracklist.latest_version_id = version.id
-    for track in parse_tracklist_tracks(ANCHOR_HTML):
+    for position in range(1, 53):
         session.add(
             TracklistTrack(
                 version_id=version.id,
-                position=track.position,
-                artist=track.artist,
-                title=track.title,
-                label=track.label,
-                timestamp=f"{track.position}:00" if timestamped else track.timestamp,
-                is_mashup=track.is_mashup,
-                remix_info=track.remix_info,
+                position=position,
+                artist=None if position == UNRESOLVED_POSITION else "Artist",
+                title=None if position == UNRESOLVED_POSITION else "Title",
+                label=None,
+                timestamp=f"{position}:00" if timestamped else None,
+                is_mashup=False,
+                remix_info=None,
             )
         )
     await session.flush()
@@ -143,11 +138,5 @@ async def test_segment_join_gives_an_unresolved_row_no_title(session: AsyncSessi
     segments = {s.position: s for s in build_track_segments(tracks, [], 7200.0)}
 
     assert segments[UNRESOLVED_POSITION].title is None
-    assert segments[1].title == "Ritual Of Life"
+    assert segments[1].title == "Title"
     assert "ID" not in {s.title for s in segments.values()}
-
-
-@pytest.mark.parametrize("position", [UNRESOLVED_POSITION])
-def test_the_chosen_position_is_really_unresolved_in_the_capture(position: int) -> None:
-    track = parse_tracklist_tracks(ANCHOR_HTML)[position - 1]
-    assert track.is_unresolved

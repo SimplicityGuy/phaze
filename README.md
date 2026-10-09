@@ -35,7 +35,7 @@ service, player, or unattended library mutator.
 - Analyzes every natural fine and coarse window. There is no sampling cap or deepen mode; live
   PCM and process peak RSS are bounded at the chunk/process boundary, and long-running work stays
   live through progress heartbeats rather than a wall-clock timeout.
-- Searches and renders 1001Tracklists through a paced, resumable drain, then matches tracklists
+- Reads stored tracklists and local cue companions, then matches tracklists
   to Discogs data.
 - Generates structured rename and destination proposals through LiteLLM.
 - Presents filename and destination decisions together in **Changes Review**. Tags remain a

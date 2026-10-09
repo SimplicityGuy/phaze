@@ -25,7 +25,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `file_companions`     | Many-to-many: companion files to media files                          |
 | `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
 | `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
-| `tracklists`          | Tracklist metadata (sourced from `1001tracklists`; audio-fingerprint sourcing was removed, phaze-0jpe) |
+| `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired (phaze-7muoo) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
@@ -38,10 +38,6 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
 | `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
-| `tracklist_lookup_cache` | Persisted per-unique-set record of the last 1001Tracklists lookup outcome, so a drain restart never re-asks an already-answered question (phaze-fq9h.3) |
-| `tracklist_priority_flags` | Persisted operator "answer this file's tracklist lookup next" flag consumed by the drain (phaze-fq9h.8) |
-| `tracklist_file_lookups` | Per-file record of the 1001Tracklists drain's outcome for each file (`queued` / `matched` / `not_found` / `low_confidence` / `retry_pending` / `not_eligible`), with its last attempt and next eligible time and the cache `set_key` it was grouped under; the source of `Stage.TRACKLIST`'s in-flight, failed and skipped buckets (phaze-o71bf) |
-| `tracklist_drain_arm_state` | Single durable ARM/DISARM row for the continuous 1001Tracklists drain: `armed`, `in_flight`, `consecutive_failures`, and the `next_eligible_at` cooldown the scheduler reads (migration `059`) |
 | `dedup_review_plan` | Opaque, immutable keeper choice plus the complete reviewed membership snapshot (`group_hash`, `canonical_file_id`, `member_ids`), committed at most once via `committed_at` (migration `061`) |
 
 One further table shares the database but is **not** in the list above because it is not an
@@ -258,10 +254,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-081)
+### Post-baseline chain (040-082)
 
 `alembic/versions/` holds **43** files: the `039` baseline plus a linear chain to the current
-head, **`081`**.
+head, **`082`**.
 
 | Rev | Change |
 |-----|--------|
@@ -306,7 +302,9 @@ head, **`081`**.
 | `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search |
 | `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
 | `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) |
-| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) — **head** |
+| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) |
+
+| `082` | Retire 1001Tracklists acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

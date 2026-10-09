@@ -57,7 +57,8 @@ def test_routing_for_controller_function() -> None:
     # examples here and went with the legacy scrape path. submit_cloud_job keeps a file_id-keyed
     # controller task under this assertion, which is the shape the removed pair covered.
     assert routing_for_function("submit_cloud_job") == "controller"
-    assert routing_for_function("drain_tracklists") == "controller"
+    with pytest.raises(ValueError, match="not a routable"):
+        routing_for_function("drain_tracklists")
 
 
 def test_routing_for_unknown_function_raises() -> None:

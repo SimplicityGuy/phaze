@@ -36,12 +36,6 @@ from tests._queue_fakes import FakeRedis
 # ``_KEY_BUILDERS`` fails ``test_every_routable_task_is_keyed_or_exempt`` loud.
 _UNKEYED_TASKS: frozenset[str] = frozenset(
     {
-        # phaze-2akf: an operator-triggered re-arm of the drain for a chosen SET of pages (it was
-        # a monthly cron). Unkeyed because a natural key would have to be the target list, and two
-        # refreshes naming overlapping-but-different sets are genuinely distinct work -- collapsing
-        # them would silently drop pages the operator asked for. It spends no host requests, so a
-        # duplicate run costs nothing worth deduping.
-        "refresh_tracklists",
         # repeated directory scans are intentionally distinct (a re-scan of the same
         # root is a NEW unit of work, not a dedup no-op).
         "scan_directory",
@@ -61,19 +55,6 @@ _UNKEYED_TASKS: frozenset[str] = frozenset(
         # it names. Two runs page the same rows differently, so no natural key identifies the work;
         # an overlapping pair re-reads a few small files and rewrites the same rows (idempotent).
         "extract_companion_features",
-        # phaze-fq9h.7: one job is a BOUNDED SLICE of a months-long drain -- the next N lookups,
-        # not a repeat of the last N -- so consecutive slices are genuinely distinct work, the
-        # same reasoning as scan_directory. A key would not buy concurrency safety either: the
-        # whole-host ~1 req/8s ceiling is enforced by the process-wide
-        # `reserve_host_request_slot` schedule regardless of how the jobs are scheduled, and an
-        # overlapping pair costs at most one duplicated request thanks to the drain's pre-spend
-        # cache re-check.
-        "drain_tracklists",
-        # phaze-fq9h.7: a read (queue depth + projected schedule) that enqueues nothing and spends
-        # no host requests. Same request/response shape as read_companion_files -- deduping a
-        # second caller onto an in-flight job it has no handle on would make it wait out a timeout
-        # for a result it never receives.
-        "tracklist_drain_status",
     }
 )
 

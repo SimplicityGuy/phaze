@@ -42,7 +42,6 @@ from phaze.tasks._shared import stage_control as stage_control_module
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.stage_control import StagePausedRetry, repark_if_stage_paused
 from phaze.tasks.controller import settings as controller_settings
-from phaze.tasks.tracklist_drain_control import record_drain_slice_completion
 from phaze.telemetry import saq as telemetry_saq
 
 
@@ -100,6 +99,10 @@ def _session_factory_that_fails() -> Any:
     raise OSError(msg)
 
 
+async def _raising_hook(ctx: dict[str, Any]) -> None:
+    ctx["async_session"]()
+
+
 async def _unpaused(_queue: Any, _stage: str) -> tuple[bool, int]:
     return False, 50
 
@@ -148,27 +151,6 @@ def unpaused_stage_control(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.mark.asyncio
-async def test_a_raising_controller_hook_no_longer_abandons_the_jobs_span_and_metrics(telemetry_sink: TelemetrySink) -> None:
-    """Acceptance 1, on the controller's PRODUCTION wiring.
-
-    ``record_drain_slice_completion`` raising is one of the three cases the bead names. The
-    job itself completed normally: the whole point is that a failure in a bookkeeping hook
-    used to erase the record of a job that was fine.
-    """
-    worker = saq.Worker(**controller_settings)
-    job = _Job("drain_tracklists", Status.COMPLETE)
-    ctx: dict[str, Any] = {"job": job, "async_session": _session_factory_that_fails}
-
-    await worker._before_process(ctx)
-    with pytest.raises(OSError, match="connection reset"):
-        await worker._after_process(ctx)
-
-    assert telemetry_sink.span_names() == ["saq.job"], "the job's span was not ended and exported"
-    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "drain_tracklists", "outcome": "ok"}]
-    assert telemetry_sink.count("phaze.saq.job.duration") == 1
-
-
-@pytest.mark.asyncio
 async def test_control_group_the_pre_fix_list_shape_still_loses_the_span(telemetry_sink: TelemetrySink) -> None:
     """CONTROL: the same scenario with the hooks registered as a flat list -- the pre-fix shape.
 
@@ -180,7 +162,7 @@ async def test_control_group_the_pre_fix_list_shape_still_loses_the_span(telemet
         queue=_Queue(),
         functions=[],
         before_process=[telemetry_saq.before_process],
-        after_process=[increment_completed, record_drain_slice_completion, telemetry_saq.after_process],
+        after_process=[increment_completed, _raising_hook, telemetry_saq.after_process],
     )
     job = _Job("drain_tracklists", Status.COMPLETE)
     ctx: dict[str, Any] = {"job": job, "async_session": _session_factory_that_fails}
@@ -273,7 +255,7 @@ def test_both_workers_register_the_telemetry_hook_through_the_chain(agent_worker
     """
     for settings, neighbours in (
         (agent_worker_module.settings, (repark_if_stage_paused, increment_completed)),
-        (controller_settings, (increment_completed, record_drain_slice_completion)),
+        (controller_settings, (increment_completed,)),
     ):
         worker = saq.Worker(**settings)
         assert worker.after_process is not None

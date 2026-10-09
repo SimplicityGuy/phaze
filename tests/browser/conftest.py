@@ -16,8 +16,7 @@ lived in exactly that gap.
 Scope and cost
 ==============
 
-Playwright is NOT a project dependency (only Patchright is, because the 1001Tracklists render path
-needs a browser at runtime, in production). This suite runs under the ephemeral
+Playwright is isolated to the optional ``browser`` dependency group. This suite also supports the ephemeral
 ``uv run --with playwright`` idiom, the same one ``scripts/analyze_browser_soak.py`` uses, and is
 excluded from the default pytest run by the ``browser`` marker. ``just test-browser`` is the entry
 point; CI runs it as a separate job, blocking since 2026-08-21 (phaze-8p1uq).

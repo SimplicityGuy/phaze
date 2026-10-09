@@ -28,7 +28,6 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
-from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.routers.pipeline._common import _stage_pill_oob, logger, router, templates
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import get_file_stage_buckets
@@ -211,9 +210,7 @@ async def _one_stage_scalars(session: AsyncSession, stage: Stage, file_id: uuid.
         return {"row_present": mrow is not None, "failed_at": mrow[0] if mrow else None, "inflight": inflight, "skipped": await _skipped()}
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
-        # phaze-o71bf: the per-file lookup record supplies TRACKLIST's in-flight / failed / skipped.
-        outcome = (await session.execute(select(TracklistFileLookup.outcome).where(TracklistFileLookup.file_id == file_id))).scalar_one_or_none()
-        return {"row_present": present, "lookup_outcome": outcome, "failed": False, "inflight": inflight}
+        return {"row_present": present, "failed": False, "inflight": inflight}
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
         failed = (

@@ -36,7 +36,6 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
-from phaze.models.tracklist_lookup_cache import TracklistFileLookup
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.harmonic_journey import build_harmonic_journey
@@ -47,7 +46,7 @@ from phaze.services.record_metadata import build_metadata_card
 from phaze.services.route_control import get_route_control
 from phaze.services.set_similarity import SimilarSet, find_similar_sets
 from phaze.services.track_segments import build_track_segments
-from phaze.services.tracklist_priority import get_file_tracklist_review
+from phaze.services.tracklist_review import get_file_tracklist_review
 from phaze.version import APP_VERSION
 from phaze.web.static import static_asset_url
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
@@ -215,10 +214,6 @@ async def build_file_record_context(
     # CONSOLE-01: the six derived per-stage buckets — the SAME stage_status_case derivation the
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
     stage_buckets = await get_file_stage_buckets(session, file_id)
-    # phaze-yyfax: the Tracklist pill prints the lookup outcome's word, exactly as the Files matrix cell does
-    # (_tracklist_pill.html), so it needs the same per-file TracklistFileLookup row (a primary-key read).
-    tracklist_lookup = await session.get(TracklistFileLookup, file_id)
-
     # phaze-cavai: the per-stage "why" facts the pills alone cannot answer. A failed pill gets the
     # STORED failure reason (FileMetadata / AnalysisResult error_message — written on failure,
     # previously never surfaced anywhere in the UI); an orphaned enrich stage gets the ledger facts
@@ -233,9 +228,7 @@ async def build_file_record_context(
     orphan_details = await get_file_orphan_details(session, file_id)
     analyze_started = bool(windows) or analysis is not None
 
-    # phaze-fq9h.8: the per-file 1001Tracklists review -- scraped/propagated/attempted-but-absent/
-    # never-looked-up, plus the operator priority flag. The file was already confirmed to exist
-    # above, so this can never legitimately come back None here.
+    # Read the latest stored tracklist without external acquisition.
     tracklist_review = await get_file_tracklist_review(session, file_id)
 
     # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
@@ -315,7 +308,6 @@ async def build_file_record_context(
     return {
         "file": file,
         "stage_buckets": stage_buckets,
-        "tracklist_lookup": tracklist_lookup,
         "analysis": analysis,
         "file_id": file_id,
         "set_profile": set_profile,
