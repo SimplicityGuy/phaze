@@ -148,3 +148,10 @@ async def test_ingested_sibling_cue_reaches_proposal_prompt_and_tracklist_source
     rendered_prompt = captured["messages"][0]["content"]
     assert '"companions": [' in rendered_prompt
     assert json.dumps(cue_content) in rendered_prompt
+
+    from phaze.services.tracklist_review import get_file_tracklist_review
+
+    review = await get_file_tracklist_review(session, media.id)
+    assert review is not None
+    assert review.local_sources == ("CUE companion",)
+    assert review.tracklist is None and review.tracks == (), "recognition must not invent imported track rows"
