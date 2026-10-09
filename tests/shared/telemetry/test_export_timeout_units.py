@@ -28,7 +28,7 @@ from unittest.mock import Mock
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
 import pytest
-from urllib3 import HTTPResponse, PoolManager
+from requests import Response, Session
 
 from phaze.telemetry import _env
 
@@ -45,15 +45,18 @@ def test_the_otlp_timeout_is_still_read_in_seconds(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", raising=False)
     _env.apply_export_defaults()
 
-    request = Mock(return_value=HTTPResponse(status=200, body=b""))
-    monkeypatch.setattr(PoolManager, "request", request)
-    exporter = OTLPSpanExporter()
+    response = Response()
+    response.status_code = 200
+    request = Mock(return_value=response)
+    session = Session()
+    monkeypatch.setattr(session, "request", request)
+    exporter = OTLPSpanExporter(session=session)
     try:
         assert exporter.export([]) is SpanExportResult.SUCCESS
     finally:
         exporter.shutdown()
     request.assert_called_once()
-    resolved = request.call_args.kwargs["timeout"].total
+    resolved = request.call_args.kwargs["timeout"]
 
     assert os.environ["OTEL_EXPORTER_OTLP_TIMEOUT"] == "5"
     # The exporter's deadline budget spends a little time encoding the batch before the request.
