@@ -16,7 +16,7 @@ SCRUBBED_REVISION = "fc771de884d236213c9c4d3b3ae2fb24f3208cef"
 # This commit is deliberately retained in history: it is the source-neutral corpus checkpoint for branch review,
 # not a file exemption. Future changes still meet the same exact-transform/numeric guard.
 # Authority and scope: docs/design/0024-tracklist-source-retirement.md.
-RETIREMENT_REVISION = "3fcf3c6934b63215136a23b7c30854c4491d9f2a"
+RETIREMENT_REVISION = "13a7049f7108d61a6ea37acf1cfc17a2354ed1c1"
 
 
 def _git(root: Path, *args: str) -> bytes:

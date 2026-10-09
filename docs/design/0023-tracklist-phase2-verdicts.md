@@ -16,7 +16,7 @@ Nothing here is product code. All acquisition decisions below are historical; th
 | 4 | Captcha re-queue (script merged in PR #678, bead phaze-c9go7) | **CANCELED**; earlier release deferral superseded | 2026-10-08, phaze-1soo9 and phaze-tqoty; historical timing quoted below | `docs/spikes/phaze-gnbct-ajax-endpoints.md` |
 
 The operator's authority (phaze-rs4x6, 2026-10-07) is limited to the three timing and scope statements quoted below. The evidence summaries, the correction in
-section 2 and the standing conditions in section 4 are the planner's and the spikes', not the operator's.
+section 2 and the former conditions removed from section 4 are the planner's and the spikes', not the operator's.
 
 ### 1. Parser fixes: DONE
 
