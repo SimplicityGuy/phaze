@@ -55,8 +55,8 @@ honest client read it with a single plain GET. That block was specific to the ea
 | `robots.txt` | 1 |
 | `MixesDB:Legal_stuff`, `MixesDB:About` | 2 |
 | Bare `/w/api.php` (path only, no query) | 1 |
-| `Category:retired external source` | 1 |
-| REST search: 36 sample queries, 2 format probes, 1 search for `retired external source` | 39 |
+| A retired-provider category | 1 |
+| REST search: 36 sample queries, 2 format probes, 1 query identifying the retired source | 39 |
 | One malformed probe query I wasted (empty result) | 1 |
 | Artist category pages (1 format probe + 19 distinct artists) | 20 |
 | Set pages, `GET /w/<Page>` | 11 |
@@ -94,7 +94,7 @@ A second group (`ia_archiver`, `AhrefsBot`, `CCBot`, `HTTrack`, `libwww`, and ot
 > properly; there is a --wait option you can use to set the delay between hits, for instance.
 
 `User-agent: wget` gets `Disallow: /`. A `phaze/...` UA matches none of the named groups, so the
-`*` group governs. `Category:retired external source` and ordinary artist categories are not disallowed.
+`*` group governs. The retired-provider category and ordinary artist categories are not disallowed.
 `rest.php` and `api.php` have no rule of their own.
 
 ### `api.php` and the REST API
@@ -198,11 +198,11 @@ the 10 pages with a tracklist, the track counts ran 12 to 55 entries.
 
 ### retired external source mirroring
 
-None of the 11 set pages contains the string `1001` anywhere in its HTML, links included.
-`Category:retired external source` exists, but it is not an ID mirror. It is a category of sets *produced by*
+None of the 11 set pages contains the retired provider's identifying string anywhere in its HTML, links included.
+A retired-provider category exists, but it is not an ID mirror. It is a category of sets *produced by*
 the retired external source site, its "Exclusive Mix" and "Spotlight Mix" podcast series: 16 mixes, 12
-images, 2014 to 2025. A full-text search for `retired external source` returned only those mixes, whose
-matches are SoundCloud and Mixcloud URLs of retired external source' own channel, not tracklist URLs. So
+images, 2014 to 2025. A full-text query identifying the retired source returned only those mixes, whose
+matches are SoundCloud and Mixcloud URLs of the retired source's own channel, not tracklist URLs. So
 **MixesDB does not carry retired external source IDs or URLs as a cross-reference**, in this sample or in the
 site's own search. Joining the two sources has to go by artist, event and date text.
 
@@ -218,7 +218,7 @@ site's own search. Joining the two sources has to go by artist, event and date t
   applies. This is a reading of the site's statement, not legal advice.
 - **Premise corrections.** (1) The "bot-blocked" report does not hold for an honest client. (2) The
   third-party `api.php` claim only holds for the help page, since real calls need `?action=`, which
-  robots disallows. The REST API is the correct door. (3) `Category:retired external source` is not a mirror
+  robots disallows. The REST API is the correct door. (3) The retired-provider category is not a mirror
   of retired external source IDs.
 - **Coverage: unknown for the archive.** The 33% to 56% above is a public mainstage sample of 36
   and must not be read as the archive's rate. It says the source is not empty for this kind of
