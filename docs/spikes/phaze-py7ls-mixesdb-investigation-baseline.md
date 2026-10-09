@@ -30,11 +30,11 @@ One investigator owns transport. Narrow same-host policy reads precede REST sear
 
 Historical extrapolations and GO recommendations represent the prior authors' judgements, not fresh measurements. For phaze-ypcx6 on 2026-10-08, the current scope is investigation/specification; the historical suggestion to file a build bead is outside that scope.
 
-Fresh policy reads and the conservative stop are recorded in [REST access and pacing](phaze-6ehg6-mixesdb-rest-access.md). Matching and completeness are in [search semantics](phaze-s19tp-mixesdb-search-semantics.md); source interpretation is in [parsing and provenance](phaze-vwcsv-mixesdb-parsing-provenance.md).
+Fresh policy reads, the initial conservative stop and the subsequently authorized API phase are recorded in [REST access and pacing](phaze-6ehg6-mixesdb-rest-access.md). Final shared count is 13/100; REST search and ordinary page routes work, slash-key routing remains unresolved, and bare Action help identifies MediaWiki 1.46.1. On phaze-ypcx6, 2026-10-08, the followup answer was “Respect those robots restrictions; test REST and the bare Action API endpoint only”. This amends the initial access scope without permitting `?action=` queries. Matching and completeness are in [search semantics](phaze-s19tp-mixesdb-search-semantics.md); source interpretation is in [parsing and provenance](phaze-vwcsv-mixesdb-parsing-provenance.md).
 
 ## Verdict
 
-The evidence supports investigating a content source with modest measured historical yield. It does not prove reliable automatic association, precise cues, current REST availability or complete negative discovery. Those claims must remain separate.
+The evidence supports a content source with modest measured historical yield and now verified REST search/page availability. It does not prove reliable automatic association, precise cues or complete negative discovery. Those claims must remain separate. The current Action evidence is help/version discovery only.
 
 ## Recommendation
 
