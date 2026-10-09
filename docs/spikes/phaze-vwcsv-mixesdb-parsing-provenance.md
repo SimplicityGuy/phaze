@@ -8,11 +8,13 @@ Can a MixesDB content adapter preserve source meaning, identity and rights witho
 
 ## Method
 
-Use historical markup observations and synthetic fragments. Compare with the proposed descriptor/discover/load provider boundary drafted by phaze-drv39 under phaze-uquqk. That contract is a parallel proposed specification, not a landed runtime API. Fresh REST content was not obtained because the [access stop](phaze-6ehg6-mixesdb-rest-access.md) preceded REST requests. No actual parser or consumer changes were tested here.
+Use historical markup observations and synthetic fragments. Compare with the proposed descriptor/discover/load provider boundary drafted by phaze-drv39 under phaze-uquqk. That contract is a parallel proposed specification, not a landed runtime API. The initial [access stop](phaze-6ehg6-mixesdb-rest-access.md) preceded REST requests; the subsequently authorized API phase obtained two public REST page bodies. No actual parser or consumer changes were tested here.
 
 ## Evidence and interpretation cases
 
 Historical pages used numbered `#` entries on 16/24 pages and `<list>` blocks on 8/24. The original public spike recognized only the numbered form. Preserve ordered entries from both supported forms; reject unsupported nested structures explicitly rather than silently returning an empty list.
+
+The two fresh pages have 12 and 21 numbered entries, respectively; neither has cue marks or `<list>` markup. One contains remix/mashup text, the other section labels dividing track groups. These are bounded source observations, not executed parser coverage. Preserve section labels and the source's ordering/credit context as provenance rather than silently flattening every section into one confident set identity.
 
 All examples in this table are synthetic:
 
@@ -42,7 +44,7 @@ These are written acceptance scenarios, not executed parser tests. Minute cues c
 | REST search-returned key | Stable `(mixesdb, native_id)` without truncation; distinct from display title, encoded URL and content revision. Never place it into a retired provider's ID namespace. |
 | Page title/category/date evidence | Nullable set artist/event/date plus known/inferred/unknown/conflicting certainty and bounded origins. Do not normalize a partial date into an exact day. |
 | Page source | Format and parser revision, track enumeration completeness and bounded interpretation evidence. Native markup stays source evidence, not matching authority. |
-| Source revision if available | Opaque revision with evidence; explicit unknown otherwise. Retrieval time is independent and timezone aware. |
+| Fresh `latest.id` and `latest.timestamp` | Current opaque revision and revision-time evidence; explicit unknown for sources without it. Retrieval time is independent and timezone aware. |
 | Ordered lines | Positive unique positions, nullable artist/title, optional label/remix/mashup metadata, timestamps with original/kind/precision/interpretation evidence/usability. |
 | Original page reference | Source URL for attribution; page key remains identity. URL presence never grants permission to fetch media or linked sites. |
 | Empty REST license object | Unknown API license evidence, supplemented by separately retrieved policy statement; never interpret blank strings as rights clearance. |
@@ -59,7 +61,7 @@ Do not copy policy prose into track content, fetch images/audio, follow player U
 
 ## Verdict
 
-The proposed provider port can represent MixesDB's historical formats and uncertainty. No fresh source parser coverage, current revision schema or per-page rights override behavior was verified. Qualified timestamp consumption remains a separate implementation concern.
+The proposed provider port can represent MixesDB's formats and uncertainty. Current REST revision schema and two numbered-list sources were observed. No production parser coverage, fresh alternate-list/timestamp coverage or per-page rights override behavior was verified. Qualified timestamp consumption remains a separate implementation concern.
 
 ## Recommendation
 
