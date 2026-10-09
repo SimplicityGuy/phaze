@@ -89,13 +89,13 @@ async def _seed_generatable_tracklist(session: AsyncSession, current_path: str) 
     tracklist = Tracklist(
         id=tracklist_id,
         external_id=f"ext-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://www.1001tracklists.com/tracklist/{uuid.uuid4().hex[:6]}",
+        source_url=f"https://example.invalid/tracklist/{uuid.uuid4().hex[:6]}",
         file_id=file_id,
         match_confidence=95,
         artist="DJ Shadow",
         event="Coachella 2024",
         latest_version_id=version_id,
-        source="1001tracklists",
+        source="manual",
         status="approved",
     )
     session.add(tracklist)

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 @pytest.mark.asyncio
 async def test_the_retired_bulk_scrape_triggers_are_gone(client: AsyncClient) -> None:
-    """phaze-2akf: re-adding an unbounded bulk fan-out at 1001Tracklists must fail loudly.
+    """phaze-2akf: re-adding an unbounded bulk fan-out at manual must fail loudly.
 
     Asserted as 404s rather than merely by omission. The whole reason the drain exists is that the
     host budget is ~1 request / 8 s for the entire system, so a "just enqueue one per file" button

@@ -6,6 +6,9 @@ score: 14/14 must-haves verified
 re_verification: false
 ---
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 # Phase 17: Live Set Matching & Tracklist Review Verification Report
 
 **Phase Goal:** Users can scan live set recordings against the fingerprint database and review proposed tracklists with confidence scores before accepting them
@@ -31,7 +34,7 @@ re_verification: false
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
 | 1 | Tracklist model has source and status columns; TracklistTrack has confidence column | VERIFIED | `source: Mapped[str]` (String(30)), `status: Mapped[str]` (String(20)) on Tracklist; `confidence: Mapped[float \| None]` (Float) on TracklistTrack |
-| 2 | Existing tracklist rows are backfilled with source='1001tracklists' and status='approved' | VERIFIED | Migration 008: `server_default="1001tracklists"` and `server_default="approved"` on add_column calls |
+| 2 | Existing tracklist rows are backfilled with source='retired external source' and status='approved' | VERIFIED | Migration 008: `server_default="retired external source"` and `server_default="approved"` on add_column calls |
 | 3 | QueryMatch and CombinedMatch include optional timestamp field | VERIFIED | `timestamp: str \| None = None` in both dataclasses at lines 43 and 53 |
 | 4 | scan_live_set arq task queries fingerprint DB and creates Tracklist+TracklistVersion+TracklistTrack rows with source='fingerprint' | VERIFIED | `scan.py` calls `orchestrator.combined_query()`, creates Tracklist with `source="fingerprint"`, `status="proposed"`, adds version and track rows |
 | 5 | scan_live_set resolves track_id to artist/title from FileMetadata | VERIFIED | Joins `FileMetadata` by `file_id` UUID and sets `match.resolved_artist`, `match.resolved_title` |
@@ -43,7 +46,7 @@ re_verification: false
 | 6 | Scan tab appears on the Tracklists page alongside All/Matched/Unmatched/Proposed | VERIFIED | `filter_tabs.html` has `@click="showScan = true; activeTab = 'scan'"` button; `list.html` has `#scan-panel` with `x-show="showScan"` |
 | 7 | User can select files and trigger a batch fingerprint scan | VERIFIED | `scan_tab.html` renders file selection with Alpine.js checkboxes; POST `/tracklists/scan` enqueues `scan_live_set` per file_id |
 | 8 | Scan progress polls until complete and shows result | VERIFIED | `scan_progress.html` has `hx-trigger="every 3s"`; `scan_status` endpoint checks arq job results and returns completion HTML |
-| 9 | Tracklist cards show source badge (Fingerprint or 1001Tracklists) and status badge (Proposed/Approved/Rejected) | VERIFIED | `source_badge.html` contains "Fingerprint" (purple) and "1001Tracklists" (blue); `status_badge.html` contains "Proposed" (yellow), "Approved" (green), "Rejected" (red); `tracklist_card.html` includes both |
+| 9 | Tracklist cards show source badge (Fingerprint or retired external source) and status badge (Proposed/Approved/Rejected) | VERIFIED | `source_badge.html` contains "Fingerprint" (purple) and "retired external source" (blue); `status_badge.html` contains "Proposed" (yellow), "Approved" (green), "Rejected" (red); `tracklist_card.html` includes both |
 | 10 | Proposed filter tab shows only fingerprint-sourced proposed tracklists | VERIFIED | `filter_tabs.html` has Proposed tab button; router `list_tracklists` applies `Tracklist.status == "proposed"` filter; stats include proposed count in 4-column grid |
 
 ### Must-Haves: Plan 03 (Review Flow)
@@ -74,7 +77,7 @@ re_verification: false
 | `src/phaze/routers/tracklists.py` | VERIFIED | scan_tab, trigger_scan, scan_status, edit_track_field, save_track_field, delete_track, approve_tracklist, reject_tracklist, reject_low_confidence all present |
 | `src/phaze/templates/tracklists/partials/scan_tab.html` | VERIFIED | Contains "Scan Live Sets" heading, file selection UI |
 | `src/phaze/templates/tracklists/partials/scan_progress.html` | VERIFIED | Contains `hx-trigger="every 3s"` polling |
-| `src/phaze/templates/tracklists/partials/source_badge.html` | VERIFIED | "Fingerprint" (purple-100) and "1001Tracklists" (blue-100) spans |
+| `src/phaze/templates/tracklists/partials/source_badge.html` | VERIFIED | "Fingerprint" (purple-100) and "retired external source" (blue-100) spans |
 | `src/phaze/templates/tracklists/partials/status_badge.html` | VERIFIED | "Proposed" (yellow-100), "Approved" (green-100), "Rejected" (red-100) spans |
 | `src/phaze/templates/tracklists/partials/fingerprint_track_detail.html` | VERIFIED | 57 lines; `hx-get.*edit`, `hx-delete`, `confidence_badge` include present |
 | `src/phaze/templates/tracklists/partials/inline_edit_field.html` | VERIFIED | 10 lines; `hx-put`, `hx-trigger="blur, keyup[keyCode==13]"` present |

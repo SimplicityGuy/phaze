@@ -1,5 +1,8 @@
 # Phase 39: Tracklist Search DAG Node - Context
 
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
+
 **Gathered:** 2026-06-14
 **Status:** Ready for planning
 **Source:** Inline operator discussion (AskUserQuestion rounds, 2026-06-14)
@@ -11,7 +14,7 @@ Make the DAG the manual control surface for **name-based** tracklist discovery. 
 
 This phase adds a **Search** node to the DAG with a real bulk trigger button (same chrome as the Phase-38 agent stages) that enqueues `search_tracklist` over eligible files, gated disabled until Metadata has produced tags. Manual only — no auto-trigger added.
 
-**In scope:** the name-search ("1001Tracklists") path only.
+**In scope:** the name-search ("retired external source") path only.
 **Out of scope:** fingerprint-scan path (`scan_live_set`) → Phase 40; Scrape/Match triggers → Phase 41; recovery automation → Phase 42.
 </domain>
 

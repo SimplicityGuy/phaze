@@ -182,7 +182,7 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
     tracklist = Tracklist(
         id=uuid.uuid4(),
         external_id=uuid.uuid4().hex,
-        source_url="https://1001.tl/x",
+        source_url="https://manual/x",
         file_id=media.id,
     )
     session.add(tracklist)
@@ -382,7 +382,7 @@ async def test_null_file_id_tracklist_is_never_touched(session: AsyncSession) ->
     orphan = Tracklist(
         id=uuid.uuid4(),
         external_id=uuid.uuid4().hex,
-        source_url="https://1001.tl/orphan",
+        source_url="https://manual/orphan",
         file_id=None,
     )
     session.add(orphan)

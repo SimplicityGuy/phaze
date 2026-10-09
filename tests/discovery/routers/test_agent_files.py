@@ -715,7 +715,7 @@ async def test_move_logs_every_retirement_with_both_paths_and_keeps_a_row_with_a
     middle = "/test/music/incomplete/a.mp3"
     await authenticated_client.post("/api/internal/agent/files", json={"files": [_hashed(_INCOMPLETE), _hashed(middle), _hashed(_FINAL)]})
     rows = {row.original_path: row.id for row in await _rows(session)}
-    session.add(Tracklist(external_id="tl-1", source_url="https://1001.tl/x", file_id=rows[middle]))
+    session.add(Tracklist(external_id="tl-1", source_url="https://manual/x", file_id=rows[middle]))
     await session.commit()
 
     with caplog.at_level(logging.INFO, logger="phaze.routers.agent_files"):

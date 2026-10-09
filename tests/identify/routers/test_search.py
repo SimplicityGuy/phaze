@@ -77,12 +77,12 @@ async def create_searchable_tracklist(
     tracklist = Tracklist(
         id=uuid.uuid4(),
         external_id=f"tl-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://1001tracklists.com/{uuid.uuid4().hex[:8]}",
+        source_url=f"https://example.invalid/{uuid.uuid4().hex[:8]}",
         artist=artist,
         event=event,
         status=status,
         date=tracklist_date,
-        source="1001tracklists",
+        source="manual",
     )
     session.add(tracklist)
     await session.commit()
@@ -376,11 +376,11 @@ async def create_searchable_discogs_link(
     tracklist = Tracklist(
         id=uuid.uuid4(),
         external_id=f"tl-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://1001tracklists.com/{uuid.uuid4().hex[:8]}",
+        source_url=f"https://example.invalid/{uuid.uuid4().hex[:8]}",
         artist=discogs_artist,
         event="Test Event",
         status="approved",
-        source="1001tracklists",
+        source="manual",
     )
     session.add(tracklist)
     await session.flush()

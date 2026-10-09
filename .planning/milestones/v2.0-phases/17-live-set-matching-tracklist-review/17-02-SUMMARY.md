@@ -38,7 +38,7 @@ key-decisions:
   - "Alpine.js x-data moved to outer container in list.html so filter_tabs and scan-panel share showScan state"
   - "Scan tab uses Alpine.js toggle (not HTMX) per Research Pitfall 6 -- avoids server round-trip for tab switch"
   - "Unscanned file query uses NOT IN subquery on Tracklist.file_id where source='fingerprint'"
-  - "Fingerprint-sourced cards hide 1001tracklists-specific actions; approve/reject buttons deferred to Plan 03"
+  - "Fingerprint-sourced cards hide retired external source-specific actions; approve/reject buttons deferred to Plan 03"
 
 patterns-established:
   - "Source/status badges as includable Jinja2 partials for reuse across card and detail views"
@@ -49,6 +49,9 @@ requirements-completed: [FPRINT-03]
 duration: 8min
 completed: 2026-04-02
 ---
+
+> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+
 
 # Phase 17 Plan 02: Scan Tab UI & Source/Status Badges Summary
 
@@ -64,7 +67,7 @@ completed: 2026-04-02
 
 ## Accomplishments
 - Scan tab renders batch file selection with checkboxes, select-all, file size/format, and pagination for unscanned audio files
-- Source badges (Fingerprint purple, 1001Tracklists blue) and status badges (Proposed yellow, Approved green, Rejected red) on all tracklist cards
+- Source badges (Fingerprint purple, retired external source blue) and status badges (Proposed yellow, Approved green, Rejected red) on all tracklist cards
 - Scan progress polls arq job results every 3s and shows completion with link to Proposed tab
 - Proposed filter tab and 4-column stats header with proposed count
 - 17 tests passing (6 new + 11 existing)
@@ -80,7 +83,7 @@ Each task was committed atomically:
 - `src/phaze/routers/tracklists.py` - Added scan_tab, trigger_scan, scan_status endpoints; proposed filter; AUDIO_EXTENSIONS constant
 - `src/phaze/templates/tracklists/partials/scan_tab.html` - Batch file selection UI with Alpine.js checkboxes and HTMX form
 - `src/phaze/templates/tracklists/partials/scan_progress.html` - Polling progress indicator with completion states
-- `src/phaze/templates/tracklists/partials/source_badge.html` - Fingerprint/1001Tracklists source badge
+- `src/phaze/templates/tracklists/partials/source_badge.html` - Fingerprint/retired external source source badge
 - `src/phaze/templates/tracklists/partials/status_badge.html` - Proposed/Approved/Rejected status badge
 - `src/phaze/templates/tracklists/list.html` - Alpine.js x-data on outer container, scan-panel with x-show toggle
 - `src/phaze/templates/tracklists/partials/filter_tabs.html` - Added Proposed and Scan tabs with showScan toggle
@@ -92,7 +95,7 @@ Each task was committed atomically:
 - Alpine.js x-data moved to outer container in list.html so filter_tabs and scan-panel share showScan state
 - Scan tab uses Alpine.js toggle (not HTMX) per Research Pitfall 6 to avoid server round-trip for tab switch
 - Unscanned file query uses NOT IN subquery on Tracklist.file_id where source='fingerprint'
-- Fingerprint-sourced cards hide 1001tracklists-specific actions; approve/reject buttons deferred to Plan 03
+- Fingerprint-sourced cards hide retired external source-specific actions; approve/reject buttons deferred to Plan 03
 
 ## Deviations from Plan
 
