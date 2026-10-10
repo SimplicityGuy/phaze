@@ -43,7 +43,10 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 from pathlib import Path
+import stat
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -66,6 +69,31 @@ logger = structlog.get_logger(__name__)
 # Same bound as TagWriteResultPayload.error_message -- truncate BEFORE constructing the payload so a
 # pathological exception string can never raise a ValidationError that would swallow the real error.
 _ERROR_MESSAGE_MAX = 2000
+
+
+def _snapshot_failure_hash(file_path: str, scan_roots: list[str]) -> str | None:
+    """Bounded regular-file observation after failed extraction, never another tag save."""
+    try:
+        path, _root = resolve_contained_twin(file_path, scan_roots)
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("hash observation requires a regular file")
+            digest = hashlib.sha256()
+            remaining = before.st_size
+            while remaining:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("file shrank during hash observation")
+                digest.update(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(stream.fileno())
+            if stream.read(1) or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError("file changed during hash observation")
+            return digest.hexdigest()
+    except (OSError, ValueError):
+        logger.warning("tag snapshot failure hash unavailable", exc_info=True)
+        return None
 
 
 def _write_verify_and_rehash(
@@ -151,22 +179,39 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
     file_path = str(resolved_path)
 
-    # phaze-anrw4: capture + durably report the pre-write snapshot in its own thread offload and
-    # HTTP round trip, BEFORE the mutating write below -- see the module docstring. Best-effort:
-    # neither an extraction failure nor a transport failure here may abort the write itself, since
-    # ``write_and_verify_sync`` below still captures + reports its own ``before_tags`` as a
-    # single-attempt fallback (the endpoint's first-write-wins guard keeps whichever call lands
-    # first; a second, redundant report is simply ignored).
+    # phaze-xq8vq: no mutating write until the control plane ACKNOWLEDGES a durable original.
+    # A lost snapshot response is safe: retry before mutation; an existing snapshot wins.
+    # Deploy the controller first. Old controllers reject include_status, failing closed;
+    # old agents still have the best-effort bug, so drain their tag jobs before upgrading.
     try:
         before_snapshot = await asyncio.to_thread(_extract_before_tags, file_path)
-        await api.report_tag_write_before_snapshot(payload.log_id, TagWriteBeforeSnapshotPayload(before_tags=before_snapshot))
-    except Exception:
-        logger.warning(
-            "tag write pre-snapshot failed -- falling back to the write-time capture",
-            file_id=str(payload.file_id),
-            log_id=str(payload.log_id),
-            exc_info=True,
+        if not before_snapshot:
+            # Even an untagged file has six explicit None fields. {} is the controller's
+            # "not captured" sentinel and cannot serve as a durable original.
+            raise ValueError("empty pre-write snapshot")
+    except Exception as exc:
+        # No snapshot means no safe undo. Report a terminal failure WITHOUT mutagen save.
+        # A prior attempt may already have written and lost its result callback. Observe the
+        # bytes even if their tags cannot be parsed; otherwise terminal FAILED leaves stale hash.
+        sha256_hash = await asyncio.to_thread(_snapshot_failure_hash, payload.file_path, scan_roots)
+        result = TagWriteResultPayload(
+            status=TagWriteStatus.FAILED,
+            before_tags={},
+            error_message=f"pre-write snapshot failed: {exc}"[:_ERROR_MESSAGE_MAX],
+            sha256_hash=sha256_hash,
         )
+        await api.patch_tag_write(payload.log_id, result)
+        return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
+
+    snapshot_ack = await api.report_tag_write_before_snapshot(
+        payload.log_id, TagWriteBeforeSnapshotPayload(before_tags=before_snapshot, include_status=True)
+    )
+    if snapshot_ack.status is None:
+        raise RuntimeError("tag write snapshot acknowledgment lacks status; refusing disk mutation")
+    if snapshot_ack.status != TagWriteStatus.QUEUED:
+        # A duplicate old job may arrive after an undo or a newer write. Do not rewrite the
+        # file merely because applied=false was mistaken for an existing queued snapshot.
+        return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(snapshot_ack.status)}
 
     # phaze-qfxv discipline, carried over from the api: the ENTIRE blocking sequence (read-before,
     # mutagen save -- which rewrites the whole file when the tag area must grow -- and the verify

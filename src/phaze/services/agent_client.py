@@ -571,9 +571,9 @@ class PhazeAgentClient:
         Called BEFORE the mutating mutagen write in ``write_file_tags``, separate from (and prior
         to) :meth:`patch_tag_write`'s terminal report -- the control plane records it first-write
         -wins, so a SAQ retry's re-extraction of an ALREADY-WRITTEN disk can never overwrite the
-        true original captured by an earlier attempt. Best-effort from the caller's perspective:
-        a failure here must not abort the write itself (the terminal callback still carries its own
-        ``before_tags`` as a single-attempt fallback). ``log_id`` rides the path only (AUTH-01).
+        true original captured by an earlier attempt. Updated tasks require this acknowledgment
+        before mutation; include_status opts into the locked row's status without changing the
+        response shape for older agents. ``log_id`` rides the path only (AUTH-01).
         httpx-only -- NO database import, keeping the agent worker Postgres-free
         (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotResponse  # noqa: PLC0415
@@ -581,7 +581,7 @@ class PhazeAgentClient:
         response = await self._request(
             "PATCH",
             f"/api/internal/agent/tag-writes/{log_id}/before-snapshot",
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return TagWriteBeforeSnapshotResponse.model_validate(response.json())
 

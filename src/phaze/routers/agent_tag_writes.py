@@ -160,7 +160,9 @@ async def patch_tag_write(
     return TagWriteResultResponse(agent_id=agent.id, log_id=log_id, status=body.status, applied=True)
 
 
-@router.patch("/{log_id}/before-snapshot", status_code=status.HTTP_200_OK, response_model=TagWriteBeforeSnapshotResponse)
+@router.patch(
+    "/{log_id}/before-snapshot", status_code=status.HTTP_200_OK, response_model=TagWriteBeforeSnapshotResponse, response_model_exclude_none=True
+)
 async def record_tag_write_before_snapshot(
     log_id: uuid.UUID,
     body: TagWriteBeforeSnapshotPayload,
@@ -187,11 +189,15 @@ async def record_tag_write_before_snapshot(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write log not found")
 
     if log_entry.status != TagWriteStatus.QUEUED or log_entry.before_tags:
-        # Already terminal, or a snapshot already won -- always a safe no-op, never an error (the
-        # agent must not burn tenacity retries on this call, and it does not gate the write itself).
-        return TagWriteBeforeSnapshotResponse(agent_id=agent.id, log_id=log_id, applied=False)
+        # Already terminal, or a snapshot already won. Updated agents use the same locked
+        # row's status to skip terminal jobs; queued retries retain the first original.
+        return TagWriteBeforeSnapshotResponse(
+            agent_id=agent.id, log_id=log_id, applied=False, status=TagWriteStatus(log_entry.status) if body.include_status else None
+        )
 
     log_entry.before_tags = dict(body.before_tags)
     await session.commit()
 
-    return TagWriteBeforeSnapshotResponse(agent_id=agent.id, log_id=log_id, applied=True)
+    return TagWriteBeforeSnapshotResponse(
+        agent_id=agent.id, log_id=log_id, applied=True, status=TagWriteStatus.QUEUED if body.include_status else None
+    )
