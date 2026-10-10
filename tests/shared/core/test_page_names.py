@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 import pytest
@@ -145,12 +146,12 @@ def test_summary_link_labels_name_the_page_they_open() -> None:
     assert actions, "the scenarios produced no summary actions at all"
     seen_hrefs = set()
     for item in actions:
-        stage = str(item["href"]).removeprefix("/s/")
+        stage = urlsplit(str(item["href"])).path.removeprefix("/s/")
         assert stage in PAGE_NAMES, f"{item['href']!r} is not a shell page"
         assert item["action"] == open_label(stage), item
         seen_hrefs.add(stage)
     # The two labels the review named as lying must have been exercised, not merely absent.
-    assert {"discover", "agents", "runtime-config", "apply", "rename"} <= seen_hrefs
+    assert {"discover", "agents", "runtime-config", "apply", "rename", "files"} <= seen_hrefs
 
 
 def test_summary_flow_names_the_last_stage_like_the_rest_of_the_app() -> None:

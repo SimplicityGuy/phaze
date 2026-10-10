@@ -57,7 +57,7 @@
 {% endmacro %}
 {# phaze-a6hm.3: pagers must carry the sort forward (column_sort contract rule 4, inverse direction)
    -- a Prev/Next click that dropped the operator's chosen order would silently reset it mid-scan. #}
-{% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (sort.query_state() if sort else '') %}
+{% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (('&scope=' ~ active_scope) if active_scope else '') ~ (sort.query_state() if sort else '') %}
 {# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
 {% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'tracklist': 'Tracklist', 'propose': 'Propose', 'review': 'Review', 'apply': 'Execute'} %}
 {% set _stage_display = _stage_names.get(active_stage, active_stage) %}
@@ -111,6 +111,7 @@
         <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
         {% if active_stage %}<input type="hidden" name="stage" value="{{ active_stage }}">{% endif %}
         {% if active_bucket %}<input type="hidden" name="bucket" value="{{ active_bucket }}">{% endif %}
+        {% if active_scope == 'media' %}<input type="hidden" name="scope" value="media">{% endif %}
         <label class="grid gap-1 text-xs text-muted ">
             <span class="font-jura text-[10px] uppercase tracking-[0.15em]">Sort by</span>
             <select name="sort" class="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">

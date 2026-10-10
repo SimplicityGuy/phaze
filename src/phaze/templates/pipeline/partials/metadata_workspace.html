@@ -35,6 +35,12 @@
             {{ ui.metric('Latest successful write', latest_value, 'Controller receipt time, not a batch run', 'neutral') }}
         {% endcall %}
 
+        <section x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0"{% if not (metadata_status.available and metadata_status.failed) %} x-cloak{% endif %}
+                 aria-label="Metadata failure inspection" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <p class="text-sm text-muted">Inspect failed music and video files separately from Extract All eligibility. Resolved duplicates can retain a failed outcome without being eligible for extraction.</p>
+            <a href="/s/files?stage=metadata&amp;bucket=failed&amp;scope=media" class="{{ ui.btn('secondary', 'md') }} mt-3">Inspect failed files</a>
+        </section>
+
         <div x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown" x-cloak>
             {{ ui.actionable_alert('Metadata measurements degraded', 'One or more metadata status, selection, or SAQ measurements are unavailable. Unknown values display as an em dash; they are not zero.', 'info') }}
         </div>

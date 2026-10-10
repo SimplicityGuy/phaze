@@ -122,7 +122,7 @@ def test_degraded_state_prioritizes_failures_then_orphans_and_capacity() -> None
         "Files awaiting cloud routing",
         "Cloud quota wait",
     ]
-    assert summary["recommended"]["href"] == "/s/metadata"  # type: ignore[index]
+    assert summary["recommended"]["href"] == "/s/files?stage=metadata&bucket=failed&scope=media"  # type: ignore[index]
     orphan_item = next(item for item in summary["attention"] if item["title"] == "Orphaned work")  # type: ignore[attr-defined,index]
     assert orphan_item["detail"] == "3 scheduled file(s) have no live job or domain result."
     assert orphan_item["action"] == "Open Discover"

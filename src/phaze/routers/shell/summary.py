@@ -242,8 +242,8 @@ def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_t
                 10,
                 "Metadata failures",
                 f"{format_count(metadata_failed)} file(s) need inspection or retry.",
-                "/s/metadata",
-                open_label("metadata"),
+                "/s/files?stage=metadata&bucket=failed&scope=media",
+                open_label("files"),
                 "danger",
             )
         )

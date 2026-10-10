@@ -20,6 +20,7 @@ from phaze.models.scan_batch import ScanBatch
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import ORPHANED_BUCKET
+from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
 from phaze.services.stage_status import (
     display_status_case,
     orphaned_clause,
@@ -130,7 +131,9 @@ def _scan_root(path: str, roots: list[str], batch_root: str | None) -> str:
     return "Unassigned scan root"
 
 
-def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None, sort: SortState | None = None) -> Select[Any]:
+def _files_page_stmt(
+    *, page: int, page_size: int, stage: Stage | None, bucket: str | None, sort: SortState | None = None, media_only: bool = False
+) -> Select[Any]:
     """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
 
     ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by
@@ -175,6 +178,9 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
         .outerjoin(ScanBatch, ScanBatch.id == FileRecord.batch_id)
         .options(selectinload(FileRecord.set_profile)),
     )
+    # Summary stage counts cover music/video, while the general Files history includes every category.
+    if media_only:
+        stmt = stmt.where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
     # phaze-7sdwt: `bucket is not None` is the WHOLE gate -- `stage` alone ("any status") stays a
     # deliberate no-op, matching the caller contract stated above.
     if bucket is not None:
@@ -211,6 +217,7 @@ async def get_files_page(
     stage: Stage | None = None,
     bucket: str | None = None,
     sort: SortState | None = None,
+    media_only: bool = False,
 ) -> FilesPage:
     """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
 
@@ -237,7 +244,7 @@ async def get_files_page(
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket, sort=sort)
+            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket, sort=sort, media_only=media_only)
             result = (await session.execute(stmt)).all()
             page_rows, has_next = split_sentinel(result, page_size)
     except Exception:
