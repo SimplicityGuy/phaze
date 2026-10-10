@@ -31,6 +31,19 @@ router = APIRouter(prefix="/api/internal/agent/tag-writes", tags=["agent-interna
 _ERROR_MESSAGE_MAX = 2000
 
 
+async def _require_file_owner(session: AsyncSession, file_id: uuid.UUID, agent: Agent) -> None:
+    """Authorize from the retained file row, including rows marked missing.
+
+    Unlike execution callbacks' nullable/unlinked proposal association, tag logs have a
+    non-null restrictive file FK. A missing file is an inconsistent resource, not permission.
+    """
+    file_record = await session.get(FileRecord, file_id)
+    if file_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write file not found")
+    if file_record.agent_id != agent.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tag write log does not belong to authenticated agent")
+
+
 @router.patch("/{log_id}", status_code=status.HTTP_200_OK, response_model=TagWriteResultResponse)
 async def patch_tag_write(
     log_id: uuid.UUID,
@@ -68,11 +81,9 @@ async def patch_tag_write(
     site for the two consumers that then fail permanently, and for why ``None`` leaves the column
     alone instead of nulling it.
 
-    ``agent`` comes from the auth dep (token, never body -- AUTH-01) and the row is addressed by
-    the PATH ``log_id`` only, so a forged body cannot redirect the write. The endpoint deliberately
-    does NOT check that the row's file belongs to the calling agent: ``log_id`` is a server-minted
-    UUID the agent only learns by being handed the job, which is the same unguessable-handle
-    authorization the execution-log callbacks use.
+    ``agent`` comes from the auth dep (token, never body -- AUTH-01). The log UUID identifies
+    the audit row; it does not authorize access. Both callbacks require the associated file's
+    owner before mutating state or returning an idempotent response.
     """
     if body.status == TagWriteStatus.QUEUED:
         # ``queued`` is the state this endpoint EXISTS to leave. Accepting it would silently strand
@@ -103,6 +114,8 @@ async def patch_tag_write(
     log_entry = result.scalar_one_or_none()
     if log_entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write log not found")
+
+    await _require_file_owner(session, log_entry.file_id, agent)
 
     if log_entry.status != TagWriteStatus.QUEUED:
         # Late / duplicate replay of a callback that already landed -- a no-op 200, never an error
@@ -187,6 +200,8 @@ async def record_tag_write_before_snapshot(
     log_entry = result.scalar_one_or_none()
     if log_entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write log not found")
+
+    await _require_file_owner(session, log_entry.file_id, agent)
 
     if log_entry.status != TagWriteStatus.QUEUED or log_entry.before_tags:
         # Already terminal, or a snapshot already won. Updated agents use the same locked
