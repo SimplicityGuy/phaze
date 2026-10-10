@@ -37,6 +37,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
+from phaze.routers.request_guards import require_same_origin_form
 from phaze.schemas.companion_details import (
     CompanionDetails,
     DetailPage,
@@ -569,7 +570,7 @@ async def companion_linked_media(
     return result
 
 
-@router.post("/files/{file_id}/companions/{companion_id}/refresh", response_class=HTMLResponse)
+@router.post("/files/{file_id}/companions/{companion_id}/refresh", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
 async def companion_refresh(request: Request, file_id: uuid.UUID, companion_id: uuid.UUID) -> HTMLResponse:
     """Explicit async read; rendering never dispatches work. The agent owns filesystem access."""
     try:

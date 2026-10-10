@@ -243,6 +243,7 @@ async def test_real_rename_task_uses_reviewed_facts_and_rechecks_after_llm(commi
 
 
 async def test_actual_discogs_workspace_match_review_forms_and_stale_refusal(client, session):
+    client.headers["Origin"] = "http://test"
     media, companion, selected = await selected_inventory(session)
     link = DiscogsLink(
         source_observation_id=selected.observation_id,

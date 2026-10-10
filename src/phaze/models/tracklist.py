@@ -6,7 +6,7 @@ from datetime import date, datetime  # noqa: TC003 — SQLAlchemy resolves Mappe
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, and_, column, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -97,7 +97,7 @@ class Tracklist(TimestampMixin, Base):
             "ix_tracklists_external_id",
             "external_id",
             unique=True,
-            postgresql_where=text(CANONICAL_TRACKLIST_CLAUSE + " AND provider_object_id IS NULL"),
+            postgresql_where=and_(column("propagated_from_set_key").is_(None), column("provider_object_id").is_(None)),
         ),
         Index("ix_tracklists_provider_object", "provider_object_id", unique=True, postgresql_where=text(CANONICAL_TRACKLIST_CLAUSE)),
         # Serves the correction path -- "show/undo every row this cluster produced" -- without

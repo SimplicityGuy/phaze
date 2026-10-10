@@ -24,6 +24,39 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 
+async def test_hostile_native_discogs_form_refuses_valid_pin_then_same_origin_review_succeeds(page, seed, live_server):
+    """A genuine browser supplies the hostile Origin; retained pins do not authorize CSRF."""
+    from sqlalchemy import select
+
+    from phaze.models.discogs_link import DiscogsLink
+    from tests.integration.test_selected_discogs_consumers import selected_inventory
+
+    await seed.agent("test-fileserver")
+    media, _companion, selected = await selected_inventory(seed.session)
+    link = DiscogsLink(source_observation_id=selected.observation_id, source_track_position=1, discogs_release_id="synthetic", confidence=90)
+    seed.session.add(link)
+    await seed.session.commit()
+    target = f"{live_server}/recording-discogs/{media.id}/links/{link.id}"
+    hostile = live_server.replace("127.0.0.1", "localhost") + "/hostile"
+    html = f'''<form method="post" action="{target}">
+      <input name="observation_id" value="{selected.observation_id}">
+      <input name="selected_token" value="{selected.selection_token}">
+      <button name="action" value="accept">Hostile accept</button></form>'''
+    await page.route(hostile, lambda route: route.fulfill(status=200, content_type="text/html", body=html))
+    await page.goto(hostile)
+    async with page.expect_response(lambda response: response.url == target and response.request.method == "POST") as received:
+        await page.get_by_role("button", name="Hostile accept").click()
+    assert (await received.value).status == 403
+    assert await seed.session.scalar(select(DiscogsLink.status).where(DiscogsLink.id == link.id)) == "candidate"
+    # Drive the real served native form, disabling only the optional HTMX enhancement.
+    await page.goto(f"{live_server}/recording-discogs/{media.id}")
+    await page.get_by_role("button", name="Accept", exact=True).evaluate("button => button.form.removeAttribute('hx-post')")
+    async with page.expect_response(lambda response: response.url == target and response.request.method == "POST") as received:
+        await page.get_by_role("button", name="Accept", exact=True).click()
+    assert (await received.value).status == 200
+    assert await seed.session.scalar(select(DiscogsLink.status).where(DiscogsLink.id == link.id)) == "accepted"
+
+
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])
 async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, seed, kind):
     await seed.agent("test-fileserver")

@@ -147,9 +147,10 @@ USING IT
 
 import json
 from typing import Any, cast
+from urllib.parse import urlsplit
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,7 +162,66 @@ __all__ = [
     "MAX_ARRAY_ITEMS",
     "execute_guarding_vanished_file",
     "parse_json_array_payload",
+    "require_companion_command_origin",
+    "require_same_origin_form",
 ]
+
+
+def _origin(value: str, *, referer: bool = False) -> tuple[str, str, int] | None:
+    """An exact HTTP origin, never a prefix or a client-supplied forwarded authority."""
+    if not value or len(value) > 4096 or "\\" in value or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    try:
+        url = urlsplit(value)
+        if url.scheme not in {"http", "https"} or not url.hostname or url.username is not None or url.password is not None:
+            return None
+        if url.fragment or url.netloc.endswith(":") or (not referer and (url.path or "?" in value or "#" in value)):
+            return None
+        return url.scheme, url.hostname.lower(), url.port if url.port is not None else (443 if url.scheme == "https" else 80)
+    except ValueError:
+        return None
+
+
+def require_same_origin_form(request: Request) -> None:
+    """CSRF protection for explicitly registered companion operator mutations.
+
+    Browser-owned Origin/Referer/Fetch Metadata evidence is required. Sibling sites are not
+    trusted. ASGI scheme and Host reflect the server's trusted proxy handling; raw Forwarded,
+    X-Forwarded-* and HX-Request headers never grant permission. Unknown/absent evidence fails
+    closed; an observation pin protects freshness but is not a browser-origin credential.
+    """
+    denied = HTTPException(status_code=403, detail="Same-origin browser mutation required")
+    if any(len(request.headers.getlist(header)) > 1 for header in ("origin", "referer", "sec-fetch-site")):
+        raise denied
+    site = request.headers.get("sec-fetch-site")
+    if site in {"cross-site", "same-site"}:
+        raise denied
+    target = _origin(f"{request.url.scheme}://{request.url.netloc}")
+    if target is None:
+        raise denied
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    if origin is not None:
+        if target is None or _origin(origin) != target:
+            raise denied
+    elif referer is not None:
+        if target is None or _origin(referer, referer=True) != target:
+            raise denied
+    elif site != "same-origin":
+        raise denied
+
+
+def require_companion_command_origin(request: Request) -> None:
+    """Preserve explicit non-simple JSON APIs; native companion forms use the strict guard.
+
+    Headerless application/json clients retain their API contract. Browsers cannot send this
+    media type cross-origin without CORS preflight, and Phaze does not enable CORS. If browser
+    evidence is supplied, it must pass the same check even for a JSON command.
+    """
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type == "application/json" and not any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        return
+    require_same_origin_form(request)
 
 
 MALFORMED_PAYLOAD_STATUS = 422

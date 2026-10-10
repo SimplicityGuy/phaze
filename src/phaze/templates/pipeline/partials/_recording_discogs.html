@@ -4,6 +4,7 @@
         <p class="text-xs text-muted">Selected observation {{ selected.observation_id }} · revision {{ selected.snapshot.revision or 'unknown' }} · {{ selected.availability }}</p>
         <a href="/files/{{ media_id }}#companion-sources" class="text-link">Inspect source evidence</a>
         {% if selected.availability == 'current' %}
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -- FastAPI route requires require_same_origin_form before broker effects; this Jinja app has no Django CSRF middleware. -->
         <form method="post" action="/recording-discogs/{{ media_id }}/match" hx-post="/recording-discogs/{{ media_id }}/match" hx-target="#recording-discogs-{{ media_id }}" hx-swap="outerHTML" class="my-3">
             <input type="hidden" name="observation_id" value="{{ selected.observation_id }}">
             <input type="hidden" name="selected_token" value="{{ selected.selection_token }}">
@@ -16,6 +17,7 @@
             <tr><td class="p-2">{{ link.source_track_position }}</td><td class="p-2">{{ link.discogs_artist or '' }} · {{ link.discogs_title or link.discogs_release_id }}</td><td class="p-2">{{ link.confidence }}</td><td class="p-2">
                 {{ link.status }}
                 {% if selected.availability == 'current' %}
+                <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -- FastAPI route requires require_same_origin_form before decisions; valid-pin hostile native POST is tested. -->
                 <form method="post" action="/recording-discogs/{{ media_id }}/links/{{ link.id }}" hx-post="/recording-discogs/{{ media_id }}/links/{{ link.id }}" hx-target="#recording-discogs-{{ media_id }}" hx-swap="outerHTML">
                     <input type="hidden" name="observation_id" value="{{ selected.observation_id }}">
                     <input type="hidden" name="selected_token" value="{{ selected.selection_token }}">

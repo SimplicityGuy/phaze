@@ -265,7 +265,7 @@ async def test_captured_cue_native_mapping_real_broker_authenticated_write(
         assert form is not None
         values = {field["name"]: field.get("value", "") for field in form.select("input[name]")}
         client._transport.app.state.task_router = router
-        queued = await client.post(f"/cue/files/{media.id}/generate", data=values)
+        queued = await client.post(f"/cue/files/{media.id}/generate", data=values, headers={"Origin": "http://test"})
         assert "artifact queued" in queued.text, queued.text
         await asyncio.wait_for(worker.process(), timeout=15)
         written = Path(media.current_path).with_suffix(".cue").read_text(encoding="utf-8-sig")
@@ -506,7 +506,7 @@ async def test_physical_competing_sources_native_independent_choices_preserve_ma
             assert form is not None
             values = {field["name"]: field.get("value", "") for field in form.select("input[name]")}
             values["action"] = "accept"
-            reviewed = await client.post(form["action"], data=values)
+            reviewed = await client.post(form["action"], data=values, headers={"Origin": "http://test"})
             assert reviewed.status_code == 200
             actual_link = await _get_accepted_discogs_link(session, media.id)
             assert actual_link.source_observation_id == a_tracks.id and actual_link.track_id is None

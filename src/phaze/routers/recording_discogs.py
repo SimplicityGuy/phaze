@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
+from phaze.routers.request_guards import require_same_origin_form
 from phaze.services.enqueue_router import resolve_queue_for_task
 from phaze.services.local_source_import import get_selected_recording_source
 from phaze.services.pagination import clamp_page
@@ -60,7 +61,7 @@ async def recording_discogs_review(request: Request, media_id: uuid.UUID, sessio
     return await _render(request, session, media_id)
 
 
-@router.post("/{media_id}/match", response_class=HTMLResponse)
+@router.post("/{media_id}/match", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
 async def match_recording_discogs(
     request: Request,
     media_id: uuid.UUID,
@@ -83,7 +84,7 @@ async def match_recording_discogs(
     return await _render(request, session, media_id, message="Discogs matching queued for this reviewed source. Refresh to inspect candidates.")
 
 
-@router.post("/{media_id}/links/{link_id}", response_class=HTMLResponse)
+@router.post("/{media_id}/links/{link_id}", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
 async def decide_recording_discogs(
     request: Request,
     media_id: uuid.UUID,
