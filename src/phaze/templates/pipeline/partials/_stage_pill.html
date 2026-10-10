@@ -10,7 +10,7 @@
 
    Params (set by the caller, e.g. via {% with %} before the include):
      * stage_label -- the human stage name shown in the aria-label (Meta / FP / Analyze / ...).
-     * bucket      -- one of 'done' | 'in_flight' | 'queued' | 'not_started' | 'failed' | 'skipped'
+     * bucket      -- one of 'done' | 'in_flight' | 'queued' | 'not_started' | 'failed' | 'skipped' | 'missing'
                       (the derived stage_status_case value; unknown -> not_started fallback).
 
    Pure template: no HTMX, no self-poll. The stage_label crosses only trusted-constant text
@@ -25,6 +25,8 @@
 {{ ui.status_badge(stage_label, 'queued', 'slate', '◌') }}
 {% elif bucket == 'failed' %}
 {{ ui.status_badge(stage_label, 'failed', 'danger', '✕') }}
+{% elif bucket == 'missing' %}
+{{ ui.status_badge(stage_label, 'missing', 'danger', '✕', aria_label=stage_label ~ ': file missing on disk') }}
 {% elif bucket == 'skipped' %}
 {{ ui.status_badge(stage_label, 'skipped', 'skipped', '⊘', false, stage_label ~ ': skipped (force-completed)') }}
 {% else %}

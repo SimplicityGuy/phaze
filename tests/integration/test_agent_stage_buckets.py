@@ -44,6 +44,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pipeline import ORPHANED_BUCKET, _agent_stage_buckets
+from phaze.services.stage_status import MISSING_BUCKET
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from tests.db_guard import integration_dsns, require_test_database
 
@@ -76,7 +77,7 @@ _FIVE_BUCKETS = (
 # It is NOT a `Status` member (the derived per-file status, eligibility and recovery are unchanged), so
 # it cannot be spelled off the enum -- hence the explicit tuple here. The sum-to-total invariant is
 # unaffected: the split MOVES files between two of these six keys, it never drops one.
-_SIX_BUCKETS = (*_FIVE_BUCKETS, ORPHANED_BUCKET)
+_SIX_BUCKETS = (*_FIVE_BUCKETS, ORPHANED_BUCKET, MISSING_BUCKET)  # phaze-227l5: the name predates the seventh key
 
 
 @pytest_asyncio.fixture

@@ -762,6 +762,41 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     return case(*branches, else_=Status.NOT_STARTED.value)
 
 
+# phaze-227l5 -- "missing" is its own reporting state, NOT a kind of "failed".
+#
+# A row with ``files.missing_at`` set is gone from its agent's disk (phaze-5rfev): nothing can be
+# retried, so counting it as a failure told the operator there was work to do when there was none. The
+# derived per-stage status (``stage_status_case`` / the Python resolver / DERIV-04) is deliberately NOT
+# touched -- eligibility and recovery still read ``failed``. Like ``orphaned`` (D-01a) this is a
+# REPORTING refinement layered on top: every failure COUNT and failed-BUCKET FILTER goes through the
+# two builders below, so there is exactly one definition of "missing" and of "failed, for display".
+MISSING_BUCKET = "missing"
+
+
+def missing_clause() -> ColumnElement[bool]:
+    """The ONE predicate for "this row was found gone from disk" (``files.missing_at IS NOT NULL``)."""
+    return FileRecord.missing_at.isnot(None)
+
+
+def counted_failed_clause(stage: Stage) -> ColumnElement[bool]:
+    """``failed_clause(stage)`` for a row that is NOT missing -- the predicate every failure count/list uses.
+
+    Retry/eligibility sets keep the raw :func:`failed_clause` (they exclude missing rows separately,
+    phaze-5rfev); only what the operator is told is "failed" goes through here.
+    """
+    return and_(failed_clause(stage), not_(missing_clause()))
+
+
+def display_status_case(stage: Stage) -> ColumnElement[str]:
+    """:func:`stage_status_case` with a failed row that is missing reported as :data:`MISSING_BUCKET`.
+
+    Wraps the LOCKED ladder verbatim (never a fresh CASE) and only relabels its ``failed`` arm, so
+    the buckets still partition the corpus: ``failed`` + ``missing`` equals the old ``failed``.
+    """
+    base = stage_status_case(stage)
+    return case((and_(base == Status.FAILED.value, missing_clause()), MISSING_BUCKET), else_=base)
+
+
 # phaze-cvn6.1 -- the DISPLAY order for a stage-status column.
 #
 # READ THIS BEFORE REORDERING IT. This tuple is NOT the precedence ladder above and the two must

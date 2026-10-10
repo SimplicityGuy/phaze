@@ -19,8 +19,9 @@ from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status
 from phaze.models.file import FileRecord
 from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
 from phaze.services.stage_status import (
+    MISSING_BUCKET,
+    display_status_case,
     orphaned_clause,
-    stage_status_case,
 )
 
 
@@ -40,9 +41,10 @@ ORPHANED_BUCKET = "orphaned"
 
 
 def _empty_buckets() -> dict[str, int]:
-    """Return the zero-filled SIX-key reporting bucket dict (the five ``Status`` values + ``orphaned``)."""
+    """Return the zero-filled SEVEN-key reporting bucket dict (the five ``Status`` values + ``orphaned`` + ``missing``)."""
     out: dict[str, int] = {s.value: 0 for s in Status}
     out[ORPHANED_BUCKET] = 0
+    out[MISSING_BUCKET] = 0
     return out
 
 
@@ -144,7 +146,7 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     # the ungrouped ``files.id`` -> "subquery uses ungrouped column" GroupingError). The ONLY delta from
     # :func:`_safe_bucket_counts` is the ``FileRecord.agent_id == agent_id`` conjunct (D-04).
     status_subq = (
-        select(stage_status_case(stage).label("status"))
+        select(display_status_case(stage).label("status"))
         .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
         .where(FileRecord.agent_id == agent_id)
         .subquery()
@@ -177,7 +179,7 @@ class StageBucketSnapshot:
 
 
 def _stage_bucket_stmt(stage: Stage) -> Select[Any]:
-    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
+    status_subq = select(display_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
     return select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
 
 

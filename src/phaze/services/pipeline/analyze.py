@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, cast as type_cast
 
-from sqlalchemy import and_, false, func, or_, select
+from sqlalchemy import and_, false, func, not_, or_, select
 import structlog
 
 from phaze.config import get_settings
@@ -23,6 +23,7 @@ from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.stage_status import (
     inflight_clause,
+    missing_clause,
 )
 
 
@@ -93,6 +94,7 @@ ANALYZE_FILTER_IN_FLIGHT = "in_flight"
 ANALYZE_FILTER_AWAITING = "awaiting_cloud"
 ANALYZE_FILTER_FAILED = "failed"
 ANALYZE_FILTER_COMPLETED = "completed"
+ANALYZE_FILTER_MISSING = "missing"
 ANALYZE_FILTERS: frozenset[str] = frozenset(
     {
         ANALYZE_FILTER_ALL,
@@ -100,6 +102,7 @@ ANALYZE_FILTERS: frozenset[str] = frozenset(
         ANALYZE_FILTER_AWAITING,
         ANALYZE_FILTER_FAILED,
         ANALYZE_FILTER_COMPLETED,
+        ANALYZE_FILTER_MISSING,
     }
 )
 
@@ -139,6 +142,7 @@ def _analyze_files_select() -> Select[Any]:
                 AnalysisResult.analysis_completed_at,
                 AnalysisResult.failed_at,
                 FileMetadata.duration,
+                FileRecord.missing_at,
             )
             .select_from(FileRecord)
             .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
@@ -183,7 +187,10 @@ def _analyze_status_where(status: str | None) -> Any:
     if status == ANALYZE_FILTER_AWAITING:
         return CloudJob.status == CloudJobStatus.AWAITING.value
     if status == ANALYZE_FILTER_FAILED:
-        return AnalysisResult.failed_at.is_not(None)
+        # phaze-227l5: a failed analysis on a file gone from disk is "missing", not "failed".
+        return and_(AnalysisResult.failed_at.is_not(None), not_(missing_clause()))
+    if status == ANALYZE_FILTER_MISSING:
+        return and_(AnalysisResult.failed_at.is_not(None), missing_clause())
     if status == ANALYZE_FILTER_COMPLETED:
         return AnalysisResult.analysis_completed_at.is_not(None)
     # ANALYZE_FILTER_ALL / None / unknown -> the full analyze-stage membership (the derived-state predicate).
@@ -226,7 +233,7 @@ def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[di
     is the once-per-call registry projection (never a per-row lookup).
     """
     files: list[dict[str, Any]] = []
-    for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration in rows:
+    for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration, missing_at in rows:
         lane, lane_kind = derive_file_lane(cloud_job_id, backend_id, kinds)
         files.append(
             {
@@ -238,7 +245,9 @@ def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[di
                 # PR-A: derived boolean flags replace the raw ``state`` key -- the template
                 # renders off these, never a FileState string.
                 "awaiting_cloud": cloud_status == CloudJobStatus.AWAITING.value,
-                "analysis_failed": failed_at is not None,
+                "analysis_failed": failed_at is not None and missing_at is None,
+                # phaze-227l5: a failed analysis on a file gone from disk is its own state, not a failure.
+                "analysis_missing": failed_at is not None and missing_at is not None,
                 "lane": lane,
                 "lane_kind": lane_kind,
                 "fine_done": fine_done,

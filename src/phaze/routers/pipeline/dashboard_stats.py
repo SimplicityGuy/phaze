@@ -50,6 +50,7 @@ from phaze.services.pipeline import (
     stage_orphan_counts_known,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.services.stage_status import MISSING_BUCKET
 from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
 
@@ -176,6 +177,7 @@ async def _build_dag_context(
         "metadataFailed": int(stage["metadata"].get("failed") or 0),
         "metadataStatusDone": int(metadata_buckets.get(Status.DONE.value) or 0),
         "metadataStatusFailed": int(metadata_buckets.get(Status.FAILED.value) or 0),
+        "metadataStatusMissing": int(metadata_buckets.get(MISSING_BUCKET) or 0),
         "metadataStatusTotal": metadata_status_total,
         "metadataStatusKnown": int(metadata_buckets.get("available") or 0),
         "analyzeDone": done("analyze"),
