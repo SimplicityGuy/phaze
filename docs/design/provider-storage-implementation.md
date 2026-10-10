@@ -21,7 +21,9 @@ The service is [provider_persistence.py](../../src/phaze/services/provider_persi
 - `source_availability(session, observation, media_id)` returns current inventory/link state independently of retained historical authority. Missing, ambiguous, unlinked and stale sources remain viewable as history.
 - `backfill_legacy_identities(session, batch_size=100)` resumes through unexpanded canonical rows, preserving legacy values and unambiguous projection links. Legacy namespaces are inert hashes of the original source string; manual native keys use row UUIDs. No namespace activates an adapter.
 
-All calls use a caller-owned transaction and never commit. Imports lock digest buckets and source objects before content comparisons. Selection locks recording/source inventory in original-path order before companion pairs, matching deletion. It refreshes current database state before granting authority. Snapshot versions are not selected merely because they arrived later.
+All calls use a caller-owned transaction and never commit. Imports lock digest buckets, then bound source inventory with UPDATE, then source objects before content comparisons. Unbound provider sources use bucket then object. Capture takes the same bucket before rechecking inventory and storing its read. Inventory precedes object locks so file deletion's SET NULL updates cannot invert the order; it also prevents a deleted file binding from being inserted. Selection locks recording/source inventory in original-path order before companion pairs, matching deletion. It refreshes current database state before granting authority. Snapshot versions are not selected merely because they arrived later.
+
+Composed target imports must acquire their provider buckets with `lock_source_bucket` first, then all media and companion inventory rows in global original-path order, before resolving source objects, adding candidates, selecting sources or changing legacy projections. Acquiring files before buckets would invert capture's order. Capturing raw text itself creates no target candidate or selection and needs only its bound source inventory row.
 
 ## Revisions and finite bounds
 

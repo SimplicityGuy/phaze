@@ -37,7 +37,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict
 import pytest
 
-from phaze.schemas import agent_s3, agent_tasks
+from phaze.schemas import agent_companion_capture, agent_s3, agent_tasks
 from phaze.schemas.wire_payload import WirePayload
 
 
@@ -51,7 +51,7 @@ _TASKS_DIR = Path(__file__).resolve().parents[3] / "src" / "phaze" / "tasks"
 # by :func:`test_every_wire_payload_dumps_json_native`; a payload declared somewhere else would be
 # caught by :func:`test_every_task_payload_consumer_is_a_wire_payload` (which resolves by name
 # across both) failing to find it.
-_SCHEMA_MODULES = (agent_tasks, agent_s3)
+_SCHEMA_MODULES = (agent_tasks, agent_s3, agent_companion_capture)
 
 
 def _consumer_payload_names() -> set[str]:

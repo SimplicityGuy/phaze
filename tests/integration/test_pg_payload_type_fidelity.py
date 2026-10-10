@@ -56,6 +56,7 @@ import pytest
 import pytest_asyncio
 from saq.queue.postgres import PostgresQueue
 
+from phaze.schemas.agent_companion_capture import CaptureCompanionPayload, CaptureTarget
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.schemas.agent_tasks import (
     CompanionFeaturesTarget,
@@ -97,6 +98,19 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
     two list-of-model payloads carry two items so nested-model serialization is exercised.
     """
     return [
+        (
+            "capture_companion_source",
+            CaptureCompanionPayload(
+                agent_id="itest-agent",
+                target=CaptureTarget(
+                    file_id=uuid.uuid4(),
+                    media_id=uuid.uuid4(),
+                    path="/archive/notes.txt",
+                    expected_sha256="a" * 64,
+                    expected_size=42,
+                ),
+            ),
+        ),
         (
             "process_file",
             ProcessFilePayload(

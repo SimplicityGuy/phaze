@@ -106,6 +106,7 @@ LANE_TASKS: dict[str, frozenset[str]] = {
             "write_file_tags",
             "write_cue_sheet",
             "read_companion_files",
+            "capture_companion_source",
             # phaze-osy6j: the companion-features backfill -- a page of small companion reads, the
             # same I/O-light profile as read_companion_files.
             "extract_companion_features",
