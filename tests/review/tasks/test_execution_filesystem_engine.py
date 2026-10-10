@@ -424,10 +424,8 @@ async def test_cross_fs_copy_publishes_to_a_free_destination(tmp_path: Path) -> 
 # phaze-x4kvv: Darwin's exFAT/MS-DOS refuse os.link with ENOTSUP, a DIFFERENT value from
 # EOPNOTSUPP there (one value on Linux). Measured on real volumes; see test_execution_cross_device.py.
 @pytest.mark.parametrize("link_errno", [errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM])
-async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_errno: int
-) -> None:
-    """FAT/SMB/FUSE mounts cannot link -- the move must still work, via the documented fallback."""
+async def test_cross_fs_copy_refuses_when_the_filesystem_has_no_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_errno: int) -> None:
+    """Without an exclusive publish primitive, retain the source rather than risking replacement."""
     src = tmp_path / "src" / "<track-03>.mp3"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_bytes(b"content")
@@ -438,11 +436,85 @@ async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(
         raise OSError(link_errno, "operation not supported")
 
     monkeypatch.setattr(execmod.os, "link", _no_links)
-    execmod._atomic_cross_fs_copy(src, dst)
+    with pytest.raises(OSError) as exc:
+        execmod._atomic_cross_fs_copy(src, dst)
 
-    assert dst.read_bytes() == b"content"
+    assert exc.value.errno == link_errno
+    assert not dst.exists()
+    assert src.read_bytes() == b"content"
     # phaze-otoqj: unique-per-attempt tmp name -- glob for the family, not one fixed path.
     assert not list((tmp_path / "dst").glob(f"<track-03>.mp3{execmod._COPY_TMP_SUFFIX}*"))
+
+
+@pytest.mark.parametrize("same_fs", [True, False], ids=["same-fs", "cross-fs"])
+@pytest.mark.parametrize("facade", [False, True], ids=["local", "production-facade"])
+@pytest.mark.parametrize("link_errno", sorted({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV, errno.EIO}))
+async def test_link_failure_preserves_a_destination_created_after_the_engine_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_fs: bool, facade: bool, link_errno: int
+) -> None:
+    """phaze-pc0dr: a pre-check cannot protect publication; injected link failure must fail closed.
+
+    Real source, competing destination and staging I/O exercise the full consumer. Only
+    device selection and the syscall race/error are injected; this is not a mount-capability test.
+    """
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"approved source")
+    destination = tmp_path / "out" / "destination.mp3"
+    primitives = LocalFilesystemPrimitives()
+    monkeypatch.setattr(primitives, "same_filesystem", lambda _s, _d: same_fs)
+    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: same_fs)
+
+    def _occupy_then_fail(_src: object, dst: Path, *, follow_symlinks: bool = True) -> None:
+        assert dst == destination
+        assert follow_symlinks is False
+        destination.write_bytes(b"foreign occupant")
+        raise OSError(link_errno, "injected publication failure")
+
+    monkeypatch.setattr(execmod.os, "link", _occupy_then_fail)
+    engine = execmod._filesystem_engine() if facade else LocalExecutionFilesystemEngine(primitives)
+    step = MoveStep()
+    with pytest.raises(OSError) as exc:
+        await engine.move(FilesystemMoveRequest(item=_item(source, "out", destination.name), scan_roots=[str(tmp_path)]), step)
+
+    assert exc.value.errno == link_errno
+    assert step.current == "copy"
+    assert source.read_bytes() == b"approved source"
+    assert destination.read_bytes() == b"foreign occupant"
+    assert sorted(path.name for path in destination.parent.iterdir()) == [destination.name]
+
+    # A retry cannot mistake a foreign occupant for a committed copy or delete the source.
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        await engine.move(FilesystemMoveRequest(item=_item(source, "out", destination.name), scan_roots=[str(tmp_path)]), MoveStep())
+    assert source.read_bytes() == b"approved source"
+    assert destination.read_bytes() == b"foreign occupant"
+
+
+@pytest.mark.parametrize("same_fs", [True, False], ids=["same-fs", "cross-fs"])
+async def test_executor_reports_unsupported_publication_as_copy_failure_without_moving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_fs: bool
+) -> None:
+    """An unsupported claim is a reported failure, never a committed move or a success callback."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: same_fs)
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"approved source")
+    api = _make_api_client_mock()
+
+    def _no_links(_src: object, _dst: object, *, follow_symlinks: bool = True) -> None:
+        raise OSError(errno.ENOTSUP, "injected unsupported hard links")
+
+    monkeypatch.setattr(execmod.os, "link", _no_links)
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(source, "out", "destination.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    assert source.read_bytes() == b"approved source"
+    assert list((tmp_path / "out").iterdir()) == []
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api.patch_execution_log.await_args.args[1].error_message.startswith("copy:")
+    assert api.post_exec_batch_progress.await_args.args[1].terminal_step == "failed"
+    assert api.post_exec_batch_progress.await_args.args[1].failed_at_step == "copy"
 
 
 async def test_same_fs_move_refuses_an_occupant_rather_than_clobbering_it(tmp_path: Path) -> None:

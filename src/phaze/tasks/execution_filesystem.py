@@ -43,9 +43,6 @@ COPY_CHUNK_BYTES = 16 * 1024 * 1024
 COPY_TMP_SUFFIX = ".phaze-tmp"
 COMMIT_MARKER_SUFFIX = ".phaze-committed"
 
-# ENOTSUP and EOPNOTSUPP are one value on Linux but two on Darwin, where a real
-# exFAT or MS-DOS volume refuses os.link with ENOTSUP (phaze-x4kvv).
-_LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
 # Filesystems that cannot fsync a directory fd say so with one of these; any other
 # errno is a real failure and propagates.
 _DIR_FSYNC_UNSUPPORTED_ERRNOS = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
@@ -235,15 +232,13 @@ class LocalFilesystemPrimitives:
         shutil.copystat(src, dst)
 
     def claim_destination_by_link(self, src: Path, dst: Path) -> bool:
-        """Atomically claim ``dst``; return false only when links are unsupported."""
-        try:
-            os.link(src, dst, follow_symlinks=False)
-        except FileExistsError:
-            raise
-        except OSError as exc:
-            if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
-                return False
-            raise
+        """Atomically claim ``dst`` or fail, including when hard links are unsupported.
+
+        A prior exists check cannot authorize an overwrite-capable rename: a
+        competing entry can arrive before publication. Keep the source intact
+        when this filesystem cannot provide the exclusive claim (phaze-pc0dr).
+        """
+        os.link(src, dst, follow_symlinks=False)
         return True
 
     def atomic_cross_fs_copy(self, src: Path, dst: Path) -> None:
@@ -251,19 +246,14 @@ class LocalFilesystemPrimitives:
         tmp = self.unique_tmp_path(dst)
         try:
             self.streamed_copy(src, tmp)
-            if self.claim_destination_by_link(tmp, dst):
-                tmp.unlink()
-            else:
-                tmp.replace(dst)
+            self.claim_destination_by_link(tmp, dst)
         finally:
             tmp.unlink(missing_ok=True)
 
     def atomic_same_fs_move(self, src: Path, dst: Path) -> None:
         """Move within a filesystem through an atomic no-clobber claim."""
-        if self.claim_destination_by_link(src, dst):
-            src.unlink()
-        else:
-            src.replace(dst)
+        self.claim_destination_by_link(src, dst)
+        src.unlink()
 
     @property
     def hash_file_for_offload(self) -> Callable[[Path], str]:
