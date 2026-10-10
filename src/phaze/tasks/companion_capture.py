@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import json
 import sys
 from typing import TYPE_CHECKING, Any
+import uuid
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_companion_capture import CaptureCompanionPayload, CaptureReport
@@ -67,5 +68,5 @@ async def capture_companion_source(ctx: dict[str, Any], **kwargs: Any) -> dict[s
     roots = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
     read = await capture_read(payload, roots)
     api: PhazeAgentClient = ctx["api_client"]
-    response = await api.post_companion_capture(CaptureReport(target=payload.target, budget=payload.budget, read=read))
+    response = await api.post_companion_capture(CaptureReport(attempt_id=uuid.uuid4(), target=payload.target, budget=payload.budget, read=read))
     return {"observation_id": str(response.observation_id), "status": read.status.value, "freshness": response.freshness}

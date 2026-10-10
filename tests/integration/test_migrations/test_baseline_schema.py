@@ -80,6 +80,9 @@ _EXPECTED_TABLES = frozenset(
         "provider_recording_candidates",
         "provider_recording_selections",
         "provider_selection_events",
+        "provider_acquisition_attempts",
+        "companion_import_runs",
+        "companion_import_items",
         "agents",
         "analysis",
         "analysis_window",
@@ -361,6 +364,7 @@ def test_baseline_is_the_only_migration() -> None:
         "084_companion_ambiguous_at.py",
         "085_provider_source_observations.py",
         "086_local_source_decisions.py",
+        "087_companion_import_progress.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -389,10 +393,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (086: local source decisions)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (087: companion import progress)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "086"
+    assert version == "087"
 
 
 @pytest.mark.asyncio
@@ -718,7 +722,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "086"
+        assert version == "087"
     finally:
         if engine is not None:
             await engine.dispose()

@@ -25,6 +25,7 @@ class ProviderSourceObject(Base):
 
     __table_args__ = (
         Index("ix_provider_objects_bucket", "provider_id", "native_digest"),
+        Index("ix_provider_objects_source_file_id", "source_file_id"),
         CheckConstraint("octet_length(native_id) BETWEEN 1 AND 16384", name="provider_native_bound"),
         CheckConstraint("channel IS NULL OR channel IN ('companion', 'embedded')", name="provider_channel"),
     )

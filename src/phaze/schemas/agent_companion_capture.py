@@ -38,6 +38,7 @@ class CaptureCompanionPayload(WirePayload):
 class CaptureReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    attempt_id: uuid.UUID | None = None
     target: CaptureTarget
     budget: CaptureBudget = CaptureBudget()
     read: SourceRead

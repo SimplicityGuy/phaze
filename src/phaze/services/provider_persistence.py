@@ -97,21 +97,22 @@ async def resolve_source(
         bound = await session.scalar(select(FileRecord.id).where(FileRecord.id == source_file_id).with_for_update())
         if bound is None:
             raise ValueError("Local source inventory no longer exists")
-    rows = (
-        await session.scalars(
-            select(ProviderSourceObject)
-            .where(
-                ProviderSourceObject.provider_id == identity.provider_id,
-                ProviderSourceObject.native_digest == digest,
-            )
-            .with_for_update()
+    after: uuid.UUID | None = None
+    while True:
+        query = select(ProviderSourceObject).where(
+            ProviderSourceObject.provider_id == identity.provider_id,
+            ProviderSourceObject.native_digest == digest,
         )
-    ).all()
-    for row in rows:
+        if after is not None:
+            query = query.where(ProviderSourceObject.id > after)
+        row = await session.scalar(query.order_by(ProviderSourceObject.id).limit(1).with_for_update())
+        if row is None:
+            break
         if row.native_id.encode("utf-8") == identity.native_id.encode("utf-8"):
             if row.original_file_id != source_file_id or row.channel != channel:
                 raise ValueError("Source identity cannot be rebound to another file or channel")
             return row
+        after = row.id
     row = ProviderSourceObject(
         provider_id=identity.provider_id,
         native_id=identity.native_id,
@@ -156,36 +157,62 @@ async def _store(
         parent = await session.get(ProviderSourceObservation, parent_id)
         if parent is None or parent.object_id != source.id:
             raise ValueError("Parent observation must belong to this source")
-    rows = (
-        await session.scalars(
-            select(ProviderSourceObservation)
-            .where(
-                ProviderSourceObservation.object_id == source.id,
-            )
-            .order_by(ProviderSourceObservation.retrieved_at, ProviderSourceObservation.id)
+    digest = _digest(serialized)
+    after: uuid.UUID | None = None
+    # A digest is a nonunique prefilter, never identity/equality authority. Load one
+    # bounded payload at a time even when a test or adversary collides every digest.
+    while True:
+        query = select(ProviderSourceObservation).where(
+            ProviderSourceObservation.object_id == source.id,
+            ProviderSourceObservation.parser_version == parser_version,
+            ProviderSourceObservation.revision.is_not_distinct_from(revision),
+            ProviderSourceObservation.revision_scope == revision_scope,
+            ProviderSourceObservation.status == status,
+            ProviderSourceObservation.content_digest == digest,
         )
-    ).all()
-    conflict_with: uuid.UUID | None = None
-    for row in rows:
-        same_revision = row.revision == revision and row.revision_scope == revision_scope
-        if (
-            snapshot
-            and same_revision
-            and revision is not None
-            and revision_scope == "full"
-            and "tracks" in row.payload
-            and row.conflict_with_id is None
-        ):
-            if row.decoded_text != decoded_text:
-                conflict_with = row.id
-            elif row.parser_version != parser_version and parent_id is None:
-                parent_id = row.id
-        if row.parser_version != parser_version or not same_revision or row.status != status:
-            continue
+        if after is not None:
+            query = query.where(ProviderSourceObservation.id > after)
+        row = await session.scalar(query.order_by(ProviderSourceObservation.id).limit(1))
+        if row is None:
+            break
         if row.payload == payload:
             return StoredObservation(source, row, True, row.conflict_with_id is not None)
-        if snapshot and revision is not None and revision_scope == "full" and "tracks" in row.payload and row.conflict_with_id is None:
-            conflict_with = row.id
+        after = row.id
+    conflict_with: uuid.UUID | None = None
+    if snapshot and revision is not None and revision_scope == "full":
+        after_time: datetime | None = None
+        after_id: uuid.UUID | None = None
+        while True:
+            conflict_query = select(
+                ProviderSourceObservation.id,
+                ProviderSourceObservation.retrieved_at,
+                ProviderSourceObservation.parser_version,
+                ProviderSourceObservation.status,
+                ProviderSourceObservation.decoded_text,
+            ).where(
+                ProviderSourceObservation.object_id == source.id,
+                ProviderSourceObservation.revision == revision,
+                ProviderSourceObservation.revision_scope == revision_scope,
+                ProviderSourceObservation.conflict_with_id.is_(None),
+                ProviderSourceObservation.payload.op("?")("tracks"),
+            )
+            if after_time is not None:
+                conflict_query = conflict_query.where(
+                    (ProviderSourceObservation.retrieved_at > after_time)
+                    | ((ProviderSourceObservation.retrieved_at == after_time) & (ProviderSourceObservation.id > after_id))
+                )
+            conflict_row = (
+                await session.execute(conflict_query.order_by(ProviderSourceObservation.retrieved_at, ProviderSourceObservation.id).limit(1))
+            ).first()
+            if conflict_row is None:
+                break
+            if conflict_row.decoded_text != decoded_text or (conflict_row.parser_version == parser_version and conflict_row.status == status):
+                # Exact reuse was already exhaustively checked above. A same-parser
+                # same-status row here therefore has distinct complete normalized data.
+                conflict_with = conflict_row.id
+            elif conflict_row.parser_version != parser_version and parent_id is None:
+                parent_id = conflict_row.id
+            after_time, after_id = conflict_row.retrieved_at, conflict_row.id
     observation = ProviderSourceObservation(
         object_id=source.id,
         status=status,
@@ -193,7 +220,7 @@ async def _store(
         revision=revision,
         revision_scope=revision_scope,
         parser_version=parser_version,
-        content_digest=_digest(serialized),
+        content_digest=digest,
         payload=payload,
         decoded_text=decoded_text,
         encoding=encoding,
@@ -476,3 +503,22 @@ async def backfill_legacy_identities(session: AsyncSession, *, batch_size: int =
             projection.provider_object_id = source.id
     await session.flush()
     return len(rows)
+
+
+async def find_source_object_id(session: AsyncSession, identity: SourceIdentity) -> uuid.UUID | None:
+    """Read-only indexed digest bucket, full UTF-8 equality and one bounded key per page."""
+    _bound(identity.native_id, MAX_NATIVE_BYTES, "native identity")
+    digest = _digest(identity.provider_id.encode() + b"\0" + identity.native_id.encode("utf-8"))
+    after: uuid.UUID | None = None
+    while True:
+        query = select(ProviderSourceObject.id, ProviderSourceObject.native_id).where(
+            ProviderSourceObject.provider_id == identity.provider_id, ProviderSourceObject.native_digest == digest
+        )
+        if after is not None:
+            query = query.where(ProviderSourceObject.id > after)
+        row = (await session.execute(query.order_by(ProviderSourceObject.id).limit(1))).first()
+        if row is None:
+            return None
+        if row.native_id.encode("utf-8") == identity.native_id.encode("utf-8"):
+            return row[0]
+        after = row[0]

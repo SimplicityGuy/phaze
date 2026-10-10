@@ -14,6 +14,7 @@ import stat
 import sys
 from typing import Any
 
+from phaze.constants import is_quarantined
 from phaze.schemas.agent_companion_capture import CaptureBudget, CaptureReport, CaptureTarget
 from phaze.services.companion_features import detect_encoding
 from phaze.services.containment import resolve_contained_twin
@@ -47,8 +48,12 @@ def _failure(target: CaptureTarget, code: str, status: str = "unavailable") -> S
 
 def read_capture(target: CaptureTarget, budget: CaptureBudget, scan_roots: list[str]) -> SourceRead:
     """Read a single pinned regular file once. Capped input never scans the remainder for a digest."""
+    if is_quarantined(target.path):
+        return _failure(target, "quarantined")
     try:
         path, _root = resolve_contained_twin(target.path, scan_roots)
+        if is_quarantined(str(path)):
+            return _failure(target, "quarantined")
         fd = _open_regular(path)
     except ValueError:
         return _failure(target, "refused")
