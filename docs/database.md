@@ -28,6 +28,11 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `file_companions`     | Many-to-many: companion files to media files                          |
 | `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
 | `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
+| `provider_source_objects` | Opaque provider/native identities and optional current source-file binding; source history survives file deletion |
+| `provider_source_observations` | Immutable revisioned decoded text, parsed facts/tracks, read failures and provenance |
+| `provider_recording_candidates` | Pending or accepted source observations associated with each recording |
+| `provider_recording_selections` | Explicit current choices for tracklists and release metadata |
+| `provider_selection_events` | Append-only reviewed choices with actor, target and observation |
 | `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired (phaze-7muoo) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
@@ -257,10 +262,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-084)
+### Post-baseline chain (040-085)
 
-`alembic/versions/` holds **46** files: the `039` baseline plus a linear chain to the current
-head, **`084`**.
+`alembic/versions/` holds **47** files: the `039` baseline plus a linear chain to the current
+head, **`085`**.
 
 | Rev | Change |
 |-----|--------|
@@ -308,7 +313,8 @@ head, **`084`**.
 | `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) |
 | `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) |
 | `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill (phaze-5rfev) |
-| `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) — **head** |
+| `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) |
+| `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

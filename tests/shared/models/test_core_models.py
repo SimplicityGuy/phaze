@@ -8,6 +8,11 @@ def test_all_tables_defined() -> None:
     """All expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected = {
+        "provider_source_objects",
+        "provider_source_observations",
+        "provider_recording_candidates",
+        "provider_recording_selections",
+        "provider_selection_events",
         "agents",
         "files",
         "metadata",
