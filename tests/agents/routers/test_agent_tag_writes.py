@@ -40,13 +40,13 @@ def _make_client(session: AsyncSession, token: str | None = None) -> AsyncClient
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers)
 
 
-async def _seed_queued_log(session: AsyncSession, *, source: str = "proposal") -> TagWriteLog:
+async def _seed_queued_log(session: AsyncSession, *, source: str = "proposal", agent_id: str = "test-fileserver") -> TagWriteLog:
     """Seed the applied file + the ``queued`` audit row the control plane creates at dispatch."""
     file_id = uuid.uuid4()
     session.add(
         FileRecord(
             id=file_id,
-            agent_id="test-fileserver",
+            agent_id=agent_id,
             sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             original_path=f"/data/music/{file_id}.mp3",
             original_filename="<track-01>.mp3",
@@ -83,7 +83,7 @@ def _body(**overrides: Any) -> dict[str, Any]:
 async def test_completed_callback_moves_the_row_out_of_queued(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """The happy path: ``queued`` -> ``completed``, with the agent-captured before-tags snapshot."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
@@ -102,7 +102,7 @@ async def test_completed_callback_moves_the_row_out_of_queued(session: AsyncSess
 async def test_discrepancy_and_error_detail_are_persisted(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """A non-clean outcome carries its per-field detail through to the audit row."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(
@@ -125,7 +125,7 @@ async def test_nul_in_error_message_is_sanitized_before_persist(session: AsyncSe
     callback -- leaving the audit row ``queued`` and the file silently out of every terminal count.
     """
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(
@@ -148,7 +148,7 @@ async def test_nul_in_before_tags_value_is_rejected_422(session: AsyncSession, s
     silently drop the poisoned key/value: that would make the persisted snapshot disagree with what
     the agent actually read off disk, corrupting the undo anchor."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(
@@ -165,7 +165,7 @@ async def test_nul_in_before_tags_value_is_rejected_422(session: AsyncSession, s
 async def test_nul_in_discrepancies_key_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """Same hazard, nested one level deeper: a NUL in a `discrepancies` inner dict KEY."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(
@@ -191,7 +191,7 @@ async def test_replay_is_an_idempotent_no_op(session: AsyncSession, seed_test_ag
     retries on a permanent error.
     """
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
@@ -215,7 +215,7 @@ async def test_replay_is_an_idempotent_no_op(session: AsyncSession, seed_test_ag
 async def test_queued_status_is_rejected(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """``queued`` is the state this endpoint EXISTS to leave -- accepting it strands the row silently."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body(status=TagWriteStatus.QUEUED.value))
@@ -252,7 +252,7 @@ async def test_unauthenticated_callback_is_refused(session: AsyncSession) -> Non
 async def test_unknown_body_field_is_rejected(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """Phase 25 D-16: agent-supplied bodies are validated as strictly as any other request body."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body(unexpected="x"))
@@ -412,7 +412,7 @@ def _snapshot_body(**overrides: Any) -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_before_snapshot_records_on_a_queued_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
@@ -429,7 +429,7 @@ async def test_before_snapshot_nul_in_before_tags_is_rejected_422(session: Async
     """phaze-hvve5 (site 2): same hazard, same fix, on the SEPARATE before-snapshot endpoint --
     `TagWriteBeforeSnapshotPayload.before_tags` is the same unsanitized JSONB sink."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         resp = await client.patch(
@@ -451,7 +451,7 @@ async def test_before_snapshot_first_write_wins_against_a_second_snapshot_report
     post-write snapshot. Only the first must persist.
     """
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
@@ -476,7 +476,7 @@ async def test_result_callback_keeps_the_before_snapshot_already_recorded(sessio
     value). The genuine, pre-write snapshot reported earlier must win.
     """
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
@@ -495,7 +495,7 @@ async def test_result_callback_keeps_the_before_snapshot_already_recorded(sessio
 @pytest.mark.asyncio
 async def test_before_snapshot_no_op_once_the_row_is_terminal(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
@@ -535,7 +535,7 @@ async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession)
 @pytest.mark.asyncio
 async def test_result_callback_clears_its_scheduling_ledger_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
     await upsert_ledger_entry(
         session,
         key=f"write_file_tags:{log.id}",
@@ -556,7 +556,7 @@ async def test_result_callback_clears_its_scheduling_ledger_row(session: AsyncSe
 async def test_duplicate_callback_does_not_error_when_ledger_row_is_already_gone(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """A replay (the row already left ``queued``) short-circuits before the ledger clear -- no row, no error."""
     _agent, token = seed_test_agent
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id=_agent.id)
 
     async with _make_client(session, token) as client:
         first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
@@ -565,3 +565,118 @@ async def test_duplicate_callback_does_not_error_when_ledger_row_is_already_gone
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.json()["applied"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["", "/before-snapshot"])
+@pytest.mark.parametrize("log_status", [TagWriteStatus.QUEUED, TagWriteStatus.COMPLETED])
+@pytest.mark.parametrize("missing", [False, True])
+async def test_foreign_callback_cannot_change_audit_hash_or_ledger(
+    session: AsyncSession, seed_test_agent, endpoint: str, log_status: TagWriteStatus, missing: bool
+) -> None:  # type: ignore[no-untyped-def]
+    """Valid credentials and a known foreign UUID do not authorize either callback."""
+    from datetime import UTC, datetime
+
+    from tests._saq_jobs_seed import create_saq_jobs
+
+    _agent, token = seed_test_agent
+    await create_saq_jobs(session)
+    log = await _seed_queued_log(session)
+    file_record = await session.get(FileRecord, log.file_id)
+    assert file_record is not None
+    file_record.missing_at = datetime.now(UTC) if missing else None
+    log.status = log_status.value
+    log.before_tags = {} if log_status == TagWriteStatus.QUEUED else {"artist": "Original"}
+    log.discrepancies = {"artist": {"expected": "Old", "actual": "Original"}}
+    log.error_message = "original detail"
+    key = f"write_file_tags:{log.id}"
+    await upsert_ledger_entry(session, key=key, function="write_file_tags", kwargs={"log_id": str(log.id)})
+    await session.commit()
+    await session.refresh(log)
+    await session.refresh(file_record)
+    original = (
+        log.status,
+        dict(log.before_tags),
+        dict(log.after_tags),
+        log.discrepancies,
+        log.error_message,
+        log.updated_at,
+        file_record.sha256_hash,
+        file_record.updated_at,
+        file_record.missing_at,
+    )
+    ledger = await session.get(SchedulingLedger, key)
+    assert ledger is not None
+    original_ledger = (ledger.function, dict(ledger.payload), ledger.enqueued_at)
+    payload = (
+        {"before_tags": {"artist": "Forged"}}
+        if endpoint
+        else _body(before_tags={"artist": "Forged"}, sha256_hash="f" * 64, error_message="forged detail")
+    )
+    async with _make_client(session, token) as client:
+        response = await client.patch(f"/api/internal/agent/tag-writes/{log.id}{endpoint}", json=payload)
+    await session.refresh(log)
+    await session.refresh(file_record)
+    ledger = await session.get(SchedulingLedger, key, populate_existing=True)
+    actual = (
+        log.status,
+        dict(log.before_tags),
+        dict(log.after_tags),
+        log.discrepancies,
+        log.error_message,
+        log.updated_at,
+        file_record.sha256_hash,
+        file_record.updated_at,
+        file_record.missing_at,
+    )
+    assert response.status_code == 403, response.text
+    assert actual == original
+    assert ledger is not None
+    assert (ledger.function, ledger.payload, ledger.enqueued_at) == original_ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["", "/before-snapshot"])
+async def test_owner_callback_accepts_retained_missing_inventory(session: AsyncSession, seed_test_agent, endpoint: str) -> None:  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime
+
+    from tests._saq_jobs_seed import create_saq_jobs
+
+    agent, token = seed_test_agent
+    await create_saq_jobs(session)
+    log = await _seed_queued_log(session, agent_id=agent.id)
+    file_record = await session.get(FileRecord, log.file_id)
+    assert file_record is not None
+    file_record.missing_at = datetime.now(UTC)
+    await session.commit()
+    async with _make_client(session, token) as client:
+        response = await client.patch(f"/api/internal/agent/tag-writes/{log.id}{endpoint}", json=_snapshot_body() if endpoint else _body())
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["", "/before-snapshot"])
+@pytest.mark.parametrize("log_status", [TagWriteStatus.QUEUED, TagWriteStatus.COMPLETED])
+async def test_missing_file_lookup_fails_closed_before_callback_state_guard(
+    session: AsyncSession, seed_test_agent, monkeypatch, endpoint: str, log_status: TagWriteStatus
+) -> None:  # type: ignore[no-untyped-def]
+    """Inject a missing lookup: the restrictive FK prevents normal orphan tag rows."""
+    agent, token = seed_test_agent
+    log = await _seed_queued_log(session, agent_id=agent.id)
+    log.status = log_status.value
+    await session.commit()
+    original_get = session.get
+
+    async def missing_file(entity, ident, **kwargs):  # type: ignore[no-untyped-def]
+        if entity is FileRecord:
+            return None
+        return await original_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", missing_file)
+    async with _make_client(session, token) as client:
+        response = await client.patch(f"/api/internal/agent/tag-writes/{log.id}{endpoint}", json=_snapshot_body() if endpoint else _body())
+    assert response.status_code == 404
+    await session.refresh(log)
+    assert log.status == log_status
+    assert log.before_tags == {}
