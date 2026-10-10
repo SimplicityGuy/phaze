@@ -14,6 +14,7 @@ report (``report_tag_write_before_snapshot``, asserted in ``TestPreWriteSnapshot
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import TYPE_CHECKING, Any
 import unicodedata
@@ -24,7 +25,7 @@ from mutagen.mp3 import MP3
 import pytest
 
 from phaze.enums.tag_write import TagWriteStatus
-from phaze.tasks.tag_write import write_file_tags
+from phaze.tasks.tag_write import _snapshot_failure_hash, write_file_tags
 from tests._media_path_fakes import byte_exact_exists, substituted_twin_lookup
 
 
@@ -53,6 +54,7 @@ def mp3_file(tmp_path: Path) -> Path:
 def _ctx() -> tuple[dict[str, Any], AsyncMock]:
     """SAQ ctx carrying a mock PhazeAgentClient, plus the client for assertions."""
     api = AsyncMock()
+    api.report_tag_write_before_snapshot.return_value = MagicMock(status=TagWriteStatus.QUEUED)
     return {"api_client": api}, api
 
 
@@ -271,7 +273,7 @@ class TestWriteFileTagsTask:
             _patch_scan_roots([str(mp3_file.parent)]),
             patch("phaze.tasks.tag_write.asyncio.to_thread", new_callable=AsyncMock) as to_thread,
         ):
-            to_thread.side_effect = [{}, (TagWriteStatus.COMPLETED, None, None, {}, "a" * 64)]
+            to_thread.side_effect = [{"artist": None}, (TagWriteStatus.COMPLETED, None, None, {}, "a" * 64)]
             await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "Test"}))
 
         assert to_thread.await_count == 2
@@ -331,6 +333,51 @@ class TestPreWriteSnapshot:
     """phaze-anrw4: the pre-write snapshot is reported in its OWN call, BEFORE the mutating write."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [TagWriteStatus.COMPLETED, TagWriteStatus.FAILED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED])
+    async def test_terminal_snapshot_ack_does_not_mutate_disk(self, mp3_file: Path, status: TagWriteStatus) -> None:
+        ctx, api = _ctx()
+        api.report_tag_write_before_snapshot.return_value = MagicMock(status=status, applied=False)
+        original = mp3_file.read_bytes()
+        with _patch_scan_roots([str(mp3_file.parent)]):
+            result = await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
+        assert result["status"] == status
+        assert mp3_file.read_bytes() == original
+        api.patch_tag_write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_snapshot_ack_fails_closed(self, mp3_file: Path) -> None:
+        ctx, api = _ctx()
+        api.report_tag_write_before_snapshot.return_value = MagicMock(status=None, applied=True)
+        original = mp3_file.read_bytes()
+        with _patch_scan_roots([str(mp3_file.parent)]), pytest.raises(RuntimeError, match="lacks status"):
+            await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
+        assert mp3_file.read_bytes() == original
+        api.patch_tag_write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_extraction_failure_never_saves(self, mp3_file: Path) -> None:
+        ctx, api = _ctx()
+        original = mp3_file.read_bytes()
+        with (
+            _patch_scan_roots([str(mp3_file.parent)]),
+            patch("phaze.tasks.tag_write._extract_before_tags", side_effect=ValueError("unreadable snapshot")),
+        ):
+            result = await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
+        assert result["status"] == TagWriteStatus.FAILED
+        assert mp3_file.read_bytes() == original
+        api.report_tag_write_before_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_snapshot_sentinel_cannot_authorize_a_write(self, mp3_file: Path) -> None:
+        ctx, api = _ctx()
+        original = mp3_file.read_bytes()
+        with _patch_scan_roots([str(mp3_file.parent)]), patch("phaze.tasks.tag_write._extract_before_tags", return_value={}):
+            result = await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
+        assert result["status"] == TagWriteStatus.FAILED
+        assert mp3_file.read_bytes() == original
+        api.report_tag_write_before_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_before_snapshot_is_reported_before_the_write_lands(self, mp3_file: Path) -> None:
         ctx, api = _ctx()
         log_id = uuid.uuid4()
@@ -345,19 +392,17 @@ class TestPreWriteSnapshot:
         assert snapshot_payload.before_tags["artist"] is None  # captured before the write
 
     @pytest.mark.asyncio
-    async def test_snapshot_report_failure_does_not_abort_the_write(self, mp3_file: Path) -> None:
-        """Best-effort: the terminal callback's own ``before_tags`` is the single-attempt fallback."""
+    async def test_snapshot_report_failure_prevents_the_write(self, mp3_file: Path) -> None:
+        """An unavailable undo anchor must stop before irreversible bytes change."""
         ctx, api = _ctx()
         api.report_tag_write_before_snapshot.side_effect = RuntimeError("hub unreachable")
+        original = mp3_file.read_bytes()
 
-        with _patch_scan_roots([str(mp3_file.parent)]):
-            result = await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
+        with _patch_scan_roots([str(mp3_file.parent)]), pytest.raises(RuntimeError, match="hub unreachable"):
+            await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "New Artist"}))
 
-        assert result["status"] == TagWriteStatus.COMPLETED
-        assert MP3(str(mp3_file)).tags["TPE1"].text == ["New Artist"]
-        api.patch_tag_write.assert_awaited_once()
-        payload = api.patch_tag_write.await_args.args[1]
-        assert payload.before_tags["artist"] is None
+        assert mp3_file.read_bytes() == original
+        api.patch_tag_write.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_snapshot_reported_before_write_and_verify(self, mp3_file: Path) -> None:
@@ -365,8 +410,9 @@ class TestPreWriteSnapshot:
         ctx, api = _ctx()
         calls: list[str] = []
 
-        async def _record_snapshot(*_args: Any, **_kwargs: Any) -> None:
+        async def _record_snapshot(*_args: Any, **_kwargs: Any) -> Any:
             calls.append("snapshot")
+            return MagicMock(status=TagWriteStatus.QUEUED)
 
         api.report_tag_write_before_snapshot.side_effect = _record_snapshot
 
@@ -378,3 +424,56 @@ class TestPreWriteSnapshot:
 
         assert calls[0] == "snapshot"
         assert calls[1] == "write"
+
+
+class TestSnapshotFailureHash:
+    def test_contained_regular_file_hash_is_observed(self, mp3_file: Path) -> None:
+        from phaze.services.hashing import compute_sha256
+
+        assert _snapshot_failure_hash(str(mp3_file), [str(mp3_file.parent)]) == compute_sha256(mp3_file)
+
+    def test_fifo_and_outside_twin_are_refused(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        fifo = root / "fifo"
+        os.mkfifo(fifo)
+        assert _snapshot_failure_hash(str(fifo), [str(root)]) is None
+        outside = tmp_path / "outside.mp3"
+        outside.write_bytes(b"outside")
+        (root / "twin.mp3").symlink_to(outside)
+        assert _snapshot_failure_hash(str(root / "twin.mp3"), [str(root)]) is None
+
+    def test_leaf_symlink_swap_after_containment_is_refused(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        target = root / "track.mp3"
+        target.write_bytes(b"inside")
+        outside = tmp_path / "outside.mp3"
+        outside.write_bytes(b"outside")
+        real_open = os.open
+
+        def swap_then_open(path, flags):
+            target.unlink()
+            target.symlink_to(outside)
+            return real_open(path, flags)
+
+        with patch("phaze.tasks.tag_write.os.open", side_effect=swap_then_open):
+            assert _snapshot_failure_hash(str(target), [str(root)]) is None
+
+    @pytest.mark.parametrize("changed", [b"", b"original plus growth"])
+    def test_size_changes_during_observation_are_not_reported(self, tmp_path: Path, changed: bytes) -> None:
+        target = tmp_path / "track.mp3"
+        target.write_bytes(b"original")
+        real_fstat = os.fstat
+        calls = 0
+
+        def change_after_first_stat(fd):
+            nonlocal calls
+            result = real_fstat(fd)
+            calls += 1
+            if calls == 1:
+                target.write_bytes(changed)
+            return result
+
+        with patch("phaze.tasks.tag_write.os.fstat", side_effect=change_after_first_stat):
+            assert _snapshot_failure_hash(str(target), [str(tmp_path)]) is None

@@ -113,6 +113,9 @@ class TagWriteBeforeSnapshotPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     before_tags: dict[str, str | int | list[str] | None] = Field(default_factory=dict)
+    # Opt in: old agents forbid extra response keys. Updated agents require the locked row's
+    # status to distinguish an acknowledged existing snapshot from an already-terminal job.
+    include_status: bool = False
 
     # Same sink, same hazard as `TagWriteResultPayload.before_tags` -- see `_reject_pg_unsafe_json`.
     _reject_pg_unsafe_before_tags = field_validator("before_tags", mode="after")(_reject_pg_unsafe_json)
@@ -128,3 +131,4 @@ class TagWriteBeforeSnapshotResponse(BaseModel):
     # False when a snapshot was already recorded for this row (first-write-wins) or the row has
     # already left ``queued`` -- never an error, always a safe no-op.
     applied: bool
+    status: TagWriteStatus | None = None

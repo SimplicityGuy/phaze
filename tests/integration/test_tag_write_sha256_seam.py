@@ -63,6 +63,7 @@ from phaze.job_runner import _verify_integrity_step
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_tag_writes import router as agent_tag_writes_router
+from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotResponse
 from phaze.services.hashing import compute_sha256
 from phaze.tasks.execution import _verify_hash_or_raise
 from phaze.tasks.tag_write import write_file_tags
@@ -168,6 +169,13 @@ async def _run_real_tag_write(
 
         api = AsyncMock()
         api.patch_tag_write.side_effect = _forward
+
+        async def _snapshot(log_id: uuid.UUID, payload: Any) -> TagWriteBeforeSnapshotResponse:
+            response = await client.patch(f"/api/internal/agent/tag-writes/{log_id}/before-snapshot", json=payload.model_dump(mode="json"))
+            assert response.status_code == 200, response.text
+            return TagWriteBeforeSnapshotResponse.model_validate(response.json())
+
+        api.report_tag_write_before_snapshot.side_effect = _snapshot
         with patch("phaze.tasks.tag_write.get_settings", return_value=_agent_settings([str(path.parent)])):
             await write_file_tags(
                 {"api_client": api},

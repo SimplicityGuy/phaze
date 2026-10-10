@@ -419,9 +419,26 @@ async def test_before_snapshot_records_on_a_queued_row(session: AsyncSession, se
 
     assert resp.status_code == 200
     assert resp.json()["applied"] is True
+    assert "status" not in resp.json(), "legacy strict response consumers must see the original shape"
     await session.refresh(log)
     assert log.before_tags == {"artist": "Original Artist"}
     assert log.status == TagWriteStatus.QUEUED, "the snapshot report must not advance the row's status"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_status_opt_in_distinguishes_existing_original_from_terminal(session: AsyncSession, seed_test_agent) -> None:
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+    async with _make_client(session, token) as client:
+        first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body(include_status=True))
+        second = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body(include_status=True))
+        assert first.json()["status"] == second.json()["status"] == "queued"
+        assert first.json()["applied"] is True
+        assert second.json()["applied"] is False
+        await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+        terminal = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body(include_status=True))
+        assert terminal.json()["status"] == "completed"
+        assert terminal.json()["applied"] is False
 
 
 @pytest.mark.asyncio
