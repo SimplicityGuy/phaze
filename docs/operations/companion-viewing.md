@@ -1,6 +1,6 @@
 # Viewing companion sources
 
-Date: 2026-10-10. Beads: phaze-517k9, phaze-yjuzv. Epic: phaze-kf7jr.
+Date: 2026-10-10. Beads: phaze-517k9, phaze-yjuzv, phaze-89019. Epic: phaze-kf7jr.
 
 Open a music or video file's detail page, or its Details drawer. Both presentations show local
 tracklist previews and attributed release fields beside extracted tags. Track parsing and release
@@ -41,6 +41,15 @@ errors. Native HTMX forms negotiate HTML status/error fragments at those same ro
 routes likewise return typed JSON to API clients and escaped HTML fragments to the served controls.
 Synthetic PostgreSQL and compiled-CSS browser fixtures verify music/video parity, keyboard use,
 narrow layouts, source paging, raw-parent text, explicit CUE mapping and stale review errors.
+
+Companion import, selection, refresh, selected Discogs decisions and reviewed CUE generation
+require same-origin browser evidence for form submissions. Cross-origin, sibling-site, opaque,
+malformed and missing evidence returns 403 before mutation or enqueueing. Native forms and HTMX
+both use this check; a selection token establishes source freshness, not browser origin.
+Nonbrowser local-source JSON commands retain their explicit `application/json` contract, and
+owning-agent callbacks retain bearer authentication. Form automation must send the actual request
+origin. A reverse proxy must preserve the public Host and use trusted ASGI proxy handling for the
+effective scheme; client-supplied forwarded headers alone do not grant permission.
 
 ## From local inputs to reviewed changes
 

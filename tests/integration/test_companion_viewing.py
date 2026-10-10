@@ -26,7 +26,7 @@ from tests.integration.test_local_source_import import CUE, decision, inventory
 
 
 TEXT = 'EVENT: Example Festival\nDATE: 2024-06-02\nVENUE: Example Hall\nLABEL: Example Records\nQUALITY: 320 kbps\n01. Artist - Opening\n02. Other - Finale\n<script>alert("synthetic")</script>\n'
-HX = {"HX-Request": "true"}
+HX = {"HX-Request": "true", "Origin": "http://test"}
 
 
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])

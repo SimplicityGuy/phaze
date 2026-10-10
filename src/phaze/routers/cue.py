@@ -24,6 +24,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.routers.request_guards import require_same_origin_form
 from phaze.schemas.agent_tasks import CueSourceBinding, WriteCueSheetPayload
 from phaze.services import cue_review
 from phaze.services.cue_generator import CueTrackData, generate_cue_content
@@ -127,7 +128,7 @@ async def selected_cue_preview(request: Request, media_id: uuid.UUID, session: A
     return await _selected_preview_response(request, session, media_id)
 
 
-@router.post("/files/{media_id}/generate", response_class=HTMLResponse)
+@router.post("/files/{media_id}/generate", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
 async def generate_selected_cue(
     request: Request,
     media_id: uuid.UUID,

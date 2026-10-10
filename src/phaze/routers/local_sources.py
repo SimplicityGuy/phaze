@@ -16,6 +16,7 @@ import structlog
 
 from phaze.database import get_session
 from phaze.routers.record import templates
+from phaze.routers.request_guards import require_companion_command_origin
 from phaze.schemas.local_source_import import ImportLocalSource, ImportResult, SelectedRecordingSource, SourceDecision, SourceKind
 from phaze.services.companion_view import command_body, fragment, html_requested, request_schema, validation_message
 from phaze.services.local_source_import import decide_local_source, get_selected_recording_source, import_local_source
@@ -32,8 +33,15 @@ def _error(request: Request, error: ValueError | PermissionError) -> HTMLRespons
     return fragment(templates, request, "record/companions/_action.html", message=message, failed=True)
 
 
-@router.post("/import", response_model=ImportResult, openapi_extra=request_schema(ImportLocalSource))
-@router.post("/reimport", response_model=ImportResult, openapi_extra=request_schema(ImportLocalSource))
+@router.post(
+    "/import", response_model=ImportResult, openapi_extra=request_schema(ImportLocalSource), dependencies=[Depends(require_companion_command_origin)]
+)
+@router.post(
+    "/reimport",
+    response_model=ImportResult,
+    openapi_extra=request_schema(ImportLocalSource),
+    dependencies=[Depends(require_companion_command_origin)],
+)
 async def import_source(request: Request, session: Annotated[AsyncSession, Depends(get_session)]) -> ImportResult | HTMLResponse:
     """Both source kinds remain pending until a separate explicit review decision."""
     try:
@@ -59,7 +67,12 @@ async def import_source(request: Request, session: Annotated[AsyncSession, Depen
     return result
 
 
-@router.post("/decision", response_model=SelectedRecordingSource | None, openapi_extra=request_schema(SourceDecision))
+@router.post(
+    "/decision",
+    response_model=SelectedRecordingSource | None,
+    openapi_extra=request_schema(SourceDecision),
+    dependencies=[Depends(require_companion_command_origin)],
+)
 async def decide_source(request: Request, session: Annotated[AsyncSession, Depends(get_session)]) -> SelectedRecordingSource | HTMLResponse | None:
     """Expected revisions/tokens and explicit conflict/CUE mapping are checked by the service."""
     try:

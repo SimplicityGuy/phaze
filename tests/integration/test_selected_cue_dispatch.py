@@ -26,6 +26,7 @@ from tests.integration.test_selected_source_consumers import CUE
 
 
 async def test_real_selected_cue_dispatch_authenticated_worker_and_stale_refusal(client, session, seed_test_agent, tmp_path):
+    client.headers["Origin"] = "http://test"
     media, companion, raw = await inventory(session, CUE, "cue", agent_id=seed_test_agent[0].id)
     audio = tmp_path / "recording.mp3"
     audio.write_bytes(b"synthetic media")

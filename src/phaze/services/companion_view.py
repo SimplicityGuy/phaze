@@ -38,7 +38,7 @@ def fragment(templates: Jinja2Templates, request: Request, name: str, **context:
 
 async def command_body(request: Request, model: type[ImportLocalSource] | type[SourceDecision]) -> BaseModel:
     """JSON clients retain their contract; HTMX uses actual native form serialization."""
-    if "application/json" in request.headers.get("content-type", ""):
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json":
         return model.model_validate(await request.json())
     values: dict[str, Any] = dict(await request.form())
     for key in ("raw_observation_id", "embedded_channel", "expected_selection_token", "expected_revision", "cue_file_ordinal"):

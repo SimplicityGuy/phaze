@@ -8,6 +8,7 @@
         {% if artifact.omitted_track_count %}<p class="mt-2 text-sm text-warn">{{ artifact.omitted_track_count }} tracks lack qualified offsets and are omitted from this generated CUE. Their original timing remains in the source details.</p>{% endif %}
         <pre class="relative mt-3 max-h-80 overflow-auto whitespace-pre rounded bg-gray-50 p-3 text-xs dark:bg-phaze-bg">{{ artifact.content }}</pre>
         {% if applied and supported %}
+            <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -- FastAPI require_same_origin_form rejects hostile/missing origin before enqueueing this reviewed artifact; no Django middleware is used. -->
             <form method="post" action="/cue/files/{{ media_id }}/generate" class="mt-3" hx-post="/cue/files/{{ media_id }}/generate" hx-target="#selected-cue-card-{{ media_id }}" hx-swap="outerHTML">
                 <input type="hidden" name="binding" value="{{ artifact.binding.model_dump_json() }}">
                 <input type="hidden" name="audio_path" value="{{ artifact.file.current_path }}">
