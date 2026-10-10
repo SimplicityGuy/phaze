@@ -20,7 +20,7 @@
 {% import "ui/primitives.html" as ui %}
 {% set _is_metadata = stage == "metadata" %}
 {% if _is_metadata %}
-    {% set columns = ["File", "Format", "Size", "Existing tags"] %}
+    {% set columns = ["File", "Format", "Size"] %}
     {% set empty_heading = "Nothing pending" %}
     {% set empty_body = "Every discovered file already has extracted metadata." %}
     {% set row_id_prefix = "metadata-row" %}
@@ -44,7 +44,6 @@
                 {'text': f.original_filename, 'mono': True, 'title': f.original_path},
                 {'text': f.file_type},
                 {'text': f.file_size | filesizeformat, 'mono': True},
-                {'text': '—'},
             ]) %}
         {% else %}
             {% set _ = ns.rows.append([

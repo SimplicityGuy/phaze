@@ -5,11 +5,26 @@ get_file_stage_buckets and friends -- `services/pipeline/files.py`.
 
 from __future__ import annotations
 
+from phaze.services.pipeline.files import _scan_root
 from tests.shared.services.pipeline._shared import (
     _NullSavepoint,
     pytest,
     uuid,
 )
+
+
+@pytest.mark.parametrize(
+    ("path", "roots", "batch_root", "expected"),
+    [
+        ("/music/live/song.mp3", ["/music", "/music/live/"], None, "/music/live"),
+        ("/music/live/song.mp3", ["/music", "/music/live"], "/music", "/music"),
+        ("/music-other/song.mp3", ["/music"], None, "Unassigned scan root"),
+        ("/old/song.mp3", [], "/old", "/old"),
+        ("/elsewhere/song.mp3", [], "/old", "Unassigned scan root"),
+    ],
+)
+def test_scan_root_matches_segments_and_prefers_nested_roots(path: str, roots: list[str], batch_root: str | None, expected: str) -> None:
+    assert _scan_root(path, roots, batch_root) == expected
 
 
 @pytest.mark.asyncio

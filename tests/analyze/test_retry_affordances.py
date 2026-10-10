@@ -240,10 +240,11 @@ def _render_files_table(*, bucket: str, active_stage: str | None = None, active_
     include resolution match production exactly), mirroring ``tests/shared/test_stage_pill_render.py``.
     """
     from pathlib import Path
-    from types import SimpleNamespace
 
     from fastapi.templating import Jinja2Templates
     from starlette.requests import Request
+
+    from phaze.services.pipeline.files import FilesPage, FilesPageRow
 
     templates_dir = Path(__file__).resolve().parent.parent.parent / "src" / "phaze" / "templates"
     _templates = Jinja2Templates(directory=str(templates_dir))
@@ -269,8 +270,8 @@ def _render_files_table(*, bucket: str, active_stage: str | None = None, active_
         "review": "not_started",
         "apply": "not_started",
     }
-    row = SimpleNamespace(file=file, buckets=buckets)
-    files_page = SimpleNamespace(rows=[row], page=1, page_size=25, has_next=False)
+    row = FilesPageRow(file=file, buckets=buckets)
+    files_page = FilesPage(rows=[row], page=1, page_size=25, has_next=False)
     response = _templates.TemplateResponse(
         request=request,
         name="pipeline/partials/files_table_view.html",

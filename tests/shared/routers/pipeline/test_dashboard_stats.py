@@ -454,8 +454,8 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
     card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
     assert card is not None
     card_html = card.group(0)
-    assert "Finished" in card_html
-    assert "Finished overall" in card_html
+    assert "Kubernetes jobs finished" in card_html
+    assert "completed files across all backends" in card_html
     assert "text-ok" in card_html
     # Healthy progression — alert role + amber stay exclusive to inadmissible_card.
     assert 'role="alert"' not in card_html
@@ -484,7 +484,7 @@ async def test_dashboard_admission_card_finished_is_a_lifetime_total_not_a_live_
     assert "lifetime total" in card_html, "the Finished tile must say it is cumulative, not live"
     # The live-grid caption must not sit above a lone Finished tile implying it shares that clock.
     live_caption_pos = card_html.find("Kueue admission · updates about every 5 min")
-    finished_pos = card_html.find("Finished")
+    finished_pos = card_html.find("Kubernetes jobs finished")
     assert live_caption_pos == -1, "with only Finished non-zero, the live-snapshot caption must not render"
     assert finished_pos != -1
 

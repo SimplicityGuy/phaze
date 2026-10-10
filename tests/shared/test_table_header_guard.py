@@ -48,12 +48,12 @@ def test_templates_are_found() -> None:
 @pytest.mark.parametrize("path", _templates(), ids=lambda p: str(p.relative_to(_TEMPLATES)))
 def test_every_column_header_cell_carries_the_shared_class(path: Path) -> None:
     """A ``<th>`` without ``table-th`` is a fourth header variant waiting to happen. Row headers
-    (``scope="row"``) are body cells that happen to be <th>; they are not column headers and are exempt."""
+    (``scope="row"`` or ``scope="rowgroup"``) describe body data, so they are exempt."""
     offenders = []
     for match in _TAG.finditer(path.read_text()):
         tag = match.group(0)
         if match.group(1) == "th":
-            if 'scope="row"' in tag:
+            if 'scope="row"' in tag or 'scope="rowgroup"' in tag:
                 continue
             if "table-th" not in _classes(tag):
                 offenders.append(tag)

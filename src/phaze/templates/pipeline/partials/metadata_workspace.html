@@ -51,7 +51,8 @@
                 {{ ui.refresh_status('Live queue state', 'Refreshing queue state…') }}
             </div>
             <div class="mt-3 flex flex-wrap gap-2" aria-live="polite">
-                <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataEligible > 0">{{ ui.status_badge('Metadata', 'eligible', 'neutral', '—') }}</span>
+                {% set eligible_badge %}Eligible <span x-text="formatCount($store.pipeline.metadataEligible)">{{ metadata_selection.eligible_count | thousands }}</span>{% endset %}
+                <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataEligible > 0">{{ ui.status_badge('Metadata', eligible_badge, 'neutral', '○', aria_label='Metadata: eligible files') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataQueued > 0">{{ ui.status_badge('Metadata', 'queued', 'attention', '●') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataActive > 0">{{ ui.status_badge('Metadata', 'active', 'accent', '●', true) }}</span>
                 <span x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✕') }}</span>
