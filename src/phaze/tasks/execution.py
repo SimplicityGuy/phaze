@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import stat
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 import uuid
 
 import structlog
@@ -58,6 +58,10 @@ _MOVE_INTENT_PREFIX = "move_intent_hash:"
 
 class ExecCommittedReportError(RuntimeError):
     """A committed move needs report-only replay, never a failed-move report."""
+
+
+class ExecOutcomePersistenceError(RuntimeError):
+    """Write-ahead identity or a terminal failure needs persistence before acknowledgement."""
 
 
 class ExecBatchTerminalReportError(RuntimeError):
@@ -390,7 +394,10 @@ async def _compute_proposed(
             if item.sha256_hash is not None and intent_hash != item.sha256_hash:
                 raise ValueError("sha256 mismatch for move source")
             job_meta[intent_key] = intent_hash
-            await job.update(meta=job_meta)
+            try:
+                await job.update(meta=job_meta)
+            except Exception as exc:
+                raise ExecOutcomePersistenceError("move intent metadata was not acknowledged") from exc
     checked_item = item.model_copy(update={"sha256_hash": intent_hash}) if intent_hash is not None else item
     request = _filesystem.FilesystemMoveRequest(
         item=checked_item,
@@ -450,12 +457,26 @@ async def _execute_one(
         start_logged = False
         logger.warning("execute_approved_batch: could not record start log for %s: %s", item.proposal_id, exc)
 
+    job_meta = dict(getattr(job, "meta", None) or {}) if job is not None else {}
+    failed_step_key = f"failed_step:{item.proposal_id}"
+    failed_error_key = f"failed_error:{item.proposal_id}"
+    if failed_step_key in job_meta:
+        # A later proposal may force the whole batch to retry. A terminal failed
+        # proposal must only replay its reports, even if its transient cause is gone.
+        await _report_failure(
+            report_ctx,
+            cast("FailedAtStep", job_meta[failed_step_key]),
+            job_meta[failed_error_key],
+            start_logged=start_logged,
+        )
+        return False
+
     step = _MoveStep()
     try:
         proposed = await _compute_proposed(item, scan_roots, job, step)
         await _report_success(report_ctx, proposed, start_logged=start_logged, sha_verified=sha_verified)
         return True
-    except (ExecBatchTerminalReportError, ExecCommittedReportError):
+    except (ExecBatchTerminalReportError, ExecCommittedReportError, ExecOutcomePersistenceError):
         raise
     except Exception as exc:
         failed_step: FailedAtStep = _classify_failure_step(step.current, exc)
@@ -467,6 +488,14 @@ async def _execute_one(
             exc,
             exc_info=True,
         )
+        if job is not None:
+            updated_job_meta = dict(getattr(job, "meta", None) or {})
+            updated_job_meta[failed_step_key] = failed_step
+            updated_job_meta[failed_error_key] = formatted_error
+            try:
+                await job.update(meta=updated_job_meta)
+            except Exception as persist_exc:
+                raise ExecOutcomePersistenceError("terminal failure metadata was not acknowledged") from persist_exc
         await _report_failure(report_ctx, failed_step, formatted_error, start_logged=start_logged)
         return False
 

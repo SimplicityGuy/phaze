@@ -63,9 +63,12 @@ class _RouteClient:
         await self._send("POST", f"/api/internal/agent/exec-batches/{batch_id}/progress", payload)
 
 
-@pytest.mark.parametrize("fault", ["callback", "metadata"])
+@pytest.mark.parametrize(
+    ("fault", "first_failure"),
+    [(fault, failure) for fault in ("callback", "metadata", "intent") for failure in ("hash", "transient", "none")]
+    + [("failed_metadata", "transient")],
+)
 @pytest.mark.parametrize("with_hash", [True, False])
-@pytest.mark.parametrize("first_fails", [True, False])
 async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
     session: AsyncSession,
     seed_test_agent: tuple[Agent, str],
@@ -73,10 +76,11 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
     with_hash: bool,
-    first_fails: bool,
+    first_failure: str,
 ) -> None:
     """Two moves, later report lost: reload durable metadata and never recount/remutate."""
     agent, token = seed_test_agent
+    first_fails = first_failure != "none" and fault != "failed_metadata"
     _patch_settings(monkeypatch, [str(tmp_path)])
     files = []
     proposals = []
@@ -107,7 +111,7 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
                 source_path=str(source),
                 proposed_path="",
                 proposed_filename=proposal.proposed_filename,
-                sha256_hash="0" * 64 if first_fails and index == 0 else (digest if with_hash else None),
+                sha256_hash="0" * 64 if first_failure == "hash" and index == 0 else (digest if with_hash else None),
             )
         )
     await session.commit()
@@ -129,10 +133,15 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
     app.state.redis = redis
     moves = []
     actual_move = execution._atomic_same_fs_move
+    failed_once = False
 
     def counted_move(source: Path, destination: Path) -> None:
-        moves.append(str(source))
+        nonlocal failed_once
+        if first_failure == "transient" and source == Path(items[0].source_path) and not failed_once:
+            failed_once = True
+            raise OSError("synthetic transient pre-move filesystem outage")
         actual_move(source, destination)
+        moves.append(str(source))
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://synthetic", headers={"Authorization": f"Bearer {token}"}) as client:
@@ -140,17 +149,32 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
             actual_update = job.update
 
             async def interrupted_update(**kwargs: Any) -> None:
-                if f"moved:{proposals[1].id}" in kwargs.get("meta", {}):
+                meta = kwargs.get("meta", {})
+                if fault == "failed_metadata" and f"failed_step:{proposals[0].id}" in meta:
+                    raise RuntimeError("synthetic terminal-outcome broker outage")
+                if fault == "intent" and f"move_intent_hash:{proposals[1].id}" in meta:
+                    raise RuntimeError("synthetic write-ahead broker outage")
+                if fault == "metadata" and f"moved:{proposals[1].id}" in meta:
                     raise RuntimeError("synthetic interruption after move before metadata commit")
                 await actual_update(**kwargs)
 
             with patch.object(execution, "_atomic_same_fs_move", counted_move):
                 with (
-                    patch.object(job, "update", interrupted_update if fault == "metadata" else actual_update),
-                    pytest.raises(RuntimeError, match="committed move"),
+                    patch.object(job, "update", interrupted_update if fault != "callback" else actual_update),
+                    pytest.raises(RuntimeError, match=r"(committed move|move intent|terminal failure)"),
                 ):
                     await execution.execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
-                assert len(moves) == (1 if first_fails else 2)
+                expected_moves = (0 if first_fails else 1) if fault == "intent" else (1 if first_fails else 2)
+                if fault == "failed_metadata":
+                    expected_moves = 0
+                    assert Path(items[0].source_path).read_bytes() == b"synthetic audio 0"
+                    assert not (tmp_path / "dest-0.mp3").exists()
+                    await session.refresh(proposals[0])
+                    assert proposals[0].status == "approved"
+                assert len(moves) == expected_moves
+                if fault in {"intent", "failed_metadata"}:
+                    assert Path(items[1].source_path).read_bytes() == b"synthetic audio 1"
+                    assert not (tmp_path / "dest-1.mp3").exists()
                 await session.refresh(proposals[1])
                 assert proposals[1].status == "approved"
                 assert (await redis.hgetall(key))["status"] == "running"
@@ -159,9 +183,16 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
                 # committed PostgreSQL payload, including UUIDs and move intent.
                 reloaded = await queue.job(job.key)
                 assert reloaded is not None and reloaded is not job
+                if first_fails:
+                    assert reloaded.meta[f"failed_step:{proposals[0].id}"] == ("verify" if first_failure == "hash" else "copy")
+                if fault == "failed_metadata":
+                    assert f"failed_step:{proposals[0].id}" not in reloaded.meta
                 if fault == "metadata":
                     assert f"moved:{proposals[1].id}" not in reloaded.meta
-                assert reloaded.meta[f"move_intent_hash:{proposals[1].id}"] == files[1].sha256_hash
+                if fault in {"intent", "failed_metadata"}:
+                    assert f"move_intent_hash:{proposals[1].id}" not in reloaded.meta
+                else:
+                    assert reloaded.meta[f"move_intent_hash:{proposals[1].id}"] == files[1].sha256_hash
                 await queue.retry(reloaded, error="synthetic report retry")
                 reloaded = await queue.dequeue(timeout=2.0)
                 assert reloaded is not None
