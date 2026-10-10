@@ -265,10 +265,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-087)
+### Post-baseline chain (040-088)
 
-`alembic/versions/` holds **48** files: the `039` baseline plus a linear chain to the current
-head, **`087`**.
+`alembic/versions/` holds **50** files: the `039` baseline plus a linear chain to the current
+head, **`088`**.
 
 | Rev | Change |
 |-----|--------|
@@ -319,7 +319,8 @@ head, **`087`**.
 | `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) |
 | `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) |
 | `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) |
-| `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) — **head** |
+| `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) |
+| `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs (phaze-c5v4x) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
