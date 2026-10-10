@@ -68,7 +68,7 @@ from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
 from phaze.services.pipeline_counters import incr_completed, incr_enqueued
-from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, ledger_enqueue_session
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, enqueue_authority, ledger_enqueue_session
 from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
 
@@ -219,6 +219,14 @@ async def apply_deterministic_key(job: Job) -> None:
     # .asyncio) on the agent path -- it executes only when ledger_sessionmaker is present.
     try:
         sm = getattr(job.queue, "ledger_sessionmaker", None)
+        authority = enqueue_authority.get()
+        if job.function == "process_file" and authority is not None:
+            # Incoming metadata may belong to a previous attempt. Only this call's
+            # acquired serialization can mint a token or refresh ledger authority.
+            job.meta = dict(job.meta or {})
+            job.meta.pop(ATTEMPT_META_KEY, None)
+            if not authority.serialized or authority.key != job.key or ledger_enqueue_session.get() is None:
+                return
         if sm is not None:
             # INTENTIONAL function-local import (PLC0415 suppressed on the import line below):
             # this module is _shared (the agent worker imports it); a top-level import of the
