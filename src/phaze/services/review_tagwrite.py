@@ -87,6 +87,7 @@ class SqlTagwriteReviewReader:
             .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
             .order_by(FileRecord.original_filename, FileRecord.id)
             .limit(self._scan_batch)
+            .execution_options(populate_existing=True)
         )
         if last_key is not None:
             stmt = stmt.where(tuple_(FileRecord.original_filename, FileRecord.id) > last_key)

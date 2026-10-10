@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sqlalchemy import ColumnElement, Text, and_, case, cast, exists, func, or_, select
+from sqlalchemy import ColumnElement, Text, and_, case, cast, exists, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 
 from phaze.models.discogs_link import DiscogsLink
@@ -23,13 +23,13 @@ def selected_track_membership_clause(position: Any = DiscogsLink.source_track_po
     """Narrow SQL membership mirrors intrinsic position and explicit CUE FILE projection."""
     payload = ProviderSourceObservation.payload
     tracks = (
-        func.jsonb_array_elements(case((func.jsonb_typeof(payload["tracks"]) == "array", payload["tracks"]), else_=cast("[]", JSONB)))
+        func.jsonb_array_elements(case((func.jsonb_typeof(payload["tracks"]) == "array", payload["tracks"]), else_=cast(literal("[]", Text), JSONB)))
         .table_valued("value")
         .alias("selected_intrinsic_track")
     )
     track = cast(tracks.c.value, JSONB)
     cue_member = func.jsonb_path_exists(
-        case((func.jsonb_typeof(track["evidence"]) == "array", track["evidence"]), else_=cast("[]", JSONB)),
+        case((func.jsonb_typeof(track["evidence"]) == "array", track["evidence"]), else_=cast(literal("[]", Text), JSONB)),
         cast("$[*] ? (@ starts with $prefix)", JSONPATH),
         func.jsonb_build_object("prefix", func.concat("FILE:", ProviderRecordingSelection.target_mapping["cue_file_ordinal"].as_string(), ":")),
     )
@@ -88,7 +88,7 @@ def authoritative_tracklist_clause(file_id: Any = FileRecord.id) -> ColumnElemen
             func.jsonb_array_length(
                 case(
                     (func.jsonb_typeof(ProviderSourceObservation.payload["tracks"]) == "array", ProviderSourceObservation.payload["tracks"]),
-                    else_=cast("[]", JSONB),
+                    else_=cast(literal("[]", Text), JSONB),
                 )
             )
             > 0,

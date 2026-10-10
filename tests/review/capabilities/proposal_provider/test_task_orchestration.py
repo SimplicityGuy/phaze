@@ -11,6 +11,18 @@ import pytest
 from phaze.services.proposal import BatchProposalResponse, FileProposalResponse
 
 
+@pytest.fixture(autouse=True)
+def legacy_source_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These orchestration fixtures represent no selected sources or accepted links.
+
+    Real selected-source reads/write fencing are exercised against PG in selected_source_consumers.
+    Keep this module's network/session-lifetime mocks independent of that SQL population.
+    """
+    monkeypatch.setattr("phaze.tasks.proposal.overlay_selected_tag_sources", AsyncMock(return_value={}))
+    monkeypatch.setattr("phaze.tasks.proposal._get_accepted_discogs_links_for_files", AsyncMock(return_value={}))
+    monkeypatch.setattr("phaze.tasks.proposal.validate_selected_proposal_context", AsyncMock(return_value=True))
+
+
 def _make_session_factory(mock_session: AsyncMock) -> MagicMock:
     """Create a mock async_sessionmaker that returns a context manager yielding mock_session."""
     factory = MagicMock()

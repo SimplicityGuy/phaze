@@ -15,10 +15,13 @@ from phaze.services.enqueue_router import resolve_queue_for_task
 from phaze.services.local_source_import import get_selected_recording_source
 from phaze.services.pagination import clamp_page
 from phaze.services.selected_discogs import decide_recording_discogs_link, read_recording_discogs_pin
+from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
 router = APIRouter(prefix="/recording-discogs", tags=["tracklists"])
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+register_set_glyph_globals(templates.env)
+register_page_name_globals(templates.env)
 
 
 async def _render(request: Request, session: AsyncSession, media_id: uuid.UUID, *, message: str | None = None) -> HTMLResponse:
