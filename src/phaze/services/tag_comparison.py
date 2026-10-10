@@ -20,18 +20,21 @@ from __future__ import annotations
 import base64
 import json
 from typing import TYPE_CHECKING, Any
+import uuid
 
 from sqlalchemy import Select, and_, exists, or_, select, tuple_
 
 from phaze.models.discogs_link import DiscogsLink
+from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObservation
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.services.selected_source_consumers import explicit_tracklist_clause, selected_track_membership_clause
+from phaze.services.selected_tag_sources import SelectedTagSource, overlay_selected_tag_sources, validate_selected_tag_review
 from phaze.services.tag_proposal import CORE_FIELDS
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,7 +99,7 @@ def _terminal_tagwrite_subq(file_id: uuid.UUID | None = None) -> Select[tuple[uu
     return select(terminal_rows.c.file_id).where(~later_undo_exists).distinct()
 
 
-async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> Tracklist | None:
+async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> Tracklist | SelectedTagSource | None:
     """Find the best tracklist associated with a file.
 
     ``tracklists.file_id`` has only a NON-unique index, and mainline paths (>=90 auto-link,
@@ -107,11 +110,15 @@ async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> 
     """
     stmt = select(Tracklist).where(Tracklist.file_id == file_id).order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.id).limit(1)
     result = await session.execute(stmt)
-    return result.scalars().first()
+    legacy = result.scalars().first()
+    return (await overlay_selected_tag_sources(session, [file_id], {file_id: legacy} if legacy is not None else {})).get(file_id)
 
 
 async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) -> DiscogsLink | None:
     """Find the accepted DiscogsLink for the file's tracklist, if any."""
+    if await session.scalar(select(explicit_tracklist_clause(file_id))):
+        resolved = await overlay_selected_tag_sources(session, [file_id], {})
+        return (await _get_accepted_discogs_links_for_files(session, resolved)).get(file_id)
     # Multiplicity-tolerant (see _get_tracklist_for_file): a file may have >1 tracklist; pick the
     # highest-confidence one's latest version rather than raising MultipleResultsFound.
     tl_stmt = (
@@ -134,11 +141,11 @@ async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) 
         .order_by(DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
         .limit(1)
     )
-    link_result = await session.execute(link_stmt)
+    link_result = await session.execute(link_stmt.execution_options(populate_existing=True))
     return link_result.scalar_one_or_none()
 
 
-async def _get_tracklists_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, Tracklist]:
+async def _get_tracklists_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, Tracklist | SelectedTagSource]:
     """Batch form of :func:`_get_tracklist_for_file`: ONE query for a whole page of files (phaze-bto9).
 
     Same selection rule per file -- highest ``match_confidence``, ``id`` breaking ties -- expressed
@@ -155,10 +162,13 @@ async def _get_tracklists_for_files(session: AsyncSession, file_ids: list[uuid.U
         .distinct(Tracklist.file_id)
         .order_by(Tracklist.file_id, Tracklist.match_confidence.desc().nulls_last(), Tracklist.id)
     )
-    return {tl.file_id: tl for tl in (await session.execute(stmt)).scalars().all() if tl.file_id is not None}
+    legacy = {tl.file_id: tl for tl in (await session.execute(stmt)).scalars().all() if tl.file_id is not None}
+    return await overlay_selected_tag_sources(session, file_ids, legacy)
 
 
-async def _get_accepted_discogs_links_for_files(session: AsyncSession, tracklists: dict[uuid.UUID, Tracklist]) -> dict[uuid.UUID, DiscogsLink]:
+async def _get_accepted_discogs_links_for_files(
+    session: AsyncSession, tracklists: dict[uuid.UUID, Tracklist | SelectedTagSource]
+) -> dict[uuid.UUID, DiscogsLink]:
     """Batch form of :func:`_get_accepted_discogs_link`, keyed by file id (phaze-bto9).
 
     Takes the already-resolved per-file tracklists (so the "which tracklist" decision is made once,
@@ -167,8 +177,27 @@ async def _get_accepted_discogs_links_for_files(session: AsyncSession, tracklist
     phaze-evn9 deterministic tiebreak, expressed as ``DISTINCT ON (version_id)``.
     """
     version_to_file = {tl.latest_version_id: file_id for file_id, tl in tracklists.items() if tl.latest_version_id is not None}
+    result: dict[uuid.UUID, DiscogsLink] = {}
+    provider_ids = [
+        file_id for file_id, value in tracklists.items() if isinstance(value, SelectedTagSource) and value.eligible and value.track_observation_id
+    ]
+    for start in range(0, len(provider_ids), 100):
+        provider_stmt = (
+            select(ProviderRecordingSelection.media_id, DiscogsLink)
+            .join(ProviderSourceObservation, ProviderSourceObservation.id == ProviderRecordingSelection.observation_id)
+            .join(DiscogsLink, DiscogsLink.source_observation_id == ProviderSourceObservation.id)
+            .where(
+                ProviderRecordingSelection.media_id.in_(provider_ids[start : start + 100]),
+                ProviderRecordingSelection.kind == "tracklist",
+                DiscogsLink.status == "accepted",
+                selected_track_membership_clause(),
+            )
+            .distinct(ProviderRecordingSelection.media_id)
+            .order_by(ProviderRecordingSelection.media_id, DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
+        )
+        result.update((await session.execute(provider_stmt.execution_options(populate_existing=True))).tuples().all())
     if not version_to_file:
-        return {}
+        return result
     stmt = (
         select(TracklistTrack.version_id, DiscogsLink)
         .join(DiscogsLink, DiscogsLink.track_id == TracklistTrack.id)
@@ -176,7 +205,58 @@ async def _get_accepted_discogs_links_for_files(session: AsyncSession, tracklist
         .distinct(TracklistTrack.version_id)
         .order_by(TracklistTrack.version_id, DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
     )
-    return {version_to_file[version_id]: link for version_id, link in (await session.execute(stmt)).tuples().all()}
+    result.update(
+        {
+            version_to_file[version_id]: link
+            for version_id, link in (await session.execute(stmt.execution_options(populate_existing=True))).tuples().all()
+        }
+    )
+    return result
+
+
+def discogs_review_fields(link: DiscogsLink | None) -> dict[str, str | int | None] | None:
+    """Exactly the scalar accepted facts used by tag proposals."""
+    return {"artist": link.discogs_artist, "title": link.discogs_title, "year": link.discogs_year} if link is not None else None
+
+
+async def validate_reviewed_source_versions(session: AsyncSession, file_id: uuid.UUID, expected: dict[str, Any]) -> None:
+    """Fence selected inventory and accepted facts until the queued audit row commits."""
+    await validate_selected_tag_review(session, file_id, expected.get("selected_source_evidence"))
+    await session.execute(
+        select(ProviderSourceObservation.id)
+        .join(ProviderRecordingSelection, ProviderRecordingSelection.observation_id == ProviderSourceObservation.id)
+        .where(ProviderRecordingSelection.media_id == file_id, ProviderRecordingSelection.kind == "tracklist")
+        .with_for_update(read=True, of=ProviderSourceObservation)
+    )
+    if expected.get("tracklist_id") is not None:
+        legacy = await session.scalar(
+            select(Tracklist)
+            .where(Tracklist.id == uuid.UUID(expected["tracklist_id"]))
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+        if (
+            legacy is None
+            or (str(legacy.latest_version_id) if legacy.latest_version_id is not None else None) != expected.get("tracklist_version_id")
+            or legacy.updated_at.isoformat() != expected.get("tracklist_updated_at")
+        ):
+            raise ValueError("Reviewed legacy tracklist changed; refresh before approving tags")
+    current = await _get_accepted_discogs_link(session, file_id)
+    if current is not None:
+        # Legacy rows have no source observation mutex; lock the actual accepted row as well.
+        current = await session.scalar(
+            select(DiscogsLink).where(DiscogsLink.id == current.id).with_for_update(read=True).execution_options(populate_existing=True)
+        )
+        if current is not None and current.status != "accepted":
+            current = None
+    identity = str(current.id) if current is not None else None
+    updated = current.updated_at.isoformat() if current is not None else None
+    if (
+        identity != expected.get("discogs_link_id")
+        or updated != expected.get("discogs_link_updated_at")
+        or ("discogs_review_fields" in expected and discogs_review_fields(current) != expected["discogs_review_fields"])
+    ):
+        raise ValueError("Accepted Discogs facts changed after review; refresh before approving tags")
 
 
 def _build_comparison(
@@ -243,17 +323,21 @@ def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
 
 def _tag_review_payload(
     file_record: FileRecord,
-    tracklist: Tracklist | None,
+    tracklist: Tracklist | SelectedTagSource | None,
     discogs_link: DiscogsLink | None,
     proposed: Mapping[str, object],
 ) -> dict[str, Any]:
     """Capture the exact rendered tag decision and every source version that produced it."""
     metadata = file_record.file_metadata
+    selected_evidence = list(tracklist.evidence) if isinstance(tracklist, SelectedTagSource) else None
+    if isinstance(tracklist, SelectedTagSource):
+        tracklist = tracklist.legacy
     return {
         "file_id": str(file_record.id),
         "before": {field: getattr(metadata, field, None) if metadata is not None else None for field in CORE_FIELDS},
         "after": {field: proposed.get(field) for field in CORE_FIELDS},
         "sources": {
+            **({"selected_source_evidence": selected_evidence} if selected_evidence is not None else {}),
             "file_updated_at": file_record.updated_at.isoformat(),
             "metadata_updated_at": metadata.updated_at.isoformat() if metadata is not None else None,
             "tracklist_id": str(tracklist.id) if tracklist is not None else None,
@@ -261,6 +345,7 @@ def _tag_review_payload(
             "tracklist_version_id": str(tracklist.latest_version_id) if tracklist is not None and tracklist.latest_version_id is not None else None,
             "discogs_link_id": str(discogs_link.id) if discogs_link is not None else None,
             "discogs_link_updated_at": discogs_link.updated_at.isoformat() if discogs_link is not None else None,
+            **({"discogs_review_fields": discogs_review_fields(discogs_link)} if discogs_link is not None else {}),
         },
     }
 

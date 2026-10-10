@@ -16,6 +16,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -23,9 +24,11 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.schemas.agent_tasks import WriteCueSheetPayload
+from phaze.schemas.agent_tasks import CueSourceBinding, WriteCueSheetPayload
 from phaze.services import cue_review
 from phaze.services.cue_generator import CueTrackData, generate_cue_content
+from phaze.services.selected_cue import agent_supports_selected_cue, build_selected_cue_artifact, validate_selected_cue_binding
+from phaze.services.selected_source_consumers import explicit_tracklist_clause
 from phaze.services.stage_status import is_applied
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
@@ -101,6 +104,63 @@ async def list_cue() -> RedirectResponse:
     outright.
     """
     return RedirectResponse(url="/s/cue", status_code=302)
+
+
+async def _selected_preview_response(request: Request, session: AsyncSession, media_id: uuid.UUID, message: str = "") -> HTMLResponse:
+    artifact = None
+    try:
+        artifact = await build_selected_cue_artifact(session, media_id)
+    except ValueError as exc:
+        message = message or str(exc)
+    applied = await is_applied(session, media_id)
+    supported = await agent_supports_selected_cue(session, artifact.file.agent_id) if artifact is not None else False
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_selected_cue_preview.html",
+        context={"request": request, "media_id": media_id, "artifact": artifact, "applied": applied, "supported": supported, "message": message},
+    )
+
+
+@router.get("/files/{media_id}/preview", response_class=HTMLResponse)
+async def selected_cue_preview(request: Request, media_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Lazy preview of one actual reviewed authority, with no archive read or write."""
+    return await _selected_preview_response(request, session, media_id)
+
+
+@router.post("/files/{media_id}/generate", response_class=HTMLResponse)
+async def generate_selected_cue(
+    request: Request,
+    media_id: uuid.UUID,
+    binding: str = Form(max_length=4096),  # DoS bound on one finite source/inventory pin.
+    audio_path: str = Form(max_length=16384),  # DoS bound; current_path is Text storage.
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    try:
+        reviewed = CueSourceBinding.model_validate_json(binding)
+        media = await session.get(FileRecord, media_id, populate_existing=True)
+        if media is None:
+            raise ValueError("Recording is no longer available")
+        artifact = await validate_selected_cue_binding(session, media_id, reviewed, agent_id=media.agent_id, audio_path=audio_path)
+        if not await is_applied(session, media_id):
+            raise ValueError("Apply the recording before generating its CUE artifact")
+        if not await agent_supports_selected_cue(session, media.agent_id):
+            raise ValueError("The owning agent has not reported selected-source CUE support; update its meta worker and wait for a heartbeat")
+    except (ValueError, ValidationError) as exc:
+        return await _selected_preview_response(request, session, media_id, str(exc))
+    payload = WriteCueSheetPayload(
+        file_id=media_id, source_binding=reviewed, agent_id=artifact.file.agent_id, audio_path=artifact.file.current_path, content=artifact.content
+    )
+    await session.commit()  # Release the read transaction before the broker round-trip.
+    try:
+        await request.app.state.task_router.enqueue_for_file(file_record=artifact.file, task_name="write_cue_sheet", payload=payload)
+    except Exception:
+        logger.warning("selected CUE dispatch failed", media_id=str(media_id), exc_info=True)
+        return await _selected_preview_response(
+            request, session, media_id, "Could not queue the CUE artifact; check the agent and task broker, then retry"
+        )
+    return await _selected_preview_response(
+        request, session, media_id, "CUE artifact queued; the worker will recheck this exact reviewed source before writing"
+    )
 
 
 @router.post("/{tracklist_id}/generate", response_class=HTMLResponse)
@@ -237,6 +297,11 @@ async def _resolve_generate_target(
     if file_record is None or not await is_applied(session, file_record.id):
         toast_msg = "File must be executed before generating a CUE sheet. Run the pipeline to move the file to its destination."
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+
+    if await session.scalar(select(explicit_tracklist_clause()).where(FileRecord.id == file_record.id)):
+        return await _render_generate_error(
+            request, session, tracklist, file_record, "This recording now has an explicitly selected source; review its selected-source CUE preview"
+        )
 
     # Validate tracklist is approved
     if tracklist.status != "approved":

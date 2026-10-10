@@ -36,6 +36,7 @@ from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES
 from phaze.services.cue_generator import parse_timestamp_string
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import camelot_number, key_name_for_camelot, modal_camelot
+from phaze.tracklist_providers.domain import ProviderTrack
 
 
 if TYPE_CHECKING:
@@ -118,7 +119,7 @@ class TrackSegment:
         return MOOD_HUES.get(self.mood) if self.mood else None
 
 
-def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
+def _timestamped(tracks: Sequence[TracklistTrack | ProviderTrack]) -> list[tuple[int, float]]:
     """``(position, start_sec)`` for every track with a parseable, non-negative timestamp.
 
     ``parse_timestamp_string`` is total by contract (``phaze-97u7``): empty cells, bracketed or
@@ -127,7 +128,15 @@ def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
     """
     result: list[tuple[int, float]] = []
     for track in tracks:
-        start = parse_timestamp_string(track.timestamp)
+        if isinstance(track, ProviderTrack):
+            timestamp = track.timestamp
+            start = (
+                float(timestamp.offset.as_fraction())
+                if timestamp is not None and timestamp.kind == "offset" and timestamp.offset_usability == "qualified" and timestamp.offset is not None
+                else None
+            )
+        else:
+            start = parse_timestamp_string(track.timestamp)
         if start is None or not math.isfinite(start) or start < 0:
             continue
         result.append((track.position, float(start)))
@@ -233,7 +242,7 @@ def _argmax_mood(windows: Sequence[AnalysisWindow]) -> str | None:
 
 
 def build_track_segments(
-    tracks: Sequence[TracklistTrack],
+    tracks: Sequence[TracklistTrack | ProviderTrack],
     windows: Sequence[AnalysisWindow],
     duration_sec: float | None,
 ) -> list[TrackSegment]:

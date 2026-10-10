@@ -1,17 +1,21 @@
 {% if review is none %}
 <p class="text-sm text-muted">File not found.</p>
 {% else %}
-{% if review.local_sources %}
+{% if review.local_sources and not review.selected_source %}
 <p class="mb-2 text-sm">Local tracklist sources: {{ review.local_sources | join(', ') }}. Source content is available to proposals. Recognition does not create stored track rows.</p>
 {% endif %}
-{% if review.tracklist %}
+{% if review.selected_source %}
+<p class="mb-2 text-sm font-medium">Selected tracklist · {{ review.tracks | length }} tracks · {{ review.selected_source.availability }}</p>
+<p class="mb-2 text-xs">{{ review.selected_source.identity.provider_id }} · revision {{ review.selected_source.snapshot.revision or 'unknown' }} · parser {{ review.selected_source.snapshot.parser_version }} · reviewed by {{ review.selected_source.actor }}. <a href="/files/{{ review.file_id }}#companion-sources" class="underline">Inspect source and alternatives</a></p>
+{% endif %}
+{% if review.tracklist or review.selected_source %}
 <p class="mb-2 text-sm font-medium">Stored tracklist · {{ review.tracks | length }} tracks{% if review.is_propagated %} · inherited from a duplicate{% endif %}</p>
-<dl class="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+{% if review.tracklist %}<dl class="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
     <div><dt>Set artist</dt><dd>{{ review.tracklist.artist or '—' }}</dd></div>
     <div><dt>Set / event</dt><dd>{{ review.tracklist.event or '—' }}</dd></div>
     <div><dt>Date</dt><dd>{{ review.tracklist.date.isoformat() if review.tracklist.date else '—' }}</dd></div>
     <div><dt>Latest version</dt><dd>{% if review.latest_version %}{{ review.latest_version.version_number }} · imported {{ review.latest_version.scraped_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</dd></div>
-</dl>
+</dl>{% endif %}
         {% if review.tracks %}
         {# ONE pass over the segments, keyed by position, instead of a `selectattr` per ROW.
            `selectattr(...) | list | first` walks the whole segment list for every track, which is
@@ -55,7 +59,7 @@
                         {% if segment %}data-track-start="{{ segment.start_sec }}"{% if segment.end_sec is not none %} data-track-end="{{ segment.end_sec }}"{% endif %} tabindex="0"{% endif %}
                         class="border-t border-gray-100 dark:border-white/5">
                         <td class="py-1 pr-3 font-mono text-muted ">{{ track.position }}</td>
-                        <td class="py-1 pr-3 font-mono text-muted ">{{ track.timestamp or '—' }}</td>
+                        <td class="py-1 pr-3 font-mono text-muted ">{{ (track.timestamp.original if review.selected_source and track.timestamp else track.timestamp) or '—' }}{% if review.selected_source and track.timestamp %}<span class="block text-xs">{{ track.timestamp.kind }} · {{ track.timestamp.precision }} · {{ track.timestamp.offset_usability }}</span>{% endif %}</td>
                         <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">{{ track.artist or '—' }}</td>
                         <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">
                             {{ track.title or '—' }}{% if track.is_mashup %} <span class="text-muted">(mashup)</span>{% endif %}

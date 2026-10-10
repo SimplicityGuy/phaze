@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         TagWriteResultPayload,
         TagWriteResultResponse,
     )
+    from phaze.schemas.agent_tasks import CueSourceCheck
 
 
 logger = structlog.get_logger(__name__)
@@ -729,6 +730,10 @@ class PhazeAgentClient:
         )
         return None
 
+    async def check_cue_source(self, payload: CueSourceCheck) -> None:
+        """Validate one pinned selected authority; stale/unauthorized responses refuse the write."""
+        await self._request("POST", "/api/internal/agent/cue-source-check", json=payload.model_dump(mode="json"))
+
     async def heartbeat(self, payload: HeartbeatRequest) -> None:
         """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content).
 
@@ -740,7 +745,11 @@ class PhazeAgentClient:
         await self._request(
             "POST",
             "/api/internal/agent/heartbeat",
-            json=payload.model_dump(mode="json", exclude={"effective_config"} if payload.effective_config is None else None),
+            json=payload.model_dump(
+                mode="json",
+                exclude=({"effective_config"} if payload.effective_config is None else set())
+                | ({"selected_cue_v1"} if payload.selected_cue_v1 is None else set()),
+            ),
         )
         return None
 

@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 import structlog
 
 from phaze.config import get_settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation
 from phaze.services.date_convention import annotate_date_conventions
 from phaze.services.proposal import (
     MalformedCompletionError,
@@ -23,9 +24,13 @@ from phaze.services.proposal import (
     load_companion_targets,
     store_proposals,
 )
+from phaze.services.selected_tag_sources import SelectedTagSource, overlay_selected_tag_sources
+from phaze.services.tag_comparison import _get_accepted_discogs_links_for_files
 
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from phaze.config import ControlSettings
     from phaze.schemas.agent_tasks import CompanionReadItem
 
@@ -93,6 +98,8 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
         }
         metadata_by_id = {row.file_id: row for row in (await session.execute(select(FileMetadata).where(FileMetadata.file_id.in_(uids)))).scalars()}
 
+        reviewed_sources = await overlay_selected_tag_sources(session, uids, {})
+        reviewed_discogs = await _get_accepted_discogs_links_for_files(session, reviewed_sources)
         for fid, uid in zip(file_ids, uids, strict=True):
             file_record = files_by_id.get(uid)
             if file_record is None:
@@ -118,6 +125,21 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
             by_agent = await load_companion_targets(session, uid, task_router=task_router)
 
             ctx_dict = build_file_context(file_record, analysis, [], metadata=metadata)
+            reviewed_source = reviewed_sources.get(uid)
+            if isinstance(reviewed_source, SelectedTagSource):
+                if not reviewed_source.eligible:
+                    continue
+                ctx_dict["reviewed_source_evidence"] = reviewed_source.evidence
+                source_tags = dict(reviewed_source.tags)
+                ctx_dict["reviewed_source_tags"] = source_tags
+                discogs = reviewed_discogs.get(uid)
+                ctx_dict["reviewed_discogs_evidence"] = _discogs_evidence(discogs)
+                if discogs is not None:
+                    for field, value in (("artist", discogs.discogs_artist), ("title", discogs.discogs_title), ("year", discogs.discogs_year)):
+                        if value is not None:
+                            source_tags[field] = value
+                # Pending text is inspectable evidence, but cannot become proposal authority.
+                by_agent = {}
             ctx_dict["index"] = len(files_context)
             files_context.append(ctx_dict)
             valid_file_ids.append(fid)
@@ -183,7 +205,60 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     # 4. Open a FRESH short session only for the writes + commit (phaze-6fvu). store_proposals upserts
     #    by file_id (pg_insert), so it needs no live ORM objects from the read phase.
     async with ctx["async_session"]() as session:
+        if not await validate_selected_proposal_context(session, valid_file_ids, files_context):
+            return {"batch": batch_index, "count": 0, "status": "stale_source"}
         stored = await store_proposals(session, valid_file_ids, batch_response, files_context)
         await session.commit()
 
     return {"batch": batch_index, "count": stored, "status": "ok"}
+
+
+async def validate_selected_proposal_context(session: AsyncSession, file_ids: list[str], contexts: list[dict[str, Any]]) -> bool:
+    """Recheck pinned selection/current inventory in a short write transaction, after network work."""
+    ids = [uuid.UUID(identifier) for identifier in file_ids]
+    source_ids = (
+        select(ProviderSourceObject.source_file_id)
+        .join(ProviderSourceObservation, ProviderSourceObservation.object_id == ProviderSourceObject.id)
+        .join(ProviderRecordingSelection, ProviderRecordingSelection.observation_id == ProviderSourceObservation.id)
+        .where(ProviderRecordingSelection.media_id.in_(ids), ProviderRecordingSelection.kind.in_(("tracklist", "release_metadata")))
+    )
+    await session.execute(
+        select(FileRecord.id)
+        .where(or_(FileRecord.id.in_(ids), FileRecord.id.in_(source_ids)))
+        .order_by(FileRecord.original_path, FileRecord.id)
+        .with_for_update()
+    )
+    await session.execute(
+        select(ProviderRecordingSelection)
+        .where(ProviderRecordingSelection.media_id.in_(ids), ProviderRecordingSelection.kind.in_(("tracklist", "release_metadata")))
+        .with_for_update(read=True)
+    )
+    current = await overlay_selected_tag_sources(session, ids, {})
+    selected_observations = [
+        source.track_observation_id for source in current.values() if isinstance(source, SelectedTagSource) and source.track_observation_id
+    ]
+    if selected_observations:
+        await session.execute(
+            select(ProviderSourceObservation.id)
+            .where(ProviderSourceObservation.id.in_(selected_observations))
+            .order_by(ProviderSourceObservation.id)
+            .with_for_update(read=True)
+        )
+    current_discogs = await _get_accepted_discogs_links_for_files(session, current)
+    for identifier, context in zip(ids, contexts, strict=True):
+        source = current.get(identifier)
+        expected = context.get("reviewed_source_evidence")
+        if isinstance(source, SelectedTagSource):
+            if not source.eligible or source.evidence != expected:
+                return False
+            if _discogs_evidence(current_discogs.get(identifier)) != context.get("reviewed_discogs_evidence"):
+                return False
+        elif expected is not None:
+            return False
+    return True
+
+
+def _discogs_evidence(link: Any) -> dict[str, Any] | None:
+    if link is None:
+        return None
+    return {"id": str(link.id), "artist": link.discogs_artist, "title": link.discogs_title, "year": link.discogs_year}

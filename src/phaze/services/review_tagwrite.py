@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from phaze.models.discogs_link import DiscogsLink
     from phaze.models.tracklist import Tracklist
+    from phaze.services.selected_tag_sources import SelectedTagSource
 
 
 logger = structlog.get_logger(__name__)
@@ -50,8 +51,10 @@ class SqlTagwriteReviewReader:
         scan_batch: int,
         max_scan_batches: int,
         terminal_tagwrite_subq: Callable[[], Select[tuple[uuid.UUID]]],
-        get_tracklists_for_files: Callable[[AsyncSession, list[uuid.UUID]], Awaitable[dict[uuid.UUID, Tracklist]]],
-        get_accepted_discogs_links_for_files: Callable[[AsyncSession, dict[uuid.UUID, Tracklist]], Awaitable[dict[uuid.UUID, DiscogsLink]]],
+        get_tracklists_for_files: Callable[[AsyncSession, list[uuid.UUID]], Awaitable[dict[uuid.UUID, Tracklist | SelectedTagSource]]],
+        get_accepted_discogs_links_for_files: Callable[
+            [AsyncSession, dict[uuid.UUID, Tracklist | SelectedTagSource]], Awaitable[dict[uuid.UUID, DiscogsLink]]
+        ],
         compute_proposed_tags: Callable[..., dict[str, Any]],
         build_comparison: Callable[..., list[dict[str, Any]]],
         count_changes: Callable[[list[dict[str, Any]]], int],
@@ -108,7 +111,7 @@ class SqlTagwriteReviewReader:
     def _build_row(
         self,
         file_record: FileRecord,
-        tracklist: Tracklist | None,
+        tracklist: Tracklist | SelectedTagSource | None,
         discogs_link: DiscogsLink | None,
         latest_logs: dict[uuid.UUID, TagWriteLog],
     ) -> dict[str, Any] | None:
@@ -144,7 +147,7 @@ class SqlTagwriteReviewReader:
     def _rows_from_batch(
         self,
         batch: list[FileRecord],
-        tracklists: dict[uuid.UUID, Tracklist],
+        tracklists: dict[uuid.UUID, Tracklist | SelectedTagSource],
         discogs_links: dict[uuid.UUID, DiscogsLink],
         latest_logs: dict[uuid.UUID, TagWriteLog],
         remaining_capacity: int,

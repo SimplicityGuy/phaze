@@ -105,6 +105,7 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "process_file": lambda k: str(k["file_id"]),
     "extract_file_metadata": lambda k: str(k["file_id"]),
     "match_tracklist_to_discogs": lambda k: str(k["tracklist_id"]),
+    "match_recording_source_to_discogs": lambda k: f"{k['media_id']}:{k['expected_observation_id']}:{k['expected_selection_token']}",
     "generate_proposals": lambda k: _hash_ids(k["file_ids"]),
     # Phase 50 (CLOUDPIPE-05): push_file:<file_id> dedup collapses a double-tick of the
     # bounded cloud-window staging cron to a no-op (T-50-double-enqueue).

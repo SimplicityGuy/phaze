@@ -76,6 +76,7 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
     {
         "generate_proposals",
         "match_tracklist_to_discogs",
+        "match_recording_source_to_discogs",
         "learn_filename_conventions",
         "submit_cloud_job",  # Control-plane producer; kube credentials stay here.
         # phaze-spd83: the automatic companion association run. The api requests it after every

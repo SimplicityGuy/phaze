@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from fractions import Fraction
     from pathlib import Path
 
 
@@ -25,7 +26,7 @@ class CueTrackData:
     position: int
     title: str | None = None
     artist: str | None = None
-    timestamp_seconds: float | None = None
+    timestamp_seconds: float | Fraction | None = None
     genre: str | None = None
     label: str | None = None
     year: int | None = None
@@ -55,7 +56,7 @@ _CUE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 _CUE_FILE_DIRECTIVE_RE = re.compile(r'^FILE "[^"]*"', re.MULTILINE)
 
 
-def seconds_to_cue_timestamp(total_seconds: float) -> str:
+def seconds_to_cue_timestamp(total_seconds: float | Fraction) -> str:
     """Convert seconds to CUE MM:SS:FF format at 75 frames per second.
 
     Args:

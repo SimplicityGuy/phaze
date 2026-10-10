@@ -20,6 +20,9 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.cue_generator import CueTrackData, parse_timestamp_string
+from phaze.services.local_source_import import get_selected_recording_source
+from phaze.services.selected_discogs import accepted_recording_discogs_links
+from phaze.services.selected_source_consumers import explicit_tracklist_clause
 from phaze.services.stage_status import applied_clause
 
 
@@ -28,6 +31,8 @@ if TYPE_CHECKING:
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.schemas.local_source_import import SelectedRecordingSource
 
 
 # phaze-hdho: the cue workspace's display order -- alphabetically by artist/event. Both columns
@@ -59,7 +64,7 @@ def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], S
     base_stmt = (
         select(Tracklist, FileRecord)
         .join(FileRecord, Tracklist.file_id == FileRecord.id)
-        .where(Tracklist.status == "approved", Tracklist.file_id.is_not(None), applied_clause())
+        .where(Tracklist.status == "approved", Tracklist.file_id.is_not(None), applied_clause(), ~explicit_tracklist_clause(Tracklist.file_id))
     )
     return base_stmt, has_timestamp_subq
 
@@ -196,7 +201,8 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     for chunk in _id_chunks(track_ids):
         discogs_stmt = select(DiscogsLink).where(DiscogsLink.track_id.in_(chunk), DiscogsLink.status == "accepted")
         for link in (await session.execute(discogs_stmt)).scalars().all():
-            discogs_by_track[link.track_id] = link
+            if link.track_id is not None:
+                discogs_by_track[link.track_id] = link
 
     tracks_by_version: dict[uuid.UUID, list[TracklistTrack]] = defaultdict(list)
     for track in tracks:
@@ -219,4 +225,48 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
             )
         result[version_id] = cue_tracks
 
+    return result
+
+
+async def build_cue_tracks_for_file(session: AsyncSession, media_id: uuid.UUID) -> list[CueTrackData]:
+    """Use explicit reviewed authority; preserve rational offsets until CUE frame rendering."""
+    selected = await get_selected_recording_source(session, media_id)
+    if selected is None:
+        tracklist = await session.scalar(
+            select(Tracklist).where(Tracklist.file_id == media_id).order_by(Tracklist.updated_at.desc(), Tracklist.id).limit(1)
+        )
+        return (
+            (await build_cue_tracks_for_versions(session, [tracklist.latest_version_id])).get(tracklist.latest_version_id, [])
+            if tracklist is not None and tracklist.latest_version_id is not None
+            else []
+        )
+    links = await accepted_recording_discogs_links(session, selected)
+    return cue_tracks_from_selected(selected, links)
+
+
+def cue_tracks_from_selected(selected: SelectedRecordingSource, links: dict[int, DiscogsLink] | None = None) -> list[CueTrackData]:
+    """Project only current, qualified rational offsets from one immutable reviewed authority."""
+    result = []
+    for track in selected.tracks:
+        timestamp = track.timestamp
+        offset = (
+            timestamp.offset.as_fraction()
+            if selected.availability == "current"
+            and timestamp is not None
+            and timestamp.kind == "offset"
+            and timestamp.offset_usability == "qualified"
+            and timestamp.offset is not None
+            else None
+        )
+        link = (links or {}).get(track.position)
+        result.append(
+            CueTrackData(
+                position=track.position,
+                title=track.title,
+                artist=track.artist,
+                timestamp_seconds=offset,
+                label=link.discogs_label if link is not None else track.label,
+                year=link.discogs_year if link is not None else None,
+            )
+        )
     return result

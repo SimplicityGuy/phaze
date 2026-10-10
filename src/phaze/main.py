@@ -22,6 +22,7 @@ from phaze.routers import (
     agent_companion_capture,
     agent_companion_features,
     agent_config,
+    agent_cue,
     agent_exec_batches,
     agent_execution,
     agent_files,
@@ -50,6 +51,7 @@ from phaze.routers import (
     preview,
     proposals,
     record,
+    recording_discogs,
     routing,
     scan,
     search,
@@ -279,6 +281,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_orphan_companions.router,
     # phaze-osy6j: what the agent read inside each companion (references, tracklist flag, junk class).
     agent_companion_capture.router,
+    agent_cue.router,
+    recording_discogs.router,
     local_sources.router,
     agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks

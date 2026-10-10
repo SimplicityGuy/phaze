@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
@@ -17,7 +17,10 @@ from phaze.database import get_session
 from phaze.models.tracklist import Tracklist  # noqa: TC001
 from phaze.routers.pipeline._common import _background_tasks, logger, router, templates
 from phaze.services import enqueue_router
+from phaze.services.pagination import DEFAULT_PAGE_SIZE
 from phaze.services.pipeline import get_match_pending_tracklists
+from phaze.services.pipeline.tracklists import get_match_pending_recording_sources
+from phaze.services.source_workspace import get_existing_cue_page, get_source_workspace_page
 
 
 if TYPE_CHECKING:
@@ -58,6 +61,14 @@ async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
         )
 
 
+async def _enqueue_recording_match_jobs(queue: Any, sources: list[dict[str, str]]) -> None:
+    for source in sources:
+        try:
+            await queue.enqueue("match_recording_source_to_discogs", **source)
+        except Exception:
+            logger.exception("recording_discogs_enqueue_failed", media_id=source["media_id"])
+
+
 @router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
 async def trigger_match_tracklists_ui(
     request: Request,
@@ -74,16 +85,49 @@ async def trigger_match_tracklists_ui(
     (automatic enqueue is reserved for the Phase-42 recovery pass).
     """
     tracklists = await get_match_pending_tracklists(session)
-    count = len(tracklists)
+    recording_sources = await get_match_pending_recording_sources(session)
+    count = len(tracklists) + len(recording_sources)
 
     if count > 0:
         routed = await enqueue_router.resolve_queue_for_task("match_tracklist_to_discogs", request.app.state, session)
         task = asyncio.create_task(_enqueue_match_jobs(routed.queue, tracklists))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
+        source_task = asyncio.create_task(_enqueue_recording_match_jobs(routed.queue, recording_sources))
+        _background_tasks.add(source_task)
+        source_task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_tracklist_response.html",
         context={"request": request, "action": "matching", "count": count},
+    )
+
+
+@router.get("/pipeline/local-source-sets", response_class=HTMLResponse)
+async def local_source_sets_fragment(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Stored source provenance and current CUE inventory; no acquisition or implicit selection."""
+    raw_kind = request.query_params.get("kind", "tracklist")
+    kind = cast('Literal["tracklist", "release_metadata", "cue"]', raw_kind if raw_kind in {"tracklist", "release_metadata", "cue"} else "tracklist")
+    try:
+        page = int(request.query_params.get("page", "1"))
+    except ValueError:
+        page = 1
+    try:
+        size = int(request.query_params.get("page_size", str(DEFAULT_PAGE_SIZE)))
+    except ValueError:
+        size = DEFAULT_PAGE_SIZE
+    inventory_view = kind == "cue" and request.query_params.get("inventory") == "1"
+    source_page = (
+        await get_existing_cue_page(session, page=page, page_size=size)
+        if inventory_view
+        else await get_source_workspace_page(session, kind, page=page, page_size=size)
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_local_source_sets.html",
+        context={"request": request, "source_page": source_page, "source_kind": kind, "inventory_view": inventory_view},
     )
