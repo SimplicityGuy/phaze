@@ -24,6 +24,7 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp
 from phaze.services.pipeline.buckets import _safe_bucket_snapshot
 from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, MUSIC_VIDEO_TYPES
 from phaze.services.stage_status import (
+    MISSING_BUCKET,
     dedup_resolved_clause,
     eligible_clause,
     skipped_clause,
@@ -219,6 +220,8 @@ class MetadataStatusSnapshot:
 
     done: int = 0
     failed: int = 0
+    # phaze-227l5: failed metadata on a file gone from disk -- its own state, not part of ``failed``.
+    missing: int = 0
     total: int = 0
     available: bool = False
 
@@ -283,6 +286,7 @@ async def get_metadata_status_snapshot(session: AsyncSession) -> MetadataStatusS
     return MetadataStatusSnapshot(
         done=snapshot.counts[Status.DONE.value],
         failed=snapshot.counts[Status.FAILED.value],
+        missing=snapshot.counts[MISSING_BUCKET],
         total=sum(snapshot.counts.values()),
         available=True,
     )

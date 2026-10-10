@@ -73,14 +73,16 @@ def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool 
     done = _stage_count(stage, "done")
     skipped = _stage_count(stage, "skipped")
     failed = _stage_count(stage, "failed")
+    # phaze-227l5: files gone from disk are SETTLED (nothing is waiting on them) but are not failures.
+    missing = _stage_count(stage, "missing")
     in_flight = _stage_count(stage, "in_flight")
     if in_flight:
         state: dict[str, str | bool | int] = {"label": "in flight", "tone": "accent", "icon": "●", "pulse": True}
-    elif total and done + skipped + failed >= total:
+    elif total and done + skipped + failed + missing >= total:
         if done + skipped:
             state = {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
         else:
-            state = {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
+            state = {"label": "failed" if failed else "missing", "tone": "danger", "icon": "✕", "pulse": False}
     elif total and done + skipped:
         # Idle but unfinished: some files settled successfully, the rest are waiting. Not "not started" (a51b2).
         state = {"label": "partial", "tone": "slate", "icon": "◐", "pulse": False}
@@ -89,6 +91,7 @@ def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool 
     else:
         state = {"label": "empty", "tone": "neutral", "icon": "—", "pulse": False}
     state["failed"] = failed
+    state["missing"] = missing
     return state
 
 
@@ -135,8 +138,8 @@ def _flow_readiness_status(count: int, ready_label: str) -> dict[str, str | bool
     non-zero, else the same "caught up" pill every DAG-progress tile falls back to.
     """
     if count:
-        return {"label": ready_label, "tone": "attention", "icon": "!", "pulse": False, "failed": 0}
-    return {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False, "failed": 0}
+        return {"label": ready_label, "tone": "attention", "icon": "!", "pulse": False, "failed": 0, "missing": 0}
+    return {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False, "failed": 0, "missing": 0}
 
 
 def _flow_dag_nodes(stage_progress: dict[str, dict[str, int | None]], total_files: int) -> list[dict[str, Any]]:
