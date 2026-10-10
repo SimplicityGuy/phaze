@@ -56,7 +56,7 @@ async def test_failure_attention_reaches_resolved_duplicate_with_no_eligible_fil
 
     summary = await client.get("/s/summary")
     assert summary.status_code == 200
-    summary_link = BeautifulSoup(summary.text, "html.parser").find("a", string="Inspect failed files")
+    summary_link = BeautifulSoup(summary.text, "html.parser").find("a", string="Open Files")
     assert summary_link is not None
     href = str(summary_link["href"])
     assert href == "/s/files?stage=metadata&bucket=failed&scope=media"

@@ -34,7 +34,7 @@ async def test_failure_attention_and_metadata_inspection(page: Page, seed: Seede
 
     await open_shell(page)
     await settled(page)
-    link = page.locator("#stage-workspace a").filter(has_text="Inspect failed files").first
+    link = page.locator("#stage-workspace a").filter(has_text="Open Files").first
     assert await link.get_attribute("href") == "/s/files?stage=metadata&bucket=failed&scope=media"
     await link.click()
     await page.wait_for_url("**/s/files?stage=metadata&bucket=failed&scope=media")
