@@ -397,7 +397,7 @@ async def test_filtering_the_files_table_swaps_in_place_without_nesting_a_second
 
     await open_shell(page, "/s/files")
     await settled(page)
-    assert await page.locator(f"{_DESKTOP_TABLE} tbody tr").count() == 2, "the seeded files are not in the table"
+    assert await page.locator(f"{_DESKTOP_TABLE} tbody tr[id^='files-row-']").count() == 2, "the seeded files are not in the table"
     await page.evaluate("window.__documentAlive = true")
 
     # No seeded file has a metadata failure, so Metadata=failed is a filter that matches nothing --
@@ -417,7 +417,7 @@ async def test_filtering_the_files_table_swaps_in_place_without_nesting_a_second
 
     async with swap_settles(page):
         await page.select_option("#filter-bucket", "")
-    await page.wait_for_function("() => document.querySelectorAll('#files-table-view tbody tr').length === 2")
+    await page.wait_for_function("() => document.querySelectorAll('#files-table-view tbody tr[id^=\"files-row-\"]').length === 2")
     assert await page.locator("#files-table-view").count() == 1, "clearing the filter nested a second #files-table-view"
 
 
