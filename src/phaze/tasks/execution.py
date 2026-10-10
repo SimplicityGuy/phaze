@@ -7,14 +7,16 @@ the terminal progress token whose loss must make SAQ replay the job.
 
 The task reads paths from its payload and never imports application ORM models,
 the database layer, or SQLAlchemy (D-23 and the agent import-boundary guard).
-Filesystem failures remain isolated per proposal.  Reporting failures after a
-committed move remain best-effort except for a lost ``sub_batch_terminal`` event,
-which is the sole completion token and therefore raises for replay.
+Filesystem failures remain isolated per proposal. A committed move's inventory
+report must succeed before its progress acknowledgement; either lost report or
+lost ``sub_batch_terminal`` event raises for replay.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import stat
 from typing import TYPE_CHECKING, Any, Literal
 import uuid
 
@@ -51,6 +53,11 @@ _COPY_TMP_SUFFIX = _filesystem.COPY_TMP_SUFFIX
 _COMMIT_MARKER_SUFFIX = _filesystem.COMMIT_MARKER_SUFFIX
 
 _MOVED_FLAG_PREFIX = "moved:"
+_MOVE_INTENT_PREFIX = "move_intent_hash:"
+
+
+class ExecCommittedReportError(RuntimeError):
+    """A committed move needs report-only replay, never a failed-move report."""
 
 
 class ExecBatchTerminalReportError(RuntimeError):
@@ -332,6 +339,7 @@ async def _report_success(
             ctx.item.proposal_id,
             report_exc,
         )
+        raise ExecCommittedReportError("committed move inventory report was not acknowledged") from report_exc
     await _post_exec_batch_progress_terminal(ctx, terminal_step="deleted")
 
 
@@ -364,19 +372,52 @@ async def _compute_proposed(
     job: Any | None,
     step: _MoveStep,
 ) -> Path:
-    """Delegate the destructive operation to the filesystem port, then persist SAQ corroboration."""
+    """Persist source identity before mutation, then retain committed SAQ corroboration."""
     job_meta = dict(getattr(job, "meta", None) or {}) if job is not None else {}
+    intent_key = f"{_MOVE_INTENT_PREFIX}{item.proposal_id}"
+    intent_hash = job_meta.get(intent_key)
+    had_intent = intent_hash is not None
+    moved = job_meta.get(_moved_flag_key(item.proposal_id)) is not None
+    if job is not None and intent_hash is None and not moved:
+        # Write ahead of the destructive operation: a restart between rename and
+        # moved:* persistence must still identify THIS proposal's destination.
+        source, root = _resolve_and_check_containment(item.source_path, scan_roots)
+        destination = _resolve_destination(item, source, root, scan_roots)
+        legacy_marker = not source.exists() and _committed_copy_marker_path(destination, item.proposal_id).exists()
+        if not legacy_marker:
+            step.current = "verify"
+            intent_hash = await asyncio.to_thread(_hash_move_source, source)
+            if item.sha256_hash is not None and intent_hash != item.sha256_hash:
+                raise ValueError("sha256 mismatch for move source")
+            job_meta[intent_key] = intent_hash
+            await job.update(meta=job_meta)
+    checked_item = item.model_copy(update={"sha256_hash": intent_hash}) if intent_hash is not None else item
     request = _filesystem.FilesystemMoveRequest(
-        item=item,
+        item=checked_item,
         scan_roots=scan_roots,
-        replay_corroborated=job_meta.get(_moved_flag_key(item.proposal_id)) is not None,
+        replay_corroborated=moved or had_intent,
     )
+    step.current = "copy"
     result = await _filesystem_engine().move(request, step)
     if result.committed_now and job is not None:
         updated_job_meta = dict(getattr(job, "meta", None) or {})
         updated_job_meta[_moved_flag_key(item.proposal_id)] = "1"
-        await job.update(meta=updated_job_meta)
+        try:
+            await job.update(meta=updated_job_meta)
+        except Exception as exc:
+            raise ExecCommittedReportError("committed move metadata was not acknowledged") from exc
     return result.proposed
+
+
+def _hash_move_source(source: Path) -> str:
+    """Capture authoritative source identity with bounded, no-follow reads."""
+    digest = hashlib.sha256()
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("move source is not a regular file")
+        for chunk in iter(lambda: handle.read(_COPY_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 async def _execute_one(
@@ -414,7 +455,7 @@ async def _execute_one(
         proposed = await _compute_proposed(item, scan_roots, job, step)
         await _report_success(report_ctx, proposed, start_logged=start_logged, sha_verified=sha_verified)
         return True
-    except ExecBatchTerminalReportError:
+    except (ExecBatchTerminalReportError, ExecCommittedReportError):
         raise
     except Exception as exc:
         failed_step: FailedAtStep = _classify_failure_step(step.current, exc)
