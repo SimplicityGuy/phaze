@@ -1,0 +1,7 @@
+{% import "ui/primitives.html" as ui %}
+<div data-reviewed-source class="mt-2 text-sm">
+    {% if selected %}<p>Selected {{ kind }} · {{ selected.availability }} · reviewed by {{ selected.actor }}</p>
+    <p class="text-xs break-all">{{ selected.identity.native_id }} · revision {{ selected.snapshot.revision or 'unknown' }}</p>
+    <button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ selected.observation_id }}" hx-target="next [data-selected-observation]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">View reviewed rows and source</button><div data-selected-observation></div>
+    {% else %}<p>No explicitly selected {{ kind }} source. Pending imports do not change reviewed content.</p>{% endif %}
+</div>

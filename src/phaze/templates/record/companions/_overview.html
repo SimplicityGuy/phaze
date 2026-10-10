@@ -1,0 +1,48 @@
+{% import "ui/primitives.html" as ui %}
+<div id="companion-sources" data-companion-overview class="min-w-0 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-semibold">Companion files and local sources</h3>
+        <button type="button" hx-get="/files/{{ file_id }}/companion-details" hx-target="closest [data-companion-overview]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Update stored view</button>
+    </div>
+    <p class="text-xs text-muted">Stored text, tracklists and release notes. Import creates candidates; source selection is a separate review. Media, tags and paths still use Changes Review.</p>
+    {% for link in details.links %}
+    <div class="min-w-0 rounded border p-3" data-companion-link>
+        <a href="/files/{{ link.file_id }}#companion-sources" class="text-link break-all">{{ link.filename }}</a>
+        <p class="text-xs break-all">{{ link.file_type }} · {{ link.location }}</p>
+        <p class="text-xs">{{ link.availability }} · link: {{ link.derivation_method }}{% if link.derivation_revision %} · revision {{ link.derivation_revision[:12] }}{% endif %}</p>
+        {% if link.derivation_evidence %}<details><summary class="text-xs cursor-pointer">Link evidence</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ link.derivation_evidence | join('\n') }}</pre></details>{% endif %}
+        <form hx-post="/files/{{ file_id }}/companions/{{ link.file_id }}/refresh" hx-target="next [data-companion-action]" hx-swap="innerHTML" class="mt-2">
+            <button type="submit" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Refresh companion text</button>
+        </form>
+        <div data-companion-action aria-live="polite"></div>
+    </div>
+    {% else %}<p class="text-sm text-muted">No linked companion files.</p>{% endfor %}
+    {% if details.next_link_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-details?link_offset={{ details.next_link_offset }}&amp;source_offset={{ source_offset | default(0) }}" hx-target="closest [data-companion-overview]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next companions</button>{% endif %}
+    <div class="space-y-2" data-selected-sources>
+        {% for kind, label in [('tracklist', 'Reviewed tracklist'), ('release_metadata', 'Reviewed release metadata')] %}
+        <div>
+            <button type="button" hx-get="/api/local-sources/recordings/{{ file_id }}/selected?kind={{ kind }}" hx-target="next [data-selected-content]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">{{ label }}</button>
+            <div data-selected-content aria-live="polite"></div>
+        </div>
+        {% endfor %}
+    </div>
+    {% for source in details.sources %}
+    <article class="min-w-0 rounded border p-3" data-source-object="{{ source.source_object_id }}">
+        <a href="/files/{{ source.source_file_id or file_id }}#companion-sources" class="font-medium text-link break-all">{{ source.filename or source.native_id }}</a>
+        <p class="text-xs break-all">{{ source.channel or source.provider_id }} · {{ source.location or 'Retained historical source' }} · {{ source.inventory_availability }}</p>
+        {% if source.latest_stored_content %}<p class="text-xs">Latest stored observation: {{ source.latest_stored_content.parser_version }} · {{ source.latest_stored_content.status }} · {{ source.latest_stored_content.availability }}</p>{% else %}<p class="text-xs">Not read or imported yet.</p>{% endif %}
+        {% if source.latest_received_attempt %}<p class="text-xs" data-latest-attempt>Latest received read: {{ source.latest_received_attempt.status }} · {{ source.latest_received_attempt.code }} · {{ source.latest_received_attempt.freshness }}</p>{% else %}<p class="text-xs">Read attempt history unknown.</p>{% endif %}
+        <button type="button" hx-get="/files/{{ file_id }}/companion-sources/{{ source.source_object_id }}/observations" hx-target="next [data-source-history]" class="{{ ui.btn('secondary', 'sm', 'mt-2 max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Browse text, tracklists and release metadata</button>
+        <div data-source-history aria-live="polite"></div>
+    </article>
+    {% else %}<p class="text-sm text-muted">No stored local source content. Refresh a linked companion, or import a descriptive tag.</p>{% endfor %}
+    {% if details.next_source_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-details?source_offset={{ details.next_source_offset }}&amp;link_offset={{ link_offset | default(0) }}" hx-target="closest [data-companion-overview]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next sources</button>{% endif %}
+    {% for channel in companion_embedded_channels | default(()) %}
+    <form hx-post="/api/local-sources/import" hx-target="next [data-companion-action]" class="flex flex-wrap gap-2">
+        <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="embedded_channel" value="{{ channel }}">
+        <button type="submit" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Import stored {{ channel }} tag</button>
+    </form><div data-companion-action aria-live="polite"></div>
+    {% endfor %}
+    <button type="button" hx-get="/files/{{ file_id }}/linked-media" hx-target="next [data-linked-media]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Other recordings linked to this file</button>
+    <div data-linked-media aria-live="polite"></div>
+</div>
