@@ -11,7 +11,7 @@ Where the second device comes from:
 
 * **Darwin** -- a few-MiB ``hdiutil`` disk image, attached unprivileged under
   ``tmp_path`` and detached (and deleted) at teardown.  HFS+ for EXDEV and
-  metadata, exFAT for the no-hard-link fallback, a 4 MiB HFS+ for ENOSPC.
+  metadata, exFAT for fail-closed publication without hard links, a 4 MiB HFS+ for ENOSPC.
 * **Linux** (CI) -- ``/dev/shm`` when it is a tmpfs on a different device from
   ``tmp_path``.  It covers EXDEV and metadata only: an unprivileged process can
   mount neither a size-limited filesystem nor one without hard links, so the
@@ -26,8 +26,8 @@ metadata assertions are shaped as they are:
 * ``os.rename`` and ``os.link`` from the data volume onto HFS+, MS-DOS and exFAT
   images all raise EXDEV.
 * ``os.link`` WITHIN an exFAT or MS-DOS volume raises ENOTSUP (45), which on
-  Darwin is not EOPNOTSUPP (102), so the fallback did not fire there until
-  ``_LINK_UNSUPPORTED_ERRNOS`` gained it.
+  Darwin is not EOPNOTSUPP (102). Since phaze-pc0dr both errors fail closed:
+  an overwrite-capable rename cannot preserve exclusive publication.
 * ``copystat`` onto HFS+ keeps the mode exactly and truncates mtime to whole
   seconds; onto exFAT it silently leaves the mode at 0o700 and keeps mtime to
   10 ms.  Source mtimes here are whole, even seconds so every filesystem above
@@ -206,11 +206,13 @@ async def test_cross_device_move_publishes_bytes_mode_and_mtime(tmp_path: Path, 
     assert _leftovers(dest.parent) == []
 
 
-async def test_cross_device_move_onto_a_filesystem_without_hard_links(tmp_path: Path, linkless_device: Path) -> None:
-    """exFAT refuses the no-clobber link claim; the move must take the fallback and still publish."""
+async def test_cross_device_move_refuses_a_filesystem_without_hard_links(tmp_path: Path, linkless_device: Path) -> None:
+    """Real exFAT refusal retains the original bytes and cleans the unpublished staging file."""
     probe = linkless_device / "probe"
     probe.write_bytes(b"x")
-    assert LocalFilesystemPrimitives().claim_destination_by_link(probe, linkless_device / "probe-link") is False
+    with pytest.raises(OSError) as probe_error:
+        LocalFilesystemPrimitives().claim_destination_by_link(probe, linkless_device / "probe-link")
+    assert probe_error.value.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}
     assert not (linkless_device / "probe-link").exists()
     probe.unlink()
 
@@ -218,15 +220,15 @@ async def test_cross_device_move_onto_a_filesystem_without_hard_links(tmp_path: 
     root, src = _source(tmp_path, "track-02.m4a", payload)
     request = _request(root, linkless_device, src, "track-02.m4a")
 
-    result = await LocalExecutionFilesystemEngine().move(request, MoveStep())
+    step = MoveStep()
+    with pytest.raises(OSError) as move_error:
+        await LocalExecutionFilesystemEngine().move(request, step)
 
     dest = linkless_device / "sorted" / "track-02.m4a"
-    assert result.committed_now is True
-    assert not src.exists()
-    assert dest.read_bytes() == payload
-    assert dest.stat().st_mtime == _MTIME
-    # No st_mode assertion: exFAT stores no permission bits and copystat's chmod silently
-    # no-ops (measured 0o700 whatever the source) -- a property of the device, not the engine.
+    assert move_error.value.errno == probe_error.value.errno
+    assert step.current == "copy"
+    assert src.read_bytes() == payload
+    assert not dest.exists()
     assert _leftovers(dest.parent) == []
 
 
