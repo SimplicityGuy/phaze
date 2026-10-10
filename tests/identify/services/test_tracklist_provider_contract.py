@@ -493,3 +493,24 @@ async def test_swallowed_malformed_effect_output_cannot_become_found() -> None:
     source = local_context().sources[0]
     result = await ProviderRegistry((Swallow(),)).load(ProviderCandidate(identity=source.identity, source=source), LoadBudget(), InvalidEffects())
     assert result.status == "contract_error" and result.code == "invalid_read"
+
+
+@pytest.mark.parametrize("status", [OutcomeStatus.FOUND, OutcomeStatus.AMBIGUOUS])
+async def test_injected_interpreter_cannot_advertise_complete_snapshot_from_partial_read(status: OutcomeStatus) -> None:
+    source = SourceReference(identity=identity("local"), channel="companion", format="txt")
+    candidate = ProviderCandidate(identity=source.identity, source=source)
+
+    class OverconfidentInterpreter:
+        def interpret(self, candidate: ProviderCandidate, content: SourceRead, budget: LoadBudget) -> LoadOutcome:
+            del budget
+            return LoadOutcome(
+                status=status,
+                code="claimed_complete",
+                scope=content.scope,
+                snapshot=snapshot(identity=candidate.identity, tracks=(ProviderTrack(position=1, artist="Example", title="Title"),)),
+            )
+
+    result = await local_registry(OverconfidentInterpreter()).load(candidate, LoadBudget(), Effects(status="incomplete", truncated=True))
+    assert result.snapshot is not None and result.snapshot.completeness.state == "incomplete"
+    assert result.status == (OutcomeStatus.INCOMPLETE if status == OutcomeStatus.FOUND else status)
+    assert result.code == "read_truncated"

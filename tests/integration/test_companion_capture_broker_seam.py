@@ -63,7 +63,7 @@ async def test_owning_agent_capture_crosses_real_broker_and_authenticated_storag
         observation = await session.scalar(select(ProviderSourceObservation))
         assert observation is not None and observation.decoded_text == raw.decode()
         assert observation.revision == source.sha256_hash and observation.status == "found"
-        assert observation.payload["evidence"] == ["revision:sha256:full"]
+        assert observation.payload["evidence"] == [f"capture:inventory_sha256:{source.sha256_hash}", "revision:sha256:full"]
         # Stored source text is independent of subsequent agent availability.
         assert (await session.get(ProviderSourceObservation, observation.id)).decoded_text == raw.decode()
     finally:

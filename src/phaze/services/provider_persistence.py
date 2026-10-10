@@ -334,6 +334,10 @@ async def source_availability(session: AsyncSession, observation: ProviderSource
             return "unlinked"
     elif not await session.scalar(select(FileCompanion.id).where(FileCompanion.companion_id == file.id, FileCompanion.media_id == media_id)):
         return "unlinked"
+    provenance = observation.payload.get("provenance", observation.payload.get("evidence", []))
+    inventory_revisions = [value.removeprefix("capture:inventory_sha256:") for value in provenance if value.startswith("capture:inventory_sha256:")]
+    if source.channel == "companion" and len(inventory_revisions) == 1 and file.sha256_hash != inventory_revisions[0]:
+        return "stale"
     if (
         source.channel == "companion"
         and "revision:sha256:full" in observation.payload.get("provenance", observation.payload.get("evidence", []))
@@ -421,6 +425,8 @@ async def select_observation(
                 "observation_id": observation_id,
                 "actor": actor,
                 "selected_at": datetime.now(UTC),
+                "selection_token": None,  # nosec B105 -- optimistic review UUID, not a credential
+                "target_mapping": None,
                 "tracklist_id": None,
                 "version_id": None,
             },

@@ -262,10 +262,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-085)
+### Post-baseline chain (040-086)
 
-`alembic/versions/` holds **47** files: the `039` baseline plus a linear chain to the current
-head, **`085`**.
+`alembic/versions/` holds **48** files: the `039` baseline plus a linear chain to the current
+head, **`086`**.
 
 | Rev | Change |
 |-----|--------|
@@ -314,7 +314,8 @@ head, **`085`**.
 | `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) |
 | `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill (phaze-5rfev) |
 | `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) |
-| `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) — **head** |
+| `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) |
+| `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
