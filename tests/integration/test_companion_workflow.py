@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 import httpx
 from httpx import AsyncClient
 import pytest
-from saq import Worker
+from saq import Job, Status, Worker
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -57,6 +57,53 @@ from tests.integration.test_companion_viewing import HX, TEXT
 pytestmark = pytest.mark.integration
 
 
+async def complete_owned_job(worker: Worker, job: Job, session: AsyncSession, *, timeout: float = 60) -> Job:
+    """Process a bounded real broker step; cancellation/retry is never completion."""
+
+    stopping = asyncio.Event()
+
+    async def process_until_terminal() -> Job:
+        while not stopping.is_set():
+            current = await worker.queue.job(job.key)
+            assert current is not None, f"Owned broker job disappeared: {job.key}"
+            if current.status == Status.COMPLETE:
+                return current
+            assert current.status not in {Status.FAILED, Status.ABORTED}, current.error
+            await worker.process()
+            # SAQ swallows cancellation and retries; do not start another attempt.
+            if stopping.is_set():
+                raise asyncio.CancelledError
+        raise asyncio.CancelledError
+
+    runner = asyncio.create_task(process_until_terminal())
+    try:
+        done, _ = await asyncio.wait({runner}, timeout=timeout)
+        if not done:
+            raise TimeoutError(f"Owned job did not complete: {job.key}")
+        completed = await runner
+        assert completed.status == Status.COMPLETE and completed.result is not None
+        return completed
+    except BaseException:
+        stopping.set()
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+        children = [context["task"] for context in worker.job_task_contexts.values()]
+        for child in children:
+            child.cancel()
+        await asyncio.gather(*children, return_exceptions=True)
+        # The real callback shares this fixture's savepoint connection. A cancelled
+        # flush can invalidate it; rollback before any later read or fixture cleanup.
+        if session.bind is not None and session.bind.invalidated:
+            # Clear the invalid outer/savepoint transaction before Session can
+            # reconnect. A callback cancellation may have invalidated both.
+            await session.bind.rollback()
+        await session.rollback()
+        # Reconnect through the async API before the fixture's synchronous info
+        # inspection; no test or callback may read an invalidated transaction.
+        await session.connection()
+        raise
+
+
 @contextlib.asynccontextmanager
 async def physical_source(
     session: AsyncSession,
@@ -85,9 +132,19 @@ async def physical_source(
     dsn, _ = integration_dsns()
     router = AgentTaskRouter(queue_url=dsn, cache_redis_url=os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0"))
     queue = router.queue_for(agent.id, "meta")
+    owned_jobs: list[Job] = []
+    original_enqueue = queue.enqueue
+
+    async def enqueue_owned(*args: Any, **kwargs: Any) -> Job | None:
+        job = await original_enqueue(*args, **kwargs)
+        if job is not None:
+            owned_jobs.append(job)
+        return job
+
+    monkeypatch.setattr(queue, "enqueue", enqueue_owned)
     api = PhazeAgentClient(base_url="http://test", token=token, _client=authenticated_client)
     worker = Worker(queue=queue, functions=[capture_companion_source, write_cue_sheet], concurrency=1, dequeue_timeout=0.5)
-    worker.context.update(api_client=api, agent_identity=SimpleNamespace(agent_id=agent.id))
+    worker.context.update(api_client=api, agent_identity=SimpleNamespace(agent_id=agent.id), owned_jobs=owned_jobs)
     config = MagicMock(spec=AgentSettings)
     config.scan_roots = [str(tmp_path)]
     monkeypatch.setattr("phaze.tasks.companion_capture.get_settings", lambda: config)
@@ -100,7 +157,7 @@ async def physical_source(
             response = await authenticated_client.post("/api/internal/agent/companion-captures", json=failure.model_dump(mode="json"))
             assert response.status_code == 200
         await enqueue_companion_capture(factory, router, source.id, media_id=media.id)
-        await asyncio.wait_for(worker.process(), timeout=15)
+        completed = await complete_owned_job(worker, owned_jobs[-1], session)
         raw = (
             await session.execute(
                 select(ProviderSourceObservation)
@@ -113,10 +170,17 @@ async def physical_source(
             )
         ).scalar_one()
         assert raw is not None and raw.decoded_text == text and raw.status == "found"
+        assert completed.result["observation_id"] == str(raw.id)
         yield source, media, raw, router, worker
     finally:
+        children = [context["task"] for context in worker.job_task_contexts.values()]
+        for child in children:
+            child.cancel()
+        await asyncio.gather(*children, return_exceptions=True)
+        if not session.is_active:
+            await session.rollback()
         async with queue.pool.connection() as connection:
-            await connection.execute("DELETE FROM saq_jobs WHERE queue = %s", (queue.name,))
+            await connection.execute("DELETE FROM saq_jobs WHERE queue = %s AND key = ANY(%s)", (queue.name, [job.key for job in owned_jobs]))
         await router.close()
 
 
@@ -267,7 +331,8 @@ async def test_captured_cue_native_mapping_real_broker_authenticated_write(
         client._transport.app.state.task_router = router
         queued = await client.post(f"/cue/files/{media.id}/generate", data=values, headers={"Origin": "http://test"})
         assert "artifact queued" in queued.text, queued.text
-        await asyncio.wait_for(worker.process(), timeout=15)
+        completed = await complete_owned_job(worker, worker.context["owned_jobs"][-1], session)
+        assert completed.function == "write_cue_sheet"
         written = Path(media.current_path).with_suffix(".cue").read_text(encoding="utf-8-sig")
         assert "INDEX 01 00:01:01" in written and "First target" in written and "Second target" not in written
         assert artifact.binding.observation_id == observation.id
@@ -556,3 +621,53 @@ async def test_physical_competing_sources_native_independent_choices_preserve_ma
             assert (legacy.id, version.id, track.id, accepted.id) == saved and version.version_number == 7
             assert track.timestamp == "00:01:01" and track.timestamp_evidence is None and accepted.status == "accepted"
             assert tags.artist == "Embedded Artist" and tags.raw_tags == {"Comments": "untimed original comment"}
+
+
+async def test_actual_callback_cancellation_drains_worker_and_rolls_back_flush(session, authenticated_client, seed_test_agent, tmp_path, monkeypatch):
+    from sqlalchemy import text
+
+    async with physical_source(session, authenticated_client, seed_test_agent, tmp_path, monkeypatch, TEXT) as (source, media, _raw, router, worker):
+        backend_pid = await session.scalar(select(func.pg_backend_pid()))
+        original_flush = session.flush
+
+        async def hold_callback_flush(*args, **kwargs):
+            # A real callback storage await on the actual fixture connection, not
+            # a mocked broker/read/report. Cancel only after PG confirms it active.
+            await session.execute(text("SELECT pg_sleep(60) /* jwals_callback_flush */"))
+            return await original_flush(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(session, "flush", hold_callback_flush)
+            factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+            await enqueue_companion_capture(factory, router, source.id, media_id=media.id)
+            job = worker.context["owned_jobs"][-1]
+            completion = asyncio.create_task(complete_owned_job(worker, job, session))
+            observer = async_sessionmaker(session.bind.engine, expire_on_commit=False)
+
+            async def wait_for_callback_query():
+                async with observer() as db:
+                    while not await db.scalar(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid=:pid "
+                            "AND state='active' AND query LIKE '%jwals_callback_flush%')"
+                        ),
+                        {"pid": backend_pid},
+                    ):
+                        # PG caches statistics per transaction. Each poll must
+                        # observe current activity rather than the first snapshot.
+                        await db.commit()
+                        await asyncio.sleep(0.01)
+
+            try:
+                await asyncio.wait_for(wait_for_callback_query(), 10)
+                completion.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await completion
+            finally:
+                if not completion.done():
+                    completion.cancel()
+                    await asyncio.gather(completion, return_exceptions=True)
+        assert not worker.job_task_contexts
+        retried = await worker.queue.job(job.key)
+        assert retried is not None and retried.status == Status.QUEUED and retried.error == "cancelled"
+        assert session.is_active and await session.scalar(select(1)) == 1

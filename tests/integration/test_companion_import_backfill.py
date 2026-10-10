@@ -195,6 +195,12 @@ async def test_atomic_keyset_pages_fixed_cutoff_and_readonly_counts(session):
         await features(session, companion)
         companions.append(companion)
     run = await create_run(session, "test-fileserver", associated=True)
+    # Fixed synthetic timestamps separate old-run and fresh-count membership
+    # without making correctness depend on how fast the suite executes.
+    run.cutoff -= timedelta(days=1)
+    for companion in companions:
+        companion.created_at = run.cutoff - timedelta(seconds=1)
+    await session.flush()
     late = FileRecord(
         id=uuid.UUID(int=1),
         agent_id="test-fileserver",
@@ -227,8 +233,13 @@ async def test_atomic_keyset_pages_fixed_cutoff_and_readonly_counts(session):
     with pytest.raises(ValueError, match="Page size"):
         await enumerate_page(session, run.id, page_size=51)
     before = await session.scalar(select(func.count()).select_from(CompanionImportRun))
+    # A new read-only count has its own cutoff; the late row remains later
+    # than the persistent run cutoff and earlier than the current DB clock.
+    assert run.cutoff < late.created_at <= await session.scalar(select(func.clock_timestamp()))
     counts = await count_backfill(session, page_size=2)
-    assert sum(counts.values()) == 7
+    assert sum(counts.values()) == 8 and counts["pending"] == 1
+    assert late.created_at > run.cutoff
+    assert await session.scalar(select(func.count()).select_from(CompanionImportItem)) == 7
     assert await session.scalar(select(func.count()).select_from(CompanionImportRun)) == before
 
 
