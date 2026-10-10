@@ -33,6 +33,9 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `provider_recording_candidates` | Pending or accepted source observations associated with each recording |
 | `provider_recording_selections` | Explicit current choices for tracklists and release metadata |
 | `provider_selection_events` | Append-only reviewed choices with actor, target and observation |
+| `provider_acquisition_attempts` | Immutable physical-read attempts with received order, separate from deduplicated source observations |
+| `companion_import_runs` | Fixed inventory boundary and durable continuation for a per-agent import run |
+| `companion_import_items` | Bounded resumable source work, lease and per-kind outcome checkpoints |
 | `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired (phaze-7muoo) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
@@ -262,10 +265,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-086)
+### Post-baseline chain (040-087)
 
 `alembic/versions/` holds **48** files: the `039` baseline plus a linear chain to the current
-head, **`086`**.
+head, **`087`**.
 
 | Rev | Change |
 |-----|--------|
@@ -315,7 +318,8 @@ head, **`086`**.
 | `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill (phaze-5rfev) |
 | `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) |
 | `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) |
-| `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) — **head** |
+| `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) |
+| `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

@@ -561,6 +561,17 @@ owning agent at run time. Bring that agent back online and re-run the command â€
 a repeat enqueue of an already-queued file a clean no-op reported as `in_flight`) â€” no manual
 bookkeeping is needed to avoid double-enqueuing.
 
+## Local companion text and import backfill
+
+After deploying migration `087` and updated controller/agent workers, inspect all eligible sources
+with `uv run phaze backfill companion-import`. This default is read-only and reports counts across
+every inventory page. Use `--apply --agent <agent-id>` to start a durable per-agent run;
+`--run <run-id>` shows progress and `--run <run-id> --apply` resumes it. Importing creates source
+candidates and preserves reviewed selections. It does not apply tags or move files.
+
+See [the companion import implementation notes](design/companion-import-backfill-implementation.md)
+for deployment order, outcome meanings, retry behavior and the separate acquisition attempt history.
+
 ## COMPANION archive-backfill proposal decision (phaze-cy1h7)
 
 The 2026-09-14 post-backfill production measurement found zero existing rename proposals. The

@@ -58,6 +58,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.active_reaper import reap_stranded_active_jobs
 from phaze.tasks.companion_association import associate_agent_companions
+from phaze.tasks.companion_import import import_agent_companions
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.filename_convention import learn_filename_conventions
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
@@ -456,6 +457,7 @@ settings = {
         # phaze-spd83: the automatic, coalesced companion association run for one agent. Enqueued by
         # the api after the events that can change a companion's links -- never by a cron.
         associate_agent_companions,
+        import_agent_companions,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors

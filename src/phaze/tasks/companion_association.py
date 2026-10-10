@@ -21,6 +21,8 @@ from typing import Any
 import structlog
 
 from phaze.services.companion_autolink import agent_association_lock, enqueue_association, run_agent_association, scan_running
+from phaze.services.companion_import_backfill import create_run
+from phaze.tasks.companion_import import enqueue_import_run
 
 
 logger = structlog.get_logger(__name__)
@@ -49,6 +51,11 @@ async def associate_agent_companions(ctx: dict[str, Any], *, agent_id: str, wind
             if not acquired:
                 return await _defer(ctx, agent_id, window, "agent_locked")
             association, detection = await run_agent_association(session, agent_id, apply=True)
+    async with ctx["async_session"]() as session:
+        import_run = await create_run(session, agent_id, associated=True, request_key=f"association:{agent_id}:{window}")
+        import_run_id, continuation = import_run.id, import_run.continuation
+        await session.commit()
+    await enqueue_import_run(ctx["queue"], import_run_id, step=continuation)
     result: dict[str, Any] = {
         "agent_id": agent_id,
         "window": window,

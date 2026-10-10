@@ -140,6 +140,7 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # request in a window collapses onto this key while it is queued; a request made after the run
     # started falls in a later window and so gets its own key instead of being dropped against the
     # active one (services/companion_autolink.py, "COALESCING").
+    "import_agent_companions": lambda k: f"{k['run_id']}:{k['step']}",
     "associate_agent_companions": lambda k: f"{k['agent_id']}:{k['window']}",
 }
 
