@@ -47,6 +47,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[API Reference](api.md)** | 🔌 REST and HTMX UI endpoints, plus the distributed Agent API |
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Companion Source Capture](operations/companion-capture.md)** | Revision-bound owning-agent text capture and immutable offline observations |
+| **[Companion Viewing](operations/companion-viewing.md)** | Music and video detail views, stored text, parsed sources, explicit selection and capture status |
 | **[Local Tracklist Syntax](design/local-tracklist-parser-implementation.md)** | Narrow CUE/text grammars, source origins, excluded lines and exact timing evidence |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |

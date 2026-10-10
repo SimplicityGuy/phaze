@@ -1,5 +1,7 @@
 """Bounded HTML view context for persisted companion content and reviewed decisions."""
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 import uuid
 
@@ -10,12 +12,16 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import cast, func, select
 from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from phaze.models.companion_import import ProviderAcquisitionAttempt
 from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
 from phaze.schemas.companion_details import CompanionDetails, StoredObservationDetail, StoredTextRequest
 from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
+from phaze.services.companion_acquisition import get_latest_source_attempts
 from phaze.services.companion_details import _embedded_freshness, _file, _observation_query, _summary, get_companion_details, get_stored_text
 from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
 from phaze.tracklist_providers.local_parser import PARSER_VERSION
@@ -63,7 +69,7 @@ async def observation_actions(session: AsyncSession, detail: StoredObservationDe
     media = await session.get(FileRecord, detail.file_id)
     source = await session.get(ProviderSourceObject, detail.summary.source_object_id)
     file = await session.get(FileRecord, source.source_file_id) if source and source.source_file_id else None
-    overview = await get_companion_details(session, detail.file_id)
+    overview = await get_companion_details(session, detail.file_id, attempt_reader=get_latest_source_attempts)
     known = detail.summary.parser_version in {PARSER_VERSION, RELEASE_PARSER_VERSION}
     kind = "release_metadata" if detail.summary.parser_version == RELEASE_PARSER_VERSION else "tracklist"
     selected = next((item for item in overview.selected if item.kind == kind), None) if overview else None
@@ -155,3 +161,76 @@ def request_schema(model: type[ImportLocalSource] | type[SourceDecision]) -> dic
             "content": {"application/json": {"schema": inline(schema)}, "application/x-www-form-urlencoded": {"schema": inline(schema)}},
         }
     }
+
+
+@dataclass(frozen=True)
+class CaptureRefreshBaseline:
+    since: datetime
+    ordinal: int
+    revision: str
+
+
+def _capture_pair(media_id: uuid.UUID, companion_id: uuid.UUID) -> Any:
+    """Use current inventory owners and exact native identity, including collision-safe equality."""
+    companion = aliased(FileRecord)
+    source = ProviderSourceObject
+    return (
+        select(companion.sha256_hash.label("revision"), source.id.label("source_id"), FileRecord.agent_id.label("owner"))
+        .select_from(FileRecord)
+        .join(FileCompanion, FileCompanion.media_id == FileRecord.id)
+        .join(companion, companion.id == FileCompanion.companion_id)
+        .outerjoin(
+            source, (source.source_file_id == companion.id) & (source.provider_id == "local") & (source.native_id == f"companion:{companion_id}")
+        )
+        .where(FileRecord.id == media_id, companion.id == companion_id, companion.agent_id == FileRecord.agent_id)
+    ).subquery()
+
+
+async def capture_refresh_baseline(session: AsyncSession, media_id: uuid.UUID, companion_id: uuid.UUID) -> CaptureRefreshBaseline:
+    pair = _capture_pair(media_id, companion_id)
+    latest = (
+        select(func.coalesce(func.max(ProviderAcquisitionAttempt.ordinal), 0))
+        .where(ProviderAcquisitionAttempt.source_object_id == pair.c.source_id)
+        .scalar_subquery()
+    )
+    row = (await session.execute(select(pair.c.revision, latest.label("ordinal"), func.clock_timestamp().label("since")))).mappings().first()
+    if row is None:
+        raise ValueError("Companion link or owning agent changed")
+    return CaptureRefreshBaseline(row["since"], row["ordinal"], row["revision"])
+
+
+async def capture_refresh_received(
+    session: AsyncSession, media_id: uuid.UUID, companion_id: uuid.UUID, baseline: CaptureRefreshBaseline
+) -> tuple[datetime, dict[str, Any] | None, bool]:
+    """Narrow authenticated receipt evidence; HTTP replay never advances the attempt ordinal.
+
+    A receipt can come from another concurrent capture of this same revision. It is deliberately
+    reported as observed after the request rather than asserted to complete one exact queue job.
+    """
+    pair = _capture_pair(media_id, companion_id)
+    attempt = ProviderAcquisitionAttempt
+    observation = ProviderSourceObservation
+    valid_pair = await session.scalar(select(pair.c.revision).where(pair.c.revision == baseline.revision))
+    now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
+    row = (
+        (
+            await session.execute(
+                select(attempt.ordinal, attempt.status, attempt.code, attempt.freshness, attempt.received_at)
+                .join(pair, pair.c.source_id == attempt.source_object_id)
+                .join(observation, (observation.id == attempt.observation_id) & (observation.object_id == attempt.source_object_id))
+                .where(
+                    pair.c.revision == baseline.revision,
+                    attempt.agent_id == pair.c.owner,
+                    attempt.ordinal > baseline.ordinal,
+                    attempt.received_at >= baseline.since,
+                    attempt.envelope["target"]["expected_sha256"].astext == baseline.revision,
+                    observation.parser_version == "source-read-v1",
+                )
+                .order_by(attempt.ordinal.desc())
+                .limit(1)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return now, dict(row) if row is not None else None, valid_pair is not None

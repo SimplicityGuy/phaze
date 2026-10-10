@@ -14,6 +14,7 @@ proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a frien
 (``record_not_found.html`` -- T-61-05), never a 500 / JSON detail / stack trace.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast as type_cast
@@ -32,10 +33,8 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
-from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.schemas.companion_details import (
@@ -49,6 +48,7 @@ from phaze.schemas.companion_details import (
 )
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.companion_acquisition import get_latest_source_attempts
 from phaze.services.companion_capture import enqueue_companion_capture
 from phaze.services.companion_details import (
     get_companion_details,
@@ -57,7 +57,16 @@ from phaze.services.companion_details import (
     get_stored_observation,
     get_stored_text,
 )
-from phaze.services.companion_view import embedded_channels, fragment, html_requested, observation_actions, visible_parsed_content
+from phaze.services.companion_view import (
+    CaptureRefreshBaseline,
+    capture_refresh_baseline,
+    capture_refresh_received,
+    embedded_channels,
+    fragment,
+    html_requested,
+    observation_actions,
+    visible_parsed_content,
+)
 from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
@@ -250,7 +259,7 @@ async def build_file_record_context(
 
     # Read the latest stored tracklist without external acquisition.
     tracklist_review = await get_file_tracklist_review(session, file_id)
-    companion_details = await get_companion_details(session, file_id)
+    companion_details = await get_companion_details(session, file_id, attempt_reader=get_latest_source_attempts)
     companion_parsed = await visible_parsed_content(session, companion_details) if companion_details else ()
 
     # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
@@ -460,6 +469,7 @@ async def companion_detail_page(
         file_id,
         link_page=DetailPage(offset=offset if link_offset is None else link_offset, limit=limit),
         source_page=DetailPage(offset=offset if source_offset is None else source_offset, limit=limit),
+        attempt_reader=get_latest_source_attempts,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -561,10 +571,14 @@ async def companion_linked_media(
 @router.post("/files/{file_id}/companions/{companion_id}/refresh", response_class=HTMLResponse)
 async def companion_refresh(request: Request, file_id: uuid.UUID, companion_id: uuid.UUID) -> HTMLResponse:
     """Explicit async read; rendering never dispatches work. The agent owns filesystem access."""
-    since = datetime.now(UTC)
     try:
-        payload = await enqueue_companion_capture(async_session, request.app.state.task_router, companion_id, media_id=file_id)
-    except (ValueError, PermissionError, OSError) as exc:
+        async with async_session() as session:
+            baseline = await capture_refresh_baseline(session, file_id, companion_id)
+        async with asyncio.timeout(10):
+            payload = await enqueue_companion_capture(async_session, request.app.state.task_router, companion_id, media_id=file_id)
+        if payload.target.expected_sha256 != baseline.revision:
+            raise ValueError("Companion revision changed while dispatching; update the stored view before retrying")
+    except Exception as exc:
         return fragment(templates, request, "record/companions/_action.html", message=f"Refresh could not be queued: {exc}", failed=True)
     return fragment(
         templates,
@@ -572,10 +586,11 @@ async def companion_refresh(request: Request, file_id: uuid.UUID, companion_id: 
         "record/companions/_refresh.html",
         file_id=file_id,
         companion_id=companion_id,
-        since=since.isoformat(),
+        since=baseline.since.isoformat(),
+        after_ordinal=baseline.ordinal,
         revision=payload.target.expected_sha256,
         waiting=True,
-        message="Refresh queued on the owning agent. Waiting for a stored matching-revision report; this is not completion.",
+        message="Refresh queued on the owning agent. Waiting for a new received capture of this revision; enqueue is not completion.",
     )
 
 
@@ -585,34 +600,27 @@ async def companion_refresh_status(
     file_id: uuid.UUID,
     companion_id: uuid.UUID,
     since: datetime,
-    revision: str = Query(pattern=r"^[0-9a-f]{64}$"),
+    revision: str = Query(max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    after_ordinal: int = Query(0, ge=0, le=9223372036854775807),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Report observed persisted state; an enqueue alone is never labelled complete."""
     if since.tzinfo is None:
         raise HTTPException(status_code=422, detail="Refresh baseline requires a timezone")
-    linked = await session.scalar(select(FileCompanion.id).where(FileCompanion.media_id == file_id, FileCompanion.companion_id == companion_id))
-    if linked is None:
+    now, row, valid_pair = await capture_refresh_received(session, file_id, companion_id, CaptureRefreshBaseline(since, after_ordinal, revision))
+    if not valid_pair:
         return fragment(
-            templates, request, "record/companions/_action.html", message="Companion link changed; retained history remains readable.", failed=True
+            templates,
+            request,
+            "record/companions/_action.html",
+            message="Companion link, owner or inventory revision changed; retained history remains readable.",
+            failed=True,
         )
-    row = await session.scalar(
-        select(ProviderSourceObservation)
-        .join(ProviderSourceObject, ProviderSourceObject.id == ProviderSourceObservation.object_id)
-        .where(
-            ProviderSourceObject.source_file_id == companion_id,
-            ProviderSourceObservation.parser_version == "source-read-v1",
-            ProviderSourceObservation.retrieved_at >= since,
-            ProviderSourceObservation.payload["evidence"].contains([f"capture:inventory_sha256:{revision}"]),
-        )
-        .order_by(ProviderSourceObservation.retrieved_at.desc(), ProviderSourceObservation.id.desc())
-        .limit(1)
-    )
-    waiting = row is None and datetime.now(UTC) - since < timedelta(minutes=2)
+    waiting = row is None and now - since < timedelta(minutes=2)
     message = (
-        f"Observed stored read: {row.status} · {row.code}. Import stored text separately."
+        f"A new authorized capture was received since this request: {row['status']} · {row['code']} · {row['freshness']}. This is observed receipt, not proof of this exact job completing. Import stored text separately."
         if row
-        else "Waiting for a matching-revision stored report."
+        else "Waiting for a new received capture of this revision."
         if waiting
         else "No new report observed. The agent may be offline; retained text is unchanged."
     )
@@ -623,6 +631,7 @@ async def companion_refresh_status(
         file_id=file_id,
         companion_id=companion_id,
         since=since.isoformat(),
+        after_ordinal=after_ordinal,
         revision=revision,
         waiting=waiting,
         message=message,

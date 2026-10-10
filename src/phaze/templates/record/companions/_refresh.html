@@ -1,7 +1,7 @@
 {% import "ui/primitives.html" as ui %}
 <div data-capture-status role="status" class="mt-2 text-sm"
 {% if waiting %}
- hx-get="/files/{{ file_id }}/companions/{{ companion_id }}/refresh-status?since={{ since }}&amp;revision={{ revision }}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+ hx-get="/files/{{ file_id }}/companions/{{ companion_id }}/refresh-status?since={{ since | urlencode }}&amp;revision={{ revision }}&amp;after_ordinal={{ after_ordinal }}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
     <p>{{ message }}</p>
     {% if not waiting %}<a href="/files/{{ file_id }}#companion-sources" class="text-link">Open retained content</a>{% endif %}
 </div>

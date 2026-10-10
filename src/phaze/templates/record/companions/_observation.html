@@ -24,7 +24,7 @@
     {% if detail.selected_availability %}<p class="text-xs">Reviewed target projection: {{ detail.selected_availability }} · {{ detail.selected_track_count }} tracks</p>{% for track in detail.selected_tracks %}<p class="text-xs break-all" data-selected-track>{{ track.position }}. {{ track.artist or '' }} — {{ track.title or '' }}{% if track.timestamp %} · {{ track.timestamp.offset_usability }} · {{ track.timestamp.origin }}{% endif %}</p>{% endfor %}{% endif %}
     {% if detail.evidence %}<details><summary class="text-xs">Read/parser evidence and rejected lines</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ detail.evidence | join('\n') }}</pre></details>{% endif %}
     {% if actions.raw_id %}<form hx-post="/api/local-sources/reimport" hx-target="next [data-companion-action]">
-        <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="raw_observation_id" value="{{ actions.raw_id }}"><button type="submit" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reimport stored text</button>
+        <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="raw_observation_id" value="{{ actions.raw_id }}"><button type="submit" disabled data-hx-guard class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reimport stored text</button>
     </form><div data-companion-action aria-live="polite"></div>{% endif %}
     {% if actions.can_select or actions.can_reject %}
     <form hx-post="/api/local-sources/decision" hx-target="next [data-companion-action]" class="space-y-2" data-source-decision>
@@ -34,8 +34,8 @@
         <input type="hidden" name="expected_source_sha256" value="{{ actions.source_sha256 }}"><input type="hidden" name="expected_media_sha256" value="{{ actions.media_sha256 }}">
         {% if detail.summary.conflict_with_id %}<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="accept_conflict" value="true">I reviewed the conflicting source evidence.</label>{% endif %}
         {% if actions.is_cue %}<label class="block text-sm">CUE FILE ordinal explicitly belonging to this recording <input type="number" name="cue_file_ordinal" min="1" max="4096" class="input input-sm w-24"></label><p class="text-xs">Read each track's FILE evidence. Multiple FILE parts are not concatenated.</p>{% endif %}
-        {% if actions.can_select %}<button type="submit" name="action" value="select" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Select this {{ actions.kind }}</button>{% endif %}
-        {% if actions.can_reject %}<button type="submit" name="action" value="reject" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reject candidate</button>{% endif %}
+        {% if actions.can_select %}<button type="submit" disabled data-hx-guard name="action" value="select" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Select this {{ actions.kind }}</button>{% endif %}
+        {% if actions.can_reject %}<button type="submit" disabled data-hx-guard name="action" value="reject" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reject candidate</button>{% endif %}
     </form><div data-companion-action aria-live="polite"></div>
     {% else %}<p class="text-xs">This observation cannot replace reviewed data. Inspect raw text, refresh availability, or import a complete candidate.</p>{% endif %}
 </div>

@@ -12,7 +12,7 @@
         <p class="text-xs">{{ link.availability }} · link: {{ link.derivation_method }}{% if link.derivation_revision %} · revision {{ link.derivation_revision[:12] }}{% endif %}</p>
         {% if link.derivation_evidence %}<details><summary class="text-xs cursor-pointer">Link evidence</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ link.derivation_evidence | join('\n') }}</pre></details>{% endif %}
         <form hx-post="/files/{{ file_id }}/companions/{{ link.file_id }}/refresh" hx-target="next [data-companion-action]" hx-swap="innerHTML" class="mt-2">
-            <button type="submit" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Refresh companion text</button>
+            <button type="submit" disabled data-hx-guard class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Refresh companion text</button>
         </form>
         <div data-companion-action aria-live="polite"></div>
     </div>
@@ -40,7 +40,7 @@
     {% for channel in companion_embedded_channels | default(()) %}
     <form hx-post="/api/local-sources/import" hx-target="next [data-companion-action]" class="flex flex-wrap gap-2">
         <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="embedded_channel" value="{{ channel }}">
-        <button type="submit" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Import stored {{ channel }} tag</button>
+        <button type="submit" disabled data-hx-guard class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Import stored {{ channel }} tag</button>
     </form><div data-companion-action aria-live="polite"></div>
     {% endfor %}
     <button type="button" hx-get="/files/{{ file_id }}/linked-media" hx-target="next [data-linked-media]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Other recordings linked to this file</button>

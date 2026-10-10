@@ -16,7 +16,7 @@ pytestmark = pytest.mark.browser
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])
 async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, seed, kind):
     await seed.agent("test-fileserver")
-    media, _companion, raw = await inventory(seed.session, TEXT, "nfo")
+    media, _companion, raw = await inventory(seed.session, TEXT, "nfo" if kind == "mp3" else "txt")
     media.file_type = kind
     await import_local_source(seed.session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     await seed.session.commit()
@@ -54,6 +54,9 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
     drawer_text = await page.locator("#record-body [data-record-content]").inner_text()
     assert page_text == drawer_text
     assert await page.locator("#record-body [data-visible-release-field]").first.is_visible()
+    await page.set_viewport_size({"width": 390, "height": 844})
+    assert await page.locator("#record-body [data-visible-release-field]").first.is_visible()
+    assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
 
 
 async def test_native_form_reimport_select_and_html_error(page, seed):

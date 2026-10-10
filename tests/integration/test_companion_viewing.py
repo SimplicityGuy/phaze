@@ -1,17 +1,27 @@
 """Real stored read/import/review and page/drawer HTML transport."""
 
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlencode, urlsplit
 import uuid
 
 from bs4 import BeautifulSoup
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.main import create_app
+from phaze.models.agent import Agent
+from phaze.models.companion_import import ProviderAcquisitionAttempt
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
 from phaze.schemas.local_source_import import ImportLocalSource
+from phaze.services.companion_capture import store_capture_report
 from phaze.services.local_source_import import import_local_source
+from phaze.tracklist_providers.domain import LoadBudget
+from tests.integration.test_companion_import_backfill import report
 from tests.integration.test_local_source_import import CUE, decision, inventory
 
 
@@ -21,7 +31,7 @@ HX = {"HX-Request": "true"}
 
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])
 async def test_music_video_both_interpretations_visible_page_drawer_and_lazy_text(client, session, kind):
-    media, companion, raw = await inventory(session, TEXT, "nfo")
+    media, companion, raw = await inventory(session, TEXT, "nfo" if kind == "mp3" else "txt")
     media.file_type = kind
     result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     await session.flush()
@@ -144,8 +154,9 @@ async def test_companion_and_source_cursors_are_independent(client, session):
     assert "link_offset=20" in source_page.find("button", string="Next sources")["hx-get"]
 
 
-async def test_cue_review_form_requires_explicit_file_mapping(client, session):
-    media, _companion, raw = await inventory(session, CUE, "cue")
+@pytest.mark.parametrize("multi", [False, True])
+async def test_cue_review_form_requires_explicit_file_mapping(client, session, multi):
+    media, _companion, raw = await inventory(session, CUE if multi else CUE.split('FILE "two.mp3"')[0], "cue")
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     response = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -156,8 +167,92 @@ async def test_cue_review_form_requires_explicit_file_mapping(client, session):
     values["action"] = "select"
     refused = await client.post(form["hx-post"], data=values, headers=HX)
     assert 'role="alert"' in refused.text
-    values["cue_file_ordinal"] = "2"
+    values["cue_file_ordinal"] = "2" if multi else "1"
     selected = await client.post(form["hx-post"], data=values, headers=HX)
     assert "Source selected" in selected.text
     actual = (await client.get(f"/api/local-sources/recordings/{media.id}/selected")).json()
-    assert [row["title"] for row in actual["tracks"]] == ["Second"]
+    assert [row["title"] for row in actual["tracks"]] == ["Second" if multi else "First"]
+
+
+async def test_partial_parser_detail_reads_complete_original_parent_text(client, session):
+    source_text = "01. Artist - First\n02. Artist - Retained tail\n"
+    media, _companion, raw = await inventory(session, source_text)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw, budget=LoadBudget(max_lines=1)))
+    assert imported.tracklist_status == "incomplete"
+    detail = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
+    parsed = BeautifulSoup(detail.text, "html.parser")
+    assert parsed.find("button", string="Select this tracklist") is None
+    url = parsed.find("button", string="Read original companion text")["hx-get"]
+    assert url.endswith(f"/{raw}/text")
+    original = await client.get(url, headers=HX)
+    assert "Retained tail" in original.text
+
+
+@pytest.mark.parametrize("source_text", ["", "Unrecognized notes\n"])
+async def test_empty_and_unrecognized_text_remain_visible_without_selection(client, session, source_text):
+    media, _companion, raw = await inventory(session, source_text)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    for identifier in (raw, imported.tracklist_observation_id, imported.release_observation_id):
+        detail = await client.get(f"/files/{media.id}/companion-observations/{identifier}", headers=HX)
+        assert "Read original companion text" in detail.text and "Select this" not in detail.text
+    original = await client.get(f"/files/{media.id}/companion-observations/{raw}/text", headers=HX)
+    assert ("Stored text is empty" if not source_text else "Unrecognized notes") in original.text
+
+
+async def test_refresh_uses_real_receipt_ordinal_and_db_clock_replayed_observation(client, session):
+    media, companion, _raw = await inventory(session)
+    # Agent clock is deliberately ahead. It must never make an old receipt seem new.
+    old = report(companion, status="unavailable", at=datetime.now(UTC) + timedelta(hours=1))
+    first = await store_capture_report(session, companion.agent_id, old)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    queue = SimpleNamespace(connect=AsyncMock(), enqueue=AsyncMock())
+    router = SimpleNamespace(queue_for=lambda *_: queue)
+    client._transport.app.state.task_router = router
+    with patch("phaze.routers.record.async_session", factory):
+        refreshed = await client.post(f"/files/{media.id}/companions/{companion.id}/refresh", headers=HX)
+    assert "enqueue is not completion" in refreshed.text
+    url = BeautifulSoup(refreshed.text, "html.parser").select_one("[data-capture-status]")["hx-get"]
+    params = parse_qs(urlsplit(url).query)
+    assert int(params["after_ordinal"][0]) == 1
+    waiting = await client.get(url, headers=HX)
+    assert "Waiting for a new received capture" in waiting.text and "A new authorized capture" not in waiting.text
+    await store_capture_report(session, companion.agent_id, report(companion))
+    success = await client.get(url, headers=HX)
+    assert "found" in success.text and "not proof of this exact job" in success.text
+    again = report(companion, status="unavailable", at=old.read.retrieved_at)
+    last = await store_capture_report(session, companion.agent_id, again)
+    assert last.observation_id == first.observation_id
+    failure = await client.get(url, headers=HX)
+    assert "unavailable" in failure.text and "offline" in failure.text
+    attempt = await session.get(ProviderAcquisitionAttempt, again.attempt_id)
+    params.update(since=[attempt.received_at.isoformat()], after_ordinal=[str(attempt.ordinal)])
+    after = urlsplit(url).path + "?" + urlencode(params, doseq=True)
+    # HTTP retry of the same physical read adds no receipt/ordinal and cannot satisfy a new baseline.
+    await store_capture_report(session, companion.agent_id, again)
+    assert "Waiting for a new received capture" in (await client.get(after, headers=HX)).text
+    # All overview entry points use actual receipt history, even when semantic UUID is reused.
+    for route in (f"/files/{media.id}", f"/record/{media.id}", f"/files/{media.id}/companion-details"):
+        rendered = BeautifulSoup((await client.get(route, headers=HX)).text, "html.parser")
+        assert "unavailable" in rendered.select_one("[data-latest-attempt]").get_text()
+    params["since"] = [(attempt.received_at - timedelta(minutes=3)).isoformat()]
+    expired = urlsplit(url).path + "?" + urlencode(params, doseq=True)
+    assert "agent may be offline" in (await client.get(expired, headers=HX)).text
+    params["since"] = [datetime.now(UTC).replace(tzinfo=None).isoformat()]
+    assert (await client.get(urlsplit(url).path, params=params, headers=HX)).status_code == 422
+    session.add(Agent(id="other-ui-owner", name="other-ui-owner", kind="fileserver", scan_roots=[]))
+    await session.flush()
+    companion.agent_id = "other-ui-owner"
+    await session.flush()
+    revoked = await client.get(url, headers=HX)
+    assert 'role="alert"' in revoked.text and "offline" not in revoked.text
+
+
+async def test_refresh_enqueue_failure_keeps_retained_text(client, session):
+    media, companion, raw = await inventory(session)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    queue = SimpleNamespace(connect=AsyncMock(), enqueue=AsyncMock(side_effect=OSError("synthetic broker unavailable")))
+    client._transport.app.state.task_router = SimpleNamespace(queue_for=lambda *_: queue)
+    with patch("phaze.routers.record.async_session", factory):
+        refused = await client.post(f"/files/{media.id}/companions/{companion.id}/refresh", headers=HX)
+    assert 'role="alert"' in refused.text and "could not be queued" in refused.text
+    assert "First" in (await client.get(f"/files/{media.id}/companion-observations/{raw}/text", headers=HX)).text
