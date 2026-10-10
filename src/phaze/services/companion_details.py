@@ -70,22 +70,39 @@ def _live_source(media: FileRecord | type[FileRecord]) -> Any:
     )
 
 
-def _authorized(media: FileRecord | type[FileRecord]) -> Any:
+def _historically_authorized(media: FileRecord | type[FileRecord], observation_id: Any) -> Any:
     # Historical permission is observation-specific, never a grant to all later object content.
     candidate = exists(
         select(ProviderRecordingCandidate.id)
         .correlate_except(ProviderRecordingCandidate)
-        .where(ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == Observation.id)
+        .where(ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == observation_id)
     )
     selected = exists(
         select(ProviderRecordingSelection.media_id)
         .correlate_except(ProviderRecordingSelection)
-        .where(ProviderRecordingSelection.media_id == media.id, ProviderRecordingSelection.observation_id == Observation.id)
+        .where(ProviderRecordingSelection.media_id == media.id, ProviderRecordingSelection.observation_id == observation_id)
     )
     event = exists(
-        select(ProviderSelectionEvent.id).where(ProviderSelectionEvent.media_id == media.id, ProviderSelectionEvent.observation_id == Observation.id)
+        select(ProviderSelectionEvent.id).where(ProviderSelectionEvent.media_id == media.id, ProviderSelectionEvent.observation_id == observation_id)
     )
-    return or_(_live_source(media), candidate, selected, event)
+    return or_(candidate, selected, event)
+
+
+def _authorized(media: FileRecord | type[FileRecord]) -> Any:
+    # A reviewed interpretation retains its exact raw parent, never sibling/future content.
+    child = aliased(Observation)
+    owner = aliased(FileRecord)
+    same_owner = exists(select(owner.id).where(owner.id == Source.source_file_id, owner.agent_id == _current_owner(media.id)))
+    retained_parent = exists(
+        select(child.id).where(
+            child.parent_id == Observation.id,
+            child.object_id == Observation.object_id,
+            Observation.parser_version == "source-read-v1",
+            or_(Source.source_file_id.is_(None), same_owner),
+            _historically_authorized(media, child.id),
+        )
+    )
+    return or_(_live_source(media), _historically_authorized(media, Observation.id), retained_parent)
 
 
 async def _file(session: AsyncSession, file_id: uuid.UUID) -> FileRecord | None:

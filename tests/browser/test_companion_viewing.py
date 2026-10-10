@@ -1,10 +1,13 @@
 """Real HTMX keyboard and narrow-view companion page/drawer browsing."""
 
+from playwright.async_api import Page
 import pytest
 
+from phaze.models.file_companion import FileCompanion
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.local_source_import import import_local_source
 from tests.browser.helpers import open_shell, swap_settles
+from tests.browser.seed import Seeder
 from tests.browser.test_files_record import _details_button, _wait_for_record
 from tests.integration.test_companion_viewing import TEXT
 from tests.integration.test_local_source_import import inventory
@@ -78,3 +81,50 @@ async def test_native_form_reimport_select_and_html_error(page, seed):
     await seed.session.commit()
     await page.get_by_role("button", name="Select this tracklist", exact=True).click()
     await page.get_by_role("alert").filter(has_text="Inventory revision changed before decision").wait_for()
+
+
+async def test_workspace_links_keyboard_independent_release_and_tracklist_choices(page: Page, seed: Seeder) -> None:
+    """Served controls are real; separate integration fixtures prove physical acquisition."""
+    await seed.agent("test-fileserver")
+    media, _first, raw = await inventory(seed.session, "Artist: First Artist\nAlbum: First Album\n01. First - Opening\n", "nfo")
+    first = await import_local_source(seed.session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    media.original_path = "/synthetic/first-recording.mp3"
+    await seed.session.flush()
+    _other, second_source, second_raw = await inventory(
+        seed.session, "Artist: Alternate Artist\nAlbum: Alternate Album\n01. Other - Alternate\n", "txt"
+    )
+    seed.session.add(FileCompanion(media_id=media.id, companion_id=second_source.id))
+    await seed.session.flush()
+    second = await import_local_source(seed.session, ImportLocalSource(media_id=media.id, raw_observation_id=second_raw))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": 390, "height": 844})
+    await open_shell(page, "/s/tracklist")
+    await page.locator("#local-tracklist-sources table").wait_for()
+    evidence = page.locator(f'a[href="/files/{media.id}#companion-sources"]').first
+    await evidence.focus()
+    await page.keyboard.press("Enter")
+    await page.locator("[data-companion-overview]").wait_for()
+    for observation, button in (
+        (first.tracklist_observation_id, "Select this tracklist"),
+        (second.release_observation_id, "Select this release metadata"),
+    ):
+        source = page.locator(f'[hx-get="/files/{media.id}/companion-observations/{observation}"]').first
+        await source.focus()
+        async with swap_settles(page):
+            await page.keyboard.press("Enter")
+        await page.locator(f'[data-stored-observation="{observation}"]').wait_for()
+        form = page.locator(f'[data-stored-observation="{observation}"] [data-source-decision]')
+        conflict = form.locator('input[name="accept_conflict"]')
+        if await conflict.count():
+            await conflict.check()
+        await form.get_by_role("button", name=button, exact=True).focus()
+        async with swap_settles(page):
+            await page.keyboard.press("Enter")
+        await page.get_by_role("status").filter(has_text="Source selected.").last.wait_for()
+    await open_shell(page, f"/files/{media.id}")
+    assert "Selected tracklist" in await page.locator("[data-record-content]").inner_text()
+    await page.get_by_role("button", name="Reviewed release metadata", exact=True).focus()
+    async with swap_settles(page):
+        await page.keyboard.press("Enter")
+    await page.locator("[data-reviewed-source]").filter(has_text="Selected release metadata").wait_for()
+    assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
