@@ -56,24 +56,30 @@ class ResilientPostgresQueue(PostgresQueue):
             raise ValueError(f"Job registered to a different queue: {registered_queue.name}")
         # Control-only lazy import: agent queues have no ledger handle.
         from phaze.services.analysis_attempt import serialize_analysis_enqueue  # noqa: PLC0415
-        from phaze.tasks._shared.attempt_context import ledger_enqueue_session  # noqa: PLC0415
+        from phaze.tasks._shared.attempt_context import EnqueueAuthority, enqueue_authority, ledger_enqueue_session  # noqa: PLC0415
 
         key = f"process_file:{(payload or {}).get('file_id')}"
-        async with AsyncExitStack() as stack:
-            try:
-                await stack.enter_async_context(serialize_analysis_enqueue(maker, key))
-            except Exception:
-                # Preserve T-45-03: ledger bookkeeping must never stop the broker enqueue.
-                # This degraded attempt has no trustworthy token; startup backfill repairs
-                # the obligation as before. Only acquisition is caught, never broker errors.
-                logger.warning("analysis_attempt_lock_degraded", key=key, exc_info=True)
-            if ledger_enqueue_session.get() is not None:
-                live = await self.job(key)
-                if live is not None and live.status not in TERMINAL_STATUSES:
-                    # Linearize dedup at this read. A finish after the read cannot turn
-                    # this duplicate producer into a new accepted attempt with an old token.
-                    return None
-            return await super().enqueue(job_or_func, **kwargs)
+        # Clear inherited context: a parent call holding another key is no proof
+        # that this enqueue owns serialization. Restore it only when this call ends.
+        session_token = ledger_enqueue_session.set(None)
+        authority_token = enqueue_authority.set(EnqueueAuthority(key, serialized=False))
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    await stack.enter_async_context(serialize_analysis_enqueue(maker, key))
+                except Exception:
+                    # Preserve availability without overwriting another attempt's ledger
+                    # or manufacturing trusted metadata before broker deduplication.
+                    logger.warning("analysis_attempt_lock_degraded", key=key, exc_info=True)
+                else:
+                    enqueue_authority.set(EnqueueAuthority(key, serialized=True))
+                    live = await self.job(key)
+                    if live is not None and live.status not in TERMINAL_STATUSES:
+                        return None
+                return await super().enqueue(job_or_func, **kwargs)
+        finally:
+            enqueue_authority.reset(authority_token)
+            ledger_enqueue_session.reset(session_token)
 
     async def _increment_upkeep_metric(self, metric: str) -> None:
         """Best-effort durable metric; observability must not replace the original failure."""

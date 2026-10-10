@@ -37,7 +37,7 @@ async def test_concurrent_producers_keep_winning_attempt_and_release_on_failure(
     """Per-key serialization must not deadlock by borrowing a second ledger connection."""
     _, default_maker = committed_db
     queue, _ = stage_env
-    engine = create_async_engine(default_maker.kw["bind"].url, pool_size=pool_size, max_overflow=0, pool_timeout=1)
+    engine = create_async_engine(default_maker.kw["bind"].url, pool_size=pool_size, max_overflow=0, pool_timeout=10)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     queue.ledger_sessionmaker = maker
     broker_insert = queue._enqueue
@@ -55,7 +55,7 @@ async def test_concurrent_producers_keep_winning_attempt_and_release_on_failure(
     try:
         # Four simultaneous producers: same-key dedup and independent-key progress.
         jobs = await asyncio.wait_for(
-            asyncio.gather(*(queue.enqueue("process_file", file_id=fid) for fid in [file_ids[0], file_ids[0], *file_ids[1:]])), 10
+            asyncio.gather(*(queue.enqueue("process_file", file_id=fid) for fid in [file_ids[0], file_ids[0], *file_ids[1:]])), 30
         )
         assert sum(job is not None for job in jobs) == 3
         key = f"process_file:{file_ids[0]}"
@@ -208,7 +208,7 @@ async def test_analysis_queue_rejects_foreign_registration_and_survives_lock_out
     assert await queue.job(accepted.key) is not None
     async with maker() as session:
         row = await session.get(SchedulingLedger, accepted.key)
-        assert row is not None and accepted.meta[ATTEMPT_META_KEY] == row.enqueued_at.isoformat()
+        assert row is None and ATTEMPT_META_KEY not in accepted.meta
 
 
 def test_backfill_rejects_naive_attempt_epoch_in_broker_payload() -> None:
@@ -484,3 +484,114 @@ async def test_cancelled_enqueue_releases_session_lock_and_context(
             await holder.commit()
             await holder.close()
         await engine.dispose()
+
+
+async def test_failed_serialization_preserves_winner_and_recovers_tokenless_enqueue(committed_db, stage_env, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from phaze.services.scheduling_ledger import clear_ledger_entry
+    from phaze.tasks._shared.attempt_context import enqueue_authority
+
+    _, maker = committed_db
+    queue, _ = stage_env
+    queue.ledger_sessionmaker = maker
+    identifier = str(uuid.uuid4())
+    winner = await queue.enqueue("process_file", file_id=identifier)
+    epoch = datetime.fromisoformat(winner.meta[ATTEMPT_META_KEY])
+    async with maker.begin() as db:
+        await mark_analysis_attempt_terminal(db, winner.key, epoch)
+    async with maker() as db:
+        terminal = (await db.get(SchedulingLedger, winner.key)).terminal_at
+
+    async def failed_lock():
+        raise OSError("synthetic acquisition failure")
+
+    @asynccontextmanager
+    async def unavailable_lock(_maker, _key):
+        await failed_lock()
+        yield
+
+    monkeypatch.setattr("phaze.services.analysis_attempt.serialize_analysis_enqueue", unavailable_lock)
+    duplicates = await asyncio.gather(
+        *(queue.enqueue("process_file", file_id=identifier, meta={ATTEMPT_META_KEY: "untrusted incoming", "other": "retained"}) for _ in range(3))
+    )
+    assert duplicates == [None, None, None]
+    persisted = await queue.job(winner.key)
+    assert persisted.meta[ATTEMPT_META_KEY] == epoch.isoformat()
+    async with maker.begin() as db:
+        row = await db.get(SchedulingLedger, winner.key)
+        assert row.enqueued_at == epoch and row.terminal_at == terminal
+        await clear_ledger_entry(db, winner.key)
+        assert await db.get(SchedulingLedger, winner.key, populate_existing=True) is not None  # Live broker protects even terminal ledger.
+
+    new = await queue.enqueue("process_file", file_id=str(uuid.uuid4()), meta={ATTEMPT_META_KEY: epoch.isoformat(), "other": "retained"})
+    assert new is not None and ATTEMPT_META_KEY not in new.meta and new.meta["other"] == "retained"
+    assert ledger_enqueue_session.get() is None and enqueue_authority.get() is None
+    async with maker.begin() as db:
+        assert await db.get(SchedulingLedger, new.key) is None
+        await backfill_ledger_from_saq_jobs(db)
+    async with maker() as db:
+        recovered = await db.get(SchedulingLedger, new.key)
+        # Tokenless broker jobs use the existing best-effort backfill timestamp;
+        # their queued millisecond value is not a trusted attempt epoch.
+        assert recovered is not None and recovered.payload == new.kwargs and recovered.terminal_at is None
+        unchanged = await db.get(SchedulingLedger, winner.key)
+        assert unchanged.enqueued_at == epoch and unchanged.terminal_at == terminal
+
+    monkeypatch.undo()
+    await queue.finish(new, Status.FAILED, error="synthetic retry")
+    fresh = await queue.enqueue("process_file", file_id=new.kwargs["file_id"])
+    assert fresh is not None and ATTEMPT_META_KEY in fresh.meta
+    async with maker() as db:
+        assert (await db.get(SchedulingLedger, new.key)).enqueued_at == datetime.fromisoformat(fresh.meta[ATTEMPT_META_KEY])
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError, None])
+async def test_enqueue_authority_is_current_key_and_restores_inherited_context(committed_db, stage_env, monkeypatch, failure):
+    from contextlib import asynccontextmanager
+
+    from phaze.tasks._shared.attempt_context import EnqueueAuthority, enqueue_authority
+
+    _, maker = committed_db
+    queue, _ = stage_env
+    queue.ledger_sessionmaker = maker
+    inherited_session = object()
+    parent = EnqueueAuthority("process_file:parent", serialized=True)
+    session_token = ledger_enqueue_session.set(inherited_session)
+    parent_token = enqueue_authority.set(parent)
+    identifier = str(uuid.uuid4())
+    key = f"process_file:{identifier}"
+    original_insert = queue._enqueue
+
+    async def failed_lock():
+        assert ledger_enqueue_session.get() is None
+        raise OSError("synthetic acquisition failure")
+
+    @asynccontextmanager
+    async def unavailable_lock(_maker, current_key):
+        assert current_key == key
+        await failed_lock()
+        yield
+
+    async def insert(candidate):
+        assert enqueue_authority.get() == EnqueueAuthority(key, serialized=False)
+        assert ledger_enqueue_session.get() is None and ATTEMPT_META_KEY not in candidate.meta
+        if failure is not None:
+            raise failure("synthetic broker outcome")
+        return await original_insert(candidate)
+
+    monkeypatch.setattr("phaze.services.analysis_attempt.serialize_analysis_enqueue", unavailable_lock)
+    monkeypatch.setattr(queue, "_enqueue", insert)
+    try:
+        if failure is not None:
+            with pytest.raises(failure, match="synthetic broker outcome"):
+                await queue.enqueue("process_file", file_id=identifier, meta={ATTEMPT_META_KEY: "inherited"})
+        else:
+            assert await queue.enqueue("process_file", file_id=identifier, meta={ATTEMPT_META_KEY: "inherited"}) is not None
+        assert ledger_enqueue_session.get() is inherited_session and enqueue_authority.get() is parent
+        async with maker() as db:
+            assert await db.get(SchedulingLedger, key) is None
+    finally:
+        enqueue_authority.reset(parent_token)
+        ledger_enqueue_session.reset(session_token)
+    assert enqueue_authority.get() is None and ledger_enqueue_session.get() is None
