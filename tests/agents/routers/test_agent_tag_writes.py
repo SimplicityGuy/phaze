@@ -40,7 +40,7 @@ def _make_client(session: AsyncSession, token: str | None = None) -> AsyncClient
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers)
 
 
-async def _seed_queued_log(session: AsyncSession, *, source: str = "proposal", agent_id: str = "test-fileserver") -> TagWriteLog:
+async def _seed_queued_log(session: AsyncSession, *, source: str = "proposal", agent_id: str = "test-agent-01") -> TagWriteLog:
     """Seed the applied file + the ``queued`` audit row the control plane creates at dispatch."""
     file_id = uuid.uuid4()
     session.add(
@@ -238,7 +238,7 @@ async def test_unknown_log_id_404s(session: AsyncSession, seed_test_agent) -> No
 @pytest.mark.asyncio
 async def test_unauthenticated_callback_is_refused(session: AsyncSession) -> None:
     """AUTH-01: the calling agent comes from the token, never the body -- no token, no write."""
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id="test-fileserver")
 
     async with _make_client(session) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
@@ -519,7 +519,7 @@ async def test_before_snapshot_unknown_log_id_404s(session: AsyncSession, seed_t
 
 @pytest.mark.asyncio
 async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession) -> None:
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id="test-fileserver")
 
     async with _make_client(session) as client:
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
@@ -581,7 +581,7 @@ async def test_foreign_callback_cannot_change_audit_hash_or_ledger(
 
     _agent, token = seed_test_agent
     await create_saq_jobs(session)
-    log = await _seed_queued_log(session)
+    log = await _seed_queued_log(session, agent_id="test-fileserver")
     file_record = await session.get(FileRecord, log.file_id)
     assert file_record is not None
     file_record.missing_at = datetime.now(UTC) if missing else None
