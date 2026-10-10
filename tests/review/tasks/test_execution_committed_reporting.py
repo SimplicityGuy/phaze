@@ -8,6 +8,7 @@ and replay must consume write-ahead identity rather than repeat its mutation.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -66,7 +67,7 @@ class _RouteClient:
 @pytest.mark.parametrize(
     ("fault", "first_failure"),
     [(fault, failure) for fault in ("callback", "metadata", "intent") for failure in ("hash", "transient", "none")]
-    + [("failed_metadata", "transient")],
+    + [("failed_metadata", "transient"), ("callback", "unsupported")],
 )
 @pytest.mark.parametrize("with_hash", [True, False])
 async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
@@ -140,7 +141,12 @@ async def test_committed_move_reloaded_from_broker_repairs_inventory_once(
         if first_failure == "transient" and source == Path(items[0].source_path) and not failed_once:
             failed_once = True
             raise OSError("synthetic transient pre-move filesystem outage")
-        actual_move(source, destination)
+        if first_failure == "unsupported" and source == Path(items[0].source_path) and not failed_once:
+            failed_once = True
+            with patch.object(execution.os, "link", side_effect=OSError(errno.ENOTSUP, "synthetic unsupported exclusive publication")):
+                actual_move(source, destination)
+        else:
+            actual_move(source, destination)
         moves.append(str(source))
 
     try:
