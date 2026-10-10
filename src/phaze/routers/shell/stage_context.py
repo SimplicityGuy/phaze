@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from phaze.config import get_settings
@@ -327,6 +328,9 @@ async def _files_stage_context(request: Request, session: AsyncSession, stage: s
     requested_bucket = request.query_params.get("bucket")
     valid_buckets = {status.value for status in Status} | {ORPHANED_BUCKET}
     active_bucket = requested_bucket if requested_bucket in valid_buckets else None
+    active_scope = request.query_params.get("scope")
+    if active_scope not in (None, "media"):
+        raise HTTPException(status_code=422, detail="Unknown file scope")
     files_sort_state = FILES_SORT.resolve(
         sort=request.query_params.get("sort"),
         order=request.query_params.get("order"),
@@ -334,9 +338,12 @@ async def _files_stage_context(request: Request, session: AsyncSession, stage: s
             "page_size": page_size,
             "stage": active_stage.value if active_stage is not None else None,
             "bucket": active_bucket,
+            "scope": active_scope,
         },
     )
-    files_page = await get_files_page(session, page=page, page_size=page_size, stage=active_stage, bucket=active_bucket, sort=files_sort_state)
+    files_page = await get_files_page(
+        session, page=page, page_size=page_size, stage=active_stage, bucket=active_bucket, sort=files_sort_state, media_only=active_scope == "media"
+    )
     # phaze-t0b8: files_workspace.html now composes _workspace_scaffold.html like every other
     # STAGE_PARTIALS host, which both supplies the <h1 tabindex="-1"> focus target this stage was
     # missing and unconditionally includes _workspace_poll_seeds.html itself -- so the former
@@ -346,6 +353,7 @@ async def _files_stage_context(request: Request, session: AsyncSession, stage: s
         "files_page": files_page,
         "active_stage": active_stage.value if active_stage is not None else None,
         "active_bucket": active_bucket,
+        "active_scope": active_scope,
         "sort": files_sort_state,
         "stage": stage,
         "stage_partial": _stage_partial(stage),

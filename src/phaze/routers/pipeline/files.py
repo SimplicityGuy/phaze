@@ -18,7 +18,7 @@ Left as a real but low-value future opportunity if the pattern grows a fifth or 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -136,6 +136,7 @@ async def pipeline_files(
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     stage: str | None = Query(None),
     bucket: str | None = Query(None),
+    scope: Literal["media"] | None = Query(None),
     sort: str | None = Query(None),
     order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
@@ -195,13 +196,16 @@ async def pipeline_files(
     sort_state = FILES_SORT.resolve(
         sort=sort,
         order=order,
-        view_state={"page_size": page_size, "stage": stage_enum.value if stage_enum is not None else None, "bucket": bucket_val},
+        view_state={"page_size": page_size, "stage": stage_enum.value if stage_enum is not None else None, "bucket": bucket_val, "scope": scope},
     )
-    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val, sort=sort_state)
+    files_page = await get_files_page(
+        session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val, sort=sort_state, media_only=scope == "media"
+    )
     context = {
         "files_page": files_page,
         "active_stage": stage_enum.value if stage_enum is not None else None,
         "active_bucket": bucket_val,
+        "active_scope": scope,
         "sort": sort_state,
     }
     return templates.TemplateResponse(
