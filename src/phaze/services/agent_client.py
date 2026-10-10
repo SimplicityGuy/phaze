@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         AnalysisWriteResponse,
         PresignDownloadMetadata,
     )
+    from phaze.schemas.agent_companion_capture import CaptureReport, CaptureResponse
     from phaze.schemas.agent_companion_features import CompanionFeaturesChunk, CompanionFeaturesResponse
     from phaze.schemas.agent_config import AgentConfigResponse
 
@@ -644,6 +645,13 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ScanBatchPatchResponse.model_validate(response.json())
+
+    async def post_companion_capture(self, payload: CaptureReport) -> CaptureResponse:
+        """POST /api/internal/agent/companion-captures -- immutable raw source observation."""
+        from phaze.schemas.agent_companion_capture import CaptureResponse  # noqa: PLC0415
+
+        response = await self._request("POST", "/api/internal/agent/companion-captures", json=payload.model_dump(mode="json"))
+        return CaptureResponse.model_validate(response.json())
 
     async def post_companion_features(self, payload: CompanionFeaturesChunk) -> CompanionFeaturesResponse:
         """POST /api/internal/agent/companion-features -- one chunk of companion content features (phaze-osy6j)."""

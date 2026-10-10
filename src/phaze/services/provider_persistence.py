@@ -1,6 +1,6 @@
 """Transactional provider storage. Callers own transactions and approval policy.
 
-Lock order: provider/native digest bucket, source object, recording, canonical tracklist.
+Lock order: provider/native digest bucket, bound inventory file, source object, recording, canonical tracklist.
 Digest indexes accelerate lookup only; complete opaque identity and payload determine equality.
 """
 
@@ -67,6 +67,17 @@ def _bound(value: str | None, maximum: int, label: str) -> None:
         raise ValueError(f"{label} exceeds its storage bound or contains NUL")
 
 
+async def lock_source_bucket(session: AsyncSession, identity: SourceIdentity) -> str:
+    """Serialize a full identity bucket before inventory/object locks; return its digest."""
+    identity = SourceIdentity.model_validate(identity)
+    _bound(identity.native_id, MAX_NATIVE_BYTES, "native identity")
+    raw_key = identity.provider_id.encode() + b"\0" + identity.native_id.encode("utf-8")
+    digest = _digest(raw_key)
+    lock_key = int.from_bytes(hashlib.sha256(identity.provider_id.encode() + digest.encode()).digest()[:8], "big", signed=True)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+    return digest
+
+
 async def resolve_source(
     session: AsyncSession,
     identity: SourceIdentity,
@@ -79,11 +90,13 @@ async def resolve_source(
     _bound(identity.native_id, MAX_NATIVE_BYTES, "native identity")
     if channel not in {None, "companion", "embedded"} or (source_file_id is None) != (channel is None):
         raise ValueError("Local source binding requires a file and companion/embedded channel")
-    raw_key = identity.provider_id.encode() + b"\0" + identity.native_id.encode("utf-8")
-    digest = _digest(raw_key)
-    # Hash-lock collisions merely serialize unrelated buckets; equality never uses the lock key.
-    lock_key = int.from_bytes(hashlib.sha256(identity.provider_id.encode() + digest.encode()).digest()[:8], "big", signed=True)
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+    digest = await lock_source_bucket(session, identity)
+    # Deletion locks inventory before FK SET NULL updates source objects. Match that order,
+    # and lock before inserting a source so deletion cannot invalidate the new binding.
+    if source_file_id is not None:
+        bound = await session.scalar(select(FileRecord.id).where(FileRecord.id == source_file_id).with_for_update())
+        if bound is None:
+            raise ValueError("Local source inventory no longer exists")
     rows = (
         await session.scalars(
             select(ProviderSourceObject)

@@ -64,6 +64,7 @@ from phaze.tasks._shared.live_worker import install_live_concurrency, lane_concu
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import StagePausedRetry, enforce_stage_pause_on_process, repark_if_stage_paused
+from phaze.tasks.companion_capture import capture_companion_source
 from phaze.tasks.companion_features import extract_companion_features
 from phaze.tasks.companion_read import read_companion_files
 from phaze.tasks.cue_write import write_cue_sheet
@@ -560,6 +561,7 @@ _FUNCTIONS_BY_NAME: dict[str, Any] = {
     "write_file_tags": write_file_tags,
     "write_cue_sheet": write_cue_sheet,
     "read_companion_files": read_companion_files,
+    "capture_companion_source": capture_companion_source,
     # phaze-osy6j: the backfill's per-page companion content read. MUST mirror LANE_TASKS["meta"].
     "extract_companion_features": extract_companion_features,
     # phaze-lwuf6: the junk quarantine move. MUST mirror LANE_TASKS["meta"].
@@ -579,6 +581,7 @@ _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "write_file_tags",
     "write_cue_sheet",
     "read_companion_files",
+    "capture_companion_source",
     "extract_companion_features",
     "quarantine_companion",
     "push_file",
