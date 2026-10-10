@@ -1,16 +1,24 @@
 """Real HTMX keyboard and narrow-view companion page/drawer browsing."""
 
-from playwright.async_api import Page
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import pytest
 
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.local_source_import import import_local_source
 from tests.browser.helpers import open_shell, swap_settles
-from tests.browser.seed import Seeder
 from tests.browser.test_files_record import _details_button, _wait_for_record
 from tests.integration.test_companion_viewing import TEXT
 from tests.integration.test_local_source_import import inventory
+
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+
+    from tests.browser.seed import Seeder
 
 
 pytestmark = pytest.mark.browser
