@@ -1,0 +1,41 @@
+{% import "ui/primitives.html" as ui %}
+<div data-stored-observation="{{ detail.summary.observation_id }}" class="mt-3 min-w-0 space-y-3">
+    <p class="text-xs">{{ detail.summary.parser_version }} · {{ detail.summary.status }} · {{ detail.summary.availability }} · revision {{ detail.summary.revision or 'unknown' }} ({{ detail.summary.revision_scope }})</p>
+    <p class="text-xs">{{ detail.summary.completeness_state or 'Raw source read' }} · {{ detail.summary.completeness_reason or detail.summary.code }}</p>
+    {% if actions.source_file_id %}<a href="/files/{{ actions.source_file_id }}#companion-sources" class="text-xs text-link">Open source file and linked recordings</a>{% endif %}
+    {% if detail.summary.conflict_with_id %}<p class="text-warn text-sm">Conflicting source data is retained. Selection requires acknowledging this conflict.</p>{% endif %}
+    <button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ actions.text_id }}/text" hx-target="next [data-text-host]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Read original companion text</button><div data-text-host></div>
+    <div data-local-track-rows>
+        <h4 class="text-sm font-semibold">Intrinsic source tracklist</h4>
+        {% for track in detail.tracks %}
+        <p class="text-sm break-all" data-local-track>{{ track.position }}. {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}{% if track.timestamp %} · {{ track.timestamp.original or track.timestamp.precision }} · {{ track.timestamp.offset_usability }}{% endif %}</p>
+        {% if track.evidence %}<details><summary class="text-xs">Track source evidence</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ track.evidence | join('\n') }}</pre></details>{% endif %}
+        {% else %}<p class="text-sm text-muted">No parsed track rows in this observation. Original text remains inspectable.</p>{% endfor %}
+        {% if detail.next_track_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ detail.summary.observation_id }}?track_offset={{ detail.next_track_offset }}" hx-target="closest [data-stored-observation]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next track rows</button>{% endif %}
+    </div>
+    <div data-companion-release-facts>
+        <h4 class="text-sm font-semibold">Release metadata from source</h4>
+        {% for fact in detail.release_facts %}<div class="text-sm break-all" data-release-fact><span class="font-medium">{{ fact.field }}:</span> {{ fact.original_value }}{% if fact.normalized_value is not none %} · normalized: {{ fact.normalized_value }}{% endif %} · {{ fact.certainty }}
+            <details><summary class="text-xs">Original release field and evidence</summary><pre class="whitespace-pre-wrap break-all text-xs">Line {{ fact.source_line or 'unknown' }} · {{ fact.original_value or '' }}
+{{ fact.evidence | join('\n') }}</pre></details>
+        </div>{% else %}<p class="text-sm text-muted">No structured release fields in this observation. Other observations of the same source may contain release metadata.</p>{% endfor %}
+        {% if detail.next_fact_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ detail.summary.observation_id }}?fact_offset={{ detail.next_fact_offset }}" hx-target="closest [data-stored-observation]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next release fields</button>{% endif %}
+    </div>
+    {% if detail.selected_availability %}<p class="text-xs">Reviewed target projection: {{ detail.selected_availability }} · {{ detail.selected_track_count }} tracks</p>{% for track in detail.selected_tracks %}<p class="text-xs break-all" data-selected-track>{{ track.position }}. {{ track.artist or '' }} — {{ track.title or '' }}{% if track.timestamp %} · {{ track.timestamp.offset_usability }} · {{ track.timestamp.origin }}{% endif %}</p>{% endfor %}{% endif %}
+    {% if detail.evidence %}<details><summary class="text-xs">Read/parser evidence and rejected lines</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ detail.evidence | join('\n') }}</pre></details>{% endif %}
+    {% if actions.raw_id %}<form hx-post="/api/local-sources/reimport" hx-target="next [data-companion-action]">
+        <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="raw_observation_id" value="{{ actions.raw_id }}"><button type="submit" disabled data-hx-guard class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reimport stored text</button>
+    </form><div data-companion-action aria-live="polite"></div>{% endif %}
+    {% if actions.can_select or actions.can_reject %}
+    <form hx-post="/api/local-sources/decision" hx-target="next [data-companion-action]" class="space-y-2" data-source-decision>
+        <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="observation_id" value="{{ detail.summary.observation_id }}">
+        <input type="hidden" name="kind" value="{{ actions.kind }}"><input type="hidden" name="decision_id" value="{{ actions.decision_id }}">
+        <input type="hidden" name="expected_selection_token" value="{{ actions.selection_token or '' }}"><input type="hidden" name="expected_revision" value="{{ detail.summary.revision or '' }}">
+        <input type="hidden" name="expected_source_sha256" value="{{ actions.source_sha256 }}"><input type="hidden" name="expected_media_sha256" value="{{ actions.media_sha256 }}">
+        {% if detail.summary.conflict_with_id %}<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="accept_conflict" value="true">I reviewed the conflicting source evidence.</label>{% endif %}
+        {% if actions.is_cue %}<label class="block text-sm">CUE FILE ordinal explicitly belonging to this recording <input type="number" name="cue_file_ordinal" min="1" max="4096" class="input input-sm w-24"></label><p class="text-xs">Read each track's FILE evidence. Multiple FILE parts are not concatenated.</p>{% endif %}
+        {% if actions.can_select %}<button type="submit" disabled data-hx-guard name="action" value="select" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Select this {{ actions.kind }}</button>{% endif %}
+        {% if actions.can_reject %}<button type="submit" disabled data-hx-guard name="action" value="reject" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Reject candidate</button>{% endif %}
+    </form><div data-companion-action aria-live="polite"></div>
+    {% else %}<p class="text-xs">This observation cannot replace reviewed data. Inspect raw text, refresh availability, or import a complete candidate.</p>{% endif %}
+</div>

@@ -14,7 +14,8 @@ proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a frien
 (``record_not_found.html`` -- T-61-05), never a 500 / JSON detail / stack trace.
 """
 
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast as type_cast
 import uuid
@@ -27,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, selectinload
 
 from phaze.config import get_settings
-from phaze.database import get_session
+from phaze.database import async_session, get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
@@ -47,12 +48,24 @@ from phaze.schemas.companion_details import (
 )
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.companion_acquisition import get_latest_source_attempts
+from phaze.services.companion_capture import enqueue_companion_capture
 from phaze.services.companion_details import (
     get_companion_details,
     get_companion_media,
     get_source_observations,
     get_stored_observation,
     get_stored_text,
+)
+from phaze.services.companion_view import (
+    CaptureRefreshBaseline,
+    capture_refresh_baseline,
+    capture_refresh_received,
+    embedded_channels,
+    fragment,
+    html_requested,
+    observation_actions,
+    visible_parsed_content,
 )
 from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
@@ -246,7 +259,8 @@ async def build_file_record_context(
 
     # Read the latest stored tracklist without external acquisition.
     tracklist_review = await get_file_tracklist_review(session, file_id)
-    companion_details = await get_companion_details(session, file_id)
+    companion_details = await get_companion_details(session, file_id, attempt_reader=get_latest_source_attempts)
+    companion_parsed = await visible_parsed_content(session, companion_details) if companion_details else ()
 
     # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
     # timestamps become time segments, each carrying the median BPM, modal key, argmax mood and
@@ -338,6 +352,8 @@ async def build_file_record_context(
         "history": history,
         "tracklist_review": tracklist_review,
         "companion_details": companion_details,
+        "companion_parsed": companion_parsed,
+        "companion_embedded_channels": await embedded_channels(session, file_id),
         "track_segments": track_segments,
         "lane": lane,
         "lane_kind": lane_kind,
@@ -438,49 +454,66 @@ async def file_poster_svg(
     return Response(content=svg, media_type="image/svg+xml")
 
 
-@router.get("/files/{file_id}/companion-details")
+@router.get("/files/{file_id}/companion-details", response_model=CompanionDetails)
 async def companion_detail_page(
+    request: Request,
     file_id: uuid.UUID,
     offset: int = Query(0, ge=0, le=100000),
     link_offset: int | None = Query(None, ge=0, le=100000),
     source_offset: int | None = Query(None, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
-) -> CompanionDetails:
+) -> CompanionDetails | HTMLResponse:
     result = await get_companion_details(
         session,
         file_id,
         link_page=DetailPage(offset=offset if link_offset is None else link_offset, limit=limit),
         source_page=DetailPage(offset=offset if source_offset is None else source_offset, limit=limit),
+        attempt_reader=get_latest_source_attempts,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="File not found")
+    if html_requested(request):
+        return fragment(
+            templates,
+            request,
+            "record/companions/_overview.html",
+            details=result,
+            file_id=file_id,
+            link_offset=offset if link_offset is None else link_offset,
+            source_offset=offset if source_offset is None else source_offset,
+            companion_embedded_channels=await embedded_channels(session, file_id),
+        )
     return result
 
 
-@router.get("/files/{file_id}/companion-sources/{source_object_id}/observations")
+@router.get("/files/{file_id}/companion-sources/{source_object_id}/observations", response_model=ObservationPage)
 async def companion_observation_page(
+    request: Request,
     file_id: uuid.UUID,
     source_object_id: uuid.UUID,
     offset: int = Query(0, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
-) -> ObservationPage:
+) -> ObservationPage | HTMLResponse:
     result = await get_source_observations(session, file_id, source_object_id, page=DetailPage(offset=offset, limit=limit))
     if result is None:
         raise HTTPException(status_code=404, detail="Source not found for this file")
+    if html_requested(request):
+        return fragment(templates, request, "record/companions/_history.html", history=result, file_id=file_id)
     return result
 
 
-@router.get("/files/{file_id}/companion-observations/{observation_id}")
+@router.get("/files/{file_id}/companion-observations/{observation_id}", response_model=StoredObservationDetail)
 async def companion_observation_detail(
+    request: Request,
     file_id: uuid.UUID,
     observation_id: uuid.UUID,
     track_offset: int = Query(0, ge=0, le=100000),
     fact_offset: int = Query(0, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
-) -> StoredObservationDetail:
+) -> StoredObservationDetail | HTMLResponse:
     result = await get_stored_observation(
         session,
         file_id,
@@ -490,31 +523,116 @@ async def companion_observation_detail(
     )
     if result is None:
         raise HTTPException(status_code=404, detail="Observation not found for this file")
+    if html_requested(request):
+        return fragment(
+            templates,
+            request,
+            "record/companions/_observation.html",
+            detail=result,
+            file_id=file_id,
+            actions=await observation_actions(session, result),
+        )
     return result
 
 
-@router.get("/files/{file_id}/companion-observations/{observation_id}/text")
+@router.get("/files/{file_id}/companion-observations/{observation_id}/text", response_model=StoredTextChunk)
 async def companion_stored_text(
+    request: Request,
     file_id: uuid.UUID,
     observation_id: uuid.UUID,
     offset: int = Query(0, ge=0, le=262144),
     length: int = Query(8192, ge=1, le=32768),
     session: AsyncSession = Depends(get_session),
-) -> StoredTextChunk:
+) -> StoredTextChunk | HTMLResponse:
     result = await get_stored_text(session, file_id, observation_id, chunk=StoredTextRequest(offset=offset, length=length))
     if result is None:
         raise HTTPException(status_code=404, detail="Observation not found for this file")
+    if html_requested(request):
+        return fragment(templates, request, "record/companions/_text.html", chunk=result, file_id=file_id)
     return result
 
 
-@router.get("/files/{companion_id}/linked-media")
+@router.get("/files/{companion_id}/linked-media", response_model=ReverseMediaPage)
 async def companion_linked_media(
+    request: Request,
     companion_id: uuid.UUID,
     offset: int = Query(0, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
-) -> ReverseMediaPage:
+) -> ReverseMediaPage | HTMLResponse:
     result = await get_companion_media(session, companion_id, page=DetailPage(offset=offset, limit=limit))
     if result is None:
         raise HTTPException(status_code=404, detail="Companion not found")
+    if html_requested(request):
+        return fragment(templates, request, "record/companions/_reverse.html", reverse=result, file_id=companion_id)
     return result
+
+
+@router.post("/files/{file_id}/companions/{companion_id}/refresh", response_class=HTMLResponse)
+async def companion_refresh(request: Request, file_id: uuid.UUID, companion_id: uuid.UUID) -> HTMLResponse:
+    """Explicit async read; rendering never dispatches work. The agent owns filesystem access."""
+    try:
+        async with async_session() as session:
+            baseline = await capture_refresh_baseline(session, file_id, companion_id)
+        async with asyncio.timeout(10):
+            payload = await enqueue_companion_capture(async_session, request.app.state.task_router, companion_id, media_id=file_id)
+        if payload.target.expected_sha256 != baseline.revision:
+            raise ValueError("Companion revision changed while dispatching; update the stored view before retrying")
+    except Exception as exc:
+        return fragment(templates, request, "record/companions/_action.html", message=f"Refresh could not be queued: {exc}", failed=True)
+    return fragment(
+        templates,
+        request,
+        "record/companions/_refresh.html",
+        file_id=file_id,
+        companion_id=companion_id,
+        since=baseline.since.isoformat(),
+        after_ordinal=baseline.ordinal,
+        revision=payload.target.expected_sha256,
+        waiting=True,
+        message="Refresh queued on the owning agent. Waiting for a new received capture of this revision; enqueue is not completion.",
+    )
+
+
+@router.get("/files/{file_id}/companions/{companion_id}/refresh-status", response_class=HTMLResponse)
+async def companion_refresh_status(
+    request: Request,
+    file_id: uuid.UUID,
+    companion_id: uuid.UUID,
+    since: datetime,
+    revision: str = Query(max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    after_ordinal: int = Query(0, ge=0, le=9223372036854775807),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Report observed persisted state; an enqueue alone is never labelled complete."""
+    if since.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Refresh baseline requires a timezone")
+    now, row, valid_pair = await capture_refresh_received(session, file_id, companion_id, CaptureRefreshBaseline(since, after_ordinal, revision))
+    if not valid_pair:
+        return fragment(
+            templates,
+            request,
+            "record/companions/_action.html",
+            message="Companion link, owner or inventory revision changed; retained history remains readable.",
+            failed=True,
+        )
+    waiting = row is None and now - since < timedelta(minutes=2)
+    message = (
+        f"A new authorized capture was received since this request: {row['status']} · {row['code']} · {row['freshness']}. This is observed receipt, not proof of this exact job completing. Import stored text separately."
+        if row
+        else "Waiting for a new received capture of this revision."
+        if waiting
+        else "No new report observed. The agent may be offline; retained text is unchanged."
+    )
+    return fragment(
+        templates,
+        request,
+        "record/companions/_refresh.html",
+        file_id=file_id,
+        companion_id=companion_id,
+        since=since.isoformat(),
+        after_ordinal=after_ordinal,
+        revision=revision,
+        waiting=waiting,
+        message=message,
+    )

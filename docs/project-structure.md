@@ -25,7 +25,7 @@ a module makes the inventory fail until this page is reconciled.
 | `models/` | 31 | SQLAlchemy application schema, including companion acquisition attempts and resumable import progress |
 | `routers/` | 62 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 29 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 140 | Business rules and infrastructure adapters, including bounded companion acquisition/import and companion detail projection; includes `backends/` and `pipeline/` packages |
+| `services/` | 141 | Business rules and infrastructure adapters, including bounded companion acquisition/import and companion detail/view projection; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 50 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
