@@ -133,3 +133,9 @@ class HeartbeatRequest(BaseModel):
     that predates this field -- is handled on the agent (phaze-mvq8z.20; see the version-tolerance
     note above :class:`EffectiveConfigLastReload`).
     """
+    selected_cue_v1: bool | None = None
+    """This lane can revalidate selected CUE bindings over authenticated HTTP before writing.
+
+    Absent on older agents; absence forbids dispatch of that new payload shape. Optional capability
+    is omitted from old-shape heartbeat storage and removed on agent retry to an older controller.
+    """

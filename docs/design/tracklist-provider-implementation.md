@@ -71,3 +71,43 @@ The same file belongs to the existing identify CI shard. Boundary tests exercise
 substitution, exact negotiation, descriptor/import effects, nullable rows, evidence/precision,
 malformed output, cumulative budgets, deadlines and cancellation. Full configured validation
 and hooks run before handoff; final evidence is recorded in the bead handoff.
+
+## Selected-source consumers
+
+Date: 2026-10-10. Bead: phaze-c5v4x. The foundation above remains effect-free;
+consumer integration uses the persisted `get_selected_recording_source` port. A pending
+import does not replace reviewed authority. An explicit selection suppresses the legacy
+fallback even when its source is stale or unavailable; original evidence remains inspectable.
+Tracklists, Metadata and Cue load bounded source pages with recording-detail links.
+Metadata keeps companion release facts separate from embedded tag extraction, and Cue lists
+inventoried companion sheets separately from generated artifacts.
+
+Discogs links identify exactly one legacy track UUID or one immutable observation plus
+positive intrinsic track position. Matching reads the selected target projection, releases
+the database session for HTTP, and revalidates selection and inventory in a short write
+transaction. Re-matching replaces candidates while preserving accepted link UUIDs. Acceptance
+serializes on the source observation; a multi-file CUE can only review tracks in its selected
+FILE mapping. No external tracklist provider is activated by this integration, consistent with
+[ADR-0024](0024-tracklist-source-retirement.md).
+
+Tag and rename proposals consume certain reviewed facts. Their final storage boundary checks
+the selected observation/token, current inventory, and accepted Discogs identity and used values.
+The selected CUE preview and owning worker use the same accepted label/year overlay and content
+digest. Qualified offsets retain rational values until rendering at 75 frames per second;
+clock, minute, unknown, stale and unmapped timings cannot become exact boundaries.
+
+Legacy timing is qualified only by validated `timestamp_evidence`: its original value must
+equal the retained timestamp and its origin must be `recording:<UUID>` for the actual target.
+The evidence supplies the rational offset and exact precision; parsing a display string does
+not qualify it. Missing, malformed, approximate, intrinsic FILE or other-target evidence
+remains readable but contributes no exact CUE boundary or analysis segment. No migration or
+manual text edit infers this evidence. SQL eligibility and runtime consumers apply the same
+validation, including a 4096-digit rational operand bound; analysis conversion also rejects
+non-finite offsets while CUE rendering retains fractions.
+
+Provider CUE tasks carry `source_binding` instead of a fabricated legacy tracklist UUID. Legacy
+tasks retain their original serialized shape. The controller dispatches the new shape only
+after a recent owning meta/all worker heartbeat reports `selected_cue_v1`; older controllers
+can reject that optional field and still receive a core heartbeat retry. Before writing, the
+owning worker checks the exact recording/source binding through its authenticated controller
+port. Selecting or viewing a source never writes a CUE or tags implicitly.

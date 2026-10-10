@@ -15,6 +15,7 @@
     "GET /audit/",
     "GET /audit/{log_id}/detail",
     "GET /cue/",
+    "GET /cue/files/{media_id}/preview",
     "GET /duplicates/",
     "GET /duplicates/groups",
     "GET /execution/agents-table",
@@ -35,6 +36,7 @@
     "GET /pipeline/files",
     "GET /pipeline/files/{file_id}/trace/{stage}",
     "GET /pipeline/lanes/{backend_id}",
+    "GET /pipeline/local-source-sets",
     "GET /pipeline/pending-files",
     "GET /pipeline/recover/status",
     "GET /pipeline/scans/agent-roots",
@@ -47,6 +49,7 @@
     "GET /proposals/{proposal_id}/detail",
     "GET /proposals/{proposal_id}/timeline",
     "GET /record/{file_id}",
+    "GET /recording-discogs/{media_id}",
     "GET /s/operations",
     "GET /s/{stage}",
     "GET /search/",
@@ -68,6 +71,7 @@
     "POST /api/internal/agent/analysis/{file_id}/progress",
     "POST /api/internal/agent/companion-captures",
     "POST /api/internal/agent/companion-features",
+    "POST /api/internal/agent/cue-source-check",
     "POST /api/internal/agent/exec-batches/{batch_id}/progress",
     "POST /api/internal/agent/execution-log",
     "POST /api/internal/agent/files",
@@ -90,6 +94,7 @@
     "POST /api/v1/associate",
     "POST /api/v1/extract-metadata",
     "POST /api/v1/proposals/generate",
+    "POST /cue/files/{media_id}/generate",
     "POST /cue/{tracklist_id}/generate",
     "POST /duplicates/resolve-all",
     "POST /duplicates/review-all",
@@ -117,6 +122,8 @@
     "POST /pipeline/stages/{stage}/pause",
     "POST /pipeline/stages/{stage}/priority",
     "POST /pipeline/stages/{stage}/resume",
+    "POST /recording-discogs/{media_id}/links/{link_id}",
+    "POST /recording-discogs/{media_id}/match",
     "POST /tags/bulk-write-no-discrepancies",
     "POST /tags/{file_id}/undo",
     "POST /tags/{file_id}/write",
@@ -1308,6 +1315,16 @@
       ],
       [
         "div",
+        "local-cue-inventory",
+        "{\"hx-get\": \"/pipeline/local-source-sets?kind=cue&inventory=1\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "div",
+        "local-cue-sources",
+        "{\"hx-get\": \"/pipeline/local-source-sets?kind=cue\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
       ],
@@ -1825,6 +1842,11 @@
         "button",
         "",
         "{\"hx-post\": \"/pipeline/stages/metadata/resume\", \"hx-swap\": \"none\"}"
+      ],
+      [
+        "div",
+        "local-release_metadata-sources",
+        "{\"hx-get\": \"/pipeline/local-source-sets?kind=release_metadata\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
       ],
       [
         "div",
@@ -2774,6 +2796,11 @@
         "button",
         "",
         "{\"hx-confirm\": \"Enqueue matching for all pending tracklists?\", \"hx-post\": \"/pipeline/match-tracklists\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#match-trigger-response\"}"
+      ],
+      [
+        "div",
+        "local-tracklist-sources",
+        "{\"hx-get\": \"/pipeline/local-source-sets?kind=tracklist\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
       ],
       [
         "div",

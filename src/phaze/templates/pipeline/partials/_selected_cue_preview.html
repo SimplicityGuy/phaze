@@ -1,0 +1,20 @@
+{% import "ui/primitives.html" as ui %}
+<article id="selected-cue-card-{{ media_id }}" class="mt-3 rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+    <h3 class="font-semibold">Selected-source CUE artifact preview</h3>
+    {% if message %}<p class="mt-2 text-sm" role="status">{{ message }}</p>{% endif %}
+    {% if artifact %}
+        <p class="mt-2 break-all text-xs text-muted">Observation {{ artifact.source.observation_id }} · {{ artifact.source.snapshot.parser_version }} · revision {{ artifact.source.snapshot.revision or 'unknown' }}</p>
+        <p class="mt-1 text-xs text-muted">Reviewed by {{ artifact.source.actor }} · {{ artifact.source.selected_at }}. Existing companion input is retained; this action writes a versioned generated artifact.</p>
+        {% if artifact.omitted_track_count %}<p class="mt-2 text-sm text-warn">{{ artifact.omitted_track_count }} tracks lack qualified offsets and are omitted from this generated CUE. Their original timing remains in the source details.</p>{% endif %}
+        <pre class="relative mt-3 max-h-80 overflow-auto whitespace-pre rounded bg-gray-50 p-3 text-xs dark:bg-phaze-bg">{{ artifact.content }}</pre>
+        {% if applied and supported %}
+            <form method="post" action="/cue/files/{{ media_id }}/generate" class="mt-3" hx-post="/cue/files/{{ media_id }}/generate" hx-target="#selected-cue-card-{{ media_id }}" hx-swap="outerHTML">
+                <input type="hidden" name="binding" value="{{ artifact.binding.model_dump_json() }}">
+                <input type="hidden" name="audio_path" value="{{ artifact.file.current_path }}">
+                <button class="{{ ui.btn('primary', 'md') }}" type="submit">Generate reviewed CUE artifact</button>
+            </form>
+        {% elif not applied %}<p class="mt-3 text-sm text-warn">Apply the recording before generating its CUE artifact.</p>
+        {% else %}<p class="mt-3 text-sm text-warn">The owning agent has not reported selected-source CUE support. Update its meta worker and wait for a heartbeat.</p>{% endif %}
+    {% endif %}
+    <a class="mt-3 inline-block text-link hover:underline" href="/files/{{ media_id }}#companion-sources">Inspect stored source and timing evidence</a>
+</article>

@@ -120,7 +120,7 @@ def test_every_wire_payload_dumps_json_native() -> None:
     imported, not duplicated, so a tenth payload added there is checked here for free and cannot
     drift between the two modules.
     """
-    from tests.integration.test_pg_payload_type_fidelity import _representative_payloads
+    from tests.integration.test_pg_payload_type_fidelity import _representative_cue_binding, _representative_payloads
 
     declared = {
         obj
@@ -130,9 +130,13 @@ def test_every_wire_payload_dumps_json_native() -> None:
     }
     assert declared, "no WirePayload subclasses found — the scan is broken, not the code"
 
-    instantiated = {type(payload) for _, payload in _representative_payloads()}
+    # HTTP-only preflight is a real controller request, not an invented broker task.
+    # Its authenticated ASGI/owning-worker seam is covered in test_selected_cue_dispatch.
+    http_payload = agent_tasks.CueSourceCheck(file_id=uuid.uuid4(), audio_path="/archive/<set-01>.mp3", source_binding=_representative_cue_binding())
+    representatives = [*_representative_payloads(), ("HTTP cue-source-check", http_payload)]
+    instantiated = {type(payload) for _, payload in representatives}
 
-    for task_name, payload in _representative_payloads():
+    for task_name, payload in representatives:
         dumped = payload.model_dump()  # THE OMISSION: no mode= at all.
         try:
             json.dumps(dumped)
@@ -142,7 +146,7 @@ def test_every_wire_payload_dumps_json_native() -> None:
     # Nested item models are exercised through their parents rather than standalone; name them so the
     # gap is explicit rather than something a reader has to infer from the count.
     nested_only = {m.__name__ for m in declared - instantiated}
-    assert nested_only <= {"ExecuteBatchProposalItem", "CompanionReadItem", "CompanionFeaturesTarget"}, (
+    assert nested_only <= {"ExecuteBatchProposalItem", "CompanionReadItem", "CompanionFeaturesTarget", "CueSourceBinding"}, (
         f"WirePayload subclass(es) with no representative instance and not a known nested item: {sorted(nested_only)}. "
         f"Add one to _representative_payloads() in tests/integration/test_pg_payload_type_fidelity.py."
     )

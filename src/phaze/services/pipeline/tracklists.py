@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 import structlog
 
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
+from phaze.models.provider_source import ProviderRecordingSelection
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.local_source_import import get_selected_recording_source
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
+from phaze.services.selected_source_consumers import authoritative_tracklist_clause, explicit_tracklist_clause, selected_discogs_clause
 
 
 if TYPE_CHECKING:
@@ -47,9 +50,30 @@ async def get_match_pending_tracklists(session: AsyncSession) -> list[Tracklist]
         .join(TracklistTrack, DiscogsLink.track_id == TracklistTrack.id)
         .join(TracklistVersion, TracklistTrack.version_id == TracklistVersion.id)
     )
-    stmt = select(Tracklist).where(Tracklist.id.not_in(matched_subq))
+    stmt = select(Tracklist).where(Tracklist.id.not_in(matched_subq), ~explicit_tracklist_clause(Tracklist.file_id))
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_match_pending_recording_sources(session: AsyncSession) -> list[dict[str, str]]:
+    """Exhaustive enqueue inventory, distinct from bounded workspace display pages."""
+    rows = (
+        await session.execute(
+            select(ProviderRecordingSelection.media_id, ProviderRecordingSelection.observation_id, ProviderRecordingSelection.selection_token)
+            .join(FileRecord, FileRecord.id == ProviderRecordingSelection.media_id)
+            .where(ProviderRecordingSelection.kind == "tracklist", authoritative_tracklist_clause(), ~selected_discogs_clause())
+        )
+    ).all()
+    # Historical token-less selections need the public read port's deterministic fingerprint.
+    result = []
+    for media_id, observation_id, token in rows:
+        if token is None:
+            source = await get_selected_recording_source(session, media_id)
+            if source is None:
+                continue
+            token = source.selection_token
+        result.append({"media_id": str(media_id), "expected_observation_id": str(observation_id), "expected_selection_token": str(token)})
+    return result
 
 
 # Identify-workspace read-only row assembly (IDENT-01/IDENT-02)
@@ -116,6 +140,7 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
             discogs_matched.label("discogs_matched"),
         )
         .select_from(Tracklist)
+        .where(~explicit_tracklist_clause(Tracklist.file_id))
         .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
         .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id),
         page=page,
@@ -203,7 +228,7 @@ async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
     """
     stmt = select(FileRecord).where(
         FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+        ~authoritative_tracklist_clause(),
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())

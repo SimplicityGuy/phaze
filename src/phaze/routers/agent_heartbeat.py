@@ -22,6 +22,7 @@ Every lane now heartbeats with a `lane` tag. Two consequences, both handled here
     (the misleading 762) to the agent's true all-lane total, with no template change.
 """
 
+from datetime import UTC, datetime
 import json
 from typing import Annotated
 
@@ -115,6 +116,11 @@ async def post_heartbeat(
     # here keeps THAT beat's stored shape byte-identical to before this bead, with no stray
     # `effective_config: null` key.
     omit_effective_config: set[str] = set() if body.effective_config is not None else {"effective_config"}
+    if body.selected_cue_v1 is None:
+        omit_effective_config.add("selected_cue_v1")
+    stored_status = body.model_dump(exclude=omit_effective_config)
+    if body.selected_cue_v1 is not None:
+        stored_status["selected_cue_v1_received_at"] = datetime.now(UTC).isoformat()
     if body.lane is None:
         # `exclude={"lane", ...}` keeps the stored shape byte-identical to the pre-phaze-30fo
         # payload rather than adding a `lane: null` key. An unlaned agent's last_status
@@ -122,10 +128,10 @@ async def post_heartbeat(
         await session.execute(
             update(Agent)
             .where(Agent.id == agent.id)
-            .values(last_seen_at=func.now(), last_status=body.model_dump(exclude={"lane"} | omit_effective_config)),
+            .values(last_seen_at=func.now(), last_status={key: value for key, value in stored_status.items() if key != "lane"}),
         )
     else:
-        payload = body.model_dump(exclude=omit_effective_config)
+        payload = stored_status
         # Top-level fields describe the most recent beat; `queue_depth` is excluded here
         # because the SQL replaces it with the cross-lane SUM.
         base = {k: v for k, v in payload.items() if k != "queue_depth"}

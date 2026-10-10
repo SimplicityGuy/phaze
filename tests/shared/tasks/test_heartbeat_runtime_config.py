@@ -292,7 +292,8 @@ async def test_a_beat_without_effective_config_omits_the_key_for_an_old_control_
     """Found while writing the test above: ``PhazeAgentClient.heartbeat`` dumped an absent snapshot
     as ``"effective_config": null``, which an old control plane's ``extra="forbid"`` rejects exactly
     like a populated one -- so even a beat with NO snapshot (and the fallback beat) 422'd. An absent
-    snapshot must be absent from the body, and the old control plane must accept it first time."""
+    snapshot must be absent from both attempts. The new selected-CUE capability is shed on the
+    fallback attempt so an old controller still receives a core liveness beat."""
     accepted: list[dict[str, Any]] = []
     route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(side_effect=_old_control_plane(accepted))
 
@@ -302,21 +303,22 @@ async def test_a_beat_without_effective_config_omits_the_key_for_an_old_control_
     finally:
         await client.close()
 
-    assert route.call_count == 1
+    assert route.call_count == 2
     assert len(accepted) == 1
     assert "effective_config" not in accepted[0]
+    assert "selected_cue_v1" not in accepted[0]
 
 
 @respx.mock
 async def test_a_rejected_beat_without_effective_config_is_not_re_sent(caplog: pytest.LogCaptureFixture) -> None:
-    """The fallback exists only to shed the optional snapshot: a 4xx on a beat that carries none has
+    """The fallback sheds optional snapshot/capability fields: a 4xx on a beat that carries none has
     nothing to shed, so it is reported once and NOT re-sent (it would fail identically)."""
     route = respx.post(f"{_BASE_URL}/api/internal/agent/heartbeat").mock(return_value=httpx.Response(422, json={"detail": []}))
 
     client = PhazeAgentClient(base_url=_BASE_URL, token=_TOKEN, timeout=5.0, _retry_sleep=_no_retry_sleep)
     try:
         with caplog.at_level("WARNING", logger="phaze.tasks.heartbeat"):
-            await send_heartbeat(_ctx(client))
+            await send_heartbeat({**_ctx(client), "agent_lane": "analyze"})
     finally:
         await client.close()
 

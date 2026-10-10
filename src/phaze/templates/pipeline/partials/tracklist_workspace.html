@@ -6,6 +6,11 @@
     <div class="px-4 pt-4 sm:px-6">
         <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Review stored tracklists and link their tracks to Discogs. Local cue companions and embedded tags remain available.</p>
     </div>
+    <section class="p-4 sm:p-6" aria-labelledby="local-tracklists-heading">
+        <h2 id="local-tracklists-heading" class="font-semibold">Local tracklists and reviewed sources</h2>
+        <p class="mt-1 text-sm text-muted">Inspect stored tracklists and select their source in the recording details. Pending alternatives do not replace a reviewed selection.</p>
+        <div id="local-tracklist-sources" class="mt-3" hx-get="/pipeline/local-source-sets?kind=tracklist" hx-trigger="load" hx-swap="innerHTML">Loading stored local tracklists…</div>
+    </section>
     <ol aria-label="Tracklist preparation workflow" class="grid gap-4 px-4 py-4 sm:px-6">
         {# Match -- POST /pipeline/match-tracklists (returns trigger_tracklist_response.html:
            match_tracklist_to_discogs is a CONTROLLER task, so there is no no-active-agent branch). #}

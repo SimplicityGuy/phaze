@@ -1,7 +1,7 @@
 """Bounded, DB-only companion detail reads with exact-observation membership."""
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, cast as type_cast
+from typing import TYPE_CHECKING, Any, Protocol, cast as type_cast
 import uuid
 
 from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, union_all
@@ -52,12 +52,12 @@ def _array(value: Any) -> Any:
     return case((func.jsonb_typeof(value) == "array", value), else_=cast(literal("[]"), JSONB))
 
 
-def _current_owner(file_id: uuid.UUID) -> Any:
+def _current_owner(file_id: Any) -> Any:
     inventory = aliased(FileRecord)
-    return select(inventory.agent_id).where(inventory.id == file_id).scalar_subquery()
+    return select(inventory.agent_id).where(inventory.id == file_id).correlate(FileRecord).scalar_subquery()
 
 
-def _live_source(media: FileRecord) -> Any:
+def _live_source(media: FileRecord | type[FileRecord]) -> Any:
     owner = aliased(FileRecord)
     owner_ok = exists(select(owner.id).where(owner.id == Source.source_file_id, owner.agent_id == _current_owner(media.id)))
     linked = exists(select(FileCompanion.id).where(FileCompanion.media_id == media.id, FileCompanion.companion_id == Source.source_file_id))
@@ -70,17 +70,17 @@ def _live_source(media: FileRecord) -> Any:
     )
 
 
-def _authorized(media: FileRecord) -> Any:
+def _authorized(media: FileRecord | type[FileRecord]) -> Any:
     # Historical permission is observation-specific, never a grant to all later object content.
     candidate = exists(
-        select(ProviderRecordingCandidate.id).where(
-            ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == Observation.id
-        )
+        select(ProviderRecordingCandidate.id)
+        .correlate_except(ProviderRecordingCandidate)
+        .where(ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == Observation.id)
     )
     selected = exists(
-        select(ProviderRecordingSelection.media_id).where(
-            ProviderRecordingSelection.media_id == media.id, ProviderRecordingSelection.observation_id == Observation.id
-        )
+        select(ProviderRecordingSelection.media_id)
+        .correlate_except(ProviderRecordingSelection)
+        .where(ProviderRecordingSelection.media_id == media.id, ProviderRecordingSelection.observation_id == Observation.id)
     )
     event = exists(
         select(ProviderSelectionEvent.id).where(ProviderSelectionEvent.media_id == media.id, ProviderSelectionEvent.observation_id == Observation.id)
@@ -100,11 +100,12 @@ def _inventory(missing: Any, ambiguous: Any, source_id: Any, same_owner: bool = 
     return "ambiguous" if ambiguous is not None else "unverified"
 
 
-def _observation_query(media: FileRecord) -> Any:
+def _observation_query(media: FileRecord | type[FileRecord]) -> Any:
     source_file = aliased(FileRecord)
     linked = exists(select(FileCompanion.id).where(FileCompanion.media_id == media.id, FileCompanion.companion_id == Source.source_file_id))
     candidate_status = (
         select(ProviderRecordingCandidate.status)
+        .correlate_except(ProviderRecordingCandidate)
         .where(ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == Observation.id)
         .scalar_subquery()
     )
@@ -151,7 +152,15 @@ def _observation_query(media: FileRecord) -> Any:
     )
 
 
-def _summary(row: Mapping[Any, Any], media: FileRecord, authorities: Sequence[SelectedAuthority]) -> ObservationSummary:
+class MediaIdentity(Protocol):
+    @property
+    def id(self) -> uuid.UUID: ...
+
+    @property
+    def agent_id(self) -> str: ...
+
+
+def _summary(row: Mapping[Any, Any], media: MediaIdentity, authorities: Sequence[SelectedAuthority]) -> ObservationSummary:
     channel = row["channel"]
     if channel is None:
         availability = "current"

@@ -29,6 +29,12 @@
             {% endif %}
         </div>
     </div>
+    <section class="p-4 sm:p-6" aria-labelledby="existing-cue-heading">
+        <h2 id="existing-cue-heading" class="font-semibold">Existing CUE companion files</h2>
+        <div id="local-cue-inventory" class="mt-3" hx-get="/pipeline/local-source-sets?kind=cue&amp;inventory=1" hx-trigger="load" hx-swap="innerHTML">Loading linked CUE inputs…</div>
+        <h3 class="mt-5 font-semibold">Stored CUE interpretations</h3>
+        <div id="local-cue-sources" class="mt-3" hx-get="/pipeline/local-source-sets?kind=cue" hx-trigger="load" hx-swap="innerHTML">Loading stored CUE interpretations…</div>
+    </section>
     {% if cue_cards %}
     <div class="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2 sm:p-6">
         {% for card in cue_cards %}{% include "pipeline/partials/_cue_preview.html" %}{% endfor %}

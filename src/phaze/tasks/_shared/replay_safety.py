@@ -52,6 +52,7 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         "process_file",
         "extract_file_metadata",
         "match_tracklist_to_discogs",
+        "match_recording_source_to_discogs",
         "generate_proposals",
         "push_file",
         "submit_cloud_job",

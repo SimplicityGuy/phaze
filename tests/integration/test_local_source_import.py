@@ -29,11 +29,13 @@ TEXT = "01. Artist - First\n02. Other - Second\n"
 CUE = 'PERFORMER "Set Artist"\nTITLE "Set"\nFILE "one.mp3" MP3\n TRACK 01 AUDIO\n TITLE "First"\n INDEX 01 00:01:01\nFILE "two.mp3" MP3\n TRACK 01 AUDIO\n TITLE "Second"\n INDEX 01 00:02:02\n'
 
 
-async def inventory(session: AsyncSession, text: str = TEXT, extension: str = "txt") -> tuple[FileRecord, FileRecord, uuid.UUID]:
+async def inventory(
+    session: AsyncSession, text: str = TEXT, extension: str = "txt", *, agent_id: str = "test-fileserver"
+) -> tuple[FileRecord, FileRecord, uuid.UUID]:
     def file(name, kind, digest):
         return FileRecord(
             id=uuid.uuid4(),
-            agent_id="test-fileserver",
+            agent_id=agent_id,
             original_path="/synthetic/" + name,
             current_path="/synthetic/" + name,
             original_filename=name,

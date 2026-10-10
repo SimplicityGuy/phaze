@@ -13,6 +13,7 @@ selected by overlap instead of by midpoint, produces a different number in every
 from __future__ import annotations
 
 from dataclasses import fields
+from functools import partial
 import uuid
 
 import pytest
@@ -22,11 +23,22 @@ from phaze.models.tracklist import TracklistTrack
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, ribbons
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import camelot_number, key_name_for_camelot
-from phaze.services.track_segments import TrackSegment, build_track_segments
+from phaze.services.track_segments import TrackSegment, build_track_segments as _build_track_segments
+from tests._timing import qualified_timing
+
+
+MEDIA_ID = uuid.uuid4()
+build_track_segments = partial(_build_track_segments, media_id=MEDIA_ID)
 
 
 def _track(position: int, timestamp: str | None) -> TracklistTrack:
-    return TracklistTrack(version_id=uuid.uuid4(), position=position, timestamp=timestamp, title=f"Track {position}")
+    return TracklistTrack(
+        version_id=uuid.uuid4(),
+        position=position,
+        timestamp=timestamp,
+        timestamp_evidence=qualified_timing(timestamp, MEDIA_ID),
+        title=f"Track {position}",
+    )
 
 
 def _fine(index: int, start: float, end: float, *, bpm: float | None = None, camelot: str | None = None) -> AnalysisWindow:

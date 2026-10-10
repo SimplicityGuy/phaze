@@ -290,6 +290,7 @@ async def test_get_accepted_discogs_link_returns_highest_confidence_accepted() -
 
     session = AsyncMock()
     session.execute.side_effect = [version_result, link_result]
+    session.scalar.return_value = False  # No explicit provider selection; preserve the legacy branch.
 
     got = await _get_accepted_discogs_link(session, uuid.uuid4())
     assert got is sentinel_link
@@ -302,6 +303,7 @@ async def test_get_accepted_discogs_link_none_when_no_tracklist_version() -> Non
     version_result.scalars.return_value.first.return_value = None
     session = AsyncMock()
     session.execute.return_value = version_result
+    session.scalar.return_value = False
 
     got = await _get_accepted_discogs_link(session, uuid.uuid4())
     assert got is None

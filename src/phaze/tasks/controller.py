@@ -59,7 +59,7 @@ from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.active_reaper import reap_stranded_active_jobs
 from phaze.tasks.companion_association import associate_agent_companions
 from phaze.tasks.companion_import import import_agent_companions
-from phaze.tasks.discogs import match_tracklist_to_discogs
+from phaze.tasks.discogs import match_recording_source_to_discogs, match_tracklist_to_discogs
 from phaze.tasks.filename_convention import learn_filename_conventions
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
@@ -447,6 +447,7 @@ settings = {
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,
+        match_recording_source_to_discogs,
         reap_expired_staging,
         # phaze-5fta.3: one full refresh of the corpus-learned release-group date-order
         # conventions. Operator-enqueueable with NO CronJob, deliberately (see the task module):
