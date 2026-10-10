@@ -1,0 +1,13 @@
+{% import "ui/primitives.html" as ui %}
+<div data-observation-history class="mt-3 space-y-3">
+    {% for row in history.observations %}
+    <div id="companion-observation-{{ row.observation_id }}" class="min-w-0 rounded border p-2">
+        <p class="text-xs">{{ row.parser_version }} · {{ row.status }} · {{ row.availability }} · {{ row.candidate_status or 'source evidence' }}{% if row.selected_kinds %} · selected {{ row.selected_kinds | join(', ') }}{% endif %}</p>
+        <p class="text-xs">{{ row.track_count }} tracks · {{ row.release_fact_count }} release fields · {{ row.encoding or 'encoding unknown' }}{% if row.truncated %} · truncated{% endif %}</p>
+        {% if row.conflict_with_id %}<p class="text-xs text-warn">Conflicting source observation. Explicit acknowledgement required.</p>{% endif %}
+        <button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ row.observation_id }}" hx-target="next [data-observation-content]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Read text, rows and source evidence</button>
+        <div data-observation-content aria-live="polite"></div>
+    </div>
+    {% else %}<p class="text-sm">No captured observations for this source.</p>{% endfor %}
+    {% if history.next_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-sources/{{ history.source_object_id }}/observations?offset={{ history.next_offset }}" hx-target="closest [data-observation-history]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next observations</button>{% endif %}
+</div>

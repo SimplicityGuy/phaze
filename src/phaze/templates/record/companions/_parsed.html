@@ -1,0 +1,18 @@
+{% import "ui/primitives.html" as ui %}
+<div class="space-y-3" data-visible-companion-{{ parsed_kind }}>
+{% for observation in companion_parsed | default(()) %}
+    {% if (parsed_kind == 'tracklist' and observation.summary.parser_version == 'local-tracklist-v1') or (parsed_kind == 'release' and observation.summary.parser_version == 'local-release-v1') %}
+    <div class="min-w-0 rounded border p-3" data-visible-observation="{{ observation.summary.observation_id }}">
+        {% set provenance = namespace(source=none) %}{% for source in companion_details.sources if source.source_object_id == observation.summary.source_object_id %}{% set provenance.source=source %}{% endfor %}
+        <a href="/files/{{ provenance.source.source_file_id or file.id if provenance.source else file.id }}#companion-sources" class="text-xs text-link break-all">{{ provenance.source.filename or provenance.source.native_id if provenance.source else 'Retained source' }}</a>
+        <p class="text-xs">{{ observation.summary.candidate_status or 'source evidence' }}{% if observation.summary.selected_kinds %} · selected {{ observation.summary.selected_kinds | join(', ') }}{% endif %} · {{ observation.summary.status }} · {{ observation.summary.availability }}{% if observation.summary.conflict_with_id %} · conflicting source{% endif %}</p>
+        {% if parsed_kind == 'tracklist' %}
+            {% for track in observation.tracks %}<p class="text-sm break-all" data-visible-track>{{ track.position }}. {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}{% if track.timestamp %} · {{ track.timestamp.original }} · {{ track.timestamp.precision }} · {{ track.timestamp.offset_usability }}{% endif %}</p>{% else %}<p class="text-sm">No parsed rows; preserved source text is still readable.</p>{% endfor %}
+        {% else %}
+            {% for fact in observation.release_facts %}<p class="text-sm break-all" data-visible-release-field>{{ fact.field }}: {{ fact.original_value or fact.value or 'Unknown' }}{% if fact.normalized_value %} · normalized {{ fact.normalized_value }}{% endif %} · {{ fact.certainty }}</p>{% else %}<p class="text-sm">No recognized release fields; preserved text remains readable.</p>{% endfor %}
+        {% endif %}
+        <button type="button" hx-get="/files/{{ file.id }}/companion-observations/{{ observation.summary.observation_id }}" hx-target="next [data-parsed-detail]" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Read all {{ 'track rows' if parsed_kind == 'tracklist' else 'release fields' }}, text and review</button><div data-parsed-detail></div>
+    </div>
+    {% endif %}
+{% else %}<p class="text-sm text-muted">No local interpretations imported yet. Stored companion text and descriptive tags can be imported below.</p>{% endfor %}
+</div>

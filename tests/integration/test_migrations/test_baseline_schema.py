@@ -75,6 +75,14 @@ _BASELINE_PATH = Path(__file__).resolve().parents[3] / "alembic" / "versions" / 
 
 _EXPECTED_TABLES = frozenset(
     {
+        "provider_source_objects",
+        "provider_source_observations",
+        "provider_recording_candidates",
+        "provider_recording_selections",
+        "provider_selection_events",
+        "provider_acquisition_attempts",
+        "companion_import_runs",
+        "companion_import_items",
         "agents",
         "analysis",
         "analysis_window",
@@ -354,6 +362,10 @@ def test_baseline_is_the_only_migration() -> None:
         "082_retire_external_tracklist_acquisition.py",
         "083_files_missing_at.py",
         "084_companion_ambiguous_at.py",
+        "085_provider_source_observations.py",
+        "086_local_source_decisions.py",
+        "087_companion_import_progress.py",
+        "088_discogs_provider_track_binding.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -382,10 +394,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (084: companion ambiguity)."""
+    """A bare ``upgrade head`` lands at the current head (088: immutable provider Discogs binding)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "084"
+    assert version == "088"
 
 
 @pytest.mark.asyncio
@@ -711,7 +723,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "084"
+        assert version == "088"
     finally:
         if engine is not None:
             await engine.dispose()

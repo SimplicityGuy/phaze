@@ -9,13 +9,46 @@ suffix naming, and UTF-8 BOM file writing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import re
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from phaze.tracklist_providers.domain import Timestamp
+
 
 if TYPE_CHECKING:
+    from fractions import Fraction
     from pathlib import Path
+    import uuid
+
+
+def qualified_legacy_offset(raw: str | None, evidence: object, media_id: uuid.UUID | None) -> Fraction | None:
+    """Only explicitly revalidated, target-bound legacy evidence authorizes an exact offset.
+
+    Historical raw text stays displayable. Its syntax supplies no meaning or precision, and
+    neither an approved tracklist nor an intrinsic FILE origin qualifies a recording boundary.
+    Strict JSON validation keeps the SQL eligibility predicate and this adapter on typed evidence.
+    """
+    if raw is None or media_id is None or not isinstance(evidence, dict):
+        return None
+    try:
+        timestamp = Timestamp.model_validate_json(json.dumps(evidence), strict=True)
+    except (ValidationError, TypeError, ValueError):
+        return None
+    if (
+        timestamp.original != raw
+        or timestamp.origin != f"recording:{media_id}"
+        or timestamp.kind != "offset"
+        or timestamp.offset_usability != "qualified"
+        or timestamp.offset is None
+        or len(str(timestamp.offset.numerator)) > 4096
+        or len(str(timestamp.offset.denominator)) > 4096
+    ):
+        return None
+    return timestamp.offset.as_fraction()
 
 
 @dataclass
@@ -25,7 +58,7 @@ class CueTrackData:
     position: int
     title: str | None = None
     artist: str | None = None
-    timestamp_seconds: float | None = None
+    timestamp_seconds: float | Fraction | None = None
     genre: str | None = None
     label: str | None = None
     year: int | None = None
@@ -55,7 +88,7 @@ _CUE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 _CUE_FILE_DIRECTIVE_RE = re.compile(r'^FILE "[^"]*"', re.MULTILINE)
 
 
-def seconds_to_cue_timestamp(total_seconds: float) -> str:
+def seconds_to_cue_timestamp(total_seconds: float | Fraction) -> str:
     """Convert seconds to CUE MM:SS:FF format at 75 frames per second.
 
     Args:
@@ -84,9 +117,8 @@ def parse_timestamp_string(ts: str | None) -> float | None:
     retired provider markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
     writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
     ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
-    contract, NOT raise -- callers (``phaze.services.cue_review.build_cue_tracks_for_versions``, both single and batch
-    generate) run this per track OUTSIDE their own try/except and rely on the documented None
-    contract to route to the friendly "No tracks have timestamps" toast instead of a 500.
+    contract, NOT raise. This syntax utility does not qualify legacy timestamp evidence; exact
+    CUE and segment consumers use ``qualified_legacy_offset`` and retain this raw string for display.
 
     Args:
         ts: Timestamp string or None.

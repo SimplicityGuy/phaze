@@ -1,0 +1,6 @@
+{% import "ui/primitives.html" as ui %}
+<div data-stored-text class="mt-2 min-w-0">
+    <p class="text-xs">{{ chunk.encoding or 'Encoding unknown' }} · {{ chunk.total_characters }} characters{% if chunk.source_truncated %} · source text truncated{% endif %}</p>
+    {% if chunk.text is none %}<p class="text-sm">No decoded text stored for this observation.</p>{% elif chunk.total_characters == 0 %}<p class="text-sm">Stored text is empty.</p>{% else %}<pre class="relative whitespace-pre-wrap break-all text-xs max-h-96 overflow-y-auto" data-companion-text>{{ chunk.text }}</pre>{% endif %}
+    {% if chunk.next_offset is not none %}<button type="button" hx-get="/files/{{ file_id }}/companion-observations/{{ chunk.observation_id }}/text?offset={{ chunk.next_offset }}" hx-target="closest [data-stored-text]" hx-swap="afterend" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">More stored text</button>{% endif %}
+</div>

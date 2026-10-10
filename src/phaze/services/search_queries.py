@@ -17,6 +17,12 @@ from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist
 from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, paged_stmt, split_sentinel
+from phaze.services.selected_source_consumers import (
+    authoritative_tracklist_clause,
+    discogs_authority_clause,
+    explicit_tracklist_clause,
+    selected_fact_value,
+)
 
 
 if TYPE_CHECKING:
@@ -127,18 +133,21 @@ def _file_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[A
     tag-extraction ingest (services/metadata.py::_first_str), so the stored column is already the
     clean text.
     """
+    reviewed_artist = func.coalesce(selected_fact_value("artist"), FileMetadata.artist)
+    reviewed_genre = func.coalesce(selected_fact_value("genre"), FileMetadata.genre)
+    reviewed_event = func.coalesce(selected_fact_value("event"), selected_fact_value("album"), selected_fact_value("title"))
     file_display_filename = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
     file_tsvector = func.to_tsvector(
         "simple",
-        func.concat_ws(" ", file_display_filename, FileMetadata.artist, FileMetadata.title, FileMetadata.genre),
+        func.concat_ws(" ", file_display_filename, reviewed_artist, FileMetadata.title, reviewed_genre, reviewed_event),
     )
     file_q: Select[Any] = (
         select(
             cast(FileRecord.id, String).label("id"),
             literal_column("'file'").label("result_type"),
             file_display_filename.label("title"),
-            FileMetadata.artist.label("artist"),
-            FileMetadata.genre.label("genre"),
+            reviewed_artist.label("artist"),
+            reviewed_genre.label("genre"),
             # PR-A/D-11: the file branch no longer exposes the file pipeline-status column --
             # the search status facet is removed with no derived replacement. The union ``state`` SLOT is
             # kept (a neutral NULL literal here) purely for column-parity so the tracklist/discogs branches
@@ -165,9 +174,9 @@ def _file_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[A
     # containing a literal `\` (e.g. `AC\DC`) round-trips through the ⌘K autocomplete instead of
     # the backslash being silently consumed as the LIKE escape character.
     if facets.artist:
-        file_q = file_q.where(FileMetadata.artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
+        file_q = file_q.where(reviewed_artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
     if facets.genre:
-        file_q = file_q.where(FileMetadata.genre.ilike(like_wildcard(facets.genre), escape=LIKE_ESCAPE_CHAR))
+        file_q = file_q.where(reviewed_genre.ilike(like_wildcard(facets.genre), escape=LIKE_ESCAPE_CHAR))
     if facets.date_from:
         file_q = file_q.where(FileRecord.created_at >= facets.date_from)
     if facets.date_to:
@@ -215,7 +224,7 @@ def _tracklist_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Sel
         func.ts_rank(tracklist_tsvector, ts_query).label("rank"),
         # phaze-x1qr3.9: union-parity NULL -- a tracklist has no file to key a set glyph by.
         literal_column("NULL").label("glyph"),
-    ).where(tracklist_tsvector.op("@@")(ts_query))
+    ).where(tracklist_tsvector.op("@@")(ts_query), ~explicit_tracklist_clause(Tracklist.file_id))
 
     if facets.artist:
         tracklist_q = tracklist_q.where(Tracklist.artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
@@ -252,7 +261,7 @@ def _discogs_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Selec
             literal_column("NULL").label("glyph"),
         )
         .where(discogs_tsvector.op("@@")(ts_query))
-        .where(DiscogsLink.status == "accepted")
+        .where(DiscogsLink.status == "accepted", discogs_authority_clause())
     )
 
     if facets.artist:
@@ -361,8 +370,12 @@ async def distinct_artists(session: AsyncSession, query: str, *, limit: int = 20
     """
     like = like_wildcard(query)
     fm = select(FileMetadata.artist).where(FileMetadata.artist.is_not(None), FileMetadata.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
-    tl = select(Tracklist.artist).where(Tracklist.artist.is_not(None), Tracklist.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
-    combined = union_all(fm, tl).subquery()
+    tl = select(Tracklist.artist).where(
+        ~explicit_tracklist_clause(Tracklist.file_id), Tracklist.artist.is_not(None), Tracklist.artist.ilike(like, escape=LIKE_ESCAPE_CHAR)
+    )
+    reviewed = selected_fact_value("artist")
+    selected = select(reviewed.label("artist")).select_from(FileRecord).where(reviewed.is_not(None), reviewed.ilike(like, escape=LIKE_ESCAPE_CHAR))
+    combined = union_all(fm, tl, selected).subquery()
     rows = await session.execute(select(combined.c.artist).distinct().order_by(combined.c.artist).limit(limit))
     return [artist for (artist,) in rows if artist]
 
@@ -372,10 +385,13 @@ async def get_summary_counts(session: AsyncSession) -> dict[str, int]:
     file_count_result = await session.execute(select(func.count()).select_from(FileRecord))
     file_count = file_count_result.scalar() or 0
 
-    tracklist_count_result = await session.execute(select(func.count()).select_from(Tracklist))
-    tracklist_count = tracklist_count_result.scalar() or 0
+    tracklist_count_result = await session.execute(select(func.count()).select_from(Tracklist).where(~explicit_tracklist_clause(Tracklist.file_id)))
+    selected_count = await session.scalar(select(func.count(FileRecord.id)).where(explicit_tracklist_clause(), authoritative_tracklist_clause())) or 0
+    tracklist_count = (tracklist_count_result.scalar() or 0) + selected_count
 
-    discogs_count_result = await session.execute(select(func.count()).select_from(DiscogsLink).where(DiscogsLink.status == "accepted"))
+    discogs_count_result = await session.execute(
+        select(func.count()).select_from(DiscogsLink).where(DiscogsLink.status == "accepted", discogs_authority_clause())
+    )
     discogs_count = discogs_count_result.scalar() or 0
 
     return {"file_count": file_count, "tracklist_count": tracklist_count, "discogs_count": discogs_count}

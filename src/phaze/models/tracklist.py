@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from phaze.models.base import Base, TimestampMixin
@@ -32,7 +32,8 @@ class Tracklist(TimestampMixin, Base):
 
     New rows default to the manual source. Existing source identifiers, URLs and duplicate
     propagation fields are retained as provenance after external acquisition was retired.
-    External identifiers are unique among canonical rows only; inherited projections remain
+    Legacy external identifiers are unique among unexpanded canonical rows; expanded rows use
+    provider object identity. Inherited projections remain
     distinguishable by propagated_from_set_key. Every read resolving an external identifier
     must use is_canonical() to avoid selecting an inherited row.
     """
@@ -40,8 +41,9 @@ class Tracklist(TimestampMixin, Base):
     __tablename__ = "tracklists"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_object_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_objects.id"))
     external_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    """Source identifier, unique among canonical rows only."""
+    """Compatibility display identifier; uniqueness applies to unexpanded canonical rows only."""
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=True)
     match_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -91,7 +93,13 @@ class Tracklist(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_tracklists_file_id", "file_id"),
         # PARTIAL unique: one canonical row per source identifier, with propagated projections exempt.
-        Index("ix_tracklists_external_id", "external_id", unique=True, postgresql_where=text(CANONICAL_TRACKLIST_CLAUSE)),
+        Index(
+            "ix_tracklists_external_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text(CANONICAL_TRACKLIST_CLAUSE + " AND provider_object_id IS NULL"),
+        ),
+        Index("ix_tracklists_provider_object", "provider_object_id", unique=True, postgresql_where=text(CANONICAL_TRACKLIST_CLAUSE)),
         # Serves the correction path -- "show/undo every row this cluster produced" -- without
         # seq-scanning a table that carries one row per tracklisted file in the archive.
         Index("ix_tracklists_propagated_from_set_key", "propagated_from_set_key", postgresql_where=text("propagated_from_set_key IS NOT NULL")),
@@ -107,6 +115,7 @@ class TracklistVersion(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tracklist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklists.id"), nullable=False)
+    source_observation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_observations.id"))
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -129,6 +138,7 @@ class TracklistTrack(TimestampMixin, Base):
     artist: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp_evidence: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     timestamp: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_mashup: Mapped[bool] = mapped_column(Boolean, default=False)
     remix_info: Mapped[str | None] = mapped_column(Text, nullable=True)

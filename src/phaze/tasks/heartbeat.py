@@ -359,19 +359,20 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         # test ctx built by hand) -- HeartbeatRequest.effective_config is Optional for exactly
         # this reason (see its docstring).
         effective_config=_build_effective_config(runtime_config_store) if runtime_config_store is not None else None,
+        selected_cue_v1=True if ctx.get("agent_lane") in {None, "meta"} else None,
     )
     try:
         try:
             await client.heartbeat(payload)
         except AgentApiClientError:
-            if payload.effective_config is None:
+            if payload.effective_config is None and payload.selected_cue_v1 is None:
                 raise
             # phaze-mvq8z.20: a control plane older than `effective_config` 422s every beat that
             # carries it, and agents may upgrade first. The snapshot is optional; liveness is not --
             # so re-send the core beat without it. Tried again with the snapshot on every tick, so
             # the panel fills in by itself once the control plane catches up.
             logger.warning("heartbeat: control plane rejected effective_config; re-sending the beat without it")
-            await client.heartbeat(payload.model_copy(update={"effective_config": None}))
+            await client.heartbeat(payload.model_copy(update={"effective_config": None, "selected_cue_v1": None}))
         # DEBUG only by design (PR3): the 30s cadence fires constantly, so an INFO
         # here would flood operational logs -- heartbeat liveness lives at DEBUG.
         logger.debug("heartbeat sent", agent=identity.agent_id, queue_depth=queue_depth)

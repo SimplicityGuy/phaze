@@ -76,12 +76,14 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
     {
         "generate_proposals",
         "match_tracklist_to_discogs",
+        "match_recording_source_to_discogs",
         "learn_filename_conventions",
         "submit_cloud_job",  # Control-plane producer; kube credentials stay here.
         # phaze-spd83: the automatic companion association run. The api requests it after every
         # event that can change a companion's links (services/companion_autolink.py), so it MUST be
         # routable; a deferred run re-requests itself on the same queue.
         "associate_agent_companions",
+        "import_agent_companions",
     }
 )
 """Fileless tasks the application-server controller worker consumes.
@@ -106,6 +108,7 @@ LANE_TASKS: dict[str, frozenset[str]] = {
             "write_file_tags",
             "write_cue_sheet",
             "read_companion_files",
+            "capture_companion_source",
             # phaze-osy6j: the companion-features backfill -- a page of small companion reads, the
             # same I/O-light profile as read_companion_files.
             "extract_companion_features",

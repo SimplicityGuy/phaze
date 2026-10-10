@@ -37,6 +37,7 @@ PIPELINE_FUNCTIONS: tuple[str, ...] = (
     # path. Their durable Redis counters are deliberately NOT deleted -- they are never-reset
     # INCRs that record work genuinely completed, and read_counters simply stops enumerating them.
     "match_tracklist_to_discogs",
+    "match_recording_source_to_discogs",
     "generate_proposals",
     "push_file",
 )
@@ -111,7 +112,7 @@ async def incr_completed(redis: Any, function: str) -> None:
 
 
 async def read_counters(redis: Any) -> dict[str, dict[str, int]]:
-    """Return ``{function: {"enqueued": N, "completed": M}}`` for the 9 known functions.
+    """Return ``{function: {"enqueued": N, "completed": M}}`` for the 6 known functions.
 
     Reads both namespaces with two pipelined ``MGET`` calls (one round-trip each).
     Missing keys read back ``0``. The result is a fast cache reconciled against

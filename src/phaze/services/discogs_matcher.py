@@ -11,6 +11,7 @@ import structlog
 
 if TYPE_CHECKING:
     from phaze.models.tracklist import TracklistTrack
+    from phaze.tracklist_providers.domain import ProviderTrack
 
 
 logger = structlog.get_logger(__name__)
@@ -97,7 +98,7 @@ def _parse_artist_from_name(name: str) -> tuple[str | None, str]:
     return None, name
 
 
-async def match_track_to_discogs(client: DiscogsographyClient, track: TracklistTrack) -> list[dict[str, Any]]:
+async def match_track_to_discogs(client: DiscogsographyClient, track: TracklistTrack | ProviderTrack) -> list[dict[str, Any]]:
     """Search discogsography for a single track and return top 3 scored candidates.
 
     Skips tracks with None/empty artist or title (D-02).

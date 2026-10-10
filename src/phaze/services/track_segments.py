@@ -8,7 +8,7 @@ tracklist row can answer "what does track 7 actually sound like" from stored dat
 
 Three rules the shape here exists to keep:
 
-1. **A track without a parseable timestamp produces no segment.** It is not given the previous
+1. **A track without a qualified recording-relative offset produces no segment.** It is not given the previous
    track's range, and it is not given a zero-length one at position zero -- either would attach
    measurements from audio that is not that track. It renders as em dashes, which is the honest
    reading of "we do not know when this track starts".
@@ -33,13 +33,15 @@ import statistics
 from typing import TYPE_CHECKING, Any
 
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES
-from phaze.services.cue_generator import parse_timestamp_string
+from phaze.services.cue_generator import qualified_legacy_offset
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import camelot_number, key_name_for_camelot, modal_camelot
+from phaze.tracklist_providers.domain import ProviderTrack
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    import uuid
 
     from phaze.models.analysis import AnalysisWindow
     from phaze.models.tracklist import TracklistTrack
@@ -118,16 +120,23 @@ class TrackSegment:
         return MOOD_HUES.get(self.mood) if self.mood else None
 
 
-def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
-    """``(position, start_sec)`` for every track with a parseable, non-negative timestamp.
-
-    ``parse_timestamp_string`` is total by contract (``phaze-97u7``): empty cells, bracketed or
-    decorated times and non-numeric segments all come back ``None`` rather than raising, which
-    is exactly the "no segment for this track" signal rule 1 needs.
-    """
+def _timestamped(tracks: Sequence[TracklistTrack | ProviderTrack], media_id: uuid.UUID | None) -> list[tuple[int, float]]:
+    """Qualified rational boundaries, converted to finite floats only at the analysis boundary."""
     result: list[tuple[int, float]] = []
     for track in tracks:
-        start = parse_timestamp_string(track.timestamp)
+        if isinstance(track, ProviderTrack):
+            timestamp = track.timestamp
+            offset = (
+                timestamp.offset.as_fraction()
+                if timestamp is not None and timestamp.kind == "offset" and timestamp.offset_usability == "qualified" and timestamp.offset is not None
+                else None
+            )
+        else:
+            offset = qualified_legacy_offset(track.timestamp, track.timestamp_evidence, media_id)
+        try:
+            start = float(offset) if offset is not None else None
+        except OverflowError:
+            start = None
         if start is None or not math.isfinite(start) or start < 0:
             continue
         result.append((track.position, float(start)))
@@ -233,9 +242,11 @@ def _argmax_mood(windows: Sequence[AnalysisWindow]) -> str | None:
 
 
 def build_track_segments(
-    tracks: Sequence[TracklistTrack],
+    tracks: Sequence[TracklistTrack | ProviderTrack],
     windows: Sequence[AnalysisWindow],
     duration_sec: float | None,
+    *,
+    media_id: uuid.UUID | None = None,
 ) -> list[TrackSegment]:
     """Join the scraped tracklist to the window projection, one segment per timestamped track.
 
@@ -248,7 +259,7 @@ def build_track_segments(
     ``duration_sec`` is the file's own duration. ``None``, non-finite, or a value at or before
     the last track's start leaves the final segment open-ended; see ``TrackSegment.end_sec``.
     """
-    bounds = _timestamped(tracks)
+    bounds = _timestamped(tracks, media_id)
     if not bounds:
         return []
     # Keyed by position rather than zipped with ``bounds``: ``_timestamped`` drops untimed

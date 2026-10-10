@@ -22,6 +22,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.record import build_file_record_context
 from phaze.services.analysis_timeline import MOOD_HUES
 from phaze.services.track_segments import TrackSegment
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -51,7 +52,16 @@ async def _seed_set_with_tracklist_and_windows(make_file, session: AsyncSession)
     session.add(version)
     await session.flush()
     tracklist.latest_version_id = version.id
-    session.add(TracklistTrack(version_id=version.id, position=1, artist="Coldwave", title="Opener", timestamp="00:00"))
+    session.add(
+        TracklistTrack(
+            version_id=version.id,
+            position=1,
+            artist="Coldwave",
+            title="Opener",
+            timestamp="00:00",
+            timestamp_evidence=qualified_timing("00:00", file_rec.id),
+        )
+    )
     session.add(TracklistTrack(version_id=version.id, position=2, artist="Duskline", title="Untimed", timestamp=None))
     session.add_all(
         [
@@ -149,7 +159,16 @@ async def test_a_file_with_no_windows_renders_the_table_exactly_as_before(client
     session.add(version)
     await session.flush()
     tracklist.latest_version_id = version.id
-    session.add(TracklistTrack(version_id=version.id, position=1, artist="Coldwave", title="Opener", timestamp="00:00"))
+    session.add(
+        TracklistTrack(
+            version_id=version.id,
+            position=1,
+            artist="Coldwave",
+            title="Opener",
+            timestamp="00:00",
+            timestamp_evidence=qualified_timing("00:00", file_rec.id),
+        )
+    )
     await session.commit()
 
     response = await client.get(f"/record/{file_rec.id}")
