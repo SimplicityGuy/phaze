@@ -224,6 +224,7 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any, f
     from datetime import date
 
     from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+    from tests._timing import qualified_timing
 
     file = await seed.file(filename="<set-01>.mp3")
     await seed.metadata(file, duration=_INSPECTION_DURATION_SEC)
@@ -254,8 +255,22 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any, f
     await seed.session.flush()
     seed.session.add_all(
         [
-            TracklistTrack(version_id=version.id, position=1, timestamp="0:00", artist="First Artist", title="Opening Track"),
-            TracklistTrack(version_id=version.id, position=2, timestamp="5:00", artist="Second Artist", title="Closing Track"),
+            TracklistTrack(
+                version_id=version.id,
+                position=1,
+                timestamp="0:00",
+                timestamp_evidence=qualified_timing("0:00", file.id),
+                artist="First Artist",
+                title="Opening Track",
+            ),
+            TracklistTrack(
+                version_id=version.id,
+                position=2,
+                timestamp="5:00",
+                timestamp_evidence=qualified_timing("5:00", file.id),
+                artist="Second Artist",
+                title="Closing Track",
+            ),
         ]
     )
     tracklist.latest_version_id = version.id

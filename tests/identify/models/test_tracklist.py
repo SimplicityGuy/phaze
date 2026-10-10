@@ -76,7 +76,7 @@ class TestTracklistModel:
         index = next(i for i in Tracklist.__table__.indexes if i.name == "ix_tracklists_external_id")
         assert index.unique is True
         assert [c.name for c in index.columns] == ["external_id"]
-        assert str(index.dialect_options["postgresql"]["where"]) == "propagated_from_set_key IS NULL"
+        assert str(index.dialect_options["postgresql"]["where"]) == "propagated_from_set_key IS NULL AND provider_object_id IS NULL"
 
     def test_propagation_columns_are_nullable_provenance(self):
         """Both are NULL on a scraped row -- which is what makes every pre-existing row canonical."""

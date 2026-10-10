@@ -181,3 +181,6 @@ For each file, provide:
 - `confidence`: Your confidence score (0.0 to 1.0)
 - `artist`, `event_name`, `venue`, `date`, `source_type`, `stage`, `day_number`, `b2b_partners`, `episode_number`, `part`: Extracted metadata (null/empty if not applicable)
 - `reasoning`: Brief explanation of why you chose this filename and confidence level
+
+
+When `reviewed_source_tags` and `reviewed_source_evidence` are present, they are the explicitly reviewed local source version for that recording. Preserve its identity and prefer its certain fields over unreviewed companion references. A newer pending import is not reviewed authority. Embedded file tags remain a separate source; uncertain or conflicting companion facts do not become certain naming metadata.

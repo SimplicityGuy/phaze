@@ -122,6 +122,7 @@ from phaze.routers.pipeline.skip import (
 )
 from phaze.routers.pipeline.tracklists import (
     _enqueue_match_jobs,
+    local_source_sets_fragment,
     trigger_match_tracklists_ui,
 )
 
@@ -169,6 +170,7 @@ __all__ = [
     "eligibility_trace",
     "force_skip_stage",
     "lane_detail",
+    "local_source_sets_fragment",
     "logger",
     "pending_files_fragment",
     "pipeline_files",

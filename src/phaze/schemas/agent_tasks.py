@@ -11,10 +11,10 @@ Every model inherits :class:`WirePayload`, making ``model_dump()`` JSON-native f
 declares ``extra="forbid"`` locally so strict agent-supplied validation remains visible at each schema.
 """
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 import uuid
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from phaze.schemas.wire_payload import WirePayload
 
@@ -276,6 +276,29 @@ class WriteFileTagsPayload(WirePayload):
     tags: dict[str, str | int | list[str] | None]
 
 
+class CueSourceBinding(WirePayload):
+    """Reviewed source/inventory pin, revalidated by the controller before an agent writes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    observation_id: uuid.UUID
+    selection_token: uuid.UUID
+    media_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_revision: str | None = Field(max_length=2048)
+    parser_version: str = Field(min_length=1, max_length=128)
+    target_mapping_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CueSourceCheck(WirePayload):
+    """Authenticated pre-write pin check; sends no stored source or generated CUE text."""
+
+    model_config = ConfigDict(extra="forbid")
+    file_id: uuid.UUID
+    audio_path: str = Field(max_length=16384)  # DoS bound on one authenticated check, not a Text storage width.
+    source_binding: CueSourceBinding
+
+
 class WriteCueSheetPayload(WirePayload):
     """SAQ job: write a fully-rendered CUE sheet next to its audio file, on the owning agent (phaze-6bkk).
 
@@ -289,10 +312,24 @@ class WriteCueSheetPayload(WirePayload):
     model_config = ConfigDict(extra="forbid")
 
     file_id: uuid.UUID
-    tracklist_id: uuid.UUID
+    tracklist_id: uuid.UUID | None = None
+    source_binding: CueSourceBinding | None = None
     agent_id: str
     audio_path: str
     content: str
+
+    @model_validator(mode="after")
+    def one_authority(self) -> "WriteCueSheetPayload":
+        if (self.tracklist_id is None) == (self.source_binding is None):
+            raise ValueError("Choose exactly one legacy tracklist or selected source binding")
+        return self
+
+    @model_serializer(mode="wrap")
+    def legacy_wire_compatibility(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = cast("dict[str, Any]", handler(self))
+        if self.source_binding is None:
+            result.pop("source_binding", None)
+        return result
 
 
 class CompanionReadItem(WirePayload):

@@ -23,13 +23,14 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.schemas.agent_tasks import WriteCueSheetPayload
+from phaze.schemas.agent_tasks import CueSourceCheck, WriteCueSheetPayload
 from phaze.services.containment import resolve_contained_twin
 from phaze.services.cue_generator import retarget_cue_file_line, write_cue_file
 
@@ -66,11 +67,20 @@ def _write_sync(audio_path: Path, content: str, scan_roots: list[str]) -> tuple[
     return write_cue_file(retarget_cue_file_line(content, resolved.name), resolved)
 
 
-async def write_cue_sheet(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001  -- ctx is SAQ's required first arg; this task needs nothing from it
+async def write_cue_sheet(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Write one pre-rendered CUE sheet next to its audio file on the agent."""
     payload = WriteCueSheetPayload.model_validate(kwargs)
     cfg = get_settings()
     scan_roots = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
+
+    if payload.source_binding is not None:
+        if hashlib.sha256(payload.content.encode()).hexdigest() != payload.source_binding.content_sha256:
+            raise ValueError("CUE content does not match the reviewed artifact")
+        # No controller DB connection survives this HTTP round-trip. A selection/inventory
+        # change while the job waited in the queue is refused before the first disk write.
+        await ctx["api_client"].check_cue_source(
+            CueSourceCheck(file_id=payload.file_id, audio_path=payload.audio_path, source_binding=payload.source_binding)
+        )
 
     logger.info("cue write started", file_id=str(payload.file_id), tracklist_id=str(payload.tracklist_id))
 

@@ -51,6 +51,10 @@ _UNKEYED_TASKS: frozenset[str] = frozenset(
         # caller's enqueue dedup onto an in-flight job it has no handle on, so it would wait out
         # its full timeout and then propose with no companion context. Distinct jobs, always.
         "read_companion_files",
+        # phaze-p2qah: recapture intentionally observes again; availability, byte/line budget
+        # and requested media target can differ even when inventory revision is unchanged.
+        # Immutable report replays are deduplicated by storage, not by suppressing new reads.
+        "capture_companion_source",
         # phaze-osy6j: one job is a PAGE of the companion-features backfill, keyed by the set of rows
         # it names. Two runs page the same rows differently, so no natural key identifies the work;
         # an overlapping pair re-reads a few small files and rewrites the same rows (idempotent).

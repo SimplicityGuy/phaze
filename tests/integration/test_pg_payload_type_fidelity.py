@@ -56,10 +56,12 @@ import pytest
 import pytest_asyncio
 from saq.queue.postgres import PostgresQueue
 
+from phaze.schemas.agent_companion_capture import CaptureCompanionPayload, CaptureTarget
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.schemas.agent_tasks import (
     CompanionFeaturesTarget,
     CompanionReadItem,
+    CueSourceBinding,
     ExecuteApprovedBatchPayload,
     ExecuteBatchProposalItem,
     ExtractCompanionFeaturesPayload,
@@ -85,6 +87,20 @@ if TYPE_CHECKING:
 BROKER_DSN, _ = integration_dsns()
 
 
+def _representative_cue_binding() -> CueSourceBinding:
+    """All nested selected-source pin fields must survive the actual task broker."""
+    return CueSourceBinding(
+        observation_id=uuid.uuid4(),
+        selection_token=uuid.uuid4(),
+        media_sha256="a" * 64,
+        source_sha256="b" * 64,
+        source_revision="fixture-revision",
+        parser_version="local-cue-v1",
+        target_mapping_digest="c" * 64,
+        content_sha256="d" * 64,
+    )
+
+
 def _representative_payloads() -> list[tuple[str, BaseModel]]:
     """One production-shaped payload per task that crosses the enqueue seam.
 
@@ -97,6 +113,19 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
     two list-of-model payloads carry two items so nested-model serialization is exercised.
     """
     return [
+        (
+            "capture_companion_source",
+            CaptureCompanionPayload(
+                agent_id="itest-agent",
+                target=CaptureTarget(
+                    file_id=uuid.uuid4(),
+                    media_id=uuid.uuid4(),
+                    path="/archive/notes.txt",
+                    expected_sha256="a" * 64,
+                    expected_size=42,
+                ),
+            ),
+        ),
         (
             "process_file",
             ProcessFilePayload(
@@ -149,6 +178,16 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
             WriteCueSheetPayload(
                 file_id=uuid.uuid4(),
                 tracklist_id=uuid.uuid4(),
+                agent_id="itest-agent",
+                audio_path="/archive/<set-01>.mp3",
+                content='FILE "<set-01>.mp3" MP3\n  TRACK 01 AUDIO\n',
+            ),
+        ),
+        (
+            "write_cue_sheet",
+            WriteCueSheetPayload(
+                file_id=uuid.uuid4(),
+                source_binding=_representative_cue_binding(),
                 agent_id="itest-agent",
                 audio_path="/archive/<set-01>.mp3",
                 content='FILE "<set-01>.mp3" MP3\n  TRACK 01 AUDIO\n',

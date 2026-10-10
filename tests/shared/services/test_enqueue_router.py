@@ -106,8 +106,9 @@ def test_lane_tasks_totality_union_equals_agent_tasks() -> None:
     # write_cue_sheet, read_companion_files) -- the archive I/O the fileless api/controller used to
     # attempt in-process against a mount they do not have. phaze-osy6j added the companion-features
     # backfill read (extract_companion_features), also on the meta lane; phaze-lwuf6 the junk
-    # quarantine move (quarantine_companion), on the meta lane as well.
-    assert len(AGENT_TASKS) == 11
+    # quarantine move (quarantine_companion), on the meta lane as well. phaze-p2qah adds the
+    # revision-bound source capture (capture_companion_source), also on the owning meta lane.
+    assert len(AGENT_TASKS) == 12
 
 
 def test_lane_tasks_no_task_in_two_lanes() -> None:

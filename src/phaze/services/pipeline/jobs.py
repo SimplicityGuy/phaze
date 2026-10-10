@@ -124,10 +124,7 @@ async def get_match_busy_count(session: AsyncSession) -> int:
     except Exception:
         logger.warning("match_busy_degraded", exc_info=True)
         return 0
-    for row in rows:
-        if row[0] == _MATCH_BUSY_FUNCTION:
-            return int(row[1])
-    return 0
+    return sum(int(row[1]) for row in rows if row[0] in (_MATCH_BUSY_FUNCTION, "match_recording_source_to_discogs"))
 
 
 # Bulk proposal in-flight gate (phaze-8qheu). generate_proposals is a CONTROLLER task whose

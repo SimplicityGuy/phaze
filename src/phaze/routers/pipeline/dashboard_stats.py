@@ -72,7 +72,7 @@ if TYPE_CHECKING:
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
     "analyze": ("process_file",),
-    "match": ("match_tracklist_to_discogs",),
+    "match": ("match_tracklist_to_discogs", "match_recording_source_to_discogs"),
 }
 
 

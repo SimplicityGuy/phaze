@@ -14,6 +14,7 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.local_source_import import get_selected_recording_source
 
 
 if TYPE_CHECKING:
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.schemas.local_source_import import SelectedRecordingSource
+    from phaze.tracklist_providers.domain import ProviderTrack
 
 
 _TIMESTAMP_LINE = re.compile(r"(?:^|\n)[^\n]{0,40}?\b\d{1,2}:\d{2}(?::\d{2})?\b")
@@ -64,9 +68,10 @@ class FileTracklistReview:
     file_id: uuid.UUID
     tracklist: Tracklist | None
     latest_version: TracklistVersion | None
-    tracks: tuple[TracklistTrack, ...]
+    tracks: tuple[TracklistTrack | ProviderTrack, ...]
     is_propagated: bool
     local_sources: tuple[str, ...] = ()
+    selected_source: SelectedRecordingSource | None = None
 
 
 async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -> FileTracklistReview | None:
@@ -74,6 +79,17 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
     if await session.get(FileRecord, file_id) is None:
         return None
     local_sources = await _local_sources(session, file_id)
+    selected = await get_selected_recording_source(session, file_id)
+    if selected is not None:
+        return FileTracklistReview(
+            file_id=file_id,
+            tracklist=None,
+            latest_version=None,
+            tracks=selected.tracks,
+            is_propagated=False,
+            local_sources=local_sources,
+            selected_source=selected,
+        )
     tracklist_result = await session.execute(select(Tracklist).where(Tracklist.file_id == file_id).order_by(Tracklist.updated_at.desc()).limit(1))
     tracklist = tracklist_result.scalar_one_or_none()
 

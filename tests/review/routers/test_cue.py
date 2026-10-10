@@ -22,6 +22,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from tests._queue_fakes import install_fake_queues
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -106,6 +107,7 @@ async def _create_approved_tracklist_with_file(
             artist=f"Track Artist {i}",
             title=f"Track Title {i}",
             timestamp=f"0:{i * 10}:00" if with_timestamps else None,
+            timestamp_evidence=qualified_timing(f"0:{i * 10}:00", file_id) if with_timestamps else None,
         )
         session.add(track)
 
@@ -587,6 +589,7 @@ async def test_generate_cue_stale_version_refuses_write_and_returns_fresh_previe
             artist="New Artist",
             title="New Title",
             timestamp="0:05:00",
+            timestamp_evidence=qualified_timing("0:05:00", file_record.id),
         )
     )
     tracklist.latest_version_id = new_version_id

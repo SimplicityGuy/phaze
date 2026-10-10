@@ -43,6 +43,7 @@ def _make_tracklist(tracklist_id: uuid.UUID | None = None, latest_version_id: uu
     tl = MagicMock()
     tl.id = tracklist_id or uuid.uuid4()
     tl.latest_version_id = latest_version_id or uuid.uuid4()
+    tl.file_id = None  # These fixtures are detached legacy catalogues, without selected media authority.
     return tl
 
 
@@ -64,6 +65,7 @@ async def test_match_tracklist_processes_eligible_tracks(
     session = ctx["_mock_session"]
 
     tracklist = _make_tracklist()
+    session.scalar.return_value = tracklist  # Fresh, locked version at the post-network write boundary.
     tracks = [_make_track("deadmau5", "Strobe"), _make_track("Skrillex", "Bangarang")]
 
     # First execute: tracklist lookup, second: tracks query
@@ -115,6 +117,7 @@ async def test_rematch_deletes_candidates_preserves_accepted(
     session = ctx["_mock_session"]
 
     tracklist = _make_tracklist()
+    session.scalar.return_value = tracklist
     tracks = [_make_track("deadmau5", "Strobe")]
 
     mock_tracklist_result = MagicMock()
@@ -171,6 +174,7 @@ async def test_match_tracklist_closes_client_on_exception(
     session = ctx["_mock_session"]
 
     tracklist = _make_tracklist()
+    session.scalar.return_value = tracklist
     tracks = [_make_track("deadmau5", "Strobe")]
 
     mock_tracklist_result = MagicMock()
@@ -240,6 +244,7 @@ async def test_match_tracklist_holds_no_session_across_network_gather(
         idx = session_count
         session = AsyncMock()
         session.add = MagicMock()  # AsyncSession.add is sync
+        session.scalar.return_value = tracklist
         if idx == 1:
             session.execute = AsyncMock(side_effect=[mock_tracklist_result, mock_tracks_result])
         else:

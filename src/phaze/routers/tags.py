@@ -40,6 +40,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.services.selected_tag_sources import SelectedTagSource
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_comparison import (
     _build_comparison,
@@ -51,6 +52,7 @@ from phaze.services.tag_comparison import (
     _summarize_tags,
     _tag_review_payload,
     _terminal_tagwrite_subq,
+    validate_reviewed_source_versions,
 )
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import TagWriteAlreadyQueuedError, enqueue_tag_write
@@ -222,7 +224,12 @@ async def _get_file_with_metadata(session: AsyncSession, file_id: uuid.UUID) -> 
     ``FileRecord.set_profile`` is ``lazy="noload"`` (models/file.py), so without this
     ``_tagwrite_row_context`` reading ``file_record.set_profile`` would raise, not silently N+1.
     """
-    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata), selectinload(FileRecord.set_profile)).where(FileRecord.id == file_id)
+    stmt = (
+        select(FileRecord)
+        .options(selectinload(FileRecord.file_metadata), selectinload(FileRecord.set_profile))
+        .where(FileRecord.id == file_id)
+        .execution_options(populate_existing=True)
+    )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -317,6 +324,8 @@ async def _validate_tag_review_token(
 ) -> tuple[dict[str, Any], dict[str, str | int | None]]:
     reviewed = _decode_tag_review_token(token, file_record.id)
     tracklist = await _get_tracklist_for_file(session, file_record.id)
+    if isinstance(tracklist, SelectedTagSource) and not tracklist.eligible:
+        raise HTTPException(status_code=409, detail="Selected source binding is no longer current; review the source before approving tags")
     discogs_link = await _get_accepted_discogs_link(session, file_record.id)
     proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
     current = _tag_review_payload(file_record, tracklist, discogs_link, proposed)
@@ -697,6 +706,7 @@ async def _dispatch_bulk_candidate(
         reviewed, proposed = validated[file_id]
         comparison = _build_comparison(candidate.metadata, proposed)
         if _count_changes(comparison) < 1:
+            await validate_reviewed_source_versions(session, file_id, reviewed["sources"])
             # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP
             # marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same
             # window on every submit and permanently starves the qualifying files behind it.

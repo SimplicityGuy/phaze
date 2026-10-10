@@ -95,7 +95,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
-from phaze.models.tracklist import Tracklist
+from phaze.services.selected_source_consumers import authoritative_tracklist_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -199,7 +199,7 @@ def done_clause(stage: Stage) -> ColumnElement[bool]:
         # D-03: a row present AND not a failure-only row.
         return exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.is_(None)))
     if stage is Stage.TRACKLIST:
-        return exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id))
+        return authoritative_tracklist_clause()
     if stage in (Stage.PROPOSE, Stage.REVIEW):
         # Presence: done = a proposal exists (ELIG-02 review semantics; RESEARCH OQ2 resolution).
         return exists(select(RenameProposal.id).where(RenameProposal.file_id == FileRecord.id))

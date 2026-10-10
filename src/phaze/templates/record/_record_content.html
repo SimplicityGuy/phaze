@@ -64,6 +64,12 @@
             </div>
         </section>
 
+        <section data-companion-tracks class="{{ _panel }}" aria-label="Imported local tracklists"><h3 class="text-sm font-semibold mb-2">Local tracklist sources</h3>{% with parsed_kind='tracklist' %}{% include "record/companions/_parsed.html" %}{% endwith %}</section>
+
+        <section id="companions" data-companion-section class="scroll-mt-4 {{ _panel }}" aria-label="Companion text and local tracklist sources">
+            {% with details=companion_details, file_id=file.id %}{% include "record/companions/_overview.html" %}{% endwith %}
+        </section>
+
         {# 4 — Expanded stage matrix (trace triggers) + enrich-only force-skip (UI-03 / UI-04,
            D-02/D-06..D-10): the right-pane half of the D-02 dual home. Each stage is a keyboard-
            accessible trace TRIGGER — a real <button> (native Enter/Space → click) that hx-gets the
@@ -164,6 +170,8 @@
            failed" and "row exists but nothing came back" never read alike. #}
         <section id="metadata" data-metadata-card class="scroll-mt-4 {{ _panel }}" aria-labelledby="metadata-heading">
             <p id="metadata-heading" class="{{ _eyebrow }} mb-3">Extracted metadata</p>
+            <div data-release-metadata class="mb-4"><h3 class="text-sm font-semibold mb-2">Release metadata from companions</h3>{% with parsed_kind='release' %}{% include "record/companions/_parsed.html" %}{% endwith %}</div>
+            <p class="mb-3 text-xs">Companion release metadata is attributed separately from these extracted tags. <a href="#companion-sources" class="text-link">Browse release fields and original source text</a>.</p>
             <div>
                 {% if metadata_card.status == 'missing' %}
                 <p class="text-sm text-muted ">No metadata extracted yet.</p>

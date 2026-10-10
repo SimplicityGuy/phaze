@@ -45,6 +45,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.tasks.cue_write import write_cue_sheet
 from tests._queue_fakes import install_fake_queues
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -110,6 +111,7 @@ async def _seed_generatable_tracklist(session: AsyncSession, current_path: str) 
                 artist=f"Track Artist {i}",
                 title=f"Track Title {i}",
                 timestamp=f"0:{i * 10}:00",
+                timestamp_evidence=qualified_timing(f"0:{i * 10}:00", file_id),
             )
         )
     await session.commit()

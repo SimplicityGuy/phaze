@@ -33,6 +33,7 @@ from tests import bh_test_report
 from tests._background_drain import leaked_background_tasks_message, pending_router_background_tasks
 from tests._queue_fakes import install_fake_queues
 from tests._real_models import apply_default as _apply_real_models_default
+from tests._timing import qualified_timing
 from tests.db_guard import (
     SharedTestDatabaseError,
     TestDatabaseUnreachableError,
@@ -980,6 +981,7 @@ def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-d
             title="Track 1",
             artist="Artist",
             timestamp="00:00:00" if eligible else None,
+            timestamp_evidence=qualified_timing("00:00:00", file.id) if eligible else None,
         )
         session.add(track)
         tracklist.latest_version_id = version.id

@@ -121,10 +121,12 @@ import secrets
 import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+import uuid
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
+from phaze.cli.companion_import import run_companion_import
 from phaze.config import get_settings
 from phaze.database import async_session
 from phaze.logging_config import configure_logging
@@ -476,6 +478,12 @@ def _build_parser() -> argparse.ArgumentParser:
     links_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
     links_mode.add_argument("--apply", dest="apply", action="store_true", help="Write the links. Without it nothing is written.")
     links.set_defaults(apply=False)
+    imports = backfill_sub.add_parser("companion-import", help="Count local source outcomes or asynchronously import stored companion intelligence.")
+    imports.add_argument("--agent", dest="agent_id")
+    imports.add_argument("--run", dest="run_id", type=uuid.UUID, help="Read a durable run status; --apply resumes it.")
+    imports.add_argument("--after", type=uuid.UUID, help="Bounded status page cursor.")
+    imports.add_argument("--page-size", type=int, default=50)
+    imports.add_argument("--apply", action="store_true", help="Schedule durable capture/import; default counts without writes.")
     mode = reset.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count and classify only, read-only (the default).")
     mode.add_argument("--apply", dest="apply", action="store_true", help="Write the reset. Without it nothing is written.")
@@ -552,6 +560,10 @@ async def _run_queue_status(queue_name: str, concurrency: int | None = None) -> 
 
 def _main_backfill(args: argparse.Namespace) -> int:
     """Handle ``phaze backfill <command>``. Returns a process exit code."""
+    if args.backfill_command == "companion-import":
+        return asyncio.run(
+            run_companion_import(apply=args.apply, agent_id=args.agent_id, run_id=args.run_id, page_size=args.page_size, after=args.after)
+        )
     if args.backfill_command == "reenqueue-incomplete-analyses":
         return asyncio.run(_run_reenqueue_incomplete_analyses())
     if args.backfill_command == "set-projection":

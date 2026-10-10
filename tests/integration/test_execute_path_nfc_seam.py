@@ -70,6 +70,7 @@ from phaze.schemas.agent_execution import ExecutionLogCreate
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_client import PhazeAgentClient
 from phaze.tasks.execution import _report_success, _ReportContext
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -298,6 +299,7 @@ async def test_the_persisted_current_path_reaches_the_cue_writer_in_the_ingest_f
                 artist=f"Track Artist {position}",
                 title=f"Track Title {position}",
                 timestamp=f"0:{position * 10}:00",
+                timestamp_evidence=qualified_timing(f"0:{position * 10}:00", file_id),
             )
         )
     await session.commit()

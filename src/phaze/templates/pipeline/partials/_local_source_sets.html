@@ -1,0 +1,56 @@
+{% import "ui/primitives.html" as ui %}
+{% set target = '#local-' ~ source_kind ~ ('-inventory' if inventory_view else '-sources') %}
+{% set base = '/pipeline/local-source-sets?kind=' ~ source_kind ~ '&page_size=' ~ source_page.page_size ~ ('&inventory=1' if inventory_view else '') %}
+<div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+    <table class="w-full text-left text-sm">
+        <thead class="table-head"><tr class="bg-gray-50 dark:bg-phaze-panel"><th class="table-th p-3">Recording</th><th class="table-th p-3">{{ 'Existing companion CUE' if inventory_view else 'Stored source' }}</th><th class="table-th p-3">State</th><th class="table-th p-3">Evidence</th></tr></thead>
+        <tbody>
+        {% for source in source_page.rows %}
+            <tr class="border-t border-gray-200 align-top dark:border-phaze-border">
+                <td class="p-3"><a class="text-link hover:underline" href="/files/{{ source.media_id }}#companion-sources">{{ source.media_filename }}</a></td>
+                <td class="p-3">
+                    {% if inventory_view %}
+                        <a class="text-link hover:underline" href="/files/{{ source.source_file_id }}#companion-sources">{{ source.source_filename }}</a>
+                    {% else %}
+                        <a class="text-link hover:underline" href="/files/{{ source.media_id }}#companion-sources">{{ source.channel or 'retained source' }} · {{ source.parser_version }}</a>
+                        <p class="mt-1 break-all text-xs text-muted">Revision {{ source.revision or 'unknown' }} · {{ source.revision_scope }}</p>
+                        <p class="mt-1 text-xs text-muted">Observation {{ source.observation_id }}</p>
+                        {% if source.source_file_id %}<a class="mt-1 text-xs text-link hover:underline" href="/files/{{ source.source_file_id }}#companion-sources">Open source file</a>{% endif %}
+                    {% endif %}
+                </td>
+                <td class="p-3">
+                    {% if inventory_view %}
+                        {{ 'Missing' if source.missing_at else 'Ambiguous link' if source.companion_ambiguous_at else 'Inventoried companion' }}
+                    {% elif source.selected %}
+                        <strong>Selected authority</strong><p class="mt-1 text-xs text-muted">{{ source.selected_actor }} · {{ source.selected_at }}</p>
+                    {% else %}
+                        {{ source.candidate_status }} candidate
+                    {% endif %}
+                    {% if not inventory_view %}<p class="mt-1 text-xs text-muted">{{ source.availability }} · {{ source.status }} · {{ source.completeness_state or 'unknown completeness' }}</p>{% endif %}
+                </td>
+                <td class="p-3 text-xs text-muted">
+                    {% if inventory_view %}Linked input file; generating a CUE creates a separate versioned artifact.
+                    {% else %}{{ source.track_count }} tracks · {{ source.release_fact_count }} release facts
+                        {% if source.conflict_with_id %}<p>Conflicting source revision retained</p>{% endif %}
+                        {% if source.completeness_reason %}<p class="mt-1">{{ source.completeness_reason }}</p>{% endif %}
+                        <p class="mt-1">Open the recording to inspect original text, facts and timing usability.</p>
+                        {% if source.selected and source_kind in ['tracklist', 'cue'] and source.track_count %}
+                            <button type="button" class="mt-2 text-link hover:underline" hx-get="/recording-discogs/{{ source.media_id }}" hx-target="#selected-discogs-{{ source.candidate_id }}" hx-swap="innerHTML">Review Discogs links for selected tracks</button>
+                            <div id="selected-discogs-{{ source.candidate_id }}"></div>
+                            <button type="button" class="mt-2 text-link hover:underline" hx-get="/cue/files/{{ source.media_id }}/preview" hx-target="#selected-cue-preview-{{ source.candidate_id }}" hx-swap="innerHTML">Preview generated CUE artifact</button>
+                            <div id="selected-cue-preview-{{ source.candidate_id }}"></div>
+                        {% endif %}
+                    {% endif %}
+                </td>
+            </tr>
+        {% else %}
+            <tr><td class="p-4 text-muted" colspan="4">{{ 'No linked CUE companions on this page.' if inventory_view else 'No stored local-source observations on this page. Open a recording to inspect and import its linked companions.' }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+<nav class="mt-3 flex items-center gap-3 text-sm" aria-label="{{ source_kind }} source pages">
+    {% if source_page.page > 1 %}<a href="{{ base }}&page={{ source_page.page - 1 }}" hx-get="{{ base }}&page={{ source_page.page - 1 }}" hx-target="{{ target }}" hx-swap="innerHTML" class="text-link">Previous</a>{% endif %}
+    <span>Page {{ source_page.page }}</span>
+    {% if source_page.has_next %}<a href="{{ base }}&page={{ source_page.page + 1 }}" hx-get="{{ base }}&page={{ source_page.page + 1 }}" hx-target="{{ target }}" hx-swap="innerHTML" class="text-link">Next</a>{% endif %}
+</nav>

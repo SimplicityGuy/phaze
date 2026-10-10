@@ -13,6 +13,8 @@ from phaze.config import get_settings
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.discogs_matcher import DiscogsographyClient, match_track_to_discogs
+from phaze.services.selected_discogs import lock_recording_discogs_pin, read_recording_discogs_pin
+from phaze.services.selected_source_consumers import explicit_tracklist_clause
 
 
 if TYPE_CHECKING:
@@ -51,6 +53,8 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
         if tracklist is None:
             logger.info("discogs match completed", tracklist_id=tracklist_id, status="not_found")
             return {"tracklist_id": tracklist_id, "status": "not_found"}
+        if tracklist.file_id is not None and await session.scalar(select(explicit_tracklist_clause(tracklist.file_id))):
+            return {"tracklist_id": tracklist_id, "status": "selected_source"}
 
         tracks_result = await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id))
         tracks = tracks_result.scalars().all()
@@ -81,6 +85,13 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
     #    across the whole match run (phaze-xdu1).
     candidates_created = 0
     async with ctx["async_session"]() as session:
+        current = await session.scalar(select(Tracklist).where(Tracklist.id == tracklist.id).with_for_update())
+        if (
+            current is None
+            or current.latest_version_id != tracklist.latest_version_id
+            or (current.file_id is not None and await session.scalar(select(explicit_tracklist_clause(current.file_id))))
+        ):
+            return {"tracklist_id": tracklist_id, "status": "stale_source", "candidates_created": 0}
         # phaze-vu88k.4: ONE DELETE for every eligible track instead of one per track. The old
         # per-track DELETE ran inside the zip loop below, so a tracklist of N eligible tracks cost N
         # round trips to remove exactly the rows this single statement removes. Same transaction,
@@ -125,3 +136,63 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
         "tracks_skipped": skipped,
         "candidates_created": candidates_created,
     }
+
+
+async def match_recording_source_to_discogs(
+    ctx: dict[str, Any], *, media_id: str, expected_observation_id: str, expected_selection_token: str
+) -> dict[str, Any]:
+    """Match the reviewed target projection; never hold a database session across HTTP requests."""
+    settings = cast("ControlSettings", get_settings())
+    try:
+        async with ctx["async_session"]() as session:
+            pin = await read_recording_discogs_pin(
+                session, uuid.UUID(media_id), uuid.UUID(expected_observation_id), uuid.UUID(expected_selection_token)
+            )
+    except ValueError:
+        return {"media_id": media_id, "status": "stale_source", "candidates_created": 0}
+
+    eligible = [track for track in pin.source.tracks if track.artist and track.title]
+    client = DiscogsographyClient(base_url=settings.discogsography_url)
+    try:
+        semaphore = asyncio.Semaphore(settings.discogs_match_concurrency)
+
+        async def match_one(track: Any) -> list[dict[str, Any]]:
+            async with semaphore:
+                return await match_track_to_discogs(client, track)
+
+        results = await asyncio.gather(*(match_one(track) for track in eligible))
+    finally:
+        await client.close()
+
+    count = 0
+    async with ctx["async_session"]() as session:
+        try:
+            await lock_recording_discogs_pin(session, pin)
+        except ValueError:
+            return {"media_id": media_id, "status": "stale_source", "candidates_created": 0}
+        if eligible:
+            await session.execute(
+                delete(DiscogsLink).where(
+                    DiscogsLink.source_observation_id == pin.source.observation_id,
+                    DiscogsLink.source_track_position.in_([track.position for track in eligible]),
+                    DiscogsLink.status == "candidate",
+                )
+            )
+        for track, candidates in zip(eligible, results, strict=True):
+            for candidate in candidates:
+                session.add(
+                    DiscogsLink(
+                        source_observation_id=pin.source.observation_id,
+                        source_track_position=track.position,
+                        discogs_release_id=candidate["discogs_release_id"],
+                        discogs_artist=candidate.get("discogs_artist"),
+                        discogs_title=candidate.get("discogs_title"),
+                        discogs_label=candidate.get("discogs_label"),
+                        discogs_year=candidate.get("discogs_year"),
+                        confidence=candidate["confidence"],
+                        status="candidate",
+                    )
+                )
+                count += 1
+        await session.commit()
+    return {"media_id": media_id, "status": "matched", "tracks_matched": len(eligible), "candidates_created": count}

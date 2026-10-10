@@ -26,6 +26,7 @@ from phaze.services.cue_review import build_cue_tracks_for_versions
 from phaze.services.discogs_matcher import match_track_to_discogs
 from phaze.services.tag_proposal import compute_proposed_tags
 from phaze.services.track_segments import build_track_segments
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ async def _store(session: AsyncSession, file_id: uuid.UUID | None = None, *, tim
                 title=None if position == UNRESOLVED_POSITION else "Title",
                 label=None,
                 timestamp=f"{position}:00" if timestamped else None,
+                timestamp_evidence=qualified_timing(f"{position}:00", file_id) if timestamped and file_id else None,
                 is_mashup=False,
                 remix_info=None,
             )
@@ -73,8 +75,9 @@ async def _unresolved_row(session: AsyncSession, version: TracklistVersion) -> T
     return rows.one()
 
 
-async def test_cue_writer_emits_a_bare_timed_track_never_performer_id(session: AsyncSession) -> None:
-    _, version = await _store(session, timestamped=True)
+async def test_cue_writer_emits_a_bare_timed_track_never_performer_id(session: AsyncSession, make_file) -> None:
+    file = await make_file()
+    _, version = await _store(session, file.id, timestamped=True)
 
     cue_tracks = (await build_cue_tracks_for_versions(session, [version.id]))[version.id]
     sheet = generate_cue_content("set.mp3", "mp3", cue_tracks)
@@ -127,15 +130,16 @@ async def test_tag_proposal_never_sees_a_track_row(session: AsyncSession) -> Non
     assert "ID" not in proposed.values()
 
 
-async def test_segment_join_gives_an_unresolved_row_no_title(session: AsyncSession) -> None:
+async def test_segment_join_gives_an_unresolved_row_no_title(session: AsyncSession, make_file) -> None:
     from sqlalchemy import select
 
-    _, version = await _store(session, timestamped=True)
+    file = await make_file()
+    _, version = await _store(session, file.id, timestamped=True)
     tracks = list(
         (await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == version.id).order_by(TracklistTrack.position))).scalars()
     )
 
-    segments = {s.position: s for s in build_track_segments(tracks, [], 7200.0)}
+    segments = {s.position: s for s in build_track_segments(tracks, [], 7200.0, media_id=file.id)}
 
     assert segments[UNRESOLVED_POSITION].title is None
     assert segments[1].title == "Title"

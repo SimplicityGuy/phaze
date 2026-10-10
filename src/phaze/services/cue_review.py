@@ -14,12 +14,16 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Numeric, Select, Text, and_, case, cast, exists, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, array
 
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
-from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.services.cue_generator import CueTrackData, parse_timestamp_string
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.cue_generator import CueTrackData, qualified_legacy_offset
+from phaze.services.local_source_import import get_selected_recording_source
+from phaze.services.selected_discogs import accepted_recording_discogs_links
+from phaze.services.selected_source_consumers import explicit_tracklist_clause
 from phaze.services.stage_status import applied_clause
 
 
@@ -29,12 +33,60 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.schemas.local_source_import import SelectedRecordingSource
+
 
 # phaze-hdho: the cue workspace's display order -- alphabetically by artist/event. Both columns
 # are nullable ``Text`` (models/tracklist.py), so callers that page or slice on this MUST append a
 # ``Tracklist.id`` tiebreaker themselves (paging contract rule 4) -- this tuple alone is not a
 # unique sort key.
 ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (Tracklist.artist, Tracklist.event)
+
+
+def qualified_legacy_timestamp_clause() -> Any:
+    """Strict typed evidence, precise rational offset and the actual recording target.
+
+    Guard every JSON shape/arithmetic conversion: legacy evidence is nullable arbitrary JSONB.
+    This mirrors qualified_legacy_offset, never inferring meaning from the raw timestamp string.
+    """
+    empty = cast(literal("{}", Text), JSONB)
+    obj = case((func.jsonb_typeof(TracklistTrack.timestamp_evidence) == "object", TracklistTrack.timestamp_evidence), else_=empty)
+    offset = case((func.jsonb_typeof(obj.op("->")("offset")) == "object", obj.op("->")("offset")), else_=empty)
+    evidence = case((func.jsonb_typeof(obj.op("->")("evidence")) == "array", obj.op("->")("evidence")), else_=cast(literal("[]", Text), JSONB))
+    values = func.jsonb_array_elements_text(evidence).table_valued("value").alias("legacy_timing_evidence")
+    too_long = exists(select(1).select_from(values).where(func.char_length(values.c.value) > 4096).correlate(TracklistTrack))
+
+    def integer_value(key: str) -> Any:
+        value = offset.op("->>")(key)
+        return case(
+            (
+                and_(func.jsonb_typeof(offset.op("->")(key)) == "number", value.op("~")(r"^[0-9]+$"), func.char_length(value) <= 4096),
+                cast(value, Numeric),
+            ),
+            else_=None,
+        )
+
+    numerator, denominator = integer_value("numerator"), integer_value("denominator")
+    return and_(
+        obj.op("-")(array(["original", "kind", "precision", "origin", "offset", "offset_usability", "evidence"])) == empty,
+        offset.op("-")(array(["numerator", "denominator"])) == empty,
+        obj.op("->>")("original") == TracklistTrack.timestamp,
+        func.jsonb_typeof(obj.op("->")("original")) == "string",
+        func.char_length(obj.op("->>")("original")) <= 4096,
+        obj.op("->>")("kind") == "offset",
+        obj.op("->>")("offset_usability") == "qualified",
+        obj.op("->>")("origin") == func.concat("recording:", cast(Tracklist.file_id, Text)),
+        func.jsonb_typeof(obj.op("->")("origin")) == "string",
+        func.jsonb_array_length(evidence).between(1, 64),
+        ~func.jsonb_path_exists(evidence, cast('$[*] ? (@.type() != "string")', JSONPATH)),
+        ~too_long,
+        numerator >= 0,
+        denominator > 0,
+        or_(
+            and_(obj.op("->>")("precision") == "second", func.mod(numerator, func.nullif(denominator, 0)) == 0),
+            and_(obj.op("->>")("precision") == "cue_frame_75", func.mod(numerator * 75, func.nullif(denominator, 0)) == 0),
+        ),
+    )
 
 
 def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], Select[uuid.UUID]]:
@@ -55,11 +107,17 @@ def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], S
     button that could never succeed, permanently inflating ``eligible`` past ``generated`` with no
     way to converge.
     """
-    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
+    has_timestamp_subq = (
+        select(TracklistTrack.version_id)
+        .join(TracklistVersion, TracklistVersion.id == TracklistTrack.version_id)
+        .join(Tracklist, Tracklist.id == TracklistVersion.tracklist_id)
+        .where(qualified_legacy_timestamp_clause())
+        .distinct()
+    )
     base_stmt = (
         select(Tracklist, FileRecord)
         .join(FileRecord, Tracklist.file_id == FileRecord.id)
-        .where(Tracklist.status == "approved", Tracklist.file_id.is_not(None), applied_clause())
+        .where(Tracklist.status == "approved", Tracklist.file_id.is_not(None), applied_clause(), ~explicit_tracklist_clause(Tracklist.file_id))
     )
     return base_stmt, has_timestamp_subq
 
@@ -187,16 +245,25 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     #      function, which has no dedicated test file of its own (covered incidentally, chiefly by
     #      tests/review/routers/test_cue.py and tests/review/capabilities/cue/test_degrade.py).
     tracks: list[TracklistTrack] = []
+    media_by_version: dict[uuid.UUID, uuid.UUID | None] = {}
     for chunk in _id_chunks(version_ids):
-        tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(chunk))
-        tracks.extend((await session.execute(tracks_stmt)).scalars().all())
+        tracks_stmt = (
+            select(TracklistTrack, Tracklist.file_id)
+            .join(TracklistVersion, TracklistVersion.id == TracklistTrack.version_id)
+            .join(Tracklist, Tracklist.id == TracklistVersion.tracklist_id)
+            .where(TracklistTrack.version_id.in_(chunk))
+        )
+        for track, media_id in (await session.execute(tracks_stmt)).tuples():
+            tracks.append(track)
+            media_by_version[track.version_id] = media_id
 
     track_ids = [t.id for t in tracks]
     discogs_by_track: dict[uuid.UUID, DiscogsLink] = {}
     for chunk in _id_chunks(track_ids):
         discogs_stmt = select(DiscogsLink).where(DiscogsLink.track_id.in_(chunk), DiscogsLink.status == "accepted")
         for link in (await session.execute(discogs_stmt)).scalars().all():
-            discogs_by_track[link.track_id] = link
+            if link.track_id is not None:
+                discogs_by_track[link.track_id] = link
 
     tracks_by_version: dict[uuid.UUID, list[TracklistTrack]] = defaultdict(list)
     for track in tracks:
@@ -211,7 +278,7 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
                     position=track.position,
                     title=track.title,
                     artist=track.artist,
-                    timestamp_seconds=parse_timestamp_string(track.timestamp),
+                    timestamp_seconds=qualified_legacy_offset(track.timestamp, track.timestamp_evidence, media_by_version.get(track.version_id)),
                     genre=None,  # DiscogsLink has no genre field (D-09)
                     label=discogs_link.discogs_label if discogs_link else None,
                     year=discogs_link.discogs_year if discogs_link else None,
@@ -219,4 +286,48 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
             )
         result[version_id] = cue_tracks
 
+    return result
+
+
+async def build_cue_tracks_for_file(session: AsyncSession, media_id: uuid.UUID) -> list[CueTrackData]:
+    """Use explicit reviewed authority; preserve rational offsets until CUE frame rendering."""
+    selected = await get_selected_recording_source(session, media_id)
+    if selected is None:
+        tracklist = await session.scalar(
+            select(Tracklist).where(Tracklist.file_id == media_id).order_by(Tracklist.updated_at.desc(), Tracklist.id).limit(1)
+        )
+        return (
+            (await build_cue_tracks_for_versions(session, [tracklist.latest_version_id])).get(tracklist.latest_version_id, [])
+            if tracklist is not None and tracklist.latest_version_id is not None
+            else []
+        )
+    links = await accepted_recording_discogs_links(session, selected)
+    return cue_tracks_from_selected(selected, links)
+
+
+def cue_tracks_from_selected(selected: SelectedRecordingSource, links: dict[int, DiscogsLink] | None = None) -> list[CueTrackData]:
+    """Project only current, qualified rational offsets from one immutable reviewed authority."""
+    result = []
+    for track in selected.tracks:
+        timestamp = track.timestamp
+        offset = (
+            timestamp.offset.as_fraction()
+            if selected.availability == "current"
+            and timestamp is not None
+            and timestamp.kind == "offset"
+            and timestamp.offset_usability == "qualified"
+            and timestamp.offset is not None
+            else None
+        )
+        link = (links or {}).get(track.position)
+        result.append(
+            CueTrackData(
+                position=track.position,
+                title=track.title,
+                artist=track.artist,
+                timestamp_seconds=offset,
+                label=link.discogs_label if link is not None else track.label,
+                year=link.discogs_year if link is not None else None,
+            )
+        )
     return result

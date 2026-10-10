@@ -10,6 +10,8 @@ from pathlib import PurePosixPath
 import re
 from typing import TYPE_CHECKING, Protocol, cast
 
+from phaze.services.selected_tag_sources import SelectedTagSource
+
 
 if TYPE_CHECKING:
     from phaze.models.discogs_link import DiscogsLink
@@ -85,7 +87,7 @@ def parse_filename(filename: str) -> dict[str, str | int | None]:
 
 def compute_proposed_tags(
     file_metadata: TagFieldSource | None,
-    tracklist: Tracklist | None,
+    tracklist: Tracklist | SelectedTagSource | None,
     filename: str,
     discogs_link: DiscogsLink | None = None,
 ) -> dict[str, str | int | None]:
@@ -110,11 +112,15 @@ def compute_proposed_tags(
     merged = parse_filename(filename)
     merged.update(_field_overlay(file_metadata, _METADATA_FIELDS))
 
+    selected_tags = tracklist.tags if isinstance(tracklist, SelectedTagSource) else {}
+    if isinstance(tracklist, SelectedTagSource):
+        tracklist = tracklist.legacy
     # Tracklist dates are fallback-only, unlike the tracklist artist and event overlay.
     if tracklist is not None and tracklist.date is not None:
         merged.setdefault("year", tracklist.date.year)
     merged.update(_field_overlay(tracklist, _TRACKLIST_FIELDS))
 
+    merged.update(selected_tags)
     merged.update(_field_overlay(discogs_link, _DISCOGS_FIELDS))
 
     return {field: value for field, value in merged.items() if field in CORE_FIELDS and value is not None}

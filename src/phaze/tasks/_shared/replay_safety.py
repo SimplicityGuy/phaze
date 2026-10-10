@@ -52,6 +52,7 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         "process_file",
         "extract_file_metadata",
         "match_tracklist_to_discogs",
+        "match_recording_source_to_discogs",
         "generate_proposals",
         "push_file",
         "submit_cloud_job",
@@ -69,6 +70,7 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         # The run reads the agent's companions, features and media at RUN time; a row replayed a week
         # later re-derives the links as they should be then, which is all a re-derive can mean.
         "associate_agent_companions",
+        "import_agent_companions",
     }
 )
 """Keyed producers whose stored payload is TIME-INVARIANT -- safe to replay verbatim, forever.

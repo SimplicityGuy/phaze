@@ -9,7 +9,7 @@ which companions to decide, the agent's media they are decided against, and the 
   carries CURRENT features, linked or not, and REPLACES its links with exactly what the chain returns:
   links the chain no longer returns -- a junk companion's, the retired parent-folder rule's, an
   over-link to every file of a collection folder -- are deleted, missing ones inserted, the rest kept.
-  ``file_companions`` carries no provenance, and this module is its only writer, so no link is
+  ``file_companions`` records derivation only when this chain actually runs; historical links remain unknown. This module is its only writer, so no link is
   operator-made and none is exempt.
 - **Only companions with CURRENT content features are decided.** A companion with no
   ``companion_content_features`` row, or whose stored fingerprint no longer equals
@@ -41,10 +41,11 @@ which companions to decide, the agent's media they are decided against, and the 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.models.companion_content import CompanionContentFeatures
@@ -210,7 +211,11 @@ async def _count_awaiting_features(session: AsyncSession, agent_id: str | None) 
 
 
 def _decide_page(
-    index: AgentMediaIndex, page: Sequence[_Companion], linked: set[str], outcome: AssociationOutcome
+    index: AgentMediaIndex,
+    page: Sequence[_Companion],
+    linked: set[str],
+    outcome: AssociationOutcome,
+    derivations: dict[uuid.UUID, tuple[str, str, list[str]]] | None = None,
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
     """Run the chain over one page; returns ``companion id -> media ids`` for EVERY companion of the page (empty: no links).
 
@@ -232,6 +237,12 @@ def _decide_page(
         )
         outcome.decided[decision.step] = outcome.decided.get(decision.step, 0) + 1
         targets[companion.id] = list(decision.media_ids)
+        if derivations is not None:
+            derivations[companion.id] = (
+                decision.step,
+                companion.fingerprint,
+                [f"linking-chain:{decision.step}", f"features:sha256:{companion.fingerprint}"],
+            )
         if decision.media_ids:
             linked.add(companion.fingerprint)
     return targets
@@ -252,7 +263,14 @@ _DELETE_CHUNK = 10_000
 """Link ids per DELETE statement: one bind each, well under the 32,767 cap."""
 
 
-async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uuid.UUID]], outcome: AssociationOutcome, *, apply: bool) -> None:
+async def _replace_links(
+    session: AsyncSession,
+    targets: dict[uuid.UUID, list[uuid.UUID]],
+    outcome: AssociationOutcome,
+    *,
+    apply: bool,
+    derivations: dict[uuid.UUID, tuple[str, str, list[str]]] | None = None,
+) -> None:
     """Make each companion's links exactly its target set: delete the rest, insert the missing. Does NOT commit.
 
     Runs inside the page's transaction, so every companion's replacement lands whole or not at all.
@@ -262,6 +280,33 @@ async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uu
     if not targets:
         return
     existing = await _existing_links(session, list(targets))
+    if apply and derivations is not None:
+        # Selection/import/delete all take inventory before companion pairs. Include old targets
+        # before globally sorting; changed links outside this set require a fresh derivation.
+        file_ids = set(targets) | {media for ids in targets.values() for media in ids} | {media for held in existing.values() for media in held}
+        locked = (
+            await session.scalars(
+                select(FileRecord)
+                .where(FileRecord.id.in_(file_ids))
+                .order_by(FileRecord.original_path, FileRecord.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+        fresh_existing = await _existing_links(session, list(targets))
+        if any(media not in file_ids for held in fresh_existing.values() for media in held):
+            raise ValueError("Companion links changed during derivation; retry association")
+        existing = fresh_existing
+        current = {file.id: file for file in locked}
+        targets = {
+            companion: media_ids
+            for companion, media_ids in targets.items()
+            if companion in current
+            and current[companion].sha256_hash == derivations[companion][1]
+            and current[companion].missing_at is None
+            and current[companion].companion_ambiguous_at is None
+            and all(media in current and current[media].agent_id == current[companion].agent_id for media in media_ids)
+        }
     stale: list[uuid.UUID] = []
     missing: dict[uuid.UUID, list[uuid.UUID]] = {}
     for companion_id, media_ids in targets.items():
@@ -282,6 +327,19 @@ async def _replace_links(session: AsyncSession, targets: dict[uuid.UUID, list[uu
         outcome.links_removed += deleted.rowcount
     if rows := _link_rows(missing):
         outcome.links_created += await _insert_links(session, rows)
+    if derivations is not None:
+        for companion_id in targets:
+            method, revision, evidence = derivations[companion_id]
+            await session.execute(
+                update(FileCompanion)
+                .where(FileCompanion.companion_id == companion_id)
+                .values(
+                    derivation_method=method,
+                    derivation_revision=revision,
+                    derivation_evidence=evidence,
+                    derived_at=datetime.now(UTC),
+                )
+            )
 
 
 def _link_rows(targets: dict[uuid.UUID, list[uuid.UUID]]) -> list[dict[str, uuid.UUID]]:
@@ -426,7 +484,9 @@ async def _associate_agent(session: AsyncSession, agent_id: str, *, batch_size: 
             if index is None:
                 index = await _media_index(session, agent_id)
             this_pass = [companion for companion in page if bool(index.in_folder(media_folder(companion.path))) is beside_media]
-            await _replace_links(session, _decide_page(index, this_pass, linked, outcome), outcome, apply=apply)
+            derivations: dict[uuid.UUID, tuple[str, str, list[str]]] = {}
+            targets = _decide_page(index, this_pass, linked, outcome, derivations)
+            await _replace_links(session, targets, outcome, apply=apply, derivations=derivations)
             if apply:
                 # This PAGE's commit boundary: every replacement on the page lands whole (_replace_links).
                 await session.commit()

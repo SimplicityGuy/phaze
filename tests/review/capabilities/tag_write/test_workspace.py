@@ -408,7 +408,7 @@ async def test_review_audit_one_row(
     file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None)
     token = (await _visible_tag_review_tokens(client))[0]
     resp = await client.post(f"/tags/{file.id}/write", data={"review_token": token})
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file.id)
     assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
 

@@ -1,0 +1,5 @@
+{% import "ui/primitives.html" as ui %}
+<div data-reverse-media class="mt-2">
+    {% for media in reverse.media %}<p class="text-sm break-all"><a href="/files/{{ media.media_id }}#companion-sources" class="text-link">{{ media.filename }}</a> · {{ media.file_type }} · {{ media.location }}</p>{% else %}<p class="text-sm">No other linked recordings.</p>{% endfor %}
+    {% if reverse.next_offset is not none %}<button type="button" hx-get="/files/{{ reverse.companion_id }}/linked-media?offset={{ reverse.next_offset }}" hx-target="closest [data-reverse-media]" hx-swap="outerHTML" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Next linked recordings</button>{% endif %}
+</div>

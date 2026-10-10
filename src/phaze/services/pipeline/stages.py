@@ -30,6 +30,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pipeline.buckets import StageBucketSnapshot, _empty_buckets, _safe_bucket_counts, _safe_bucket_snapshot
 from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count
+from phaze.services.selected_source_consumers import authoritative_tracklist_clause, explicit_tracklist_clause, selected_discogs_clause
 from phaze.services.stage_status import (
     done_clause,
     inflight_clause,
@@ -196,7 +197,10 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # Select. Statement construction is pure (no I/O) -- only the execute() inside each own session
     # touches the pool.
     mv_total_stmt = select(func.count(FileRecord.id)).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
-    tracklist_total_stmt = select(func.count(Tracklist.id))
+    tracklist_total_stmt = select(
+        select(func.count(Tracklist.id)).where(~explicit_tracklist_clause(Tracklist.file_id)).scalar_subquery()
+        + select(func.count(FileRecord.id)).where(explicit_tracklist_clause(), authoritative_tracklist_clause()).scalar_subquery()
+    )
     discovery_stmt = select(func.count(FileRecord.id))
     # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
     # (mirrors get_proposal_pending_batches's ready-set, ``_proposal_pending_clauses`` below). The
@@ -235,7 +239,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         ~inflight_clause(Stage.ANALYZE),
     )
     convergence_stmt = select(func.count(FileRecord.id)).where(*convergence_clauses)
-    tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
+    tracklist_stmt = select(func.count(FileRecord.id)).where(authoritative_tracklist_clause())
     # phaze-vtwk9: the numerator counts the SAME unit as the denominator -- distinct files INSIDE the
     # convergence set -- so ``done <= total`` always. It was a bare ``COUNT(DISTINCT proposals.file_id)``
     # over every proposal, so a file that has a proposal but is not (or no longer) in the convergence set
@@ -259,7 +263,10 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         .select_from(DiscogsLink)
         .join(TracklistTrack, DiscogsLink.track_id == TracklistTrack.id)
         .join(TracklistVersion, TracklistTrack.version_id == TracklistVersion.id)
+        .join(Tracklist, Tracklist.id == TracklistVersion.tracklist_id)
+        .where(~explicit_tracklist_clause(Tracklist.file_id))
     )
+    match_done_stmt = select(match_done_stmt.scalar_subquery() + select(func.count(FileRecord.id)).where(selected_discogs_clause()).scalar_subquery())
 
     # execute.done: distinct file_id with a COMPLETED execution_log row, walked
     # execution_log -> proposals (execution_log carries only proposal_id).

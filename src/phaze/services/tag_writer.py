@@ -32,6 +32,7 @@ from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
 from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.stage_status import is_applied
+from phaze.services.tag_comparison import validate_reviewed_source_versions
 
 # Re-exported for back-compat: the disk-side helpers now live in the agent-importable module.
 from phaze.services.tag_write_disk import (  # noqa: F401  -- re-export
@@ -147,6 +148,9 @@ async def enqueue_tag_write(
     if already_queued.scalar():
         msg = f"a tag write is already queued for file {file_record.id}"
         raise TagWriteAlreadyQueuedError(msg)
+
+    if review_source_versions is not None:
+        await validate_reviewed_source_versions(session, file_record.id, review_source_versions)
 
     log_entry = TagWriteLog(
         id=uuid.uuid4(),

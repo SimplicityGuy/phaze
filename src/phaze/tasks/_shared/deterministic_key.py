@@ -68,7 +68,7 @@ from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
 from phaze.services.pipeline_counters import incr_completed, incr_enqueued
-from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, ledger_enqueue_session
+from phaze.tasks._shared.attempt_context import ATTEMPT_META_KEY, enqueue_authority, ledger_enqueue_session
 from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
 
@@ -105,6 +105,7 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "process_file": lambda k: str(k["file_id"]),
     "extract_file_metadata": lambda k: str(k["file_id"]),
     "match_tracklist_to_discogs": lambda k: str(k["tracklist_id"]),
+    "match_recording_source_to_discogs": lambda k: f"{k['media_id']}:{k['expected_observation_id']}:{k['expected_selection_token']}",
     "generate_proposals": lambda k: _hash_ids(k["file_ids"]),
     # Phase 50 (CLOUDPIPE-05): push_file:<file_id> dedup collapses a double-tick of the
     # bounded cloud-window staging cron to a no-op (T-50-double-enqueue).
@@ -140,6 +141,7 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # request in a window collapses onto this key while it is queued; a request made after the run
     # started falls in a later window and so gets its own key instead of being dropped against the
     # active one (services/companion_autolink.py, "COALESCING").
+    "import_agent_companions": lambda k: f"{k['run_id']}:{k['step']}",
     "associate_agent_companions": lambda k: f"{k['agent_id']}:{k['window']}",
 }
 
@@ -217,6 +219,14 @@ async def apply_deterministic_key(job: Job) -> None:
     # .asyncio) on the agent path -- it executes only when ledger_sessionmaker is present.
     try:
         sm = getattr(job.queue, "ledger_sessionmaker", None)
+        authority = enqueue_authority.get()
+        if job.function == "process_file" and authority is not None:
+            # Incoming metadata may belong to a previous attempt. Only this call's
+            # acquired serialization can mint a token or refresh ledger authority.
+            job.meta = dict(job.meta or {})
+            job.meta.pop(ATTEMPT_META_KEY, None)
+            if not authority.serialized or authority.key != job.key or ledger_enqueue_session.get() is None:
+                return
         if sm is not None:
             # INTENTIONAL function-local import (PLC0415 suppressed on the import line below):
             # this module is _shared (the agent worker imports it); a top-level import of the
