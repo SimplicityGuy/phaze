@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 import uuid
 
+import pytest
+
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_client import AgentApiServerError
-from phaze.tasks.execution import execute_approved_batch
+from phaze.tasks.execution import ExecCommittedReportError, execute_approved_batch
 from tests.review.tasks._execution_contract_scenarios import (
     _fail_only_telemetry_posts,
     _make_api_client_mock,
@@ -22,8 +24,6 @@ from tests.review.tasks._execution_contract_scenarios import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 async def test_post_execution_log_failure_is_swallowed(
@@ -239,14 +239,7 @@ async def test_executed_state_patch_5xx_does_not_fail_proposal(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A 503 on the executed-state PATCH (after a successful move) is swallowed.
-
-    Before the fix the un-guarded success PATCH landed in the generic handler:
-    proposal APPROVED->FAILED, failed_at_step misreported as 'delete', and
-    FileRecord.current_path left pointing at the deleted original. Now the move
-    is committed first, so the report failure is logged and the proposal still
-    counts as executed.
-    """
+    """A committed move's exhausted inventory report requests replay, never FAILED."""
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     job = _make_job_mock()
@@ -271,22 +264,16 @@ async def test_executed_state_patch_5xx_does_not_fail_proposal(
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
 
-    with caplog.at_level(logging.ERROR):
-        result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+    with caplog.at_level(logging.ERROR), pytest.raises(ExecCommittedReportError):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
 
     # The move committed: file relocated, original gone.
     assert proposed_paths[0].exists()
     assert not orig_paths[0].exists()
-    # Proposal is NOT marked failed.
-    assert result["status"] == "completed"
-    assert result["error_count"] == 0
     # No second (failed) report was attempted -- only the executed one fired.
     assert api.patch_proposal_state.await_count == 1
     reported_states = [c.args[1].proposal_state for c in api.patch_proposal_state.await_args_list]
     assert "failed" not in reported_states
-    # The terminal progress POST reports SUCCESS ('deleted'), never 'failed'/'delete'.
-    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
-    assert sent.terminal_step == "deleted"
-    assert sent.failed_at_step is None
-    # The swallow was logged at ERROR (move committed, report failed).
+    # No successful completion token can acknowledge stale inventory.
+    api.post_exec_batch_progress.assert_not_awaited()
     assert any("reporting executed state failed" in r.message for r in caplog.records)

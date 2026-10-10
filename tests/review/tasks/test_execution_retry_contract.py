@@ -66,9 +66,8 @@ async def test_uuids_reused_from_job_meta_on_retry(
     """Pre-seeded job.meta -> UUIDs re-used (no re-seed update); POST'd UUIDs match.
 
     phaze-ebb46: this is a genuinely FRESH move (the destination doesn't exist yet), so
-    ``job.update`` IS still called once -- not to re-seed the already-present UUIDs (closes
-    L6/L22, unchanged), but to persist this bead's per-proposal "moved" corroboration flag
-    immediately after the move commits.
+    ``job.update`` writes the move intent before mutation and the committed
+    corroboration after mutation, without re-seeding the UUIDs.
     """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
@@ -96,9 +95,7 @@ async def test_uuids_reused_from_job_meta_on_retry(
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
     await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
 
-    # The UUID keys were already present -> the only job.update call is this bead's
-    # per-proposal "moved" flag (phaze-ebb46), not a fresh UUID seed.
-    assert job.update.await_count == 1
+    assert job.update.await_count == 2
     updated_meta = job.update.await_args.kwargs["meta"]
     assert updated_meta[f"log_id:{proposal_id}"] == str(preseeded_log_id)
     assert updated_meta[f"req_id:{proposal_id}"] == str(preseeded_req_id)
