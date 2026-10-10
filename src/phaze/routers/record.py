@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast as type_cast
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -36,8 +36,24 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
+from phaze.schemas.companion_details import (
+    CompanionDetails,
+    DetailPage,
+    ObservationPage,
+    ReverseMediaPage,
+    StoredObservationDetail,
+    StoredTextChunk,
+    StoredTextRequest,
+)
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.companion_details import (
+    get_companion_details,
+    get_companion_media,
+    get_source_observations,
+    get_stored_observation,
+    get_stored_text,
+)
 from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
@@ -230,6 +246,7 @@ async def build_file_record_context(
 
     # Read the latest stored tracklist without external acquisition.
     tracklist_review = await get_file_tracklist_review(session, file_id)
+    companion_details = await get_companion_details(session, file_id)
 
     # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
     # timestamps become time segments, each carrying the median BPM, modal key, argmax mood and
@@ -320,6 +337,7 @@ async def build_file_record_context(
         "identity": identity,
         "history": history,
         "tracklist_review": tracklist_review,
+        "companion_details": companion_details,
         "track_segments": track_segments,
         "lane": lane,
         "lane_kind": lane_kind,
@@ -418,3 +436,85 @@ async def file_poster_svg(
         }
     )
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.get("/files/{file_id}/companion-details")
+async def companion_detail_page(
+    file_id: uuid.UUID,
+    offset: int = Query(0, ge=0, le=100000),
+    link_offset: int | None = Query(None, ge=0, le=100000),
+    source_offset: int | None = Query(None, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> CompanionDetails:
+    result = await get_companion_details(
+        session,
+        file_id,
+        link_page=DetailPage(offset=offset if link_offset is None else link_offset, limit=limit),
+        source_page=DetailPage(offset=offset if source_offset is None else source_offset, limit=limit),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return result
+
+
+@router.get("/files/{file_id}/companion-sources/{source_object_id}/observations")
+async def companion_observation_page(
+    file_id: uuid.UUID,
+    source_object_id: uuid.UUID,
+    offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> ObservationPage:
+    result = await get_source_observations(session, file_id, source_object_id, page=DetailPage(offset=offset, limit=limit))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Source not found for this file")
+    return result
+
+
+@router.get("/files/{file_id}/companion-observations/{observation_id}")
+async def companion_observation_detail(
+    file_id: uuid.UUID,
+    observation_id: uuid.UUID,
+    track_offset: int = Query(0, ge=0, le=100000),
+    fact_offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> StoredObservationDetail:
+    result = await get_stored_observation(
+        session,
+        file_id,
+        observation_id,
+        track_page=DetailPage(offset=track_offset, limit=limit),
+        fact_page=DetailPage(offset=fact_offset, limit=limit),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Observation not found for this file")
+    return result
+
+
+@router.get("/files/{file_id}/companion-observations/{observation_id}/text")
+async def companion_stored_text(
+    file_id: uuid.UUID,
+    observation_id: uuid.UUID,
+    offset: int = Query(0, ge=0, le=262144),
+    length: int = Query(8192, ge=1, le=32768),
+    session: AsyncSession = Depends(get_session),
+) -> StoredTextChunk:
+    result = await get_stored_text(session, file_id, observation_id, chunk=StoredTextRequest(offset=offset, length=length))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Observation not found for this file")
+    return result
+
+
+@router.get("/files/{companion_id}/linked-media")
+async def companion_linked_media(
+    companion_id: uuid.UUID,
+    offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> ReverseMediaPage:
+    result = await get_companion_media(session, companion_id, page=DetailPage(offset=offset, limit=limit))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Companion not found")
+    return result
