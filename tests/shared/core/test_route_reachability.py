@@ -173,6 +173,11 @@ ALLOWLIST: dict[str, str] = {**_NON_UI_ROUTES, **_LEGACY_BOOKMARK_ROUTES}
 # route no longer exists, or which has acquired a caller, FAILS with an instruction to delete
 # the line. So the ledger cannot rot into a permanent allowlist.
 KNOWN_ORPHANS: dict[str, str] = {
+    "GET /files/{file_id}/companion-details": "phaze-517k9: wire bounded shared companion overview browsing",
+    "GET /files/{file_id}/companion-sources/{source_object_id}/observations": "phaze-517k9: wire retained source observation history browsing",
+    "GET /files/{file_id}/companion-observations/{observation_id}": "phaze-517k9: wire stored intrinsic and selected source detail browsing",
+    "GET /files/{file_id}/companion-observations/{observation_id}/text": "phaze-517k9: wire authorized lazy stored text expansion",
+    "GET /files/{companion_id}/linked-media": "phaze-517k9: wire same-agent reverse companion links",
     # phaze-67q4e supplies the reviewed-source API before its dependent detail UI bead.
     # phaze-517k9 owns the served music/video page and drawer callers. These are real
     # temporary orphans, not non-UI exceptions; the ledger staleness guard removes each
