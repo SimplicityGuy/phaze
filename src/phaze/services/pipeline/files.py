@@ -6,6 +6,7 @@ single-file stage matrix and orphan diagnostics behind the record slide-in.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, false, or_, select
@@ -13,7 +14,9 @@ from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.enums.stage import Stage, Status
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
+from phaze.models.scan_batch import ScanBatch
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import ORPHANED_BUCKET
@@ -88,6 +91,12 @@ class FilesPageRow:
 
     file: FileRecord
     buckets: dict[str, str]
+    scan_root: str = "Unassigned scan root"
+
+    @property
+    def filename(self) -> str:
+        """Display the current basename, including after an approved rename."""
+        return PurePosixPath(self.file.current_path).name
 
 
 @dataclass
@@ -99,6 +108,25 @@ class FilesPage:
     # Contract rule 3: the page size is owned by phaze.services.pagination, never re-spelled here.
     page_size: int = DEFAULT_PAGE_SIZE
     has_next: bool = False
+
+    @property
+    def groups(self) -> list[tuple[str, str, list[FilesPageRow]]]:
+        """Group this bounded page by owner and root, preserving sort order inside each section."""
+        grouped: dict[tuple[str, str], list[FilesPageRow]] = {}
+        for row in self.rows:
+            grouped.setdefault((row.file.agent_id, row.scan_root), []).append(row)
+        return [(agent_id, root, rows) for (agent_id, root), rows in grouped.items()]
+
+
+def _scan_root(path: str, roots: list[str], batch_root: str | None) -> str:
+    """Use the recorded scan root, or the deepest owner root for watcher and unbatched files."""
+    source = PurePosixPath(path)
+    if batch_root and source.is_relative_to(PurePosixPath(batch_root)):
+        return str(PurePosixPath(batch_root))
+    matches = [PurePosixPath(root) for root in roots if source.is_relative_to(PurePosixPath(root))]
+    if matches:
+        return str(max(matches, key=lambda root: len(root.parts)))
+    return "Unassigned scan root"
 
 
 def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None, sort: SortState | None = None) -> Select[Any]:
@@ -139,7 +167,13 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     # bounded page (selectinload, not a join on the correlated derivation above) -- never one
     # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
     # every `row.file.set_profile` the template reads would raise, not silently N+1.
-    stmt = cast("Select[Any]", select(FileRecord, *cols).options(selectinload(FileRecord.set_profile)))
+    stmt = cast(
+        "Select[Any]",
+        select(FileRecord, *cols, Agent.scan_roots, ScanBatch.configured_root)
+        .outerjoin(Agent, Agent.id == FileRecord.agent_id)
+        .outerjoin(ScanBatch, ScanBatch.id == FileRecord.batch_id)
+        .options(selectinload(FileRecord.set_profile)),
+    )
     # phaze-7sdwt: `bucket is not None` is the WHOLE gate -- `stage` alone ("any status") stays a
     # deliberate no-op, matching the caller contract stated above.
     if bucket is not None:
@@ -212,6 +246,7 @@ async def get_files_page(
         FilesPageRow(
             file=row[0],
             buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
+            scan_root=_scan_root(row[0].original_path, row[-2] or [], row[-1]),
         )
         for row in page_rows
     ]

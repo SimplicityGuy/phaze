@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
 
+from phaze.models.analysis import AnalysisResult
+from phaze.models.metadata import FileMetadata
 from tests.browser.helpers import click_swap, open_shell, settled, settled_focus, swap_settles
 
 
@@ -91,6 +93,52 @@ async def _settled_focus_in_record(page: Any, *, timeout_ms: int = 5_000) -> str
             return where
         await page.wait_for_timeout(100)
     return str(await page.evaluate(describe))
+
+
+@pytest.mark.parametrize("viewport_width", [768, 1440, 1920])
+async def test_stage_pills_fit_after_restoring_narrow_columns(page: Any, seed: Any, viewport_width: int) -> None:
+    """Old saved widths must not let pills cross cell borders at any table breakpoint."""
+    record = await seed.file(filename="song.mp3")
+    failed = await seed.file(filename="failed.mp3")
+    seed.session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC)))
+    seed.session.add(AnalysisResult(file_id=failed.id, failed_at=datetime.now(UTC)))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script("""localStorage.setItem('phaze-pipeline-col-widths', JSON.stringify({
+        File: 140, Metadata: 64, Analyze: 80, Tracklist: 90, Propose: 64, Review: 64, Execute: 64
+    }));""")
+    await open_shell(page, "/s/files")
+    await page.wait_for_selector(f"#files-stage-pill-metadata-{record.id}", state="attached")
+    geometry = await page.evaluate("""() => [...document.querySelectorAll('#files-table-view tbody tr[id] td')]
+        .filter(cell => cell.checkVisibility()).flatMap(cell => [...cell.querySelectorAll('.rounded-full, button[hx-post]')].map(pill => {
+            const c = cell.getBoundingClientRect(), p = pill.getBoundingClientRect();
+            return {text: pill.innerText, left: p.left - c.left, right: c.right - p.right};
+        }))""")
+    assert geometry, "the table must render status pills"
+    assert all(item["left"] >= 8 and item["right"] >= 8 for item in geometry), geometry
+    assert (
+        await page.locator(f"#files-stage-pill-metadata-{record.id}").evaluate("el => el.closest('tr').querySelector('td').textContent.trim()")
+        == "song.mp3"
+    )
+    legend = page.locator('#files-table-view p[aria-hidden="true"]')
+    gap = await legend.evaluate("el => el.parentElement.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom")
+    assert gap >= 16
+
+
+async def test_metadata_eligible_badge_shows_count_and_omits_placeholder_tags(page: Any, seed: Any) -> None:
+    await seed.file(filename="pending.mp3")
+    await open_shell(page, "/s/metadata")
+    await page.wait_for_selector("#metadata-files-view table")
+    badge = page.locator('[aria-label="Metadata: eligible files"]')
+    assert "1" in await badge.inner_text()
+    assert "EXISTING TAGS" not in (await page.locator("#metadata-files-view thead").inner_text()).upper()
+
+
+async def test_analyze_lanes_heading_has_top_padding(page: Any) -> None:
+    await open_shell(page, "/s/analyze")
+    gap = await page.locator("#analyze-lanes-heading").evaluate("""el =>
+        el.getBoundingClientRect().top - el.closest('section').getBoundingClientRect().top""")
+    assert gap >= 16
 
 
 async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> None:

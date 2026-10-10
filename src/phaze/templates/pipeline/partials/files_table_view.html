@@ -80,7 +80,7 @@
    to /s/files (files_workspace.html, the sole surviving host) instead of a second full-page fork
    (phaze-uvmcr.2 retired pipeline/files.html) -- the host owns the id, so this partial never needs to. #}
     {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
-    <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
+    <div class="px-6 pt-2 pb-4">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
     {# Per-stage status filter lens (87-05, UI-02 / D-03) -- URL-carried, failure-inclusive; ONE canonical
        surface (no separate failures page). Rendered ABOVE the table and OUTSIDE the rows guard so the
        operator can always clear a filter that returned nothing. #}
@@ -174,14 +174,14 @@
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
            the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
            in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
-        <div class="hidden md:block">
-        {% call ui.data_table('Files and pipeline stage status', layout_class='table-fixed xl:min-w-[1583px]') %}
+        <div class="hidden md:block" :style="{ '--files-table-min-width': ($store.colResize.width('File') + ['Type', 'Metadata', 'Analyze', 'Tracklist', 'Propose', 'Review', 'Execute'].reduce((sum, col) => sum + $store.colResize.width(col), 0) + 216 + 113) + 'px' }">
+        {% call ui.data_table('Files and pipeline stage status', layout_class='table-fixed xl:min-w-[var(--files-table-min-width,1583px)]') %}
             <colgroup>
                 <col data-col="File" data-default-width="flex" :style="$store.colResize.widths.File ? { width: $store.colResize.width('File') + 'px' } : {}">
-                <col data-col="Type" data-default-width="72" :style="{ width: $store.colResize.width('Type') + 'px' }">
+                <col data-col="Type" data-default-width="72" style="width: 72px" :style="{ width: $store.colResize.width('Type') + 'px' }">
                 {% set _default_widths = {'Metadata': 164, 'Analyze': 164, 'Tracklist': 282, 'Propose': 144, 'Review': 144, 'Execute': 144} %}
                 {% for col in _stage_cols | map(attribute=0) | list %}
-                <col data-col="{{ col }}" data-default-width="{{ _default_widths[col] }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
+                <col data-col="{{ col }}" data-default-width="{{ _default_widths[col] }}" class="hidden xl:table-column" style="width: {{ _default_widths[col] }}px" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
                 {% endfor %}
                 <col data-col="Current state" data-default-width="216" style="width: 216px">
                 <col data-col="Details" data-default-width="113" style="width: 113px">
@@ -246,9 +246,15 @@
                     <th scope="col" class="table-th px-3 py-2"><span class="sr-only">File details</span></th>
                 </tr>
             </thead>
+            {% set row_number = namespace(value=0) %}
+            {% for agent_id, scan_root, group_rows in files_page.groups %}
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
-                {% for row in files_page.rows %}
-                <tr id="files-row-{{ loop.index }}"
+                <tr><th scope="rowgroup" colspan="10" class="bg-gray-50 px-3 py-3 text-left text-xs font-medium text-muted dark:bg-phaze-panel">
+                    <span class="font-mono">{{ scan_root }}</span> <span class="ml-2">· {{ agent_id }}</span>
+                </th></tr>
+                {% for row in group_rows %}
+                {% set row_number.value = row_number.value + 1 %}
+                <tr id="files-row-{{ row_number.value }}"
                     class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/5"
                     {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                     {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
@@ -262,7 +268,7 @@
                        for that case, matching the acceptance criterion. A file WITH one gets a 10px
                        (`h-2.5`) strip inline after the path, in a fixed-width wrapper so the
                        macro's `w-full` sizes to the wrapper, not the cell. #}
-                    <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</td>
+                    <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.filename }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</td>
                     <td class="px-3 py-2 text-muted ">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
                     <td class="hidden whitespace-nowrap px-3 py-2 xl:table-cell">
@@ -288,10 +294,13 @@
                 </tr>
                 {% endfor %}
             </tbody>
+            {% endfor %}
         {% endcall %}
         </div>
         <div class="grid gap-3 px-4 py-3 md:hidden" role="list" aria-label="Files and pipeline stage status">
-            {% for row in files_page.rows %}
+            {% for agent_id, scan_root, group_rows in files_page.groups %}
+            <h2 class="break-all py-2 text-xs text-muted"><span class="font-mono">{{ scan_root }}</span> · {{ agent_id }}</h2>
+            {% for row in group_rows %}
             <article class="min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white p-3 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:hover:bg-white/5"
                      role="listitem" {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                 <div class="flex items-start justify-between gap-3">
@@ -303,7 +312,7 @@
                            and the palette Files group -- every other Files surface shows it, and the
                            card already has `row.file.set_profile` eager-loaded by `get_files_page`,
                            so this is free). #}
-                        <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.file.current_path }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</h2>
+                        <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.filename }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</h2>
                         <p class="mt-1 text-xs uppercase tracking-wide text-muted ">{{ row.file.file_type }}</p>
                     </div>
                 </div>
@@ -324,6 +333,7 @@
                 </details>
                 <div class="mt-3">{{ details_button(row, true) }}</div>
             </article>
+            {% endfor %}
             {% endfor %}
         </div>
     </div>

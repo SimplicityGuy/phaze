@@ -25,9 +25,10 @@
         {% if finished_count %}
         <p class="border-t border-gray-200 pt-3 text-sm text-muted dark:border-phaze-border">
             <span class="font-mono font-semibold tabular-nums text-ok">{{ finished_count | thousands }}</span>
-            <span class="font-medium text-ok">Finished overall</span>
-            <span>· lifetime total</span>
+            <span class="font-medium text-ok">Kubernetes jobs finished</span>
+            <span>· lifetime total across Kubernetes backends</span>
         </p>
+        <p class="text-xs text-muted">The Analyze sidebar counts completed files across all backends, including local and compute-agent analyses.</p>
         {% endif %}
     {% endif %}
 </section>

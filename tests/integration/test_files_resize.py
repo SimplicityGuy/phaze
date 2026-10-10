@@ -219,7 +219,7 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
     file_col = re.search(r'<col data-col="File"[^>]*>', colgroup)
     assert file_col is not None
     assert 'style="width' not in file_col.group(0)
-    floor = re.search(r"xl:min-w-\[(\d+)px\]", body)
+    floor = re.search(r"xl:min-w-\[var\(--files-table-min-width,(\d+)px\)\]", body)
     assert floor is not None
     assert int(floor.group(1)) == sum(fixed.values()) + 140
     assert re.search(r'<table[^>]*class="[^"]*\btable-fixed\b', body)

@@ -207,7 +207,9 @@
                 })(),
                 width(col) {
                     const legacy = this.legacyKeys[col];
-                    return this.widths[col] ?? (legacy ? this.widths[legacy] : undefined) ?? this.defaults[col] ?? 120;
+                    const saved = this.widths[col] ?? (legacy ? this.widths[legacy] : undefined);
+                    const value = Number(saved ?? this.defaults[col] ?? 120);
+                    return Math.min(Math.max(Number.isFinite(value) ? value : (this.defaults[col] ?? 120), this.mins[col] ?? 64), this.max);
                 },
                 setWidth(col, px) {
                     const min = this.mins[col] ?? 64;
