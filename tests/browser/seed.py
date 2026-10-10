@@ -100,6 +100,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.set_projection import MOOD_ORDER, build_profile
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -892,6 +893,7 @@ async def seed_populated(dsn: str, *, with_failures: bool = False) -> None:
                         title=f"Synthetic Title {position}",
                         artist="Synthetic Artist",
                         timestamp=f"0{position - 1}:00:00",
+                        timestamp_evidence=qualified_timing(f"0{position - 1}:00:00", tracklist.file_id),
                     )
                     for position in (1, 2, 3)
                 ]

@@ -96,6 +96,15 @@ The selected CUE preview and owning worker use the same accepted label/year over
 digest. Qualified offsets retain rational values until rendering at 75 frames per second;
 clock, minute, unknown, stale and unmapped timings cannot become exact boundaries.
 
+Legacy timing is qualified only by validated `timestamp_evidence`: its original value must
+equal the retained timestamp and its origin must be `recording:<UUID>` for the actual target.
+The evidence supplies the rational offset and exact precision; parsing a display string does
+not qualify it. Missing, malformed, approximate, intrinsic FILE or other-target evidence
+remains readable but contributes no exact CUE boundary or analysis segment. No migration or
+manual text edit infers this evidence. SQL eligibility and runtime consumers apply the same
+validation, including a 4096-digit rational operand bound; analysis conversion also rejects
+non-finite offsets while CUE rendering retains fractions.
+
 Provider CUE tasks carry `source_binding` instead of a fabricated legacy tracklist UUID. Legacy
 tasks retain their original serialized shape. The controller dispatches the new shape only
 after a recent owning meta/all worker heartbeat reports `selected_cue_v1`; older controllers

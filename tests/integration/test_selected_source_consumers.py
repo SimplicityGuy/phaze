@@ -297,3 +297,166 @@ async def test_actual_selected_tag_approval_and_write_boundary_revalidation(clie
     with pytest.raises(ValueError, match="Selected source binding changed"):
         await enqueue_tag_write(session, router, media, tags, "proposal", review_source_versions=reviewed["sources"])
     assert len(router.captures) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "raw",
+        "unknown",
+        "clock",
+        "minute",
+        "intrinsic",
+        "other_target",
+        "original_changed",
+        "array",
+        "boolean",
+        "decimal",
+        "zero_denominator",
+        "extra",
+        "long_evidence",
+        "wrong_evidence_type",
+        "oversized_integer",
+        "empty_evidence",
+        "second_fraction",
+        "frame_fraction",
+        "qualified",
+    ],
+)
+async def test_legacy_exact_boundaries_require_typed_recording_review(session, make_file, case):
+    """Actual PG eligibility and actual CUE/record joins agree; raw evidence never authorizes precision."""
+    from phaze.routers.record import build_file_record_context
+    from phaze.services.cue_review import eligible_tracklist_stmt, gated_tracklist_stmt
+    from tests._timing import qualified_timing
+
+    media = await make_file()
+    session.add(FileMetadata(file_id=media.id, duration=20))
+    session.add(RenameProposal(file_id=media.id, proposed_filename="recording.mp3", status="executed"))
+    legacy = Tracklist(external_id=uuid.uuid4().hex, source_url="", file_id=media.id, source="manual", status="approved")
+    session.add(legacy)
+    await session.flush()
+    version = TracklistVersion(tracklist_id=legacy.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    legacy.latest_version_id = version.id
+    raw = "12:35"
+    evidence = qualified_timing(raw, media.id, seconds=Fraction(76, 75))
+    if case == "raw":
+        evidence = None
+    elif case == "unknown":
+        evidence = {"original": raw}
+    elif case == "clock":
+        evidence.update(kind="clock", offset=None, offset_usability="unusable")
+    elif case == "minute":
+        evidence.update(precision="minute", offset={"numerator": 60, "denominator": 1}, offset_usability="approximate")
+    elif case == "intrinsic":
+        evidence["origin"] = "FILE:1:recording.mp3"
+    elif case == "other_target":
+        evidence["origin"] = f"recording:{uuid.uuid4()}"
+    elif case == "original_changed":
+        evidence["original"] = "different"
+    elif case == "array":
+        evidence = []
+    elif case == "boolean":
+        evidence["offset"]["numerator"] = True
+    elif case == "decimal":
+        evidence["offset"]["numerator"] = 76.5
+    elif case == "zero_denominator":
+        evidence["offset"]["denominator"] = 0
+    elif case == "extra":
+        evidence["unexpected"] = "not domain evidence"
+    elif case == "long_evidence":
+        evidence["evidence"] = ["x" * 4097]
+    elif case == "wrong_evidence_type":
+        evidence["evidence"] = [True]
+    elif case == "empty_evidence":
+        evidence["evidence"] = []
+    elif case == "second_fraction":
+        evidence["precision"] = "second"
+    elif case == "frame_fraction":
+        evidence["offset"]["denominator"] = 74
+    elif case == "oversized_integer":
+        evidence["offset"] = {"numerator": 10**4096, "denominator": 1}
+    track = TracklistTrack(version_id=version.id, position=1, title="Retained", timestamp=raw, timestamp_evidence=evidence)
+    session.add(track)
+    await session.flush()
+    original_id = track.id
+    eligible = {row[0].id for row in (await session.execute(eligible_tracklist_stmt())).all()}
+    gated = {row[0].id for row in (await session.execute(gated_tracklist_stmt())).all()}
+    assert (legacy.id in eligible) == (case == "qualified")
+    assert (legacy.id in gated) == (case != "qualified")
+    cue = await build_cue_tracks_for_file(session, media.id)
+    context = await build_file_record_context(media.id, session)
+    if case == "qualified":
+        assert cue[0].timestamp_seconds == Fraction(76, 75)
+        assert "INDEX 01 00:01:01" in generate_cue_content("recording.mp3", "mp3", cue)
+        assert context["track_segments"][0].start_sec == float(Fraction(76, 75))
+    else:
+        assert cue[0].timestamp_seconds is None
+        output = generate_cue_content("recording.mp3", "mp3", cue)
+        assert "INDEX 01" not in output and "TRACK 01" not in output
+        assert not context["track_segments"]
+    await session.refresh(track)
+    assert track.id == original_id and track.timestamp == raw and track.timestamp_evidence == evidence
+
+
+async def test_huge_qualified_legacy_offset_cannot_crash_analysis_boundary(session, make_file):
+    from tests._timing import qualified_timing
+
+    media = await make_file()
+    track = TracklistTrack(
+        version_id=uuid.uuid4(), position=1, timestamp="12:35", timestamp_evidence=qualified_timing("12:35", media.id, seconds=Fraction(10**400))
+    )
+    assert not build_track_segments([track], [], 20, media_id=media.id)
+
+
+def test_huge_qualified_provider_offset_cannot_crash_analysis_boundary():
+    from phaze.tracklist_providers.domain import ProviderTrack, Timestamp
+    from tests._timing import qualified_timing
+
+    media_id = uuid.uuid4()
+    track = ProviderTrack(position=1, timestamp=Timestamp.model_validate(qualified_timing("00:01", media_id, seconds=Fraction(10**400))))
+    assert not build_track_segments([track], [], 20)
+
+
+async def test_real_selected_workspace_routes_and_match_all_retry(session, client, monkeypatch):
+    """Real imported decisions drive served workspace rows and exhaustive controller enqueue pins."""
+    from phaze.services.pipeline.tracklists import get_match_pending_recording_sources
+    from tests._background_drain import drain_router_background_tasks
+
+    media, companion, raw = await inventory(session, CUE, "cue")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    pending = await client.get("/pipeline/local-source-sets?kind=tracklist&page=bad&page_size=bad")
+    assert pending.status_code == 200 and "pending candidate" in pending.text
+    fallback = await client.get("/pipeline/local-source-sets?kind=unsupported")
+    assert fallback.status_code == 200 and "Stored source" in fallback.text
+    inventory_response = await client.get("/pipeline/local-source-sets?kind=cue&inventory=1")
+    assert inventory_response.status_code == 200 and companion.original_filename in inventory_response.text
+    assert "Inventoried companion" in inventory_response.text
+    assert not await get_match_pending_recording_sources(session)
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    selection = await session.get(ProviderRecordingSelection, (media.id, "tracklist"))
+    selection.selection_token = None  # retained historical selection, resolved by the real generic port
+    await session.flush()
+    pins = await get_match_pending_recording_sources(session)
+    assert len(pins) == 1 and pins[0]["expected_observation_id"] == str(imported.tracklist_observation_id)
+    assert pins[0]["expected_selection_token"]
+    reviewed = await client.get("/pipeline/local-source-sets?kind=tracklist")
+    assert "Selected authority" in reviewed.text and "reviewer" in reviewed.text
+    queue, _ = install_fake_queues(client)
+    original_enqueue = queue.enqueue
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("synthetic broker unavailable")
+
+    monkeypatch.setattr(queue, "enqueue", unavailable)
+    first = await client.post("/pipeline/match-tracklists")
+    await drain_router_background_tasks()
+    assert first.status_code == 200 and not queue.captured
+    assert await get_match_pending_recording_sources(session) == pins
+    monkeypatch.setattr(queue, "enqueue", original_enqueue)
+    retry = await client.post("/pipeline/match-tracklists")
+    await drain_router_background_tasks()
+    assert retry.status_code == 200
+    assert len(queue.captured) == 1
+    assert queue.captured == [("match_recording_source_to_discogs", pins[0])]

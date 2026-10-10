@@ -16,6 +16,7 @@ from phaze.services.cue_generator import generate_cue_content as _real_generate_
 from phaze.services.review import (
     get_cue_review_cards,
 )
+from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ async def _seed_eligible_cue_tracklist(session: AsyncSession, *, artist: str) ->
             artist=f"{artist} Track",
             title="Track Title",
             timestamp="0:01:00",
+            timestamp_evidence=qualified_timing("0:01:00", file_id),
         )
     )
     await session.commit()

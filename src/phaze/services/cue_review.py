@@ -14,12 +14,13 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Numeric, Select, Text, and_, case, cast, exists, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH, array
 
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
-from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.services.cue_generator import CueTrackData, parse_timestamp_string
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.cue_generator import CueTrackData, qualified_legacy_offset
 from phaze.services.local_source_import import get_selected_recording_source
 from phaze.services.selected_discogs import accepted_recording_discogs_links
 from phaze.services.selected_source_consumers import explicit_tracklist_clause
@@ -42,6 +43,52 @@ if TYPE_CHECKING:
 ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (Tracklist.artist, Tracklist.event)
 
 
+def qualified_legacy_timestamp_clause() -> Any:
+    """Strict typed evidence, precise rational offset and the actual recording target.
+
+    Guard every JSON shape/arithmetic conversion: legacy evidence is nullable arbitrary JSONB.
+    This mirrors qualified_legacy_offset, never inferring meaning from the raw timestamp string.
+    """
+    empty = cast(literal("{}", Text), JSONB)
+    obj = case((func.jsonb_typeof(TracklistTrack.timestamp_evidence) == "object", TracklistTrack.timestamp_evidence), else_=empty)
+    offset = case((func.jsonb_typeof(obj.op("->")("offset")) == "object", obj.op("->")("offset")), else_=empty)
+    evidence = case((func.jsonb_typeof(obj.op("->")("evidence")) == "array", obj.op("->")("evidence")), else_=cast(literal("[]", Text), JSONB))
+    values = func.jsonb_array_elements_text(evidence).table_valued("value").alias("legacy_timing_evidence")
+    too_long = exists(select(1).select_from(values).where(func.char_length(values.c.value) > 4096).correlate(TracklistTrack))
+
+    def integer_value(key: str) -> Any:
+        value = offset.op("->>")(key)
+        return case(
+            (
+                and_(func.jsonb_typeof(offset.op("->")(key)) == "number", value.op("~")(r"^[0-9]+$"), func.char_length(value) <= 4096),
+                cast(value, Numeric),
+            ),
+            else_=None,
+        )
+
+    numerator, denominator = integer_value("numerator"), integer_value("denominator")
+    return and_(
+        obj.op("-")(array(["original", "kind", "precision", "origin", "offset", "offset_usability", "evidence"])) == empty,
+        offset.op("-")(array(["numerator", "denominator"])) == empty,
+        obj.op("->>")("original") == TracklistTrack.timestamp,
+        func.jsonb_typeof(obj.op("->")("original")) == "string",
+        func.char_length(obj.op("->>")("original")) <= 4096,
+        obj.op("->>")("kind") == "offset",
+        obj.op("->>")("offset_usability") == "qualified",
+        obj.op("->>")("origin") == func.concat("recording:", cast(Tracklist.file_id, Text)),
+        func.jsonb_typeof(obj.op("->")("origin")) == "string",
+        func.jsonb_array_length(evidence).between(1, 64),
+        ~func.jsonb_path_exists(evidence, cast('$[*] ? (@.type() != "string")', JSONPATH)),
+        ~too_long,
+        numerator >= 0,
+        denominator > 0,
+        or_(
+            and_(obj.op("->>")("precision") == "second", func.mod(numerator, func.nullif(denominator, 0)) == 0),
+            and_(obj.op("->>")("precision") == "cue_frame_75", func.mod(numerator * 75, func.nullif(denominator, 0)) == 0),
+        ),
+    )
+
+
 def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], Select[uuid.UUID]]:
     """Shared join+filter core for approved, applied tracklists (cue eligibility + review gating).
 
@@ -60,7 +107,13 @@ def _approved_applied_tracklist_base() -> tuple[Select[Tracklist, FileRecord], S
     button that could never succeed, permanently inflating ``eligible`` past ``generated`` with no
     way to converge.
     """
-    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
+    has_timestamp_subq = (
+        select(TracklistTrack.version_id)
+        .join(TracklistVersion, TracklistVersion.id == TracklistTrack.version_id)
+        .join(Tracklist, Tracklist.id == TracklistVersion.tracklist_id)
+        .where(qualified_legacy_timestamp_clause())
+        .distinct()
+    )
     base_stmt = (
         select(Tracklist, FileRecord)
         .join(FileRecord, Tracklist.file_id == FileRecord.id)
@@ -192,9 +245,17 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     #      function, which has no dedicated test file of its own (covered incidentally, chiefly by
     #      tests/review/routers/test_cue.py and tests/review/capabilities/cue/test_degrade.py).
     tracks: list[TracklistTrack] = []
+    media_by_version: dict[uuid.UUID, uuid.UUID | None] = {}
     for chunk in _id_chunks(version_ids):
-        tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(chunk))
-        tracks.extend((await session.execute(tracks_stmt)).scalars().all())
+        tracks_stmt = (
+            select(TracklistTrack, Tracklist.file_id)
+            .join(TracklistVersion, TracklistVersion.id == TracklistTrack.version_id)
+            .join(Tracklist, Tracklist.id == TracklistVersion.tracklist_id)
+            .where(TracklistTrack.version_id.in_(chunk))
+        )
+        for track, media_id in (await session.execute(tracks_stmt)).tuples():
+            tracks.append(track)
+            media_by_version[track.version_id] = media_id
 
     track_ids = [t.id for t in tracks]
     discogs_by_track: dict[uuid.UUID, DiscogsLink] = {}
@@ -217,7 +278,7 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
                     position=track.position,
                     title=track.title,
                     artist=track.artist,
-                    timestamp_seconds=parse_timestamp_string(track.timestamp),
+                    timestamp_seconds=qualified_legacy_offset(track.timestamp, track.timestamp_evidence, media_by_version.get(track.version_id)),
                     genre=None,  # DiscogsLink has no genre field (D-09)
                     label=discogs_link.discogs_label if discogs_link else None,
                     year=discogs_link.discogs_year if discogs_link else None,
