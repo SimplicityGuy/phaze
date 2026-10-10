@@ -23,9 +23,9 @@ a module makes the inventory fail until this page is reconciled.
 | `cli/` | 1 | Operator commands, including agent management, projection backfill and the junk quarantine dispatch |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
 | `models/` | 30 | SQLAlchemy application schema, including scan-owned orphan companion diagnostics, companion content features and the junk-companion review queue |
-| `routers/` | 61 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 26 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 136 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
+| `routers/` | 62 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 27 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 137 | Business rules and infrastructure adapters, including the junk quarantine's dispatch and its agent-side move; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 49 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 46 migrations (`039` baseline through head
-`084`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 48 migrations (`039` baseline through head
+`086`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

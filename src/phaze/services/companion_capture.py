@@ -79,7 +79,12 @@ async def store_capture_report(session: AsyncSession, agent_id: str, report: Cap
         if linked is None:
             raise ValueError("Source is no longer linked to the requested recording")
     stale = file.current_path != target.path or file.sha256_hash != target.expected_sha256 or file.file_size != target.expected_size
-    read = report.read
+    read = SourceRead.model_validate(
+        report.read.model_dump(mode="json")
+        | {
+            "evidence": tuple(dict.fromkeys((f"capture:inventory_sha256:{target.expected_sha256}", *report.read.evidence)))[:64],
+        }
+    )
     if stale:
         evidence = tuple(dict.fromkeys(("inventory_changed", *(entry for entry in read.evidence if entry.startswith("revision:")), *read.evidence)))[
             :64

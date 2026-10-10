@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from phaze.models.provider_source import ProviderSelectionEvent, ProviderSourceObservation
+from phaze.models.provider_source import ProviderSourceObservation
 from phaze.services.provider_persistence import backfill_legacy_identities, store_snapshot
 from phaze.tracklist_providers.domain import Completeness, ProviderTrack, Snapshot, SourceIdentity
 
@@ -80,7 +80,13 @@ async def test_seeded_upgrade_backfill_restart_and_lossy_downgrade_refusal() -> 
                     completeness=Completeness(state="complete", reason="complete"),
                 ),
             )
-            restarted.add(ProviderSelectionEvent(media_id=uuid.uuid4(), kind="tracklist", observation_id=stored.observation.id, actor="reviewer"))
+            # This test targets revision085, before nullable decision fields exist.
+            await restarted.execute(
+                text(
+                    "INSERT INTO provider_selection_events(id,media_id,kind,observation_id,actor) VALUES(:id,:media,'tracklist',:observation,'reviewer')"
+                ),
+                {"id": uuid.uuid4(), "media": uuid.uuid4(), "observation": stored.observation.id},
+            )
             observation_id = stored.observation.id
             await restarted.commit()
         async with engine.begin() as db:

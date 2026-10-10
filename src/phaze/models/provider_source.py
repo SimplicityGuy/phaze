@@ -83,6 +83,8 @@ class ProviderRecordingSelection(Base):
     observation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_observations.id"), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    selection_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    target_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     tracklist_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklists.id", ondelete="SET NULL"))
     version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklist_versions.id", ondelete="SET NULL"))
 
@@ -98,4 +100,8 @@ class ProviderSelectionEvent(Base):
     observation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_observations.id"), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), unique=True)
+    decision_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    action: Mapped[str | None] = mapped_column(String(16))
+    target_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     __table_args__ = (Index("ix_provider_selection_events_media", "media_id"),)

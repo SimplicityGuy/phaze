@@ -61,12 +61,25 @@ class LocalProvider:
         content = await effects.read(candidate.source, budget)
         if content.status not in {OutcomeStatus.FOUND, OutcomeStatus.INCOMPLETE} or content.text is None:
             return LoadOutcome(status=content.status, code=content.code, scope=content.scope, evidence=content.evidence)
-        if content.truncated or content.status == OutcomeStatus.INCOMPLETE:
-            return LoadOutcome(status=OutcomeStatus.INCOMPLETE, code="read_truncated", scope=content.scope, evidence=content.evidence)
         if candidate.observed_revision is not None and candidate.observed_revision != content.revision:
             return LoadOutcome(status=OutcomeStatus.RETRY, code="revision_changed", scope=content.scope, evidence=content.evidence)
         if self.interpreter is not None:
-            return self.interpreter.interpret(candidate, content, budget)
+            result = self.interpreter.interpret(candidate, content, budget)
+            if (content.truncated or content.status == OutcomeStatus.INCOMPLETE) and (
+                result.status == OutcomeStatus.FOUND or (result.snapshot is not None and result.snapshot.completeness.state == "complete")
+            ):
+                if result.snapshot is None:
+                    return LoadOutcome(status=OutcomeStatus.CONTRACT_ERROR, code="partial_read_promoted", scope=content.scope)
+                partial = result.snapshot.model_copy(update={"completeness": Completeness(state="incomplete", reason="read_truncated")})
+                return LoadOutcome(
+                    status=OutcomeStatus.INCOMPLETE if result.status == OutcomeStatus.FOUND else result.status,
+                    code="read_truncated",
+                    scope=content.scope,
+                    snapshot=partial,
+                )
+            return result
+        if content.truncated or content.status == OutcomeStatus.INCOMPLETE:
+            return LoadOutcome(status=OutcomeStatus.INCOMPLETE, code="read_truncated", scope=content.scope, evidence=content.evidence)
         return LoadOutcome(
             status=OutcomeStatus.INCOMPLETE,
             code="recognition_only",
