@@ -11,7 +11,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.services.pipeline.common import _safe_count
 from phaze.services.stage_status import (
-    failed_clause,
+    counted_failed_clause,
 )
 
 
@@ -41,7 +41,7 @@ async def get_analysis_failed_files(session: AsyncSession) -> list[FileRecord]:
     heartbeat watchdog (reason="timeout") as well as ones that crashed -- these files have
     terminally failed and carry no live job.
     """
-    result = await session.execute(select(FileRecord).where(failed_clause(Stage.ANALYZE)))
+    result = await session.execute(select(FileRecord).where(counted_failed_clause(Stage.ANALYZE)))
     return list(result.scalars().all())
 
 
@@ -59,7 +59,7 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
         # PR-A/D-09: derived from the analyze-failure marker (analysis.failed_at NOT NULL)
         # via the LOCKED ``failed_clause`` builder -- no longer the ``files.state`` column. Composes the
         # clause verbatim (never re-spells the inner exists) so the DERIV-04 equivalence guarantee holds.
-        select(func.count(FileRecord.id)).where(failed_clause(Stage.ANALYZE)),
+        select(func.count(FileRecord.id)).where(counted_failed_clause(Stage.ANALYZE)),
         node="analysis_failed",
     )
 
@@ -91,7 +91,7 @@ async def get_analysis_stalled_count(session: AsyncSession) -> int:
     return await _safe_count(
         session,
         select(func.count(FileRecord.id)).where(
-            failed_clause(Stage.ANALYZE),
+            counted_failed_clause(Stage.ANALYZE),
             exists(
                 select(AnalysisResult.id).where(
                     AnalysisResult.file_id == FileRecord.id,

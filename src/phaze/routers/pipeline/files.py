@@ -41,7 +41,7 @@ from phaze.services.pipeline import (
     get_pending_files_page,
     get_tracklist_sets_page,
 )
-from phaze.services.stage_status import stage_status_sort_case
+from phaze.services.stage_status import MISSING_BUCKET, stage_status_sort_case
 
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 # phaze-cavai: ORPHANED_BUCKET joins the lens allowlist -- a WHERE-only refinement of in_flight via
 # orphaned_clause (services.pipeline._files_page_stmt), never a sixth per-row CASE arm (D-01a).
-_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status) | {ORPHANED_BUCKET}
+_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status) | {ORPHANED_BUCKET, MISSING_BUCKET}
 
 
 # --- phaze-a6hm.1 sortable-column contracts ------------------------------------------------------

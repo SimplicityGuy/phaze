@@ -21,6 +21,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import ORPHANED_BUCKET
 from phaze.services.stage_status import (
+    display_status_case,
     orphaned_clause,
     stage_status_case,
 )
@@ -162,7 +163,7 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     and a single ineligible stage yields the empty set via ``false()`` rather than a 500 into the
     SAVEPOINT degrade path.
     """
-    cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
+    cols = [display_status_case(s) for s in _FILES_PAGE_STAGES]
     # phaze-x1qr3.9: ONE extra `SELECT ... WHERE set_profile.file_id IN (...)` for the whole
     # bounded page (selectinload, not a join on the correlated derivation above) -- never one
     # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
@@ -186,9 +187,9 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
                 orphan_stages = ()
             stmt = stmt.where(or_(*(_orphan_row_clause(s) for s in orphan_stages)) if orphan_stages else false())
         elif stage is not None:
-            stmt = stmt.where(stage_status_case(stage) == bucket)
+            stmt = stmt.where(display_status_case(stage) == bucket)
         else:
-            stmt = stmt.where(or_(*(stage_status_case(s) == bucket for s in _FILES_PAGE_STAGES)))
+            stmt = stmt.where(or_(*(display_status_case(s) == bucket for s in _FILES_PAGE_STAGES)))
     # The paging contract (phaze.services.pagination): OFFSET + a page_size+1 sentinel for has_next
     # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is the mandatory unique tiebreaker
     # (paging contract rule 4) regardless of `sort` -- an operator-chosen column ties far more often
@@ -263,7 +264,7 @@ async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> d
     all-``not_started`` mapping on any error (the pane renders, never 500s) — mirroring
     :func:`get_files_page`'s SAVEPOINT degrade posture.
     """
-    cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
+    cols = [display_status_case(s) for s in _FILES_PAGE_STAGES]
     try:
         async with session.begin_nested():
             row = (await session.execute(select(*cols).where(FileRecord.id == file_id))).one_or_none()
