@@ -73,7 +73,7 @@
             {% if running_jobs %}
             <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
                 {% for job in running_jobs %}
-                <li class="truncate" title="{{ job.filename }}">▶ {{ job.filename }}</li>
+                <li class="flex items-center gap-2" title="{{ job.filename }}"><span aria-hidden="true">•</span><span class="truncate">{{ job.filename }}</span></li>
                 {% endfor %}
             </ul>
             {% else %}

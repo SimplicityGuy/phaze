@@ -81,7 +81,7 @@
              onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">
         <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-muted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
-            <span>RANK {{ lane.rank }} · cap {{ lane.cap | thousands }}</span>
+            <span title="Lower numbers are tried first when a lane is eligible and has capacity">Dispatch priority {{ lane.rank }} (lower numbers first) · cap {{ lane.cap | thousands }}</span>
             {% if _local %}<span>Scheduler in-flight {{ _in_flight | thousands }} (queued + running; not compared with cap)</span>{% endif %}
             {% if _local and lane.claimed_overdue is defined and lane.claimed_overdue is not none %}<span>Claimed past the stall bound {{ lane.claimed_overdue | thousands }} · stranded {{ lane.stranded | thousands }} · heartbeat lost {{ lane.heartbeat_lost | thousands }}</span>{% endif %}
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}

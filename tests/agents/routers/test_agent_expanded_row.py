@@ -253,7 +253,7 @@ async def test_dismiss_removes_the_row_node_instead_of_only_hiding_it(smoke: Asy
     start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
     assert start != -1
     row = body[start : body.find("</tr>", start) + len("</tr>")]
-    assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
+    assert "this.$root.remove()" in row, "hide() must remove the row node, not only set open = false"
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_dismiss_focuses_the_details_trigger_before_removing_the_row(smoke
     assert start != -1
     row = body[start : body.find("</tr>", start) + len("</tr>")]
     focus_at = row.find(f"getElementById('agent-trigger-{AGENT_ID}-details')?.focus()")
-    remove_at = row.find("this.$el.remove()")
+    remove_at = row.find("this.$root.remove()")
     assert focus_at != -1, "hide() must return focus to the native Details trigger"
     assert remove_at != -1
     assert focus_at < remove_at, "focus must be moved before the row removes itself"
@@ -291,7 +291,7 @@ async def test_compute_lane_dismiss_url_rewrite_keeps_sort_and_order(
     row = body[start : body.find("</tr>", start) + len("</tr>")]
     assert "history.replaceState({}, '', '/s/agents?sort=name&amp;order=asc')" in row
     assert "history.replaceState({}, '', '/s/agents')" not in row
-    assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
+    assert "this.$root.remove()" in row, "hide() must remove the row node, not only set open = false"
     assert "getElementById('compute-lane-trigger-vox-details')?.focus()" in row
 
 
@@ -300,7 +300,7 @@ async def test_agent_detail_row_hide_component_source_contract() -> None:
     """Source-level pin: both fixes hold in _agent_detail_row.html even outside a rendered request."""
     component = _dismiss_component(_DETAIL_ROW)
     assert re.search(r"history\.replaceState\(\{\}, '', '/s/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
-    assert "this.$el.remove()" in component
+    assert "this.$root.remove()" in component
 
 
 @pytest.mark.asyncio
@@ -308,4 +308,4 @@ async def test_compute_lane_detail_row_hide_component_source_contract() -> None:
     """Source-level pin: both fixes hold in _compute_lane_detail_row.html too (mirrors the agent row)."""
     component = _dismiss_component(_COMPUTE_LANE_DETAIL_ROW)
     assert re.search(r"history\.replaceState\(\{\}, '', '/s/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
-    assert "this.$el.remove()" in component
+    assert "this.$root.remove()" in component

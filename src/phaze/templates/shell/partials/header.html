@@ -10,14 +10,9 @@
   caught by cmdk_modal.html (@cmdk:open.window); it carries id="cmdk-trigger" so the modal
   returns focus here on close.
 
-  COMPUTE-02: the "Agents · N" total now sums $store.pipeline.agentOnline (heartbeating agents,
-  semantics UNTOUCHED) + $store.pipeline.computeLanesActive (ACTIVE compute lanes) so the header
-  reflects both online-agent classes — still refreshed by the SAME existing OOB poll, no new timer.
-
-  phaze-74ii (phaze-nebh residue): the numeral was outside phaze-nebh's rail.html surface and was
-  left title/aria-label-less. Same treatment as the rail's done/total numerals: an explicit,
-  store-bound :title + :aria-label naming exactly what the sum counts (agentOnline + computeLanesActive),
-  agreeing with each other.
+  Inventory is separate from activity: laneCount includes every configured backend; clusterCount
+  includes the non-local subset, even while idle. agentOnline stays on its own link. The dot keeps
+  the existing agent/active-cluster activity signal. All values ride the same OOB poll.
 #}
 {# phaze-tzy6s.14: tighter gap/padding below `sm`. Adding the .13 drawer trigger pushed the row 4px
    past a 390px viewport, so the whole PAGE scrolled sideways -- caught by the browser suite's
@@ -71,19 +66,19 @@
             id="cmdk-trigger"
             x-data
             @click="$dispatch('cmdk:open')"
-            class="ml-2 min-w-0 flex-1 max-w-md h-9 flex items-center gap-2 px-3.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border text-muted text-sm hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            class="sm:ml-2 min-w-0 flex-1 max-w-md h-9 flex items-center gap-2 px-2 sm:px-3.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border text-muted text-sm hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             aria-label="Open command palette">
         <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
         </svg>
         <span class="truncate text-left hidden sm:inline">Search files, artists, tracklists — or type a command…</span>
-        <span class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-muted shrink-0"
+        <span class="hidden sm:inline ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-muted shrink-0"
               x-text="/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'">⌘K</span>
     </button>
 
     {# D-05 status strip: agent dot + "Agents · {n}" link, bound to $store.pipeline.agentOnline,
        refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
-    <div class="ml-auto flex items-center gap-2.5 text-xs text-muted " x-data>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2.5 text-xs text-muted " x-data>
         {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
            an explicit warning linked to the Config control that can revert it. #}
         {% with oob=false %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
@@ -92,11 +87,17 @@
                   :class="$store.pipeline.seedKnown && ($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
         </span>
         <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-           :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online; ' + formatCount($store.pipeline.computeLanesActive) + ' compute lanes active' : 'Agent and compute lane counts loading'"
-           class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-             <span>Agents online&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'">{{ (pipeline_seed.agentOnline if pipeline_seed else '—') | thousands }}</span></span>
-             <span aria-hidden="true" class="text-muted">·</span>
-             <span>Lanes active&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.computeLanesActive) : '—'">{{ (pipeline_seed.computeLanesActive if pipeline_seed else '—') | thousands }}</span></span>
+           aria-label="Open registered agents"
+           class="font-jura tracking-wider px-2 sm:px-3 h-8 flex items-center gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+             <span><span class="hidden sm:inline">Agents online&nbsp;</span><span class="sm:hidden">Agents&nbsp;</span><span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'">{{ (pipeline_seed.agentOnline if pipeline_seed else '—') | thousands }}</span></span>
+        </a>
+        <a href="/s/analyze" hx-get="/s/analyze" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+           title="Configured scheduler lanes, including local and idle lanes; clusters are non-local backends"
+           :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.laneCount) + ' configured lanes; ' + formatCount($store.pipeline.clusterCount) + ' configured clusters' : 'Lane and cluster counts loading'"
+           class="font-jura tracking-wider px-2 sm:px-3 h-8 flex flex-col justify-center items-center gap-0 sm:flex-row sm:gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+             <span>Lanes&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.laneCount) : '—'">{{ (pipeline_seed.laneCount if pipeline_seed else '—') | thousands }}</span></span>
+             <span aria-hidden="true" class="hidden text-muted sm:inline">·</span>
+             <span>Clusters&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.clusterCount) : '—'">{{ (pipeline_seed.clusterCount if pipeline_seed else '—') | thousands }}</span></span>
         </a>
     </div>
 

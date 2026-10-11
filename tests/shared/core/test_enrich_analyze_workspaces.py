@@ -616,9 +616,9 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
         < body.index('aria-label="Kind: local lane, nox"')
     )
     # RANK micro-labels, now paired with the cap CAPTION (phaze-5c6i2: never a live-count denominator).
-    assert "RANK 10 · cap 4" in body
-    assert "RANK 20 · cap 3" in body
-    assert "RANK 99 · cap 8" in body
+    assert "Dispatch priority 10 (lower numbers first) · cap 4" in body
+    assert "Dispatch priority 20 (lower numbers first) · cap 3" in body
+    assert "Dispatch priority 99 (lower numbers first) · cap 8" in body
     # Scheduler capacity stays explicit on every CLOUD row: in-flight / configured cap.
     assert "2/4" in body
     assert "1/3" in body

@@ -262,6 +262,8 @@ async def test_dag_context_compute_lanes_active_excludes_idle_and_waiting(
 
     ctx = await _build_dag_context(app_state, session, _idle_activity())
     assert ctx["dag"]["computeLanesActive"] == 0, "a quiet configured cluster (IDLE) must not count as active"
+    assert ctx["dag"]["laneCount"] == 1, "idle configured lanes still count in inventory"
+    assert ctx["dag"]["clusterCount"] == 1
 
 
 @pytest.mark.asyncio

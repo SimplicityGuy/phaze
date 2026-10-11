@@ -115,7 +115,8 @@ async def test_the_full_page_renders_the_sidebar_with_the_nine_facts_and_the_whe
         for row in sidebar.select("[data-record-fact]")
     }
     assert values["Format"] == "mp3"
-    assert values["Lane"] == "🖥️ local"
+    assert values["Lane"] == "local"
+    assert sidebar.select_one('[data-record-fact] svg[data-icon="server"]') is not None
     assert values["Duration"] == "6:30", "the analyzed extent of the seeded windows, as h:mm:ss"
     assert values["sha256"].startswith(file.sha256_hash[:12])
     assert values["Style"] == "techno", "dominant_style is still read verbatim off AnalysisResult"

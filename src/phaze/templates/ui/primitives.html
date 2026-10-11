@@ -82,7 +82,7 @@
                     compute lane and keeps its own glyph. #}
 {% macro kind_label(kind, name='', show_kind=true, family='lane') %}
 {% set _lane_kinds = {
-    'local': ('\U0001f5a5\ufe0f', 'LOCAL', 'local'),
+    'local': ('', 'LOCAL', 'local'),
     'compute': ('\u2601\ufe0f', 'COMPUTE', 'compute'),
     'kueue': ('\u2388', 'KUEUE', 'kueue')
 } %}
@@ -99,7 +99,8 @@
     {% set _aria = 'Kind: ' ~ _e[2] ~ ' lane' %}
 {% endif %}
 {% set _text %}{% if show_kind %}{{ _e[1] }}{% endif %}{% if show_kind and name %} &middot; {% endif %}{% if name %}<span class="normal-case">{{ name }}</span>{% endif %}{% endset %}
-{{ status_pill(_text, 'neutral', _aria ~ (', ' ~ name if name else ''), _e[0]) }}
+{% set _icon %}{% if family == 'lane' and kind == 'local' %}<svg data-icon="server" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>{% else %}{{ _e[0] }}{% endif %}{% endset %}
+{{ status_pill(_text, 'neutral', _aria ~ (', ' ~ name if name else ''), _icon) }}
 {% endmacro %}
 
 {% macro status_badge(label, status, tone='neutral', icon='', pulse=false, aria_label='', role='') %}

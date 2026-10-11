@@ -70,9 +70,9 @@
     {% include "admin/partials/_deployments.html" %}
     <div class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; compute lanes</h2>
+        <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; clusters</h2>
         <p class="font-mono text-xs tabular-nums text-muted ">
-            {{ agent_count | thousands }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count | thousands }} lane{{ '' if compute_lane_count == 1 else 's' }}
+            {{ agent_count | thousands }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count | thousands }} cluster{{ '' if compute_lane_count == 1 else 's' }}
         </p>
     </div>
     {% if not rows %}
@@ -96,7 +96,7 @@
     {% else %}
     <div class="relative overflow-x-auto">
         <table class="w-full text-sm text-left">
-            <caption class="sr-only">Registered agents and compute lanes</caption>
+            <caption class="sr-only">Registered agents and clusters</caption>
             <thead class="table-head">
                 {# phaze-a6hm.4 sortable headers, driven by the shared column_sort contract.
 
