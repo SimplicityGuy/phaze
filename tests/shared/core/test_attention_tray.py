@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from phaze.enums.stage import Stage
 from phaze.routers.shell.summary import SummaryOverviewInputs, _build_attention_items
 from phaze.services.attention import derive_attention_items
 from phaze.services.pipeline import attention_snapshot as snapshot
+from phaze.services.pipeline.buckets import _empty_buckets, _safe_bucket_counts, _safe_orphan_split
 from phaze.services.pipeline.common import _safe_count, capture_read_degradations, mark_read_degraded
 
 
@@ -60,6 +62,27 @@ async def test_degraded_count_keeps_legacy_zero_but_marks_snapshot_unknown() -> 
     with capture_read_degradations() as healthy:
         await task
     assert healthy == []
+
+
+@pytest.mark.parametrize("source", ["bucket", "orphan_split"])
+async def test_analyze_bucket_fallbacks_mark_the_parent_snapshot(source: str) -> None:
+    session = MagicMock()
+    session.begin_nested.return_value = AsyncMock()
+    session.execute = AsyncMock(side_effect=RuntimeError("synthetic database unavailable"))
+    buckets = _empty_buckets()
+    buckets["in_flight"] = 1
+    with capture_read_degradations() as failures:
+
+        async def read() -> None:
+            if source == "bucket":
+                assert await _safe_bucket_counts(session, Stage.ANALYZE) == _empty_buckets()
+            else:
+                await _safe_orphan_split(session, Stage.ANALYZE, buckets)
+                assert buckets["in_flight"] == 1
+
+        # Summary reads sources concurrently; child-task fallbacks must reach this collector.
+        await asyncio.gather(read())
+    assert failures == ["stage_bucket" if source == "bucket" else "stage_orphan_split"]
 
 
 async def test_summary_exposes_read_degradation_without_changing_attention(monkeypatch: pytest.MonkeyPatch) -> None:
