@@ -307,3 +307,28 @@ async def test_source_deletion_race_refuses_new_selection_and_preserves_observat
             if source_id is not None:
                 await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id == source_id))
                 await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.id == source_id))
+
+
+async def test_parent_scoped_reuse_compares_full_payload_under_digest_collision(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(storage, "_digest", lambda _value: "f" * 64)
+    identity = SourceIdentity(provider_id="example_catalog", native_id="acquisition-attribution")
+    parents = []
+    for text in ("first raw", "second raw"):
+        raw = await storage.store_source_read(
+            session,
+            identity,
+            SourceRead(status="found", code="read", scope="source", text=text, retrieved_at=datetime.now(UTC)),
+            parser_version="reader-v1",
+        )
+        parents.append(raw.observation.id)
+    first = await storage.store_snapshot(session, snapshot(identity.native_id), parent_id=parents[0])
+    second = await storage.store_snapshot(session, snapshot(identity.native_id), parent_id=parents[1])
+    assert first.observation.id != second.observation.id
+    assert second.observation.parent_id == parents[1] and not second.reused and not second.conflict
+    for parent, stored in zip(parents, (first, second), strict=True):
+        replay = await storage.store_snapshot(session, snapshot(identity.native_id), parent_id=parent)
+        assert replay.reused and replay.observation.id == stored.observation.id and not replay.conflict
+    changed = await storage.store_snapshot(session, snapshot(identity.native_id, text="contradictory"), parent_id=parents[1])
+    assert changed.observation.id not in {first.observation.id, second.observation.id} and changed.conflict
+    assert changed.observation.conflict_with_id in {first.observation.id, second.observation.id}
+    assert first.observation.parent_id == parents[0] and second.observation.parent_id == parents[1]

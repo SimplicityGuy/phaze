@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import struct
+import threading
 from typing import TYPE_CHECKING, Any
 import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -252,33 +253,37 @@ class TestWriteFileTagsTask:
 
     @pytest.mark.asyncio
     async def test_disk_work_runs_off_the_event_loop(self, mp3_file: Path) -> None:
-        """phaze-qfxv discipline survives the move: the disk work runs off the event loop.
+        """Snapshot and write/hash share one executor owner, while HTTP remains on-loop."""
+        from phaze.tasks import tag_write
 
-        phaze-anrw4 split the offload in two (the pre-write snapshot extraction, then
-        ``write_and_verify_sync``) -- both calls must still go through ``asyncio.to_thread``, never
-        directly on the loop. The agent's event loop also runs the Phase-46 liveness heartbeat, so an
-        on-loop mutagen stall against a slow mount risks a false DEAD classification and
-        duplicate-work re-enqueue.
+        ctx, api = _ctx()
+        loop_thread = threading.get_ident()
+        disk_threads = []
+        callback_threads = []
+        extract, write = tag_write._extract_before_tags, tag_write._write_verify_and_rehash
 
-        phaze-2zeu0 added the post-write sha256 -- another whole-file read, and so another way to
-        stall the loop. It went INSIDE the existing second offload rather than beside it, which is
-        why the count asserted here is still 2: the second callable is now
-        ``_write_verify_and_rehash``, which wraps ``write_and_verify_sync`` and appends the digest.
-        The count is the load-bearing half of this assertion -- if a future change grows it to 3,
-        the discipline has been broken even if every individual call is still offloaded.
-        """
-        ctx, _api = _ctx()
+        def observe_extract(*args):
+            disk_threads.append(threading.get_ident())
+            return extract(*args)
 
+        def observe_write(*args):
+            disk_threads.append(threading.get_ident())
+            return write(*args)
+
+        async def observe_callback(*args):
+            callback_threads.append(threading.get_ident())
+
+        api.patch_tag_write.side_effect = observe_callback
         with (
             _patch_scan_roots([str(mp3_file.parent)]),
-            patch("phaze.tasks.tag_write.asyncio.to_thread", new_callable=AsyncMock) as to_thread,
+            patch.object(tag_write, "_extract_before_tags", side_effect=observe_extract),
+            patch.object(tag_write, "_write_verify_and_rehash", side_effect=observe_write),
         ):
-            to_thread.side_effect = [{"artist": None}, (TagWriteStatus.COMPLETED, None, None, {}, "a" * 64)]
-            await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "Test"}))
-
-        assert to_thread.await_count == 2
-        assert to_thread.await_args_list[0].args[0].__name__ == "_extract_before_tags"
-        assert to_thread.await_args_list[1].args[0].__name__ == "_write_verify_and_rehash"
+            result = await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "Test"}))
+        assert result["status"] == TagWriteStatus.COMPLETED
+        assert len(disk_threads) == 2
+        assert disk_threads[0] == disk_threads[1] != loop_thread
+        assert callback_threads == [loop_thread]
 
 
 class TestContainment:

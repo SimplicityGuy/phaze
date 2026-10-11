@@ -28,6 +28,18 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | -------- | ------- |
 | **[Gates and Isolation](gates-and-isolation.md)** | 🧪 Validation-boundary evidence, PostgreSQL/Redis seat isolation, and trustworthy gate output |
 | **[Coverage Baseline Refresh](coverage-baseline-refresh.md)** | 📏 Full-suite coverage provenance, every changed module, and repaired boundary gaps |
+| **[Current Quality Coverage Assessment](quality-assessment/coverage-baseline.md)** | Exact-commit CI line/context evidence, source growth, low-line candidates and selector limits |
+| **[Testing Risk Inventory](quality-assessment/testing-risk-inventory.md)** | Current coverage, churn, assertion and consumer gaps, and bounded hunt slices |
+| **[Test Runtime Assessment](quality-assessment/runtime-profile.md)** | Current floor, fixture, collection, local lane and CI shard measurements with safe experiment boundaries |
+| **[Runtime Optimization Proposal](quality-assessment/runtime-optimization-proposal.md)** | Ranked guard, fixture, admission and shard experiments with accepted-bead metrics and preserved safety contracts |
+| **[Mutation and Replay Hunt](quality-assessment/mutation-hunt.md)** | Bounded first-round findings, independent verification, synthetic observations and checkpoint metrics |
+| **[Analysis and Worker Hunt](quality-assessment/analysis-hunt.md)** | Exhaustive analysis and orchestration slice, verified recovery/liveness findings, real-consumer limits and round metrics |
+| **[Companion Persistence and Consumer Hunt](quality-assessment/companion-hunt.md)** | Complete third-round slice, synthetic attribution failure, deferred source-only finding and browser limits |
+| **[Stronger Assertion Proposal](quality-assessment/assertion-proposal.md)** | Six canonical failing regressions, independent guard operands, real consumer oracles and bounded controls |
+| **[Implementation Design and Final Decision](quality-assessment/implementation-plan.md)** | Complete evidence synthesis, proposed dependency graph, task dispositions and operator GO design decision on 2026-10-11 UTC (`phaze-9dxnh`) |
+| **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
+| **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
+| **[Selection and Evidence Proposal](quality-assessment/selector-proposal.md)** | Safe coverage refresh ownership, real consumer mappings, preserved floors and measured bead-velocity rollout |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |

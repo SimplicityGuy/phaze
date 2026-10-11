@@ -170,6 +170,10 @@ async def _store(
             ProviderSourceObservation.status == status,
             ProviderSourceObservation.content_digest == digest,
         )
+        # An explicit acquisition parent is part of interpretation identity.
+        # Equal bounded output from a different raw capture needs its own child.
+        if parent_id is not None:
+            query = query.where(ProviderSourceObservation.parent_id == parent_id)
         if after is not None:
             query = query.where(ProviderSourceObservation.id > after)
         row = await session.scalar(query.order_by(ProviderSourceObservation.id).limit(1))
@@ -189,6 +193,7 @@ async def _store(
                 ProviderSourceObservation.parser_version,
                 ProviderSourceObservation.status,
                 ProviderSourceObservation.decoded_text,
+                ProviderSourceObservation.payload,
             ).where(
                 ProviderSourceObservation.object_id == source.id,
                 ProviderSourceObservation.revision == revision,
@@ -206,6 +211,11 @@ async def _store(
             ).first()
             if conflict_row is None:
                 break
+            if conflict_row.payload == payload:
+                # Equal content retained for another acquisition is attribution,
+                # not contradictory evidence. Never rewrite the historical parent.
+                after_time, after_id = conflict_row.retrieved_at, conflict_row.id
+                continue
             if conflict_row.decoded_text != decoded_text or (conflict_row.parser_version == parser_version and conflict_row.status == status):
                 # Exact reuse was already exhaustively checked above. A same-parser
                 # same-status row here therefore has distinct complete normalized data.
