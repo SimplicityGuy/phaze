@@ -217,3 +217,44 @@ Recommend reviewing this remediation set and, if the operator elects to continue
 already planned analysis/resource slice rather than repeating these three passes. The explicit
 choices at `phaze-bexe7` are continue the planned next round, narrow further tag-state work,
 switch to other unrun ground, or stop and wrap up. This report does not resolve that checkpoint.
+
+## Operator decision — 2026-10-11 UTC, phaze-bexe7
+
+On **2026-10-11 UTC**, at checkpoint **`phaze-bexe7`**, the operator explicitly selected
+**“Continue one planned analysis round (Recommended)”**. This decision follows the first round's
+**3 candidates → 3 confirmed → 3 novel intake reports**, with **2 P2 and 1 P3**, across all three
+declared lenses and the complete **18-file, 6,160-line** mutation slice. The recommendation remains
+to move to unrun analysis/resource ground because the bounded hunt is still productive; this is
+not a convergence claim. Errors remain **0 finder errors, 3 lead interruptions and 1 errored
+verifier attempt**, with final independent verdicts completed after recovery. Actual spend and
+cost per finding are unavailable. The historical first-round text above, including the rejected
+default-seat runs and corrected isolated evidence, remains unchanged.
+
+On **2026-10-11 UTC**, checkpoint **`phaze-bexe7`** authorizes exactly **one** planned analysis/resource
+round, **`phaze-troov`**, using the filed 18-file inventory in the
+[testing risk inventory](testing-risk-inventory.md). Each of **logic/numerical correctness**, **resource/error
+handling**, and **concurrency/state-transition** receives one complete pass over that entire slice,
+followed by required different-model adversarial verification, historical fingerprint/full-body
+dedup and bounded synthetic reproductions. This is a scope budget of **three complete lens passes
+plus their required verification**, not a monetary or token estimate; actual spend is unknown.
+The exact inventory is:
+
+| Area | Files |
+| --- | --- |
+| Services | `src/phaze/services/{analysis,analysis_decoder,analysis_exec,analysis_attempt,analysis_windows,analysis_sizing,analysis_timeline,cloud_staging}.py` |
+| Process orchestration | `src/phaze/{analysis_child,job_runner}.py` |
+| Tasks | `src/phaze/tasks/{controller,agent_worker,recovery_replay,submit_cloud_job,reap_orphaned_backend_cloud_jobs,reconcile_cloud_jobs,functions,heartbeat}.py` |
+
+Execution is bounded to **four agents globally including the coordinator**, with at most **three
+research workers** and the normal **two full-validation slots**. Each worktree must use its own
+exact three recipe exports for test PostgreSQL, migration PostgreSQL and Redis; at most one pytest
+process may use a database at a time, with its exclusive-lock header checked. Synthetic fixtures
+are the only reproduction inputs. No additional large-model acquisition, production/archive
+access, source/test/CI changes, fixes or full-suite measurement is authorized by this checkpoint.
+Existing real-model gaps, including `phaze-28883`, must remain explicit rather than being inferred
+away from mocked reductions or unavailable artifacts.
+
+The authorized round stops at **`phaze-7h65l`** with its own metrics, errors, unrun ground and
+recommendation. It does not authorize companion/browser/persistence continuation or an automatic
+third round. Recording this decision and completing its review barrier does not launch the hunt;
+dispatch of `phaze-troov` remains the coordinator's next step.
