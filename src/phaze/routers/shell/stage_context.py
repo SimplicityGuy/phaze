@@ -67,6 +67,7 @@ from phaze.services.review import (
     get_proposal_workspace_page,
     get_tagwrite_review_page,
 )
+from phaze.services.review_tagwrite import get_recent_completed_tagwrite_links
 
 
 if TYPE_CHECKING:
@@ -252,6 +253,7 @@ async def build_changes_review_context(request: Request, session: AsyncSession) 
         "changes_selected": selected,
         "changes_tag_rows": tag_rows,
         "changes_tag_partial": tag_page.partial,
+        "tagwrite_history_links": await get_recent_completed_tagwrite_links(session),
         "changes_urls": {one: url_for(status=one, page=1) for one in ("all", "needs_review", "approved", "blocked", "rejected")},
         "changes_prev_url": url_for(page=proposals.pagination.page - 1) if proposals.pagination.has_prev else None,
         "changes_next_url": url_for(page=proposals.pagination.page + 1) if proposals.pagination.has_next else None,

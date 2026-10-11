@@ -20,11 +20,13 @@ Proves REVIEW-05 over the EXISTING apply endpoints (no new audit/undo logic, D-0
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
 import re
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 from sqlalchemy import func, select
 
@@ -39,6 +41,7 @@ from phaze.routers.tags import (
     _get_tracklist_for_file,
     _tag_review_payload,
 )
+from phaze.services.review_tagwrite import get_recent_completed_tagwrite_links
 from phaze.services.tag_proposal import compute_proposed_tags
 from tests._queue_fakes import install_fake_queues
 
@@ -96,6 +99,89 @@ async def _executed_file(
 async def _tag_log_count(session: AsyncSession, file_id: uuid.UUID) -> int:
     stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id)
     return (await session.execute(stmt)).scalar_one()
+
+
+@pytest.mark.parametrize("populated", [False, True])
+async def test_review_and_audit_link_completed_tags_to_existing_file_history(client: AsyncClient, session: AsyncSession, populated: bool) -> None:
+    """A completed write leaves the decision queue but stays discoverable in both workspace shapes."""
+    file = await _executed_file(session, filename="history-example.mp3")
+    if populated:
+        session.add(TagWriteLog(file_id=file.id, before_tags={}, after_tags={"artist": "Example"}, source="manual", status="completed"))
+        await session.commit()
+    for path in ("/s/rename", "/s/rename?status=approved", "/s/audit"):
+        for headers in ({}, {"HX-Request": "true"}, {"HX-Request": "true", "HX-History-Restore-Request": "true"}):
+            response = await client.get(path, headers=headers)
+            assert response.status_code == 200
+            soup = BeautifulSoup(response.text, "html.parser")
+            panel = soup.select_one("[data-tagwrite-history-links]")
+            assert panel is not None
+            assert "ten most recent" in panel.get_text()
+            assert "For older events" in panel.get_text()
+            links = panel.select(f'a[href="/files/{file.id}#history"]')
+            assert len(links) == int(populated)
+            assert "Completed tag writes remain available in Audit" not in response.text
+            if not populated:
+                assert "No completed tag writes or undo actions have been recorded" in panel.get_text()
+            if "/s/audit" in path:
+                assert "Tag writes and undo actions do not appear in this execution table" in response.text
+            if headers == {"HX-Request": "true"}:
+                assert "<html" not in response.text
+            else:
+                assert "<html" in response.text
+    if populated:
+        record = await client.get(f"/files/{file.id}")
+        history = BeautifulSoup(record.text, "html.parser").select_one("details#history")
+        assert history is not None
+        assert "tag write" in history.get_text() and "completed" in history.get_text()
+        assert await _tag_log_count(session, file.id) == 1, "navigation must not write or duplicate audit records"
+
+
+async def test_recent_completed_tag_links_are_bounded_ordered_and_include_undo(session: AsyncSession) -> None:
+    file = await _executed_file(session)
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(12):
+        session.add(
+            TagWriteLog(
+                id=uuid.UUID(int=index + 1),
+                file_id=file.id,
+                before_tags={},
+                after_tags={},
+                source="undo" if index == 11 else "manual",
+                status="completed",
+                written_at=when + timedelta(seconds=index),
+            )
+        )
+    session.add(TagWriteLog(file_id=file.id, before_tags={}, after_tags={}, source="manual", status="failed", written_at=when + timedelta(days=1)))
+    await session.commit()
+    result = await get_recent_completed_tagwrite_links(session)
+    assert not result.degraded
+    assert len(result.rows) == 10
+    assert result.rows[0]["source"] == "undo"
+    assert [row["written_at"] for row in result.rows] == [when + timedelta(seconds=index) for index in range(11, 1, -1)]
+
+
+async def test_unavailable_recent_tag_links_do_not_claim_no_history(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from phaze.services.review_tagwrite import TagwriteHistoryLinks
+
+    async def unavailable(session: AsyncSession) -> TagwriteHistoryLinks:
+        return TagwriteHistoryLinks([], True)
+
+    monkeypatch.setattr("phaze.routers.execution.get_recent_completed_tagwrite_links", unavailable)
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    assert "Recent tag-write links could not be loaded" in response.text
+    assert "No completed tag writes or undo actions have been recorded" not in response.text
+
+
+async def test_recent_tag_link_read_failure_is_degraded_and_keeps_session_usable(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def failed_read(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic history read failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session, "execute", failed_read)
+        result = await get_recent_completed_tagwrite_links(session)
+    assert result.degraded and not result.rows
+    assert (await session.execute(select(func.count()).select_from(TagWriteLog))).scalar_one() == 0
 
 
 async def _review_token(session: AsyncSession, file_id: uuid.UUID) -> str:
