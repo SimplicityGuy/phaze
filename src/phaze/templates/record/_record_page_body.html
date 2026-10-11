@@ -3,6 +3,9 @@
    stage_partial) so a /files/<id> deep link keeps the rail, header (⌘K, status strip, theme toggle),
    toast container and hx guard release the shell already owns. It used to be a standalone document
    (record_page.html) with its own bare header and none of that. #}
+{# Full records (including the 404) share the shell's stats poll. Mount its existing targets outside
+   the snapshot record; drawers inherit their parent workspace's targets and never include this body. #}
+{% with workspace_has_cloud_cards = false %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endwith %}
 <div id="record-main" class="mx-auto max-w-7xl py-6">
     {% if file %}
         {# phaze-x1qr3.8: the full page's two-column layout. `lg:` is Tailwind's 1024px breakpoint,
