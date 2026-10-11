@@ -70,6 +70,13 @@
    re-render this subtree, so an in-progress inline edit is never clobbered).
 #}
 {% import "ui/primitives.html" as ui %}
+{# Segments stay plain text until this autoescaped macro. Removed/added changes also have a
+   weight/decorative channel, so the diff remains legible without colour. #}
+{% macro diff_value(value, segments, removed=false) -%}
+<code title="{{ value }}" data-diff-side="{{ 'before' if removed else 'after' }}"
+      class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono {{ 'bg-rose-50 text-danger line-through dark:bg-rose-500/10' if removed else 'bg-emerald-50 text-ok dark:bg-emerald-500/10' }}">{%- for segment in segments -%}{%- if segment.changed -%}{% if removed %}<del class="font-semibold decoration-2" data-diff-changed>{{ segment.text }}</del>{% else %}<ins class="font-semibold underline decoration-2" data-diff-changed>{{ segment.text }}</ins>{% endif %}{%- else -%}{{ segment.text }}{%- endif -%}{%- endfor -%}</code>
+{%- endmacro %}
+{% set _segments = before | changed_segments(after) %}
 {% set _primary = ui.btn('primary', 'sm') %}
 {% set _sec = ui.btn('secondary', 'sm') %}
 {% set _tag_approval = row_id_prefix == 'tagwrite-row' %}
@@ -156,16 +163,16 @@
         </div>
     </div>
     {% endif %}
-    {% if confidence is defined %}
-    <p class="mt-2 text-xs text-muted "><span class="font-semibold">Confidence:</span> {{ ((confidence * 100) | round | int) ~ '%' if confidence is not none else 'Unavailable' }}</p>
-    {% endif %}
+    <p class="mt-2 flex items-center gap-2 text-xs text-muted"><span><span class="font-semibold">Confidence:</span> {% if confidence is defined and confidence is not none %}{% set _confidence_percent = (confidence * 100) | round | int %}{{ _confidence_percent }}%{% else %}Unavailable{% endif %}</span>
+        {% if confidence is defined and confidence is not none %}<meter min="0" max="100" value="{{ _confidence_percent }}" aria-label="Confidence" aria-valuetext="{{ _confidence_percent }}% confidence" class="h-3 w-24 shrink-0 dark:[color-scheme:dark]">{{ _confidence_percent }}%</meter>{% endif %}
+    </p>
     {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ diff_label }}</p>{% endif %}
     <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-3 sm:items-center">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
-        <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-danger line-through dark:bg-rose-500/10 ">{{ before }}</code>
+        {{ diff_value(before, _segments.before, removed=true) }}
         <span class="text-muted " aria-hidden="true">&rarr;</span>
         {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
-        <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-ok dark:bg-emerald-500/10 ">{{ after }}</code></template>
+        <template x-if="!editing">{{ diff_value(after, _segments.after) }}</template>
         {% if show_edit|default(true) %}
         <template x-if="editing">
             <input x-ref="edit" x-model="val" name="proposed"
@@ -174,12 +181,13 @@
         {% endif %}
     </div>
     {% if secondary_label is defined and secondary_label %}
+    {% set _secondary_segments = secondary_before | changed_segments(secondary_after) %}
     <div class="mt-2 border-t border-gray-200 pt-2 dark:border-phaze-border">
         <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ secondary_label }}</p>
         <div class="grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
-            <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-danger line-through dark:bg-rose-500/10 ">{{ secondary_before }}</code>
+            {{ diff_value(secondary_before, _secondary_segments.before, removed=true) }}
             <span class="text-muted ">&rarr;</span>
-            <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-ok dark:bg-emerald-500/10 ">{{ secondary_after }}</code>
+            {{ diff_value(secondary_after, _secondary_segments.after) }}
         </div>
     </div>
     {% endif %}
