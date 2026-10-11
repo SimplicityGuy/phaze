@@ -85,7 +85,7 @@
 
         {# Availability (word-labelled, never hue-only). #}
         <p class="text-xs {% if lane.available %}text-muted {% else %}text-warn {% endif %}">
-            {% if lane.available %}Available — accepting work.{% else %}offline — no live queue data on this poll.{% endif %}
+            {% if lane.available %}Connected — dispatch also requires a free slot and an open admission gate.{% else %}Connection unavailable — new work waits for connectivity.{% endif %}
         </p>
 
         {# D-06 kueue-only admission: quota-waiting + Inadmissible. NO n/a rows on local/compute.

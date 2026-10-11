@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -132,6 +133,27 @@ async def _seed_analysis_failed(session: AsyncSession, n: int, *, stalled: bool 
     session.add_all([AnalysisResult(id=uuid.uuid4(), file_id=f.id, failed_at=datetime.now(UTC), error_message=error_message) for f in files])
     await session.commit()
     return files
+
+
+async def _publish_analysis_attention(session: AsyncSession, *, lanes: list[dict[str, Any]] | None = None) -> None:
+    """Publish the shared off-request model for pre-lifespan tests, using real failure readers."""
+    from phaze.services.attention import derive_attention_items
+    from phaze.services.pipeline import get_analysis_failed_count, get_analysis_stalled_count
+    from phaze.services.pipeline.attention_snapshot import set_attention_snapshot
+
+    failed = await get_analysis_failed_count(session)
+    stalled = await get_analysis_stalled_count(session)
+    inputs = SimpleNamespace(
+        lanes=lanes or [],
+        stalled_analyses=stalled,
+        inadmissible_count=0,
+        awaiting_cloud_count=0,
+        awaiting_hold_reason=None,
+        queued_behind_quota_count=0,
+        stage_paused={"metadata": False, "analyze": False},
+        active_fileservers=1,
+    )
+    set_attention_snapshot(derive_attention_items({}, {}, (0, failed, 0), inputs), known=True)
 
 
 async def _is_awaiting_cloud(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -651,6 +673,7 @@ __all__ = [
     "_persist_failed_with_duration",
     "_persist_files_with_duration",
     "_process_file_ledger_rows",
+    "_publish_analysis_attention",
     "_recovery_result",
     "_reset_saq_jobs_minimal",
     "_run_stage_cloud_window",

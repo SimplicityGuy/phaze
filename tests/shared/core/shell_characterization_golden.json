@@ -677,16 +677,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -2439,16 +2429,6 @@
       ]
     ],
     "GET /s/summary": [
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
       [
         "a",
         "",

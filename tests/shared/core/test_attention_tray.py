@@ -7,11 +7,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+from bs4 import BeautifulSoup
 import pytest
 
 from phaze.enums.stage import Stage
 from phaze.routers.shell.summary import SummaryOverviewInputs, _build_attention_items
-from phaze.services.attention import derive_attention_items
+from phaze.services.attention import analysis_attention_known, derive_attention_items
 from phaze.services.pipeline import attention_snapshot as snapshot
 from phaze.services.pipeline.buckets import _empty_buckets, _safe_bucket_counts, _safe_orphan_split
 from phaze.services.pipeline.common import _safe_count, capture_read_degradations, mark_read_degraded
@@ -96,6 +97,8 @@ async def test_summary_exposes_read_degradation_without_changing_attention(monke
     context = await summary._build_summary_context(None, MagicMock())
     assert context["summary"]["attention"] == [{"title": "Existing attention"}]
     assert context["summary"]["attention_known"] is False
+    assert context["summary"]["recommended"]["title"] == "Inspect unavailable status"
+    assert "caught up" not in context["summary"]["recommended"]["title"]
 
 
 def test_shared_attention_and_summary_wrapper_have_identical_items_and_hrefs() -> None:
@@ -104,8 +107,8 @@ def test_shared_attention_and_summary_wrapper_have_identical_items_and_hrefs() -
     actual = derive_attention_items(bucket, bucket, (2, 2, 3), inputs)
     assert actual == _build_attention_items(bucket, bucket, (2, 2, 3), inputs)
     assert [item["href"] for item in actual] == [item["href"] for item in _build_attention_items(bucket, bucket, (2, 2, 3), inputs)]
-    assert len(actual) == 9
-    assert [item["priority"] for item in actual] == [10, 11, 20, 30, 40, 41, 45, 46, 50]
+    assert len(actual) == 7
+    assert [item["priority"] for item in actual] == [10, 11, 20, 30, 45, 46, 50]
     assert all(item["tone"] != "danger" for item in actual if int(item["priority"]) >= 30)
     # Routine queued work is not a failure or incident. Empty stage controls yield no actionable item.
     neutral = replace(
@@ -117,6 +120,70 @@ def test_shared_attention_and_summary_wrapper_have_identical_items_and_hrefs() -
         stage_paused={"metadata": False, "analyze": False},
     )
     assert derive_attention_items(bucket, bucket, (0, 0, 0), neutral) == []
+
+
+@pytest.mark.parametrize(
+    "reason", ["held — all lanes at capacity (4/4 slots busy)", "queued — 2 free slots, dispatching on next drain tick (~5 min)"]
+)
+def test_full_capacity_and_quota_wait_are_neutral(reason: str) -> None:
+    inputs = replace(
+        _inputs(),
+        active_fileservers=1,
+        inadmissible_count=0,
+        awaiting_hold_reason=reason,
+        stage_paused={"metadata": False, "analyze": False},
+        lanes=[{"id": "cloud-a", "kind": "kueue", "available": True, "in_flight": 4, "cap": 4}],
+    )
+    assert derive_attention_items({}, {}, (0, 0, 0), inputs) == []
+
+
+def test_each_independent_incident_survives_simultaneous_failures() -> None:
+    inputs = replace(
+        _inputs(),
+        active_fileservers=1,
+        stage_paused={"metadata": False, "analyze": False},
+        lanes=[
+            {"id": "local", "kind": "local", "available": True, "stuck": 3, "in_flight": 100, "cap": 4},
+            {"id": "cloud-a", "kind": "kueue", "available": False, "breaker_held": True, "in_flight": 5, "cap": 4},
+        ],
+    )
+    items = derive_attention_items({}, {}, (2, 8, 4), inputs)
+    by_id = {item["id"]: item for item in items}
+    assert len(by_id) == len(items) == 8
+    assert set(by_id) == {
+        "metadata-failed",
+        "analysis-failed",
+        "pipeline-orphans",
+        "lane:local:stuck",
+        "lane:cloud-a:held",
+        "lane:cloud-a:unavailable",
+        "lane:cloud-a:over-capacity",
+        "cloud-inadmissible",
+    }
+    assert by_id["analysis-failed"]["count"] == 8
+    assert by_id["analysis-failed"]["href"] == "/s/files?stage=analyze&bucket=failed&scope=media"
+    assert by_id["lane:local:stuck"]["count"] == 3
+    assert by_id["lane:cloud-a:over-capacity"]["count"] == 1
+    assert by_id["lane:cloud-a:unavailable"]["tone"] == "attention"
+    assert by_id["lane:cloud-a:held"]["tone"] == "danger"
+    assert all(item["href"] == "/s/analyze?lane=cloud-a" for key, item in by_id.items() if key.startswith("lane:cloud-a:"))
+
+
+@pytest.mark.parametrize(
+    "lanes, reason",
+    [
+        ([], None),
+        ([{"id": "local", "kind": "local", "available": True, "stuck": None}], None),
+        ([{"id": "local", "kind": "local", "available": True, "stuck": 0}], "held"),
+    ],
+)
+def test_unmeasured_lane_or_routing_read_invalidates_snapshot(lanes: list[dict], reason: str | None) -> None:
+    assert analysis_attention_known(lanes, 1 if reason else 0, reason) is False
+    assert analysis_attention_known([{"id": "local", "kind": "local", "available": True, "stuck": 0}], 0, None) is True
+    assert analysis_attention_known([{"id": "cloud-a", "kind": "kueue", "available": False, "in_flight": 0}], 0, None) is True
+    missing_local_queue = [{"id": "local", "kind": "local", "available": True, "stuck": None}]
+    assert analysis_attention_known(missing_local_queue, 0, None, active_fileservers=0) is True
+    assert analysis_attention_known(missing_local_queue, 0, None, active_fileservers=1) is False
 
 
 def test_snapshot_unknown_fresh_stale_and_failed_refresh_preserve_last_good(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,6 +203,33 @@ def test_snapshot_unknown_fresh_stale_and_failed_refresh_preserve_last_good(monk
     assert snapshot.get_attention_snapshot() == ([{"title": "Cloud quota wait", "href": "/s/agents"}], False)
     snapshot.set_attention_snapshot([], known=True)
     assert snapshot.get_attention_counts() == {"attentionCount": 0, "attentionKnown": 1}
+
+
+async def test_analyze_and_tray_render_the_same_incidents_and_unknown_state(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = replace(
+        _inputs(),
+        active_fileservers=1,
+        stage_paused={"metadata": False, "analyze": False},
+        lanes=[{"id": "local", "kind": "local", "available": True, "stuck": 3}],
+    )
+    items = derive_attention_items({}, {}, (0, 8, 4), inputs)
+    clock = [100.0]
+    monkeypatch.setattr(snapshot.time, "monotonic", lambda: clock[0])
+    snapshot.set_attention_snapshot(items, known=True)
+    tray = BeautifulSoup((await client.get("/shell/attention", headers={"HX-Request": "true"})).text, "html.parser")
+    poll = BeautifulSoup((await client.get("/pipeline/stats")).text, "html.parser")
+    card = poll.select_one("#analysis-health-card")
+    assert card is not None
+    expected = [(item["id"], item["tone"]) for item in items]
+    assert [(row["data-incident-id"], row["data-incident-tone"]) for row in tray.select("[data-incident-id]")] == expected
+    assert [(row["data-incident-id"], row["data-incident-tone"]) for row in card.select("[data-incident-id]")] == expected
+    assert len(card.select('[data-incident-id="analysis-failed"]')) == 1
+    assert card.select_one('[data-incident-id="analysis-failed"] a')["href"] == "/s/files?stage=analyze&bucket=failed&scope=media"
+    clock[0] += 15.001
+    stale = (await client.get("/pipeline/stats")).text
+    assert "Incident status unavailable" in stale
+    assert 'data-incident-id="analysis-failed"' not in stale
+    assert "No actionable analysis exceptions" not in stale
 
 
 @pytest.mark.parametrize("known", [False, True])

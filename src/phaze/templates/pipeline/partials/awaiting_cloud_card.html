@@ -1,2 +1,2 @@
 {% import "ui/primitives.html" as ui %}
-{{ ui.metric("Awaiting route", awaiting_cloud_count, "Awaiting cloud · " ~ awaiting_hold_reason, "attention" if awaiting_cloud_count else "neutral", "awaiting-cloud-card", oob | default(false)) }}
+{{ ui.metric("Awaiting route", awaiting_cloud_count, "Awaiting cloud · " ~ awaiting_hold_reason, "neutral", "awaiting-cloud-card", oob | default(false)) }}

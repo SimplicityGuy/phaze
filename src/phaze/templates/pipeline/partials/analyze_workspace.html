@@ -33,9 +33,10 @@
            Keep the explanation beside the disabled action, outside its response sink. #}
         {# phaze-gmh3f: the shared alert (ui.actionable_alert) -- the same Jura heading + tone icon Discover and Summary wear
            for this same condition. The wrapper owns visibility; the alert owns the look. #}
-        <div x-show="$store.pipeline.analyzeOrphan > 0" x-cloak>
-            {% set orphan_message %}<span x-text="formatCount($store.pipeline.analyzeOrphan)"></span> file(s) awaiting recovery. Recover re-enqueues lost scheduled work across all pipeline stages.{% endset %}
-            {% call ui.actionable_alert('Orphaned analysis work', orphan_message, 'attention', 'analyze-recovery') %}
+        <div x-show="$store.pipeline.analyzeOrphan + $store.pipeline.metadataOrphan > 0" x-cloak>
+            <section id="analyze-recovery" class="rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+                <h2 class="text-sm font-semibold">Orphan recovery controls</h2>
+                <p class="mt-1 text-xs text-muted">Recover re-enqueues lost scheduled work across all pipeline stages.</p>
                 <span class="inline-flex flex-wrap items-center gap-2">
                     <button type="button" hx-post="/pipeline/recover" hx-target="#analyze-recover-response" hx-swap="innerHTML"
                             hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
@@ -44,9 +45,9 @@
                             class="{{ _btn }}">Recover orphaned work</button>
                     <span id="analyze-recover-spinner" class="htmx-indicator text-xs">Recovering…</span>
                 </span>
-                <span id="analyze-recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="basis-full text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
+                <span id="analyze-recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="basis-full text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle, then review and confirm recovery across all pipeline stages; nothing is queued by this disabled control.</span>
                 <div id="analyze-recover-response" class="basis-full text-sm empty:hidden" aria-live="polite"></div>
-            {% endcall %}
+            </section>
         </div>
         {# The waiting list is loaded on demand (first open) and never by the 5s poll, so a backlog of
            thousands costs nothing until the operator asks to see it. It lives OUTSIDE #analyze-queue so
@@ -75,7 +76,7 @@
             <span class="whitespace-nowrap font-medium text-info ">Running</span>
             <span aria-hidden="true" class="text-info">→</span>
             <span class="whitespace-nowrap font-medium text-ok ">Completed</span>
-            <span class="ml-auto whitespace-nowrap text-warn ">Awaiting route branches until a lane is available</span>
+            <span class="ml-auto whitespace-nowrap text-muted">Awaiting route waits for a connected lane with a free slot</span>
         </div>
         {% include "pipeline/partials/analysis_failed_card.html" %}
     </div>

@@ -49,12 +49,20 @@ def test_the_alert_heading_is_the_jura_eyebrow_with_a_tone_icon() -> None:
 
 @pytest.mark.parametrize(
     "template",
-    ["pipeline/partials/discover_workspace.html", "pipeline/partials/analyze_workspace.html"],
+    ["pipeline/partials/discover_workspace.html"],
 )
 def test_orphaned_work_alerts_render_through_the_shared_alert(template: str) -> None:
     source = _template(template)
 
     assert "ui.actionable_alert('Orphaned" in source
+
+
+def test_analyze_recovery_controls_do_not_repeat_the_shared_orphan_incident() -> None:
+    source = _template("pipeline/partials/analyze_workspace.html")
+    assert 'id="analyze-recovery"' in source
+    assert "Orphan recovery controls" in source
+    assert "ui.actionable_alert('Orphaned" not in source
+    assert 'hx-post="/pipeline/recover"' in source
 
 
 def test_summary_alert_items_wear_the_shared_alert_heading() -> None:

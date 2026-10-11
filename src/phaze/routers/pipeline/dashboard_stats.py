@@ -49,7 +49,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
     stage_orphan_counts_known,
 )
-from phaze.services.pipeline.attention_snapshot import get_attention_counts
+from phaze.services.pipeline.attention_snapshot import get_attention_counts, get_attention_snapshot
 from phaze.services.pipeline.review_counts import get_cached_review_counts
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.stage_status import MISSING_BUCKET
@@ -352,6 +352,7 @@ def _shared_stats_context(
     that must agree between them lives here.
     """
     settings = cast("ControlSettings", get_settings())
+    incidents, incidents_known = get_attention_snapshot()
     # phaze-m1drf.1 acceptance 3: publish the waiting-room depths the operator otherwise
     # counts in psql. POLL-DRIVEN by construction -- this function runs only when the admin
     # UI asks -- so these series go stale with no tab open. Dashboard material, never alert
@@ -377,6 +378,8 @@ def _shared_stats_context(
         "settings_batch_size": settings.llm_batch_size,
         "analysis_failed_count": analysis_failed_count,
         "analysis_stalled_count": analysis_stalled_count,
+        "analysis_incidents": [item for item in incidents if item.get("scope") in {"analyze", "pipeline"}] if incidents_known else [],
+        "analysis_incidents_known": incidents_known,
         "awaiting_cloud_count": awaiting_cloud_count,
         "awaiting_hold_reason": awaiting_hold_reason,
         "pushing_count": pushing_count,

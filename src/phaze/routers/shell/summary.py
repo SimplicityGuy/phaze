@@ -16,7 +16,7 @@ name so ordinary importers are unaffected.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
@@ -24,8 +24,8 @@ from sqlalchemy import func, select
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
-from phaze.services.attention import derive_attention_items
-from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
+from phaze.services.attention import analysis_attention_known, derive_attention_items
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count, get_backend_lane_snapshot
 from phaze.services.pipeline import (
     _read_in_own_session,
     _stats_fanout,
@@ -124,6 +124,7 @@ class SummaryOverviewInputs:
     analysis_live: int | None
     analyses_today: int | None
     analyses_lifetime: int | None
+    lanes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _stage_ready_to_start_work(bucket: dict[str, int | None], paused: bool) -> bool:
@@ -232,10 +233,15 @@ def _build_attention_items(
 
 
 def _recommended_when_attention_or_empty(attention: list[dict[str, str | int]], total_files: int) -> dict[str, str] | None:
-    """The highest-priority attention item, or the empty-collection prompt -- else ``None``."""
+    """Point to the sole incident list, or offer the empty-collection prompt -- else ``None``."""
     if attention:
-        first = attention[0]
-        return {"title": first["title"], "detail": first["detail"], "href": first["href"], "action": first["action"], "tone": first["tone"]}  # type: ignore[dict-item]
+        return {
+            "title": "Review pipeline incidents",
+            "detail": "Inspect the causes and recovery actions in Needs Attention below.",
+            "href": "#needs-attention-title",
+            "action": "Review incidents",
+            "tone": "attention",
+        }
     if total_files == 0:
         return {
             "title": "Discover the collection",
@@ -372,8 +378,6 @@ def _derive_summary_overview(stage_progress: dict[str, dict[str, int | None]], i
     recommended = _derive_recommended_action(
         attention, total_files, stage_progress, inputs.proposal_pending, inputs.proposal_approved, inputs.stage_paused
     )
-    metadata_failed, analyze_failed, orphan_total = failures
-
     return {
         "total_files": total_files,
         "resolved_enrichment": inputs.enriched_count,
@@ -389,7 +393,7 @@ def _derive_summary_overview(stage_progress: dict[str, dict[str, int | None]], i
         },
         "is_empty": total_files == 0,
         "is_partially_configured": inputs.active_fileservers == 0,
-        "is_degraded": bool(metadata_failed or analyze_failed or orphan_total or inputs.inadmissible_count or inputs.awaiting_cloud_count),
+        "is_degraded": bool(attention),
     }
 
 
@@ -444,6 +448,14 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
     with capture_read_degradations() as failures:
         context = await _read_summary_context(app_state, session)
     context["summary"]["attention_known"] = context["summary"]["attention_known"] and not failures
+    if not context["summary"]["attention_known"]:
+        context["summary"]["recommended"] = {
+            "title": "Inspect unavailable status",
+            "detail": "A pipeline measurement is unavailable. Inspect current sources before declaring the pipeline caught up.",
+            "href": "#needs-attention-title",
+            "action": "Inspect status",
+            "tone": "neutral",
+        }
     return context
 
 
@@ -499,6 +511,9 @@ async def _read_summary_context(app_state: Any, session: AsyncSession) -> dict[s
         ),
     )
     awaiting_hold_reason = await _read_in_own_session(fanout, derive_cloud_hold_reason, "held") if awaiting_cloud_count else None
+    lanes = await _read_in_own_session(
+        fanout, lambda own_session: get_backend_lane_snapshot(own_session, app_state), cast("list[dict[str, Any]]", [])
+    )
     inputs = SummaryOverviewInputs(
         proposal_pending=proposal_stats.pending,
         proposal_approved=proposal_stats.approved,
@@ -514,11 +529,13 @@ async def _read_summary_context(app_state: Any, session: AsyncSession) -> dict[s
         analysis_live=analysis_live,
         analyses_today=analysis_activity["today"],
         analyses_lifetime=analysis_activity["lifetime"],
+        lanes=lanes,
     )
     overview = _derive_summary_overview(stage_progress, inputs)
     overview["attention_known"] = (
         aggregates["active_fileservers"] is not None
         and all(bool(stage_progress[stage].get("available", 1)) for stage in ("metadata", "analyze"))
         and stage_orphan_counts_known()
+        and analysis_attention_known(lanes, awaiting_cloud_count, awaiting_hold_reason, aggregates["active_fileservers"])
     )
     return {"summary": overview}
