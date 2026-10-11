@@ -41,6 +41,7 @@ from phaze.routers.tags import (
     _tag_review_payload,
     bulk_write_no_discrepancies,
 )
+from phaze.services.selected_tag_sources import SelectedTagSource
 from phaze.services.tag_proposal import compute_proposed_tags
 from tests._queue_fakes import install_fake_queues
 
@@ -204,6 +205,44 @@ async def test_write_tags_rejects_metadata_changed_after_review(client: AsyncCli
 
     assert response.status_code == 409
     assert not router.captures
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["metadata", "binding"])
+@pytest.mark.parametrize("presentation", ["api", "non_htmx", "wrong_target", "history_restore", "tag_control"])
+async def test_stale_tag_feedback_keeps_status_and_api_contract(client: AsyncClient, session: AsyncSession, source: str, presentation: str) -> None:
+    file_record, metadata = await _create_executed_file(session, artist="Reviewed Artist")
+    token = await _review_token(session, file_record.id)
+    metadata.album = "Enriched Later"
+    await session.commit()
+    _controller_queue, router = install_fake_queues(client)
+    headers = {}
+    if presentation != "api":
+        headers = {"HX-Request": "false" if presentation == "non_htmx" else "true", "HX-Target": f"tagwrite-row-{file_record.id}"}
+    if presentation == "wrong_target":
+        headers["HX-Target"] = "changes-bulk-result"
+    if presentation == "history_restore":
+        headers["HX-History-Restore-Request"] = "true"
+    with patch("phaze.routers.tags._get_tracklist_for_file", new_callable=AsyncMock) as tracklist:
+        tracklist.return_value = SelectedTagSource(file_record.id, {}, (), None, eligible=False) if source == "binding" else None
+        response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": token}, headers=headers)
+
+    assert response.status_code == 409
+    assert response.headers["Cache-Control"] == "no-store"
+    assert set(response.headers["Vary"].split(", ")) == {"HX-Request", "HX-History-Restore-Request", "HX-Target"}
+    assert not router.captures
+    if presentation == "tag_control":
+        assert "text/html" in response.headers["content-type"]
+        assert response.headers["HX-Retarget"] == f"#tagwrite-feedback-{file_record.id}"
+        assert response.headers["HX-Reswap"] == "innerHTML"
+        assert 'role="alert"' in response.text
+        assert "Refresh review evidence" in response.text
+        assert "No tag write was queued" in response.text
+        assert "review_token" not in response.text, "a refusal must not silently replace the reviewed token"
+    else:
+        assert "application/json" in response.headers["content-type"]
+        assert "detail" in response.json()
+        assert "HX-Retarget" not in response.headers
 
 
 @pytest.mark.asyncio

@@ -72,9 +72,15 @@
 {% import "ui/primitives.html" as ui %}
 {% set _primary = ui.btn('primary', 'sm') %}
 {% set _sec = ui.btn('secondary', 'sm') %}
+{% set _tag_approval = row_id_prefix == 'tagwrite-row' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
-     x-data='{ editing:false, val:{{ after|tojson }} }'>
+     x-data='{ editing:false, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
+     {% if _tag_approval %}
+     @htmx:response-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     @htmx:send-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     @htmx:timeout="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     {% endif %}>
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ file }}">{{ file }}{% if profile is defined and profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(profile, height_class='h-2.5') }}</span>{% endif %}</div>
         {% if row_state and row_state != 'pending' %}
@@ -114,9 +120,14 @@
                caller-supplied like every other row field here (see the context contract at top);
                callers that don't pass one (the Tag facet, whose approve_url targets an unrelated
                /tags/{id}/write route) get an empty token, which the route treats as "no guard". #}
-            {% if show_approve|default(true) %}<button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
+            {% if show_approve|default(true) %}
+            {% if _tag_approval %}<fieldset :disabled="tagApprovalStale" class="border-0 p-0">{% endif %}
+            <button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
+                    {% if _tag_approval %}data-tag-approve hx-request='{"timeout":15000}'{% endif %}
                     hx-vals='{% if review_token is defined and review_token %}{{ {"review_token": review_token} | tojson }}{% else %}{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}{% endif %}'
-                    hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>{% endif %}
+                    hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>
+            {% if _tag_approval %}</fieldset>{% endif %}
+            {% endif %}
             {% if show_edit|default(true) %}
             <button type="button" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
             {% endif %}
@@ -136,6 +147,15 @@
         {% endif %}
         {% endif %}
     </div>
+    {% if _tag_approval %}
+    {# Refusals replace only this local feedback, leaving the reviewed token, sibling edits and selections intact. #}
+    <div id="tagwrite-feedback-{{ pid }}" data-conflict-swap class="mt-2">
+        <div role="alert" x-show="tagApprovalError" x-cloak class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+            <p>Tag approval could not be confirmed. Refresh review evidence and check the current write status before approving again.</p>
+            <button type="button" @click="window.location.reload()" class="{{ ui.btn('secondary', 'sm', 'mt-2') }}">Refresh review evidence</button>
+        </div>
+    </div>
+    {% endif %}
     {% if confidence is defined %}
     <p class="mt-2 text-xs text-muted "><span class="font-semibold">Confidence:</span> {{ ((confidence * 100) | round | int) ~ '%' if confidence is not none else 'Unavailable' }}</p>
     {% endif %}
