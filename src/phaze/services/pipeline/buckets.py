@@ -17,7 +17,7 @@ import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status
 from phaze.models.file import FileRecord
-from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
+from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES, mark_read_degraded
 from phaze.services.stage_status import (
     MISSING_BUCKET,
     display_status_case,
@@ -85,6 +85,7 @@ async def _safe_orphan_split(session: AsyncSession, stage: Stage, buckets: dict[
         async with session.begin_nested():
             orphaned = int((await session.execute(stmt)).scalar() or 0)
     except Exception:
+        mark_read_degraded("stage_orphan_split")
         logger.warning("stage_orphan_split_degraded", stage=stage.value, agent_id=agent_id, exc_info=True)
         return
     # Clamp: the bucket read and this count are separate statements, so a concurrent enqueue between
@@ -199,6 +200,7 @@ async def _safe_bucket_snapshot(session: AsyncSession, stage: Stage) -> StageBuc
                 if status_label in out:
                     out[status_label] = int(n)
     except Exception:
+        mark_read_degraded("stage_bucket")
         logger.warning("stage_bucket_degraded", stage=stage.value, exc_info=True)
         return StageBucketSnapshot(counts=out, available=False)
     # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight (own SAVEPOINT, own zero degrade). Skipped on

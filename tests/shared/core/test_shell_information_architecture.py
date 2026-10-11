@@ -76,10 +76,16 @@ def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> Non
     assert not any("aria-[current=page]" in one and "amber" in one for one in classes)
 
 
-def test_header_uses_canonical_workers_route_and_read_only_override_warning() -> None:
+def test_header_uses_lazy_attention_tray_and_read_only_override_warning() -> None:
     normal = _render("shell/partials/header.html", force_local=False)
     forced = _render("shell/partials/header.html", force_local=True)
-    assert 'href="/s/agents"' in normal
+    soup = BeautifulSoup(normal, "html.parser")
+    pill = soup.select_one("button#attention-pill")
+    assert isinstance(pill, Tag)
+    assert pill.get("hx-get") == "/shell/attention"
+    assert pill.get("hx-trigger") == "attention:load"
+    assert pill.get("aria-controls") == "attention-tray"
+    assert pill.get("aria-expanded") == "false"
     assert 'href="/admin/agents"' not in normal
     assert 'hx-post="/pipeline/routing/force-local"' not in normal + forced
     assert normal.count('id="routing-override-warning"') == 1

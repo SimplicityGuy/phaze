@@ -390,6 +390,7 @@ async def test_saq_mount_excludes_compute_agents(session: AsyncSession, _db_conn
     # Both off-request refreshers are incidental here and must not open overlapping
     # SAVEPOINT sessions on this test's single shared connection. Their lifecycle is tested separately.
     monkeypatch.setattr(main_module, "_review_refresh_loop", _noop_orphan_loop)
+    monkeypatch.setattr(main_module, "_attention_refresh_loop", lambda _app: _noop_orphan_loop())
 
     # Bind main_module.async_session (the SAQ-mount block's own reference, imported at module
     # load time -- see main.py:16) to a REAL session factory on the same per-test connection the

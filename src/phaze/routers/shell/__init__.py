@@ -88,6 +88,7 @@ from phaze.routers.shell.summary import (
     _get_summary_aggregates,
     _summary_stage_status,
 )
+from phaze.services.pipeline.attention_snapshot import get_attention_snapshot
 from phaze.services.route_control import get_route_control
 from phaze.version import APP_VERSION
 
@@ -225,6 +226,20 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 async def shell_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """GET / -- render the actionable Summary overview as the shell default."""
     return await _render_stage(request, "summary", session)
+
+
+@router.get("/shell/attention", response_class=HTMLResponse)
+async def shell_attention(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Lazy attention tray; direct visits/history restores keep the complete Summary shell."""
+    if not wants_fragment(request):
+        return await _render_stage(request, "summary", session)
+    items, known = get_attention_snapshot()
+    return templates.TemplateResponse(
+        request=request,
+        name="shell/partials/attention_items.html",
+        context={"attention_items": items if known else [], "attention_known": known},
+        headers=DUAL_SHAPE_RESPONSE_HEADERS,
+    )
 
 
 @router.get("/s/operations", include_in_schema=False)

@@ -29,7 +29,7 @@ from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pipeline.buckets import StageBucketSnapshot, _empty_buckets, _safe_bucket_counts, _safe_bucket_snapshot
-from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count
+from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count, mark_read_degraded
 from phaze.services.selected_source_consumers import authoritative_tracklist_clause, explicit_tracklist_clause, selected_discogs_clause
 from phaze.services.stage_status import (
     done_clause,
@@ -142,6 +142,7 @@ async def _read_in_own_session[T](fanout: asyncio.Semaphore, fn: Callable[[Async
         async with fanout, async_session() as s:
             return await fn(s)
     except Exception:
+        mark_read_degraded("source_session")
         logger.warning("stage_progress_acquire_degraded", exc_info=True)
         return default
 
@@ -389,6 +390,7 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
                 out[r.stage] = {"paused": r.paused, "priority": r.priority}
         return out
     except Exception:
+        mark_read_degraded("stage_controls")
         logger.warning("stage_controls_degraded", exc_info=True)
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
 

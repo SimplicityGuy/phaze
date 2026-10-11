@@ -83,6 +83,9 @@ async def test_lifespan_launches_and_cleanly_cancels_orphan_task(monkeypatch: py
         review_task = app.state.review_counts_task
         assert isinstance(review_task, asyncio.Task)
         assert not review_task.done()
+        attention_task = app.state.attention_task
+        assert isinstance(attention_task, asyncio.Task)
+        assert not attention_task.done()
 
     # Shutdown complete: the lifespan must have cancelled the task (before engine.dispose()) ...
     task = app.state.orphan_task
@@ -90,6 +93,8 @@ async def test_lifespan_launches_and_cleanly_cancels_orphan_task(monkeypatch: py
     assert task.cancelled()  # cancelled cleanly, not crashed out of the loop
     assert review_task.done()
     assert review_task.cancelled()
+    assert attention_task.done()
+    assert attention_task.cancelled()
 
     # ... and re-awaiting it must not surface a leaked CancelledError.
     with contextlib.suppress(asyncio.CancelledError):
