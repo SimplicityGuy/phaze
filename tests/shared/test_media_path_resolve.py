@@ -183,3 +183,47 @@ def test_returns_path_unchanged_when_ancestor_directory_cannot_be_resolved(tmp_p
 
     _force_byte_exact_filesystem(monkeypatch)
     assert resolve_media_path(str(missing)) == str(missing)
+
+
+def test_returns_original_path_when_parent_iteration_fails_midstream(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real directory iterator may fail after yielding entries; a partial listing is unusable."""
+    unrelated = tmp_path / "unrelated.mp3"
+    unrelated.write_bytes(b"unchanged")
+    missing = tmp_path / "missing.mp3"
+    original_iterdir = media_path_resolve.Path.iterdir
+    yielded = []
+
+    def interrupted_iterdir(self: Path):
+        assert self == tmp_path
+        for entry in original_iterdir(self):
+            yielded.append(entry)
+            yield entry
+            raise OSError("synthetic directory iteration failure")
+
+    monkeypatch.setattr(media_path_resolve.Path, "iterdir", interrupted_iterdir)
+
+    assert resolve_media_path(str(missing)) == str(missing)
+    assert yielded == [unrelated]
+    assert unrelated.read_bytes() == b"unchanged"
+
+
+def test_returns_original_path_at_unavailable_root_with_bounded_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthetic unavailable root must terminate without relying on a wall-clock timeout."""
+    probes = []
+    reported = "/synthetic-missing.mp3"
+    original_exists = media_path_resolve.Path.exists
+
+    def unavailable(self: Path) -> bool:
+        if str(self) not in {reported, "/"}:
+            return original_exists(self)
+        probes.append(self)
+        assert len(probes) <= 8, "ancestor traversal did not terminate at the filesystem root"
+        return False
+
+    def unexpected_listing(self: Path):
+        raise AssertionError("an unavailable root cannot provide a directory listing")
+
+    monkeypatch.setattr(media_path_resolve.Path, "exists", unavailable)
+    monkeypatch.setattr(media_path_resolve.Path, "iterdir", unexpected_listing)
+    assert resolve_media_path(reported) == reported
+    assert [str(probe) for probe in probes] == [reported, "/"]
