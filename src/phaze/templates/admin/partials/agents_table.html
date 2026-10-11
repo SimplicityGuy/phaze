@@ -248,17 +248,21 @@
        once per poll, forever. init()/destroy() on the x-data object is the documented
        Alpine lifecycle hook for exactly this (alpinejs.dev/globals/alpine-data), and is
        public API in the pinned 3.15.12 build — unlike $el._x_cleanups, which is internal. #}
-    <p class="text-xs text-muted mt-2"
+    <p class="text-xs text-muted mt-2" data-refresh-age="agents" data-refreshed-at="{{ refreshed_at_iso }}"
        x-data="{
            refreshedAt: new Date('{{ refreshed_at_iso }}'),
            now: new Date(),
            ticker: null,
-           get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); },
+           get secondsAgo() {
+               const elapsed = this.now instanceof Date && this.refreshedAt instanceof Date
+                   ? this.now.getTime() - this.refreshedAt.getTime() : NaN;
+               return Number.isFinite(elapsed) ? Math.max(0, Math.floor(elapsed / 1000)) : null;
+           },
            init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
            destroy() { clearInterval(this.ticker); }
        }">
          <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">Worker status refreshed.</span>
-         <span aria-hidden="true">Last refreshed <span x-text="secondsAgo + 's ago'"></span></span>
+         <span aria-hidden="true">Last refreshed <span x-text="secondsAgo === null ? 'at an unknown time' : secondsAgo + 's ago'"></span></span>
     </p>
 
     {# BLOCKER-2 (MANDATORY): UI-SPEC §Error / Failure-Tolerant Refresh — status: approved.

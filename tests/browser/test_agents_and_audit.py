@@ -77,6 +77,63 @@ async def test_completed_tag_history_is_reachable_after_review_and_audit_swaps(
 _AGENTS_SECTION = "#agents-table-section"
 
 
+@pytest.mark.parametrize("surface,viewport,theme", [("agents", "desktop", "light"), ("activity", "phone", "dark")])
+async def test_refresh_age_clamps_clock_skew_without_hiding_unknown_or_stale_times(
+    open_page: Any, seed: Any, tmp_path: Path, surface: str, viewport: str, theme: str
+) -> None:
+    """Exercise the rendered Alpine getter and text, retaining the server stamp for diagnosis."""
+    await seed.agent("agent-alpha", name="Alpha fileserver")
+    page = await open_page(viewport, theme=theme)
+    await open_shell(page, "/s/agents")
+    await settled(page)
+    if surface == "activity":
+        await page.click("#agent-trigger-agent-alpha-details")
+    selector = f'[data-refresh-age="{surface}"]'
+    await page.locator(selector).wait_for(state="visible")
+    stamp = await page.get_attribute(selector, "data-refreshed-at")
+    assert stamp
+    # Evaluate the real component; hold its ticker only during the synchronous edge-case checks.
+    cases = await page.evaluate(
+        """async selector => {
+            const el = document.querySelector(selector);
+            const scope = Alpine.$data(el);
+            clearInterval(scope.ticker);
+            const now = Date.parse('2026-01-01T00:00:00Z');
+            const cases = [];
+            for (const [stamp, expected] of [
+                [new Date(now + 60000), '0s ago'], [new Date(now + 100), '0s ago'],
+                [new Date(now), '0s ago'], [new Date(now - 900), '0s ago'],
+                [new Date(now - 25400), '25s ago'], [new Date(now - 86400000), '86400s ago'],
+                [new Date('invalid'), 'at an unknown time'], [new Date(''), 'at an unknown time'],
+                [null, 'at an unknown time'], [undefined, 'at an unknown time']
+            ]) {
+                scope.now = new Date(now);
+                scope.refreshedAt = stamp;
+                await Alpine.nextTick();
+                cases.push([el.querySelector('[x-text]').innerText.trim(), expected]);
+            }
+            scope.refreshedAt = new Date(el.dataset.refreshedAt);
+            scope.now = new Date();
+            scope.init();
+            await Alpine.nextTick();
+            return cases;
+        }""",
+        selector,
+    )
+    assert all(actual == expected for actual, expected in cases), cases
+    assert await page.get_attribute(selector, "data-refreshed-at") == stamp
+    # The actual five-second poll must replace the clock with a fresh server stamp.
+    await page.wait_for_function(
+        """args => document.querySelector(args[0])?.dataset.refreshedAt !== args[1]""",
+        arg=[selector, stamp],
+        timeout=20_000,
+    )
+    refreshed = await page.locator(f"{selector} [x-text]").inner_text()
+    assert refreshed.strip() in [f"{age}s ago" for age in range(5)], refreshed
+    await page.locator(selector).scroll_into_view_if_needed()
+    await page.screenshot(path=str(tmp_path / f"refresh-{surface}-{viewport}-{theme}.png"))
+
+
 async def test_the_agents_table_refreshes_itself_and_picks_up_a_new_agent(page: Any, seed: Any) -> None:
     """The live-refresh path: a row written while the page is open arrives on the pane's own tick.
 

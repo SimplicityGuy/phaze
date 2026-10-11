@@ -211,16 +211,20 @@
 
     {# D-03 own-tick "Last refreshed Ns ago" countdown (agents_table.html:82-86 idiom). This only advances
        the visible countdown; the 5s server poll is the self-removing tick below. #}
-    <p class="text-xs text-muted "
+    <p class="text-xs text-muted " data-refresh-age="activity" data-refreshed-at="{{ refreshed_at_iso }}"
        x-data="{
            refreshedAt: new Date('{{ refreshed_at_iso }}'),
            now: new Date(),
            ticker: null,
-           get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); },
+           get secondsAgo() {
+               const elapsed = this.now instanceof Date && this.refreshedAt instanceof Date
+                   ? this.now.getTime() - this.refreshedAt.getTime() : NaN;
+               return Number.isFinite(elapsed) ? Math.max(0, Math.floor(elapsed / 1000)) : null;
+           },
            init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
            destroy() { clearInterval(this.ticker); }
        }">
-        Last refreshed <span x-text="secondsAgo + 's ago'"></span>
+        Last refreshed <span x-text="secondsAgo === null ? 'at an unknown time' : secondsAgo + 's ago'"></span>
     </p>
 
     {# D-03 own-tick (CR-02): the 5s self-refresh lives on a DEDICATED child, NOT the body root -- a poll
