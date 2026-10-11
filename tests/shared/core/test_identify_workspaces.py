@@ -745,3 +745,28 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     tbody = tbl[tbl.index("<tbody") :]
     assert f'hx-get="/record/{file_id}"' in tbody
     assert 'data-record-section="tracklist"' in tbody
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 1, 2])
+async def test_tracklist_headline_counts_files_with_stored_tracklists_not_discogs_matches(
+    client: AsyncClient, session: AsyncSession, count: int
+) -> None:
+    """Empty and populated stored tracklists, including zero tracks, are not Discogs links."""
+    from phaze.services.pipeline import get_stage_progress
+
+    for index in range(count):
+        file = await _seed_file(session, original_filename=f"stored-{index}.mp3")
+        await _seed_tracklist(session, file_id=file.id, external_id=f"stored-{index}")
+    # An unlinked stored candidate appears in matching's denominator, not the file headline.
+    await _seed_tracklist(session, external_id="unlinked-candidate")
+    progress = await get_stage_progress(session)
+    assert progress["tracklist"]["done"] == count
+    assert progress["match"] == {"done": 0, "total": count + 1}
+    body = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text
+    soup = BeautifulSoup(body, "html.parser")
+    subcount = soup.find(id="stage-workspace-subcount").find("span")["x-text"]
+    assert "$store.pipeline.tracklistDone" in subcount
+    assert "Files with stored tracklists" in subcount
+    assert "sets matched" not in body
+    assert f"0 / {count + 1} with a Discogs link" in body
