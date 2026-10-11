@@ -208,6 +208,46 @@ async def test_the_page_never_scrolls_sideways_on_a_phone(phone_page: Any) -> No
         assert overflow <= 1, f"/s/{stage} overflows the viewport horizontally by {overflow}px"
 
 
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("viewport", ["phone", "desktop"])
+async def test_rail_queue_counts_follow_known_state_without_overflow(page_at: Any, theme: str, viewport: str) -> None:
+    """Real Alpine bindings must replace stale counts and colour without shifting the drawer off-screen."""
+    async with page_at(viewport=viewport, theme=theme) as page:
+        await _open(page)
+        if viewport == "phone":
+            assert await page.evaluate("window.innerWidth") == 390
+            await page.click("#rail-drawer-trigger")
+        rail = page.locator("#rail-drawer")
+        await rail.wait_for(state="visible")
+        assert await page.evaluate("document.documentElement.classList.contains('dark')") is (theme == "dark")
+        # Freeze this page's existing poll while checking a representative large snapshot. No new poll is added.
+        await page.evaluate("htmx.remove(document.getElementById('pipeline-stats'))")
+        await page.evaluate("""() => Object.assign(Alpine.store('pipeline'), {
+            seedKnown: 1, reviewCountsKnown: 1, reviewPending: 12345, reviewDedupe: 12345,
+            reviewJunk: 12345, reviewCue: 12345, executedDone: 1234, executedTotal: 12000, agentOnline: 1234
+        })""")
+        for route in ("rename", "dedupe", "junk", "cue", "apply", "agents"):
+            count = rail.locator(f'a[data-rail-stage="{route}"] span[x-text]')
+            expected = "1,234 / 12,000" if route == "apply" else "1,234" if route == "agents" else "12,345"
+            await page.wait_for_function(
+                "([selector, text]) => document.querySelector(selector).textContent === text",
+                arg=[f'a[data-rail-stage="{route}"] span[x-text]', expected],
+            )
+            assert await count.get_attribute("title") == await count.get_attribute("aria-label")
+            assert await count.evaluate("node => node.getBoundingClientRect().right <= node.closest('a').getBoundingClientRect().right")
+        assert await page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") <= 1
+        assert await rail.evaluate("node => node.scrollWidth - node.clientWidth") <= 1
+        pending = rail.locator('a[data-rail-stage="rename"] span[x-text]')
+        assert "text-warn" in (await pending.get_attribute("class"))
+        await page.evaluate("Alpine.store('pipeline').reviewCountsKnown = 0")
+        await page.wait_for_function("document.querySelector('a[data-rail-stage=rename] span[x-text]').textContent === '—'")
+        assert "text-warn" not in (await pending.get_attribute("class"))
+        assert await pending.get_attribute("title") == "Review count unavailable"
+        await page.evaluate("Object.assign(Alpine.store('pipeline'), {reviewCountsKnown: 1, reviewPending: 0})")
+        await page.wait_for_function("document.querySelector('a[data-rail-stage=rename] span[x-text]').textContent === '0'")
+        assert "text-warn" not in (await pending.get_attribute("class"))
+
+
 async def test_command_palette_opens_traps_and_returns_focus(page: Any) -> None:
     """⌘K opens the palette, Escape closes it, and focus returns to the trigger."""
     await _goto_shell(page)
