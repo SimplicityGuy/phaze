@@ -122,7 +122,7 @@ def _write_verify_and_rehash(
     decides the status AFTER ``write_tags`` has already called ``audio.save()``, so the status
     describes what the VERIFY concluded, not whether the bytes moved. ``COMPLETED``,
     ``DISCREPANCY`` and ``VERIFY_FAILED`` all follow a landed write (the last one explicitly: "the
-    on-disk write SUCCEEDED but the verify re-read failed"), and ``FAILED`` is indeterminate -- an
+    on-disk write SUCCEEDED but the verify re-read failed"), and ``SAVE_FAILED`` is indeterminate -- an
     exception raised inside or after ``save()`` still leaves a rewritten file. Hashing
     unconditionally sidesteps the whole classification: whatever is on disk now is what we report.
     Measured (phaze-2zeu0): a write that did not change the file's SIZE at all -- 5208 bytes before
