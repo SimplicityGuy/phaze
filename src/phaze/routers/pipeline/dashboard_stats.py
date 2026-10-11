@@ -49,6 +49,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
     stage_orphan_counts_known,
 )
+from phaze.services.pipeline.attention_snapshot import get_attention_counts
 from phaze.services.pipeline.review_counts import get_cached_review_counts
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.stage_status import MISSING_BUCKET
@@ -296,6 +297,7 @@ async def _build_dag_context(
     dag["notYetEnriched"] = max(int(stage["metadata"]["total"] or 0) - int(stage["metadata"]["done"] or 0), 0)
 
     dag.update(get_cached_review_counts())
+    dag.update(get_attention_counts())
     # Route callers pass their already-read attention counts; direct callers use the same services.
     if attention is None:
         attention = {

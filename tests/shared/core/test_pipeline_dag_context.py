@@ -43,6 +43,8 @@ _NEW_STORE_KEYS = (
     "reviewJunk",
     "reviewCue",
     "reviewCountsKnown",
+    "attentionCount",
+    "attentionKnown",
     "analyzeFailed",
     "analyzeStalled",
     "inadmissible",

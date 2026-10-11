@@ -1,18 +1,4 @@
-"""Jinja-render test for phaze-74ii (phaze-nebh residue).
-
-phaze-nebh (fixgroup-15) labeled every rail numeral in ``shell/partials/rail.html`` with a
-store-bound ``:title`` + ``:aria-label`` naming exactly what the number counts (see
-``tests/shared/test_rail_priority_controls.py``), but the header's "Agents · N" numeral in
-``shell/partials/header.html`` was outside that batch's surface and was left title/aria-label-less
--- a sighted operator hovering it gets no tooltip, and assistive tech announces a bare number with
-no explanation of what it counts. This test proves the SAME treatment landed here: an explicit,
-store-bound ``:title`` + ``:aria-label`` pair that agree with each other and name the two store keys
-COMPUTE-02 sums (``agentOnline`` -- heartbeating agents -- and ``computeLanesActive`` -- active
-compute lanes).
-
-Renders ``shell/partials/header.html`` through FastAPI's ``Jinja2Templates`` (the SAME safe wrapper
-Phaze uses in production, matching the idiom in ``test_rail_priority_controls.py``).
-"""
+"""Standalone header health pill first-paint, count naming and disclosure contract."""
 
 from __future__ import annotations
 
@@ -57,23 +43,29 @@ def _render_header() -> str:
     return response.body.decode()
 
 
-def test_header_names_configured_lanes_and_clusters_separately() -> None:
-    """Inventory counts include local and idle lanes; agents remain a separate link."""
+def test_health_pill_renders_without_seed_and_names_unknown_state() -> None:
+    """Header remains independently renderable with only its routing override context."""
     html = _render_header()
-    aria_match = re.search(r':aria-label="([^"]*laneCount[^"]*clusterCount[^"]*)"', html)
-    assert aria_match
-    assert "configured lanes" in aria_match.group(1)
-    assert "configured clusters" in aria_match.group(1)
-    assert "Agents online" in html
-    assert "Lanes&nbsp;" in html
-    assert "Clusters&nbsp;" in html
-    assert "Lanes active" not in html
+    title = re.search(r':title="([^"\n]*attentionCount[^"\n]*)"', html)
+    aria = re.search(r':aria-label="([^"\n]*attentionCount[^"\n]*)"', html)
+    assert title and aria
+    assert title.group(1) == aria.group(1)
+    assert "attentionKnown" in title.group(1)
+    assert "seedKnown" in title.group(1)
+    assert "Health</span>" in html
+    assert ">—</span>" in html
+    assert 'aria-controls="attention-tray"' in html
+    assert 'aria-expanded="false"' in html
 
 
-def test_header_counts_bind_to_their_distinct_store_values() -> None:
+def test_header_uses_one_lazy_health_pill_instead_of_inventory_strip() -> None:
     html = _render_header()
-    # phaze-s8xtd: each numeral is gated on seedKnown so an unmeasured count reads an em-dash, never 0.
-    assert html.count("x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'\"") == 1
-    for key in ("laneCount", "clusterCount"):
-        assert html.count(f"x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.{key}) : '—'\"") == 1
-    assert 'x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"' not in html
+    assert 'hx-get="/shell/attention" hx-trigger="attention:load"' in html
+    assert "formatCount($store.pipeline.attentionCount)" in html
+    assert "Lanes&nbsp;" not in html
+    assert "Clusters&nbsp;" not in html
+    assert "Agents online" not in html
+    assert 'role="dialog"' not in html
+    assert "x-trap" not in html
+    assert '@keydown.escape.window="closeAttention()"' in html
+    assert "open = false" not in html

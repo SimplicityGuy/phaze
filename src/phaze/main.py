@@ -59,6 +59,7 @@ from phaze.routers import (
     tags,
     tracklists,
 )
+from phaze.routers.shell.summary import _build_summary_context
 from phaze.runtime_config import get_runtime_config_store
 from phaze.runtime_config_backends import build_backends_registry_reloader
 from phaze.runtime_config_notify import install_runtime_config_overrides, start_runtime_config_listener
@@ -66,6 +67,7 @@ from phaze.runtime_config_triggers import build_backends_watcher, build_watcher,
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
+from phaze.services.pipeline.attention_snapshot import ATTENTION_REFRESH_SECONDS, set_attention_snapshot
 from phaze.services.pipeline.review_counts import _REVIEW_TTL_SECONDS, refresh_review_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
@@ -105,6 +107,21 @@ async def _review_refresh_loop() -> None:
         except Exception:
             logger.warning("review refresh loop iteration failed; keeping last-good", exc_info=True)
         await asyncio.sleep(_REVIEW_TTL_SECONDS)
+
+
+async def _attention_refresh_loop(app: FastAPI) -> None:
+    """Materialize shared attention off-request; failures make the retained snapshot unknown."""
+    while True:
+        try:
+            async with async_session() as session:
+                overview = (await _build_summary_context(app.state, session))["summary"]
+            set_attention_snapshot(overview["attention"], known=bool(overview["attention_known"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            set_attention_snapshot([], known=False)
+            logger.warning("attention refresh iteration failed; retaining unknown snapshot", exc_info=True)
+        await asyncio.sleep(ATTENTION_REFRESH_SECONDS)
 
 
 @asynccontextmanager
@@ -211,12 +228,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Materialize orphan counts off the 5 s stats request path; the cache keeps badge reads O(1).
     _app.state.orphan_task = asyncio.create_task(_orphan_refresh_loop())
     _app.state.review_counts_task = asyncio.create_task(_review_refresh_loop())
+    _app.state.attention_task = asyncio.create_task(_attention_refresh_loop(_app))
 
     yield
     # Shutdown in reverse construction order.
     # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
     # through goes away.
     await _app.state.runtime_config_listener.stop()
+    _app.state.attention_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _app.state.attention_task
     # Stop the refresher before disposing its engine.
     _app.state.review_counts_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):

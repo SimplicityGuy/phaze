@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
+from phaze.services.attention import derive_attention_items
 from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
 from phaze.services.pipeline import (
     _read_in_own_session,
@@ -35,7 +36,9 @@ from phaze.services.pipeline import (
     get_inadmissible_count,
     get_stage_controls,
     get_stage_progress,
+    stage_orphan_counts_known,
 )
+from phaze.services.pipeline.common import capture_read_degradations
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import done_clause, inflight_clause
 from phaze.utils.humanize import format_count
@@ -218,131 +221,14 @@ def _summary_failure_totals(metadata: dict[str, int | None], analyze: dict[str, 
     return metadata_failed, analyze_failed, orphan_total
 
 
-def _attention_item(priority: int, title: str, detail: str, href: str, action: str, tone: str = "attention") -> dict[str, str | int]:
-    return {"priority": priority, "title": title, "detail": detail, "href": href, "action": action, "tone": tone}
-
-
-def _awaiting_cloud_target(hold_reason: str) -> tuple[str, str]:
-    """Resolve the (href, action) pair that best explains an awaiting-cloud hold reason."""
-    if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
-        return "/s/runtime-config", open_label("runtime-config")
-    if hold_reason in {"held — no cloud backend reachable", "held — no fileserver agent online"} or hold_reason.startswith(
-        "held — all lanes at capacity"
-    ):
-        return "/s/agents", open_label("agents")
-    return "/s/analyze", open_label("analyze")
-
-
-def _failure_attention_items(metadata_failed: int, analyze_failed: int, orphan_total: int, stalled_analyses: int) -> list[dict[str, str | int]]:
-    """Attention items for terminal failures and orphaned work (priorities 10/11/20)."""
-    items: list[dict[str, str | int]] = []
-    if metadata_failed:
-        items.append(
-            _attention_item(
-                10,
-                "Metadata failures",
-                f"{format_count(metadata_failed)} file(s) need inspection or retry.",
-                "/s/files?stage=metadata&bucket=failed&scope=media",
-                open_label("files"),
-                "danger",
-            )
-        )
-    if analyze_failed:
-        stalled_detail = f"; {format_count(stalled_analyses)} stopped by the progress watchdog" if stalled_analyses else ""
-        items.append(
-            _attention_item(
-                11,
-                "Analysis failures",
-                f"{format_count(analyze_failed)} file(s) reached terminal failure{stalled_detail}.",
-                "/s/analyze",
-                open_label("analyze"),
-                "danger",
-            )
-        )
-    if orphan_total:
-        items.append(
-            _attention_item(
-                20,
-                "Orphaned work",
-                f"{format_count(orphan_total)} scheduled file(s) have no live job or domain result.",
-                "/s/discover",
-                open_label("discover"),
-            )
-        )
-    return items
-
-
-def _capacity_attention_items(
-    metadata: dict[str, int | None], analyze: dict[str, int | None], inputs: SummaryOverviewInputs
-) -> list[dict[str, str | int]]:
-    """Attention items for cloud/compute capacity and stage pauses (priorities 30-50)."""
-    items: list[dict[str, str | int]] = []
-    if inputs.inadmissible_count:
-        items.append(
-            _attention_item(
-                30,
-                "Cloud jobs blocked by configuration",
-                f"{format_count(inputs.inadmissible_count)} active cloud job(s) are Inadmissible.",
-                "/s/agents",
-                open_label("agents"),
-            )
-        )
-    if inputs.awaiting_cloud_count:
-        hold_reason = inputs.awaiting_hold_reason or "reason unavailable"
-        href, action = _awaiting_cloud_target(hold_reason)
-        items.append(
-            _attention_item(40, "Files awaiting cloud routing", f"{format_count(inputs.awaiting_cloud_count)} file(s): {hold_reason}.", href, action)
-        )
-    if inputs.queued_behind_quota_count:
-        items.append(
-            _attention_item(
-                41,
-                "Cloud quota wait",
-                f"{format_count(inputs.queued_behind_quota_count)} submitted cloud job(s) are waiting for cluster quota.",
-                "/s/agents",
-                open_label("agents"),
-            )
-        )
-    for priority, stage_name, stage_label, stage_bucket in (
-        (45, "metadata", "Metadata enrichment", metadata),
-        (46, "analyze", "Audio analysis", analyze),
-    ):
-        if _stage_paused_with_pending_work(stage_bucket, inputs.stage_paused[stage_name]):
-            items.append(
-                _attention_item(
-                    priority,
-                    f"{stage_label} is paused",
-                    f"{_stage_count(stage_bucket, 'not_started')} not started; {_stage_count(stage_bucket, 'in_flight')} still marked in flight.",
-                    f"/s/{stage_name}",
-                    open_label(stage_name),
-                )
-            )
-    if inputs.active_fileservers == 0:
-        items.append(
-            _attention_item(
-                50,
-                "No file-server agent available",
-                "Discovery and file-owned work cannot be dispatched until an agent checks in.",
-                "/s/agents",
-                open_label("agents"),
-            )
-        )
-    return items
-
-
 def _build_attention_items(
     metadata: dict[str, int | None],
     analyze: dict[str, int | None],
     failures: tuple[int, int, int],
     inputs: SummaryOverviewInputs,
 ) -> list[dict[str, str | int]]:
-    """Assemble the priority-sorted attention-queue entries for the Summary overview."""
-    metadata_failed, analyze_failed, orphan_total = failures
-    items = _failure_attention_items(metadata_failed, analyze_failed, orphan_total, inputs.stalled_analyses) + _capacity_attention_items(
-        metadata, analyze, inputs
-    )
-    items.sort(key=lambda item: int(item["priority"]))
-    return items
+    """Compatibility wrapper over the shared attention policy; items and hrefs remain identical."""
+    return derive_attention_items(metadata, analyze, failures, inputs)
 
 
 def _recommended_when_attention_or_empty(attention: list[dict[str, str | int]], total_files: int) -> dict[str, str] | None:
@@ -554,6 +440,14 @@ async def _get_summary_aggregates(session: AsyncSession) -> dict[str, int | None
 
 
 async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
+    """Keep Summary's legacy values while exposing whether its attention snapshot was measured."""
+    with capture_read_degradations() as failures:
+        context = await _read_summary_context(app_state, session)
+    context["summary"]["attention_known"] = context["summary"]["attention_known"] and not failures
+    return context
+
+
+async def _read_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
     """Read independent Summary sources in own sessions under the shared stats fan-out cap."""
     fanout = _stats_fanout()
     (
@@ -621,4 +515,10 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
         analyses_today=analysis_activity["today"],
         analyses_lifetime=analysis_activity["lifetime"],
     )
-    return {"summary": _derive_summary_overview(stage_progress, inputs)}
+    overview = _derive_summary_overview(stage_progress, inputs)
+    overview["attention_known"] = (
+        aggregates["active_fileservers"] is not None
+        and all(bool(stage_progress[stage].get("available", 1)) for stage in ("metadata", "analyze"))
+        and stage_orphan_counts_known()
+    )
+    return {"summary": overview}

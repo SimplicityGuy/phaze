@@ -85,12 +85,9 @@ async def test_initial_html_carries_the_real_counts_not_zero(client: AsyncClient
 
     # What the browser paints BEFORE Alpine boots: the static fallback text, not the old "0".
     assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.agentOnline\)[^>]*>([^<]*)</span>') == "2"
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.laneCount\)[^>]*>([^<]*)</span>') == str(
-        seed["laneCount"]
-    )
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.clusterCount\)[^>]*>([^<]*)</span>') == str(
-        seed["clusterCount"]
-    )
+    # Header uses the cached attention snapshot; an unmeasured cache paints unknown.
+    assert 'aria-controls="attention-tray"' in body
+    assert "attentionKnown: 0" in body
     assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.discovered\) : [^>]*>([^<]*)</span>') == str(
         _FILES
     )
