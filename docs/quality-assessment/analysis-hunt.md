@@ -204,3 +204,62 @@ slice; the operator should weigh the two novel P2 findings against unavailable s
 limits. Stopping to specify the five confirmed regressions is also supported by the evidence.
 A new round requires its own explicit scope/budget decision. Exhaustive natural windows,
 chunk-bounded PCM and peak RSS, and progress-only analysis watchdog behavior remain required.
+
+## Operator decision — 2026-10-11 UTC, phaze-7h65l
+
+On **2026-10-11 UTC**, at **`phaze-7h65l`**, Robert explicitly selected:
+**“Continue one planned companion round.”** This resolves the analysis-round decision boundary
+by authorizing exactly **one** planned companion/browser/persistence hunt, **`phaze-6mipc`**.
+It does not authorize a fourth round or implementation. The final quality plan remains
+approval-gated; the dispatcher releases the companion bead after this decision record is reviewed
+and integrated. This checkpoint records authorization and does not itself run that hunt.
+
+| Completed round | Candidates → confirmed → novel filed | Filed severity | Confirm / novelty rate | P0/P1 share |
+| --- | --- | --- | --- | --- |
+| Mutation / replay, `phaze-d9ifa` | 3 → 3 → 3 | 2 P2, 1 P3 | 100% / 100% | 0% |
+| Analysis / orchestration, `phaze-troov` | 2 → 2 → 2 | 2 P2 | 100% / 100% | 0% |
+| Cumulative | 5 → 5 → 5 | 4 P2, 1 P3 | 100% / 100% | 0% |
+
+All three analysis lenses completed their full 18-file slice. Analysis had **zero errored or
+aborted agents**, with **one failed verifier helper** and **one failed scratch pytest attempt**
+recovered; source-read/cache/path/tool recoveries remain in the evidence above. Mutation's
+**three lead interruptions** and **one failed verifier attempt**, subsequently replaced by
+completed verification, remain separate physical-attempt accounting. Actual spend and cost per
+filed finding are **unavailable** for both rounds. These counts do not establish convergence.
+The real **34-graph** sweep remains unrun under canonical `phaze-28883`; the prior **12-head**
+run is not evidence for all graphs. Actual Worker dispatch/abort delivery and remote-provider
+lifecycle validation also remain unrun. Synthetic admission, clocks and broker rows do not
+establish those real-consumer properties.
+
+The approved third round retains the **exact companion slice** in the
+[testing risk inventory](testing-risk-inventory.md#canonical-backlog-and-hunt-boundaries), row
+**`phaze-6mipc`**: the named companion/provider/source-selection services, companion/CUE routers,
+companion tasks, migrations 085–088, record companion templates and three named pipeline partials.
+Three independent finders each inspect that **same complete slice**, using the planned lenses:
+**data-integrity/persistence**, **security/authorization and review authority**, and
+**frontend/browser consumer contracts**. Imports supply context without silently expanding the
+claimed slice. Read existing repair issue bodies and actual regression tests; adversarially verify
+candidates with a different model, then fingerprint- and full-body-deduplicate before sanctioned
+bug intake. Distinguish actual browser/route/provider consumers from fakes and unrun seams.
+
+The round budget is **one round of three full-slice lens passes**, with at most **four total
+agents including the dispatcher**, at most **three hunt workers**, and at most **two simultaneous
+full validation gates**. Each measuring/reproducing worktree copies all **three exact exports**
+from `just test-db-for`: its own PostgreSQL database, migrations database and Redis logical DB.
+Use one pytest process per database and require the port-5433 `exclusive` header. No shared-guard
+bypass or harness teardown is authorized. No fixes, production/archive access, large model
+downloads, source/test/CI changes or additional full-suite baseline are authorized. Research may
+use bounded synthetic task-owned scratch; the normal required checkpoint validation still runs.
+
+Provisioning refreshed the live integration from main by **19 commits**, affecting **69 files**
+with **2,420 insertions and 346 deletions**, including CUE/NFO/TXT companion repairs and browser/
+review-authority behavior. The checkpoint starts at **`42a0e5f40d5313c8a2c2297047075764f139ceff`**.
+This is **source drift**, not documentation-only continuity from the original assessment source
+**`d1835b022f99397ed6be69359c57938a9ceaffd9`**. Earlier coverage, runtime and hunt measurements
+remain historical at their recorded source; this decision does not refresh those measurements.
+The dispatcher reviews the drift before dispatch, and the companion hunt freezes the new
+provisioned integration source at `42a0e5f4` or its subsequent documentation-only checkpoint merge.
+Its lead must inspect newly landed fixes and their issue bodies/tests before dedup. Using the
+current repaired consumers preserves the approved scope's relevance without repeating the old
+baseline or treating repaired defects as novel findings. After that single round, return to the
+required decision/quality-plan approval boundary; no later round starts automatically.
