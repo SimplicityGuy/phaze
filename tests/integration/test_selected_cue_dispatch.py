@@ -20,6 +20,7 @@ from phaze.services.local_source_import import decide_local_source, get_selected
 from phaze.services.selected_cue import agent_supports_selected_cue, build_selected_cue_artifact
 from phaze.services.selected_discogs import decide_recording_discogs_link
 from phaze.tasks.cue_write import write_cue_sheet
+from phaze.tracklist_providers.local_parser import PARSER_VERSION
 from tests._queue_fakes import install_fake_queues
 from tests.integration.test_local_source_import import decision, inventory
 from tests.integration.test_selected_source_consumers import CUE
@@ -156,7 +157,7 @@ async def test_invalid_frame_capture_metadata_review_requires_target_bound_exclu
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     assert imported.tracklist_status == "found"
     observation = await session.scalar(select(ProviderSourceObservation).where(ProviderSourceObservation.id == imported.tracklist_observation_id))
-    assert observation.payload["text"] == text and observation.parser_version == "local-tracklist-v3"
+    assert observation.payload["text"] == text and observation.parser_version == PARSER_VERSION
     assert observation.payload["tracks"][1]["timestamp"]["original"] == f"01:02:{frame}"
     assert observation.payload["tracks"][1]["timestamp"]["offset"] is None
     command = decision(media, companion, imported.tracklist_observation_id, ordinal=1)

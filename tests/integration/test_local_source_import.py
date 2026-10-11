@@ -122,6 +122,7 @@ async def test_capture_import_select_reimport_preserves_legacy_and_review(sessio
     [
         ("tracklist", "local-tracklist-v1"),
         ("tracklist", "local-tracklist-v2"),
+        ("tracklist", "local-tracklist-v3"),
         ("release_metadata", "local-release-v1"),
         ("release_metadata", "local-release-v2"),
     ],
@@ -132,7 +133,15 @@ async def test_old_parser_candidates_remain_reviewable_after_current_import(sess
     current_id = result.tracklist_observation_id if kind == "tracklist" else result.release_observation_id
     current = await session.get(ProviderSourceObservation, current_id)
     assert current.parser_version == (PARSER_VERSION if kind == "tracklist" else RELEASE_PARSER_VERSION) and current.status == "found"
-    legacy_snapshot = Snapshot.model_validate({**current.payload, "retrieved_at": current.retrieved_at, "parser_version": legacy_version})
+    legacy_payload = {
+        **current.payload,
+        "retrieved_at": current.retrieved_at,
+        "parser_version": legacy_version,
+    }
+    legacy_payload.pop("sections", None)
+    legacy_payload.pop("section_scan_complete", None)
+    legacy_payload["tracks"] = [{key: value for key, value in row.items() if key != "section_ordinal"} for row in legacy_payload["tracks"]]
+    legacy_snapshot = Snapshot.model_validate(legacy_payload)
     stored = await store_snapshot(session, legacy_snapshot, source_file_id=companion.id, channel="companion", parent_id=raw)
     await add_candidate(session, media.id, stored.observation.id, evidence=(f"kind:{kind}",))
     selected = await decide_local_source(session, decision(media, companion, stored.observation.id, kind=kind), actor="reviewer")

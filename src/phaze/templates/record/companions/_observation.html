@@ -8,8 +8,12 @@
     {% if actions.kind == 'tracklist' %}
     <div data-local-track-rows>
         <h4 class="text-sm font-semibold">Tracklist</h4>
+        {% if actions.sections %}<div data-text-sections><p class="text-sm">{{ actions.section_count }} text sections. Review one section for this recording; sections are never concatenated.</p>
+        {% for section in actions.sections %}<p class="text-sm break-all">Section {{ section.ordinal }}: {{ section.title or 'Unnamed section' }} · {{ section.completeness.state }}</p>
+        {% if section.completeness.evidence or section.warnings %}<pre class="whitespace-pre-wrap break-all text-xs">{{ (section.completeness.evidence + section.warnings) | join('\n') }}</pre>{% endif %}{% endfor %}
+        {% if actions.section_count > 64 %}<p class="text-xs">First 64 section summaries shown. Read the original text before choosing another ordinal.</p>{% endif %}</div>{% endif %}
         {% for track in (detail.selected_tracks if detail.selected_availability else detail.tracks) %}
-        <p class="text-sm break-words" data-local-track>{{ track.position }}. {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}{% if track.timestamp %} · {{ track.timestamp.original or 'No playback position' }}{% endif %}</p>
+        <p class="text-sm break-words" data-local-track>{{ track.position }}.{% if track.section_ordinal %} [section {{ track.section_ordinal }}]{% endif %} {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}{% if track.timestamp %} · {{ track.timestamp.original or 'No playback position' }}{% endif %}</p>
         {% if track.timestamp and track.timestamp.kind == 'offset' and track.timestamp.offset is none %}<p class="text-sm text-warn" data-invalid-source-timing>Invalid source timing {{ track.timestamp.original }} is retained without a usable offset. Selecting the metadata does not correct timing.</p>{% endif %}
         {% if track.evidence %}<details><summary class="text-xs">Track source evidence</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ track.evidence | join('\n') }}</pre></details>{% endif %}
         {% else %}<p class="text-sm text-muted">No tracks recognized. You can read the original text or try another companion file.</p>{% endfor %}
@@ -42,6 +46,8 @@
         <input type="hidden" name="expected_source_sha256" value="{{ actions.source_sha256 }}"><input type="hidden" name="expected_media_sha256" value="{{ actions.media_sha256 }}">
         {% if detail.summary.conflict_with_id %}<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="accept_conflict" value="true">I reviewed the conflicting source evidence.</label>{% endif %}
         {% if actions.is_cue %}<label class="block text-sm">CUE FILE ordinal explicitly belonging to this recording <input type="number" name="cue_file_ordinal" min="1" max="4096" class="input input-sm w-24"></label><p class="text-xs">Read each track's FILE evidence. Multiple FILE parts are not concatenated.</p>{% endif %}
+        {% if actions.sections %}<label class="block text-sm">Text section ordinal belonging to this recording <input type="number" name="text_section_ordinal" min="1" max="4096" class="input input-sm w-24" {% if actions.section_count > 1 %}required{% else %}value="{{ actions.sections[0].ordinal }}"{% endif %}></label>{% endif %}
+        {% if actions.text_warnings %}<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="accept_text_warnings" value="true">I reviewed the unresolved row structure in this section. Unknown fields remain unknown.</label>{% endif %}
         {% if actions.can_select %}<button type="submit" disabled data-hx-guard name="action" value="select" class="{{ ui.btn('primary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Use this {{ 'release info' if actions.kind == 'release_metadata' else 'tracklist' }}</button>{% endif %}
         {% if actions.can_reject %}<button type="submit" disabled data-hx-guard name="action" value="reject" class="{{ ui.btn('secondary', 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}">Skip this candidate</button>{% endif %}
     </form><div data-companion-action aria-live="polite"></div>
