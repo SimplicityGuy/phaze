@@ -153,9 +153,6 @@ details > summary::before {
     transition: transform 150ms;
 }
 details[open] > summary::before { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) {
-    details > summary::before { transition: none; }
-}
 .htmx-indicator { opacity: 0; transition: opacity 200ms; }
 .htmx-request .htmx-indicator { opacity: 1; }
 /* Refresh labels use display, not opacity, so only the current message exists
@@ -550,4 +547,14 @@ circle[data-journey-node][tabindex]:focus-visible {
 .dark .set-glyph-cursor {
     background: white;
     box-shadow: 0 0 0 1px rgb(0 0 0 / 0.7);
+}
+
+/* One app-wide motion preference, including indicators, pulse utilities and drawer transforms.
+ * Keep final transform/opacity states intact; only the motion between states is disabled. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
 }
