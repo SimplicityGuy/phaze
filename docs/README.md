@@ -31,6 +31,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Current Quality Coverage Assessment](quality-assessment/coverage-baseline.md)** | Exact-commit CI line/context evidence, source growth, low-line candidates and selector limits |
 | **[Testing Risk Inventory](quality-assessment/testing-risk-inventory.md)** | Current coverage, churn, assertion and consumer gaps, and bounded hunt slices |
 | **[Test Runtime Assessment](quality-assessment/runtime-profile.md)** | Current floor, fixture, collection, local lane and CI shard measurements with safe experiment boundaries |
+| **[Runtime Optimization Proposal](quality-assessment/runtime-optimization-proposal.md)** | Ranked guard, fixture, admission and shard experiments with accepted-bead metrics and preserved safety contracts |
 | **[Mutation and Replay Hunt](quality-assessment/mutation-hunt.md)** | Bounded first-round findings, independent verification, synthetic observations and checkpoint metrics |
 | **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
