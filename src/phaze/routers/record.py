@@ -35,6 +35,7 @@ from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.provider_source import ProviderSourceObject
 from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.request_guards import require_same_origin_form
@@ -62,10 +63,12 @@ from phaze.services.companion_view import (
     CaptureRefreshBaseline,
     capture_refresh_baseline,
     capture_refresh_received,
+    companion_overview_context,
     embedded_channels,
     fragment,
     html_requested,
     observation_actions,
+    source_review_context,
     visible_parsed_content,
 )
 from phaze.services.harmonic_journey import build_harmonic_journey
@@ -355,6 +358,7 @@ async def build_file_record_context(
         "tracklist_review": tracklist_review,
         "companion_details": companion_details,
         "companion_parsed": companion_parsed,
+        **(await companion_overview_context(session, companion_details) if companion_details else {}),
         "companion_embedded_channels": await embedded_channels(session, file_id),
         "track_segments": track_segments,
         "lane": lane,
@@ -463,6 +467,7 @@ async def companion_detail_page(
     offset: int = Query(0, ge=0, le=100000),
     link_offset: int | None = Query(None, ge=0, le=100000),
     source_offset: int | None = Query(None, ge=0, le=100000),
+    review_source_id: uuid.UUID | None = None,
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
 ) -> CompanionDetails | HTMLResponse:
@@ -485,6 +490,7 @@ async def companion_detail_page(
             link_offset=offset if link_offset is None else link_offset,
             source_offset=offset if source_offset is None else source_offset,
             companion_embedded_channels=await embedded_channels(session, file_id),
+            **await companion_overview_context(session, result, review_source_id),
         )
     return result
 
@@ -494,6 +500,7 @@ async def companion_observation_page(
     request: Request,
     file_id: uuid.UUID,
     source_object_id: uuid.UUID,
+    history_only: bool = False,
     offset: int = Query(0, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
@@ -502,7 +509,15 @@ async def companion_observation_page(
     if result is None:
         raise HTTPException(status_code=404, detail="Source not found for this file")
     if html_requested(request):
-        return fragment(templates, request, "record/companions/_history.html", history=result, file_id=file_id)
+        if history_only:
+            return fragment(templates, request, "record/companions/_history.html", history=result, file_id=file_id)
+        return fragment(
+            templates,
+            request,
+            "record/companions/_review.html",
+            review=await source_review_context(session, file_id, source_object_id),
+            file_id=file_id,
+        )
     return result
 
 
@@ -511,6 +526,7 @@ async def companion_observation_detail(
     request: Request,
     file_id: uuid.UUID,
     observation_id: uuid.UUID,
+    extracted_only: bool = False,
     track_offset: int = Query(0, ge=0, le=100000),
     fact_offset: int = Query(0, ge=0, le=100000),
     limit: int = Query(20, ge=1, le=50),
@@ -526,13 +542,16 @@ async def companion_observation_detail(
     if result is None:
         raise HTTPException(status_code=404, detail="Observation not found for this file")
     if html_requested(request):
+        actions = await observation_actions(session, result)
         return fragment(
             templates,
             request,
             "record/companions/_observation.html",
             detail=result,
             file_id=file_id,
-            actions=await observation_actions(session, result),
+            actions=actions,
+            chunk=await get_stored_text(session, file_id, actions["text_id"]) if not extracted_only else None,
+            extracted_only=extracted_only,
         )
     return result
 
@@ -592,7 +611,7 @@ async def companion_refresh(request: Request, file_id: uuid.UUID, companion_id: 
         after_ordinal=baseline.ordinal,
         revision=payload.target.expected_sha256,
         waiting=True,
-        message="Refresh queued on the owning agent. Waiting for a new received capture of this revision; enqueue is not completion.",
+        message="Read requested. Waiting for the storage agent to send companion text.",
     )
 
 
@@ -620,11 +639,11 @@ async def companion_refresh_status(
         )
     waiting = row is None and now - since < timedelta(minutes=2)
     message = (
-        f"A new authorized capture was received since this request: {row['status']} · {row['code']} · {row['freshness']}. This is observed receipt, not proof of this exact job completing. Import stored text separately."
+        "A new read report arrived. Review the available text below."
         if row
-        else "Waiting for a new received capture of this revision."
+        else "Waiting for the storage agent to send companion text."
         if waiting
-        else "No new report observed. The agent may be offline; retained text is unchanged."
+        else "No new text received. Check that the storage agent is online, then try reading again. Previous text is still available."
     )
     return fragment(
         templates,
@@ -637,4 +656,14 @@ async def companion_refresh_status(
         revision=revision,
         waiting=waiting,
         message=message,
+        receipt=row,
+        source_id=await session.scalar(
+            select(ProviderSourceObject.id).where(
+                ProviderSourceObject.source_file_id == companion_id,
+                ProviderSourceObject.native_id == f"companion:{companion_id}",
+                ProviderSourceObject.provider_id == "local",
+            )
+        )
+        if row
+        else None,
     )

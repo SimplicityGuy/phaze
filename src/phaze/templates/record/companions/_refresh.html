@@ -3,5 +3,8 @@
 {% if waiting %}
  hx-get="/files/{{ file_id }}/companions/{{ companion_id }}/refresh-status?since={{ since | urlencode }}&amp;revision={{ revision }}&amp;after_ordinal={{ after_ordinal }}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
     <p>{{ message }}</p>
-    {% if not waiting %}<a href="/files/{{ file_id }}#companion-sources" class="text-link">Open retained content</a>{% endif %}
+    {% if receipt | default(none) %}
+    <details class="text-xs text-muted"><summary>Read report details</summary><p>{{ receipt.status }} · {{ receipt.code }} · {{ receipt.freshness }}. A report arrived after this request; it may belong to another read of the same version.</p></details>
+    <div hx-get="/files/{{ file_id }}/companion-details?review_source_id={{ source_id }}" hx-trigger="load" hx-target="closest [data-companion-overview]" hx-swap="outerHTML"></div>
+    {% endif %}
 </div>

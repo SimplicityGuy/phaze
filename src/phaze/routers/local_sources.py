@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from phaze.database import get_session
+from phaze.models.provider_source import ProviderSourceObservation
 from phaze.routers.record import templates
 from phaze.routers.request_guards import require_companion_command_origin
 from phaze.schemas.local_source_import import ImportLocalSource, ImportResult, SelectedRecordingSource, SourceDecision, SourceKind
@@ -52,6 +53,8 @@ async def import_source(request: Request, session: Annotated[AsyncSession, Depen
     except (ValueError, PermissionError) as exc:
         logger.info("local_source_import_rejected", reason=str(exc))
         return _error(request, exc)
+    observation = await session.get(ProviderSourceObservation, result.raw_observation_id)
+    review_source_id = observation.object_id if observation else None
     await session.commit()
     logger.info("local_source_imported", media_id=str(body.media_id), raw_observation_id=str(result.raw_observation_id))
     if html_requested(request):
@@ -59,10 +62,11 @@ async def import_source(request: Request, session: Annotated[AsyncSession, Depen
             templates,
             request,
             "record/companions/_action.html",
-            message="Stored text imported; source review remains separate.",
+            message="Content extracted. Review it below, then choose what to use.",
             result=result,
             file_id=body.media_id,
             failed=False,
+            review_source_id=review_source_id,
         )
     return result
 
@@ -83,6 +87,8 @@ async def decide_source(request: Request, session: Annotated[AsyncSession, Depen
     except (ValueError, PermissionError) as exc:
         logger.info("local_source_decision_rejected", reason=str(exc))
         return _error(request, exc)
+    observation = await session.get(ProviderSourceObservation, body.observation_id)
+    review_source_id = observation.object_id if observation else None
     await session.commit()
     logger.info("local_source_decided", media_id=str(body.media_id), decision_id=str(body.decision_id), action=body.action)
     if html_requested(request):
@@ -90,9 +96,10 @@ async def decide_source(request: Request, session: Annotated[AsyncSession, Depen
             templates,
             request,
             "record/companions/_action.html",
-            message="Source selected." if body.action == "select" else "Candidate rejected; reviewed content retained.",
+            message="Source selected." if body.action == "select" else "Candidate skipped. Your current selections are unchanged.",
             file_id=body.media_id,
             failed=False,
+            review_source_id=review_source_id,
         )
     return result
 

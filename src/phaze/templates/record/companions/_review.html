@@ -1,0 +1,20 @@
+{% import "ui/primitives.html" as ui %}
+<div data-source-review="{{ review.source_id }}" class="mt-3 min-w-0 rounded border p-3 space-y-3">
+    <h4 class="text-sm font-semibold">Review companion content</h4>
+    <p class="text-xs text-muted">1 Read file → {% if review.interpretations %}2 Extract content → <strong>3 Choose what to use</strong>{% elif review.chunk and review.chunk.total_characters > 0 %}<strong>2 Extract content</strong> → 3 Choose what to use{% else %}<strong>Read the file to continue</strong>{% endif %}</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 min-w-0">
+        <section class="min-w-0"><h5 class="text-sm font-semibold">Original text</h5>
+            {% if review.chunk %}{% with chunk=review.chunk %}{% include "record/companions/_text.html" %}{% endwith %}
+            {% else %}<p class="text-sm text-muted">No text available yet. Read the file to continue.</p>{% endif %}
+        </section>
+        <section class="min-w-0 space-y-3"><h5 class="text-sm font-semibold">Extracted content</h5>
+            {% for interpretation in review.interpretations %}
+                {% with detail=interpretation.detail, actions=interpretation.actions, extracted_only=true %}{% include "record/companions/_observation.html" %}{% endwith %}
+            {% else %}<p class="text-sm text-muted">Extract suggested tracks and release fields, then review them before choosing a source.</p>{% endfor %}
+            {% if review.raw_id and review.chunk and review.chunk.total_characters > 0 %}<form hx-post="/api/local-sources/reimport" hx-target="next [data-companion-action]">
+                <input type="hidden" name="media_id" value="{{ file_id }}"><input type="hidden" name="raw_observation_id" value="{{ review.raw_id }}">
+                <button type="submit" disabled data-hx-guard class="{{ ui.btn('primary' if not review.interpretations else 'secondary', 'sm', 'max-w-full h-auto py-2 whitespace-normal') }}">{{ 'Extract again' if review.interpretations else 'Extract tracklist and release info' }}</button>
+            </form><div data-companion-action aria-live="polite"></div>{% endif %}
+        </section>
+    </div>
+</div>
