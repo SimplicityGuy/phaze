@@ -56,7 +56,7 @@ async def test_live_store_counts_keep_their_separators_after_every_update(page: 
                 s.tracklistDone = 12345;
                 s.proposalsDone = 1000; s.proposalsTotal = 54321;
                 s.metadataStatusKnown = true; s.metadataStatusDone = 104156; s.metadataStatusTotal = n;
-                s.agentOnline = 1200; s.computeLanesActive = 3400;
+                s.agentOnline = 1200; s.laneCount = 3400; s.clusterCount = 3399;
             }""",
             discovered,
         )
@@ -73,6 +73,7 @@ async def test_live_store_counts_keep_their_separators_after_every_update(page: 
     header = await page.locator("header").first.text_content()
     assert "1,200" in (header or "")
     assert "3,400" in (header or "")
+    assert "3,399" in (header or "")
 
 
 @pytest.mark.asyncio(loop_scope="session")
