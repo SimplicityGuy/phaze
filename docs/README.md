@@ -33,6 +33,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Testing Risk Inventory](quality-assessment/testing-risk-inventory.md)** | Current coverage, churn, assertion and consumer gaps, and bounded hunt slices |
 | **[Test Runtime Assessment](quality-assessment/runtime-profile.md)** | Current floor, fixture, collection, local lane and CI shard measurements with safe experiment boundaries |
 | **[Runtime Optimization Proposal](quality-assessment/runtime-optimization-proposal.md)** | Ranked guard, fixture, admission and shard experiments with accepted-bead metrics and preserved safety contracts |
+| **[Immutable Parse Pilot Disposition](quality-implementation/immutable-parse-disposition.md)** | R1 bounded preflight, explicit execution exclusion, existing guard boundaries and unmeasured velocity |
 | **[Mutation and Replay Hunt](quality-assessment/mutation-hunt.md)** | Bounded first-round findings, independent verification, synthetic observations and checkpoint metrics |
 | **[Analysis and Worker Hunt](quality-assessment/analysis-hunt.md)** | Exhaustive analysis and orchestration slice, verified recovery/liveness findings, real-consumer limits and round metrics |
 | **[Companion Persistence and Consumer Hunt](quality-assessment/companion-hunt.md)** | Complete third-round slice, synthetic attribution failure, deferred source-only finding and browser limits |
