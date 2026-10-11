@@ -55,7 +55,7 @@
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
                 {{ ui.kind_label(lane.kind, lane.id) }}
-                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-muted ">RANK {{ lane.rank }}</span>
+                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-muted " title="Lower numbers are tried first when a lane is eligible and has capacity">Dispatch priority {{ lane.rank }} · lower numbers first</span>
             </span>
             {% if _kind == 'local' %}
             {# phaze-lwz8n: the local lane's in_flight is queued + running and its cap comes from the

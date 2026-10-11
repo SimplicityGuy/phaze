@@ -567,6 +567,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     # CloudJob counts. Merged into the SAME row list as heartbeating agents below, so the existing 5s
     # self-poll refreshes lane rows too (no new loop, RESEARCH OQ-1).
     compute_lanes = await derive_compute_lane_identities(session)
+    # The legacy unattributed diagnostic row has kind="cloud"; it is not a configured cluster.
     selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
     canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
         agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
@@ -576,7 +577,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
         "rows": rows,
         "deployments_by_host": deployments_by_host,
         "agent_count": len(agents),
-        "compute_lane_count": len(compute_lanes),
+        "compute_lane_count": sum(lane.kind != "cloud" for lane in compute_lanes),
         "selection_kind": selection_kind,
         "now": now,
         "refreshed_at_iso": now.isoformat(),
@@ -660,6 +661,7 @@ async def table_partial(
     agents, now = await _load_agents(session, sort_state)
     deployments_by_host = await _load_deployments(session)
     compute_lanes = await derive_compute_lane_identities(session)
+    # The legacy unattributed diagnostic row has kind="cloud"; it is not a configured cluster.
     selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
     canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
         agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
@@ -673,7 +675,7 @@ async def table_partial(
             "rows": rows,
             "deployments_by_host": deployments_by_host,
             "agent_count": len(agents),
-            "compute_lane_count": len(compute_lanes),
+            "compute_lane_count": sum(lane.kind != "cloud" for lane in compute_lanes),
             "selection_kind": selection_kind,
             "now": now,
             "refreshed_at_iso": now.isoformat(),

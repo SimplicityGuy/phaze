@@ -532,14 +532,15 @@ async def _first_lane(session: AsyncSession) -> dict:  # type: ignore[type-arg]
 
 @pytest.mark.asyncio
 async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, session: AsyncSession) -> None:
-    """A known lane -> 200 fragment with the RANK label, in-flight/cap, and the own 5s tick (DRILL-01)."""
+    """A known lane -> 200 fragment with the dispatch-priority label, in-flight/cap, and the own 5s tick (DRILL-01)."""
     lane = await _first_lane(session)
     response = await client.get(f"/pipeline/lanes/{lane['id']}")
     assert response.status_code == 200, response.text
     body = response.text
 
     assert f', {lane["id"]}"' in body  # the ui.kind_label aria-label names the lane (phaze-x6ql9)
-    assert f"RANK {lane['rank']}" in body
+    assert f"Dispatch priority {lane['rank']}" in body
+    assert "lower numbers first" in body
     # phaze-lwz8n: a LOCAL lane no longer renders its in_flight/cap pair (queued + running against a
     # cap derived from the control host is not a capacity reading); it names running and waiting.
     if lane["kind"] == "local":
