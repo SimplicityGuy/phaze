@@ -403,9 +403,26 @@ async def _analysis_capacity(semaphore: asyncio.Semaphore | ResizableLimiter | N
 
     async def settle() -> None:
         if task is not None:
+            parent = asyncio.current_task()
+            if parent is None:
+                raise RuntimeError("analysis admission settlement requires an asyncio task")
+            cancellation_count = parent.cancelling()
+            parent_cancelled = False
             task.cancel()
+            # Shield the relay's cleanup from a NEW parent cancellation. Expected
+            # relay cancellation is consumed; cancellation delivered to this parent
+            # must propagate after cleanup, before the admission context can yield.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if parent.cancelling() > cancellation_count:
+                        parent_cancelled = True
+                        cancellation_count = parent.cancelling()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                task.result()
+            if parent_cancelled:
+                raise asyncio.CancelledError
 
     try:
         async with semaphore if semaphore is not None else contextlib.nullcontext():

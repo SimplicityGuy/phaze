@@ -215,3 +215,58 @@ async def test_admitted_stall_remains_sweepable_with_real_worker_abort(stage_env
         if not run.done():
             run.cancel()
         await asyncio.wait_for(run, 5)
+
+
+@pytest.mark.parametrize("cancel_requests", [1, 2])
+async def test_parent_cancel_during_granted_permit_relay_cleanup_never_admits_work(cancel_requests: int) -> None:
+    """Actual limiter grant races cancellation at pre-yield settlement, not while waiting."""
+    limiter = ResizableLimiter(1)
+    await limiter.acquire()
+    touch_started, cleanup_started, release_cleanup, relay_finished = (asyncio.Event() for _ in range(4))
+    work_started = asyncio.Event()
+    job = AsyncMock()
+
+    async def touch(**kwargs: Any) -> None:
+        touch_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            try:
+                await release_cleanup.wait()
+            finally:
+                relay_finished.set()
+
+    job.update.side_effect = touch
+
+    async def analysis() -> None:
+        async with functions._analysis_capacity(limiter, job, 0):
+            work_started.set()
+
+    parent = asyncio.create_task(analysis())
+    try:
+        await asyncio.wait_for(touch_started.wait(), 5)
+        assert limiter.waiting == 1
+        limiter.release()  # Actual FIFO grant; cancellation below happens AFTER acquisition.
+        await asyncio.wait_for(cleanup_started.wait(), 5)
+        assert limiter.borrowed_tokens == 1 and limiter.waiting == 0
+        for _ in range(cancel_requests):
+            parent.cancel()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # Let both relay and parent cancellation continuations run.
+            assert not work_started.is_set()
+            assert not relay_finished.is_set()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(parent, 5)
+        assert relay_finished.is_set()
+        assert not work_started.is_set()
+        assert limiter.borrowed_tokens == 0 and limiter.waiting == 0
+    finally:
+        release_cleanup.set()
+        if not parent.done():
+            parent.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(parent, 5)
+        if limiter.borrowed_tokens:
+            limiter.release()
