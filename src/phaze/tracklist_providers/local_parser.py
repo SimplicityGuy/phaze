@@ -20,8 +20,8 @@ from phaze.tracklist_providers.domain import (
 from phaze.tracklist_providers.local_syntax import LABELED, cue_line, note_line
 
 
-PARSER_VERSION = "local-tracklist-v2"
-PARSER_VERSIONS = frozenset({"local-tracklist-v1", PARSER_VERSION})
+PARSER_VERSION = "local-tracklist-v3"
+PARSER_VERSIONS = frozenset({"local-tracklist-v1", "local-tracklist-v2", PARSER_VERSION})
 _DIRECTIVE = re.compile(r"^([A-Za-z]+)\s+(.+)$")
 _QUOTED = re.compile(r'^"([^"\n]*)"$')
 _FILE = re.compile(r'^(?:"([^"\n]+)"|(\S+))\s+(WAVE|MP3|AIFF|BINARY|MOTOROLA)$', re.IGNORECASE)
@@ -78,6 +78,7 @@ class _Row:
 class _Parse:
     rows: list[_Row] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     artist: str | None = None
     artist_evidence: list[str] = field(default_factory=list)
@@ -210,11 +211,28 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
             result.reject(line_number, f"unsupported_{keyword}")
             continue
         match = _INDEX.fullmatch(value)
-        if current is None or match is None or int(match.group(3)) > 59 or int(match.group(4)) > 74:
+        if current is None or match is None or int(match.group(3)) > 59:
             result.reject(line_number, "malformed_INDEX")
             continue
         index, minutes, seconds, frames = match.groups()
         current.evidence.append(f"line:{line_number}:INDEX{index}:{value.split()[-1]}")
+        if int(frames) > 74:
+            warning = f"line:{line_number}:invalid_INDEX{index}_frames:{frames}:expected_0_to_74"
+            if len(result.warnings) < 64:
+                result.warnings.append(warning)
+            current.evidence.append(warning)
+            if index == "01":
+                if current.timestamp is not None:
+                    result.reject(line_number, "conflicting_INDEX01")
+                    current.timestamp = current.timestamp.model_copy(update={"offset_usability": "unusable"})
+                else:
+                    current.timestamp = Timestamp(
+                        original=value.split()[-1],
+                        kind="offset",
+                        origin=current.origin,
+                        evidence=(warning, "Invalid CUE frame value; no offset inferred or overflow normalized"),
+                    )
+            continue
         if index != "01":
             continue
         total = int(minutes) * 60 * 75 + int(seconds) * 75 + int(frames)
@@ -415,7 +433,9 @@ class LocalSourceInterpreter:
             source_format=source_format,
             parser_version=PARSER_VERSION,
             artist=Fact(value=parsed.artist, certainty="known" if parsed.artist else "unknown", evidence=_bounded_evidence(parsed.artist_evidence)),
-            completeness=Completeness(state="incomplete", reason="Partial or unsupported source grammar", evidence=_bounded_evidence(parsed.errors)),
+            completeness=Completeness(
+                state="incomplete", reason="Partial or unsupported source grammar", evidence=_bounded_evidence([*parsed.errors, *parsed.warnings])
+            ),
             provenance=_bounded_evidence([*content.evidence, *parsed.evidence]),
         )
         # Repeated inherited values can expand a small read into a large output. Serialize
@@ -442,7 +462,7 @@ class LocalSourceInterpreter:
         completeness = Completeness(
             state="complete" if complete else "incomplete",
             reason="Supported source grammar exhausted" if complete else "Partial or unsupported source grammar",
-            evidence=_bounded_evidence(parsed.errors),
+            evidence=_bounded_evidence([*parsed.errors, *parsed.warnings]),
         )
         snapshot = Snapshot.model_validate(base.model_dump(mode="python") | {"tracks": tuple(tracks), "completeness": completeness})
         return LoadOutcome(

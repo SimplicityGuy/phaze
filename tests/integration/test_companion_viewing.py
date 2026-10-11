@@ -20,9 +20,11 @@ from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObs
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.companion_capture import store_capture_report
 from phaze.services.companion_view import source_review_context
-from phaze.services.local_source_import import import_local_source
+from phaze.services.local_source_import import decide_local_source, import_local_source
 from phaze.services.provider_persistence import add_candidate, store_snapshot
 from phaze.tracklist_providers.domain import LoadBudget, Snapshot
+from phaze.tracklist_providers.local_parser import PARSER_VERSION
+from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION
 from tests.integration.test_companion_import_backfill import report
 from tests.integration.test_local_source_import import CUE, decision, inventory
 
@@ -294,9 +296,9 @@ async def test_source_review_includes_supported_parser_generations_for_same_capt
     expected = {imported.tracklist_observation_id, imported.release_observation_id}
     for identifier in tuple(expected):
         current = await session.get(ProviderSourceObservation, identifier)
-        historical = Snapshot.model_validate(
-            {**current.payload, "retrieved_at": current.retrieved_at, "parser_version": current.parser_version.replace("-v2", "-v1")}
-        )
+        assert current.parser_version in {PARSER_VERSION, RELEASE_PARSER_VERSION}
+        legacy_parser = "local-release-v1" if current.parser_version == RELEASE_PARSER_VERSION else "local-tracklist-v1"
+        historical = Snapshot.model_validate({**current.payload, "retrieved_at": current.retrieved_at, "parser_version": legacy_parser})
         stored = await store_snapshot(session, historical, source_file_id=companion.id, channel="companion", parent_id=raw)
         kind = "release_metadata" if current.parser_version.startswith("local-release") else "tracklist"
         await add_candidate(session, media.id, stored.observation.id, evidence=(f"kind:{kind}",))
@@ -310,6 +312,34 @@ async def test_source_review_includes_supported_parser_generations_for_same_capt
     panel = BeautifulSoup(response.text, "html.parser").select_one("[data-source-review]")
     assert len(panel.select("[data-source-decision]")) == 4
     assert "Example Artist" in panel.get_text() and "Opening" in panel.get_text()
+
+
+async def test_cue_invalid_timing_warning_survives_page_drawer_and_native_source_review(client, session):
+    text = 'FILE "recording.mp3" MP3\nTRACK 01 AUDIO\nTITLE "Opening"\nINDEX 01 00:01:01\nTRACK 02 AUDIO\nTITLE "Untimed"\nINDEX 01 01:02:77\n'
+    media, companion, raw = await inventory(session, text, "cue")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    await session.flush()
+    for path in (f"/files/{media.id}", f"/record/{media.id}"):
+        response = await client.get(path)
+        assert response.status_code == 200
+        soup = BeautifulSoup(response.text, "html.parser")
+        visible = soup.select_one("[data-visible-companion-tracklist]")
+        assert "Untimed" in visible.get_text() and "invalid source timing 01:02:77" in visible.get_text()
+    response = await client.get(f"/files/{media.id}/companion-details?review_source_id={source_id}", headers=HX)
+    panel = BeautifulSoup(response.text, "html.parser").select_one("[data-source-review]")
+    warning = panel.select_one("[data-invalid-source-timing]")
+    assert "01:02:77" in warning.get_text() and "without a usable offset" in warning.get_text()
+    forms = panel.select("[data-source-decision]")
+    track_form = next(form for form in forms if form.select_one('[name="kind"]')["value"] == "tracklist")
+    assert track_form.select_one('[name="observation_id"]')["value"] == str(imported.tracklist_observation_id)
+    assert track_form.select_one('[name="cue_file_ordinal"]') is not None
+    assert "Use this tracklist" in track_form.get_text()
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    await session.flush()
+    response = await client.get(f"/files/{media.id}/companion-details?review_source_id={source_id}", headers=HX)
+    current = BeautifulSoup(response.text, "html.parser").select_one('[data-current-source="tracklist"]')
+    assert "01:02:77" in current.select_one("[data-current-invalid-timing]").get_text()
 
 
 async def test_review_text_is_bounded_and_preview_is_read_only(client, session):

@@ -57,7 +57,6 @@ def test_multiple_file_origins_are_intrinsic_unresolved_and_never_concatenated()
     ("tail", "reason"),
     [
         ("INDEX 01 00:60:00", "malformed_INDEX"),
-        ("INDEX 01 00:00:75", "malformed_INDEX"),
         ("INDEX 01 broken", "malformed_INDEX"),
         ("INDEX 100 00:00:00", "malformed_INDEX"),
         ("PREGAP 00:00:75", "malformed_PREGAP"),
@@ -196,7 +195,7 @@ def test_interpreter_is_explicit_and_deterministic():
     assert result.snapshot.normalized_payload() == parse("01. Artist - Title").snapshot.normalized_payload()
     assert local_registry().descriptors()[0].id == "local"
     # Importing the parser does not silently register or enable interpretation.
-    assert result.snapshot.parser_version == "local-tracklist-v2"
+    assert result.snapshot.parser_version == "local-tracklist-v3"
 
 
 def test_positive_ordered_gaps_and_per_file_number_resets():

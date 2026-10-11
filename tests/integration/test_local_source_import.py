@@ -115,20 +115,19 @@ async def test_capture_import_select_reimport_preserves_legacy_and_review(sessio
         await decide_local_source(session, decision(media, companion, parsed.id), actor="reviewer")
 
 
-@pytest.mark.parametrize("kind", ["tracklist", "release_metadata"])
-async def test_old_parser_candidates_remain_reviewable_after_v2_import(session, kind):
+@pytest.mark.parametrize(("kind", "legacy_version"), [("tracklist", 1), ("tracklist", 2), ("release_metadata", 1)])
+async def test_old_parser_candidates_remain_reviewable_after_parser_upgrade(session, kind, legacy_version):
     media, companion, raw = await inventory(session, "| Artist........: Set Artist |\n01) Artist - Opening\n", "nfo")
     result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     current_id = result.tracklist_observation_id if kind == "tracklist" else result.release_observation_id
     current = await session.get(ProviderSourceObservation, current_id)
-    assert current.parser_version.endswith("-v2") and current.status == "found"
-    legacy_snapshot = Snapshot.model_validate(
-        {**current.payload, "retrieved_at": current.retrieved_at, "parser_version": current.parser_version.replace("-v2", "-v1")}
-    )
+    assert current.status == "found"
+    legacy_parser = current.parser_version.rsplit("-v", 1)[0] + f"-v{legacy_version}"
+    legacy_snapshot = Snapshot.model_validate({**current.payload, "retrieved_at": current.retrieved_at, "parser_version": legacy_parser})
     stored = await store_snapshot(session, legacy_snapshot, source_file_id=companion.id, channel="companion", parent_id=raw)
     await add_candidate(session, media.id, stored.observation.id, evidence=(f"kind:{kind}",))
     selected = await decide_local_source(session, decision(media, companion, stored.observation.id, kind=kind), actor="reviewer")
-    assert selected.snapshot.parser_version.endswith("-v1") and selected.availability == "current"
+    assert selected.snapshot.parser_version == legacy_parser and selected.availability == "current"
     assert (await get_selected_recording_source(session, media.id, kind=kind)).observation_id == stored.observation.id
 
 

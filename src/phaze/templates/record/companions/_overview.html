@@ -10,7 +10,7 @@
             <p class="break-all"><span class="font-medium">{{ label }}:</span> {% if selection %}{{ selection.name }} · {{ selection.authority.availability }}{% else %}No {{ label | lower }} chosen yet{% endif %}</p>
             {% if selection %}
             {% if kind == 'tracklist' %}
-                {% for track in ((selection.detail.selected_tracks if selection.detail.selected_availability else selection.detail.tracks) if selection.detail else ()) %}<p class="text-xs break-words" data-current-track>{{ track.position }}. {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}</p>{% endfor %}
+                {% for track in ((selection.detail.selected_tracks if selection.detail.selected_availability else selection.detail.tracks) if selection.detail else ()) %}<p class="text-xs break-words" data-current-track>{{ track.position }}. {{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}</p>{% if track.timestamp and track.timestamp.kind == 'offset' and track.timestamp.offset is none %}<p class="text-xs text-warn" data-current-invalid-timing>Track {{ track.position }} has invalid source timing {{ track.timestamp.original }}; no usable playback offset was inferred.</p>{% endif %}{% endfor %}
             {% else %}
                 {% for fact in (selection.detail.release_facts if selection.detail else ()) %}<p class="text-xs break-words" data-current-release-field>{{ fact.field }}: {{ fact.original_value or fact.value or 'Unknown' }}</p>{% endfor %}
             {% endif %}
