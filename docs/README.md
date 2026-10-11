@@ -40,6 +40,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
 | **[Selection and Evidence Proposal](quality-assessment/selector-proposal.md)** | Safe coverage refresh ownership, real consumer mappings, preserved floors and measured bead-velocity rollout |
+| **[Partial Tag-Save Undo Recovery](quality-implementation/tag-partial-save-undo.md)** | Partial-save audit classification, original Undo anchors, rollout ordering and regression evidence |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
