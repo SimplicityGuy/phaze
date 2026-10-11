@@ -54,9 +54,7 @@ async def test_music_video_both_interpretations_visible_page_drawer_and_lazy_tex
     assert str(result.tracklist_observation_id) in history.text and str(result.release_observation_id) in history.text
     detail = await client.get(f"/files/{media.id}/companion-observations/{result.release_observation_id}", headers=HX)
     assert "Example Festival" in detail.text and "data-source-decision" in detail.text
-    text_url = BeautifulSoup(detail.text, "html.parser").find("button", string="Read original companion text")["hx-get"]
-    assert text_url.endswith(f"/{raw}/text")
-    assert "&lt;script&gt;" in (await client.get(text_url, headers=HX)).text
+    assert "&lt;script&gt;" in detail.text and "data-companion-text" in detail.text
     text = await client.get(f"/files/{media.id}/companion-observations/{raw}/text", headers=HX)
     assert "&lt;script&gt;" in text.text and "<script>alert(" not in text.text and "whitespace-pre-wrap" in text.text
     assert f"/files/{companion.id}#companion-sources" in detail.text
@@ -78,7 +76,7 @@ async def test_json_and_form_contracts_selection_stale_errors_and_reimport(clien
     )
     assert refused.status_code == 200 and 'role="alert"' in refused.text and "Selected source changed" in refused.text
     reimport = await client.post("/api/local-sources/reimport", data={"media_id": str(media.id), "raw_observation_id": str(raw)}, headers=HX)
-    assert reimport.status_code == 200 and "source review remains separate" in reimport.text
+    assert reimport.status_code == 200 and "Review it below" in reimport.text
     assert (await client.post("/api/local-sources/import", content="{bad", headers={"Content-Type": "application/json"})).status_code == 422
     assert (await client.post("/api/local-sources/decision", json={"media_id": str(media.id)})).status_code == 422
     invalid_form = await client.post(
@@ -96,11 +94,11 @@ async def test_native_embedded_import_and_empty_text_are_inspectable(client, ses
     session.add(FileMetadata(file_id=media.id, raw_tags={"Comments": "01. Tag Artist - Tag Title"}))
     await session.flush()
     response = await client.post("/api/local-sources/import", data={"media_id": str(media.id), "embedded_channel": "Comments"}, headers=HX)
-    assert "Stored text imported" in response.text
+    assert "Content extracted" in response.text
     page = await client.get(f"/files/{media.id}")
-    assert "Tag Title" in page.text and "Import stored Comments tag" in page.text
+    assert "Tag Title" in page.text and "Extract Comments tag" in page.text
     unparsed = await client.get(f"/files/{media.id}/companion-observations/{raw}", headers=HX)
-    assert "No parsed track rows" in unparsed.text and "Read original companion text" in unparsed.text
+    assert "No tracks recognized" in unparsed.text and "Unrecognized release prose" in unparsed.text
 
 
 async def test_companion_and_source_cursors_are_independent(client, session):
@@ -144,11 +142,11 @@ async def test_companion_and_source_cursors_are_independent(client, session):
     assert [link.get_text() for link in first.select("[data-companion-link]")] != [
         link.get_text() for link in link_page.select("[data-companion-link]")
     ]
-    assert [source["data-source-object"] for source in first.select("[data-source-object]")] == [
-        source["data-source-object"] for source in link_page.select("[data-source-object]")
-    ]
-    assert [link.get_text() for link in link_page.select("[data-companion-link]")] == [
-        link.get_text() for link in source_page.select("[data-companion-link]")
+    first_json = (await client.get(f"/files/{media.id}/companion-details?link_offset=0&source_offset=0")).json()
+    link_json = (await client.get(f"/files/{media.id}/companion-details?link_offset=20&source_offset=0")).json()
+    assert [source["source_object_id"] for source in first_json["sources"]] == [source["source_object_id"] for source in link_json["sources"]]
+    assert [link.find("p").get_text() for link in link_page.select("[data-companion-link]")] == [
+        link.find("p").get_text() for link in source_page.select("[data-companion-link]")
     ]
     assert "source_offset=0" in link_page.find("button", string="Next companions")["hx-get"]
     assert "link_offset=20" in source_page.find("button", string="Next sources")["hx-get"]
@@ -181,11 +179,8 @@ async def test_partial_parser_detail_reads_complete_original_parent_text(client,
     assert imported.tracklist_status == "incomplete"
     detail = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
     parsed = BeautifulSoup(detail.text, "html.parser")
-    assert parsed.find("button", string="Select this tracklist") is None
-    url = parsed.find("button", string="Read original companion text")["hx-get"]
-    assert url.endswith(f"/{raw}/text")
-    original = await client.get(url, headers=HX)
-    assert "Retained tail" in original.text
+    assert parsed.find("button", string="Use this tracklist") is None
+    assert "Retained tail" in detail.text
 
 
 @pytest.mark.parametrize("source_text", ["", "Unrecognized notes\n"])
@@ -194,7 +189,8 @@ async def test_empty_and_unrecognized_text_remain_visible_without_selection(clie
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     for identifier in (raw, imported.tracklist_observation_id, imported.release_observation_id):
         detail = await client.get(f"/files/{media.id}/companion-observations/{identifier}", headers=HX)
-        assert "Read original companion text" in detail.text and "Select this" not in detail.text
+        assert "data-companion-text" in detail.text or "Stored text is empty" in detail.text
+        assert "Use this" not in detail.text
     original = await client.get(f"/files/{media.id}/companion-observations/{raw}/text", headers=HX)
     assert ("Stored text is empty" if not source_text else "Unrecognized notes") in original.text
 
@@ -210,33 +206,33 @@ async def test_refresh_uses_real_receipt_ordinal_and_db_clock_replayed_observati
     client._transport.app.state.task_router = router
     with patch("phaze.routers.record.async_session", factory):
         refreshed = await client.post(f"/files/{media.id}/companions/{companion.id}/refresh", headers=HX)
-    assert "enqueue is not completion" in refreshed.text
+    assert "Read requested" in refreshed.text
     url = BeautifulSoup(refreshed.text, "html.parser").select_one("[data-capture-status]")["hx-get"]
     params = parse_qs(urlsplit(url).query)
     assert int(params["after_ordinal"][0]) == 1
     waiting = await client.get(url, headers=HX)
-    assert "Waiting for a new received capture" in waiting.text and "A new authorized capture" not in waiting.text
+    assert "Waiting for the storage agent" in waiting.text and "A new read report" not in waiting.text
     await store_capture_report(session, companion.agent_id, report(companion))
     success = await client.get(url, headers=HX)
-    assert "found" in success.text and "not proof of this exact job" in success.text
+    assert "found" in success.text and "may belong to another read" in success.text
     again = report(companion, status="unavailable", at=old.read.retrieved_at)
     last = await store_capture_report(session, companion.agent_id, again)
     assert last.observation_id == first.observation_id
     failure = await client.get(url, headers=HX)
-    assert "unavailable" in failure.text and "offline" in failure.text
+    assert "unavailable" in failure.text and "Read report details" in failure.text
     attempt = await session.get(ProviderAcquisitionAttempt, again.attempt_id)
     params.update(since=[attempt.received_at.isoformat()], after_ordinal=[str(attempt.ordinal)])
     after = urlsplit(url).path + "?" + urlencode(params, doseq=True)
     # HTTP retry of the same physical read adds no receipt/ordinal and cannot satisfy a new baseline.
     await store_capture_report(session, companion.agent_id, again)
-    assert "Waiting for a new received capture" in (await client.get(after, headers=HX)).text
+    assert "Waiting for the storage agent" in (await client.get(after, headers=HX)).text
     # All overview entry points use actual receipt history, even when semantic UUID is reused.
     for route in (f"/files/{media.id}", f"/record/{media.id}", f"/files/{media.id}/companion-details"):
         rendered = BeautifulSoup((await client.get(route, headers=HX)).text, "html.parser")
         assert "unavailable" in rendered.select_one("[data-latest-attempt]").get_text()
     params["since"] = [(attempt.received_at - timedelta(minutes=3)).isoformat()]
     expired = urlsplit(url).path + "?" + urlencode(params, doseq=True)
-    assert "agent may be offline" in (await client.get(expired, headers=HX)).text
+    assert "storage agent is online" in (await client.get(expired, headers=HX)).text
     params["since"] = [datetime.now(UTC).replace(tzinfo=None).isoformat()]
     assert (await client.get(urlsplit(url).path, params=params, headers=HX)).status_code == 422
     session.add(Agent(id="other-ui-owner", name="other-ui-owner", kind="fileserver", scan_roots=[]))
@@ -256,3 +252,89 @@ async def test_refresh_enqueue_failure_keeps_retained_text(client, session):
         refused = await client.post(f"/files/{media.id}/companions/{companion.id}/refresh", headers=HX)
     assert 'role="alert"' in refused.text and "could not be queued" in refused.text
     assert "First" in (await client.get(f"/files/{media.id}/companion-observations/{raw}/text", headers=HX)).text
+
+
+async def test_new_raw_review_hides_old_candidates_and_keeps_current_selection(client, session):
+    """A reread opens its own text; the reviewed observation stays pinned above it."""
+    from phaze.services.local_source_import import decide_local_source
+
+    media, companion, raw = await inventory(session)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id), actor="reviewer")
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    companion.sha256_hash = "b" * 64
+    await session.flush()
+    envelope = report(companion)
+    envelope = envelope.model_copy(update={"read": envelope.read.model_copy(update={"text": "01. New Artist - New version\n"})})
+    new_capture = await store_capture_report(session, companion.agent_id, envelope)
+    overview = await client.get(f"/files/{media.id}/companion-details?review_source_id={source_id}", headers=HX)
+    soup = BeautifulSoup(overview.text, "html.parser")
+    current = soup.select_one('[data-current-source="tracklist"]')
+    assert "First" in current.get_text()
+    evidence = current.select_one('[hx-get*="/api/local-sources/recordings/"]')
+    assert evidence is not None and evidence.find_parent("details") is not None
+    assert evidence["hx-get"].endswith("?kind=tracklist")
+    assert "Selected tracklist" in (await client.get(evidence["hx-get"], headers=HX)).text
+    assert not soup.select_one('[data-current-source="release_metadata"]').select("[data-selection-evidence]")
+    review = soup.select_one("[data-source-review]")
+    assert "New version" in review.select_one("[data-companion-text]").get_text()
+    assert not review.select("[data-source-decision]")
+    assert "Extract tracklist and release info" in review.get_text()
+    assert str(new_capture.observation_id) in str(review)
+    pinned = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
+    assert "First" in pinned.text and "New version" not in pinned.text
+    assert "Use this tracklist" not in pinned.text
+
+
+async def test_review_text_is_bounded_and_preview_is_read_only(client, session):
+    text = "01. Artist - Opening\n" + "synthetic prose\n" * 1000
+    media, _companion, raw = await inventory(session, text)
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    with patch("phaze.routers.record.enqueue_companion_capture", side_effect=AssertionError("preview must not acquire")):
+        response = await client.get(f"/files/{media.id}/companion-sources/{source_id}/observations", headers=HX)
+    soup = BeautifulSoup(response.text, "html.parser")
+    assert len(soup.select_one("[data-companion-text]").get_text()) == 8192
+    assert soup.find("button", string="More stored text")
+    assert soup.find("button", string="Extract tracklist and release info")
+    assert not soup.select("[data-source-decision]")
+
+
+async def test_auto_refresh_keeps_open_review_outside_first_page(client, session):
+    media, _companion, raw = await inventory(session)
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    response = await client.get(
+        f"/files/{media.id}/companion-details?link_offset=100000&source_offset=100000&review_source_id={source_id}", headers=HX
+    )
+    soup = BeautifulSoup(response.text, "html.parser")
+    assert not soup.select("[data-source-object]")
+    assert "First" in soup.select_one("[data-source-review] [data-companion-text]").get_text()
+    # Link metadata still resolves retained content when the independent source page is elsewhere.
+    paged = await client.get(f"/files/{media.id}/companion-details?source_offset=100000", headers=HX)
+    assert "Review content" in paged.text and "Not read yet" not in paged.text
+
+
+async def test_incomplete_parser_child_with_text_keeps_review_as_next_action(client, session):
+    """Parser completeness must never masquerade as a failed acquisition."""
+    media, _companion, raw = await inventory(session, TEXT, "nfo")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    assert imported.tracklist_status == "incomplete"
+    child = await session.get(ProviderSourceObservation, imported.tracklist_observation_id)
+    child.retrieved_at += timedelta(seconds=1)
+    await session.flush()
+    response = await client.get(f"/files/{media.id}/companion-details", headers=HX)
+    card = BeautifulSoup(response.text, "html.parser").select_one("[data-companion-link]")
+    assert "Text available" in card.get_text() and "No readable text" not in card.get_text()
+    review = card.find("button", string="Review content")
+    assert "bg-action-brand" in review["class"]
+    assert card.find("button", string="Read file again").find_parent("details") is not None
+
+
+async def test_diagnostic_history_pagination_preserves_history_view(client, session):
+    media, _companion, raw = await inventory(session)
+    await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    first = await client.get(f"/files/{media.id}/companion-sources/{source_id}/observations?history_only=true&limit=1", headers=HX)
+    next_url = BeautifulSoup(first.text, "html.parser").find("button", string="Next observations")["hx-get"]
+    assert "history_only=true" in next_url
+    next_page = await client.get(next_url, headers=HX)
+    assert "data-observation-history" in next_page.text and "data-source-review" not in next_page.text

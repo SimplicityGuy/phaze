@@ -68,16 +68,11 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
     assert await page.locator("[data-visible-track]").first.is_visible()
     assert "Example Festival" in await page.locator("[data-release-metadata]").inner_text()
     page_text = await page.locator("[data-record-content]").inner_text()
-    track = page.get_by_role("button", name="Read all track rows, text and review").first
+    track = page.get_by_role("button", name="Review content").first
     await track.focus()
     async with swap_settles(page):
         await page.keyboard.press("Enter")
     await page.locator("[data-stored-observation]").first.wait_for()
-    text = page.get_by_role("button", name="Read original companion text").first
-    await text.focus()
-    async with swap_settles(page):
-        await page.keyboard.press("Enter")
-    await page.locator("[data-companion-text]").first.wait_for()
     assert '<script>alert("synthetic")</script>' in await page.locator("[data-companion-text]").first.inner_text()
     assert await page.locator("[data-companion-text] script").count() == 0
     await page.set_viewport_size({"width": 390, "height": 844})
@@ -109,18 +104,12 @@ async def test_native_form_reimport_select_and_html_error(page, seed):
     await import_local_source(seed.session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     await seed.session.commit()
     await open_shell(page, f"/files/{media.id}")
-    await page.get_by_role("button", name="Read all track rows, text and review").click()
-    await page.locator("[data-source-decision]").wait_for()
-    await page.get_by_role("button", name="Select this tracklist", exact=True).click()
-    await page.get_by_role("status").filter(has_text="Source selected.").wait_for()
-    await page.get_by_role("button", name="Reviewed tracklist", exact=True).click()
-    await page.locator("[data-reviewed-source]").filter(has_text="Selected tracklist").wait_for()
-    await page.get_by_role("button", name="Reimport stored text", exact=True).click()
-    await page.get_by_role("status").filter(has_text="Stored text imported").wait_for()
-    # A reviewed source revision changes while the original form remains open.
+    await page.get_by_role("button", name="Review content").click()
+    await page.locator("[data-source-decision]").first.wait_for()
+    # A displayed candidate revision changes before the decision.
     companion.sha256_hash = "b" * 64
     await seed.session.commit()
-    await page.get_by_role("button", name="Select this tracklist", exact=True).click()
+    await page.get_by_role("button", name="Use this tracklist", exact=True).click()
     await page.get_by_role("alert").filter(has_text="Inventory revision changed before decision").wait_for()
 
 
@@ -146,26 +135,75 @@ async def test_workspace_links_keyboard_independent_release_and_tracklist_choice
     await page.keyboard.press("Enter")
     await page.locator("[data-companion-overview]").wait_for()
     for observation, button in (
-        (first.tracklist_observation_id, "Select this tracklist"),
-        (second.release_observation_id, "Select this release metadata"),
+        (first.tracklist_observation_id, "Use this tracklist"),
+        (second.release_observation_id, "Use this release info"),
     ):
-        source = page.locator(f'[hx-get="/files/{media.id}/companion-observations/{observation}"]').first
-        await source.focus()
-        async with swap_settles(page):
-            await page.keyboard.press("Enter")
-        await page.locator(f'[data-stored-observation="{observation}"]').wait_for()
+        from phaze.models.provider_source import ProviderSourceObservation
+
+        source_id = (await seed.session.get(ProviderSourceObservation, observation)).object_id
+        card = page.locator(f'[data-source-object="{source_id}"]')
+        await card.get_by_role("button", name="Review content", exact=True).click()
         form = page.locator(f'[data-stored-observation="{observation}"] [data-source-decision]')
+        await form.wait_for()
         conflict = form.locator('input[name="accept_conflict"]')
         if await conflict.count():
             await conflict.check()
-        await form.get_by_role("button", name=button, exact=True).focus()
-        async with swap_settles(page):
-            await page.keyboard.press("Enter")
-        await page.get_by_role("status").filter(has_text="Source selected.").last.wait_for()
+        await form.get_by_role("button", name=button, exact=True).click()
+        kind = "tracklist" if button == "Use this tracklist" else "release_metadata"
+        await page.locator(f'[data-current-source="{kind}"]').get_by_role("button").wait_for()
     await open_shell(page, f"/files/{media.id}")
-    assert "Selected tracklist" in await page.locator("[data-record-content]").inner_text()
-    await page.get_by_role("button", name="Reviewed release metadata", exact=True).focus()
+    assert await page.locator('[data-current-source="tracklist"] [data-current-track]').count() > 0
+    await page.get_by_role("button", name="View release info", exact=True).focus()
     async with swap_settles(page):
         await page.keyboard.press("Enter")
-    await page.locator("[data-reviewed-source]").filter(has_text="Selected release metadata").wait_for()
+    await page.locator("[data-companion-text]").first.wait_for()
     assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+
+
+async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
+    """The user's actual workflow: one card, immediate text, extract, independent choices."""
+    from phaze.models.provider_source import ProviderSourceObservation
+    from phaze.services.companion_capture import store_capture_report
+    from tests.integration.test_companion_import_backfill import report
+
+    await seed.agent("test-fileserver")
+    media, companion, raw = await inventory(
+        seed.session, "Artist: Example Artist\nAlbum: Example Festival\n01. Example Artist - Opening\n02. Example Artist - Finale\n", "nfo"
+    )
+    source_id = (await seed.session.get(ProviderSourceObservation, raw)).object_id
+    await seed.session.commit()
+    await page.set_viewport_size({"width": 390, "height": 844})
+    await open_shell(page, f"/files/{media.id}")
+    overview = page.locator("[data-companion-overview]")
+    await overview.get_by_role("button", name="Review content", exact=True).click()
+    await overview.locator("[data-companion-text]").wait_for()
+    assert "Example Festival" in await overview.locator("[data-companion-text]").inner_text()
+    assert await overview.locator("[data-source-decision]").count() == 0
+    await overview.get_by_role("button", name="Extract tracklist and release info", exact=True).click()
+    await overview.get_by_role("button", name="Use this tracklist", exact=True).wait_for()
+    assert "Example Festival" in await overview.locator("[data-companion-release-facts]").inner_text()
+    await overview.get_by_role("button", name="Use this tracklist", exact=True).click()
+    await overview.locator('[data-current-source="tracklist"] [data-current-track]').first.wait_for()
+    assert "No release info chosen yet" in await overview.locator('[data-current-source="release_metadata"]').inner_text()
+    await overview.get_by_role("button", name="Use this release info", exact=True).click()
+    await overview.locator('[data-current-source="release_metadata"] [data-current-release-field]').first.wait_for()
+    assert await overview.get_by_role("button", name="Use this tracklist", exact=True).count() == 0
+    assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+    # A new capture must not replace the reviewed source or reuse the old extraction.
+    companion.sha256_hash = "b" * 64
+    await seed.session.flush()
+    envelope = report(companion)
+    envelope = envelope.model_copy(update={"read": envelope.read.model_copy(update={"text": "01. New Artist - New version\n"})})
+    await store_capture_report(seed.session, companion.agent_id, envelope)
+    await seed.session.commit()
+    await open_shell(page, f"/files/{media.id}")
+    await overview.get_by_role("button", name="Review content", exact=True).click()
+    await overview.locator("[data-companion-text]").wait_for()
+    assert "New version" in await overview.locator("[data-companion-text]").inner_text()
+    assert "Opening" in await overview.locator('[data-current-source="tracklist"]').inner_text()
+    assert await overview.locator("[data-source-decision]").count() == 0
+    await overview.get_by_role("button", name="View tracklist", exact=True).click()
+    pinned = overview.locator('[data-current-source="tracklist"] [data-companion-text]')
+    await pinned.wait_for()
+    assert "Opening" in await pinned.inner_text() and "New version" not in await pinned.inner_text()
+    assert await overview.locator(f'[data-source-review="{source_id}"]').count() == 1

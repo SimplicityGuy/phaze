@@ -19,10 +19,19 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
-from phaze.schemas.companion_details import CompanionDetails, StoredObservationDetail, StoredTextRequest
+from phaze.schemas.companion_details import CompanionDetails, DetailPage, StoredObservationDetail, StoredTextRequest
 from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
 from phaze.services.companion_acquisition import get_latest_source_attempts
-from phaze.services.companion_details import _embedded_freshness, _file, _observation_query, _summary, get_companion_details, get_stored_text
+from phaze.services.companion_details import (
+    _embedded_freshness,
+    _file,
+    _observation_query,
+    _summary,
+    get_companion_details,
+    get_source_observations,
+    get_stored_observation,
+    get_stored_text,
+)
 from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
 from phaze.tracklist_providers.local_parser import PARSER_VERSION
 from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION
@@ -139,6 +148,97 @@ async def visible_parsed_content(session: AsyncSession, details: CompanionDetail
         )
         for row in fresh_rows
     )
+
+
+async def companion_overview_context(session: AsyncSession, details: CompanionDetails, review_source_id: uuid.UUID | None = None) -> dict[str, Any]:
+    """Small, pinned selection summaries and unified cards; no source-body reads until review."""
+    selected = {}
+    for authority in details.selected:
+        detail = await get_stored_observation(session, details.file_id, authority.observation_id, track_page=DetailPage(limit=3))
+        source = await session.get(ProviderSourceObject, authority.source_object_id)
+        source_file = await session.get(FileRecord, source.source_file_id) if source and source.source_file_id else None
+        selected[authority.kind] = {
+            "authority": authority,
+            "detail": detail,
+            "name": source_file.original_filename if source_file else (source.channel if source else "Retained source"),
+        }
+    # Independent pagination must not turn a retained source into a duplicate linked-file card.
+    sources: dict[uuid.UUID, Any] = {source.source_file_id: source for source in details.sources if source.source_file_id}
+    # A link page and a retained-source page can differ. Resolve linked cards outside the
+    # source page with two bounded metadata queries, so they never claim existing text is unread.
+    missing = {link.file_id: link for link in details.links if link.file_id not in sources}
+    if missing:
+        objects = tuple(
+            await session.scalars(
+                select(ProviderSourceObject).where(
+                    ProviderSourceObject.source_file_id.in_(missing),
+                    ProviderSourceObject.provider_id == "local",
+                    ProviderSourceObject.channel == "companion",
+                    ProviderSourceObject.native_id == func.concat("companion:", ProviderSourceObject.source_file_id),
+                )
+            )
+        )
+        media = await _file(session, details.file_id)
+        if media is not None and objects:
+            obs = ProviderSourceObservation
+            rows = (
+                (
+                    await session.execute(
+                        _observation_query(media)
+                        .where(obs.object_id.in_([source.id for source in objects]))
+                        .distinct(obs.object_id)
+                        .order_by(obs.object_id, obs.retrieved_at.desc(), obs.id.desc())
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            summaries = {row["source_object_id"]: _summary(row, media, details.selected) for row in rows}
+            for source in objects:
+                if source.source_file_id is not None:
+                    sources[source.source_file_id] = {
+                        "source_object_id": source.id,
+                        "latest_stored_content": summaries.get(source.id),
+                        "latest_received_attempt": None,
+                    }
+
+    cards = [{"link": link, "source": sources.get(link.file_id)} for link in details.links]
+    linked_ids = {link.file_id for link in details.links}
+    cards.extend({"link": None, "source": source} for source in details.sources if source.source_file_id not in linked_ids)
+    review = await source_review_context(session, details.file_id, review_source_id) if review_source_id else None
+    return {"companion_cards": cards, "companion_selected": selected, "companion_review": review, "review_source_id": review_source_id}
+
+
+async def source_review_context(session: AsyncSession, file_id: uuid.UUID, source_id: uuid.UUID) -> dict[str, Any] | None:
+    """Review the newest raw capture and only its interpretations, never a different version's rows."""
+    history = await get_source_observations(session, file_id, source_id)
+    if history is None:
+        return None
+    media = await _file(session, file_id)
+    obs = ProviderSourceObservation
+    if media is None:
+        return None
+    query = _observation_query(media).where(obs.object_id == source_id)
+    raw_id = await session.scalar(
+        query.with_only_columns(obs.id).where(obs.parser_version == "source-read-v1").order_by(obs.retrieved_at.desc(), obs.id.desc()).limit(1)
+    )
+    # Embedded-tag interpretations have no separate acquisition observation.
+    text_id = raw_id or (history.observations[0].observation_id if history.observations else None)
+    chunk = await get_stored_text(session, file_id, text_id) if text_id else None
+    parsed_query = query.where(obs.parser_version.in_((PARSER_VERSION, RELEASE_PARSER_VERSION)))
+    if raw_id:
+        parsed_query = parsed_query.where(obs.parent_id == raw_id)
+    parsed_ids = tuple(
+        await session.scalars(
+            parsed_query.with_only_columns(obs.id).distinct(obs.parser_version).order_by(obs.parser_version, obs.retrieved_at.desc(), obs.id.desc())
+        )
+    )
+    interpretations = []
+    for identifier in parsed_ids:
+        detail = await get_stored_observation(session, file_id, identifier)
+        if detail:
+            interpretations.append({"detail": detail, "actions": await observation_actions(session, detail)})
+    return {"source_id": source_id, "history": history, "raw_id": raw_id, "chunk": chunk, "interpretations": interpretations}
 
 
 def request_schema(model: type[ImportLocalSource] | type[SourceDecision]) -> dict[str, Any]:
