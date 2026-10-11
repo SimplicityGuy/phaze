@@ -733,3 +733,21 @@ def test_set_variable_extraction_reads_double_quoted_literals_too() -> None:
     # double quotes) -- both must resolve.
     set_vars = _extract_set_vars('{% set c = "dark:text-gray-300" %}')
     assert set_vars == {"c": ["dark:text-gray-300"]}
+
+
+def test_shared_reduced_motion_rule_disables_animations_and_transitions() -> None:
+    css = (_TEMPLATES.parents[2] / "assets/src/app.css").read_text(encoding="utf-8")
+    assert css.count("@media (prefers-reduced-motion: reduce)") == 1
+    rule = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert "*, *::before, *::after" in rule
+    assert "animation: none !important" in rule
+    assert "transition: none !important" in rule
+    assert "scroll-behavior: auto !important" in rule
+
+
+def test_shared_navigation_controls_use_focus_visible_rings() -> None:
+    for relative in ("shell/partials/rail.html", "shell/partials/header.html", "pipeline/partials/_workspace_scaffold.html"):
+        source = (_TEMPLATES / relative).read_text(encoding="utf-8")
+        assert "focus:ring-2" not in source, relative
+    for relative in ("shell/partials/rail.html", "shell/partials/header.html"):
+        assert "focus-visible:ring-2" in (_TEMPLATES / relative).read_text(encoding="utf-8"), relative

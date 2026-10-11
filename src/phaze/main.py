@@ -66,6 +66,7 @@ from phaze.runtime_config_triggers import build_backends_watcher, build_watcher,
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
+from phaze.services.pipeline.review_counts import _REVIEW_TTL_SECONDS, refresh_review_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
@@ -92,6 +93,18 @@ async def _orphan_refresh_loop() -> None:
         except Exception:
             logger.warning("orphan refresh loop iteration failed; keeping last-good", exc_info=True)
         await asyncio.sleep(_ORPHAN_TTL_SECONDS)
+
+
+async def _review_refresh_loop() -> None:
+    """Refresh review counts off-request; failures retain values and clear their known flag."""
+    while True:
+        try:
+            await refresh_review_counts()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("review refresh loop iteration failed; keeping last-good", exc_info=True)
+        await asyncio.sleep(_REVIEW_TTL_SECONDS)
 
 
 @asynccontextmanager
@@ -197,6 +210,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     # Materialize orphan counts off the 5 s stats request path; the cache keeps badge reads O(1).
     _app.state.orphan_task = asyncio.create_task(_orphan_refresh_loop())
+    _app.state.review_counts_task = asyncio.create_task(_review_refresh_loop())
 
     yield
     # Shutdown in reverse construction order.
@@ -204,6 +218,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # through goes away.
     await _app.state.runtime_config_listener.stop()
     # Stop the refresher before disposing its engine.
+    _app.state.review_counts_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _app.state.review_counts_task
     _app.state.orphan_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await _app.state.orphan_task
