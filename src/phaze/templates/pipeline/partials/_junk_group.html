@@ -95,8 +95,8 @@
                 class="{{ ui.btn('secondary', 'md') }}">Undo</button>
         {% endif %}
         <p class="text-xs text-muted sm:ml-auto">
-            {% if group.approved %}Approved copies stay where they are until you run the quarantine; until then Undo takes them back.
-            {% elif group.pending %}Approve, then run the quarantine to move the copies into the hidden quarantine folder. Rejecting keeps every identical copy, everywhere.
+            {% if group.approved %}{{ group.approved | thousands }} approved {{ 'copy' if group.approved == 1 else 'copies' }}: quarantine dispatch cannot be undone. Undo is available before dispatch.
+            {% elif group.pending %}Approve {{ group.pending | thousands }} pending {{ 'copy' if group.pending == 1 else 'copies' }}; no files move. Reject keeps every identical copy, everywhere.
             {% elif group.executing %}Handed to quarantine: the agent moves each file and reports back. This can no longer be undone.
             {% elif group.copies %}Decided.
             {% else %}No live copies remain in this group; quarantined or failed copies can no longer be undone.{% endif %}

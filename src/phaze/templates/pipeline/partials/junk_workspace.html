@@ -19,7 +19,14 @@
 {% set subcount = "'" ~ (_total | thousands) ~ " groups awaiting a decision or a run'" %}
 {% call ws.workspace(title=page_name('junk'), subcount=subcount, x_data="{ selected: 0, count() { this.selected = document.querySelectorAll('#junk-group-list [data-junk-select]:checked').length } }") %}
     <div class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
-        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Companion files that carry nothing about a recording. Approve a group, then run the quarantine to move its approved copies into the scan root's hidden quarantine folder; until you run it, Undo takes the approval back. Rejecting keeps the files and covers every identical copy.</p>
+        <details id="junk-workflow-help">
+            <summary class="cursor-pointer text-sm font-medium text-gray-800 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-200">How Junk review works</summary>
+            <div class="mt-3 max-w-3xl space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                <p>Companion files that carry nothing about a recording. Each card shows why the detector proposed its identical copies.</p>
+                <p>Approve a group, then run the quarantine to move its approved copies into the scan root's hidden quarantine folder; until you run it, Undo takes the approval back. Rejecting keeps the files and covers every identical copy.</p>
+                <p>Quarantine dispatch cannot be undone. Bulk controls act only on checked groups on this page; quarantine moves only their approved copies.</p>
+            </div>
+        </details>
         <div id="junk-review-status" role="status" aria-live="polite" class="mt-3 text-sm text-gray-800 empty:hidden dark:text-gray-200"></div>
     </div>
     {% if _groups %}
