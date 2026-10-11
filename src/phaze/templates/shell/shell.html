@@ -124,6 +124,17 @@
             // contract for the Discover recovery panel's "none detected" claim.
             Alpine.store('pipeline', {
                 seedKnown: 0, orphanKnown: 0,
+                reviewPending: 0,
+                reviewDedupe: 0,
+                reviewJunk: 0,
+                reviewCue: 0,
+                reviewCountsKnown: 0,
+                analyzeFailed: 0,
+                analyzeStalled: 0,
+                inadmissible: 0,
+                awaitingCloud: 0,
+                queuedBehindQuota: 0,
+
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).

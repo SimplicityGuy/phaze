@@ -49,6 +49,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
     stage_orphan_counts_known,
 )
+from phaze.services.pipeline.review_counts import get_cached_review_counts
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.stage_status import MISSING_BUCKET
 from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
@@ -142,6 +143,8 @@ async def _build_dag_context(
     session: AsyncSession,
     activity: dict[str, int],  # noqa: ARG001 — kept for caller stability; analyzeActive now derives from stage_progress (Phase 93)
     stage_progress: dict[str, dict[str, int | None]] | None = None,
+    *,
+    attention: dict[str, int] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
 
@@ -292,6 +295,17 @@ async def _build_dag_context(
     # OOB seed loop onto the dag-seed-notYetEnriched placeholder the workspaces pre-mount.
     dag["notYetEnriched"] = max(int(stage["metadata"]["total"] or 0) - int(stage["metadata"]["done"] or 0), 0)
 
+    dag.update(get_cached_review_counts())
+    # Route callers pass their already-read attention counts; direct callers use the same services.
+    if attention is None:
+        attention = {
+            "analyzeFailed": int(await get_analysis_failed_count(session)),
+            "analyzeStalled": int(await get_analysis_stalled_count(session)),
+            "inadmissible": int(await get_inadmissible_count(session)),
+            "awaitingCloud": int(await get_awaiting_cloud_count(session)),
+            "queuedBehindQuota": int((await get_cloud_phase_counts(session))["queued_behind_quota"]),
+        }
+    dag.update(attention)
     return {"dag": dag}
 
 
@@ -424,13 +438,6 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     activity = await get_queue_activity(app_state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
 
-    # Phase 35 (35-04): per-DAG-node done/total/active reconciled from get_stage_progress
-    # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
-    # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
-    # the dashboard context. _build_dag_context isolates its own counter-source failures.
-    # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
-    dag_ctx = await _build_dag_context(app_state, session, activity, stage_progress)
-
     # Phase 44 (44-04): the ANALYSIS_FAILED count ("gave up") and the STALLED count (the
     # heartbeat-watchdog-killed subset of it) -- the Analysis Health card's two buckets
     # (44-02 D-02). The Phase 44 STRAGGLER count (long-running in-flight process_file jobs,
@@ -471,6 +478,20 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # (returns 0 on any DB error), so NO try/except here -- same service-owns-degrade idiom as
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
+    # Reuse stage progress and the attention reads above in both first paint and the poll.
+    dag_ctx = await _build_dag_context(
+        app_state,
+        session,
+        activity,
+        stage_progress,
+        attention={
+            "analyzeFailed": analysis_failed_count,
+            "analyzeStalled": analysis_stalled_count,
+            "inadmissible": inadmissible_count,
+            "awaitingCloud": awaiting_cloud_count,
+            "queuedBehindQuota": cloud_phase_counts["queued_behind_quota"],
+        },
+    )
 
     # phaze-5462: the Analyze workspace no longer server-renders ANY file rows inline. It used to seed
     # `analyze_files` here from get_analyze_working_set, whose "active working set" branch was UNBOUNDED
@@ -711,7 +732,19 @@ async def pipeline_stats_partial(
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
     # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
-    dag_ctx = await _build_dag_context(request.app.state, session, activity, stage_progress)
+    dag_ctx = await _build_dag_context(
+        request.app.state,
+        session,
+        activity,
+        stage_progress,
+        attention={
+            "analyzeFailed": analysis_failed_count,
+            "analyzeStalled": analysis_stalled_count,
+            "inadmissible": inadmissible_count,
+            "awaitingCloud": awaiting_cloud_count,
+            "queuedBehindQuota": cloud_phase_counts["queued_behind_quota"],
+        },
+    )
     # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
     # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
     selected_lane = lane if any(one.get("id") == lane for one in lanes) else None

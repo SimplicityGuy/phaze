@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 class CueReviewReader(Protocol):
     """Consumer-facing port for CUE candidate counts and preview cards."""
 
-    async def count_cue_review_candidates(self, session: AsyncSession) -> int: ...
+    async def count_cue_review_candidates(self, session: AsyncSession, *, strict: bool = False) -> int: ...
 
     async def get_cue_review_cards(self, session: AsyncSession) -> list[dict[str, Any]]: ...
 
@@ -74,13 +74,15 @@ class SqlCueReviewReader:
         self._build_cue_tracks_for_versions = build_cue_tracks_for_versions
         self._generate_cue_content = generate_cue_content
 
-    async def count_cue_review_candidates(self, session: AsyncSession) -> int:
+    async def count_cue_review_candidates(self, session: AsyncSession, *, strict: bool = False) -> int:
         try:
             async with session.begin_nested():
                 eligible = await session.execute(select(func.count()).select_from(self._eligible_tracklist_stmt().subquery()))
                 gated = await session.execute(select(func.count()).select_from(self._gated_tracklist_stmt().subquery()))
                 return int(eligible.scalar_one()) + int(gated.scalar_one())
         except Exception:
+            if strict:
+                raise
             logger.warning("cue_review_count_degraded", exc_info=True)
             return 0
 

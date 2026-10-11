@@ -204,9 +204,12 @@ async def get_dedupe_groups(
     return await _dedupe_reader().get_dedupe_groups(session, limit=limit, offset=offset)
 
 
-async def count_cue_review_candidates(session: AsyncSession) -> int:
-    """Return the uncapped CUE candidate count without building preview text."""
-    return await _cue_reader().count_cue_review_candidates(session)
+async def count_cue_review_candidates(session: AsyncSession, *, strict: bool = False) -> int:
+    """Return the uncapped CUE candidate count; strict reads raise so caches can reject degraded zeros."""
+    reader = _cue_reader()
+    if strict:
+        return await reader.count_cue_review_candidates(session, strict=True)
+    return await reader.count_cue_review_candidates(session)
 
 
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
