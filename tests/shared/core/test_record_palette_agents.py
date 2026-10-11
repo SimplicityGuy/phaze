@@ -96,7 +96,7 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     The boundary asserted here is three-part:
       1. the record reports the file's pending-decision COUNT, and only its OWN file's — a second
          file's pending proposal must not be counted, and a file with none must render the
-         "up to date" branch with no queue link at all,
+         "no proposed changes" branch with no queue link at all,
       2. it links to the canonical queue ``/s/rename?status=needs_review`` with htmx wiring that
          targets a container the shell actually renders (``#stage-workspace``, the same one the
          rail swaps into),
@@ -144,7 +144,7 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     r2 = await client.get(f"/record/{proposal.file_id}", headers={"HX-Request": "true"})
     assert r2.status_code == 200
     assert "needing review." not in r2.text, "no proposal needing review → no count"
-    assert "nothing needs review" in r2.text
+    assert "No proposed changes awaiting review" in r2.text
     assert "/s/rename?status=needs_review" not in r2.text, "nothing to review → no queue link"
 
 
