@@ -31,6 +31,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Current Quality Coverage Assessment](quality-assessment/coverage-baseline.md)** | Exact-commit CI line/context evidence, source growth, low-line candidates and selector limits |
 | **[Testing Risk Inventory](quality-assessment/testing-risk-inventory.md)** | Current coverage, churn, assertion and consumer gaps, and bounded hunt slices |
 | **[Test Runtime Assessment](quality-assessment/runtime-profile.md)** | Current floor, fixture, collection, local lane and CI shard measurements with safe experiment boundaries |
+| **[Mutation and Replay Hunt](quality-assessment/mutation-hunt.md)** | Bounded first-round findings, independent verification, synthetic observations and checkpoint metrics |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
