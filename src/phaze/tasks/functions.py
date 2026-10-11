@@ -45,9 +45,11 @@ from phaze.services.video_audio import AudioExtractionError, NoAudioTrackError, 
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     import uuid
 
     from phaze.services.agent_client import PhazeAgentClient
+    from phaze.services.resizable_limiter import ResizableLimiter
 
 
 logger = structlog.get_logger(__name__)
@@ -383,6 +385,36 @@ class _ExtractionOutcome:
     terminal_response: dict[str, Any] | None = None
 
 
+@contextlib.asynccontextmanager
+async def _analysis_capacity(semaphore: asyncio.Semaphore | ResizableLimiter | None, job: Any, heartbeat_sec: int) -> AsyncIterator[None]:
+    """Keep a dispatched job alive only until its local child permit is acquired.
+
+    The relay is settled before extraction/analysis starts, so it cannot hide an
+    admitted child's genuine progress stall. Cancellation also settles it before
+    the limiter context releases its permit (or removes its pending waiter).
+    """
+
+    async def relay() -> None:
+        while True:
+            await asyncio.sleep(heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE)
+            await _touch_job_heartbeat(job)
+
+    task = asyncio.create_task(relay()) if semaphore is not None and job is not None else None
+
+    async def settle() -> None:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    try:
+        async with semaphore if semaphore is not None else contextlib.nullcontext():
+            await settle()
+            yield
+    finally:
+        await settle()
+
+
 async def _extract_and_analyze(
     api: PhazeAgentClient,
     cfg: AgentSettings,
@@ -424,7 +456,7 @@ async def _extract_and_analyze(
     T-43-08 treats every one as TERMINAL -- report once, no blind SAQ re-run. Any OTHER
     exception is left to propagate to the caller's generic handler unchanged.
     """
-    semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
+    semaphore: asyncio.Semaphore | ResizableLimiter | None = ctx.get("analysis_semaphore")
     job = ctx.get("job")
     # phaze-mvq8z.21: the ONE live snapshot read for this job. The watchdog it arms, the SAQ
     # deadline stamped below and both touch cadences all derive from it, so the 2x invariant
@@ -443,7 +475,7 @@ async def _extract_and_analyze(
         await _touch_job_heartbeat(job)
 
     try:
-        async with semaphore if semaphore is not None else contextlib.nullcontext():
+        async with _analysis_capacity(semaphore, job, job_heartbeat_sec):
             audio_source = await extract_audio_track(
                 read_path,
                 file_id=str(payload.file_id),
