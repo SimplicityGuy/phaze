@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import cast, func, select
-from sqlalchemy.dialects.postgresql import JSONPATH
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -32,7 +32,7 @@ from phaze.services.companion_details import (
     get_stored_observation,
     get_stored_text,
 )
-from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
+from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact, TrackSection
 from phaze.tracklist_providers.local_parser import PARSER_VERSIONS
 from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSIONS
 
@@ -50,7 +50,14 @@ async def command_body(request: Request, model: type[ImportLocalSource] | type[S
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json":
         return model.model_validate(await request.json())
     values: dict[str, Any] = dict(await request.form())
-    for key in ("raw_observation_id", "embedded_channel", "expected_selection_token", "expected_revision", "cue_file_ordinal"):
+    for key in (
+        "raw_observation_id",
+        "embedded_channel",
+        "expected_selection_token",
+        "expected_revision",
+        "cue_file_ordinal",
+        "text_section_ordinal",
+    ):
         if values.get(key) == "":
             values[key] = None
     return model.model_validate(values)
@@ -91,6 +98,23 @@ async def observation_actions(session: AsyncSession, detail: StoredObservationDe
         and (detail.summary.release_fact_count > 0 if kind == "release_metadata" else detail.summary.track_count > 0)
     )
     text_id = detail.summary.observation_id
+    section_row = (
+        await session.execute(
+            select(
+                ProviderSourceObservation.payload["sections"],
+                ProviderSourceObservation.payload["section_scan_complete"],
+            ).where(ProviderSourceObservation.id == detail.summary.observation_id)
+        )
+    ).one_or_none()
+    sections = tuple(TrackSection.model_validate(item) for item in (section_row[0] or [])) if section_row else ()
+    if kind == "tracklist" and sections:
+        can_select = (
+            known
+            and bool(section_row and section_row[1])
+            and detail.summary.availability == "current"
+            and detail.summary.candidate_status in {"pending", "accepted"}
+            and any(section.completeness.state == "complete" for section in sections)
+        )
     if detail.summary.parent_id and await get_stored_text(session, detail.file_id, detail.summary.parent_id, chunk=StoredTextRequest(length=1)):
         text_id = detail.summary.parent_id
     source_format = await session.scalar(
@@ -98,6 +122,9 @@ async def observation_actions(session: AsyncSession, detail: StoredObservationDe
     )
     return {
         "is_cue": source_format == "cue",
+        "sections": sections[:64],
+        "section_count": len(sections),
+        "text_warnings": any(section.warnings for section in sections),
         "text_id": text_id,
         "kind": kind,
         "decision_id": uuid.uuid4(),
@@ -126,6 +153,8 @@ async def visible_parsed_content(session: AsyncSession, details: CompanionDetail
         .add_columns(
             func.jsonb_path_query_array(obs.payload, cast("$.tracks[0 to 2]", JSONPATH)).label("visible_tracks"),
             func.jsonb_path_query_array(obs.payload, cast("$.release_facts[0 to 5]", JSONPATH)).label("visible_facts"),
+            func.jsonb_path_query_array(obs.payload, cast("$.sections[0 to 63]", JSONPATH)).label("visible_sections"),
+            func.jsonb_array_length(func.coalesce(obs.payload["sections"], cast("[]", JSONB))).label("section_count"),
         )
         .where(
             obs.object_id.in_([source.source_object_id for source in details.sources]),
@@ -142,6 +171,8 @@ async def visible_parsed_content(session: AsyncSession, details: CompanionDetail
             summary=_summary(row, media, details.selected),
             tracks=tuple(ProviderTrack.model_validate(item) for item in row["visible_tracks"]),
             release_facts=tuple(ReleaseFact.model_validate(item) for item in row["visible_facts"]),
+            sections=tuple(TrackSection.model_validate(item) for item in row["visible_sections"]),
+            section_count=row["section_count"],
             evidence=(),
             next_track_offset=3 if row["track_count"] > 3 else None,
             next_fact_offset=6 if row["release_fact_count"] > 6 else None,

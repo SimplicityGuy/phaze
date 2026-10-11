@@ -44,7 +44,7 @@ async def test_music_video_both_interpretations_visible_page_drawer_and_lazy_tex
         response = await client.get(path)
         assert response.status_code == 200
         soup = BeautifulSoup(response.text, "html.parser")
-        assert soup.select_one("[data-visible-track]").get_text().startswith("1. Artist")
+        assert "Artist" in soup.select_one("[data-visible-track]").get_text()
         facts = soup.select("[data-visible-release-field]")
         assert any("Example Festival" in fact.get_text() for fact in facts)
         assert any("Example Records" in fact.get_text() for fact in facts)
@@ -64,6 +64,33 @@ async def test_music_video_both_interpretations_visible_page_drawer_and_lazy_tex
     assert f"/files/{companion.id}#companion-sources" in detail.text
     reverse = await client.get(f"/files/{companion.id}/linked-media", headers=HX)
     assert media.original_filename in reverse.text
+
+
+async def test_current_text_sections_warnings_and_native_mapping_visible_page_drawer(client, session):
+    text = "Part 1: First\n01. A - B / C - D\nPart 2: Second\n01. Other - Closing\n"
+    media, companion, raw = await inventory(session, text)
+    result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    for path in (f"/files/{media.id}", f"/record/{media.id}"):
+        page = await client.get(path)
+        assert page.status_code == 200
+        soup = BeautifulSoup(page.text, "html.parser")
+        sections = soup.select_one("[data-visible-text-sections]").get_text()
+        assert "Section 1" in sections and "Section 2" in sections and "ambiguous_artist_title" in sections
+        assert "[section 2]" in soup.select("[data-visible-track]")[1].get_text()
+    detail_url = f"/files/{media.id}/companion-observations/{result.tracklist_observation_id}"
+    detail = await client.get(detail_url, headers=HX)
+    assert 'name="text_section_ordinal"' in detail.text and 'name="accept_text_warnings"' in detail.text
+    command = decision(media, companion, result.tracklist_observation_id).model_copy(update={"text_section_ordinal": 1})
+    payload = {key: str(value) if value is not None else "" for key, value in command.model_dump().items()}
+    payload.pop("accept_text_warnings")
+    refused = await client.post("/api/local-sources/decision", data=payload, headers=HX)
+    assert 'role="alert"' in refused.text and "explicit acknowledgement" in refused.text
+    payload["accept_text_warnings"] = "true"
+    accepted = await client.post("/api/local-sources/decision", data=payload, headers=HX)
+    assert accepted.status_code == 200 and 'role="alert"' not in accepted.text
+    selected = await client.get(detail_url, headers=HX)
+    rows = BeautifulSoup(selected.text, "html.parser").select("[data-local-track]")
+    assert len(rows) == 1 and "[section 1]" in rows[0].get_text() and "Title unknown" in rows[0].get_text()
 
 
 async def test_json_and_form_contracts_selection_stale_errors_and_reimport(client, session):
@@ -371,7 +398,7 @@ async def test_auto_refresh_keeps_open_review_outside_first_page(client, session
 
 async def test_incomplete_parser_child_with_text_keeps_review_as_next_action(client, session):
     """Parser completeness must never masquerade as a failed acquisition."""
-    media, _companion, raw = await inventory(session, "Artist: Example Artist\n01. Artist - Ambiguous - Title\n", "nfo")
+    media, _companion, raw = await inventory(session, "Artist: Example Artist\n01. Artist - Opening\n01. Other - Closing\n", "nfo")
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     assert imported.tracklist_status == "incomplete"
     child = await session.get(ProviderSourceObservation, imported.tracklist_observation_id)

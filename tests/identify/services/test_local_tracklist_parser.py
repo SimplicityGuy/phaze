@@ -136,7 +136,6 @@ def test_text_time_syntax_or_magnitude_never_qualifies_offset(timestamp, kind, p
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
-        ("01. Artist - Title - Ambiguous", "ambiguous_artist_title"),
         ("02. Title: First\n02. Title: Second", "conflicting_numbering"),
         ("01. Title\nUnrecognized prose\n02. Next", "unsupported_title_only_body"),
         ("01. [12:60] Title", "malformed_timestamp"),
@@ -195,7 +194,7 @@ def test_interpreter_is_explicit_and_deterministic():
     assert result.snapshot.normalized_payload() == parse("01. Artist - Title").snapshot.normalized_payload()
     assert local_registry().descriptors()[0].id == "local"
     # Importing the parser does not silently register or enable interpretation.
-    assert result.snapshot.parser_version == "local-tracklist-v3"
+    assert result.snapshot.parser_version == "local-tracklist-v4"
 
 
 def test_positive_ordered_gaps_and_per_file_number_resets():

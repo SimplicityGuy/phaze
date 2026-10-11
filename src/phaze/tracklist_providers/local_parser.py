@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import hashlib
 import re
 
+from phaze.tracklist_providers import local_text
 from phaze.tracklist_providers.domain import (
     Completeness,
     Fact,
@@ -16,21 +17,18 @@ from phaze.tracklist_providers.domain import (
     Snapshot,
     SourceRead,
     Timestamp,
+    TrackSection,
 )
 from phaze.tracklist_providers.local_syntax import LABELED, cue_line, note_line
 
 
-PARSER_VERSION = "local-tracklist-v3"
-PARSER_VERSIONS = frozenset({"local-tracklist-v1", "local-tracklist-v2", PARSER_VERSION})
+PARSER_VERSION = "local-tracklist-v4"
+PARSER_VERSIONS = frozenset({"local-tracklist-v1", "local-tracklist-v2", "local-tracklist-v3", PARSER_VERSION})
 _DIRECTIVE = re.compile(r"^([A-Za-z]+)\s+(.+)$")
 _QUOTED = re.compile(r'^"([^"\n]*)"$')
 _FILE = re.compile(r'^(?:"([^"\n]+)"|(\S+))\s+(WAVE|MP3|AIFF|BINARY|MOTOROLA)$', re.IGNORECASE)
 _TRACK = re.compile(r"^(\d{1,4})\s+AUDIO$", re.IGNORECASE)
 _INDEX = re.compile(r"^(\d{2})\s+(\d{1,6}):(\d{2}):(\d{2})$")
-_ORDERED = re.compile(r"^(?:\[(\d{1,4})\]|(\d{1,4})[.):\-]?)[ \t]+(.+)$")
-_TIMED = re.compile(r"^(?:\[(\d{1,6}:\d{2}(?::\d{2})?)\]|(\d{1,6}:\d{2}(?::\d{2})?))[ \t]+(.+)$")
-_DURATION_TAIL = re.compile(r"\s{2,}\[?(\d{1,6}:\d{2}(?::\d{2})?)\]?(?:\s+min)?$")
-_TRACK_HEADING = re.compile(r"^(?:track\s*list(?:ing)?|tracks|nr\.?\s+(?:title|track).*)(?:\s*:)?$", re.IGNORECASE)
 _TIME = re.compile(r"^(?:(clock)\s+)?(\d{1,6}):(\d{2})(?::(\d{2}))?$", re.IGNORECASE)
 _MINUTE = re.compile(r"^(\d{1,6})\s*min$", re.IGNORECASE)
 _ANNOTATION = re.compile(r"(?:\[label:\s*([^\[\]]+)\]|\(remix:\s*([^()]+)\)|(\(mashup\)))$", re.IGNORECASE)
@@ -38,7 +36,6 @@ _SEPARATOR = re.compile(r"\s[-\u2013\u2014]\s")
 _HEADER = re.compile(
     r"^(?:artist|album|title|date|genre|label|venue|event|year|quality|bitrate|encoder|length|tracklist|tracks)\s*:\s*.*$", re.IGNORECASE
 )
-_DECORATION = re.compile(r"^[\s\-=+*_~|.:/\\\[\]─-▟]+$")
 _UNKNOWN = frozenset({"id", "unknown", "unidentified", "?", "???"})
 
 
@@ -70,6 +67,7 @@ class _Row:
     remix: str | None = None
     mashup: bool = False
     origin: str | None = None
+    section_ordinal: int | None = None
     fields: set[str] = field(default_factory=set)
     evidence: list[str] = field(default_factory=list)
 
@@ -82,6 +80,8 @@ class _Parse:
     evidence: list[str] = field(default_factory=list)
     artist: str | None = None
     artist_evidence: list[str] = field(default_factory=list)
+    sections: list[TrackSection] = field(default_factory=list)
+    global_grammar_uncertain: bool = False
 
     def reject(self, line: int, reason: str) -> None:
         if len(self.errors) < 64:
@@ -282,107 +282,258 @@ def _text_timestamp(original: str, result: _Parse, line: int) -> Timestamp:
     return Timestamp(original=original, evidence=(f"line:{line}",))
 
 
-def _plain_track(line: str) -> bool:
-    """An unnumbered artist/title row; require a section or adjacent matching row."""
-    return (
-        LABELED.fullmatch(line) is None
-        and "://" not in line
-        and len(list(_SEPARATOR.finditer(line))) == 1
-        and re.search(r"[^\W\d_]", line) is not None
-    )
+@dataclass
+class _TextSection:
+    ordinal: int
+    title: str | None
+    line: int
+    last_number: int | None = None
+    zero_based: bool = False
+    offset: int = 0
+    row_count: int = 0
+    declared: bool = False
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _text_fields(row: _Row, body: str, result: _Parse, section: _TextSection, *, title_allowed: bool) -> bool:
+    """Retain identifiable rows, with local warnings where field structure is unresolved."""
+    if not body:
+        result.reject(row.line, "empty_track_body")
+        section.errors.append(f"line:{row.line}:empty_track_body")
+        return True
+    duration = local_text.DURATION.search(body)
+    if duration:
+        body = body[: duration.start()].rstrip()
+        row.evidence.append(f"line:{row.line}:trailing_time:{duration[1]}:origin_unknown")
+    for _annotation in range(3):
+        annotation = _ANNOTATION.search(body)
+        if annotation is None:
+            break
+        if annotation.group(1):
+            if row.label is not None:
+                result.reject(row.line, "duplicate_label")
+            row.label = _known(annotation.group(1))
+        elif annotation.group(2):
+            if row.remix is not None:
+                result.reject(row.line, "duplicate_remix")
+            row.remix = _known(annotation.group(2))
+        else:
+            row.mashup = True
+        body = body[: annotation.start()].strip()
+    if _ANNOTATION.search(body):
+        result.reject(row.line, "annotation_cap")
+    columns = [column.strip() for column in re.split(r"\t+", body) if column.strip()]
+    splits = local_text.separators(body)
+    if len(columns) >= 2:
+        row.artist, row.title = _known(columns[0]), _known(columns[1])
+        if len(columns) > 2:
+            section.warnings.append(f"line:{row.line}:additional_columns_unresolved")
+            row.evidence.append("Additional columns retained in original text; meaning unresolved")
+    elif len(splits) == 1:
+        begin, end = splits[0]
+        row.artist, row.title = _known(body[:begin]), _known(body[end:])
+    elif splits:
+        section.warnings.append(f"line:{row.line}:ambiguous_artist_title")
+        row.evidence.append("Artist/title split unresolved; original line retained")
+    elif local_text.UNKNOWN.match(body):
+        row.evidence.append("Unknown identity annotation retained; no invented title")
+    elif body.lower().startswith("title:"):
+        row.title = _known(body[6:])
+    elif title_allowed:
+        row.title = _known(body)
+        # Without separator whitespace, field attribution cannot be proven. Keep the row.
+        if "-" in body:
+            row.title = None
+            section.warnings.append(f"line:{row.line}:unspaced_artist_title_unresolved")
+            row.evidence.append("Unspaced artist/title structure unresolved; original line retained")
+    else:
+        result.reject(row.line, "unsupported_title_only_body")
+        section.errors.append(f"line:{row.line}:unsupported_title_only_body")
+        return False
+    if not body:
+        result.reject(row.line, "empty_track_body")
+        section.errors.append(f"line:{row.line}:empty_track_body")
+    return True
 
 
 def _text(lines: list[str], budget: LoadBudget) -> _Parse:
     result = _Parse()
-    in_tracklist = False
-    for line_number, raw in enumerate(lines, 1):
+    section: _TextSection | None = None
+    sections: list[_TextSection] = []
+    explicit_heading = False
+    pending_title: tuple[str, int] | None = None
+    header_frame = False
+    nonempty = [(i, note_line(raw)[0]) for i, raw in enumerate(lines) if note_line(raw)[0]]
+    title_table = sum(bool(local_text.ORDERED.fullmatch(line) and local_text.DURATION.search(line)) for _, line in nonempty) >= 2
+    numbered_track_context = any(
+        (ordered_match := local_text.ORDERED.fullmatch(line)) is not None and local_text.separators(ordered_match[3]) for _, line in nonempty
+    )
+    ordered_count = sum(local_text.ORDERED.fullmatch(line) is not None for _, line in nonempty)
+
+    def begin(title: str | None, line: int) -> _TextSection:
+        if len(sections) >= min(budget.max_tracks, 4096):
+            result.reject(line, "section_cap")
+            return sections[-1]
+        new = _TextSection(len(sections) + 1, title, line, offset=result.rows[-1].position if result.rows else 0)
+        sections.append(new)
+        return new
+
+    for index, raw in enumerate(lines):
+        line_number = index + 1
         line, _start = note_line(raw)
-        if _TRACK_HEADING.fullmatch(line):
-            in_tracklist = True
+        if local_text.export_frame(lines, index):
+            header_frame = True
             continue
-        if not line or _DECORATION.fullmatch(line):
+        if not line or local_text.DECORATION.fullmatch(line):
+            if raw.lstrip().startswith("\\"):
+                header_frame = False
             continue
         if len(line) > 4096:
             result.reject(line_number, "line_field_cap")
             continue
-        if (_HEADER.fullmatch(line) or LABELED.fullmatch(line)) and not _TIMED.fullmatch(line):
-            # Release/site headers are retained in the raw source; not failed tracks.
-            if result.rows:
-                in_tracklist = False
+        # Only typed export frames establish a header block; bars also frame track rows.
+        if header_frame:
+            result.evidence.append(f"line:{line_number}:excluded_header_block")
             continue
-        match = _ORDERED.fullmatch(line)
-        timed = _TIMED.fullmatch(line) if match is None else None
-        if match is None:
-            if timed is None and _SEPARATOR.search(line) and re.match(r"^(?:\d{1,4}\b|\[\d|[A-Z]\d{1,2}\b)", line):
+        if local_text.heading(line):
+            explicit_heading = True
+            if section is None or section.row_count or section.errors:
+                title, at = pending_title if pending_title else (line, line_number)
+                section = begin(title, at)
+            pending_title = None
+            continue
+        if local_text.SECTION.fullmatch(line) or local_text.LINEUP.match(line):
+            if section is not None and not section.row_count and not section.errors and not section.declared:
+                sections.pop()
+            section = begin(line, line_number)
+            section.declared = True
+            explicit_heading = True
+            pending_title = None
+            continue
+        if local_text.ABSENT.match(line):
+            if section is None or (pending_title and (section.row_count or section.errors)):
+                section = begin(pending_title[0] if pending_title else None, pending_title[1] if pending_title else line_number)
+            pending_title = None
+            section.errors.append(f"line:{line_number}:no_tracklist_present")
+            explicit_heading = False
+            continue
+        if local_text.DATE_HEADER.match(line) or (local_text.MEDIA_NAME.search(line) and not explicit_heading) or "://" in line:
+            result.evidence.append(f"line:{line_number}:excluded_non_track_line")
+            if local_text.DATE_HEADER.match(line):
+                pending_title = (line, line_number)
+            explicit_heading = False
+            continue
+        if (_HEADER.fullmatch(line) or LABELED.fullmatch(line)) and not local_text.TIMED.fullmatch(line):
+            if line.endswith(":") and (label_match := LABELED.fullmatch(line)) is not None and not label_match["value"]:
+                pending_title = (line.rstrip(":"), line_number)
+            else:
+                explicit_heading = False
+            continue
+        syntax = local_text.prefix(line)
+        if syntax.number is not None and ordered_count == 1 and re.match(r"^\d+\s+\D", line) and local_text.adjacent_row(lines, index):
+            syntax = local_text.TextRowSyntax(None, line)
+        following = local_text.next_numbered(lines, index)
+        if (
+            syntax.number is None
+            and syntax.time is None
+            and following is not None
+            and following.number in {0, 1}
+            and (re.search(r"\b(?:live\s+broadcast|live\s+set)\b|\d{4}-\d{2}-\d{2}", line, re.IGNORECASE))
+        ):
+            pending_title = (line, line_number)
+            explicit_heading = False
+            continue
+        body = syntax.body
+        adjacent = local_text.adjacent_row(lines, index)
+        numbered = syntax.number is not None
+        timed = syntax.time is not None
+        if re.match(r"^[A-Z]\d{1,2}[.)]\s", line):
+            result.reject(line_number, "unsupported_track_number")
+            if section:
+                section.errors.append(f"line:{line_number}:unsupported_track_number")
+            continue
+        is_row = numbered or timed or (local_text.plain_row(line) and (explicit_heading or adjacent))
+        if not is_row:
+            if _SEPARATOR.search(line) and re.match(r"^[A-Z]\d{1,2}[.)]\s", line):
                 result.reject(line_number, "unsupported_track_number")
-                continue
-            adjacent = any(_plain_track(note_line(lines[index])[0]) for index in (line_number - 2, line_number) if 0 <= index < len(lines))
-            if timed is None and not (_plain_track(line) and (in_tracklist or adjacent)):
+                if section:
+                    section.errors.append(f"line:{line_number}:unsupported_track_number")
+            else:
                 result.evidence.append(f"line:{line_number}:excluded_non_track_line")
-                continue
-            number = result.rows[-1].position + 1 if result.rows else 1
-            body = timed[3] if timed else line
-        else:
-            number = int(match.group(1) or match.group(2))
-            body = match.group(3)
-        if "[" not in body and _DECORATION.fullmatch(re.sub(r"\d", "", body)):
-            # Numeric ornaments in scene art are not track declarations.
+                # A heading between independent numbered lists is a boundary only when
+                # numbering restarts. Never infer a split from duplicate adjacent ordinals.
+                if len(line) <= 512:
+                    pending_title = (line, line_number)
             continue
-        duration = _DURATION_TAIL.search(body)
-        if duration:
-            body = body[: duration.start()]
-        row = result.add(number, line_number, budget)
+        if "[" not in body and local_text.DECORATION.fullmatch(re.sub(r"\d", "", body)):
+            continue
+        if section is None:
+            section = begin(pending_title[0] if pending_title else None, pending_title[1] if pending_title else line_number)
+            pending_title = None
+        number = syntax.number if syntax.number is not None else (section.last_number + 1 if section.last_number is not None else 1)
+        if section.last_number is not None and number <= section.last_number and pending_title:
+            section = begin(*pending_title)
+            explicit_heading = True
+            pending_title = None
+        elif section.last_number is not None and number <= section.last_number:
+            result.reject(line_number, "conflicting_numbering")
+            section.errors.append(f"line:{line_number}:conflicting_numbering")
+        if section.last_number is None:
+            section.zero_based = number == 0
+        section.last_number = number
+        intrinsic = section.offset + number + int(section.zero_based)
+        intrinsic = max(intrinsic, result.rows[-1].position + 1 if result.rows else 1)
+        row = result.add(number, line_number, budget, position=intrinsic)
         if row is None:
-            continue
-        if duration:
-            row.evidence.append(f"line:{line_number}:trailing_time:{duration[1]}:origin_unknown")
-        if timed:
-            row.timestamp = _text_timestamp(timed[1] or timed[2], result, line_number)
-        if body.startswith("[") and "]" in body:
-            time, body = body[1:].split("]", 1)
-            row.timestamp = _text_timestamp(time, result, line_number)
-            body = body.strip()
+            break
+        row.section_ordinal = section.ordinal
+        section.row_count += 1
+        row.evidence.append(f"section:{section.ordinal}:declared_position:{number}")
+        if syntax.time:
+            original = f"{syntax.time} min" if syntax.minute else syntax.time
+            row.timestamp = _text_timestamp(original, result, line_number)
         elif body.startswith("["):
-            result.reject(line_number, "unclosed_timestamp")
-            continue
-        # At most three supported suffix annotations: finite scans, even for adversarial input.
-        for _annotation in range(3):
-            annotation = _ANNOTATION.search(body)
-            if annotation is None:
-                break
-            if annotation.group(1):
-                if row.label is not None:
-                    result.reject(line_number, "duplicate_label")
-                row.label = _known(annotation.group(1))
-            elif annotation.group(2):
-                if row.remix is not None:
-                    result.reject(line_number, "duplicate_remix")
-                row.remix = _known(annotation.group(2))
+            if "]" in body and re.fullmatch(r"[\d?]+", body[1 : body.index("]")]) and "?" in body[: body.index("]")]:
+                original, body = body[1:].split("]", 1)
+                row.timestamp = Timestamp(original=original, evidence=(f"line:{line_number}", "Unknown source minute cue; origin unknown"))
+                section.warnings.append(f"line:{line_number}:unknown_minute_cue")
+                body = body.strip()
             else:
-                row.mashup = True
-            body = body[: annotation.start()].strip()
-        if _ANNOTATION.search(body):
-            result.reject(line_number, "annotation_cap")
-        separators = list(_SEPARATOR.finditer(body))
-        if len(separators) == 1:
-            separator = separators[0]
-            row.artist, row.title = _known(body[: separator.start()]), _known(body[separator.end() :])
-        elif separators:
-            result.reject(line_number, "ambiguous_artist_title")
-            row.evidence.append("Artist/title split unresolved; original line retained")
-        else:
-            if body.lower().startswith("title:"):
-                row.title = _known(body[6:])
-            elif body.strip().casefold() in _UNKNOWN:
-                row.title = None
-            elif in_tracklist:
-                # A declared track section permits title-only rows, without guessing artists.
-                row.title = _known(body)
-            else:
-                result.reject(line_number, "unsupported_title_only_body")
-                result.rows.remove(row)
-        if not body:
-            result.reject(line_number, "empty_track_body")
+                result.reject(line_number, "unclosed_timestamp")
+                section.errors.append(f"line:{line_number}:unclosed_timestamp")
+                continue
+        supported = _text_fields(
+            row, body, result, section, title_allowed=explicit_heading or title_table or timed or (numbered and numbered_track_context)
+        )
+        if not supported:
+            result.rows.remove(row)
+            section.row_count -= 1
+    # Every non-cap rejection belongs to its enclosing section; callers cannot
+    # accept a duplicate/unsupported row by selecting around the global status.
+    for error in result.errors:
+        error_line = int(error.split(":", 2)[1])
+        enclosing = next((item for item in reversed(sections) if item.line <= error_line), None)
+        if enclosing is not None and error not in enclosing.errors:
+            enclosing.errors.append(error)
+        elif enclosing is None:
+            result.global_grammar_uncertain = True
+    for item in sections:
+        has_rows = item.row_count > 0
+        errors = item.errors or ([] if has_rows else [f"line:{item.line}:no_tracklist_present"])
+        result.sections.append(
+            TrackSection(
+                ordinal=item.ordinal,
+                title=item.title,
+                completeness=Completeness(
+                    state="incomplete" if errors else "complete",
+                    reason="Unsupported or absent section rows" if errors else "Section rows exhausted",
+                    evidence=_bounded_evidence(errors),
+                ),
+                warnings=_bounded_evidence(item.warnings),
+                evidence=(f"line:{item.line}:section_heading",),
+            )
+        )
     return result
 
 
@@ -436,6 +587,12 @@ class LocalSourceInterpreter:
             completeness=Completeness(
                 state="incomplete", reason="Partial or unsupported source grammar", evidence=_bounded_evidence([*parsed.errors, *parsed.warnings])
             ),
+            sections=tuple(parsed.sections),
+            section_scan_complete=bool(parsed.sections)
+            and not parsed.global_grammar_uncertain
+            and not limited
+            and not partial
+            and not any(error.endswith(("cap", "partial_input")) for error in parsed.errors),
             provenance=_bounded_evidence([*content.evidence, *parsed.evidence]),
         )
         # Repeated inherited values can expand a small read into a large output. Serialize
@@ -445,6 +602,7 @@ class LocalSourceInterpreter:
         for row in parsed.rows:
             track = ProviderTrack(
                 position=row.position,
+                section_ordinal=row.section_ordinal,
                 artist=row.artist,
                 title=row.title,
                 timestamp=row.timestamp,
@@ -458,13 +616,20 @@ class LocalSourceInterpreter:
                 parsed.reject(row.line, "snapshot_output_cap")
                 break
             tracks.append(track)
-        complete = not parsed.errors
+        complete = not parsed.errors and all(section.completeness.state == "complete" for section in parsed.sections)
         completeness = Completeness(
             state="complete" if complete else "incomplete",
             reason="Supported source grammar exhausted" if complete else "Partial or unsupported source grammar",
             evidence=_bounded_evidence([*parsed.errors, *parsed.warnings]),
         )
-        snapshot = Snapshot.model_validate(base.model_dump(mode="python") | {"tracks": tuple(tracks), "completeness": completeness})
+        snapshot = Snapshot.model_validate(
+            base.model_dump(mode="python")
+            | {
+                "tracks": tuple(tracks),
+                "completeness": completeness,
+                "section_scan_complete": base.section_scan_complete and not any(error.endswith(("cap", "partial_input")) for error in parsed.errors),
+            }
+        )
         return LoadOutcome(
             status=OutcomeStatus.FOUND if complete else OutcomeStatus.INCOMPLETE,
             code="parsed_local_tracklist" if complete else "partial_local_tracklist",

@@ -6,7 +6,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
+from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact, TrackSection
 
 
 class DetailModel(BaseModel):
@@ -127,6 +127,8 @@ class StoredObservationDetail(DetailModel):
     evidence: tuple[str, ...]
     next_track_offset: int | None
     next_fact_offset: int | None
+    sections: tuple[TrackSection, ...] = ()
+    section_count: int = 0
     # Target projection is populated only for pinned authority; intrinsic source rows stay distinct.
     selected_tracks: tuple[ProviderTrack, ...] = ()
     selected_track_count: int = 0

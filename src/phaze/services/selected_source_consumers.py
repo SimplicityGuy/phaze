@@ -39,6 +39,16 @@ def selected_track_membership_clause(position: Any = DiscogsLink.source_track_po
         .where(
             track["position"].as_string() == cast(position, Text),
             or_(
+                func.jsonb_array_length(
+                    case((func.jsonb_typeof(payload["sections"]) == "array", payload["sections"]), else_=cast(literal("[]", Text), JSONB))
+                )
+                == 0,
+                and_(
+                    ProviderRecordingSelection.target_mapping["text_section_ordinal"].is_not(None),
+                    track["section_ordinal"].as_string() == ProviderRecordingSelection.target_mapping["text_section_ordinal"].as_string(),
+                ),
+            ),
+            or_(
                 payload["source_format"].as_string().is_distinct_from("cue"),
                 and_(ProviderRecordingSelection.target_mapping["cue_file_ordinal"].is_not(None), cue_member),
             ),

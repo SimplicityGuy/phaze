@@ -40,6 +40,8 @@ class SourceDecision(BaseModel):
     action: Literal["select", "reject"] = "select"
     accept_conflict: bool = False
     cue_file_ordinal: int | None = Field(default=None, gt=0, le=4096)
+    text_section_ordinal: int | None = Field(default=None, gt=0, le=4096)
+    accept_text_warnings: bool = False
 
 
 class ImportResult(BaseModel):
