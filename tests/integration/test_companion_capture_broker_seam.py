@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import AsyncClient
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.config import AgentSettings
 from phaze.models.agent import Agent
+from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
 from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
 from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
@@ -156,3 +157,52 @@ async def test_bucket_lock_order_and_cached_inventory_revalidation(async_engine:
                 await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id == object_id))
                 await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.id == object_id))
             await db.execute(delete(FileRecord).where(FileRecord.id == source.id))
+
+
+@pytest.mark.parametrize("scenario", ["owner", "long_key", "nul_key", "missing", "ambiguous", "current_junk", "old_junk"])
+async def test_capture_dispatch_inventory_and_key_guards(
+    session: AsyncSession, seed_test_agent: tuple[Agent, str], tmp_path: Path, scenario: str
+) -> None:
+    """Actual PG inventory; substitute queue proves no enqueue, not no connection."""
+    agent, _ = seed_test_agent
+    source, media = await seed_pair(session, agent, tmp_path / "notes.txt", b"notes")
+    if scenario == "missing":
+        source.missing_at = datetime.now(UTC)
+    elif scenario == "ambiguous":
+        source.companion_ambiguous_at = datetime.now(UTC)
+    elif scenario in {"current_junk", "old_junk"}:
+        session.add(
+            CompanionContentFeatures(
+                file_id=source.id,
+                agent_id=agent.id,
+                fingerprint=source.sha256_hash if scenario == "current_junk" else "f" * 64,
+                encoding="ascii",
+                byte_size=5,
+                is_tracklist=False,
+                junk_class="site_ad",
+                extractor_version=1,
+            )
+        )
+    await session.commit()
+    queue = SimpleNamespace(connect=AsyncMock(), enqueue=AsyncMock())
+    router = SimpleNamespace(queue_for=MagicMock(return_value=queue))
+    factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    key = "x" * 129 if scenario == "long_key" else "bad\0key" if scenario == "nul_key" else "x" * 128
+    expected_owner = "previous-owner" if scenario == "owner" else agent.id
+    if scenario == "old_junk":
+        payload = await enqueue_companion_capture(factory, router, source.id, media_id=media.id, request_key=key, expected_agent_id=expected_owner)
+        queue.enqueue.assert_awaited_once_with("capture_companion_source", **payload.model_dump(), key=key)
+        router.queue_for.assert_called_once_with(agent.id, "meta")
+    else:
+        message = {
+            "owner": "owner changed",
+            "long_key": "request key",
+            "nul_key": "request key",
+            "missing": "unavailable or ambiguous",
+            "ambiguous": "unavailable or ambiguous",
+            "current_junk": "Current junk",
+        }[scenario]
+        with pytest.raises(ValueError, match=message):
+            await enqueue_companion_capture(factory, router, source.id, media_id=media.id, request_key=key, expected_agent_id=expected_owner)
+        queue.enqueue.assert_not_awaited()
+    assert await session.scalar(select(ProviderSourceObservation.id)) is None
