@@ -23,7 +23,7 @@
    get_approved_proposals_grouped_by_agent / count_revoked_skipped_proposals) so it cannot drift
    from the dispatch it describes. See that module's D-10 record before adding a read.
 
-   Exclusions are rendered, never omitted. Tag writes, duplicate resolution and cue sheets are NOT
+   Adjacent queues are contextual guidance, separate from batch exclusions. Tag writes, duplicate resolution and cue sheets are NOT
    dispatched by this control (ADR-0008 (changes review approval boundary) puts tag authorization on its own append-only log), and an
    operation type silently absent from a manifest reads as "there is none of it". They appear with
    live counts and the stage that does own them.
@@ -61,12 +61,21 @@
        empty:hidden until it fires. #}
     <div id="apply-execute-response" class="px-6 pt-4 empty:hidden"></div>
 
-    {% if preflight.blocked_reason %}
+    {% if not preflight.total and not preflight.conflicts and not preflight.exclusions %}
+    <div class="px-6 pt-4">
+        <section id="apply-blocked-reason" data-execute-empty class="rounded-xl border border-gray-200 p-4 dark:border-phaze-border">
+            <h2 class="text-sm font-semibold">No approved operations ready to execute</h2>
+            <p class="mt-2 text-sm text-muted">Review filename and destination changes before starting an execution batch.</p>
+            <a href="/s/rename?status=needs_review" hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+               class="{{ ui.btn('secondary', 'md', 'mt-3') }}">Open Review</a>
+        </section>
+    </div>
+    {% elif preflight.blocked_reason %}
     <div class="px-6 pt-4">
         {{ ui.actionable_alert(
             title="Execution unavailable",
             message=preflight.blocked_reason ~ " " ~ preflight.blocked_next_action,
-            tone="danger" if preflight.conflicts else "attention",
+            tone="danger" if preflight.conflicts or preflight.exclusions else "attention",
             id="apply-blocked-reason") }}
     </div>
     {% endif %}
@@ -130,10 +139,10 @@
 
     {% if preflight.exclusions %}
     <div class="px-6 pt-4">
-        {# phaze-tzy6s.17: the "+" is not decoration. One contributing row (tag writes) can only be
-           counted by a capped scan, so when it saturates this total is a FLOOR and says so. An
-           exact-looking total sitting above a row openly marked "N+" is the worse of the two. #}
-        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total | thousands }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
+        {# Conflicts count destinations; revoked rows count approved operations. A blocked batch
+           states each reason's own unit rather than summing those different populations.
+           Capped tag-write counts remain annotated only in the adjacent guidance below. #}
+        <p class="{{ _eyebrow }} mb-2">{% if preflight.conflicts %}Batch exceptions — execution blocked{% else %}Will not run — {{ preflight.excluded_total | thousands }} approved operation{{ '' if preflight.excluded_total == 1 else 's' }} excluded{% endif %}</p>
         <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
@@ -151,14 +160,29 @@
                             {{ exclusion.label }}
                             {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-danger ">blocking</span>{% endif %}
                         </td>
-                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count | thousands }}{{ "+" if exclusion.at_least }}</td>
-                        <td class="px-3 py-2 align-top text-muted ">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
+                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count | thousands }} {{ 'destination' if exclusion.key == 'conflict' else 'approved operation' }}{{ '' if exclusion.count == 1 else 's' }}</td>
+                        <td class="px-3 py-2 align-top text-muted ">{{ exclusion.reason }} {{ exclusion.next_action }}{% if exclusion.key == 'revoked' %} <a href="/s/agents" class="text-link">Open agents</a>{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
+    {% endif %}
+
+    {% if preflight.related_work %}
+    <section data-execute-related-work class="px-6 pt-4" aria-label="Other work outside this approved batch">
+        <h2 class="{{ _eyebrow }} mb-2">Other work outside this approved batch</h2>
+        {% set _guidance_links = {'pending': '/s/rename?status=needs_review', 'rejected': '/s/rename?status=rejected', 'tagwrite': '/s/tagwrite', 'dedupe': '/s/dedupe', 'cue': '/s/cue'} %}
+        <ul class="space-y-2 text-sm">
+            {% for row in preflight.related_work %}
+            <li>
+                <a href="{{ _guidance_links[row.key] }}" class="text-link">{{ row.label }} · {{ row.count | thousands }}{{ '+' if row.at_least }}</a>
+                <p class="text-xs text-muted">{{ row.reason }} {{ row.next_action }}</p>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
     {% endif %}
 
     {# Scope statement -- ALWAYS rendered, independent of whether any of this work happens to be
@@ -197,8 +221,8 @@
             {{ ui.metric("Needs Review", stats.pending, tone="attention") }}
             {{ ui.metric("Approved", stats.approved, tone="success") }}
             {{ ui.metric("Executed", stats.executed) }}
-            {{ ui.metric("Blocked", stats.failed, tone="danger") }}
-            {{ ui.metric("Rejected", stats.rejected, tone="danger") }}
+            {{ ui.metric("Blocked", stats.failed, tone="danger" if stats.failed else "neutral") }}
+            {{ ui.metric("Rejected by review", stats.rejected) }}
             {{ ui.metric("Avg confidence", ("%.0f%%" | format((stats.avg_confidence or 0) * 100)) if stats.avg_confidence is not none else "—") }}
         {% endcall %}
     </div>
@@ -210,9 +234,8 @@
         message="Files are copied to their proposed destination, verified, then the original is deleted. Originals survive until"
                 ~ " verification succeeds, and every operation is written to the audit log. "
                 ~ (preflight.excluded_total | thousands) ~ ("+" if preflight.excluded_total_at_least else "")
-                ~ " item" ~ ("" if preflight.excluded_total == 1 and not preflight.excluded_total_at_least else "s")
-                ~ " listed above are excluded and will not be touched."
-                ~ (" The excluded figure is a lower bound: the tag-write queue scan is capped." if preflight.excluded_total_at_least else ""),
+                ~ " approved operation" ~ ("" if preflight.excluded_total == 1 else "s")
+                ~ " listed above " ~ ("is" if preflight.excluded_total == 1 else "are") ~ " excluded and will not be touched.",
         action="/execution/start",
         target="#apply-execute-response",
         confirm_label="Execute " ~ (preflight.total | thousands),

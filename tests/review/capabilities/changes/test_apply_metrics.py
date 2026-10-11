@@ -32,6 +32,6 @@ async def test_apply_metrics_use_the_shared_framed_mono_strip(client: AsyncClien
     assert 'aria-label="Proposal status counts"' in response.text
     section = response.text.split('aria-label="Proposal status counts"', 1)[1].split("</section>", 1)[0]
     labels = re.findall(r'<dt class="font-jura[^"]*">([^<]+)</dt>', section)
-    assert labels == ["Total", "Needs Review", "Approved", "Executed", "Blocked", "Rejected", "Avg confidence"]
+    assert labels == ["Total", "Needs Review", "Approved", "Executed", "Blocked", "Rejected by review", "Avg confidence"]
     values = re.findall(r'<dd class="mt-1 font-mono[^"]*">', section)
     assert len(values) == len(labels), "every value is mono (ui.metric), none falls back to Inter"

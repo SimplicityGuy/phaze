@@ -392,7 +392,7 @@ async def test_apply_counter_row_accounts_for_executed_proposals(
 
     assert metric("Executed") == 1, "an executed proposal must have its own visible count"
     assert metric("Approved") == 1, "Approved must NOT absorb executed rows -- Execute reads it as 'still to dispatch'"
-    assert metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Rejected") == metric("Total"), (
+    assert metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Rejected by review") == metric("Total"), (
         "the per-status metrics must account for every proposal Total counts"
     )
 
@@ -428,7 +428,7 @@ async def test_apply_counter_row_accounts_for_failed_proposals(
         return int(after[1].split(">", 1)[1].split("<")[0].strip())
 
     assert metric("Blocked") == 1, "a failed proposal must have its own visible count"
-    assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected")) == metric("Total"), (
+    assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected by review")) == metric("Total"), (
         "the per-status metrics must account for every proposal Total counts, including Blocked"
     )
 
@@ -449,8 +449,8 @@ async def test_apply_workspace_disables_execute_with_nothing_approved(client: As
     assert 'hx-post="/execution/start"' not in body, "an empty batch must not be dispatchable"
     assert 'id="apply-confirm"' not in body, "no confirmation dialog should be rendered when nothing can execute"
 
-    assert "No approved proposals are ready to execute." in body, "the disabled reason must be visible text"
-    assert "Approve filename and destination changes in Changes Review first." in body, "the disabled state must name the next action"
+    assert "No approved operations ready to execute" in body, "the disabled reason must be visible text"
+    assert "Review filename and destination changes before starting an execution batch." in body, "the disabled state must name the next action"
     # The reason is wired to the button for assistive tech, not left as a floating paragraph.
     assert 'id="apply-blocked-reason"' in body
     assert 'aria-describedby="apply-blocked-reason"' in body
