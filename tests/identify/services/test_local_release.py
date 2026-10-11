@@ -148,7 +148,7 @@ def test_limits_and_failure_states() -> None:
     assert len(facts.facts) == 256 and facts.evidence == ("limit:facts",)
     evidence = extract_release_metadata(read("unknown\n" * 70), source_format="txt")
     assert len(evidence.evidence) == 64 and evidence.evidence[-1] == "limit:evidence"
-    assert evidence.completeness.state == "incomplete"
+    assert evidence.completeness.state == "complete"
 
 
 @pytest.mark.parametrize("directive", ["REM\tDATE", "rem   date", "ReM DATE"])

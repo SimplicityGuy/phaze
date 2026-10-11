@@ -33,8 +33,8 @@ from phaze.services.companion_details import (
     get_stored_text,
 )
 from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
-from phaze.tracklist_providers.local_parser import PARSER_VERSION
-from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION
+from phaze.tracklist_providers.local_parser import PARSER_VERSIONS
+from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSIONS
 
 
 def html_requested(request: Request) -> bool:
@@ -79,8 +79,8 @@ async def observation_actions(session: AsyncSession, detail: StoredObservationDe
     source = await session.get(ProviderSourceObject, detail.summary.source_object_id)
     file = await session.get(FileRecord, source.source_file_id) if source and source.source_file_id else None
     overview = await get_companion_details(session, detail.file_id, attempt_reader=get_latest_source_attempts)
-    known = detail.summary.parser_version in {PARSER_VERSION, RELEASE_PARSER_VERSION}
-    kind = "release_metadata" if detail.summary.parser_version == RELEASE_PARSER_VERSION else "tracklist"
+    known = detail.summary.parser_version in PARSER_VERSIONS | RELEASE_PARSER_VERSIONS
+    kind = "release_metadata" if detail.summary.parser_version in RELEASE_PARSER_VERSIONS else "tracklist"
     selected = next((item for item in overview.selected if item.kind == kind), None) if overview else None
     can_select = (
         known
@@ -129,7 +129,7 @@ async def visible_parsed_content(session: AsyncSession, details: CompanionDetail
         )
         .where(
             obs.object_id.in_([source.source_object_id for source in details.sources]),
-            obs.parser_version.in_([PARSER_VERSION, RELEASE_PARSER_VERSION]),
+            obs.parser_version.in_(sorted(PARSER_VERSIONS | RELEASE_PARSER_VERSIONS)),
         )
         .distinct(obs.object_id, obs.parser_version)
         .order_by(obs.object_id, obs.parser_version, obs.retrieved_at.desc(), obs.id.desc())

@@ -59,11 +59,11 @@ def test_multiple_file_origins_are_intrinsic_unresolved_and_never_concatenated()
         ("INDEX 01 00:60:00", "malformed_INDEX"),
         ("INDEX 01 00:00:75", "malformed_INDEX"),
         ("INDEX 01 broken", "malformed_INDEX"),
-        ("INDEX 02 00:00:00", "malformed_INDEX"),
-        ("PREGAP 00:00:00", "unsupported_PREGAP"),
-        ("FLAGS PRE", "unsupported_FLAGS"),
+        ("INDEX 100 00:00:00", "malformed_INDEX"),
+        ("PREGAP 00:00:75", "malformed_PREGAP"),
+        ("FLAGS UNKNOWN", "malformed_FLAGS"),
         ("garbage", "malformed_directive"),
-        ("TITLE unquoted", "malformed_TITLE"),
+        ('TITLE "Unclosed', "malformed_TITLE"),
         ('TITLE "ID"\nTITLE "Later"', "duplicate_TITLE"),
         ('PERFORMER "ID"\nPERFORMER "Later"', "duplicate_PERFORMER"),
         ("INDEX 01 00:00:00\nINDEX 01 00:01:00", "conflicting_INDEX01"),
@@ -90,7 +90,7 @@ def test_cue_conflicting_numbering_nonmonotonic_and_missing_origins():
 @pytest.mark.parametrize(
     "text",
     [
-        'FILE "part.flac" BINARY\nTRACK 01 AUDIO',
+        'FILE "part.flac" UNKNOWN\nTRACK 01 AUDIO',
         'TRACK 01 DATA\nTITLE "Orphan"',
         "INDEX 01 00:00:00",
         'PERFORMER "A"\nPERFORMER "B"',
@@ -139,7 +139,7 @@ def test_text_time_syntax_or_magnitude_never_qualifies_offset(timestamp, kind, p
     [
         ("01. Artist - Title - Ambiguous", "ambiguous_artist_title"),
         ("02. Title: First\n02. Title: Second", "conflicting_numbering"),
-        ("01. Title\nUnrecognized prose\n02. Next", "excluded_non_grammar_line"),
+        ("01. Title\nUnrecognized prose\n02. Next", "unsupported_title_only_body"),
         ("01. [12:60] Title", "malformed_timestamp"),
         ("01. [bad] Title", "unsupported_timestamp"),
         ("01. [00:00]", "empty_track_body"),
@@ -196,7 +196,7 @@ def test_interpreter_is_explicit_and_deterministic():
     assert result.snapshot.normalized_payload() == parse("01. Artist - Title").snapshot.normalized_payload()
     assert local_registry().descriptors()[0].id == "local"
     # Importing the parser does not silently register or enable interpretation.
-    assert result.snapshot.parser_version == "local-tracklist-v1"
+    assert result.snapshot.parser_version == "local-tracklist-v2"
 
 
 def test_positive_ordered_gaps_and_per_file_number_resets():
@@ -247,7 +247,8 @@ def test_partial_ended_line_and_track_cap_cue_and_bounded_rejections():
     cue = parse('FILE "a.wav" WAVE\nTRACK 01 AUDIO\nTRACK 02 AUDIO', "cue", max_tracks=1)
     assert len(cue.snapshot.tracks) == 1 and "track_cap" in errors(cue)
     rejected = parse("noise\n" * 100)
-    assert len(rejected.snapshot.completeness.evidence) == 64
+    assert len(rejected.snapshot.provenance) == 64
+    assert rejected.status == "incomplete" and "recognition_only" in errors(rejected)
     partial = parse("noise\n" * 100, read={"truncated": True})
     assert "partial_input" in errors(partial)
     unicode = parse("éé", max_bytes=3)

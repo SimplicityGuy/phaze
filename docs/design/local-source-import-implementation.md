@@ -36,6 +36,27 @@ Decision UUID locks precede source buckets. Composed import/decision writes then
 
 Synthetic seam tests exercise capture report → immutable raw storage → local parse/extraction → pending candidates → explicit review → selected projection, shared CUE targets, embedded channel revisions, replay/stale review rejection and retained offline history. Migration tests exercise unknown historical links, append-only events and evidence-preserving downgrade refusal. No production archive or backfill is involved.
 
+## Real-data parser repair (phaze-6fud5)
+
+Read-only validation on 2026-10-10 used a seeded reservoir sample across the archive's six scan roots: 120 companions each for CUE, TXT, NFO and M3U, plus all 3 PLS files (483 total). The baseline used the deployed parsers; the changed parser source ran in memory on the owning agent, without installation, queue work, database writes or media mutation. Both runs used the existing capture encoding detector and identical seed 6155. Private paths and source text stayed on the owning host; only aggregate outcomes and anonymized grammar shapes returned to task scratch. Sampling is evidence of improved recognition, not a manual correctness label for every extracted fact.
+
+| Outcome | Baseline | v2 |
+| --- | ---: | ---: |
+| CUE complete tracklist, of 120 | 103 | 118 |
+| TXT complete tracklist, of 120 | 6 | 71 |
+| NFO complete tracklist, of 120 | 0 | 10 |
+| NFO with release facts, of 118 readable | 38 | 80 |
+| NFO complete release scan, of 118 readable | 43 | 118 |
+| TXT with release facts, of 120 | 20 | 63 |
+
+Two NFOs and one M3U were all-NUL content. Of the 108 remaining incomplete NFO tracklist outcomes, 85 carried no supported track rows; release-only notes do not constitute a tracklist. Remaining incomplete results include conflicting numbering, ambiguous artist/title splits and unsupported rows. The two incomplete CUEs had invalid INDEX ranges. No ambiguous timestamp was promoted to a recording-relative offset.
+
+The v2 text grammar supports bracketed, whitespace, colon and dash numbering, timestamp-led rows, unnumbered artist/title runs and title-only rows inside a declared track section. Framed release/site headers and surrounding prose remain in raw text instead of invalidating valid rows. Track-like unsupported numbering still makes the result incomplete. Trailing scene times remain evidence with unknown origin rather than being used as chapter offsets.
+
+CUE supports standard optional CATALOG, CDTEXTFILE, SONGWRITER, ISRC, FLAGS, PREGAP and POSTGAP directives, indexes 00–99, single-token unquoted strings and all five FILE types. Only INDEX 01 determines the intrinsic rational offset. Observed writer extensions include INFO and semicolon comments outside quotes. See the [libodraw CUE format documentation](https://github.com/libyal/libodraw/blob/main/documentation/CUE%20sheet%20format.asciidoc) for the standard syntax. FILE values remain literals and are never opened or resolved by the parser.
+
+M3U/M3U8/PLS remain media-reference companions: a playlist naming separate media files is not a chapter list for a linked recording. The sampled 119 readable M3Us and all 3 PLS files retained the explicit unsupported tracklist outcome. M3U8 had no live examples; its equivalent reference grammar is covered synthetically. Regression layouts use invented names and exercise CP437 capture, exact field spans, uncertain timing, bounds, references and both v1/v2 review authority. Existing tests that rejected newly supported CUE syntax or treated a diagnostic cap as input truncation were updated to reflect the new behavior.
+
 ## Remaining recognition gaps (phaze-dcfho)
 
 Read-only investigation on 2026-10-10 revisited the phaze-6fud5 v2 results using its in-memory parser source and seeded reservoir sampling procedure (seed 6155, sorted traversal, six scan roots). The 483-file sample contained 120 each of CUE, TXT, NFO and M3U plus 3 PLS. The remaining cohorts reproduced exactly: 2 CUE tracklist failures, 49 TXT tracklist failures, and 38 readable NFOs with no release facts. Private source text and paths stayed on the owning host; only aggregates, structural row prefixes and anonymized syntax returned to scratch. No files, tags, database rows, source selections or deployment were changed. The investigation examined every remaining failure's anonymized layout, not every previously successful extraction's accuracy.

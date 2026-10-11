@@ -41,7 +41,7 @@ from phaze.tracklist_providers.domain import (
     Timestamp,
 )
 from phaze.tracklist_providers.local_parser import LocalSourceInterpreter
-from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION, ReleaseExtraction, extract_release_metadata
+from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION, RELEASE_PARSER_VERSIONS, ReleaseExtraction, extract_release_metadata
 
 
 class _StoredEffects:
@@ -404,7 +404,7 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
     )
     if candidate is None:
         raise ValueError("Observation is not a candidate for this recording")
-    candidate_kind = "release_metadata" if observation.parser_version == RELEASE_PARSER_VERSION else "tracklist"
+    candidate_kind = "release_metadata" if observation.parser_version in RELEASE_PARSER_VERSIONS else "tracklist"
     if command.kind != candidate_kind:
         raise ValueError("Decision kind does not match this candidate")
     if source.channel == "companion":
@@ -467,7 +467,7 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
         if observation.conflict_with_id is not None and not command.accept_conflict:
             raise ValueError("Conflicting source requires explicit acknowledgement")
         if command.kind == "tracklist":
-            if not snapshot.tracks or snapshot.parser_version == RELEASE_PARSER_VERSION:
+            if not snapshot.tracks or snapshot.parser_version in RELEASE_PARSER_VERSIONS:
                 raise ValueError("Release-only notes cannot be a selected tracklist")
             if snapshot.source_format == "cue":
                 if command.cue_file_ordinal is None or not any(_cue_ordinal(track) == command.cue_file_ordinal for track in snapshot.tracks):
@@ -475,7 +475,7 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
                 mapping["cue_file_ordinal"] = command.cue_file_ordinal
             elif command.cue_file_ordinal is not None:
                 raise ValueError("FILE mapping is only valid for CUE tracklists")
-        elif snapshot.parser_version != RELEASE_PARSER_VERSION or command.cue_file_ordinal is not None:
+        elif snapshot.parser_version not in RELEASE_PARSER_VERSIONS or command.cue_file_ordinal is not None:
             raise ValueError("Release selection requires release extraction without track mapping")
         elif not snapshot.release_facts:
             raise ValueError("Release notes without structured facts cannot replace reviewed metadata")

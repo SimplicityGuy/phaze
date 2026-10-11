@@ -73,7 +73,9 @@ async def test_captured_release_facts_idempotence_conflicts_and_review_preservat
     repeat = content.model_copy(update={"retrieved_at": datetime.now(UTC) + timedelta(days=1)})
     duplicate = await store_snapshot(session, snapshot(identity, repeat), parent_id=raw.observation.id)
     assert duplicate.reused and duplicate.observation.id == parsed.observation.id
-    reinterpreted = await store_snapshot(session, snapshot(identity, content, version="local-release-v2"), parent_id=parsed.observation.id)
+    reinterpreted = await store_snapshot(
+        session, snapshot(identity, content, version=f"{RELEASE_PARSER_VERSION}-next"), parent_id=parsed.observation.id
+    )
     assert not reinterpreted.conflict and reinterpreted.observation.parent_id == parsed.observation.id
     changed = content.model_copy(update={"text": "Artist: Changed\n"})
     conflict = await store_snapshot(session, snapshot(identity, changed))
