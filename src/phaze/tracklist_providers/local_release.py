@@ -6,9 +6,11 @@ from decimal import Decimal
 import re
 
 from phaze.tracklist_providers.domain import Completeness, LoadBudget, OutcomeStatus, ReleaseFact, SourceRead
+from phaze.tracklist_providers.local_syntax import LABELED, cue_line, note_line
 
 
-RELEASE_PARSER_VERSION = "local-release-v1"
+RELEASE_PARSER_VERSION = "local-release-v2"
+RELEASE_PARSER_VERSIONS = frozenset({"local-release-v1", RELEASE_PARSER_VERSION})
 _ALIASES = {
     "artist": "artist",
     "performer": "artist",
@@ -35,12 +37,19 @@ _ALIASES = {
     "duration": "duration",
     "length": "duration",
     "set type": "set_type",
+    "air date": "date",
+    "rel date": "date",
+    "rls date": "date",
+    "playtime": "duration",
+    "total playtime": "duration",
+    "set length": "duration",
+    "recording quality": "quality",
 }
-_LABELED = re.compile(r"^\s*(?P<label>[A-Za-z][A-Za-z ._-]{0,63}?)\s*[:=]\s*(?P<value>.*?)\s*$")
+_FIELD_KEYS = {re.sub(r"[^a-z]", "", key): value for key, value in _ALIASES.items()}
 _CUE = re.compile(r"^\s*(?P<label>PERFORMER|TITLE|CATALOG|REM\s+[A-Za-z_]+)\s+(?P<value>.*?)\s*$", re.IGNORECASE)
 _CUE_TRACK = re.compile(r"^\s*TRACK(?:\s|$)", re.IGNORECASE)
 _BITRATE = re.compile(r"(?P<number>\d{1,9}(?:\.\d{1,6})?)\s*(?P<unit>bps|bit/s|kbps|kbit/s|mbps|mbit/s)", re.IGNORECASE)
-_DURATION = re.compile(r"(?:(?P<hours>\d{1,6}):)?(?P<minutes>\d{1,3}):(?P<seconds>\d{2})")
+_DURATION = re.compile(r"(?:(?P<hours>\d{1,6}):)?(?P<minutes>\d{1,6}):(?P<seconds>\d{2})(?:\s*min)?", re.IGNORECASE)
 _SECONDS = re.compile(r"(?P<number>\d{1,9}(?:\.\d{1,6})?)\s*(?:s|sec|seconds)", re.IGNORECASE)
 
 
@@ -182,16 +191,21 @@ def extract_release_metadata(content: SourceRead, *, source_format: str, budget:
             continue
         if not line.strip():
             continue
+        if cue:
+            line = cue_line(line)
         if cue and _CUE_TRACK.match(line):
             track_scope = True
         if cue and track_scope:
             continue
-        match = (_CUE if cue else _LABELED).fullmatch(line)
+        if not cue:
+            line, frame_offset = note_line(line)
+            line_offset += frame_offset
+        match = (_CUE if cue else LABELED).fullmatch(line)
         if match is None:
             evidence.append(f"line:{index}:unrecognized")
             continue
         label = " ".join(match["label"].lower().replace("_", " ").split()).removeprefix("rem ").strip(".")
-        field = _ALIASES.get(label)
+        field = _FIELD_KEYS.get(re.sub(r"[^a-z]", "", label))
         if field is None:
             evidence.append(f"line:{index}:unknown-field")
             continue
@@ -202,7 +216,8 @@ def extract_release_metadata(content: SourceRead, *, source_format: str, budget:
         facts.append(_fact(field, match["value"], index, line_offset + match.start("value"), line_offset + match.end("value"), cue))
     if len(evidence) > 64:
         evidence = [*evidence[:63], "limit:evidence"]
-        incomplete = True
+        # Diagnostics are bounded separately from the scan. Scene art can fill this
+        # list before a valid release block; it does not mean any input was skipped.
     completeness = Completeness(
         state="incomplete" if incomplete else "complete",
         reason="Release metadata scan bounded" if incomplete else "Release metadata grammar scan exhausted",

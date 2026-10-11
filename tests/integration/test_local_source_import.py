@@ -21,8 +21,8 @@ from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
 from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
 from phaze.services.companion_capture import store_capture_report
 from phaze.services.local_source_import import decide_local_source, get_selected_recording_source, import_local_source, selection_token
-from phaze.services.provider_persistence import select_observation
-from phaze.tracklist_providers.domain import LoadBudget, SourceRead
+from phaze.services.provider_persistence import add_candidate, select_observation, store_snapshot
+from phaze.tracklist_providers.domain import LoadBudget, Snapshot, SourceRead
 
 
 TEXT = "01. Artist - First\n02. Other - Second\n"
@@ -115,6 +115,23 @@ async def test_capture_import_select_reimport_preserves_legacy_and_review(sessio
         await decide_local_source(session, decision(media, companion, parsed.id), actor="reviewer")
 
 
+@pytest.mark.parametrize("kind", ["tracklist", "release_metadata"])
+async def test_old_parser_candidates_remain_reviewable_after_v2_import(session, kind):
+    media, companion, raw = await inventory(session, "| Artist........: Set Artist |\n01) Artist - Opening\n", "nfo")
+    result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    current_id = result.tracklist_observation_id if kind == "tracklist" else result.release_observation_id
+    current = await session.get(ProviderSourceObservation, current_id)
+    assert current.parser_version.endswith("-v2") and current.status == "found"
+    legacy_snapshot = Snapshot.model_validate(
+        {**current.payload, "retrieved_at": current.retrieved_at, "parser_version": current.parser_version.replace("-v2", "-v1")}
+    )
+    stored = await store_snapshot(session, legacy_snapshot, source_file_id=companion.id, channel="companion", parent_id=raw)
+    await add_candidate(session, media.id, stored.observation.id, evidence=(f"kind:{kind}",))
+    selected = await decide_local_source(session, decision(media, companion, stored.observation.id, kind=kind), actor="reviewer")
+    assert selected.snapshot.parser_version.endswith("-v1") and selected.availability == "current"
+    assert (await get_selected_recording_source(session, media.id, kind=kind)).observation_id == stored.observation.id
+
+
 async def test_release_only_and_partial_never_grant_track_authority(session):
     media, companion, raw = await inventory(session, "Artist: Release Artist\nDate: 2024-01-01\n")
     result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
@@ -135,6 +152,26 @@ async def test_release_only_and_partial_never_grant_track_authority(session):
             actor="reviewer",
         )
     assert (await get_selected_recording_source(session, media.id, kind="release_metadata")).selection_token == selected.selection_token
+
+
+async def test_cue_comment_facts_persist_and_select_consistently_with_tracks(session):
+    text = 'PERFORMER Artist ; writer comment\nTITLE "Example; Set" ; writer comment\nFILE part.wav WAVE\nTRACK 01 AUDIO\nTITLE "Opening; Movement" ; track comment\nINDEX 01 00:00:00\n'
+    media, companion, raw = await inventory(session, text, "cue")
+    result = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    assert result.tracklist_status == result.release_status == "found"
+    tracks = await decide_local_source(session, decision(media, companion, result.tracklist_observation_id, ordinal=1), actor="reviewer")
+    release = await decide_local_source(session, decision(media, companion, result.release_observation_id, kind="release_metadata"), actor="reviewer")
+    assert tracks.tracks[0].artist == "Artist" and tracks.tracks[0].title == "Opening; Movement"
+    persisted = await get_selected_recording_source(session, media.id, kind="release_metadata")
+    assert persisted.observation_id == release.observation_id
+    facts = {fact.field: fact for fact in persisted.snapshot.release_facts}
+    assert facts["artist"].value == tracks.tracks[0].artist
+    assert facts["title"].value == "Example; Set"
+    assert all(fact.certainty == "known" for fact in facts.values())
+    assert persisted.snapshot.text == text
+    for fact in facts.values():
+        _, _, start, end = fact.evidence[0].split(":")
+        assert text[int(start) : int(end)] == fact.original_value
 
 
 async def test_cue_one_source_distinct_targets_preserves_intrinsic_snapshot(session):

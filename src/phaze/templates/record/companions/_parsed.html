@@ -1,7 +1,7 @@
 {% import "ui/primitives.html" as ui %}
 <div class="space-y-3" data-visible-companion-{{ parsed_kind }}>
 {% for observation in companion_parsed | default(()) %}
-    {% if (parsed_kind == 'tracklist' and observation.summary.parser_version == 'local-tracklist-v1') or (parsed_kind == 'release' and observation.summary.parser_version == 'local-release-v1') %}
+    {% if (parsed_kind == 'tracklist' and observation.summary.parser_version in ('local-tracklist-v1', 'local-tracklist-v2')) or (parsed_kind == 'release' and observation.summary.parser_version in ('local-release-v1', 'local-release-v2')) %}
     <div class="min-w-0 rounded border p-3" data-visible-observation="{{ observation.summary.observation_id }}">
         {% set provenance = namespace(source=none) %}{% for source in companion_details.sources if source.source_object_id == observation.summary.source_object_id %}{% set provenance.source=source %}{% endfor %}
         <a href="/files/{{ provenance.source.source_file_id or file.id if provenance.source else file.id }}#companion-sources" class="text-xs text-link break-all">{{ provenance.source.filename or provenance.source.native_id if provenance.source else 'Retained source' }}</a>

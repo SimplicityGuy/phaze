@@ -17,15 +17,20 @@ from phaze.tracklist_providers.domain import (
     SourceRead,
     Timestamp,
 )
+from phaze.tracklist_providers.local_syntax import LABELED, cue_line, note_line
 
 
-PARSER_VERSION = "local-tracklist-v1"
+PARSER_VERSION = "local-tracklist-v2"
+PARSER_VERSIONS = frozenset({"local-tracklist-v1", PARSER_VERSION})
 _DIRECTIVE = re.compile(r"^([A-Za-z]+)\s+(.+)$")
 _QUOTED = re.compile(r'^"([^"\n]*)"$')
-_FILE = re.compile(r'^"([^"\n]+)"\s+(WAVE|MP3|AIFF)$', re.IGNORECASE)
+_FILE = re.compile(r'^(?:"([^"\n]+)"|(\S+))\s+(WAVE|MP3|AIFF|BINARY|MOTOROLA)$', re.IGNORECASE)
 _TRACK = re.compile(r"^(\d{1,4})\s+AUDIO$", re.IGNORECASE)
-_INDEX = re.compile(r"^(00|01)\s+(\d{1,6}):(\d{2}):(\d{2})$")
-_ORDERED = re.compile(r"^(\d{1,4})[.)]\s+(.+)$")
+_INDEX = re.compile(r"^(\d{2})\s+(\d{1,6}):(\d{2}):(\d{2})$")
+_ORDERED = re.compile(r"^(?:\[(\d{1,4})\]|(\d{1,4})[.):\-]?)[ \t]+(.+)$")
+_TIMED = re.compile(r"^(?:\[(\d{1,6}:\d{2}(?::\d{2})?)\]|(\d{1,6}:\d{2}(?::\d{2})?))[ \t]+(.+)$")
+_DURATION_TAIL = re.compile(r"\s{2,}\[?(\d{1,6}:\d{2}(?::\d{2})?)\]?(?:\s+min)?$")
+_TRACK_HEADING = re.compile(r"^(?:track\s*list(?:ing)?|tracks|nr\.?\s+(?:title|track).*)(?:\s*:)?$", re.IGNORECASE)
 _TIME = re.compile(r"^(?:(clock)\s+)?(\d{1,6}):(\d{2})(?::(\d{2}))?$", re.IGNORECASE)
 _MINUTE = re.compile(r"^(\d{1,6})\s*min$", re.IGNORECASE)
 _ANNOTATION = re.compile(r"(?:\[label:\s*([^\[\]]+)\]|\(remix:\s*([^()]+)\)|(\(mashup\)))$", re.IGNORECASE)
@@ -43,6 +48,14 @@ def _bounded_evidence(values: list[str]) -> tuple[str, ...]:
 
 def _known(value: str | None) -> str | None:
     return None if value is None or value.strip().casefold() in _UNKNOWN else value.strip() or None
+
+
+def _cue_value(value: str) -> str | None:
+    """CUE strings may be quoted, or a single token; malformed quoting stays rejected."""
+    quoted = _QUOTED.fullmatch(value)
+    if quoted:
+        return quoted.group(1)
+    return value if re.fullmatch(r'[^\s"]+', value) else None
 
 
 @dataclass
@@ -107,6 +120,9 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
         if len(line) > 4096:
             result.reject(line_number, "line_field_cap")
             continue
+        line = cue_line(line)
+        if not line:
+            continue
         directive = _DIRECTIVE.fullmatch(line)
         if directive is None:
             result.reject(line_number, "malformed_directive")
@@ -115,6 +131,22 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
         if keyword == "REM":
             # REM is documented uninterpreted comment/release evidence, not track syntax.
             continue
+        if keyword in {"CATALOG", "CDTEXTFILE", "SONGWRITER", "ISRC", "FLAGS", "PREGAP", "POSTGAP", "INFO"}:
+            valid = _cue_value(value) is not None
+            if keyword == "FLAGS":
+                valid = all(flag in {"DCP", "4CH", "PRE", "SCMS"} for flag in value.upper().split())
+            elif keyword in {"PREGAP", "POSTGAP"}:
+                gap = _INDEX.fullmatch("00 " + value)
+                valid = gap is not None and int(gap[3]) < 60 and int(gap[4]) < 75
+            if not valid:
+                result.reject(line_number, f"malformed_{keyword}")
+            elif keyword in {"ISRC", "FLAGS", "PREGAP", "POSTGAP"} and current is None:
+                result.reject(line_number, f"orphan_{keyword}")
+            elif current is not None:
+                current.evidence.append(f"line:{line_number}:{keyword}:{value}")
+            else:
+                result.evidence.append(f"line:{line_number}:{keyword}:{value}")
+            continue
         if keyword == "FILE":
             file_count += 1
             current = None
@@ -122,11 +154,12 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
             file_first_track = True
             match = _FILE.fullmatch(value)
             file_origin = f"cue:{origin_key}:file:{file_count}" if match else None
-            file_evidence = f"FILE:{file_count}:{match.group(1)}" if match else None
+            file_name = (match.group(1) or match.group(2)) if match else None
+            file_evidence = f"FILE:{file_count}:{file_name}" if match else None
             if match is None:
                 result.reject(line_number, "unsupported_FILE")
             else:
-                result.evidence.append(f"line:{line_number}:FILE:{file_count}:{match.group(1)}")
+                result.evidence.append(f"line:{line_number}:FILE:{file_count}:{file_name}")
             continue
         if keyword == "TRACK":
             seen_track = True
@@ -149,11 +182,11 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
                     result.reject(line_number, "missing_FILE_origin")
             continue
         if keyword in {"PERFORMER", "TITLE"}:
-            match = _QUOTED.fullmatch(value)
-            if match is None:
+            cue_value = _cue_value(value)
+            if cue_value is None:
                 result.reject(line_number, f"malformed_{keyword}")
                 continue
-            parsed = _known(match.group(1))
+            parsed = _known(cue_value)
             if current is not None:
                 attribute = "artist" if keyword == "PERFORMER" else "title"
                 if keyword in current.fields:
@@ -182,7 +215,7 @@ def _cue(lines: list[str], budget: LoadBudget, origin_key: str) -> _Parse:
             continue
         index, minutes, seconds, frames = match.groups()
         current.evidence.append(f"line:{line_number}:INDEX{index}:{value.split()[-1]}")
-        if index == "00":
+        if index != "01":
             continue
         total = int(minutes) * 60 * 75 + int(seconds) * 75 + int(frames)
         if current.timestamp is not None:
@@ -231,23 +264,62 @@ def _text_timestamp(original: str, result: _Parse, line: int) -> Timestamp:
     return Timestamp(original=original, evidence=(f"line:{line}",))
 
 
+def _plain_track(line: str) -> bool:
+    """An unnumbered artist/title row; require a section or adjacent matching row."""
+    return (
+        LABELED.fullmatch(line) is None
+        and "://" not in line
+        and len(list(_SEPARATOR.finditer(line))) == 1
+        and re.search(r"[^\W\d_]", line) is not None
+    )
+
+
 def _text(lines: list[str], budget: LoadBudget) -> _Parse:
     result = _Parse()
+    in_tracklist = False
     for line_number, raw in enumerate(lines, 1):
-        line = raw.strip()
-        if not line or _DECORATION.fullmatch(line) or _HEADER.fullmatch(line):
+        line, _start = note_line(raw)
+        if _TRACK_HEADING.fullmatch(line):
+            in_tracklist = True
+            continue
+        if not line or _DECORATION.fullmatch(line):
             continue
         if len(line) > 4096:
             result.reject(line_number, "line_field_cap")
             continue
-        match = _ORDERED.fullmatch(line)
-        if match is None:
-            result.reject(line_number, "excluded_non_grammar_line")
+        if (_HEADER.fullmatch(line) or LABELED.fullmatch(line)) and not _TIMED.fullmatch(line):
+            # Release/site headers are retained in the raw source; not failed tracks.
+            if result.rows:
+                in_tracklist = False
             continue
-        row = result.add(int(match.group(1)), line_number, budget)
+        match = _ORDERED.fullmatch(line)
+        timed = _TIMED.fullmatch(line) if match is None else None
+        if match is None:
+            if timed is None and _SEPARATOR.search(line) and re.match(r"^(?:\d{1,4}\b|\[\d|[A-Z]\d{1,2}\b)", line):
+                result.reject(line_number, "unsupported_track_number")
+                continue
+            adjacent = any(_plain_track(note_line(lines[index])[0]) for index in (line_number - 2, line_number) if 0 <= index < len(lines))
+            if timed is None and not (_plain_track(line) and (in_tracklist or adjacent)):
+                result.evidence.append(f"line:{line_number}:excluded_non_track_line")
+                continue
+            number = result.rows[-1].position + 1 if result.rows else 1
+            body = timed[3] if timed else line
+        else:
+            number = int(match.group(1) or match.group(2))
+            body = match.group(3)
+        if "[" not in body and _DECORATION.fullmatch(re.sub(r"\d", "", body)):
+            # Numeric ornaments in scene art are not track declarations.
+            continue
+        duration = _DURATION_TAIL.search(body)
+        if duration:
+            body = body[: duration.start()]
+        row = result.add(number, line_number, budget)
         if row is None:
             continue
-        body = match.group(2)
+        if duration:
+            row.evidence.append(f"line:{line_number}:trailing_time:{duration[1]}:origin_unknown")
+        if timed:
+            row.timestamp = _text_timestamp(timed[1] or timed[2], result, line_number)
         if body.startswith("[") and "]" in body:
             time, body = body[1:].split("]", 1)
             row.timestamp = _text_timestamp(time, result, line_number)
@@ -285,6 +357,9 @@ def _text(lines: list[str], budget: LoadBudget) -> _Parse:
                 row.title = _known(body[6:])
             elif body.strip().casefold() in _UNKNOWN:
                 row.title = None
+            elif in_tracklist:
+                # A declared track section permits title-only rows, without guessing artists.
+                row.title = _known(body)
             else:
                 result.reject(line_number, "unsupported_title_only_body")
                 result.rows.remove(row)
