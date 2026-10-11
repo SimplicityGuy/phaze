@@ -431,3 +431,48 @@ async def test_shell_rail_marks_metadata_status_unavailable(
     assert "$store.pipeline.metadataStatusDone" in response.text
     assert "Metadata status unavailable" in response.text
     assert ">— / —</span>" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["empty", "partial", "completed"])
+async def test_metadata_copy_scopes_processed_and_queue_counts(client: AsyncClient, session: AsyncSession, case: str) -> None:
+    """A successful extraction, a missing file, and companion work remain distinct measurements."""
+    await session.execute(text("CREATE TEMP TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL) ON COMMIT DROP"))
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES ('capture_companion_source:example', 'active')"))
+    if case != "empty":
+        processed = _file("processed.mp3")
+        if case == "completed":
+            processed.missing_at = datetime.now(UTC)
+        session.add(processed)
+        await session.flush()
+        session.add(FileMetadata(file_id=processed.id, failed_at=None))
+    if case == "partial":
+        missing = _file("missing.mp3")
+        missing.missing_at = datetime.now(UTC)
+        session.add(missing)
+        await session.flush()
+        session.add(FileMetadata(file_id=missing.id, failed_at=datetime.now(UTC)))
+    await session.flush()
+
+    status = await get_metadata_status_snapshot(session)
+    queue = await get_stage_activity_snapshot(session)
+    assert status.available and queue.available
+    assert status.done == (0 if case == "empty" else 1)
+    assert status.missing == (1 if case == "partial" else 0)
+    assert status.failed == 0
+    assert queue.counts["metadata"] == {"queued": 0, "active": 0}
+
+    body = (await client.get("/s/metadata", headers={"HX-Request": "true"})).text
+    soup = BeautifulSoup(body, "html.parser")
+    assert soup.find(id="metadata-completed-value").get_text() == str(status.done)
+    assert soup.find(id="metadata-missing-value").get_text() == str(status.missing)
+    assert soup.find(id="metadata-failed-value").get_text() == "0"
+    assert "Extraction processed" in body
+    assert "Processed describes the extraction stage, not whole-file health" in body
+    assert "SAQ reports no queued or active extraction jobs" in body
+    assert "Companion-capture jobs are outside these counts" in body
+    assert "no queued or active metadata jobs" not in body
+    if case == "completed":
+        record = (await client.get(f"/record/{processed.id}")).text
+        assert 'data-record-health="missing"' in record
+        assert status.done == 1 and status.missing == 0, "completion retains stage precedence, not whole-file health"

@@ -20,6 +20,8 @@ Two properties make it worth a browser rather than a route test:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -154,3 +156,47 @@ async def test_going_back_from_the_handoff_restores_a_working_tracklist_workspac
             "args => !document.querySelector(args[0]).innerText.includes(args[1])",
             arg=[panel, placeholder],
         )
+
+
+async def test_stage_copy_labels_stored_tracklists_and_generation_ready_files(page: Any, seed: Any) -> None:
+    """Hydrated headlines count stored files while an empty proposal list still permits generation."""
+    file = await seed.file(filename="ready.mp3")
+    await seed.metadata(file)
+    await seed.analysis(file)
+    await seed.tracklist(file=file, external_id="stored-empty-tracks")
+    await seed.tracklist(external_id="unlinked-candidate")
+    await open_shell(page, "/s/tracklist")
+    await settled(page)
+    assert "Files with stored tracklists · 1" in await page.locator("#stage-workspace-subcount").inner_text()
+    assert "0 / 2 with a Discogs link" in await page.locator("#stage-workspace").inner_text()
+    Path("test-results/screenshots").mkdir(parents=True, exist_ok=True)
+    await page.screenshot(path="test-results/screenshots/phaze-wzfzo-11-tracklists.png", full_page=True)
+    await page.locator(_CONTINUE).click()
+    await wait_for_stage(page, "Propose changes")
+    await settled(page)
+    assert "No proposals generated yet" in await page.locator("#stage-workspace").inner_text()
+    assert "Files are ready for candidate generation" in await page.locator("#stage-workspace").inner_text()
+    await page.screenshot(path="test-results/screenshots/phaze-wzfzo-11-propose.png", full_page=True)
+    await page.locator('#stage-workspace a[href="#propose-generate"]').click()
+    assert await page.locator("#propose-generate").is_visible()
+    assert "1" in await page.locator('button[aria-label="Generate AI proposals for all pending files"]').get_attribute("hx-confirm")
+
+
+async def test_metadata_processed_copy_keeps_missing_records_separate(page: Any, seed: Any) -> None:
+    """Successful extraction history does not make a currently missing file healthy."""
+    present = await seed.file(filename="present.mp3")
+    await seed.metadata(present)
+    missing = await seed.file(filename="missing.mp3")
+    missing_metadata = await seed.metadata(missing)
+    missing_metadata.failed_at = datetime.now(UTC)
+    missing.missing_at = datetime.now(UTC)
+    await seed.session.commit()
+    await open_shell(page, "/s/metadata")
+    await settled(page)
+    assert "extraction processed" in (await page.locator("#stage-workspace").inner_text()).casefold()
+    assert await page.locator("#metadata-completed-value").inner_text() == "1"
+    assert await page.locator("#metadata-missing-value").inner_text() == "1"
+    assert await page.locator("#metadata-failed-value").inner_text() == "0"
+    assert "Companion-capture jobs are outside these counts" in await page.locator("#stage-workspace").inner_text()
+    Path("test-results/screenshots").mkdir(parents=True, exist_ok=True)
+    await page.screenshot(path="test-results/screenshots/phaze-wzfzo-11-metadata.png", full_page=True)

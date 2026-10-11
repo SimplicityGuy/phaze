@@ -1,7 +1,7 @@
 {# Metadata uses the shared operational hierarchy without changing extraction or queue controls. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = "`${$store.pipeline.metadataStatusKnown ? formatCount($store.pipeline.metadataStatusDone) : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? formatCount($store.pipeline.metadataEligible) : 'unknown'} eligible · automated extraction`" %}
+{% set subcount = "`${$store.pipeline.metadataStatusKnown ? formatCount($store.pipeline.metadataStatusDone) : 'unknown'} extraction processed · ${$store.pipeline.metadataEligibleKnown ? formatCount($store.pipeline.metadataEligible) : 'unknown'} eligible · automated extraction`" %}
 {% set _btn = ui.btn('secondary', 'md') %}
 {% set _primary = ui.btn('primary', 'md') %}
 {% set actions %}
@@ -27,9 +27,9 @@
         {% set latest_value %}<span>{{ humanize_relative_time(metadata_activity.latest_successful_at) if metadata_activity.available else 'unavailable' }}</span>{% endset %}
         {% call ui.metric_strip('Metadata extraction summary') %}
             {{ ui.metric('Eligible', eligible_value, 'Exact current Extract All selection', 'neutral') }}
-            {{ ui.metric('Queued', queued_value, 'Waiting in SAQ, including paused jobs', 'attention') }}
-            {{ ui.metric('Active', active_value, 'SAQ active; may be claimed or executing', 'accent') }}
-            {{ ui.metric('Completed', completed_value, 'Successful metadata outcomes', 'success') }}
+            {{ ui.metric('Extraction queued', queued_value, 'Waiting in SAQ, including paused extraction jobs', 'attention') }}
+            {{ ui.metric('Extraction active', active_value, 'SAQ active; may be claimed or executing', 'accent') }}
+            {{ ui.metric('Extraction processed', completed_value, 'Successful extraction stage outcomes; file health is separate', 'success') }}
             {{ ui.metric('Failed', failed_value, 'Terminal outcomes; selectable retries appear under Eligible', 'danger') }}
             {{ ui.metric('Files updated · 24h', recent_value, 'Unique files with a successful metadata write', 'accent') }}
             {{ ui.metric('Latest successful write', latest_value, 'Controller receipt time, not a batch run', 'neutral') }}
@@ -52,7 +52,7 @@
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                     <h2 id="metadata-state-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">Extraction state</h2>
-                    <p class="mt-1 text-sm text-muted ">Eligible is the exact set Extract All would select now. Queued and active are SAQ states; active means claimed by queue processing and does not prove user code is currently executing.</p>
+                    <p class="mt-1 text-sm text-muted ">Eligible is the exact set Extract All would select now. Queued and active count extraction jobs only, excluding companion capture. They are SAQ states; active means claimed by queue processing and does not prove user code is currently executing. Processed describes the extraction stage, not whole-file health; missing files and failed processing remain separate findings.</p>
                 </div>
                 {{ ui.refresh_status('Live queue state', 'Refreshing queue state…') }}
             </div>
@@ -67,7 +67,7 @@
                 <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0">{{ ui.status_badge('Metadata', 'idle', 'success', '✓') }}</span>
                 <span x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown">{{ ui.status_badge('Metadata', 'unknown', 'attention', '?') }}</span>
             </div>
-            <p x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0" class="mt-3 text-sm text-muted ">Extract All currently selects no files and SAQ reports no queued or active metadata jobs. Recent successful-write context remains visible above while the queue is idle.</p>
+            <p x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0" class="mt-3 text-sm text-muted ">Extract All currently selects no files and SAQ reports no queued or active extraction jobs. Companion-capture jobs are outside these counts. Recent successful-write context remains visible above while the extraction queue is idle.</p>
         </section>
 
         <section aria-labelledby="metadata-controls-heading" class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">

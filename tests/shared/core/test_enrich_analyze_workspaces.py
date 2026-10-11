@@ -445,7 +445,7 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
     assert "setInterval" not in md_body
     assert "automated extraction" in md_body
     assert "manual stage" not in md_body
-    for state in ("Eligible", "Queued", "Active", "Completed", "Failed", "idle"):
+    for state in ("Eligible", "Extraction queued", "Extraction active", "Extraction processed", "Failed", "idle"):
         assert state in md_body
     assert "Files updated · 24h" in md_body
     assert "Latest successful write" in md_body
