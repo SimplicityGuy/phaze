@@ -225,7 +225,7 @@ async def source_review_context(session: AsyncSession, file_id: uuid.UUID, sourc
     # Embedded-tag interpretations have no separate acquisition observation.
     text_id = raw_id or (history.observations[0].observation_id if history.observations else None)
     chunk = await get_stored_text(session, file_id, text_id) if text_id else None
-    parsed_query = query.where(obs.parser_version.in_((PARSER_VERSION, RELEASE_PARSER_VERSION)))
+    parsed_query = query.where(obs.parser_version.in_(sorted(PARSER_VERSIONS | RELEASE_PARSER_VERSIONS)))
     if raw_id:
         parsed_query = parsed_query.where(obs.parent_id == raw_id)
     parsed_ids = tuple(

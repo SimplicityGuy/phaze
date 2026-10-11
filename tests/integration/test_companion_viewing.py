@@ -19,8 +19,10 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.companion_capture import store_capture_report
+from phaze.services.companion_view import source_review_context
 from phaze.services.local_source_import import import_local_source
-from phaze.tracklist_providers.domain import LoadBudget
+from phaze.services.provider_persistence import add_candidate, store_snapshot
+from phaze.tracklist_providers.domain import LoadBudget, Snapshot
 from tests.integration.test_companion_import_backfill import report
 from tests.integration.test_local_source_import import CUE, decision, inventory
 
@@ -286,6 +288,30 @@ async def test_new_raw_review_hides_old_candidates_and_keeps_current_selection(c
     assert "Use this tracklist" not in pinned.text
 
 
+async def test_source_review_includes_supported_parser_generations_for_same_capture(client, session):
+    media, companion, raw = await inventory(session, "Artist: Example Artist\n01. Artist - Opening\n")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    expected = {imported.tracklist_observation_id, imported.release_observation_id}
+    for identifier in tuple(expected):
+        current = await session.get(ProviderSourceObservation, identifier)
+        historical = Snapshot.model_validate(
+            {**current.payload, "retrieved_at": current.retrieved_at, "parser_version": current.parser_version.replace("-v2", "-v1")}
+        )
+        stored = await store_snapshot(session, historical, source_file_id=companion.id, channel="companion", parent_id=raw)
+        kind = "release_metadata" if current.parser_version.startswith("local-release") else "tracklist"
+        await add_candidate(session, media.id, stored.observation.id, evidence=(f"kind:{kind}",))
+        expected.add(stored.observation.id)
+    source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    review = await source_review_context(session, media.id, source_id)
+    assert review["raw_id"] == raw
+    assert {item["detail"].summary.observation_id for item in review["interpretations"]} == expected
+    response = await client.get(f"/files/{media.id}/companion-details?review_source_id={source_id}", headers=HX)
+    assert response.status_code == 200
+    panel = BeautifulSoup(response.text, "html.parser").select_one("[data-source-review]")
+    assert len(panel.select("[data-source-decision]")) == 4
+    assert "Example Artist" in panel.get_text() and "Opening" in panel.get_text()
+
+
 async def test_review_text_is_bounded_and_preview_is_read_only(client, session):
     text = "01. Artist - Opening\n" + "synthetic prose\n" * 1000
     media, _companion, raw = await inventory(session, text)
@@ -315,7 +341,7 @@ async def test_auto_refresh_keeps_open_review_outside_first_page(client, session
 
 async def test_incomplete_parser_child_with_text_keeps_review_as_next_action(client, session):
     """Parser completeness must never masquerade as a failed acquisition."""
-    media, _companion, raw = await inventory(session, TEXT, "nfo")
+    media, _companion, raw = await inventory(session, "Artist: Example Artist\n01. Artist - Ambiguous - Title\n", "nfo")
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     assert imported.tracklist_status == "incomplete"
     child = await session.get(ProviderSourceObservation, imported.tracklist_observation_id)
