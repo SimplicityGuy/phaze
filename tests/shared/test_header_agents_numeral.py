@@ -57,20 +57,23 @@ def _render_header() -> str:
     return response.body.decode()
 
 
-def test_header_names_online_agents_and_active_lanes_separately() -> None:
-    """The header labels both live counts instead of presenting an ambiguous total."""
+def test_header_names_configured_lanes_and_clusters_separately() -> None:
+    """Inventory counts include local and idle lanes; agents remain a separate link."""
     html = _render_header()
-    aria_match = re.search(r':aria-label="([^"]*agentOnline[^"]*computeLanesActive[^"]*)"', html)
+    aria_match = re.search(r':aria-label="([^"]*laneCount[^"]*clusterCount[^"]*)"', html)
     assert aria_match
-    assert "agents online" in aria_match.group(1)
-    assert "compute lanes active" in aria_match.group(1)
+    assert "configured lanes" in aria_match.group(1)
+    assert "configured clusters" in aria_match.group(1)
     assert "Agents online" in html
-    assert "Lanes active" in html
+    assert "Lanes&nbsp;" in html
+    assert "Clusters&nbsp;" in html
+    assert "Lanes active" not in html
 
 
 def test_header_counts_bind_to_their_distinct_store_values() -> None:
     html = _render_header()
     # phaze-s8xtd: each numeral is gated on seedKnown so an unmeasured count reads an em-dash, never 0.
     assert html.count("x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'\"") == 1
-    assert html.count("x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.computeLanesActive) : '—'\"") == 1
+    for key in ("laneCount", "clusterCount"):
+        assert html.count(f"x-text=\"$store.pipeline.seedKnown ? formatCount($store.pipeline.{key}) : '—'\"") == 1
     assert 'x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"' not in html

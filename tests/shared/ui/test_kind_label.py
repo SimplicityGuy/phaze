@@ -42,7 +42,8 @@ def _labels(html: str) -> list[Tag]:
 def _form(pill: Tag) -> tuple[str, str]:
     """(leading glyph, visible text) of a pill, whitespace-normalised."""
     glyph, text = pill.find_all("span", recursive=False)
-    return glyph.get_text(strip=True), re.sub(r"\s+", " ", text.get_text()).strip()
+    icon = glyph.find("svg")
+    return (str(icon["data-icon"]) if icon else glyph.get_text(strip=True)), re.sub(r"\s+", " ", text.get_text()).strip()
 
 
 def _assert_neutral_and_gapped(pill: Tag) -> None:
@@ -60,7 +61,7 @@ def _macro(call: str) -> str:
 @pytest.mark.parametrize(
     ("call", "glyph", "text", "aria"),
     [
-        ("{{ ui.kind_label('local', 'nox') }}", "\U0001f5a5️", "LOCAL · nox", "Kind: local lane, nox"),
+        ("{{ ui.kind_label('local', 'nox') }}", "server", "LOCAL · nox", "Kind: local lane, nox"),
         ("{{ ui.kind_label('compute', 'a1') }}", "☁️", "COMPUTE · a1", "Kind: compute lane, a1"),
         ("{{ ui.kind_label('kueue', 'vox') }}", "⎈", "KUEUE · vox", "Kind: kueue lane, vox"),
         ("{{ ui.kind_label('kueue', 'vox', show_kind=false) }}", "⎈", "vox", "Kind: kueue lane, vox"),
@@ -114,14 +115,14 @@ def test_analyze_running_now_row_uses_the_macro() -> None:
 
     forms = [_form(p) for p in _labels(html)]
 
-    assert forms == [("\U0001f5a5️", "nox"), ("⎈", "vox")]
+    assert forms == [("server", "nox"), ("⎈", "vox")]
     for pill in _labels(html):
         _assert_neutral_and_gapped(pill)
 
 
 @pytest.mark.parametrize(
     ("kind", "glyph", "word"),
-    [("local", "\U0001f5a5️", "LOCAL"), ("compute", "☁️", "COMPUTE"), ("kueue", "⎈", "KUEUE")],
+    [("local", "server", "LOCAL"), ("compute", "☁️", "COMPUTE"), ("kueue", "⎈", "KUEUE")],
 )
 def test_lane_card_header_uses_the_macro(kind: str, glyph: str, word: str) -> None:
     lane = {"id": "nox", "kind": kind, "rank": 1, "cap": 4, "in_flight": 1, "available": True, "queued": 0, "working": 1, "active": 1}
@@ -133,7 +134,7 @@ def test_lane_card_header_uses_the_macro(kind: str, glyph: str, word: str) -> No
     _assert_neutral_and_gapped(pill)
 
 
-@pytest.mark.parametrize(("kind", "glyph", "word"), [("local", "\U0001f5a5️", "LOCAL"), ("kueue", "⎈", "KUEUE")])
+@pytest.mark.parametrize(("kind", "glyph", "word"), [("local", "server", "LOCAL"), ("kueue", "⎈", "KUEUE")])
 def test_lane_detail_header_uses_the_macro(kind: str, glyph: str, word: str) -> None:
     lane = {
         "id": "vox", "kind": kind, "rank": 2, "cap": 4, "in_flight": 1, "available": True, "active": 1, "queued": 0, "working": 1,
@@ -160,7 +161,7 @@ def test_compute_lane_detail_header_uses_the_macro(kind: str, glyph: str) -> Non
 
 @pytest.mark.parametrize(
     ("lane_kind", "lane", "glyph"),
-    [("local", "nox", "\U0001f5a5️"), ("kueue", "vox", "⎈"), (None, "cloud", "▪")],
+    [("local", "nox", "server"), ("kueue", "vox", "⎈"), (None, "cloud", "▪")],
 )
 def test_file_progress_lane_cell_uses_the_macro(lane_kind: str | None, lane: str, glyph: str) -> None:
     rows = [[{"text": "song.mp3", "mono": True}, {"lane_kind": lane_kind, "lane": lane}]]
@@ -198,7 +199,7 @@ def test_agents_kind_badge_uses_the_macro(row_kind: str, status_kind: str, glyph
 
 @pytest.mark.parametrize(
     ("lane_kind", "glyph"),
-    [("local", "\U0001f5a5️"), ("compute", "☁️"), ("kueue", "⎈"), ("", "▪")],
+    [("local", "server"), ("compute", "☁️"), ("kueue", "⎈"), ("", "▪")],
 )
 def test_record_page_lane_fact_uses_the_macro_in_a_neutral_tone(lane_kind: str, glyph: str) -> None:
     facts = [RecordFact(label="Lane", value="nox", lane_kind=lane_kind), RecordFact(label="Format", value="mp3")]

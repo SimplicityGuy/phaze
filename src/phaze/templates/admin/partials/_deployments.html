@@ -4,7 +4,7 @@
         <p class="text-xs text-muted">Phaze containers reported by each Docker host</p>
     </div>
     {% if not deployments_by_host | default({}) %}
-    <p class="text-sm text-muted">No host reports yet. Host, app version, and running image are unknown.</p>
+    <p class="text-sm text-muted">Container inventory unavailable. Phaze is running, but Docker host inventory is missing, so container versions and image identities are unknown.</p>
     {% endif %}
     {% for host, containers in (deployments_by_host | default({})).items() %}
     <div class="mb-4 last:mb-0">

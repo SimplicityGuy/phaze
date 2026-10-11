@@ -186,8 +186,8 @@ async def test_shell_pane_renders_full_shell_with_agents_table(smoke: AsyncClien
     assert 'hx-trigger="every 5s"' in body
     assert 'hx-swap="outerHTML"' in body
     assert "5 agents" in body
-    assert "0 compute lanes" in body
-    assert 'x-text="&#34;5 agents \\u00b7 0 compute lanes&#34;"' in body
+    assert "0 clusters" in body
+    assert 'x-text="&#34;5 agents \\u00b7 0 clusters&#34;"' in body
 
 
 @pytest.mark.asyncio
@@ -218,7 +218,7 @@ async def test_dedicated_table_route_returns_partial(smoke: AsyncClient) -> None
     # re-requests THIS endpoint, not that it does so without parameters.
     assert _poll_url(body).startswith("/admin/agents/_table")
     assert "5 agents" in body
-    assert "0 lanes" in body
+    assert "0 clusters" in body
     assert 'aria-live="polite"' in body
     assert body.count('aria-live="polite"') == 1
     assert '<section id="agents-table-section"' in body
@@ -295,7 +295,7 @@ _TWO_CLUSTER_REGISTRY = """
     """
 
 
-async def _seed_cloud_job(session: AsyncSession, make_file, *, backend_id: str) -> None:  # type: ignore[no-untyped-def]
+async def _seed_cloud_job(session: AsyncSession, make_file, *, backend_id: str | None) -> None:  # type: ignore[no-untyped-def]
     """Seed ONE RUNNING CloudJob attributed to ``backend_id`` (its own unique-FK FileRecord)."""
     import uuid
 
@@ -344,6 +344,29 @@ async def test_lane_rows_render_for_both_clusters_never_dead(
             assert "IDLE" in body, f"xenolab IDLE pill missing from {path}"
             # Never a perpetual DEAD/rose state anywhere on the page (no dead agent is seeded either).
             assert "DEAD" not in body, f"DEAD leaked into {path}"
+
+
+@pytest.mark.asyncio
+async def test_unattributed_work_does_not_increase_configured_cluster_count(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """Keep the diagnostic lane visible without counting it as a configured cluster."""
+    from bs4 import BeautifulSoup
+
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id=None)
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        for path in ("/s/agents", "/admin/agents/_table"):
+            response = await ac.get(path)
+            assert response.status_code == 200
+            body = response.text
+            assert 'id="compute-lane-trigger-unattributed"' in body
+            text = BeautifulSoup(body, "html.parser").get_text(" ", strip=True)
+            assert "2 clusters" in text
+            assert "3 clusters" not in text
 
 
 @pytest.mark.asyncio

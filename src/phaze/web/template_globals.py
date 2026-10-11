@@ -70,7 +70,7 @@ PAGE_NAMES: dict[str, str] = {
     "cue": "Cue sheets",
     "apply": "Execute",
     "audit": "Audit log",
-    "agents": "Agents & compute lanes",
+    "agents": "Agents & clusters",
     "runtime-config": "Config",
 }
 

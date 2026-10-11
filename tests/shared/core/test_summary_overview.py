@@ -165,9 +165,9 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
     [
         ("cloud routing disabled", "/s/runtime-config", "Open Config"),
         ("held — cloud routing paused (force-local)", "/s/runtime-config", "Open Config"),
-        ("held — no cloud backend reachable", "/s/agents", "Open Agents & compute lanes"),
-        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Open Agents & compute lanes"),
-        ("held — no fileserver agent online", "/s/agents", "Open Agents & compute lanes"),
+        ("held — no cloud backend reachable", "/s/agents", "Open Agents & clusters"),
+        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Open Agents & clusters"),
+        ("held — no fileserver agent online", "/s/agents", "Open Agents & clusters"),
         ("queued — 2 free slots, dispatching on next drain tick (~5 min)", "/s/analyze", "Open Analyze"),
         ("held", "/s/analyze", "Open Analyze"),
     ],

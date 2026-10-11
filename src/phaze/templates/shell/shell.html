@@ -158,10 +158,11 @@
                 // the dag.items() OOB loop pushes real values onto dag-seed-notYetEnriched /
                 // dag-seed-computeOnline each 5s poll (58-02, 58-04 — WORK-01/03/05).
                 notYetEnriched: 0, computeOnline: 0,
-                // COMPUTE-02: count of ACTIVE compute lanes, additive to agentOnline for the header
-                // "Agents · N" total. A read-only derived int seeded onto the dag dict server-side;
+                // COMPUTE-02: count of ACTIVE compute lanes, used with agentOnline for the activity dot.
+                // A read-only derived int seeded onto the dag dict server-side;
                 // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
                 computeLanesActive: 0,
+                laneCount: 0, clusterCount: 0,
                 // phaze-uvmcr.5: Phase 87 (87-08, UI-05) per-enrich-stage orphaned/stuck
                 // (recovery-candidate) counts. These two keys lived only in the now-deleted
                 // base.html, which never had a live caller once audit/agents moved onto this
@@ -189,13 +190,13 @@
             // is untouched by the swap; the fresh markup's `:style` bindings just re-read it.
             Alpine.store('colResize', {
                 _key: 'phaze-pipeline-col-widths',
-                // Defaults are content-fitted per column (phaze-6ezaw): Metadata's pill is short, Tracklist's can
-                // carry `× retry pending · YYYY-MM-DD`. Keep in step with the <col data-default-width> attrs in
+                // Defaults are content-fitted per column (phaze-6ezaw): Tracklist holds the stored-state
+                // badges (phaze-1r6x4). Keep in step with the <col data-default-width> attrs in
                 // files_table_view.html (a test pins the two together);
                 // mins are the narrowest a column can go: under `table-fixed` (phaze-6ezaw) nothing else
-                // floors a column, so the stage mins hold their pill (Tracklist: the longest, `× retry pending · date`).
-                defaults: { Type: 72, Metadata: 164, Analyze: 164, Tracklist: 282, Propose: 144, Review: 144, Execute: 144 },
-                mins: { File: 140, Type: 64, Metadata: 164, Analyze: 164, Tracklist: 282, Propose: 144, Review: 144, Execute: 144 },
+                // floors a column, so the stage mins hold their widest content plus cell padding.
+                defaults: { Type: 72, Metadata: 164, Analyze: 164, Tracklist: 200, Propose: 144, Review: 144, Execute: 144 },
+                mins: { File: 140, Type: 64, Metadata: 164, Analyze: 164, Tracklist: 200, Propose: 144, Review: 144, Execute: 144 },
                 legacyKeys: { Metadata: 'Meta', Propose: 'Prop', Review: 'Appr', Execute: 'Exec' },
                 max: 900,
                 widths: (() => {

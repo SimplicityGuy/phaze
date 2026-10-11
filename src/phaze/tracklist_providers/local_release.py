@@ -6,9 +6,11 @@ from decimal import Decimal
 import re
 
 from phaze.tracklist_providers.domain import Completeness, LoadBudget, OutcomeStatus, ReleaseFact, SourceRead
+from phaze.tracklist_providers.local_syntax import cue_line
 
 
-RELEASE_PARSER_VERSION = "local-release-v1"
+RELEASE_PARSER_VERSION = "local-release-v3"
+RELEASE_PARSER_VERSIONS = frozenset({"local-release-v1", "local-release-v2", RELEASE_PARSER_VERSION})
 _ALIASES = {
     "artist": "artist",
     "performer": "artist",
@@ -35,12 +37,27 @@ _ALIASES = {
     "duration": "duration",
     "length": "duration",
     "set type": "set_type",
+    "air date": "date",
+    "rel date": "date",
+    "rls date": "date",
+    "playtime": "duration",
+    "total playtime": "duration",
+    "set length": "duration",
+    "recording quality": "quality",
+    "runtime": "duration",
 }
-_LABELED = re.compile(r"^\s*(?P<label>[A-Za-z][A-Za-z ._-]{0,63}?)\s*[:=]\s*(?P<value>.*?)\s*$")
+_FIELD_KEYS = {re.sub(r"[^a-z]", "", key): value for key, value in _ALIASES.items()}
+_NOTE_FIELD = re.compile(r"^(?P<label>[A-Za-z][A-Za-z ._/-]{0,63}?)(?:\s*[:=]\s*|\s*\.+\s*\[\s*|[ \t]{2,})(?P<value>.*?)\s*$")
+_NOTE_COLUMN = re.compile(r"[ \t]{2,}(?P<label>[A-Za-z][A-Za-z ._/-]{0,63}?)\s*[:=]\s*")
+_ART = r"|│║┃/\\─━═┌┐└┘╔╗╚╝█▓▒░▀▄▌▐■"
+_NOTE_LEFT = re.compile(rf"^(?:\|\s*[^\s|]{{1,3}}\s*\||-->\s*|[\s:{_ART}`']+)+")
+_NOTE_RIGHT = re.compile(rf"(?:\s+<--|\s+::[\s:`']*|[|│║┃█▓▒░]+|[ \t]{{2,}}(?:\|\s*[^\s|]{{1,3}}\s*\||[█▓▒░▀▄].*|[{_ART}\s:`']+))\s*$")
+_PLAIN_RIGHT = re.compile(r"(?:[|│║┃█▓▒░]+|[ \t]{2,}[█▓▒░▀▄▌▐■].*)\s*$")
 _CUE = re.compile(r"^\s*(?P<label>PERFORMER|TITLE|CATALOG|REM\s+[A-Za-z_]+)\s+(?P<value>.*?)\s*$", re.IGNORECASE)
 _CUE_TRACK = re.compile(r"^\s*TRACK(?:\s|$)", re.IGNORECASE)
 _BITRATE = re.compile(r"(?P<number>\d{1,9}(?:\.\d{1,6})?)\s*(?P<unit>bps|bit/s|kbps|kbit/s|mbps|mbit/s)", re.IGNORECASE)
-_DURATION = re.compile(r"(?:(?P<hours>\d{1,6}):)?(?P<minutes>\d{1,3}):(?P<seconds>\d{2})")
+_DURATION = re.compile(r"(?:(?P<hours>\d{1,6}):)?(?P<minutes>\d{1,6}):(?P<seconds>\d{2})(?:\s*min)?", re.IGNORECASE)
+_DOT_DURATION = re.compile(r"(?P<hours>\d{1,6})\.(?P<minutes>\d{2})\.(?P<seconds>\d{2})\s+h/m/s", re.IGNORECASE)
 _SECONDS = re.compile(r"(?P<number>\d{1,9}(?:\.\d{1,6})?)\s*(?:s|sec|seconds)", re.IGNORECASE)
 
 
@@ -51,6 +68,41 @@ class ReleaseExtraction:
     facts: tuple[ReleaseFact, ...]
     completeness: Completeness
     evidence: tuple[str, ...]
+
+
+def _note_line(raw: str) -> tuple[str, int]:
+    """Release-local frames leave values and their original character offsets intact."""
+    left = _NOTE_LEFT.match(raw)
+    start = left.end() if left else 0
+    line = raw[start:]
+    right = (_NOTE_RIGHT if raw[:start].strip() else _PLAIN_RIGHT).search(line)
+    return (line[: right.start()] if right else line.rstrip()), start
+
+
+def _note_fields(line: str, *, framed: bool) -> list[tuple[str, str, int, int]]:
+    """Split only padded columns with explicit known field labels, preserving spans."""
+    match = _NOTE_FIELD.fullmatch(line)
+    if match is None:
+        return []
+    key = re.sub(r"[^a-z]", "", match["label"].lower())
+    field = _FIELD_KEYS.get(key)
+    if field is None:
+        return []
+    starts = [(field, match.start("value"), match.end("value"))]
+    for column in _NOTE_COLUMN.finditer(line, match.start("value")):
+        column_field = _FIELD_KEYS.get(re.sub(r"[^a-z]", "", column["label"].lower()))
+        if column_field is not None:
+            previous_field, previous_start, _ = starts[-1]
+            starts[-1] = (previous_field, previous_start, column.start())
+            starts.append((column_field, column.end(), match.end("value")))
+    fields: list[tuple[str, str, int, int]] = []
+    for field, start, end in starts:
+        value = line[start:end].rstrip()
+        frame = (_NOTE_RIGHT if framed else _PLAIN_RIGHT).search(value)
+        if frame:
+            value = value[: frame.start()].rstrip()
+        fields.append((field, value, start, start + len(value)))
+    return fields
 
 
 def _normalize(field: str, value: str) -> tuple[str | None, str | None, str]:
@@ -77,7 +129,7 @@ def _normalize(field: str, value: str) -> tuple[str | None, str | None, str]:
                 return format(number.normalize(), "f"), "bit/s", "known"
         return None, None, "unknown"
     if field == "duration":
-        match = _DURATION.fullmatch(value)
+        match = _DURATION.fullmatch(value) or _DOT_DURATION.fullmatch(value)
         if match and int(match["seconds"]) < 60 and (match["hours"] is None or int(match["minutes"]) < 60):
             seconds = int(match["hours"] or 0) * 3600 + int(match["minutes"]) * 60 + int(match["seconds"])
             return str(seconds), "s", "known"
@@ -182,27 +234,42 @@ def extract_release_metadata(content: SourceRead, *, source_format: str, budget:
             continue
         if not line.strip():
             continue
+        if cue:
+            line = cue_line(line)
         if cue and _CUE_TRACK.match(line):
             track_scope = True
         if cue and track_scope:
             continue
-        match = (_CUE if cue else _LABELED).fullmatch(line)
-        if match is None:
-            evidence.append(f"line:{index}:unrecognized")
+        if not cue:
+            original_line = line
+            line, frame_offset = _note_line(line)
+            framed = bool(original_line[:frame_offset].strip())
+            line_offset += frame_offset
+        if cue:
+            match = _CUE.fullmatch(line)
+            label = " ".join(match["label"].lower().split()).removeprefix("rem ") if match else ""
+            field = _FIELD_KEYS.get(re.sub(r"[^a-z]", "", label))
+            fields = [(field, match["value"], match.start("value"), match.end("value"))] if match and field else []
+        else:
+            fields = _note_fields(line, framed=framed)
+        if not fields:
+            syntax = (_CUE if cue else _NOTE_FIELD).fullmatch(line)
+            evidence.append(f"line:{index}:unknown-field" if syntax else f"line:{index}:unrecognized")
             continue
-        label = " ".join(match["label"].lower().replace("_", " ").split()).removeprefix("rem ").strip(".")
-        field = _ALIASES.get(label)
-        if field is None:
-            evidence.append(f"line:{index}:unknown-field")
-            continue
-        if len(facts) == 256:
-            incomplete = True
-            evidence.append("limit:facts")
+        fact_limit = False
+        for field, value, start, end in fields:
+            if len(facts) == 256:
+                incomplete = True
+                fact_limit = True
+                evidence.append("limit:facts")
+                break
+            facts.append(_fact(field, value, index, line_offset + start, line_offset + end, cue))
+        if fact_limit:
             break
-        facts.append(_fact(field, match["value"], index, line_offset + match.start("value"), line_offset + match.end("value"), cue))
     if len(evidence) > 64:
         evidence = [*evidence[:63], "limit:evidence"]
-        incomplete = True
+        # Diagnostics are bounded separately from the scan. Scene art can fill this
+        # list before a valid release block; it does not mean any input was skipped.
     completeness = Completeness(
         state="incomplete" if incomplete else "complete",
         reason="Release metadata scan bounded" if incomplete else "Release metadata grammar scan exhausted",

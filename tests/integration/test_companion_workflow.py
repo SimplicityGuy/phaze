@@ -185,13 +185,18 @@ async def physical_source(
 
 
 async def native_import(client: AsyncClient, media: FileRecord, raw: ProviderSourceObservation) -> None:
-    detail = await client.get(f"/files/{media.id}/companion-observations/{raw.id}", headers=HX)
+    detail = await client.get(f"/files/{media.id}/companion-sources/{raw.object_id}/observations", headers=HX)
     soup = BeautifulSoup(detail.text, "html.parser")
     form = soup.find("form", attrs={"hx-post": "/api/local-sources/reimport"})
+    if not raw.decoded_text:
+        assert form is None and soup.select_one("[data-source-review]") is not None
+        response = await client.post("/api/local-sources/reimport", json={"media_id": str(media.id), "raw_observation_id": str(raw.id)}, headers=HX)
+        assert response.status_code == 200 and "Content extracted" in response.text
+        return
     assert form is not None, detail.text
     values = {field["name"]: field.get("value", "") for field in form.select("input[name]")}
     response = await client.post(form["hx-post"], data=values, headers=HX)
-    assert response.status_code == 200 and "Stored text imported" in response.text
+    assert response.status_code == 200 and "Content extracted" in response.text
 
 
 async def parsed(session: AsyncSession, raw: ProviderSourceObservation, kind: str) -> ProviderSourceObservation | None:
@@ -250,14 +255,14 @@ async def test_physical_capture_native_import_music_video_stored_page_drawer(
             response = await client.get(path)
             assert response.status_code == 200
             soup = BeautifulSoup(response.text, "html.parser")
-            assert "Example Festival" in soup.select_one("[data-release-metadata]").get_text()
+            assert "Example Festival" in soup.select_one("[data-visible-companion-release]").get_text()
             assert "Opening" in soup.select_one("[data-visible-track]").get_text()
             assert f"/files/{source.id}#companion-sources" in response.text
             texts.append(soup.select_one("[data-record-content]").get_text())
         assert texts[0] == texts[1]
         detail = await client.get(f"/files/{media.id}/companion-observations/{observation.id}", headers=HX)
-        button = BeautifulSoup(detail.text, "html.parser").find("button", string="Read original companion text")
-        original = await client.get(button["hx-get"], headers=HX)
+        original = detail
+        assert BeautifulSoup(original.text, "html.parser").select_one("[data-companion-text]") is not None
         if text:
             assert BeautifulSoup(original.text, "html.parser").select_one("[data-companion-text]").get_text() == text
         else:
@@ -424,7 +429,7 @@ async def test_authenticated_attempt_chronology_retains_physical_text(
         for denied in (unrelated_raw.id, later_raw.id, uuid.UUID(sibling)):
             for suffix in ("", "/text"):
                 assert (await client.get(f"/files/{media.id}/companion-observations/{denied}{suffix}", headers=HX)).status_code == 404
-        history = await client.get(f"/files/{media.id}/companion-sources/{raw.object_id}/observations", headers=HX)
+        history = await client.get(f"/files/{media.id}/companion-sources/{raw.object_id}/observations?history_only=true", headers=HX)
         assert str(raw.id) in history.text and str(later_raw.id) not in history.text and sibling not in history.text
         session.add(Agent(id="foreign-owner", name="Foreign owner", token_hash="c" * 64))
         source.agent_id = "foreign-owner"
@@ -458,7 +463,7 @@ async def test_physical_text_only_and_native_exact_embedded_channel_remain_inspe
         page = await client.get(f"/files/{media.id}")
         form = BeautifulSoup(page.text, "html.parser").find("input", attrs={"name": "embedded_channel", "value": "Comments"}).find_parent("form")
         values = {field["name"]: field.get("value", "") for field in form.select("input[name]")}
-        assert "Stored text imported" in (await client.post(form["hx-post"], data=values, headers=HX)).text
+        assert "Content extracted" in (await client.post(form["hx-post"], data=values, headers=HX)).text
         for path in (f"/files/{media.id}", f"/record/{media.id}"):
             response = await client.get(path)
             assert "Untimed" in response.text
@@ -615,7 +620,7 @@ async def test_physical_competing_sources_native_independent_choices_preserve_ma
             reject = BeautifulSoup(detail.text, "html.parser").select_one("[data-source-decision]")
             values = {field["name"]: field.get("value", "") for field in reject.select('input[type="hidden"]')}
             values["action"] = "reject"
-            assert "rejected" in (await client.post(reject["hx-post"], data=values, headers=HX)).text.lower()
+            assert "Candidate skipped" in (await client.post(reject["hx-post"], data=values, headers=HX)).text
             assert (await get_selected_recording_source(session, media.id)).selection_token == selected.selection_token
             assert (await get_selected_recording_source(session, media.id, kind="release_metadata")).selection_token == release.selection_token
             assert (legacy.id, version.id, track.id, accepted.id) == saved and version.version_number == 7

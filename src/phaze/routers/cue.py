@@ -134,6 +134,7 @@ async def generate_selected_cue(
     media_id: uuid.UUID,
     binding: str = Form(max_length=4096),  # DoS bound on one finite source/inventory pin.
     audio_path: str = Form(max_length=16384),  # DoS bound; current_path is Text storage.
+    accept_omitted_tracks: bool = Form(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     try:
@@ -142,6 +143,8 @@ async def generate_selected_cue(
         if media is None:
             raise ValueError("Recording is no longer available")
         artifact = await validate_selected_cue_binding(session, media_id, reviewed, agent_id=media.agent_id, audio_path=audio_path)
+        if artifact.omitted_track_count and not accept_omitted_tracks:
+            raise ValueError("Acknowledge the tracks without usable timing before generating a CUE that excludes them")
         if not await is_applied(session, media_id):
             raise ValueError("Apply the recording before generating its CUE artifact")
         if not await agent_supports_selected_cue(session, media.agent_id):

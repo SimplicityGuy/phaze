@@ -41,7 +41,7 @@ from phaze.tracklist_providers.domain import (
     Timestamp,
 )
 from phaze.tracklist_providers.local_parser import LocalSourceInterpreter
-from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION, ReleaseExtraction, extract_release_metadata
+from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSION, RELEASE_PARSER_VERSIONS, ReleaseExtraction, extract_release_metadata
 
 
 class _StoredEffects:
@@ -297,6 +297,8 @@ def _cue_ordinal(track: ProviderTrack) -> int | None:
 def _project_tracks(snapshot: Snapshot, media_id: uuid.UUID, mapping: dict | None, availability: str = "current") -> tuple[ProviderTrack, ...]:
     result: list[ProviderTrack] = []
     for track in snapshot.tracks:
+        if snapshot.sections and (mapping is None or track.section_ordinal != mapping.get("text_section_ordinal")):
+            continue
         if snapshot.source_format == "cue":
             if mapping is None or _cue_ordinal(track) != mapping.get("cue_file_ordinal"):
                 continue
@@ -315,6 +317,27 @@ def _project_tracks(snapshot: Snapshot, media_id: uuid.UUID, mapping: dict | Non
                 track = track.model_copy(update={"timestamp": Timestamp.model_validate(values)})
         result.append(track)
     return tuple(result)
+
+
+def _review_text_section(snapshot: Snapshot, command: SourceDecision) -> int | None:
+    """Map one fully enumerated section; no collection flattening or cap bypass."""
+    if not snapshot.sections:
+        if command.text_section_ordinal is not None or command.accept_text_warnings:
+            raise ValueError("Section mapping is only valid for sectioned text tracklists")
+        return None
+    if not snapshot.section_scan_complete:
+        raise ValueError("Incomplete text scan cannot be selected by section")
+    ordinal = command.text_section_ordinal
+    if ordinal is None and len(snapshot.sections) == 1:
+        ordinal = snapshot.sections[0].ordinal
+    section = next((item for item in snapshot.sections if item.ordinal == ordinal), None)
+    if section is None:
+        raise ValueError("Collection requires an explicit text section-to-recording mapping")
+    if section.completeness.state != "complete" or not any(track.section_ordinal == ordinal for track in snapshot.tracks):
+        raise ValueError("Absent or incomplete text section cannot replace a reviewed tracklist")
+    if section.warnings and not command.accept_text_warnings:
+        raise ValueError("Unresolved text row structure requires explicit acknowledgement")
+    return ordinal
 
 
 async def get_selected_recording_source(
@@ -404,7 +427,7 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
     )
     if candidate is None:
         raise ValueError("Observation is not a candidate for this recording")
-    candidate_kind = "release_metadata" if observation.parser_version == RELEASE_PARSER_VERSION else "tracklist"
+    candidate_kind = "release_metadata" if observation.parser_version in RELEASE_PARSER_VERSIONS else "tracklist"
     if command.kind != candidate_kind:
         raise ValueError("Decision kind does not match this candidate")
     if source.channel == "companion":
@@ -453,7 +476,12 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
         raise ValueError("Selected source changed; refresh before reviewing")
     mapping: dict[str, str | int] | None = None
     if command.action == "select":
-        if candidate.status == "rejected" or observation.status != "found" or "tracks" not in observation.payload:
+        if (
+            candidate.status == "rejected"
+            or observation.status not in {"found", "incomplete"}
+            or "tracks" not in observation.payload
+            or (observation.status != "found" and not observation.payload.get("section_scan_complete"))
+        ):
             raise ValueError("Only a complete parsed candidate can be selected")
         snapshot = _snapshot(observation)
         mapping = {
@@ -462,12 +490,13 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
             "source_sha256": file.sha256_hash,
             "source_revision": observation.revision or "unknown",
         }
-        if snapshot.completeness.state != "complete":
+        text_ordinal = _review_text_section(snapshot, command) if command.kind == "tracklist" else None
+        if snapshot.completeness.state != "complete" and text_ordinal is None:
             raise ValueError("Incomplete candidate cannot be selected")
         if observation.conflict_with_id is not None and not command.accept_conflict:
             raise ValueError("Conflicting source requires explicit acknowledgement")
         if command.kind == "tracklist":
-            if not snapshot.tracks or snapshot.parser_version == RELEASE_PARSER_VERSION:
+            if not snapshot.tracks or snapshot.parser_version in RELEASE_PARSER_VERSIONS:
                 raise ValueError("Release-only notes cannot be a selected tracklist")
             if snapshot.source_format == "cue":
                 if command.cue_file_ordinal is None or not any(_cue_ordinal(track) == command.cue_file_ordinal for track in snapshot.tracks):
@@ -475,7 +504,14 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
                 mapping["cue_file_ordinal"] = command.cue_file_ordinal
             elif command.cue_file_ordinal is not None:
                 raise ValueError("FILE mapping is only valid for CUE tracklists")
-        elif snapshot.parser_version != RELEASE_PARSER_VERSION or command.cue_file_ordinal is not None:
+            if text_ordinal is not None:
+                mapping["text_section_ordinal"] = text_ordinal
+        elif (
+            snapshot.parser_version not in RELEASE_PARSER_VERSIONS
+            or command.cue_file_ordinal is not None
+            or command.text_section_ordinal is not None
+            or command.accept_text_warnings
+        ):
             raise ValueError("Release selection requires release extraction without track mapping")
         elif not snapshot.release_facts:
             raise ValueError("Release notes without structured facts cannot replace reviewed metadata")

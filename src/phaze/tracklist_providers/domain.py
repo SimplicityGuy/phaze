@@ -113,6 +113,7 @@ class Timestamp(DomainModel):
 
 class ProviderTrack(DomainModel):
     position: int = Field(gt=0)
+    section_ordinal: int | None = Field(default=None, gt=0, le=4096)
     artist: Text | None = None
     title: Text | None = None
     timestamp: Timestamp | None = None
@@ -126,6 +127,16 @@ class ProviderTrack(DomainModel):
 class Completeness(DomainModel):
     state: Literal["complete", "incomplete"]
     reason: Text
+    evidence: Evidence = ()
+
+
+class TrackSection(DomainModel):
+    """Intrinsic text grouping, never an inferred link to a recording."""
+
+    ordinal: int = Field(gt=0, le=4096)
+    title: Text | None = None
+    completeness: Completeness
+    warnings: Evidence = ()
     evidence: Evidence = ()
 
 
@@ -207,6 +218,8 @@ class Snapshot(DomainModel):
     event: Fact = Fact()
     date: Fact = Fact()
     tracks: Annotated[tuple[ProviderTrack, ...], Field(max_length=4096)] = ()
+    sections: Annotated[tuple[TrackSection, ...], Field(max_length=4096)] = ()
+    section_scan_complete: bool = False
     release_facts: Annotated[tuple[ReleaseFact, ...], Field(max_length=256)] = ()
     text: Annotated[str, Field(max_length=262144)] | None = None
     encoding: Text | None = None
@@ -223,6 +236,13 @@ class Snapshot(DomainModel):
         positions = [track.position for track in self.tracks]
         if positions != sorted(set(positions)):
             raise ValueError("Track positions must be unique and ordered")
+        ordinals = [section.ordinal for section in self.sections]
+        if ordinals != sorted(set(ordinals)):
+            raise ValueError("Section ordinals must be unique and ordered")
+        if any(track.section_ordinal is not None and track.section_ordinal not in ordinals for track in self.tracks):
+            raise ValueError("Track section must exist in the snapshot")
+        if self.sections and any(track.section_ordinal is None for track in self.tracks):
+            raise ValueError("Sectioned snapshots require a section for every track")
         offsets_by_origin: dict[str, list[Fraction]] = {}
         for track in self.tracks:
             timestamp = track.timestamp

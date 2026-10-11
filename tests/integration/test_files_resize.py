@@ -162,7 +162,8 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
 # Chromium (compiled app.css, real partials, every state each column can render, phaze-6ezaw):
 #   Metadata/Analyze  138.5  failed pill + Retry button   -> 164
 #   Propose/Review/Execute 118.5  "not started" pill      -> 144
-#   Tracklist         256.1  "low confidence . retry date" -> 282
+#   Tracklist         173.67 "no stored tracklist"        -> 200
+#                     (phaze-1r6x4: current stored-state badges, loaded Inter in both themes)
 #   Current state     190.7  stacked label + pill, one line -> 216
 #   Details           88.16  `ui.btn('secondary', 'sm')` "DETAILS" + chevron, UPPERCASE Jura -> 113
 #                     (phaze-5gde8: the old 92 was narrower than button + padding; measured in both themes)
@@ -172,7 +173,7 @@ _EXPECTED_DEFAULT_WIDTHS = {
     "Type": 72,
     "Metadata": 164,
     "Analyze": 164,
-    "Tracklist": 282,
+    "Tracklist": 200,
     "Propose": 144,
     "Review": 144,
     "Execute": 144,
@@ -181,13 +182,14 @@ _EXPECTED_DEFAULT_WIDTHS = {
 }
 _NOT_STARTED_PILL_PX = 119
 _FAILED_PILL_PLUS_RETRY_PX = 139
+_NO_STORED_TRACKLIST_PILL_PX = 173.67
 _DETAILS_BUTTON_PX = 88.16
 _CELL_PADDING_PX = 24
 
 
 @pytest.mark.asyncio
 async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-6ezaw: per-column default widths (Metadata narrow, Tracklist roomy, Current state widest).
+    """phaze-6ezaw: per-column defaults fit current content, leaving the remainder to File.
 
     Pins the rendered ``<col data-default-width>`` values, that ``Current state`` is the widest, that
     its header cannot wrap, and that the shell's ``colResize`` store defaults agree with the markup
@@ -212,7 +214,8 @@ async def test_default_column_widths_are_content_fitted_not_equal(client: AsyncC
         assert fixed[stage] >= _FAILED_PILL_PLUS_RETRY_PX + _CELL_PADDING_PX, f"{stage} would clip its failed pill + Retry"
     assert fixed["Details"] >= _DETAILS_BUTTON_PX + _CELL_PADDING_PX, "Details would clip or touch the card edge"
     assert fixed["Metadata"] == fixed["Analyze"] > fixed["Propose"]
-    assert fixed["Tracklist"] == max(fixed.values())
+    assert fixed["Tracklist"] >= _NO_STORED_TRACKLIST_PILL_PX + _CELL_PADDING_PX
+    assert fixed["Current state"] == max(fixed.values())
 
     # FILE is the flexible remainder column: no inline width until dragged, and the table's xl floor
     # is every other column plus a 140px FILE minimum.

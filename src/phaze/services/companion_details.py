@@ -36,7 +36,7 @@ from phaze.schemas.companion_details import (
 )
 from phaze.services.companion_content import MEDIA_FILE_TYPES
 from phaze.services.local_source_import import embedded_revision, get_selected_recording_source, selection_token
-from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact
+from phaze.tracklist_providers.domain import ProviderTrack, ReleaseFact, TrackSection
 
 
 if TYPE_CHECKING:
@@ -514,6 +514,8 @@ async def get_stored_observation(
                 func.jsonb_path_query_array(Observation.payload, cast(facts_path, JSONPATH)),
                 Observation.payload["completeness"]["evidence"],
                 Observation.payload["provenance"],
+                func.jsonb_path_query_array(Observation.payload, cast("$.sections[0 to 63]", JSONPATH)),
+                func.jsonb_array_length(_array(Observation.payload["sections"])),
             )
             .join(Source, Source.id == Observation.object_id)
             .where(Observation.id == observation_id, _authorized(media))
@@ -546,6 +548,8 @@ async def get_stored_observation(
         evidence=tuple((payload[2] or [])[:64]) + tuple((payload[3] or [])[:64]),
         next_track_offset=_next(track_page, tracks),
         next_fact_offset=_next(fact_page, facts),
+        sections=tuple(TrackSection.model_validate(item) for item in payload[4]),
+        section_count=payload[5],
         selected_tracks=selected_tracks,
         selected_track_count=selected_track_count,
         next_selected_track_offset=next_selected_track_offset,

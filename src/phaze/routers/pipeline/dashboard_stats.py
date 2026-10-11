@@ -270,6 +270,10 @@ async def _build_dag_context(
     # ACTIVE lanes count (IDLE configured clusters are not "active"; WAITING is a quota alarm,
     # not an online worker). It rides the same dag.items() seed + OOB loop, no stats_bar.html edit.
     dag["computeLanesActive"] = sum(1 for lane in await derive_compute_lane_identities(session) if lane.state == "ACTIVE")
+    # Configured inventory includes idle lanes and local; activity is a separate signal.
+    configured_backends = cast("ControlSettings", get_settings()).backends
+    dag["laneCount"] = len(configured_backends)
+    dag["clusterCount"] = sum(backend.kind != "local" for backend in configured_backends)
 
     # Phase 41 (REQ-41-3): the match_tracklist_to_discogs in-flight count gates the DAG Match trigger
     # node "busy" (Matching…). It is a controller task (NOT part of get_stage_busy_counts's agent

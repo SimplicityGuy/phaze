@@ -117,10 +117,11 @@ def test_the_rail_counts_render_with_separators_on_first_paint() -> None:
 
 
 def test_the_header_status_strip_renders_separators() -> None:
-    html = _render("shell/partials/header.html", pipeline_seed={"agentOnline": 1200, "computeLanesActive": 3000}, force_local=False)
+    html = _render("shell/partials/header.html", pipeline_seed={"agentOnline": 1200, "laneCount": 3000, "clusterCount": 2999}, force_local=False)
 
     assert ">1,200<" in html
     assert ">3,000<" in html
+    assert ">2,999<" in html
 
 
 def test_metric_tiles_and_tab_chips_format_numbers_but_leave_text_alone() -> None:
