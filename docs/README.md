@@ -36,6 +36,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Analysis and Worker Hunt](quality-assessment/analysis-hunt.md)** | Exhaustive analysis and orchestration slice, verified recovery/liveness findings, real-consumer limits and round metrics |
 | **[Companion Persistence and Consumer Hunt](quality-assessment/companion-hunt.md)** | Complete third-round slice, synthetic attribution failure, deferred source-only finding and browser limits |
 | **[Stronger Assertion Proposal](quality-assessment/assertion-proposal.md)** | Six canonical failing regressions, independent guard operands, real consumer oracles and bounded controls |
+| **[Implementation Design and Final Decision](quality-assessment/implementation-plan.md)** | Complete evidence synthesis, proposed dependency graph, task dispositions and operator GO design decision on 2026-10-11 UTC (`phaze-9dxnh`) |
 | **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
 | **[Selection and Evidence Proposal](quality-assessment/selector-proposal.md)** | Safe coverage refresh ownership, real consumer mappings, preserved floors and measured bead-velocity rollout |
