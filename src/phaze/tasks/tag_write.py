@@ -38,15 +38,22 @@ not disturb the D-25 boundary below.
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
 Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
+
+phaze-zjwp4: an admitted executor owns the file's OS lock through its result callback, even
+when SAQ times out its awaiting coroutine. Retry/Undo cannot enter until that owner settles.
+Drain tag jobs on older agents before rollout: their already-running writers do not participate
+in this lock. Unsupported filesystem locking refuses mutation rather than assuming exclusion.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import os
 from pathlib import Path
 import stat
+import threading
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -61,6 +68,8 @@ from phaze.services.tag_write_disk import _extract_before_tags, write_and_verify
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -179,12 +188,74 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
     file_path = str(resolved_path)
 
+    # Cancellation can abandon the coroutine, but never its admitted physical writer.
+    abandoned = threading.Event()
+    try:
+        return await asyncio.to_thread(_run_owned_write, payload, api, file_path, scan_roots, asyncio.get_running_loop(), abandoned)
+    finally:
+        abandoned.set()
+
+
+def _run_owned_write(
+    payload: WriteFileTagsPayload,
+    api: PhazeAgentClient,
+    file_path: str,
+    scan_roots: list[str],
+    loop: asyncio.AbstractEventLoop,
+    abandoned: threading.Event,
+) -> dict[str, Any]:
+    """Hold inode ownership through snapshot, mutation, verification, hash and callback.
+
+    Mutagen resizes/writes the existing file object, including its in-memory fallback;
+    it does not replace the directory entry. Aliases and other processes share this OS lock.
+    Process death releases it after its threads die. Coroutine cancellation cannot close the
+    running writer's fd. Unsupported locking refuses mutation. Uncooperative external writes
+    and external directory-entry replacement are outside this tag-attempt contract.
+    """
+
+    def call(coro: Coroutine[Any, Any, Any]) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+    try:
+        stream = Path(file_path).open("rb")  # noqa: SIM115 -- ownership spans callback settlement
+    except OSError as exc:
+        result = TagWriteResultPayload(
+            status=TagWriteStatus.FAILED, before_tags={}, error_message=f"pre-write snapshot failed: {exc}"[:_ERROR_MESSAGE_MAX]
+        )
+        call(api.patch_tag_write(payload.log_id, result))
+        return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
+    with stream:
+        while True:
+            if abandoned.is_set():
+                raise asyncio.CancelledError
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                # Wait off-loop, and abandon cancelled waiters before they can mutate.
+                abandoned.wait(0.05)
+        try:
+            if abandoned.is_set():
+                raise asyncio.CancelledError
+            return _write_file_tags_owned(payload, api, file_path, scan_roots, call)
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _write_file_tags_owned(
+    payload: WriteFileTagsPayload,
+    api: PhazeAgentClient,
+    file_path: str,
+    scan_roots: list[str],
+    call: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> dict[str, Any]:
+
     # phaze-xq8vq: no mutating write until the control plane ACKNOWLEDGES a durable original.
     # A lost snapshot response is safe: retry before mutation; an existing snapshot wins.
     # Deploy the controller first. Old controllers reject include_status, failing closed;
     # old agents still have the best-effort bug, so drain their tag jobs before upgrading.
     try:
-        before_snapshot = await asyncio.to_thread(_extract_before_tags, file_path)
+        before_snapshot = _extract_before_tags(file_path)
         if not before_snapshot:
             # Even an untagged file has six explicit None fields. {} is the controller's
             # "not captured" sentinel and cannot serve as a durable original.
@@ -193,18 +264,18 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # No snapshot means no safe undo. Report a terminal failure WITHOUT mutagen save.
         # A prior attempt may already have written and lost its result callback. Observe the
         # bytes even if their tags cannot be parsed; otherwise terminal FAILED leaves stale hash.
-        sha256_hash = await asyncio.to_thread(_snapshot_failure_hash, payload.file_path, scan_roots)
+        sha256_hash = _snapshot_failure_hash(payload.file_path, scan_roots)
         result = TagWriteResultPayload(
             status=TagWriteStatus.FAILED,
             before_tags={},
             error_message=f"pre-write snapshot failed: {exc}"[:_ERROR_MESSAGE_MAX],
             sha256_hash=sha256_hash,
         )
-        await api.patch_tag_write(payload.log_id, result)
+        call(api.patch_tag_write(payload.log_id, result))
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
 
-    snapshot_ack = await api.report_tag_write_before_snapshot(
-        payload.log_id, TagWriteBeforeSnapshotPayload(before_tags=before_snapshot, include_status=True)
+    snapshot_ack = call(
+        api.report_tag_write_before_snapshot(payload.log_id, TagWriteBeforeSnapshotPayload(before_tags=before_snapshot, include_status=True))
     )
     if snapshot_ack.status is None:
         raise RuntimeError("tag write snapshot acknowledgment lacks status; refusing disk mutation")
@@ -220,7 +291,7 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # media mount risks a false DEAD classification and duplicate-work re-enqueue.
     # phaze-2zeu0: `_write_verify_and_rehash` appends the post-write sha256 to that same offload --
     # see its docstring for why the hash is taken on every terminal path rather than only COMPLETED.
-    status, discrepancies, error_message, before_tags, sha256_hash = await asyncio.to_thread(_write_verify_and_rehash, Path(file_path), payload.tags)
+    status, discrepancies, error_message, before_tags, sha256_hash = _write_verify_and_rehash(Path(file_path), payload.tags)
 
     result = TagWriteResultPayload(
         status=status,
@@ -233,7 +304,7 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # terminal audit status the operator retries from the workspace. Only the CALLBACK is allowed to
     # fail the job: if the control plane never hears the outcome, the row is stranded in `queued`
     # and the file silently disappears from the queue, so let it raise and take SAQ's retry.
-    await api.patch_tag_write(payload.log_id, result)
+    call(api.patch_tag_write(payload.log_id, result))
 
     logger.info("tag write completed", file_id=str(payload.file_id), log_id=str(payload.log_id), status=str(status))
     return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(status)}
