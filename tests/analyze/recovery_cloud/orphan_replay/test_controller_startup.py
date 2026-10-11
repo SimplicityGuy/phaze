@@ -236,9 +236,8 @@ def test_functions_list_includes_reap_orphaned_backend_cloud_jobs() -> None:
 async def test_startup_calls_reap_orphaned_backend_cloud_jobs_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """phaze-pnt12: startup() awaits the gated reap_orphaned_backend_cloud_jobs(ctx) exactly once.
 
-    Mirrors ``test_startup_stashes_router_and_calls_recovery_once`` exactly: a config-edit-driven
-    orphan can only newly appear on THIS restart, so boot is the reconcile's one gated trigger --
-    same shape as ``recover_orphaned_work``, same retry wrapper.
+    The boot sweep recovers already-eligible rows immediately through the same retry wrapper
+    as ``recover_orphaned_work``. The periodic cleanup separately revisits protected rows.
     """
     _patch_startup_constructors(monkeypatch)
 

@@ -342,12 +342,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     if result is not None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
 
-    # phaze-pnt12: a cloud_job row can only become backend-orphaned via a [[backends]] config edit,
-    # and that edit only takes effect on THIS restart -- so boot is the only moment the condition this
-    # reaper exists for can newly arise (same reasoning as recover_orphaned_work above; see
-    # reap_orphaned_backend_cloud_jobs's module docstring for why this is gated at boot rather than a
-    # periodic cron). Same bounded retry-with-backoff as the two reconciles above, for the same
-    # schema-not-ready-yet race.
+    # Boot handles already-eligible retired-backend rows immediately. The narrow periodic
+    # cleanup below revisits rows protected here by age or live broker ownership (phaze-33c4p).
+    # Keep the same schema-not-ready bounded retry as the other boot reconciles.
     async def _do_orphan_reap() -> dict[str, int]:
         return await reap_orphaned_backend_cloud_jobs(ctx)
 
@@ -488,15 +485,8 @@ settings = {
         # Phase 54 (KSUBMIT-04): the every-minute in-flight K8s reconcile cron. Registered in BOTH functions
         # and cron_jobs (mirroring reap_stalled_scans); cron-only, NOT in enqueue_router.CONTROLLER_TASKS.
         reconcile_cloud_jobs,
-        # phaze-pnt12: the backend-registry-orphan reaper. Every reconcile above is scoped to ONE
-        # resolved backend (``backend_id == self.id``), so a cloud_job row whose backend_id names a
-        # RETIRED backend is invisible to all of them at once -- this is the general catch-all for
-        # that gap. Registered here as a plain function (mirrors recover_orphaned_work) but
-        # deliberately NOT wired as a CronJob and NOT in enqueue_router.CONTROLLER_TASKS: a row can
-        # only become orphaned by an operator config edit, which only takes effect on THIS restart,
-        # so `startup` below gates it exactly once per boot (see the task module's own docstring for
-        # the full reasoning, including why a */5 cron would trip test_no_auto_advance_cron for no
-        # benefit).
+        # Retired backends have no normal per-backend reconcile owner. This cleanup is also
+        # scheduled below so age/broker-protected staging rows are revisited after boot.
         reap_orphaned_backend_cloud_jobs,
     ],
     "concurrency": get_settings().worker_max_jobs,
@@ -552,12 +542,10 @@ settings = {
         # NOT re-add a general auto-advance / recover_orphaned_work cron here (same guard as above).
         CronJob(reconcile_cloud_jobs, cron="* * * * *"),  # type: ignore[type-var]
         CronJob(reap_expired_staging, cron="17 * * * *"),  # type: ignore[type-var]
-        # phaze-pnt12: deliberately NO reap_orphaned_backend_cloud_jobs CronJob here. It is a gated
-        # BOOT-ONLY reconcile (see `startup` below), mirroring recover_orphaned_work exactly -- a
-        # backend can only become orphaned via a config edit that takes effect on THIS restart, so
-        # boot is the only moment the condition can newly arise, and this is the SAME "no general
-        # auto-advance cron" guard as the reenqueue_discovered note above. DO NOT add a periodic
-        # cron for it.
+        # phaze-33c4p: narrow orphan cleanup, never a general auto-advance producer. Only
+        # retired-backend staging rows can spill to awaiting, behind age/liveness/CAS guards;
+        # submitted/running rows are surfaced only. Normal window admission remains separate.
+        CronJob(reap_orphaned_backend_cloud_jobs, cron="* * * * *"),  # type: ignore[type-var]
     ],
     "startup": startup,
     "shutdown": shutdown,

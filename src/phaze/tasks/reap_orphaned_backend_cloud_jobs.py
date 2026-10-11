@@ -56,30 +56,19 @@ comment trail; the closest precedent is followed as far as the two populations a
   it manually (``hold_awaiting_cloud``) or re-add the backend id to config, which restores normal
   reconcile coverage for exactly this row.
 
-RUNS AT CONTROLLER STARTUP -- deliberately NOT a periodic CronJob. Two independent reasons, not one:
+RUNS AT BOOT AND ON A NARROW EVERY-MINUTE CONTROLLER CRON (phaze-33c4p).
+A backend can become orphaned on restart, but eligibility can change AFTER a successful boot
+sweep: a young staging row crosses its age bound, or its protected broker job terminates.
+Boot alone therefore cannot recover the entire cohort. Periodic revisits retain the same
+age, broker-liveness, advisory-lock and CAS guards; they never enqueue work, touch a configured
+backend's rows, or age-kill submitted/running analysis. The ordinary bounded cloud-window
+producer remains the sole owner of subsequent staging admission. Retried ticks are idempotent
+because a successful spill leaves STAGING and consumes at most one bounded attempt.
 
-1. A ``cloud_job.backend_id`` can only become orphaned by an operator editing ``[[backends]]``, and
-   that edit only takes effect on a controller restart (``ControlSettings`` is resolved once, cached,
-   at process start). Boot is therefore not merely A trigger for this reconcile, it is the ONLY moment
-   the condition this reaper exists to catch can newly arise -- exactly the reasoning that already
-   makes ``recover_orphaned_work`` (queue-loss detection) a gated boot-only reconcile rather than a
-   cron, and the acceptance criterion this bead was filed against ("the existing rows are resolved by
-   this rule ON DEPLOY") names the same moment directly.
-2. ``tests/analyze/recovery_cloud/orphan_replay/test_controller_startup.py::test_no_auto_advance_cron``
-   pins a narrow, enumerated allow-list of the only ``*/5 * * * *`` crons permitted to exist, each
-   independently argued as bounded/idempotent/non-general (Phase 50's "no general pipeline auto-advance
-   cron" invariant, the same one that keeps ``recover_orphaned_work`` OFF the cron list entirely). This
-   reaper's own trigger condition is rarer and more precisely known (a config diff, not a heuristic
-   liveness probe) than anything already on that list, so a periodic poll would be strictly less
-   correct than boot-gating for no benefit -- the first attempt (see :func:`~phaze.tasks.controller.
-   _run_boot_reconcile_with_retry`) already retries past a transient not-ready-yet schema.
-
-Registered in ``phaze.tasks.controller.settings["functions"]`` (so it stays independently callable,
-mirroring ``submit_cloud_job``) but WITHOUT a ``CronJob`` entry and WITHOUT
-``phaze.services.enqueue_router.CONTROLLER_TASKS`` (mirrors ``recover_orphaned_work`` exactly on both
-counts). Deliberately NOT folded into ``reconcile_cloud_jobs``'s per-backend loop either: that loop is
-Kueue-cluster-aware (imports ``kube_staging``) and this reaper is not -- it never touches a cluster, so
-it needs no ``KubeConfig`` and no bound ``Backend`` instance at all.
+Registered in controller functions and cron_jobs, but NOT in enqueue_router.CONTROLLER_TASKS:
+this remains controller-owned cleanup, without cluster or retired-bucket access. It stays
+separate from the per-backend reconcile loop, whose resolved Backend instances cannot own
+retired-backend rows.
 """
 
 from __future__ import annotations
@@ -258,13 +247,12 @@ async def _surface_orphaned_inflight_rows(session: AsyncSession, resolved_ids: s
 
 
 async def reap_orphaned_backend_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
-    """Control-side boot reconcile: requeue/surface ``cloud_job`` rows whose ``backend_id`` names no configured backend.
+    """Control-side boot/periodic reconcile: requeue/surface ``cloud_job`` rows whose ``backend_id`` names no configured backend.
 
     CONTROL-ONLY (needs ``ctx["async_session"]``, mirrors every other reaper in this package). Never
     imports ``fastapi``/``phaze.routers`` and never touches ``kube_staging`` -- see the module docstring
-    for why this reaper is deliberately cluster-probe-free. Run once at controller startup (see the
-    module docstring for why boot, not a cron), gated the same way ``recover_orphaned_work`` is
-    (``phaze.tasks.controller._run_boot_reconcile_with_retry``). ``resolve_backends`` is imported
+    for why this reaper is deliberately cluster-probe-free. Run at controller startup through
+    ``_run_boot_reconcile_with_retry`` and periodically through the registered narrow cron. ``resolve_backends`` is imported
     FUNCTION-LOCALLY (deferred) for the same reason ``reconcile_cloud_jobs.py`` does: ``services.backends``
     is a package this module's own imports (``admission``, ``base``) live under, and a module-top import
     of the package ``__init__`` here would risk the same collection-time cycle.
