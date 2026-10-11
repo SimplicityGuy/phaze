@@ -20,6 +20,48 @@ from tests.browser.helpers import click_swap, open_shell
 pytestmark = pytest.mark.browser
 
 
+@pytest.mark.parametrize("workspace", ["dedupe", "junk"])
+@pytest.mark.parametrize("dark", [False, True])
+async def test_shared_workflow_help_is_accessible_above_a_long_narrow_list(page: Any, seed: Any, workspace: str, dark: bool) -> None:
+    """One keyboard-accessible disclosure replaces repeated prose without hiding card decisions."""
+    for _ in range(12):
+        if workspace == "dedupe":
+            await seed.duplicate_group(count=2)
+        else:
+            await seed.junk_group(count=2)
+    await page.set_viewport_size({"width": 390, "height": 844})
+    await open_shell(page, f"/s/{workspace}")
+    await page.evaluate("dark => document.documentElement.classList.toggle('dark', dark)", dark)
+    help_box = page.locator(f"#{workspace}-workflow-help")
+    assert await help_box.count() == 1
+    assert not await help_box.evaluate("element => element.open")
+    summary = help_box.locator("summary")
+    await summary.focus()
+    await page.keyboard.press("Enter")
+    assert await help_box.evaluate("element => element.open")
+    list_id = "dedupe-group-list" if workspace == "dedupe" else "junk-group-list"
+    cards = page.locator(f"#{list_id} > {'form' if workspace == 'dedupe' else 'article'}")
+    assert await cards.count() == 12
+    assert await page.evaluate(
+        "([helpId, listId]) => Boolean(document.getElementById(helpId).compareDocumentPosition(document.getElementById(listId)) & Node.DOCUMENT_POSITION_FOLLOWING)",
+        [f"{workspace}-workflow-help", list_id],
+    )
+    assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert await cards.last.evaluate("element => element.getBoundingClientRect().bottom > window.innerHeight")
+    body = await page.locator("#stage-workspace").inner_text()
+    if workspace == "dedupe":
+        assert body.count("Ranking compares bitrate first") == 1
+        assert await cards.last.locator("input[type=radio]:checked").count() == 1
+        assert await cards.last.get_by_text("Review decision", exact=True).is_enabled()
+        assert "Recommended keeper:" in await cards.last.inner_text()
+        assert "Nothing is archived until confirmation" in await cards.last.inner_text()
+    else:
+        assert body.count("Approve a group, then run the quarantine") == 1
+        assert await cards.last.get_by_role("button", name="Approve 2 pending copies for quarantine:", exact=False).is_enabled()
+        assert "known" in (await cards.last.inner_text()).lower() or "stamp" in (await cards.last.inner_text()).lower()
+        assert "Reject keeps every identical copy, everywhere" in await cards.last.inner_text()
+
+
 async def test_approve_then_run_swaps_the_card_and_announces_each_outcome(page: Any, seed: Any) -> None:
     """Approve marks the group (undoable); "Quarantine approved" is the separate run step.
 

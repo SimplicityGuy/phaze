@@ -10,8 +10,7 @@
             {{ group.group_name }} <span class="normal-case text-muted ">· {{ group.count | thousands }} copies</span>
         </legend>
         <p class="mt-1 text-xs text-muted ">
-            Recommended keeper: {{ group.rationale }}. Ranking compares bitrate first, then tag completeness, then shortest path.
-            Selecting a copy only stages this decision.
+            Recommended keeper: {{ group.rationale }}.
         </p>
         {% if group.truncated %}
         <p role="alert" class="mt-2 text-xs text-warn ">More than {{ group.count | thousands }} copies exist; only the first {{ group.count | thousands }} are shown for comparison.</p>
@@ -41,7 +40,7 @@
         </div>
     </fieldset>
     <div class="mt-4 flex flex-col gap-2 border-t border-gray-200 pt-3 sm:flex-row sm:items-center sm:justify-between dark:border-phaze-border">
-        <p class="text-xs text-muted ">Review the pending keeper above. Confirming creates the audited resolution and enables Undo.</p>
+        <p class="text-xs text-muted ">Review {{ (group.count - 1) | thousands }} {{ 'copy' if group.count == 2 else 'copies' }} to archive; keep the selected copy. Nothing is archived until confirmation.</p>
         {# phaze-tckiy: no method/action -- a click before htmx has processed this form falls
            through to a native GET and the keeper decision is silently never staged, which reads as an
            ordinary page reload. `disabled` + `data-hx-guard`; released by shell.html's htmx:load

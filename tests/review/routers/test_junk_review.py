@@ -43,6 +43,28 @@ HASH_DUP = "c" * 64
 _TOKEN_RE = re.compile(r'name="review_tokens" value="([^"]+)"')
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("status", ["pending", "approved"])
+async def test_card_scope_wording_matches_the_copy_count(client: AsyncClient, session: AsyncSession, count: int, status: str) -> None:
+    for index in range(count):
+        await _review(session, f"/incoming/info-{index}.nfo", HASH_STAMP)
+    await session.commit()
+    if status == "approved":
+        await _approve(client, HASH_STAMP)
+    response = await client.get("/s/junk", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    noun = "copy" if count == 1 else "copies"
+    if status == "pending":
+        assert f"Approve {count} pending {noun}; no files move" in response.text
+        assert "Reject keeps every identical copy, everywhere" in response.text
+    else:
+        assert f"{count} approved {noun}: quarantine dispatch cannot be undone" in response.text
+        assert "Undo is available before dispatch" in response.text
+    assert "1 pending copies;" not in response.text
+    assert "1 approved copies:" not in response.text
+
+
 class _Quarantine:
     """Stands in for ``junk_quarantine.enqueue_quarantine``; records every call and the statuses it saw."""
 

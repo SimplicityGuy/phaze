@@ -34,6 +34,14 @@
             class="{{ _bulk_btn }}">REVIEW AUTO-SELECTION</button>
 {% endset %}
 {% call ws.workspace(title=page_name('dedupe'), subcount=subcount, actions=actions) %}
+    <details id="dedupe-workflow-help" class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
+        <summary class="cursor-pointer text-sm font-medium text-gray-800 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-200">How duplicate review works</summary>
+        <div class="mt-3 max-w-3xl space-y-2 text-sm text-gray-600 dark:text-gray-300">
+            <p>Ranking compares bitrate first, then tag completeness, then shortest path. Each card explains its recommended keeper.</p>
+            <p>Selecting a copy only stages this decision. Pending keeper marks the selected copy; will archive marks the other copies.</p>
+            <p>Review decision shows the exact keeper and copies to archive before you confirm. Confirming creates the audited resolution and enables Undo. Review auto-selection stages choices only for the groups shown on this page.</p>
+        </div>
+    </details>
     {# The review summary and subsequent bulk-resolve response share this stable target. #}
     <div id="dedupe-bulk-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
     {# Review exactly what was rendered; the summary carries only its still-live groups into commit. #}
