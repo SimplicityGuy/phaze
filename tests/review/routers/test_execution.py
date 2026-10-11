@@ -485,7 +485,8 @@ async def test_audit_workspace_explains_its_mutation_boundary_and_uses_shared_ta
     response = await client.get("/s/audit")
     assert response.status_code == 200
     assert "Records approved file rename and move execution" in response.text
-    assert "Tag writes and tag-write undo actions use their separate tag audit history" in response.text
+    assert "Tag writes and undo actions do not appear in this execution table" in response.text
+    assert "completed tag-write links below" in response.text
     assert 'aria-label="File rename and move audit history"' in response.text
     assert 'aria-describedby="audit-scope-description"' in response.text
 

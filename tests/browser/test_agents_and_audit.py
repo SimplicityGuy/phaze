@@ -19,15 +19,59 @@ filter. Nothing about that is visible in one rendered response.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from phaze.enums.execution import ExecutionStatus
+from phaze.models.tag_write_log import TagWriteLog
 from tests.browser.helpers import click_swap, open_shell, settled
 
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
 pytestmark = pytest.mark.browser
+
+
+@pytest.mark.parametrize("viewport,theme", [("desktop", "light"), ("desktop", "dark"), ("phone", "light"), ("phone", "dark")])
+async def test_completed_tag_history_is_reachable_after_review_and_audit_swaps(
+    open_page: Any, seed: Any, tmp_path: Path, viewport: str, theme: str
+) -> None:
+    """Follow real guidance after HTMX navigation, then open the existing disclosure natively."""
+    file = await seed.file(filename="history-example.mp3")
+    seed.session.add(TagWriteLog(file_id=file.id, before_tags={}, after_tags={"artist": "Example"}, source="manual", status="completed"))
+    seed.session.add(TagWriteLog(file_id=file.id, before_tags={"artist": "Example"}, after_tags={}, source="undo", status="completed"))
+    await seed.session.commit()
+    page = await open_page(viewport, theme=theme)
+    for stage in ("audit", "rename"):
+        await open_shell(page, "/s/summary")
+        await settled(page)
+        await page.evaluate("window.__historyGuidanceDocument = true")
+        if viewport == "phone":
+            await page.click("#rail-drawer-trigger")
+        await click_swap(page, f'a[data-rail-stage="{stage}"]')
+        panel = page.locator("[data-tagwrite-history-links]")
+        await panel.wait_for(state="visible")
+        assert await page.evaluate("window.__historyGuidanceDocument === true"), "rail navigation must preserve the live document"
+        assert "Completed" in await panel.inner_text()
+        assert "Tag undo" in await panel.inner_text()
+        await panel.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / f"{stage}-{viewport}-{theme}.png"))
+        link = panel.locator(f'a[href="/files/{file.id}#history"]').first
+        await link.click()
+        await page.wait_for_url(f"**/files/{file.id}#history")
+        await page.wait_for_function("() => document.querySelector('details#history')?.open === true")
+        assert await page.locator("#history").is_visible()
+        history = await page.locator("#history").inner_text()
+        assert "tag write" in history and "completed" in history and "undo" in history
+        assert await page.locator("#stage-workspace").count() == 1
+        await page.screenshot(path=str(tmp_path / f"history-{stage}-{viewport}-{theme}.png"))
+        await page.go_back()
+        await page.locator("[data-tagwrite-history-links]").wait_for(state="visible")
+        await page.locator(f'[data-tagwrite-history-links] a[href="/files/{file.id}#history"]').first.click()
+        await page.wait_for_function("() => document.querySelector('details#history')?.open === true")
 
 
 _AGENTS_SECTION = "#agents-table-section"

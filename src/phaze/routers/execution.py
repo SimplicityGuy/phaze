@@ -70,6 +70,7 @@ from phaze.services.execution_dispatch_protocol import (
 from phaze.services.execution_queries import get_execution_log_detail, get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pipeline import count_proposal_pending_files
+from phaze.services.review_tagwrite import get_recent_completed_tagwrite_links
 from phaze.web.static import static_asset_url
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
@@ -748,6 +749,7 @@ async def build_audit_log_context(
         "current_page": "audit",
         "sort": sort_state,
         "proposal_ready_count": proposal_ready_count,
+        "tagwrite_history_links": await get_recent_completed_tagwrite_links(session),
     }
 
 

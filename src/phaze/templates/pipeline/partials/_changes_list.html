@@ -196,7 +196,7 @@
         <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
             <div>
                 <h2 id="tag-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Tag Changes</h2>
-                <p class="mt-1 text-xs text-muted ">Available only after execution. Approval dispatches a reversible write and records before/after snapshots, verification discrepancies, and errors in the audit log.</p>
+                <p class="mt-1 text-xs text-muted ">Available only after execution. Approval dispatches a reversible write. Each file's History records its tag-write and undo events alongside rename/move execution; Audit lists rename/move execution only.</p>
             </div>
             <form hx-post="/tags/bulk-write-no-discrepancies" hx-target="#changes-bulk-result" hx-swap="innerHTML" hx-confirm="Approve the eligible tag changes visible on this reviewed page?" hx-disabled-elt="find button">
                 {% for f in changes_tag_rows if f.bulk_eligible %}<input type="hidden" name="review_tokens" value="{{ f.review_token }}">{% endfor %}
@@ -219,6 +219,7 @@
                 {% if f.has_blanking %}{% set _ = tag_warnings.append("An existing tag would be blanked; excluded from bulk approval.") %}{% endif %}
                 {% if f.discrepancies %}{% set _ = tag_warnings.append("Verification discrepancy: " ~ f.discrepancies) %}{% endif %}
                 {% if f.error_message %}{% set _ = tag_warnings.append("Last error: " ~ f.error_message) %}{% endif %}
+                <p class="px-4 py-2 text-xs"><a href="/files/{{ f.file_id }}#history" class="text-link hover:underline">{{ f.filename }} — History</a></p>
                 {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename,
                         profile=f.set_profile,
                         diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
@@ -233,8 +234,9 @@
                 {% endwith %}
             {% endfor %}
         {% else %}
-            {{ ui.state('empty', 'No tag decisions match this filter', 'Completed tag writes remain available in Audit.') }}
+            {{ ui.state('empty', 'No tag decisions match this filter', "Completed tag writes are outside this decision queue. Open the file's History using the links below.") }}
         {% endif %}
     </section>
     {% endif %}
+    {% include "record/_tagwrite_history_links.html" %}
 </div>
