@@ -160,7 +160,6 @@ def test_the_empty_state_macro_renders_icon_title_message_and_optional_actions()
         ("pipeline/partials/dedupe_workspace.html", "No duplicates found</p>"),
         ("pipeline/partials/_file_table.html", "{{ empty_heading }}</p>"),
         ("pipeline/partials/_changes_list.html", "p-8 text-center"),
-        ("duplicates/partials/bulk_resolve_response.html", "py-12 text-center"),
         ("admin/partials/agents_table.html", "text-center py-8"),
     ],
 )
@@ -169,3 +168,12 @@ def test_empty_tables_and_lists_render_through_the_one_macro(template: str, bare
 
     assert bare_block not in source, f"{template} still hand-writes its empty state"
     assert ".state('empty'" in source
+
+
+def test_bulk_resolve_response_reports_a_result_not_an_empty_state() -> None:
+    """A bulk resolve leaves groups behind, so it is an action result (ui.action_status), never the "nothing here" empty state."""
+    source = (TEMPLATES_DIR / "duplicates/partials/bulk_resolve_response.html").read_text(encoding="utf-8")
+
+    assert "py-12 text-center" not in source, "bulk_resolve_response.html still hand-writes a centred block"
+    assert "ui.action_status(" in source
+    assert ".state('empty'" not in source

@@ -100,14 +100,21 @@ def _held_lane(**overrides: Any) -> dict[str, Any]:
     return lane
 
 
-def test_lane_card_renders_a_held_lane_as_an_alert() -> None:
-    """HELD badge plus an alert that says why, that nothing is charged, and when the probe runs."""
+def test_lane_card_renders_a_held_lane_as_a_persistent_non_announcing_explanation() -> None:
+    """HELD badge plus a persistent explanation of why, that nothing is charged, and when the probe runs.
+
+    The card is re-rendered on every workspace poll, so it must NOT carry role="alert" (that would re-announce an unchanged
+    incident each poll). The assertive, change-aware announcement of the held lane belongs to the shared incident policy
+    (test_health_card_leads_with_a_held_lane, test_attention_tray).
+    """
     from phaze.routers.pipeline import templates
 
     body = templates.get_template("pipeline/partials/_lane_card.html").render(lane=_held_lane(), selected_lane=None)
 
     assert "HELD" in body
-    assert 'role="alert"' in body
+    assert 'role="alert"' not in body
+    assert 'role="status"' not in body
+    assert "Dispatch held" in body
     assert _REASON in body
     assert "No attempts are being charged" in body
     assert "from 21:22 UTC" in body
