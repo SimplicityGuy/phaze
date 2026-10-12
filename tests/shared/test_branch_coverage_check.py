@@ -94,6 +94,46 @@ def test_a_file_that_lowers_branch_coverage_fails(tmp_path: Path, capsys: pytest
     assert "lowered branch coverage" in out
 
 
+@pytest.mark.parametrize("covered,total,missing", [(42, 44, [[120, 121], [204, -1]]), (43, 46, [[120, 121], [204, -1], [250, 251]])])
+def test_count_diagnostics_never_replace_ratio_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], covered: int, total: int, missing: list[list[int]]
+) -> None:
+    """Canonical pms85 unchanged misses and genuinely new misses both retain the existing refusal."""
+    module = _load()
+    path = "src/phaze/a.py"
+    coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=total, covered=covered), "missing_branches": missing}})
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"files": {path: {**_summary(num_branches=46, covered=44), "missing_branches": [[204, -1], [120, 121]]}}}))
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 1
+    out = capsys.readouterr().out
+    assert "baseline [covered=44, total=46, missing=2]" in out
+    assert f"current [covered={covered}, total={total}, missing={total - covered}]" in out
+    assert "inherited coordinates: 120->121, 204->-1" in out
+    assert f"newly missing coordinates: {'none' if covered == 42 else '250->251'}" in out
+    assert "diagnostics only" in out
+
+
+def test_legacy_baseline_arc_identity_is_unknown(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, -1]]}})
+    baseline = _write_baseline(tmp_path, {"src/phaze/a.py": 90.0})
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py") == 0
+    out = capsys.readouterr().out
+    assert "baseline [covered=unknown, total=10, missing=unknown]" in out
+    assert "inherited coordinates: unknown; newly missing coordinates: unknown" in out
+
+
+def test_baseline_roundtrip_retains_literal_exit_arc_identities(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load()
+    path = "src/phaze/a.py"
+    coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=10, covered=9), "missing_branches": [[3, -1]]}})
+    baseline = tmp_path / "baseline.json"
+    assert _run(module, coverage, "--write-baseline", "--baseline", str(baseline)) == 0
+    assert json.loads(baseline.read_text())["files"][path]["missing_branches"] == [[3, -1]]
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 0
+    assert "inherited coordinates: 3->-1; newly missing coordinates: none" in capsys.readouterr().out
+
+
 def test_scoped_report_fails_closed_when_selected_tests_cannot_match_baseline(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

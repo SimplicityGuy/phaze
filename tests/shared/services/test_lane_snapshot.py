@@ -682,3 +682,69 @@ async def test_compute_probe_real_fanout_keeps_both_lanes_online(session: AsyncS
     availability = await _probe_availability(session, [arm64, x86])
 
     assert availability == {"a1-arm64": True, "x86-spill": True}  # both online -> both lanes available (deterministic)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["resolve", "probe", "in-flight", "rollback"])
+async def test_routing_snapshot_fault_is_unknown_and_attempts_recovery(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, fault: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unknown routing is distinct from an observed empty registry, even after failed cleanup."""
+    from sqlalchemy import text
+
+    rollback = session.rollback
+    attempts = 0
+
+    async def tracked_rollback() -> None:
+        nonlocal attempts
+        attempts += 1
+        if fault == "rollback":
+            raise RuntimeError("synthetic cleanup fault")
+        await rollback()
+
+    class FaultBackend:
+        id = "synthetic-cloud"
+        cap = 2
+
+        async def in_flight_count(self, current):
+            if fault == "in-flight":
+                return (await current.execute(text("SELECT 1 / 0"))).scalar_one()
+            return 0
+
+    def resolve(_cfg):
+        if fault in {"resolve", "rollback"}:
+            raise RuntimeError("synthetic registry fault")
+        return [FaultBackend()]
+
+    async def probe(current, _backends):
+        if fault == "probe":
+            await current.execute(text("SELECT 1 / 0"))
+        return {"synthetic-cloud": True}
+
+    monkeypatch.setattr(session, "rollback", tracked_rollback)
+    monkeypatch.setattr(backends_mod, "resolve_backends", resolve)
+    monkeypatch.setattr(backends_mod, "_probe_availability", probe)
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda _backend: "kueue")
+    assert await backends_mod._get_backend_routing_snapshot(session, SimpleNamespace()) is None
+    assert attempts == (2 if fault == "in-flight" else 1)
+    assert "backend_routing_snapshot_degraded" in caplog.text
+    if fault == "rollback":
+        assert "backend_routing_snapshot_rollback_failed" in caplog.text
+    # A failed cleanup is bounded but cannot promise recovery; perform real cleanup before SQL.
+    if fault == "rollback":
+        await rollback()
+    assert (await session.execute(text("SELECT 42"))).scalar_one() == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["settings", "resolve"])
+async def test_live_aggregate_configuration_failure_is_unknown(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    async def local(_session, _state):
+        return 0, 0
+
+    def explode(*_args):
+        raise RuntimeError("synthetic configuration fault")
+
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", local)
+    monkeypatch.setattr(backends_mod, "get_settings" if fault == "settings" else "resolve_backends", explode)
+    assert await backends_mod.get_analysis_live_count(session, SimpleNamespace()) is None

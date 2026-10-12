@@ -65,7 +65,7 @@ deliberately: the allocation registry is keyed by seat, and minting a second ind
 double every worktree's consumption of the 64 available for a hazard that sequencing removes.
 
 Seeding
-=======
+-------
 
 ``seed`` (see ``tests/browser/seed.py``) writes application rows to that same database over this
 process's own connection. Read that module's docstring before adding a test that needs state -- in
