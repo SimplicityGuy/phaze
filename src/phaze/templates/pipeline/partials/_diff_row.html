@@ -81,8 +81,15 @@
 {% set _sec = ui.btn('secondary', 'sm') %}
 {% set _tag_approval = row_id_prefix == 'tagwrite-row' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
-     class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
-     x-data='{ editing:false, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
+     data-review-row tabindex="-1"
+     class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 data-[review-focused=true]:ring-2 data-[review-focused=true]:ring-inset data-[review-focused=true]:ring-blue-500{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
+     x-data='{ editing:false, proposalError:null, proposalRefused(event) {
+        try { this.proposalError = JSON.parse(event.detail.xhr.responseText).detail; }
+        catch { this.proposalError = "Review could not be confirmed. Refresh review evidence before trying again."; }
+     }, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
+     {% if not _tag_approval %}
+     @htmx:response-error.camel="proposalRefused($event)"
+     {% endif %}
      {% if _tag_approval %}
      @htmx:response-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
      @htmx:send-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
@@ -108,7 +115,7 @@
                branch, the pending branch below already templates the verb. Rename/move pass no
                undo_method (defaults to "patch") and their undo routes are PATCH, so templating the
                verb here is a no-op for them and the fix for the tag facet. #}
-            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
+            <button type="button" data-review-action="undo" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" {% if not _tag_approval %}hx-vals='{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}'{% endif %} hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
             {% endif %}
         </div>
         {% else %}
@@ -129,20 +136,20 @@
                /tags/{id}/write route) get an empty token, which the route treats as "no guard". #}
             {% if show_approve|default(true) %}
             {% if _tag_approval %}<fieldset :disabled="tagApprovalStale" class="border-0 p-0">{% endif %}
-            <button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
+            <button type="button" data-review-action="approve" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
                     {% if _tag_approval %}data-tag-approve hx-request='{"timeout":15000}'{% endif %}
                     hx-vals='{% if review_token is defined and review_token %}{{ {"review_token": review_token} | tojson }}{% else %}{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}{% endif %}'
                     hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>
             {% if _tag_approval %}</fieldset>{% endif %}
             {% endif %}
             {% if show_edit|default(true) %}
-            <button type="button" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
+            <button type="button" data-review-action="edit" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
             {% endif %}
             {% if show_skip|default(true) %}
-            <button type="button" hx-patch="{{ skip_url }}" hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
+            <button type="button" data-review-action="skip" hx-patch="{{ skip_url }}" hx-vals='{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}' hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
             {% endif %}
             {% if show_undo|default(false) %}
-            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
+            <button type="button" data-review-action="undo" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
             {% endif %}
         </div>
         {% if show_edit|default(true) %}
@@ -154,6 +161,9 @@
         {% endif %}
         {% endif %}
     </div>
+    {% if not _tag_approval %}
+    <p role="alert" x-show="proposalError" x-cloak x-text="proposalError" class="mt-2 text-xs text-danger"></p>
+    {% endif %}
     {% if _tag_approval %}
     {# Refusals replace only this local feedback, leaving the reviewed token, sibling edits and selections intact. #}
     <div id="tagwrite-feedback-{{ pid }}" data-conflict-swap class="mt-2">

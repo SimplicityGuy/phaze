@@ -322,9 +322,12 @@ async def reject_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
 ) -> HTMLResponse:
     """Reject a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM)
+    proposal = await _guarded_status_update(
+        session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM, expected_updated_at=_parse_updated_at_token(expected_updated_at)
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
@@ -336,9 +339,12 @@ async def undo_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
 ) -> HTMLResponse:
     """Revert a proposal to pending status and return the updated row (phaze-vvmh: no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM)
+    proposal = await _guarded_status_update(
+        session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM, expected_updated_at=_parse_updated_at_token(expected_updated_at)
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)

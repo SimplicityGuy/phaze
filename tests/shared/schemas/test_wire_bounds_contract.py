@@ -141,6 +141,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # column. A length bound would police a value FastAPI hands to ``datetime.fromisoformat``, not
     # a value Postgres stores.
     ("/proposals/{proposal_id}/approve", "expected_updated_at"): _NOT_STORED,
+    # Skip and Undo use the same parsed, predicate-only optimistic-concurrency token.
+    ("/proposals/{proposal_id}/reject", "expected_updated_at"): _NOT_STORED,
+    ("/proposals/{proposal_id}/undo", "expected_updated_at"): _NOT_STORED,
     # phaze-y4s6: ``GET /proposals/`` (status/q/sort/order) and the matching four params on
     # ``PATCH /proposals/bulk`` were removed along with the legacy ``#proposal-list-container``
     # surface (``proposal_list.html``/``proposal_table.html``/``pagination.html``/
