@@ -45,7 +45,7 @@ async def test_bulk_preview_requires_confirmation_of_only_reviewed_eligible_rows
             await page.get_by_role("checkbox", name=f"Select {name}", exact=True).check()
         await page.get_by_role("button", name="Preview eligible selection", exact=True).click()
         preview = page.get_by_role("region", name="Bulk approval preview")
-        await preview.get_by_text("1 eligible at 99% · 1 excluded", exact=True).wait_for()
+        await preview.get_by_text("1 eligible at 99% · 1 excluded from selection", exact=True).wait_for()
         assert patches == []
         assert await preview.locator('input[name="review_tokens"]').count() == 1
         assert str(eligible.id) in (await preview.locator('input[name="review_tokens"]').input_value())
@@ -53,11 +53,11 @@ async def test_bulk_preview_requires_confirmation_of_only_reviewed_eligible_rows
         await preview.scroll_into_view_if_needed()
         await page.screenshot(path=str(tmp_path / f"bulk-preview-{theme}.png"), full_page=True)
         page.once("dialog", lambda dialog: dialog.dismiss())
-        await preview.get_by_role("button", name="Confirm reviewed eligible selection", exact=True).click()
+        await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
         assert patches == []
         page.once("dialog", lambda dialog: dialog.accept())
-        await preview.get_by_role("button", name="Confirm reviewed eligible selection", exact=True).click()
-        await page.get_by_text("1 proposal approved.", exact=True).wait_for()
+        await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+        await page.get_by_text("1 approved, 0 skipped.", exact=True).wait_for()
         assert len(patches) == 1
         assert await page.locator(f"#rename-row-{eligible.id}").count() == 0
         assert await page.locator(f"#rename-row-{low.id}").count() == 1
@@ -70,7 +70,7 @@ async def test_bulk_preview_requires_confirmation_of_only_reviewed_eligible_rows
         assert len(patches) == 2
         assert await page.locator(f"#rename-row-{eligible.id}").count() == 1
         assert await page.locator(f"#rename-row-{low.id}").count() == 1
-        assert await page.locator('input[name="threshold"]').input_value() == "99"
+        assert await page.locator("#changes-confidence-threshold").input_value() == "99"
 
 
 async def test_approving_one_proposal_swaps_only_that_row(page: Any, seed: Any) -> None:
@@ -199,3 +199,353 @@ async def test_a_row_selection_is_written_into_the_url_and_into_every_nav_attrib
     assert "selected=" not in (await page.locator("#changes-bulk-form").get_attribute("hx-patch") or ""), (
         "unchecking the row left the selection in the bulk form's hx-patch"
     )
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_slider_preview_pairs_changes_posts_exact_tokens_and_counts_stale_skip(
+    page_at: Callable[..., AbstractAsyncContextManager[Page]], seed: Seeder, theme: str, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+    from urllib.parse import parse_qs
+
+    high = await seed.proposal(
+        filename="slider-high.mp3", proposed_filename="Renamed High.mp3", proposed_path="/music/Reviewed/Event", confidence=0.99
+    )
+    low = await seed.proposal(filename="slider-low.mp3", confidence=0.95)
+    async with page_at(viewport="phone", theme=theme) as page:
+        await page.emulate_media(reduced_motion="reduce")
+        await open_shell(page, "/s/rename?status=all&q=retained&sort=filename&order=desc&page_size=50")
+        preview = page.get_by_role("region", name="Bulk approval preview")
+        await preview.get_by_text("2 eligible at 90%", exact=True).wait_for()
+        slider = page.get_by_label("Minimum confidence:", exact=False)
+        await slider.focus()
+        await slider.press("End")
+        await preview.get_by_text("1 eligible at 99%", exact=True).wait_for()
+        assert await page.locator('output[for="changes-confidence-threshold"]').inner_text() == "99%"
+        assert await slider.evaluate("el => getComputedStyle(el).transitionDuration") == "0s"
+        row = preview.locator(f'[data-preview-proposal="{high.id}"]')
+        assert "slider-high.mp3" in await row.inner_text() and "Renamed High.mp3" in await row.inner_text()
+        assert "/music/Reviewed/Event/Renamed High.mp3" in await row.inner_text()
+        tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("elements => elements.map(el => el.value)")
+        assert len(tokens) == 1 and tokens[0].startswith(str(high.id) + "|")
+        high.proposed_path = "/music/Changed/Unreviewed"
+        high.updated_at += timedelta(seconds=10)
+        await seed.session.commit()
+        requests: list[Any] = []
+        page.on("request", lambda request: requests.append(request) if request.method == "PATCH" and "/proposals/bulk?" in request.url else None)
+        page.once("dialog", lambda dialog: dialog.dismiss())
+        await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+        assert requests == []
+        page.once("dialog", lambda dialog: dialog.accept())
+        await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+        await page.get_by_text("0 approved, 1 skipped.", exact=False).wait_for()
+        assert len(requests) == 1
+        body = parse_qs(requests[0].post_data)
+        assert body["review_tokens"] == tokens and body["threshold"] == ["99"]
+        query = parse_qs(requests[0].url.split("?", 1)[1], keep_blank_values=True)
+        assert (
+            query["status"] == ["all"]
+            and query["q"] == ["retained"]
+            and query["sort"] == ["filename"]
+            and query["order"] == ["desc"]
+            and query["page_size"] == ["50"]
+            and query["threshold"] == ["99"]
+        )
+        assert await page.get_by_role("button", name="Undo this approval batch", exact=True).count() == 0
+        await seed.session.refresh(high)
+        await seed.session.refresh(low)
+        assert high.status == low.status == ProposalStatus.PENDING.value
+        await page.screenshot(path=str(tmp_path / f"a5-slider-stale-{theme}.png"), full_page=True)
+
+
+@pytest.mark.parametrize("release_before_current", [True, False])
+async def test_selected_preview_response_cannot_restore_old_selection(page: Page, seed: Seeder, release_before_current: bool) -> None:
+    import asyncio
+    from urllib.parse import parse_qs
+
+    from playwright.async_api import Error as PlaywrightError
+
+    first = await seed.proposal(filename="race-first.mp3", confidence=0.99)
+    second = await seed.proposal(filename="race-second.mp3", confidence=0.99)
+    await open_shell(page, "/s/rename")
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("2 eligible at 90%", exact=True).wait_for()
+    held = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+    generations: list[str] = []
+    hold_next = True
+
+    async def delay_selected(route: Any) -> None:
+        nonlocal hold_next
+        body = parse_qs(route.request.post_data)
+        if body.get("scope", ["selected"])[0] == "selected" and hold_next:
+            hold_next = False
+            generations.extend(body["preview_generation"])
+            response = await route.fetch()
+            held.set()
+            await release.wait()
+            try:
+                await route.fulfill(response=response)
+            except PlaywrightError:
+                # Native hx-sync replacement can abort this already-read response.
+                pass
+            finally:
+                completed.set()
+        else:
+            await route.continue_()
+
+    await page.route("**/proposals/bulk/preview?**", delay_selected)
+    patches: list[Any] = []
+    page.on("request", lambda request: patches.append(request) if request.method == "PATCH" else None)
+    await page.get_by_label("Select race-first.mp3", exact=True).check()
+    await page.get_by_role("button", name="Preview eligible selection", exact=True).click()
+    await asyncio.wait_for(held.wait(), timeout=10)
+    await page.get_by_label("Select race-first.mp3", exact=True).uncheck()
+    await page.get_by_label("Select race-second.mp3", exact=True).check()
+    assert await page.locator('#changes-approval-preview input[name="review_tokens"]').count() == 0
+    assert await page.locator("#changes-approval-preview button").count() == 0
+    assert len(generations) == 1 and int(generations[0]) > 0
+    try:
+        if release_before_current:
+            async with page.expect_response(lambda response: "/proposals/bulk/preview?" in response.url):
+                release.set()
+            await asyncio.wait_for(completed.wait(), timeout=10)
+            await page.wait_for_function("() => document.querySelector('[data-selected-preview]').disabled === false")
+            assert await page.locator('#changes-approval-preview input[name="review_tokens"]').count() == 0
+            await page.get_by_role("button", name="Preview eligible selection", exact=True).click()
+            await preview.get_by_text("1 eligible at 90% · 0 excluded from selection", exact=True).wait_for()
+            expected = {str(second.id)}
+        else:
+            await page.get_by_role("button", name="Refresh preview", exact=True).click()
+            await preview.get_by_text("2 eligible at 90%", exact=True).wait_for()
+            release.set()
+            await asyncio.wait_for(completed.wait(), timeout=10)
+            expected = {str(first.id), str(second.id)}
+        tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value.split('|')[0])")
+        assert set(tokens) == expected
+        assert await preview.get_by_role("button", name=f"Approve these {len(expected)} previewed proposals", exact=True).is_enabled()
+        assert not patches
+        await seed.session.refresh(first)
+        await seed.session.refresh(second)
+        assert first.status == second.status == ProposalStatus.PENDING.value
+    finally:
+        release.set()
+
+
+async def test_failed_preview_clears_confirmation_and_refresh_recovers(page: Page, seed: Seeder) -> None:
+    proposal = await seed.proposal(filename="failed-preview.mp3", confidence=0.99)
+    await open_shell(page, "/s/rename")
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("1 eligible at 90%", exact=True).wait_for()
+    patches: list[Any] = []
+    page.on("request", lambda request: patches.append(request) if request.method == "PATCH" else None)
+    await page.route("**/proposals/bulk/preview?**", lambda route: route.fulfill(status=503, body="Synthetic preview failure"))
+    await page.get_by_role("button", name="Refresh preview", exact=True).click()
+    await page.get_by_role("alert").filter(has_text="Preview unavailable").wait_for()
+    assert await page.locator('#changes-approval-preview input[name="review_tokens"]').count() == 0
+    assert await page.locator("#changes-approval-preview button").count() == 0
+    assert await page.locator('#changes-bulk-form button[type="submit"][value="approve_eligible"]').count() == 0
+    await page.unroute("**/proposals/bulk/preview?**")
+    await page.get_by_role("button", name="Refresh preview", exact=True).click()
+    await preview.get_by_text("1 eligible at 90%", exact=True).wait_for()
+    assert (await preview.locator('input[name="review_tokens"]').input_value()).startswith(str(proposal.id) + "|")
+    assert not patches
+
+
+async def test_batch_undo_retains_new_active_threshold(page: Page, seed: Seeder) -> None:
+    from urllib.parse import parse_qs
+
+    proposal = await seed.proposal(filename="undo-threshold.mp3", confidence=0.99)
+    await open_shell(page, "/s/rename?status=all&q=retained&sort=filename&order=desc")
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("1 eligible at 90%", exact=True).wait_for()
+    page.once("dialog", lambda dialog: dialog.accept())
+    await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+    await page.get_by_text("1 approved, 0 skipped.", exact=True).wait_for()
+    slider = page.get_by_label("Minimum confidence:", exact=False)
+    await slider.focus()
+    await slider.press("End")
+    await page.locator('output[for="changes-confidence-threshold"]').get_by_text("99%", exact=True).wait_for()
+    page.once("dialog", lambda dialog: dialog.accept())
+    async with page.expect_request(lambda request: request.method == "PATCH" and "/proposals/bulk/undo?" in request.url) as request_info:
+        await page.get_by_role("button", name="Undo this approval batch", exact=True).click()
+    request = await request_info.value
+    assert parse_qs(request.post_data)["threshold"] == ["99"]
+    query = parse_qs(request.url.split("?", 1)[1])
+    assert query["threshold"] == ["99"] and query["q"] == ["retained"] and query["sort"] == ["filename"]
+    await page.get_by_text("1 reverted, 0 skipped. Edited, executed, or conflicting versions cannot be reverted.", exact=True).wait_for()
+    assert await page.locator("#changes-confidence-threshold").input_value() == "99"
+    await seed.session.refresh(proposal)
+    assert proposal.status == ProposalStatus.PENDING.value
+
+
+async def test_population_cap_displays_and_confirms_exactly_500_operations(
+    page_at: Callable[..., AbstractAsyncContextManager[Page]], seed: Seeder, tmp_path: Path
+) -> None:
+    from urllib.parse import parse_qs
+    import uuid
+
+    from sqlalchemy import func, select
+
+    from phaze.models.file import FileRecord
+    from phaze.models.proposal import RenameProposal
+
+    agent = await seed.agent()
+    for index in range(501):
+        file_id = uuid.uuid4()
+        filename = f"cap-source-{index}.mp3"
+        seed.session.add(
+            FileRecord(
+                id=file_id,
+                agent_id=agent.id,
+                sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                original_path=f"/archive-mount/incoming/{filename}",
+                original_filename=filename,
+                current_path=f"/archive-mount/incoming/{filename}",
+                file_type="mp3",
+                file_size=100,
+            )
+        )
+        seed.session.add(
+            RenameProposal(
+                id=uuid.UUID(int=index + 1),
+                file_id=file_id,
+                proposed_filename=f"cap-target-{index}.mp3",
+                proposed_path="/archive-mount/Reviewed/Event",
+                confidence=0.99,
+                status=ProposalStatus.PENDING.value,
+            )
+        )
+    await seed.session.commit()
+    async with page_at(viewport="phone", theme="dark") as page:
+        await open_shell(page, "/s/rename?threshold=99")
+        preview = page.get_by_role("region", name="Bulk approval preview")
+        await preview.get_by_text("500 eligible at 99%", exact=True).wait_for()
+        assert "More than 500 eligible proposals match" in await preview.inner_text()
+        rows = preview.locator("[data-preview-proposal]")
+        assert await rows.count() == 500
+        tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value)")
+        visible_ids = await rows.evaluate_all("els => els.map(el => el.dataset.previewProposal)")
+        assert [token.split("|")[0] for token in tokens] == visible_ids
+        assert str(uuid.UUID(int=501)) not in visible_ids
+        assert "cap-source-0.mp3" in await rows.first.inner_text()
+        assert "/archive-mount/Reviewed/Event/cap-target-0.mp3" in await rows.first.inner_text()
+        await preview.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / "a5-cap-dark-phone.png"), full_page=True)
+        page.once("dialog", lambda dialog: dialog.accept())
+        async with page.expect_request(lambda request: request.method == "PATCH" and "/proposals/bulk?" in request.url) as request_info:
+            await preview.get_by_role("button", name="Approve these 500 previewed proposals", exact=True).click()
+        request = await request_info.value
+        assert parse_qs(request.post_data)["review_tokens"] == tokens
+        await page.get_by_text("500 approved, 0 skipped.", exact=True).wait_for()
+        approved = await seed.session.scalar(
+            select(func.count()).select_from(RenameProposal).where(RenameProposal.status == ProposalStatus.APPROVED.value)
+        )
+        pending = await seed.session.scalar(
+            select(func.count()).select_from(RenameProposal).where(RenameProposal.status == ProposalStatus.PENDING.value)
+        )
+        assert approved == 500 and pending == 1
+
+
+async def test_old_threshold_response_cannot_replace_current_99_preview(page: Page, seed: Seeder) -> None:
+    import asyncio
+    from urllib.parse import parse_qs
+
+    from playwright.async_api import Error as PlaywrightError
+
+    high = await seed.proposal(filename="threshold-high.mp3", confidence=0.99)
+    low = await seed.proposal(filename="threshold-low.mp3", confidence=0.95)
+    await open_shell(page, "/s/rename")
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("2 eligible at 90%", exact=True).wait_for()
+    held = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+    requests: list[dict[str, list[str]]] = []
+
+    async def delay_old_threshold(route: Any) -> None:
+        body = parse_qs(route.request.post_data)
+        requests.append(body)
+        if body["threshold"] == ["90"]:
+            response = await route.fetch()
+            held.set()
+            await release.wait()
+            try:
+                await route.fulfill(response=response)
+            except PlaywrightError:
+                pass  # Native hx-sync cancels the superseded request.
+            finally:
+                completed.set()
+        else:
+            await route.continue_()
+
+    await page.route("**/proposals/bulk/preview?**", delay_old_threshold)
+    await page.get_by_role("button", name="Refresh preview", exact=True).click()
+    await asyncio.wait_for(held.wait(), timeout=10)
+    slider = page.get_by_label("Minimum confidence:", exact=False)
+    try:
+        await slider.focus()
+        await slider.press("ArrowRight")
+        await slider.press("End")
+        await preview.get_by_text("1 eligible at 99%", exact=True).wait_for()
+        tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value)")
+        assert len(tokens) == 1 and tokens[0].startswith(str(high.id) + "|")
+        release.set()
+        await asyncio.wait_for(completed.wait(), timeout=10)
+        assert await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value)") == tokens
+        assert await preview.locator(f'[data-preview-proposal="{low.id}"]').count() == 0
+        assert await preview.locator('input[name="threshold"]').input_value() == "99"
+        assert await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).is_enabled()
+        assert int(requests[-1]["preview_generation"][0]) > int(requests[0]["preview_generation"][0])
+    finally:
+        release.set()
+
+
+async def test_live_row_eligibility_and_description_follow_threshold_and_row_swaps(page: Page, seed: Seeder) -> None:
+    target = await seed.proposal(filename="live-floor.mp3", confidence=0.95)
+    unknown = await seed.proposal(filename="live-unknown.mp3", confidence=None)
+    resolved = await seed.proposal(filename="live-resolved.mp3", confidence=0.99, status=ProposalStatus.APPROVED)
+    collision = await seed.proposal(
+        filename="live-collision.mp3", confidence=0.99, proposed_filename="same.mp3", proposed_path="/synthetic/collision"
+    )
+    await seed.proposal(filename="live-collision-other.mp3", confidence=0.99, proposed_filename="same.mp3", proposed_path="/synthetic/collision")
+    await open_shell(page, "/s/rename?status=all")
+    slider = page.get_by_label("Minimum confidence:", exact=False)
+    cue = page.locator(f"#changes-eligibility-{target.id}")
+    checkbox = page.get_by_role("checkbox", name="Select live-floor.mp3", exact=True)
+    assert await checkbox.get_attribute("aria-describedby") == f"changes-eligibility-{target.id}"
+    assert "Eligible" in await cue.inner_text()
+    row = page.locator(f"#rename-row-{target.id}")
+    await slider.focus()
+    await slider.press("End")
+    await settled(page)
+    assert "Excluded" in await cue.inner_text() and "99%" in await cue.inner_text()
+    assert "Below the 99%" in await row.locator("[data-live-confidence-warning]").inner_text()
+    await slider.press("Home")
+    await settled(page)
+    assert "Eligible" in await cue.inner_text() and "90%" in await cue.inner_text()
+    assert not await row.locator("[data-live-confidence-warning]").is_visible()
+    assert "unavailable" in await page.locator(f"#changes-eligibility-{unknown.id}").inner_text()
+    assert "resolved" in await page.locator(f"#changes-eligibility-{resolved.id}").inner_text()
+    assert "conflict" in await page.locator(f"#changes-eligibility-{collision.id}").inner_text()
+    await row.get_by_role("button", name="APPROVE", exact=True).click()
+    await row.get_by_role("button", name="UNDO", exact=True).wait_for()
+    assert "resolved" in await cue.inner_text()
+    await row.get_by_role("button", name="UNDO", exact=True).click()
+    await row.get_by_role("button", name="APPROVE", exact=True).wait_for()
+    assert "preview must confirm" in await cue.inner_text()
+    assert await page.locator(f"#changes-eligibility-{target.id}").count() == 1
+    await row.get_by_role("button", name="EDIT", exact=True).click()
+    await row.locator('input[name="proposed"]').fill("live-floor-reviewed.mp3")
+    await row.get_by_role("button", name="SAVE EDIT", exact=True).click()
+    await row.get_by_role("button", name="APPROVE", exact=True).wait_for()
+    assert "preview must confirm" in await cue.inner_text()
+    await slider.focus()
+    await slider.press("End")
+    await settled(page)
+    assert "Excluded" in await cue.inner_text() and "99%" in await cue.inner_text()
+    await slider.press("Home")
+    await settled(page)
+    assert "90%" in await cue.inner_text() and "preview must confirm" in await cue.inner_text()
+    assert not await row.locator("[data-live-confidence-warning]").is_visible()

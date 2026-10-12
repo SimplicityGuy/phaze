@@ -2,7 +2,8 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlencode
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -24,6 +25,7 @@ from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_frag
 # the SAME builder its GET uses. The edge is one-way -- routers/shell.py does not import this
 # module -- so there is no cycle.
 from phaze.routers.shell import build_changes_review_context
+from phaze.routers.view_state import ListViewState
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
@@ -36,7 +38,7 @@ from phaze.services.proposal_queries import (
     bulk_undo_approved,
     bulk_update_status,
     get_proposal_with_file,
-    preview_bulk_approval,
+    preview_bulk_approval_page,
     update_proposal_fields,
     update_proposal_status,
 )
@@ -69,16 +71,12 @@ def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
     operator needs and the one a naive ``f"{len(ids)} approved"`` destroys, so it is stated rather
     than smoothed over: silence about 38 skipped rows reads as success on all 50.
 
-    The zero case gets its own sentence because "0 approved" alone invites the operator to conclude
-    the button is broken and click it harder, when in fact the answer is complete and stable.
+    Skipped rows retain their existing state. The shared approve/reject toast avoids attributing
+    every skip to confidence or collision checks, which apply only to approval.
     """
     verb = _PAST_TENSE[action]
-    if applied == requested:
-        return f"{applied} proposal{'' if applied == 1 else 's'} {verb}."
     skipped = requested - applied
-    if applied == 0:
-        return f"Nothing {verb} — all {skipped} selected proposal{'' if skipped == 1 else 's'} had already been actioned."
-    return f"{applied} proposal{'' if applied == 1 else 's'} {verb} · {skipped} skipped (already actioned)."
+    return f"{applied} {verb}, {skipped} skipped." + (" Skipped proposals remain unchanged; reload for individual review." if skipped else "")
 
 
 async def _guarded_status_update(
@@ -261,6 +259,11 @@ def _diff_row_response(
 ) -> HTMLResponse:
     """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
     context = _diff_row_context(proposal, row_id_prefix, facet, row_state, threshold=threshold)
+    if request.headers.get("HX-Target") == f"rename-row-{proposal.id}":
+        context["live_bulk_eligibility"] = True
+        context["bulk_collision"] = None  # A row swap has no current population collision proof.
+        context["bulk_threshold"] = threshold
+        context["warnings"] = _changes_review_warnings(proposal, threshold=threshold, include_confidence=False)
     context["request"] = request
     return templates.TemplateResponse(request=request, name="pipeline/partials/_diff_row.html", context=context)
 
@@ -673,17 +676,36 @@ async def bulk_approval_preview(
     request: Request,
     review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
     threshold: int = Form(default=90, ge=90, le=99),
+    scope: Literal["selected", "filtered"] = Form(default="selected"),
     session: AsyncSession = Depends(get_session),
 ) -> JSONResponse | HTMLResponse:
     """Inspect the exact eligible selection without changing any proposal or dispatching work."""
     reviewed, selected = _parse_bulk_selection(review_tokens, [])
-    eligible = await preview_bulk_approval(session, reviewed, threshold=threshold / 100)
+    view = ListViewState.from_request(request, status="needs_review", sort="confidence")
+    if view.status not in {"all", "needs_review", "approved", "blocked", "rejected"}:
+        view = view.with_(status="needs_review")
+    preview = await preview_bulk_approval_page(session, reviewed if scope == "selected" else None, status=view.status, threshold=threshold / 100)
+    eligible = preview.tokens
     context = {
         "threshold": threshold,
+        "scope": scope,
+        "capped": preview.capped,
         "eligible_count": len(eligible),
-        "skipped_count": len(set(selected)) - len(eligible),
+        "skipped_count": len(set(selected)) - len(eligible) if scope == "selected" else None,
         "eligible_ids": [str(token.proposal_id) for token in eligible],
         "review_tokens": [f"{token.proposal_id}|{token.updated_at.isoformat()}|{token.content_digest}" for token in eligible],
+        "view_query": urlencode(view.params() | {"selected": request.query_params.get("selected", ""), "threshold": str(threshold)}),
+        "preview_rows": [
+            {
+                "id": str(proposal.id),
+                "before_filename": proposal.file.original_filename,
+                "before_destination": proposal.file.current_path,
+                "after_filename": proposal.proposed_filename,
+                "after_destination": str(Path(proposal.proposed_path or str(Path(proposal.file.current_path).parent)) / proposal.proposed_filename),
+                "confidence": proposal.confidence,
+            }
+            for proposal in preview.proposals
+        ],
     }
     if wants_fragment(request):
         return templates.TemplateResponse(

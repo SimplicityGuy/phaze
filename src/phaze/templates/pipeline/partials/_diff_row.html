@@ -86,7 +86,21 @@
      x-data='{ editing:false, proposalError:null, proposalRefused(event) {
         try { this.proposalError = JSON.parse(event.detail.xhr.responseText).detail; }
         catch { this.proposalError = "Review could not be confirmed. Refresh review evidence before trying again."; }
-     }, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
+     }{% if live_bulk_eligibility | default(false) %},
+     bulkFloor() { return typeof threshold === "undefined" ? {{ bulk_threshold }} : threshold; },
+     confidenceWarning() {
+        const confidence = {{ confidence | tojson }};
+        return confidence === null ? "Confidence unavailable; individual review required."
+            : confidence < this.bulkFloor() / 100 ? "Below the " + this.bulkFloor() + "% bulk-approval threshold; individual review required." : "";
+     },
+     bulkCue() {
+        if ({{ (row_state != "pending") | tojson }}) return "Disabled: this decision is already resolved.";
+        if ({{ bulk_collision | tojson }} === true) return "Excluded: destination conflict; approval is blocked.";
+        if (this.confidenceWarning()) return "Excluded: " + this.confidenceWarning();
+        return {{ bulk_collision | tojson }} === null
+            ? "Confidence meets " + this.bulkFloor() + "%; preview must confirm destinations and reviewed versions."
+            : "Eligible for selected bulk approval at " + this.bulkFloor() + "%.";
+     }{% endif %}, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
      {% if not _tag_approval %}
      @htmx:response-error.camel="proposalRefused($event)"
      {% endif %}
@@ -201,6 +215,11 @@
         </div>
     </div>
     {% endif %}
+    {% if live_bulk_eligibility | default(false) %}
+    <div x-show="confidenceWarning()" class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+        <p data-live-confidence-warning x-text="confidenceWarning()">{% if confidence is none %}Confidence unavailable; individual review required.{% elif confidence < bulk_threshold / 100 %}Below the {{ bulk_threshold }}% bulk-approval threshold; individual review required.{% endif %}</p>
+    </div>
+    {% endif %}
     {% if warnings is defined and warnings %}
     <div class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
         {% for warning in warnings %}<p>Warning: {{ warning }}</p>{% endfor %}
@@ -214,7 +233,11 @@
     {% if consequences is defined and consequences %}
     <p class="mt-2 text-xs text-muted "><span class="font-semibold">Operation:</span> {{ consequences }}</p>
     {% endif %}
-    {% if eligibility_reason is defined and eligibility_reason %}
+    {% if live_bulk_eligibility | default(false) %}
+    <p class="mt-1 text-xs text-muted"><span class="font-semibold">Bulk eligibility:</span>
+        <span id="changes-eligibility-{{ pid }}" x-text="bulkCue()">{% if row_state != "pending" %}Disabled: this decision is already resolved.{% elif bulk_collision is sameas true %}Excluded: destination conflict; approval is blocked.{% elif confidence is none %}Excluded: confidence unavailable; individual review required.{% elif confidence < bulk_threshold / 100 %}Excluded: confidence is below {{ bulk_threshold }}%.{% elif bulk_collision is none %}Confidence meets {{ bulk_threshold }}%; preview must confirm destinations and reviewed versions.{% else %}Eligible for selected bulk approval at {{ bulk_threshold }}%.{% endif %}</span>
+    </p>
+    {% elif eligibility_reason is defined and eligibility_reason %}
     <p class="mt-1 text-xs text-muted "><span class="font-semibold">Bulk eligibility:</span> {{ eligibility_reason }}</p>
     {% endif %}
     {% if show_edit|default(true) %}

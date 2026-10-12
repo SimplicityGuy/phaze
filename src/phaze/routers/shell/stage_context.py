@@ -257,6 +257,7 @@ async def build_changes_review_context(request: Request, session: AsyncSession, 
     return {
         "changes_view": view,
         "changes_threshold": threshold,
+        "changes_bulk_query": urlencode(view.params() | {"selected": ",".join(selected), "threshold": str(threshold)}),
         "changes_proposals": proposals.rows,
         "changes_pagination": proposals.pagination,
         "changes_stats": changes_stats,

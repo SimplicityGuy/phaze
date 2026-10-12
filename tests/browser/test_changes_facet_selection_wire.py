@@ -33,7 +33,7 @@ Measured before the fix, on a seeded two-row list:
 * Select a row, switch tab -> the wire carried ``selected=`` (empty) and the selection was silently
   dropped. A narrowing; annoying, harmless to the archive.
 * DESELECT a row, switch tab -> the wire carried the stale id, and the list came back with the row
-  RE-CHECKED and "Approve selected eligible" RE-ENABLED. That is the widening, and it is sticky:
+  RE-CHECKED and "Preview eligible selection" RE-ENABLED. That is the widening, and it is sticky:
   each swap re-renders the tabs from the stale value it was just handed, so unchecking again and
   switching again resurrects it again. Three consecutive rounds measured (see
   :func:`test_deselecting_a_row_and_switching_tabs_does_not_resurrect_it`); the loop only breaks
@@ -69,17 +69,17 @@ from tests.browser.helpers import open_shell, settled, swap_settles
 pytestmark = pytest.mark.browser
 
 
-_APPROVE = "button[value='approve_eligible']"
+_APPROVE = "button[data-selected-preview]"
 _ALL_TAB = "a[data-changes-nav]:has-text('All')"
 
 
-def _watch_wire(page: Any, needle: str) -> list[str]:
+def _watch_wire(page: Any, needle: str, *, method: str | None = None) -> list[str]:
     """Record every request URL containing ``needle``, in issue order.
 
     Playwright's ``request`` event, not ``htmx:configRequest``: the socket is the thing under test.
     """
     seen: list[str] = []
-    page.on("request", lambda request: seen.append(request.url) if needle in request.url else None)
+    page.on("request", lambda request: seen.append(request.url) if needle in request.url and (method is None or request.method == method) else None)
     return seen
 
 
@@ -183,7 +183,7 @@ async def test_deselecting_a_row_and_switching_tabs_does_not_resurrect_it(page: 
             f"round {round_no} ({tab}): the unticked row came back CHECKED after the swap"
         )
         assert await page.evaluate("sel => document.querySelector(sel).matches(':disabled')", _APPROVE), (
-            f"round {round_no} ({tab}): 'Approve selected eligible' is live against a selection the operator had cleared"
+            f"round {round_no} ({tab}): 'Preview eligible selection' is live against a selection the operator had cleared"
         )
 
 
@@ -206,7 +206,9 @@ async def test_the_pagination_links_carry_the_live_selection_too(page: Any, seed
     await settled(page)
     await page.wait_for_selector("a[data-changes-nav]:has-text('Next')", timeout=5_000)
 
-    label = await page.evaluate("() => document.querySelector('input[name=review_tokens]').getAttribute('aria-label')")
+    label = await page.evaluate(
+        "() => document.querySelector('#changes-bulk-form input[type=checkbox][name=review_tokens]').getAttribute('aria-label')"
+    )
     await page.get_by_label(label).check()
     # Which row sorts first is the page's business, not this test's; the claim is about the link.
     on_screen = await page.evaluate(
@@ -245,7 +247,7 @@ async def test_the_bulk_patch_carries_the_live_selection_and_still_names_its_act
     target = await seed.proposal(status=ProposalStatus.PENDING, filename="<set-01>.mp3")
     await seed.proposal(status=ProposalStatus.PENDING, filename="<set-02>.mp3")
 
-    wire = _watch_wire(page, "/proposals/bulk")
+    wire = _watch_wire(page, "/proposals/bulk", method="PATCH")
 
     await open_shell(page, "/s/rename")
     await settled(page)
@@ -255,8 +257,23 @@ async def test_the_bulk_patch_carries_the_live_selection_and_still_names_its_act
     advertised = await page.evaluate("() => document.querySelector('#changes-bulk-form').getAttribute('hx-patch')")
     assert str(target.id) in advertised, f"sync() never rewrote hx-patch: {advertised!r}"
 
-    async with swap_settles(page):
-        await page.click(_APPROVE)
+    await page.click(_APPROVE)
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("1 eligible at 90% · 0 excluded from selection", exact=True).wait_for()
+    assert not wire, "read-only preview issued a bulk write"
+    tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value)")
+    assert len(tokens) == 1 and tokens[0].startswith(str(target.id) + "|")
+    page.once("dialog", lambda dialog: dialog.accept())
+    async with (
+        page.expect_request(lambda request: request.method == "PATCH" and "/proposals/bulk?" in request.url) as request_info,
+        swap_settles(page),
+    ):
+        await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+    from urllib.parse import parse_qs
+
+    request = await request_info.value
+    body = parse_qs(request.post_data)
+    assert body["review_tokens"] == tokens and body["action"] == ["approve_eligible"]
 
     assert len(wire) == 1, f"expected exactly one bulk PATCH, got {wire}"
     assert str(target.id) in wire[0], (
@@ -272,7 +289,7 @@ async def test_the_bulk_patch_carries_the_live_selection_and_still_names_its_act
             return el ? el.innerText : '';
         }"""
     )
-    assert "1 proposal approved" in toast, (
+    assert "1 approved" in toast, (
         f"the bulk PATCH did not land as a one-row approval — a lost `action` field answers 422 and renders no toast at all: {toast!r}"
     )
 
@@ -325,7 +342,7 @@ async def test_the_guard_still_releases_exactly_once_across_repeated_syncs(page:
         await _selection_synced(
             page,
             await page.evaluate(
-                "() => document.querySelector('input[name=review_tokens]').checked ? new URL(document.querySelector('[data-changes-nav]').getAttribute('hx-get'), location.origin).searchParams.get('selected') : ''"
+                "() => document.querySelector('#changes-bulk-form input[type=checkbox][name=review_tokens]').checked ? new URL(document.querySelector('[data-changes-nav]').getAttribute('hx-get'), location.origin).searchParams.get('selected') : ''"
             ),
         )
         await page.get_by_label("Select <set-01>.mp3").uncheck()
@@ -337,7 +354,7 @@ async def test_the_guard_still_releases_exactly_once_across_repeated_syncs(page:
     assert await page.evaluate("sel => !document.querySelector(sel).hasAttribute('data-hx-guard')", _APPROVE), (
         "the guard attribute came BACK across the re-processing, which would re-arm a released control"
     )
-    for selector, label in ((_APPROVE, "Approve selected eligible"), ("button[value='reject']", "Reject selected pending")):
+    for selector, label in ((_APPROVE, "Preview eligible selection"), ("button[value='reject']", "Reject selected pending")):
         assert await page.evaluate("sel => document.querySelector(sel).matches(':disabled')", selector), (
             f"{label!r} is clickable with nothing selected after ten syncs — the re-processing broke phaze-tckiy's fieldset/guard composition"
         )
@@ -368,7 +385,7 @@ async def test_the_guard_still_releases_exactly_once_across_repeated_syncs(page:
         "the hand-fired htmx:load never reached shell.html's release listener, so the over-release assertions below would be vacuous"
     )
     assert await page.evaluate("() => window.__loads") == 1, "the hand-fired htmx:load was not observed on the form — the dispatch itself failed"
-    for selector, label in ((_APPROVE, "Approve selected eligible"), ("button[value='reject']", "Reject selected pending")):
+    for selector, label in ((_APPROVE, "Preview eligible selection"), ("button[value='reject']", "Reject selected pending")):
         assert await page.evaluate("sel => document.querySelector(sel).matches(':disabled')", selector), (
             f"{label!r} was re-enabled by a second htmx:load — the guard release is not idempotent"
         )
@@ -376,3 +393,27 @@ async def test_the_guard_still_releases_exactly_once_across_repeated_syncs(page:
     # And the buttons are not STUCK: the business rule still lets them through.
     await page.get_by_label("Select <set-01>.mp3").check()
     await page.wait_for_function("sel => !document.querySelector(sel).matches(':disabled')", arg=_APPROVE, timeout=5_000)
+
+
+async def test_reject_selection_still_posts_exact_live_tokens_after_repeated_sync(page: Any, seed: Any) -> None:
+    from urllib.parse import parse_qs
+
+    from phaze.models.proposal import ProposalStatus
+
+    first = await seed.proposal(filename="reject-first.mp3")
+    second = await seed.proposal(filename="reject-second.mp3")
+    await open_shell(page, "/s/rename?status=all")
+    await page.get_by_label("Select reject-first.mp3", exact=True).check()
+    await page.get_by_label("Select reject-second.mp3", exact=True).check()
+    await page.get_by_label("Select reject-second.mp3", exact=True).uncheck()
+    await _selection_synced(page, str(first.id))
+    checkbox_token = await page.get_by_label("Select reject-first.mp3", exact=True).input_value()
+    async with page.expect_request(lambda request: request.method == "PATCH" and "/proposals/bulk?" in request.url) as request_info:
+        await page.get_by_role("button", name="Reject selected pending", exact=True).click()
+    request = await request_info.value
+    body = parse_qs(request.post_data)
+    assert body["action"] == ["reject"] and body["review_tokens"] == [checkbox_token]
+    await page.get_by_text("1 rejected, 0 skipped.", exact=True).wait_for()
+    await seed.session.refresh(first)
+    await seed.session.refresh(second)
+    assert first.status == ProposalStatus.REJECTED.value and second.status == ProposalStatus.PENDING.value

@@ -376,6 +376,65 @@ async def preview_bulk_approval(
     return [token_by_id[proposal.id] for proposal in reviewed]
 
 
+@dataclass
+class BulkApprovalPreview:
+    """Bounded displayed snapshots; a sentinel proves a cap without authorizing it."""
+
+    proposals: list[RenameProposal]
+    tokens: list[ProposalReviewToken]
+    capped: bool = False
+
+
+async def preview_bulk_approval_page(
+    session: AsyncSession,
+    review_tokens: Iterable[ProposalReviewToken] | None,
+    *,
+    status: str = "needs_review",
+    threshold: float = 0.9,
+) -> BulkApprovalPreview:
+    """Preview selected snapshots, or the first 500 eligible rows in the active status scope.
+
+    Population reads materialize at most 100 candidates per round trip. Colliding candidates do
+    not consume the 501st-eligible sentinel budget. The write still receives only the 500 visible
+    snapshots and rechecks the exact same eligibility classifier and atomic version predicates.
+    Search/sort/page preferences are URL state, as in the existing Changes reader; they do not
+    silently become a second implementation of its filter semantics here.
+    """
+    if review_tokens is not None:
+        proposals, token_by_id = await _reviewed_bulk_candidates(session, list(review_tokens), threshold=threshold)
+        return BulkApprovalPreview(proposals, [token_by_id[proposal.id] for proposal in proposals])
+    if status not in {"all", "needs_review"}:
+        return BulkApprovalPreview([], [])
+    collision_ids = await get_review_collision_ids(session)
+    displayed: list[RenameProposal] = []
+    tokens: list[ProposalReviewToken] = []
+    after: uuid_mod.UUID | None = None
+    while True:
+        query = (
+            select(RenameProposal)
+            .options(selectinload(RenameProposal.file))
+            .where(RenameProposal.status == ProposalStatus.PENDING.value, RenameProposal.confidence >= threshold)
+            .order_by(RenameProposal.id)
+            .limit(100)
+        )
+        if after is not None:
+            query = query.where(RenameProposal.id > after)
+        candidates = (await session.execute(query)).scalars().all()
+        if not candidates:
+            return BulkApprovalPreview(displayed, tokens)
+        for proposal in candidates:
+            token = ProposalReviewToken(proposal.id, proposal.updated_at, proposal_review_digest(proposal))
+            if not _is_eligible_for_bulk_approval(proposal, token, collision_ids=collision_ids, threshold=threshold):
+                continue
+            if len(tokens) == 500:
+                return BulkApprovalPreview(displayed, tokens, capped=True)
+            displayed.append(proposal)
+            tokens.append(token)
+        after = candidates[-1].id
+        if len(candidates) < 100:
+            return BulkApprovalPreview(displayed, tokens)
+
+
 async def bulk_approve_selected_with_tokens(
     session: AsyncSession,
     review_tokens: Iterable[ProposalReviewToken],

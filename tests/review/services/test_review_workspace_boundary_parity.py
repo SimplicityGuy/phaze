@@ -52,11 +52,18 @@ async def test_changes_workspace_preserves_rows_warning_copy_order_and_paginatio
     expected = await baseline_review.get_changes_review_page(session, status="not-a-status", page=99, page_size=1)
     actual = await review.get_changes_review_page(session, status="not-a-status", page=99, page_size=1)
 
-    assert actual == expected
+    # phaze-vssr1: the additive warning channel excludes generated confidence copy only.
+    assert actual.rows[0]["other_warnings"] == ["No destination change; the file will be renamed in its current directory."]
+    original_rows = [{key: value for key, value in row.items() if key != "other_warnings"} for row in actual.rows]
+    assert actual._replace(rows=original_rows) == expected
     assert actual.pagination.page == 2
     assert actual.rows[0]["id"] == low.id
     absent_page = await review.get_changes_review_page(session, status="needs_review", page=1, page_size=1)
     assert absent_page.rows[0]["id"] == absent.id
+    assert absent_page.rows[0]["other_warnings"] == [
+        "No destination change; the file will be renamed in its current directory.",
+        "Operator-visible reason.",
+    ]
     assert absent_page.rows[0]["warnings"] == [
         "Confidence unavailable; individual review required.",
         "No destination change; the file will be renamed in its current directory.",

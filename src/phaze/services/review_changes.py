@@ -108,11 +108,11 @@ async def _changes_review_stats(session: AsyncSession) -> ChangesReviewStats:
     )
 
 
-def _changes_review_warnings(proposal: RenameProposal, *, threshold: int = 90) -> list[str]:
+def _changes_review_warnings(proposal: RenameProposal, *, threshold: int = 90, include_confidence: bool = True) -> list[str]:
     warnings: list[str] = []
-    if proposal.confidence is None:
+    if include_confidence and proposal.confidence is None:
         warnings.append("Confidence unavailable; individual review required.")
-    elif proposal.confidence < threshold / 100:
+    elif include_confidence and proposal.confidence is not None and proposal.confidence < threshold / 100:
         warnings.append(f"Below the {threshold}% bulk-approval threshold; individual review required.")
     if proposal.proposed_path is None:
         warnings.append("No destination change; the file will be renamed in its current directory.")
@@ -142,6 +142,7 @@ def _build_changes_review_row(
         "status": review_status,
         "raw_status": proposal.status,
         "warnings": _changes_review_warnings(proposal, threshold=threshold),
+        "other_warnings": _changes_review_warnings(proposal, threshold=threshold, include_confidence=False),
         "conflicts": conflicts,
         "bulk_eligible": (
             raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= threshold / 100 and not conflicts
