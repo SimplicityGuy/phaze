@@ -33,6 +33,20 @@ content digest, or file UUID is included in this record.
 The served page contained the native-submit guard bootstrap. That is DOM/source-presence evidence;
 it does not demonstrate a pre-processing race or a production submit interaction.
 
+### Read-only follow-up on 2026-10-12 at 17:17:18 UTC
+
+A fresh Chromium observation found the same served version, **2026.10.5**, in all **9** states.
+All **3** expected historical control labels were present in every state, and all **27** control
+observations were effectively disabled: **18** through disabled fieldsets and **9** through the
+buttons' own disabled attributes. The **3 document GETs** and **6 filter GETs** all returned HTTP
+**200**; the filter links again used canonical `/s/rename` URLs across the three entry aliases.
+Every state had **0** review rows, **0** selection inputs, and **0** selected checkboxes. There were
+**0** non-GET/HEAD attempts, and no selection or action was performed.
+
+This follow-up preserves the earlier measurement and strengthens the unchanged-release observation.
+It supplies no deployed commit digest or evidence that A5 is released. Eligible-selection enablement
+remains unmeasured because no suitable rows were available.
+
 ## Release follow-up remains open
 
 The deployed controls above retain the historical labels. **A5 — phaze-vssr1** adds a preview-first
