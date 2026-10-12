@@ -3,8 +3,12 @@
     <h3 class="font-semibold">Selected-source CUE artifact preview</h3>
     {% if message %}<p class="mt-2 text-sm" role="status">{{ message }}</p>{% endif %}
     {% if artifact %}
-        <p class="mt-2 break-all text-xs text-muted">Observation {{ artifact.source.observation_id }} · {{ artifact.source.snapshot.parser_version }} · revision {{ artifact.source.snapshot.revision or 'unknown' }}</p>
-        <p class="mt-1 text-xs text-muted">Reviewed by {{ artifact.source.actor }} · {{ artifact.source.selected_at }}. Existing companion input is retained; this action writes a versioned generated artifact.</p>
+        <p class="mt-2 text-sm">Selected tracklist · current source version. Existing companion input is retained; this action writes a versioned generated artifact.</p>
+        {% if artifact.source.snapshot.completeness.state != 'complete' %}<p class="mt-2 text-sm text-warn" data-source-completeness>{{ 'Partial extraction — inspect original text and selected timing before generating.' if artifact.source.snapshot.completeness.state == 'incomplete' else 'Extraction completeness unknown — inspect original text and timing before generating.' }}</p>{% endif %}
+        <details class="mt-1 text-xs text-muted"><summary class="cursor-pointer">Source version and review details</summary>
+            <p class="break-all">Observation {{ artifact.source.observation_id }} · {{ artifact.source.snapshot.parser_version }} · revision {{ artifact.source.snapshot.revision or 'unknown' }}</p>
+            <p>Reviewed by {{ artifact.source.actor }} · {{ artifact.source.selected_at }} · {{ artifact.source.availability }} · {{ artifact.source.snapshot.completeness.state }}</p>
+        </details>
         {% if artifact.omitted_track_count %}<p class="mt-2 text-sm text-warn">{{ artifact.omitted_track_count }} tracks lack qualified offsets and are omitted from this generated CUE. Their original timing remains in the source details.</p>{% endif %}
         <pre class="relative mt-3 max-h-80 overflow-auto whitespace-pre rounded bg-gray-50 p-3 text-xs dark:bg-phaze-bg">{{ artifact.content }}</pre>
         {% if applied and supported %}

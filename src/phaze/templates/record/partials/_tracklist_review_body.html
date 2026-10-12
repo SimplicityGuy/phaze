@@ -5,11 +5,14 @@
 <p class="mb-2 text-sm">Local tracklist sources: {{ review.local_sources | join(', ') }}. Source content is available to proposals. Recognition does not create stored track rows.</p>
 {% endif %}
 {% if review.selected_source %}
-<p class="mb-2 text-sm font-medium">Selected tracklist · {{ review.tracks | length }} tracks · {{ review.selected_source.availability }}</p>
-<p class="mb-2 text-xs">{{ review.selected_source.identity.provider_id }} · revision {{ review.selected_source.snapshot.revision or 'unknown' }} · parser {{ review.selected_source.snapshot.parser_version }} · reviewed by {{ review.selected_source.actor }}. <a href="/files/{{ review.file_id }}#companion-sources" class="underline">Inspect source and alternatives</a></p>
+<p class="mb-2 text-sm font-medium">Selected tracklist · {{ review.tracks | length }} tracks</p>
+<p class="mb-2 text-sm {{ 'text-muted' if review.selected_source.availability == 'current' else 'text-warn' }}" data-source-availability>{{ {'current': 'Current source version', 'stale': 'Source version changed — review the latest version', 'unverified': 'Source not verified', 'unknown_binding': 'Recording binding not verified', 'missing': 'Source file missing', 'unavailable': 'Source unavailable', 'unlinked': 'Source no longer linked to this recording', 'ambiguous': 'Source link is ambiguous'}.get(review.selected_source.availability, 'Source status unknown — inspect the evidence') }}</p>
+{% if review.selected_source.snapshot.completeness.state != 'complete' %}<p class="mb-2 text-sm text-warn" data-source-completeness>{{ 'Partial extraction — review original text and selected timing before approving changes.' if review.selected_source.snapshot.completeness.state == 'incomplete' else 'Extraction completeness unknown — review original text and timing before approving changes.' }}</p>{% endif %}
+<a href="/files/{{ review.file_id }}#companion-sources" class="mb-2 inline-block text-xs underline">Inspect source and alternatives</a>
+<details class="mb-2 text-xs"><summary class="cursor-pointer">Source version and review details</summary><p class="break-all">{{ review.selected_source.identity.provider_id }} · observation {{ review.selected_source.observation_id }} · revision {{ review.selected_source.snapshot.revision or 'unknown' }} · parser {{ review.selected_source.snapshot.parser_version }} · reviewed by {{ review.selected_source.actor }} · {{ review.selected_source.availability }} · {{ review.selected_source.snapshot.completeness.state }}</p></details>
 {% endif %}
 {% if review.tracklist or review.selected_source %}
-<p class="mb-2 text-sm font-medium">Stored tracklist · {{ review.tracks | length }} tracks{% if review.is_propagated %} · inherited from a duplicate{% endif %}</p>
+{% if review.tracklist %}<p class="mb-2 text-sm font-medium">Stored tracklist · {{ review.tracks | length }} tracks{% if review.is_propagated %} · inherited from a duplicate{% endif %}</p>{% endif %}
 {% if review.tracklist %}<dl class="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
     <div><dt>Set artist</dt><dd>{{ review.tracklist.artist or '—' }}</dd></div>
     <div><dt>Set / event</dt><dd>{{ review.tracklist.event or '—' }}</dd></div>

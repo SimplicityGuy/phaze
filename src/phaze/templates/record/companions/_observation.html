@@ -4,6 +4,8 @@
     <h4 class="text-sm font-semibold">Original text</h4>
     {% include "record/companions/_text.html" %}
     {% endif %}
+    <p class="text-sm {{ 'text-muted' if detail.summary.availability == 'current' else 'text-warn' }}" data-source-availability>{{ {'current': 'Current source version', 'stale': 'Source version changed — review the latest version before choosing', 'unverified': 'Source not verified', 'unknown_binding': 'Recording binding not verified', 'missing': 'Source file missing', 'unavailable': 'Source unavailable', 'unlinked': 'Source no longer linked to this recording', 'ambiguous': 'Source link is ambiguous', 'absent': 'No recognized source content', 'unsupported': 'Source format unsupported', 'retry': 'Source read needs retry', 'contract_error': 'Source read or extraction failed'}.get(detail.summary.availability, 'Source status unknown — inspect the evidence') }}</p>
+    {% if detail.summary.completeness_state != 'complete' %}<p class="text-sm text-warn" data-source-completeness>{{ ('Partial extraction — review original text and choose only a complete section for this recording' if actions.sections else 'Partial extraction — review original text for missing fields before choosing') if detail.summary.completeness_state == 'incomplete' else 'Extraction completeness unknown — review original text before choosing' }}</p>{% endif %}
     {% if detail.summary.conflict_with_id %}<p class="text-warn text-sm">This version conflicts with other retained source data. Review the evidence below before choosing.</p>{% endif %}
     {% if actions.kind == 'tracklist' %}
     <div data-local-track-rows>
@@ -32,7 +34,9 @@
     </div>
     {% endif %}
     <details class="text-xs text-muted"><summary class="cursor-pointer">Version details and review evidence</summary>
+    <p class="break-all">Observation {{ detail.summary.observation_id }} · source {{ detail.summary.source_object_id }}</p>
     <p class="break-all">{{ detail.summary.parser_version }} · {{ detail.summary.status }} · {{ detail.summary.availability }} · revision {{ detail.summary.revision or 'unknown' }}</p>
+    <p class="break-all">Revision scope {{ detail.summary.revision_scope }} · source SHA-256 {{ actions.source_sha256 or 'unknown' }} · recording SHA-256 {{ actions.media_sha256 or 'unknown' }}</p>
     <p>{{ detail.summary.completeness_state or 'Raw source read' }} · {{ detail.summary.completeness_reason or detail.summary.code }}</p>
     {% if actions.source_file_id %}<a href="/files/{{ actions.source_file_id }}#companion-sources" class="text-link">Open source file and linked recordings</a>{% endif %}
     {% if detail.evidence %}<details><summary class="text-xs">Read/parser evidence and rejected lines</summary><pre class="whitespace-pre-wrap break-all text-xs">{{ detail.evidence | join('\n') }}</pre></details>{% endif %}
