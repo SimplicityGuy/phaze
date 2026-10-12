@@ -791,3 +791,77 @@ async def test_profiles_are_unique_and_robots_without_crawl_delay_keeps_the_gap(
     assert read.status == OutcomeStatus.FOUND
     assert socket.requests[-1].url == "https://catalog.example.invalid/api/search?q=Example%20Artist"
     assert (socket.sent_at[1] - socket.sent_at[0]).total_seconds() == GAP
+
+
+HELD_SQL = text(
+    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
+    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+)
+OTHER_BACKENDS_SQL = text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()")
+
+
+class HangingSocket(FakeSocket):
+    """Never answers for the hosts in ``hang``: a send that outlives its caller."""
+
+    def __init__(self, clock: FakeClock, hang: set[str]) -> None:
+        super().__init__(clock)
+        self.hang = hang
+
+    @asynccontextmanager
+    async def open(self, request: OutboundRequest) -> AsyncIterator[FakeResponse]:
+        if request.host in self.hang:
+            self.requests.append(request)
+            await asyncio.Event().wait()
+        async with super().open(request) as response:
+            yield response
+
+
+async def held_locks_and_backends(engine: AsyncEngine) -> tuple[int, int]:
+    async with engine.connect() as conn:
+        return int(await conn.scalar(HELD_SQL) or 0), int(await conn.scalar(OTHER_BACKENDS_SQL) or 0)
+
+
+async def test_cancellation_and_timeout_release_the_lock_and_its_connection(committed_db: Any) -> None:
+    engine, _ = committed_db
+    clock = FakeClock()
+    socket = HangingSocket(clock, {PROFILE.host})
+    transport = worker(engine, clock, socket)
+    # The session's own exclusivity lock and guard connection are the baseline, not ours.
+    baseline = await held_locks_and_backends(engine)
+    # Cancelled by its caller mid-send: the reservation stands, the lock and the connection do not.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(transport.run().read(fetch_reference(), DiscoveryBudget()), 0.5)
+    assert len(socket.requests) == 1
+    assert await held_locks_and_backends(engine) == baseline
+    assert [row["outcome"] for row in (await ledger(engine))["attempts"]] == ["interrupted"]
+    # Timed out by the profile: a typed retry, and again nothing is left held.
+    impatient = worker(engine, clock, socket, PROFILE.model_copy(update={"request_timeout_seconds": 0.2}))
+    clock.advance(GAP)
+    read = await impatient.run().read(fetch_reference(), DiscoveryBudget())
+    assert (read.status, read.code) == (OutcomeStatus.RETRY, "timeout")
+    assert await held_locks_and_backends(engine) == baseline
+    socket.hang.clear()
+    clock.advance(GAP)
+    assert (await asyncio.wait_for(worker(engine, clock, socket).run().read(fetch_reference(), DiscoveryBudget()), 10)).status == OutcomeStatus.FOUND
+    await transport.aclose()
+
+
+async def test_two_providers_never_wait_on_each_other(committed_db: Any) -> None:
+    engine, _ = committed_db
+    clock = FakeClock()
+    other = PROFILE.model_copy(update={"provider_id": "other_catalog", "host": "other.example.invalid"})
+    socket = HangingSocket(clock, {PROFILE.host})
+    transport = RemoteTransport(profiles=(PROFILE, other), engine=engine, socket=socket, clock=clock)
+    baseline = await held_locks_and_backends(engine)
+    stuck = asyncio.create_task(transport.run().read(fetch_reference(), DiscoveryBudget()))
+    while not socket.requests:
+        await asyncio.sleep(0.01)
+    other_reference = fetch_reference().model_copy(update={"identity": SourceIdentity(provider_id="other_catalog", native_id="set-01")})
+    read = await asyncio.wait_for(transport.run().read(other_reference, DiscoveryBudget()), 10)
+    assert read.status == OutcomeStatus.FOUND and socket.requests[-1].host == "other.example.invalid"
+    async with engine.connect() as conn:
+        assert await conn.scalar(HELD_SQL) == baseline[0] + 1, "only the stuck provider's lock is held"
+    stuck.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stuck
+    assert await held_locks_and_backends(engine) == baseline

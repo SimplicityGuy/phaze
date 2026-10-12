@@ -9,8 +9,10 @@ re-checks its shape against the profile before any socket opens (docs/design/002
 Durable state lives in Postgres (``phaze.models.remote_transport``), never Valkey, and generalizes the
 investigation runner of docs/spikes/phaze-6ehg6-mixesdb-rest-access.md:
 
-- **Serial.** A per-provider session advisory lock is held across reservation and send, so two workers,
-  in one process or many, never have requests to one host in flight at once.
+- **Serial.** A per-provider session advisory lock, keyed by the provider ID, is held across reservation
+  and send on a dedicated unpooled connection, so two workers, in one process or many, never have
+  requests to one host in flight at once, and two providers never wait on each other. No transaction is
+  open while a request is in flight.
 - **Reserved before send.** The attempt row and counter are committed before the request leaves, so an
   interrupted send still consumes budget. Every request is charged, retries included: this effect never
   retries by itself, and a retry by core is a new, charged reservation.
@@ -59,7 +61,8 @@ import httpx
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 import structlog
 
 from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
@@ -296,7 +299,10 @@ class RemoteTransport:
             profile_or_none = self._profiles.get(provider_id)
             if profile_or_none is None or profile_or_none.credential is None:
                 raise ValueError(f"A credential was supplied for a provider without a credential slot: {provider_id}")
-        self._engine = engine
+        # The pacing lock is held across a send of up to the profile timeout, so it lives on a DEDICATED,
+        # unpooled connection: never one borrowed from the app's request pool, and closing it on exit is what
+        # releases the lock even if the unlock itself never runs.
+        self._engine = create_async_engine(engine.url, poolclass=NullPool)
         self._socket = socket
         self._clock = clock or SystemClock()
         now, mono = self._clock.wall(), self._clock.monotonic()
@@ -310,6 +316,9 @@ class RemoteTransport:
 
     def run(self) -> RemoteTransportRun:
         return RemoteTransportRun(self)
+
+    async def aclose(self) -> None:
+        await self._engine.dispose()
 
     async def read(self, run: RemoteTransportRun, source: SourceReference, budget: DiscoveryBudget) -> SourceRead:
         try:
