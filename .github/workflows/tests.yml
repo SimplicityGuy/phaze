@@ -355,6 +355,16 @@ jobs:
           PYEOF
           echo "::endgroup::"
 
+      # One full default non-browser collection, sequentially in this existing serial leg.
+      # The helper removes PYTEST_ADDOPTS; actual shard argv and reports remain authoritative.
+      - name: 🧾 Capture canonical collection receipt
+        id: canonical-collection
+        # Retain all actual shard execution even if collection evidence fails. The final
+        # outcome guard below makes that failure blocking after reports are uploaded.
+        continue-on-error: true
+        if: ${{ matrix.bucket.name == 'shared-registry' }}
+        run: uv run --no-sync python -m scripts.canonical_collection_receipt
+
       - name: 🧪 Run shard tests with coverage
         # Every shard contains DB-fixture (integration-marked) tests — verified empirically at
         # execution: `pytest <paths> -m integration --collect-only` returns >0 for all shards.
@@ -392,6 +402,21 @@ jobs:
           path: .coverage.${{ matrix.bucket.name }}
           include-hidden-files: true
           if-no-files-found: error
+
+      - name: 📤 Upload canonical collection receipt
+        if: ${{ !cancelled() && matrix.bucket.name == 'shared-registry' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: canonical-collection
+          path: canonical-collection/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 🧾 Require complete canonical collection
+        if: ${{ !cancelled() && matrix.bucket.name == 'shared-registry' && steps.canonical-collection.outcome != 'success' }}
+        run: |
+          echo "::error::Canonical collection failed or did not run; retained evidence is incomplete."
+          exit 1
 
   combine:
     name: Combine coverage
