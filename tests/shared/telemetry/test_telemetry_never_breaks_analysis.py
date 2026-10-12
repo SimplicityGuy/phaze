@@ -58,11 +58,18 @@ def audio(tmp_path: Path) -> str:
     return write_two_tone_wav(str(tmp_path / "sine.wav"), total_sec=_TOTAL_SEC, source_rate=_SOURCE_RATE)
 
 
+class _StallingServer(http.server.ThreadingHTTPServer):
+    #: Set at teardown, so a stalled request answers then instead of after `_SLOW_RESPONSE_SEC`.
+    release: threading.Event
+
+
 class _StallingHandler(http.server.BaseHTTPRequestHandler):
-    """Accepts the request, then sleeps past every timeout before answering."""
+    """Accepts the request, then stalls past every timeout before answering."""
+
+    server: _StallingServer
 
     def do_POST(self) -> None:  # BaseHTTPRequestHandler's spelling
-        time.sleep(_SLOW_RESPONSE_SEC)
+        self.server.release.wait(_SLOW_RESPONSE_SEC)
         self.send_response(200)
         self.end_headers()
 
@@ -72,14 +79,21 @@ class _StallingHandler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def slow_collector() -> Iterator[str]:
-    """A REAL listener that accepts and stalls -- homelab under load, not homelab gone."""
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StallingHandler)
+    """A REAL listener that accepts and stalls -- homelab under load, not homelab gone.
+
+    The stall holds for the whole test and is released at teardown (phaze-esjwp): a handler left
+    sleeping kept the exporter's request open past the test, and the conftest's
+    ``no_exporter_thread_survives`` waits for that exporter thread to finish.
+    """
+    server = _StallingServer(("127.0.0.1", 0), _StallingHandler)
+    server.release = threading.Event()
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
     finally:
+        server.release.set()
         server.shutdown()
         server.server_close()
 

@@ -13,14 +13,18 @@ warning printed 3,201 times in phaze-api before phaze-lhunw bounded that one cal
 
 Everything here is the real thing: phaze's own ``configure_telemetry("api")`` installs the
 provider exactly as production does, ``phaze.main.create_app()`` is the app, and a real
-ASGI client drives it. The endpoint is the black hole the bootstrap tests use, so the
-OTLP exporter never delivers and never blocks the request path.
+ASGI client drives it. The endpoint is a local listener that answers every export at once,
+so the OTLP exporter neither blocks the request path nor leaves an export in flight after
+the test (phaze-esjwp: the black hole used here before kept the exporter thread alive
+for seconds after teardown, and its ERROR log landed in a later test's ``caplog``).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import http.server
+import threading
+from typing import TYPE_CHECKING, Any
 import warnings
 
 from httpx import ASGITransport, AsyncClient
@@ -32,7 +36,6 @@ import pytest
 
 from phaze.telemetry import _env, bootstrap, tracing
 from tests.shared.telemetry.conftest import reset_otel_globals
-from tests.shared.telemetry.test_telemetry_bootstrap import BLACK_HOLE
 
 
 if TYPE_CHECKING:
@@ -52,11 +55,36 @@ def _warn_from_one_location() -> None:
     warnings.warn(MESSAGE, RepeatedWarning, stacklevel=1)
 
 
+class _AcceptingHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every OTLP export with 200 straight away."""
+
+    def do_POST(self) -> None:  # BaseHTTPRequestHandler's spelling
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Silence the default stderr access log."""
+
+
 @pytest.fixture
-def api_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TracerProvider, InMemorySpanExporter]]:
+def collector() -> Iterator[str]:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _AcceptingHandler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def api_provider(collector: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TracerProvider, InMemorySpanExporter]]:
     """phaze's own api-role provider, plus an in-memory processor proving FastAPI used it."""
     monkeypatch.setenv("PHAZE_ROLE", "api")
-    monkeypatch.setenv(_env.ENDPOINT_ENV, BLACK_HOLE)
+    monkeypatch.setenv(_env.ENDPOINT_ENV, collector)
     bootstrap._reset_for_tests()
     reset_otel_globals()
     tracing._reset_for_tests()

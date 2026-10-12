@@ -21,7 +21,7 @@ from opentelemetry import trace
 import pytest
 
 from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments, tracing
-from tests.shared.telemetry.conftest import reset_otel_globals
+from tests.shared.telemetry.conftest import exporter_threads, reset_otel_globals
 
 
 BLACK_HOLE = "http://192.0.2.1:4318"
@@ -400,10 +400,45 @@ def test_configure_reports_OFF_when_someone_else_owns_the_provider(monkeypatch: 
     # reason until the guard it was written for reported success.
     trace.set_tracer_provider(foreign)
     assert trace.get_tracer_provider() is foreign, "the foreign provider did not install; the simulation is not set up"
+    before = exporter_threads()
     try:
         assert bootstrap.configure_telemetry("api") is False, "configure_telemetry claimed success while a foreign provider owns the API"
         assert trace.get_tracer_provider() is foreign, "the foreign provider should still be installed; phaze must not have fought it"
+        # phaze-esjwp: the provider phaze built and could not install had already started its
+        # export thread, and nothing held it any more -- a thread leaked for the process's life.
+        assert exporter_threads() == before, "the provider phaze could not install left its export thread running"
     finally:
+        reset_otel_globals()
+        foreign.shutdown()
+        bootstrap._reset_for_tests()
+
+
+def test_a_meter_provider_that_did_not_take_leaves_no_export_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The meter half of the guard above: phaze's own reader thread must not outlive the refusal.
+
+    The tracer provider DID take here, because only the meter API was owned by someone else, and
+    ``configure_telemetry`` reports telemetry OFF while that tracer provider stays globally installed
+    and exporting. That state is pre-existing and outside this test; it is shut down in ``finally`` so
+    its thread does not outlive the test either.
+    """
+    from opentelemetry import metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    monkeypatch.setenv(_env.ENDPOINT_ENV, BLACK_HOLE)
+    bootstrap._reset_for_tests()
+    reset_otel_globals()
+    foreign = MeterProvider(shutdown_on_exit=False)
+    metrics.set_meter_provider(foreign)
+    assert metrics.get_meter_provider() is foreign, "the foreign provider did not install; the simulation is not set up"
+    try:
+        assert bootstrap.configure_telemetry("api") is False
+        assert metrics.get_meter_provider() is foreign
+        readers = [thread.name for thread in exporter_threads() if thread.name.startswith("OtelPeriodicExportingMetricReader")]
+        assert readers == [], "the meter provider phaze could not install left its reader thread running"
+    finally:
+        installed = trace.get_tracer_provider()
+        if isinstance(installed, bootstrap._resolved_once_tracer_provider()):
+            installed.shutdown()
         reset_otel_globals()
         foreign.shutdown()
         bootstrap._reset_for_tests()
