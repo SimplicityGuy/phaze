@@ -120,7 +120,9 @@ async def test_stage_pills_fit_after_restoring_narrow_columns(page: Any, seed: A
         await page.locator(f"#files-stage-pill-metadata-{record.id}").evaluate("el => el.closest('tr').querySelector('td').textContent.trim()")
         == "song.mp3"
     )
-    legend = page.locator('#files-table-view p[aria-hidden="true"]')
+    legend = page.locator("#files-table-view [data-stage-legend]")
+    assert await legend.locator("[data-stage-bucket]").count() == 7
+    assert await legend.get_attribute("aria-hidden") is None
     gap = await legend.evaluate("el => el.parentElement.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom")
     assert gap >= 16
 
@@ -534,3 +536,54 @@ async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(pa
     assert await page.evaluate("document.querySelectorAll('[inert]').length") == 0, "the page stayed inert after the drawer closed"
     blocked = [m for m in messages if "aria-hidden" in m.lower()]
     assert not blocked, f"console reported an aria-hidden problem: {blocked}"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("viewport_width", [390, 1440])
+async def test_glyph_cells_legend_and_record_skip_refresh_keep_accessible_meaning(page: Any, seed: Any, theme: str, viewport_width: int) -> None:
+    """Real keyboard skip preserves word record tokens; existing Files refresh restores glyph cells."""
+    file = await seed.file(filename="glyph.mp3")
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await open_shell(page, "/s/files")
+    table = page.locator(f"#files-stage-pill-metadata-{file.id} [aria-label]")
+    assert await table.inner_text() == "—"
+    assert await table.get_attribute("aria-label") == "Metadata: not started"
+    assert await table.get_attribute("title") == "Metadata: not started"
+    assert await table.get_attribute("data-status-variant") == "glyph"
+    mobile = page.locator(f"#files-mobile-stage-pill-metadata-{file.id} [aria-label]")
+    assert "not started" in (await mobile.text_content() or "")
+    legend = page.locator("[data-stage-legend]")
+    assert await legend.locator("[data-stage-bucket]").count() == 7
+    assert await legend.evaluate("el => !el.closest('[aria-hidden=true]')")
+    assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    if viewport_width == 390:
+        disclosure = page.get_by_text("Stage details", exact=True)
+        await disclosure.focus()
+        await page.keyboard.press("Enter")
+        assert await mobile.is_visible()
+        assert "not started" in (await mobile.inner_text()).lower()
+    details = page.get_by_role("button", name="Open details for glyph.mp3", exact=True)
+    await details.focus()
+    await page.keyboard.press("Enter")
+    await _wait_for_record(page)
+    record = page.locator(f"#stage-pill-metadata-{file.id} [aria-label]")
+    assert "not started" in (await record.inner_text()).lower()
+    assert await record.get_attribute("data-status-variant") is None
+    skip = page.get_by_role("button", name="Skip metadata for this file", exact=True)
+    await skip.focus()
+    await page.keyboard.press("Enter")
+    dialog = page.get_by_role("dialog", name="Skip metadata for this file")
+    await dialog.wait_for(state="visible")
+    await dialog.locator("textarea[name=reason]").fill("synthetic unreadable tags")
+    submit = dialog.get_by_role("button", name="Skip stage", exact=True)
+    await submit.focus()
+    await page.keyboard.press("Enter")
+    await page.wait_for_function("id => document.getElementById('stage-pill-metadata-' + id).textContent.includes('skipped')", arg=str(file.id))
+    assert await record.get_attribute("aria-label") == "Metadata: skipped (force-completed)"
+    assert await record.get_attribute("data-status-variant") is None
+    await page.goto("/s/files", wait_until="domcontentloaded")
+    await settled(page)
+    assert await table.inner_text() == "⊘"
+    assert await table.get_attribute("aria-label") == "Metadata: skipped (force-completed)"
+    assert await table.get_attribute("data-status-variant") == "glyph"

@@ -67,7 +67,7 @@ async def test_compact_layout_uses_cards_and_progressive_stage_disclosure(client
     assert 'class="grid gap-3 px-4 py-3 md:hidden"' in body
     assert 'class="min-w-0 cursor-pointer rounded-lg border' in body
     assert "Stage details</summary>" in body
-    assert "hidden whitespace-nowrap px-3 py-2 xl:table-cell" in body
+    assert "hidden whitespace-nowrap px-3 py-2 text-center xl:table-cell" in body
     for label in ("Metadata", "Analyze", "Propose", "Review", "Execute"):
         assert f">{label}<" in body
     for abbreviation in (">Meta<", ">Prop<", ">Appr<", ">Exec<"):

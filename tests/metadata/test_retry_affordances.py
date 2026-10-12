@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 from sqlalchemy import select
 
@@ -115,6 +116,16 @@ async def test_per_file_retry_reenqueues_one_file_on_meta_lane(client: AsyncClie
     # the pill's id fresh in the DOM rather than silently doing nothing on this surface.
     assert f'id="files-stage-pill-metadata-{file.id}"' in response.text
     assert f'id="files-mobile-stage-pill-metadata-{file.id}"' in response.text
+    # Compare the actual pushed token with first paint after the guarded write commits.
+    fresh = BeautifulSoup((await client.get("/pipeline/files", headers={"HX-Request": "true"})).text, "html.parser")
+    pushed = BeautifulSoup(response.text, "html.parser")
+    for prefix, glyph in (("files", True), ("files-mobile", False)):
+        token_id = f"{prefix}-stage-pill-metadata-{file.id}"
+        first_pill = fresh.select_one(f"#{token_id} [aria-label]")
+        oob_pill = pushed.select_one(f"#{token_id} [aria-label]")
+        assert first_pill is not None and oob_pill is not None
+        assert str(first_pill) == str(oob_pill)
+        assert (oob_pill.get("data-status-variant") == "glyph") == glyph
     assert f'id="files-current-status-{file.id}"' in response.text
     assert f'id="files-mobile-current-status-{file.id}"' in response.text
     assert 'hx-swap-oob="true"' in response.text

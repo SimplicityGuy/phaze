@@ -272,7 +272,7 @@
                     <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.filename }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</td>
                     <td class="px-3 py-2 text-muted ">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
-                    <td class="hidden whitespace-nowrap px-3 py-2 xl:table-cell">
+                    <td class="hidden whitespace-nowrap px-3 py-2 text-center xl:table-cell">
                         {# phaze-cvn6.2: pill + Retry share ONE flex row (items-center, no wrap) so a
                            failed cell renders on the same single line as a done/in-flight/not-started
                            cell -- previously the Retry affordance sat in its own block-level `div`
@@ -284,7 +284,7 @@
                         {% if key == 'tracklist' %}
                         {# phaze-o71bf: the lookup outcome, not the bare bucket -- "not found" and "not
                            eligible" share the skipped bucket but mean different things to the operator. #}
-                        {% with bucket=row.buckets[key] %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}
+                        {% with bucket=row.buckets[key], pill_variant='glyph' %}{% include "pipeline/partials/_tracklist_pill.html" %}{% endwith %}
                         {% else %}
                         {% with file_id=row.file.id, bucket=row.buckets[key], surface='table', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}
                         {% endif %}
