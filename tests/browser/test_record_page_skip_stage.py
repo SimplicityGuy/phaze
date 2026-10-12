@@ -27,11 +27,14 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 
-async def test_skip_stage_submits_and_toasts_on_the_standalone_record_page(page: Any, seed: Seeder) -> None:
-    file = await seed.file(filename="<set-01>.mp3")  # metadata never ran: not started, so the control is offered
+@pytest.mark.parametrize("file_type", ["mp3", "txt"])
+async def test_skip_stage_submits_and_toasts_on_the_standalone_record_page(page: Any, seed: Seeder, file_type: str) -> None:
+    file = await seed.file(filename=f"<set-01>.{file_type}", file_type=file_type)  # metadata never ran: not started, so the control is offered
 
     await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
     await page.evaluate("window.__documentAlive = true")
+    if file_type == "txt":
+        assert await page.locator(f"#stage-pill-metadata-{file.id} [aria-label]").get_attribute("aria-label") == "Metadata: not applicable"
 
     await page.get_by_role("button", name="Skip metadata for this file").click()
     dialog = page.get_by_role("dialog", name="Skip metadata for this file")

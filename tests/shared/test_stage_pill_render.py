@@ -249,3 +249,41 @@ def test_namespaced_stage_oob_matches_files_and_record_variants(bucket: str) -> 
         assert (b.get("data-status-variant") == "glyph") == (variant == "glyph")
     record = BeautifulSoup(_stage_pill_oob(file_id, "analyze", bucket), "html.parser").select_one("[aria-label]")
     assert not record.has_attr("data-status-variant")
+
+
+@pytest.mark.parametrize("variant", ["word", "glyph"])
+def test_not_applicable_uses_shared_neutral_distinct_accessible_token(variant: str) -> None:
+    for template, label in [("pipeline/partials/_stage_pill.html", "Metadata"), ("pipeline/partials/_tracklist_pill.html", "Tracklist")]:
+        html = _templates.env.get_template(template).render(stage_label=label, bucket="not_started", stage_applicable=False, pill_variant=variant)
+        pill = BeautifulSoup(html, "html.parser").select_one("[aria-label]")
+        assert pill["aria-label"] == f"{label}: not applicable"
+        assert pill.select_one("[aria-hidden=true]").get_text() == "∅"
+        assert "bg-gray-100" in pill["class"] and "text-muted" in pill["class"]
+        if variant == "glyph":
+            assert pill["title"] == pill["aria-label"] and pill.get_text(strip=True) == "∅"
+        else:
+            assert "not applicable" in pill.get_text()
+    legend = BeautifulSoup(_render_matrix(legend_only=True), "html.parser")
+    assert legend.select_one("[data-stage-applicability=not_applicable]").get_text(strip=True) == "∅ not applicable"
+
+
+@pytest.mark.parametrize("bucket", [case[0] for case in _BUCKET_CASES if case[0] != "not_started"] + [""])
+def test_real_bucket_or_unknown_is_never_overwritten_by_display_scope(bucket: str) -> None:
+    for template in ("pipeline/partials/_stage_pill.html", "pipeline/partials/_tracklist_pill.html"):
+        html = _templates.env.get_template(template).render(stage_label="Metadata", bucket=bucket, stage_applicable=False)
+        assert "not applicable" not in html
+
+
+@pytest.mark.parametrize("file_type", ["mp3", "mp4", "txt", None])
+@pytest.mark.parametrize("bucket", ["not_started", "done", "failed", "missing", "in_flight", "queued", "skipped", ""])
+def test_display_scope_preserves_all_history_and_downstream_work(file_type: str | None, bucket: str) -> None:
+    from phaze.services.pipeline.files import file_stage_applicability
+
+    buckets = dict.fromkeys(("metadata", "analyze", "tracklist", "propose", "review", "apply"), bucket)
+    for history in (None, {}, dict.fromkeys(("metadata", "analyze", "tracklist"), True), dict.fromkeys(("metadata", "analyze", "tracklist"), False)):
+        actual = file_stage_applicability(file_type, buckets, history)
+        for stage in ("metadata", "analyze", "tracklist"):
+            expected = not (file_type == "txt" and bucket == "not_started" and history and history.get(stage) is False)
+            assert actual[stage] == expected
+        assert all(actual[stage] for stage in ("propose", "review", "apply"))
+        assert set(buckets.values()) == {bucket}

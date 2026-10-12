@@ -9,10 +9,10 @@ without the marker keeps the stage summary unchanged.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import re
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 
 from phaze.models.file import FileRecord
@@ -43,7 +43,8 @@ def _file(name: str, *, missing: bool) -> FileRecord:
 
 
 def _status_cells(body: str, file_id: uuid.UUID) -> list[str]:
-    return [match.group(1) for match in re.finditer(rf'id="files(?:-mobile)?-current-status-{file_id}">(.*?)</span>\s*</', body, re.DOTALL)]
+    soup = BeautifulSoup(body, "html.parser")
+    return [str(soup.select_one(f"#{prefix}-current-status-{file_id}")) for prefix in ("files", "files-mobile")]
 
 
 async def test_a_missing_row_reads_missing_and_a_present_row_keeps_its_stage_summary(client: AsyncClient, session: AsyncSession) -> None:

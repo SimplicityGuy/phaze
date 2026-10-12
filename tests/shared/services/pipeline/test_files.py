@@ -28,7 +28,8 @@ def test_scan_root_matches_segments_and_prefers_nested_roots(path: str, roots: l
 
 
 @pytest.mark.asyncio
-async def test_get_file_stage_buckets_degrades_to_all_not_started_on_db_error() -> None:
+@pytest.mark.parametrize("with_history", [False, True])
+async def test_get_file_stage_buckets_degrades_to_all_not_started_on_db_error(with_history: bool) -> None:
     """A DB error on the single-file stage-buckets read degrades to an all-``not_started`` mapping.
 
     Mirrors ``get_files_page``'s SAVEPOINT degrade posture -- the record slide-in pane renders
@@ -44,7 +45,13 @@ async def test_get_file_stage_buckets_degrades_to_all_not_started_on_db_error() 
             msg = 'relation "files" does not exist'
             raise RuntimeError(msg)
 
-    buckets = await get_file_stage_buckets(_ExplodingSession(), uuid.uuid4())  # type: ignore[arg-type]
+    history = {"metadata": False, "analyze": False, "tracklist": False} if with_history else None
+    buckets = await get_file_stage_buckets(_ExplodingSession(), uuid.uuid4(), history=history)  # type: ignore[arg-type]
 
     assert buckets, "the not-started fallback mapping must not be empty"
     assert all(v == "not_started" for v in buckets.values())
+    if with_history:
+        from phaze.services.pipeline.files import file_stage_applicability
+
+        assert history == {}, "a failed read must not retain stale measured absence"
+        assert all(file_stage_applicability("txt", buckets, history).values())

@@ -6,25 +6,41 @@
     ('Review', 'review'),
     ('Execute', 'apply'),
 ] %}
+{% set applicability = stage_applicability|default({}) %}
 {% set current = namespace(label='', key='', bucket='') %}
-{% for priority in ['failed', 'in_flight', 'not_started'] %}
+{% for priority in ['failed', 'missing', 'in_flight', 'queued', 'not_started'] %}
     {% for stage_label, key in stages %}
-        {% if not current.key and buckets[key] == priority %}
+        {% if not current.key and buckets[key] == priority and applicability.get(key, true) %}
             {% set current.label = stage_label %}
             {% set current.key = key %}
             {% set current.bucket = priority %}
         {% endif %}
     {% endfor %}
 {% endfor %}
-{# phaze-5rfev: a row a reconcile found gone from its agent's disk (files.missing_at). It is kept with its history and
-   left out of every enrich pending set, so its stage buckets no longer say what is wrong with it -- this does. #}
+{# Presentation-only summary: stage cells keep exact buckets and recovery controls. Review done
+   means a proposal exists, not approval. Never infer dispatch readiness from these buckets. #}
 {% if missing %}
 {{ ui.status_badge('File', 'missing', 'danger', '✕', aria_label='File missing on disk since ' ~ missing.strftime('%Y-%m-%d')) }}
-{% elif current.key %}
-<span class="inline-flex flex-wrap items-center gap-2">
-    <span class="font-jura text-[10px] font-medium uppercase tracking-[0.15em] text-gray-600 dark:text-gray-300">{{ current.label }}</span>
-    {% with stage_label=current.label, bucket=current.bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
-</span>
+{% elif current.bucket in ('failed', 'missing') %}
+<span class="text-xs text-danger">Inspect {{ current.label }} error and recovery options</span>
+{% elif current.bucket == 'in_flight' %}
+<span class="text-xs text-info">{{ current.label }} work in progress</span>
+{% elif current.bucket == 'queued' %}
+<span class="text-xs text-muted">Waiting for {{ current.label }} work</span>
+{% elif current.key in ('metadata', 'analyze') %}
+<span class="text-xs text-muted">Awaiting {{ current.label }} processing</span>
+{% elif current.key == 'propose' %}
+    {% if buckets.metadata in ('done', 'skipped') and buckets.analyze in ('done', 'skipped') %}
+<span class="text-xs text-muted">Awaiting proposed changes</span>
+    {% elif not applicability.get('metadata', true) and not applicability.get('analyze', true) %}
+<span class="text-xs text-muted">Outside ordinary media processing; workflow awaits prerequisites</span>
+    {% else %}
+<span class="text-xs text-muted">Changes await enrichment prerequisites</span>
+    {% endif %}
+{% elif current.key in ('review', 'apply') %}
+<span class="text-xs text-muted">Check Changes Review and execution readiness</span>
+{% elif 'skipped' in buckets.values() %}
+<span class="text-xs text-muted">Recorded workflow finished with skipped stages</span>
 {% else %}
 {{ ui.status_badge('Pipeline', 'complete', 'success', '✓') }}
 {% endif %}
