@@ -30,12 +30,16 @@ def row(start: object = "00:02:43", artist: object = "Artist A", title: object =
     return {"artist": artist, "title": title, "label": "Label A", "startTime": start, "endTime": "00:05:00", **extra}
 
 
+def process(process_id: int, rows: list[object], end_date: object = "2026-01-01T00:00:00Z") -> dict[str, object]:
+    return {"id": process_id, "endDate": end_date, "detectionProcessMusicTracks": rows}
+
+
 def detail(rows: list[object], *, status: int = 3, track_count: int = 0, process_id: int = 10) -> dict[str, object]:
-    return {
-        "status": status,
-        "trackCount": track_count,
-        "detectionProcesses": [{"id": process_id, "detectionProcessMusicTracks": rows}],
-    }
+    return {"status": status, "trackCount": track_count, "detectionProcesses": [process(process_id, rows)]}
+
+
+def multi(*processes: dict[str, object]) -> dict[str, object]:
+    return {"status": 3, "trackCount": 0, "detectionProcesses": list(processes)}
 
 
 def read(document: object) -> SourceRead:
@@ -132,16 +136,82 @@ def test_ready_stream_with_no_rows_is_incomplete_not_found_empty() -> None:
     assert outcome.snapshot.tracks == ()
 
 
-def test_highest_detection_process_id_wins() -> None:
-    document = {
-        "status": 3,
-        "detectionProcesses": [
-            {"id": 7, "detectionProcessMusicTracks": [row(title="Old")]},
-            {"id": 12, "detectionProcessMusicTracks": [row(title="New 1"), row(title="New 2")]},
-            {"id": 9, "detectionProcessMusicTracks": [row(title="Mid")]},
-        ],
-    }
-    assert [t.title for t in only_snapshot(document).tracks] == ["New 1", "New 2"]
+def test_rows_from_all_processes_are_merged_and_ordered_by_start_time() -> None:
+    first = [row(f"00:{i * 6 + 3:02d}:00", title=f"A{i}") for i in range(17)]
+    second = [row("00:50:00", title="B0")]
+    third = [row(f"00:{i * 6 + 1:02d}:30", title=f"C{i}") for i in range(3)]
+    snapshot = only_snapshot(multi(process(1, first), process(2, second), process(3, third)))
+    assert len(snapshot.tracks) == 21
+    assert [t.position for t in snapshot.tracks] == list(range(1, 22))
+    offsets = [t.timestamp.offset.as_fraction() for t in snapshot.tracks if t.timestamp and t.timestamp.offset]
+    assert offsets == sorted(offsets)
+    assert [t.title for t in snapshot.tracks[:4]] == ["C0", "A0", "C1", "A1"]
+
+
+def test_ties_break_by_process_id_then_row_order() -> None:
+    snapshot = only_snapshot(
+        multi(process(5, [row("00:01:00", title="p5a"), row("00:01:00", title="p5b")]), process(2, [row("00:01:00", title="p2")]))
+    )
+    assert [t.title for t in snapshot.tracks] == ["p2", "p5a", "p5b"]
+
+
+def test_in_flight_latest_process_does_not_hide_earlier_rows() -> None:
+    outcome = interpret(multi(process(1, [row(f"00:{i:02d}:00") for i in range(10)]), process(2, [], end_date=None)))
+    assert outcome.status == OutcomeStatus.INCOMPLETE
+    assert outcome.snapshot is not None
+    assert len(outcome.snapshot.tracks) == 10
+    assert "Detection process 2 is still in flight" in outcome.snapshot.completeness.reason
+    assert any("process 2" in item for item in outcome.snapshot.completeness.evidence)
+
+
+def test_all_processes_empty_stays_incomplete_not_found_empty() -> None:
+    outcome = interpret(multi(process(1, []), process(2, [])))
+    assert outcome.status == OutcomeStatus.INCOMPLETE
+    assert outcome.snapshot is not None
+    assert outcome.snapshot.tracks == ()
+
+
+def test_exact_repeat_across_processes_is_dropped_but_a_repeated_track_at_another_time_is_kept() -> None:
+    same = row("00:02:00", musicTrackId=77)
+    again = row("00:30:00", musicTrackId=77)
+    snapshot = only_snapshot(multi(process(1, [same, again]), process(2, [dict(same), dict(again, endTime="00:31:00")])))
+    assert [t.timestamp.original for t in snapshot.tracks if t.timestamp] == ["00:02:00", "00:30:00", "00:30:00"]
+    assert any("exact repeat from detection process 2 dropped" in e for e in snapshot.tracks[0].evidence)
+    # Without a track id nothing is an exact repeat.
+    plain = only_snapshot(multi(process(1, [row("00:02:00")]), process(2, [row("00:02:00")])))
+    assert len(plain.tracks) == 2
+
+
+def test_each_track_records_the_process_it_came_from() -> None:
+    snapshot = only_snapshot(multi(process(4, [row("00:09:00")]), process(8, [row("00:01:00")])))
+    assert snapshot.tracks[0].evidence[0] == "detection_process=8"
+    assert snapshot.tracks[1].evidence[0] == "detection_process=4"
+
+
+def test_highest_process_id_and_end_date_are_recorded_as_evidence_and_revision_stays_none() -> None:
+    snapshot = only_snapshot(
+        multi(process(3, [row()], end_date="2026-02-02T00:00:00Z"), process(9, [row("00:09:00")], end_date="2026-03-03T00:00:00Z"))
+    )
+    assert snapshot.revision is None
+    assert any("id=9" in p and "2026-03-03T00:00:00Z" in p for p in snapshot.provenance)
+
+
+def test_row_cap_returns_incomplete_naming_the_cap() -> None:
+    # Compact rows: a full-size 4097-row document would exceed SourceRead.text itself.
+    rows = [{"startTime": f"{i // 3600:02d}:{i % 3600 // 60:02d}:{i % 60:02d}"} for i in range(4097)]
+    outcome = TrackIdInterpreter().interpret(CANDIDATE, read(detail(rows)), LoadBudget(max_tracks=4096))
+    assert outcome.status == OutcomeStatus.INCOMPLETE
+    assert outcome.snapshot is not None
+    assert len(outcome.snapshot.tracks) == 4096
+    assert "cap 4096" in outcome.snapshot.completeness.reason
+    default = TrackIdInterpreter().interpret(CANDIDATE, read(detail(rows[:2000])), LoadBudget())
+    assert default.snapshot is not None
+    assert len(default.snapshot.tracks) == LoadBudget().max_tracks
+
+
+def test_oversized_end_time_evidence_is_bounded() -> None:
+    snapshot = only_snapshot(detail([row(endTime="9" * 5000)]))
+    assert all(len(item) < 200 for item in snapshot.tracks[0].evidence)
 
 
 def test_malformed_documents_are_contract_errors_or_incomplete() -> None:
