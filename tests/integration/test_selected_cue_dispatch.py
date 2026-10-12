@@ -214,3 +214,100 @@ async def test_only_invalid_timing_is_reviewable_metadata_without_generated_arti
     assert selected.tracks[0].title == "Untimed" and selected.tracks[0].timestamp.offset is None
     with pytest.raises(ValueError, match="no qualified recording offsets"):
         await build_selected_cue_artifact(session, media.id)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {"lanes": {"meta": "invalid"}},
+        {"selected_cue_v1": True},
+        {"selected_cue_v1": True, "selected_cue_v1_received_at": None},
+        {"selected_cue_v1": True, "selected_cue_v1_received_at": "invalid"},
+        {"selected_cue_v1": True, "selected_cue_v1_received_at": "2026-01-01T00:00:00"},
+    ],
+)
+async def test_malformed_capability_never_enables_native_cue_form(client, session, seed_test_agent, status):
+    agent, _ = seed_test_agent
+    media, companion, raw = await inventory(session, CUE, "cue", agent_id=agent.id)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    session.add(RenameProposal(file_id=media.id, proposed_filename=media.original_filename, status=ProposalStatus.EXECUTED))
+    agent.last_status = status
+    await session.commit()
+    assert not await agent_supports_selected_cue(session, agent.id)
+    preview = await client.get(f"/cue/files/{media.id}/preview")
+    assert preview.status_code == 200 and "has not reported selected-source CUE support" in preview.text
+    assert "<form" not in preview.text and "Inspect stored source" in preview.text
+
+
+@pytest.mark.parametrize("fault", ["malformed", "missing_recording", "path", "unapplied", "stale_source", "dispatch"])
+async def test_selected_cue_http_refusals_preserve_recoverable_preview(client, session, seed_test_agent, tmp_path, fault):
+    client.headers["Origin"] = "http://test"
+    agent, _ = seed_test_agent
+    media, companion, raw = await inventory(session, CUE, "cue", agent_id=agent.id)
+    audio = tmp_path / "recording.mp3"
+    audio.write_bytes(b"synthetic media")
+    media.current_path = str(audio)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    if fault != "unapplied":
+        session.add(RenameProposal(file_id=media.id, proposed_filename=media.original_filename, status=ProposalStatus.EXECUTED))
+    agent.last_status = {"lanes": {"meta": {"selected_cue_v1": True, "selected_cue_v1_received_at": datetime.now(UTC).isoformat()}}}
+    await session.commit()
+    artifact = await build_selected_cue_artifact(session, media.id)
+    form = {"binding": artifact.binding.model_dump_json(), "audio_path": str(audio)}
+    target = media.id
+    expected = "Could not queue" if fault == "dispatch" else "selection or inventory changed"
+    if fault == "malformed":
+        form["binding"] = "invalid json"
+        expected = "Invalid JSON"
+    elif fault == "missing_recording":
+        target = uuid.uuid4()
+        expected = "no longer available"
+    elif fault == "path":
+        form["audio_path"] = str(tmp_path / "foreign.mp3")
+    elif fault == "unapplied":
+        expected = "Apply the recording"
+    elif fault == "stale_source":
+        companion.sha256_hash = "b" * 64
+        await session.commit()
+        expected = "Selected source is"
+    _, router = install_fake_queues(client)
+    if fault == "dispatch":
+        with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("synthetic broker refusal")):
+            response = await client.post(f"/cue/files/{target}/generate", data=form)
+    else:
+        response = await client.post(f"/cue/files/{target}/generate", data=form)
+    assert response.status_code == 200 and expected in response.text
+    assert f'id="selected-cue-card-{target}"' in response.text and "Inspect stored source" in response.text
+    assert not router.captures and not list(tmp_path.glob("*.cue"))
+    assert audio.read_bytes() == b"synthetic media"
+    if fault in {"unapplied", "stale_source", "missing_recording"}:
+        assert "<form" not in response.text
+    else:
+        assert f'action="/cue/files/{media.id}/generate"' in response.text
+
+
+async def test_missing_and_revoked_agent_refuse_selected_capability(session, seed_test_agent):
+    agent, _ = seed_test_agent
+    assert not await agent_supports_selected_cue(session, "missing-synthetic-agent")
+    agent.revoked_at = datetime.now(UTC)
+    agent.last_status = {"selected_cue_v1": True, "selected_cue_v1_received_at": datetime.now(UTC).isoformat()}
+    await session.flush()
+    assert not await agent_supports_selected_cue(session, agent.id)
+
+
+async def test_explicit_selected_authority_refuses_legacy_generate_with_recoverable_row(client, session):
+    from tests.review.routers.test_cue import _create_approved_tracklist_with_file
+
+    media, companion, raw = await inventory(session, CUE, "cue")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    session.add(RenameProposal(file_id=media.id, proposed_filename=media.original_filename, status=ProposalStatus.EXECUTED))
+    legacy, _ = await _create_approved_tracklist_with_file(session)
+    legacy.file_id = media.id
+    await session.commit()
+    _, router = install_fake_queues(client)
+    response = await client.post(f"/cue/{legacy.id}/generate")
+    assert response.status_code == 200 and "explicitly selected source" in response.text
+    assert f'id="cue-row-{legacy.id}"' in response.text and not router.captures
