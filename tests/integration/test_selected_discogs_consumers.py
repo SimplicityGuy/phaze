@@ -323,3 +323,61 @@ async def test_tag_audit_boundary_rejects_changed_accepted_identity_and_values(c
     with pytest.raises(ValueError, match="Accepted Discogs facts changed"):
         await enqueue_tag_write(session, router, media, proposed, source="reviewed", review_source_versions=versions)
     assert not router.captures and await session.scalar(select(func.count(TagWriteLog.id))) == 0
+
+
+@pytest.mark.parametrize("fault", ["missing", "foreign_observation", "foreign_position", "stale_token"])
+async def test_discogs_native_decision_refuses_foreign_identity_without_mutation(client, session, seed_test_agent, fault):
+    client.headers["Origin"] = "http://test"
+    media, _, selected = await selected_inventory(session)
+    observation_id = selected.observation_id
+    if fault == "foreign_observation":
+        foreign_media, foreign_companion, raw = await inventory(session, CUE, "cue", agent_id=seed_test_agent[0].id)
+        imported = await import_local_source(session, ImportLocalSource(media_id=foreign_media.id, raw_observation_id=raw))
+        foreign = await decide_local_source(
+            session, decision(foreign_media, foreign_companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer"
+        )
+        observation_id = foreign.observation_id
+    link = DiscogsLink(
+        source_observation_id=observation_id,
+        source_track_position=99 if fault == "foreign_position" else 1,
+        discogs_release_id="synthetic-refusal",
+        confidence=90,
+    )
+    session.add(link)
+    await session.commit()
+    original_id = link.id
+    token = uuid.uuid4() if fault == "stale_token" else selected.selection_token
+    queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/recording-discogs/{media.id}/links/{uuid.uuid4() if fault == 'missing' else original_id}",
+        data={"observation_id": str(selected.observation_id), "selected_token": str(token), "action": "accept"},
+    )
+    expected = "inventory changed" if fault == "stale_token" else "does not belong"
+    assert response.status_code == 200 and expected in response.text
+    assert f'id="recording-discogs-{media.id}"' in response.text and 'method="post"' in response.text
+    assert "Inspect source evidence" in response.text
+    assert (await session.get(DiscogsLink, original_id, populate_existing=True)).status == "candidate"
+    assert not queue.captured and not router.captures
+    if fault in {"foreign_observation", "foreign_position"}:
+        assert f"/links/{original_id}" not in response.text
+
+
+async def test_discogs_changed_projection_between_pin_reads_refuses_lock(committed_session, monkeypatch):
+    from dataclasses import replace
+
+    from phaze.services import selected_discogs
+
+    session = committed_session
+    media, _, selected = await selected_inventory(session)
+    pin = await selected_discogs.read_recording_discogs_pin(session, media.id, selected.observation_id, selected.selection_token)
+    actual_read = selected_discogs.read_recording_discogs_pin
+
+    async def changed_projection(*args):
+        current = await actual_read(*args)
+        return replace(current, source=current.source.model_copy(update={"tracks": current.source.tracks[:1]}))
+
+    # Inject only the changed projection; real inventory validation and SQL locks remain.
+    monkeypatch.setattr(selected_discogs, "read_recording_discogs_pin", changed_projection)
+    with pytest.raises(ValueError, match="projection changed"):
+        await selected_discogs.lock_recording_discogs_pin(session, pin)
+    assert await session.scalar(select(func.count(DiscogsLink.id))) == 0
