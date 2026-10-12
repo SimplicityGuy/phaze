@@ -229,3 +229,17 @@ def test_default_httpx_socket_disables_redirects_and_environment() -> None:
     client = socket._client
     assert client.follow_redirects is False and client._trust_env is False
     asyncio.run(socket.aclose())
+
+
+def test_a_page_origin_other_than_one_needs_a_page_parameter_and_defaults_to_one() -> None:
+    assert SEARCH.page_origin == 1
+    with pytest.raises(ValidationError):
+        RemoteSearchRoute(fields=frozenset({"artist"}), format="json", path="/api/search", term_parameters=(("artist", "q"),), page_origin=0)
+    zero = RemoteSearchRoute(
+        fields=frozenset({"artist"}), format="json", path="/api/search", term_parameters=(("artist", "q"),), page_parameter="p", page_origin=0
+    )
+    assert zero.page_origin == 0
+    with pytest.raises(ValidationError):
+        RemoteSearchRoute(
+            fields=frozenset({"artist"}), format="json", path="/api/search", term_parameters=(("artist", "q"),), page_parameter="p", page_origin=2
+        )  # type: ignore[arg-type]

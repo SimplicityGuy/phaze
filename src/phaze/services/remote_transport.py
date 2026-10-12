@@ -378,7 +378,7 @@ class RemoteTransport:
             grouped.setdefault(names[term.field], []).append(term.value)
         query = [*search.fixed_parameters, *((name, " ".join(parts)) for name, parts in grouped.items())]
         if search.page_parameter is not None:
-            query.append((search.page_parameter, str(request.page)))
+            query.append((search.page_parameter, str(request.page - 1 + search.page_origin)))
         return _Plan("search", search.path, tuple(query), search)
 
     async def _robots_for(self, run: RemoteTransportRun, profile: RemoteHostProfile, budget: DiscoveryBudget) -> _Robots | SourceRead:
