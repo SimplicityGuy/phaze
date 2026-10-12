@@ -19,8 +19,9 @@ ancestors of this leaf**. Assignment therefore did not deliver the task's intend
 No older worker implementation was edited and no upstream merge was performed in the container.
 The dispatcher must reconcile that baseline through the approved lifecycle before final verification.
 
-The operator chose the next **20 completed beads**, grouped by actual change type, as the
-observation cohort. A complete accepted-bead comparison is not available here. M0 documents
+On **2026-10-11**, the operator chose "Next 20 completed beads, grouped by change type" for
+the observation cohort, recorded in implementation molecule **phaze-75qpj** before the pilots
+(cutoff **2026-10-11T19:04:16Z**). A complete accepted-bead comparison is not available here. M0 documents
 unknown historical work-start boundaries; SB excludes unsupported immutable evidence generations;
 SC's reviewed disposition is not integrated into this parent. Those facts do not authorize an
 adoption or a speed claim. This report supplies a source-only exclusion without executing the denied
