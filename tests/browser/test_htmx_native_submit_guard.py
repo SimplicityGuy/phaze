@@ -383,6 +383,7 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
 # conditionally disabled can enable it when it should not be.
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_every_guarded_button_on_its_own_route_is_released_by_htmx(page: Any, seed: Any) -> None:
     """The three forms not raced above, each reached the way an operator reaches it.
 

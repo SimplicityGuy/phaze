@@ -512,6 +512,28 @@ async def page(open_page: Any) -> Any:
     return await open_page("desktop")
 
 
+@pytest_asyncio.fixture(loop_scope="session", params=[1024])
+async def modal_width(request: pytest.FixtureRequest, page: Any) -> int:
+    """Pin ``page`` below ``xl`` so a Files record opens in the MODAL host (phaze-7u4sy).
+
+    From ``xl`` up the Files stage opens records in the docked, non-modal inspector
+    (``record_dock.html``), so the tests that assert the modal's contract -- focus trap, inert
+    background, exact opener restore -- must run where the modal is the owner. Request it with
+    ``@pytest.mark.usefixtures("modal_width")``; the viewport is set before the test body navigates.
+    """
+    width = int(request.param)
+    await page.set_viewport_size({"width": width, "height": 1000})
+    return width
+
+
+@pytest_asyncio.fixture(loop_scope="session", params=[1024, 768])
+async def modal_widths(request: pytest.FixtureRequest, page: Any) -> int:
+    """:func:`modal_width` at both widths below ``xl`` the modal contract is held to (1024 and 768)."""
+    width = int(request.param)
+    await page.set_viewport_size({"width": width, "height": 1000})
+    return width
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def tablet_page(open_page: Any) -> Any:
     """A tablet-width page (between ``md`` and ``lg``) with touch enabled."""

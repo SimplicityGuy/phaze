@@ -68,8 +68,10 @@ async def _wait_for_record(page: Any) -> None:
     Alpine tick before either has happened. Visibility is the honest post-condition: it is the last
     of the three to land.
     """
-    await page.wait_for_selector("#record-body h2")
-    await page.wait_for_function("() => document.getElementById('record-body').checkVisibility()")
+    await page.wait_for_selector("#record-body h2, #record-dock-body h2")
+    await page.wait_for_function(
+        "() => [...document.querySelectorAll('#record-body, #record-dock-body')].some(host => host.checkVisibility() && host.querySelector('h2'))"
+    )
 
 
 async def _settled_focus_in_record(page: Any, *, timeout_ms: int = 5_000) -> str:
@@ -157,6 +159,7 @@ async def test_analyze_lanes_heading_has_top_padding(page: Any) -> None:
     assert gap >= 16
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> None:
     """The open contract of the record slide-in, which no server-side assertion reaches.
 
@@ -191,6 +194,7 @@ async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> No
     assert target.current_path in await page.locator("#record-body").inner_text(), "the record shows a different file than the row that opened it"
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed: Any) -> None:
     """The drawer's ordinary link reaches an addressable page with stable section anchors."""
     target = await seed.file(filename="<track-01>.mp3")
@@ -214,6 +218,7 @@ async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed:
         assert await page.locator(f'a[href="#{anchor}"]').count() == 1
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_record_drawer_and_full_page_show_the_same_complete_latest_tracklist(page: Any, seed: Any) -> None:
     """The shared record partial keeps stored track order identical in both views."""
     from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -269,6 +274,7 @@ async def test_record_drawer_and_full_page_show_the_same_complete_latest_trackli
     assert page_text == drawer_text
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any) -> None:
     """A modal dialog must take the keyboard with it when it opens.
 
@@ -300,6 +306,7 @@ async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_record_from_the_command_palette_also_moves_focus_into_it(page: Any, seed: Any) -> None:
     """The ⌘K Files row is the second opener of the SAME host, so it gets the same guarantee.
 
@@ -329,6 +336,7 @@ async def test_opening_a_record_from_the_command_palette_also_moves_focus_into_i
     assert where.startswith("IN "), f"a record opened from the command palette left focus outside it — landed on {where}"
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_dismissing_a_record_returns_focus_to_the_row_that_opened_it(page: Any, seed: Any) -> None:
     """Esc closes the slide-in and puts the keyboard back where it was.
 
@@ -355,6 +363,7 @@ async def test_dismissing_a_record_returns_focus_to_the_row_that_opened_it(page:
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_second_record_never_leaves_the_first_file_on_screen(page: Any, seed: Any) -> None:
     """phaze-7yet: the panel must not display the PREVIOUS file while the next one is in flight.
 
@@ -493,6 +502,7 @@ async def _focus_state(page: Any) -> dict[str, Any]:
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(page: Any, seed: Any) -> None:
     """The drawer's whole focus contract, observed from the very first moment (phaze-x1cv5).
 

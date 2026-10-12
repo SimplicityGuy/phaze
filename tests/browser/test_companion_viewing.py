@@ -145,7 +145,7 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
                 whiteSpace: getComputedStyle(el).whiteSpace})).slice(0, 12);
     }""")
     assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"), overflow
-    await page.set_viewport_size({"width": 1280, "height": 900})
+    await page.set_viewport_size({"width": 1024, "height": 900})  # below xl: the modal drawer, not the Files dock
     await open_shell(page, "/s/files")
     await page.locator(_details_button(media.id)).click()
     await _wait_for_record(page)

@@ -200,6 +200,7 @@ async def _seed_two_history_rows(seed: Seeder, file: Any) -> None:
     await seed.session.commit()
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_one_file_is_the_same_record_from_files_analyze_tracklists_and_search(page: Any, seed: Seeder) -> None:
     """The molecule's central claim, driven through all four openers against one seeded file.
 
@@ -283,6 +284,7 @@ async def test_one_file_is_the_same_record_from_files_analyze_tracklists_and_sea
         )
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_an_unmatched_file_states_its_stored_tracklist_status_without_leaking_the_matched_one(page: Any, seed: Seeder) -> None:
     """An unmatched file displays its empty state across the drawer and canonical page.
 
@@ -363,6 +365,7 @@ async def test_the_canonical_page_is_addressable_on_reload_and_without_htmx(page
     await page.unroute("**/htmx*.js")
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_the_timeline_reads_the_same_in_the_drawer_and_on_the_page_and_returns_focus(page: Any, seed: Seeder) -> None:
     """Timeline inspection is part of the record, so it has to agree across both presentations.
 
@@ -425,6 +428,7 @@ async def test_the_timeline_reads_the_same_in_the_drawer_and_on_the_page_and_ret
     )
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_every_opener_of_the_history_section_opens_its_closed_fold(page: Any, seed: Seeder) -> None:
     """phaze-uwliw: History renders inside ``<details id="history">``, closed by default
     (phaze-x1qr3.8's fold design -- reference the operator consults, not reads). Before this fix
@@ -483,6 +487,7 @@ async def test_every_opener_of_the_history_section_opens_its_closed_fold(page: A
     await _assert_history_open_and_populated("#record-body")
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_the_fingerprint_sees_inside_the_closed_history_fold(page: Any, seed: Seeder) -> None:
     """Guards the ``_record_fingerprint`` fix directly: History (and Metadata & identity) render
     inside closed ``<details>``, and ``inner_text()`` -- the primitive the fingerprint reads --

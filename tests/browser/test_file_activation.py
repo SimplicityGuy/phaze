@@ -39,6 +39,7 @@ async def _record_request_counter(page: Any, file_id: Any) -> None:
     )
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_files_row_keyboard_and_details_button_share_one_opener_contract(page: Any, seed: Any) -> None:
     """A post-filter row opens by Enter; its nested Details button issues one request, not two."""
     target = await seed.file(filename="<track-01>.mp3")
@@ -293,6 +294,7 @@ async def test_tracklist_rows_distinguish_matched_files_from_candidates_after_pa
     await _close_and_expect_opener(page, matched)
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_gone_stale(page: Any, seed: Any) -> None:
     """phaze-39eiy: focus must not strand on <body> when the opener is gone by the time Escape runs.
 
@@ -343,6 +345,7 @@ async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_go
     assert landed_in_workspace, "focus did not fall back into the stage workspace when the opener was gone"
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_escape_returns_focus_to_the_equivalent_row_when_a_swap_replaced_the_opener(page: Any, seed: Any) -> None:
     """phaze-ozqbk: a REPLACED opener (re-rendered for the same file) gets focus back, not the stage heading.
 
