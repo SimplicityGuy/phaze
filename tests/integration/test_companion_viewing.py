@@ -275,6 +275,32 @@ async def test_refresh_uses_real_receipt_ordinal_and_db_clock_replayed_observati
     assert 'role="alert"' in revoked.text and "offline" not in revoked.text
 
 
+async def test_a_receipt_newer_by_ordinal_is_found_when_the_db_clock_stepped_back(client, session):
+    """phaze-esjwp: received order is the attempt ordinal, not ``received_at`` against ``since``.
+
+    ``clock_timestamp()`` can step backwards between the refresh baseline and the receipt (measured:
+    105.5 ms on the test database under load). The step is replayed exactly here by moving the
+    baseline's ``since`` past the receipt's own ``received_at``; no sleep and no wall clock decide it.
+    """
+    media, companion, _raw = await inventory(session)
+    await store_capture_report(session, companion.agent_id, report(companion, status="unavailable"))
+    queue = SimpleNamespace(connect=AsyncMock(), enqueue=AsyncMock())
+    client._transport.app.state.task_router = SimpleNamespace(queue_for=lambda *_: queue)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    with patch("phaze.routers.record.async_session", factory):
+        refreshed = await client.post(f"/files/{media.id}/companions/{companion.id}/refresh", headers=HX)
+    url = BeautifulSoup(refreshed.text, "html.parser").select_one("[data-capture-status]")["hx-get"]
+    params = parse_qs(urlsplit(url).query)
+    found = report(companion)
+    await store_capture_report(session, companion.agent_id, found)
+    receipt = await session.get(ProviderAcquisitionAttempt, found.attempt_id)
+    assert receipt.ordinal == int(params["after_ordinal"][0]) + 1
+    params["since"] = [(receipt.received_at + timedelta(milliseconds=105)).isoformat()]
+    stepped_back = await client.get(urlsplit(url).path, params=params, headers=HX)
+    assert "A new read report arrived" in stepped_back.text and "found" in stepped_back.text
+    assert "Waiting for the storage agent" not in stepped_back.text
+
+
 async def test_refresh_enqueue_failure_keeps_retained_text(client, session):
     media, companion, raw = await inventory(session)
     factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
