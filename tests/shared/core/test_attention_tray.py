@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from bs4 import BeautifulSoup
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.enums.stage import Stage
 from phaze.routers.shell.summary import SummaryOverviewInputs, _build_attention_items
@@ -20,6 +22,7 @@ from phaze.services.pipeline.common import _safe_count, capture_read_degradation
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.fixture(autouse=True)
@@ -230,6 +233,12 @@ async def test_analyze_and_tray_render_the_same_incidents_and_unknown_state(clie
     assert "Incident status unavailable" in stale
     assert 'data-incident-id="analysis-failed"' not in stale
     assert "No actionable analysis exceptions" not in stale
+    header = BeautifulSoup((await client.get("/s/files")).text, "html.parser").select_one("#attention-pill")
+    assert header is not None and "unavailable" in str(header["aria-label"])
+    assert "Healthy" not in header.get_text()
+    stale_tray = (await client.get("/shell/attention", headers={"HX-Request": "true"})).text
+    assert "Attention status unavailable" in stale_tray
+    assert 'data-incident-id="analysis-failed"' not in stale_tray
 
 
 @pytest.mark.parametrize("known", [False, True])
@@ -287,3 +296,93 @@ async def test_cancel_during_read_propagates(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(main, "async_session", MagicMock(return_value=AsyncMock()))
     with pytest.raises(asyncio.CancelledError):
         await main._attention_refresh_loop(MagicMock())
+
+
+@pytest.mark.parametrize("measurement", ["empty", "normal_waiting", "count_failure", "bucket_failure", "lane_failure", "admission_failure"])
+async def test_source_measurement_faults_agree_across_real_summary_refresh_and_shell_surfaces(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, measurement: str
+) -> None:
+    """Real degrade primitives and refresh publication drive every rendered attention consumer."""
+    import phaze.main as main
+    from phaze.routers.shell import summary
+    from phaze.services.backends.lane_snapshot import _admission_by_backend_id
+    from tests.shared.routers.pipeline._shared import _reset_saq_jobs_minimal
+
+    await _reset_saq_jobs_minimal(session)
+    fault = MagicMock()
+    fault.begin_nested.return_value = AsyncMock()
+    fault.execute = AsyncMock(side_effect=RuntimeError("synthetic measurement unavailable"))
+    fault.rollback = AsyncMock()
+    lane = {"id": "cloud-a", "kind": "kueue", "available": True, "in_flight": 4, "cap": 4}
+
+    async def lanes(_session: AsyncSession, _state: object) -> list[dict]:
+        if measurement == "lane_failure":
+            raise RuntimeError("synthetic lane measurement unavailable")
+        if measurement == "admission_failure":
+            assert await _admission_by_backend_id(fault) == {}  # Scheduler fallback remains unchanged.
+        return [lane]
+
+    async def count(_session: AsyncSession) -> int:
+        return await _safe_count(fault, MagicMock(), node="inadmissible")
+
+    read_progress = summary.get_stage_progress
+
+    async def progress(own_session: AsyncSession) -> dict:
+        result = await read_progress(own_session)
+        # Preserve the real source's zero fallback; the collector must retain its unavailability.
+        bucket = await _safe_bucket_counts(fault, Stage.ANALYZE)
+        result["analyze"] = bucket | {"total": sum(bucket.values())}
+        return result
+
+    monkeypatch.setattr(summary, "get_backend_lane_snapshot", lanes)
+    monkeypatch.setattr(summary, "_get_summary_aggregates", AsyncMock(return_value={"enriched": 0, "active_fileservers": 1}))
+    monkeypatch.setattr(summary, "get_cached_stage_orphan_counts", lambda: {"metadata": 0, "analyze": 0})
+    monkeypatch.setattr(summary, "stage_orphan_counts_known", lambda: True)
+    if measurement == "count_failure":
+        monkeypatch.setattr(summary, "get_inadmissible_count", count)
+    if measurement == "bucket_failure":
+        monkeypatch.setattr(summary, "get_stage_progress", progress)
+    if measurement == "normal_waiting":
+        monkeypatch.setattr(summary, "get_awaiting_cloud_count", AsyncMock(return_value=5))
+        monkeypatch.setattr(summary, "derive_cloud_hold_reason", AsyncMock(return_value="held — all lanes at capacity (4/4 slots busy)"))
+        monkeypatch.setattr(summary, "get_cloud_phase_counts", AsyncMock(return_value={"queued_behind_quota": 5}))
+
+    known = measurement in {"empty", "normal_waiting"}
+    if not known:
+        # A failed refresh retains the prior measured exception internally, but every UI
+        # consumer must hide it as unmeasured rather than display an unlabelled stale value.
+        previous = derive_attention_items(
+            {},
+            {},
+            (0, 3, 0),
+            replace(
+                _inputs(), active_fileservers=1, stage_paused={"metadata": False, "analyze": False}, inadmissible_count=0, awaiting_cloud_count=0
+            ),
+        )
+        snapshot.set_attention_snapshot(previous, known=True)
+
+    # Run the actual refresh loop for one iteration, including its real Summary collector.
+    factory = async_sessionmaker(session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    with monkeypatch.context() as refresh:
+        refresh.setattr(main, "async_session", factory)
+        refresh.setattr(main, "asyncio", SimpleNamespace(CancelledError=asyncio.CancelledError, sleep=AsyncMock(side_effect=asyncio.CancelledError)))
+        with pytest.raises(asyncio.CancelledError):
+            await main._attention_refresh_loop(client._transport.app)
+
+    assert snapshot.get_attention_counts() == {"attentionCount": int(not known), "attentionKnown": int(known)}
+    if not known:
+        assert snapshot.get_attention_snapshot() == (previous, False)
+    summary_page = BeautifulSoup((await client.get("/s/summary")).text, "html.parser")
+    pill = summary_page.select_one("#attention-pill")
+    assert pill is not None
+    assert ("Healthy" in pill.get_text()) is known
+    assert ("unavailable" in str(pill["aria-label"])) is (not known)
+    assert ("Attention status unavailable" in summary_page.get_text()) is (not known)
+    assert ("Inspect unavailable status" in summary_page.get_text()) is (not known)
+    tray = (await client.get("/shell/attention", headers={"HX-Request": "true"})).text
+    card = BeautifulSoup((await client.get("/pipeline/stats")).text, "html.parser").select_one("#analysis-health-card")
+    assert card is not None
+    assert ("Attention status unavailable" in tray) is (not known)
+    assert ("Incident status unavailable" in card.get_text()) is (not known)
+    assert ("No actionable analysis exceptions" in card.get_text()) is known
+    assert not card.select("[data-incident-id]")
