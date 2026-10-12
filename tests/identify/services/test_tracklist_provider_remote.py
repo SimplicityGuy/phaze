@@ -42,10 +42,20 @@ from phaze.tracklist_providers.registry import context_key
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 PROVIDER = "example_catalog"
+SEARCH_TERMS = (("artist", "q"), ("event", "q"), ("date", "q"))
 PROFILE = RemoteHostProfile(
     provider_id=PROVIDER,
-    search=RemoteSearchRoute(fields=frozenset({"artist", "event", "date"}), format="example_search_json", max_page=3),
-    fetch=RemoteFetchRoute(native_id_pattern=r"set-[0-9]{2}", format="example_set_json"),
+    search=RemoteSearchRoute(
+        fields=frozenset({"artist", "event", "date"}),
+        format="example_search_json",
+        max_page=3,
+        path="/search",
+        term_parameters=SEARCH_TERMS,
+        page_parameter="page",
+    ),
+    fetch=RemoteFetchRoute(native_id_pattern=r"set-[0-9]{2}", format="example_set_json", path_template="/sets/{native_id}"),
+    host="catalog.example.invalid",
+    user_agent="phaze-test/1 (+https://example.invalid)",
 )
 CONTEXT = RecordingContext(
     recording_id="recording-01",
@@ -205,7 +215,11 @@ async def test_nothing_is_minted_without_a_usable_term_or_a_search_route() -> No
     await ProviderRegistry((RemoteCatalog(discover_reads=capture),), remote_profiles=(fetch_only,)).discover(
         PROVIDER, CONTEXT, DiscoveryBudget(), effects
     )
-    narrow = PROFILE.model_copy(update={"search": RemoteSearchRoute(fields=frozenset({"event"}), format="example_search_json")})
+    narrow = PROFILE.model_copy(
+        update={
+            "search": RemoteSearchRoute(fields=frozenset({"event"}), format="example_search_json", path="/search", term_parameters=(("event", "q"),))
+        }
+    )
     await ProviderRegistry((RemoteCatalog(discover_reads=capture),), remote_profiles=(narrow,)).discover(
         PROVIDER, CONTEXT, DiscoveryBudget(), effects
     )
@@ -436,7 +450,7 @@ def test_registry_construction_contract_errors() -> None:
     with pytest.raises(ValidationError):
         RemoteHostProfile(provider_id=PROVIDER)
     with pytest.raises(ValidationError, match="Invalid native ID pattern"):
-        RemoteFetchRoute(native_id_pattern="(", format="json")
+        RemoteFetchRoute(native_id_pattern="(", format="json", path_template="/sets/{native_id}")
     assert [d.id for d in registry().descriptors()] == ["example_catalog", "local"]
 
 

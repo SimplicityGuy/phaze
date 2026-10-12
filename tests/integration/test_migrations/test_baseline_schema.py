@@ -81,6 +81,9 @@ _EXPECTED_TABLES = frozenset(
         "provider_recording_selections",
         "provider_selection_events",
         "provider_acquisition_attempts",
+        # phaze-gan2z (migration 089): durable remote transport pacing, budget and stop.
+        "remote_transport_ledgers",
+        "remote_transport_attempts",
         "companion_import_runs",
         "companion_import_items",
         "agents",
@@ -366,6 +369,7 @@ def test_baseline_is_the_only_migration() -> None:
         "086_local_source_decisions.py",
         "087_companion_import_progress.py",
         "088_discogs_provider_track_binding.py",
+        "089_remote_transport_ledger.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -394,10 +398,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` lands at the current head (088: immutable provider Discogs binding)."""
+    """A bare ``upgrade head`` lands at the current head (089: remote transport ledger)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "088"
+    assert version == "089"
 
 
 @pytest.mark.asyncio
@@ -723,7 +727,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "088"
+        assert version == "089"
     finally:
         if engine is not None:
             await engine.dispose()

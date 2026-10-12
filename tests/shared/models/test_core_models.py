@@ -14,6 +14,8 @@ def test_all_tables_defined() -> None:
         "provider_recording_selections",
         "provider_selection_events",
         "provider_acquisition_attempts",
+        "remote_transport_ledgers",
+        "remote_transport_attempts",
         "companion_import_runs",
         "companion_import_items",
         "agents",

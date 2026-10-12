@@ -27,6 +27,7 @@ from phaze.models.provider_source import (
     ProviderSourceObject,
     ProviderSourceObservation,
 )
+from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
 from phaze.models.route_control import RouteControl
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.models.scan_batch import ScanBatch, ScanStatus
@@ -68,6 +69,8 @@ __all__ = [
     "ProviderSelectionEvent",
     "ProviderSourceObject",
     "ProviderSourceObservation",
+    "RemoteTransportAttempt",
+    "RemoteTransportLedger",
     "RenameProposal",
     "RouteControl",
     "RuntimeConfigOverride",
