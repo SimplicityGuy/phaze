@@ -1,6 +1,6 @@
 {% import "ui/primitives.html" as ui %}
 {% if bucket == 'done' %}
-{{ ui.status_badge('Tracklist', 'stored', 'success', '✓') }}
+{{ ui.status_badge('Tracklist', 'stored', 'success', '✓', variant=pill_variant|default('word')) }}
 {% else %}
-{{ ui.status_badge('Tracklist', 'no stored tracklist', 'neutral', '—') }}
+{{ ui.status_badge('Tracklist', 'no stored tracklist', 'neutral', '—', variant=pill_variant|default('word')) }}
 {% endif %}

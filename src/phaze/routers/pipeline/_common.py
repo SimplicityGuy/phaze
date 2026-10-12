@@ -97,6 +97,7 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: s
     pill = templates.get_template("pipeline/partials/_stage_pill.html").render(
         stage_label=_ENRICH_STAGE_LABELS.get(stage, stage),
         bucket=bucket,
+        pill_variant="glyph" if id_prefix == "files-stage-pill" else "word",
     )
     return f'<span id="{id_prefix}-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 

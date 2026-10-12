@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 from sqlalchemy import select
 
@@ -275,6 +276,16 @@ async def test_successful_skip_returns_oob_pill_showing_skipped(client: AsyncCli
     assert 'hx-swap-oob="true"' in body, "the pill fragment must be an out-of-band swap (the ack's own target is the error box)"
     assert 'aria-label="Analyze: skipped (force-completed)"' in body, "the pushed pill must carry the honest SKIPPED bucket"
     assert "⊘" in body
+    record_pill = BeautifulSoup(body, "html.parser").select_one(f"#stage-pill-analyze-{file_id} [aria-label]")
+    assert record_pill is not None
+    assert "skipped" in record_pill.get_text() and not record_pill.has_attr("data-status-variant")
+    # Existing Files refresh reads the committed state; skip adds no new writer targets.
+    refreshed = BeautifulSoup((await client.get("/pipeline/files", headers={"HX-Request": "true"})).text, "html.parser")
+    table_pill = refreshed.select_one(f"#files-stage-pill-analyze-{file_id} [aria-label]")
+    assert table_pill is not None
+    assert table_pill.get_text(strip=True) == "⊘"
+    assert table_pill["aria-label"] == "Analyze: skipped (force-completed)"
+    assert table_pill["data-status-variant"] == "glyph"
     assert "Skipped analyze — reason recorded." in body, "the existing toast ack must survive alongside the pill"
 
 
