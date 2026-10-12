@@ -338,7 +338,7 @@ def _bulk_approve_statement(
             RenameProposal.updated_at == review_token_pairs.c.updated_at,
         )
         .values(status=ProposalStatus.APPROVED.value)
-        .returning(RenameProposal.id)
+        .returning(RenameProposal.id, RenameProposal.updated_at)
     )
 
 
@@ -376,23 +376,24 @@ async def preview_bulk_approval(
     return [token_by_id[proposal.id] for proposal in reviewed]
 
 
-async def bulk_approve_selected_above_confidence(
+async def bulk_approve_selected_with_tokens(
     session: AsyncSession,
     review_tokens: Iterable[ProposalReviewToken],
     *,
     threshold: float = 0.9,
-) -> int:
+) -> list[ProposalReviewToken]:
     """Approve selected rows only when they are still pending and still meet ``threshold``.
 
     Changes Review keeps selection in browser/history state, so every submitted id is stale by
     definition. The status and confidence predicates therefore live in the UPDATE itself. A replay,
     concurrent action, confidence rewrite, malformed selection, or forged low-confidence id simply
-    does not match and is reported through the returned transition count.
+    does not match. Return only actual transitioned rows with their stored post-approve timestamps,
+    so undo carries the approved version rather than the pre-approval review timestamp.
 
     Shape (phaze-1i0h6.4): classify in Python, transition in ONE set-based statement. Eligibility
     stays here because it needs values SQL cannot see -- the rendered content digest and the
     cross-corpus collision set -- while the guarded transition is a single
-    ``UPDATE ... FROM (VALUES ...) RETURNING id``. The database remains the final arbiter of every
+    ``UPDATE ... FROM (VALUES ...) RETURNING id, updated_at``. The database remains the final arbiter of every
     race: see :func:`_bulk_approve_statement` for why its predicates duplicate the Python ones on
     purpose. This function owns the transaction and commits exactly ONCE on every path that touched
     the session -- after the single UPDATE, or after the reads when nothing turned out to be
@@ -411,11 +412,11 @@ async def bulk_approve_selected_above_confidence(
     """
     tokens = list(review_tokens)
     if not tokens:
-        return 0
+        return []
     reviewed, token_by_id = await _reviewed_bulk_candidates(session, tokens, threshold=threshold)
     if not reviewed:
         await session.commit()
-        return 0
+        return []
     result = await session.execute(_bulk_approve_statement(reviewed, token_by_id, threshold=threshold))
     # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
     # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
@@ -428,6 +429,57 @@ async def bulk_approve_selected_above_confidence(
     # The marker below must stay on the line IMMEDIATELY above the statement: semgrep reads
     # nosemgrep from the preceding line only, so folding it into the paragraph above silently
     # stops suppressing.
+    # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
+    applied = [ProposalReviewToken(proposal_id, updated_at, token_by_id[proposal_id].content_digest) for proposal_id, updated_at in result.all()]
+    await session.commit()
+    return applied
+
+
+async def bulk_approve_selected_above_confidence(
+    session: AsyncSession, review_tokens: Iterable[ProposalReviewToken], *, threshold: float = 0.9
+) -> int:
+    """Compatibility count over the actual guarded transition set."""
+    return len(await bulk_approve_selected_with_tokens(session, review_tokens, threshold=threshold))
+
+
+async def bulk_undo_approved(session: AsyncSession, review_tokens: Iterable[ProposalReviewToken]) -> int:
+    """Revert only unchanged APPROVED versions in one atomic UPDATE ... RETURNING and one commit.
+
+    Pending siblings and ambiguous same-file undo selections are excluded to preserve the unique
+    pending-proposal invariant. A concurrent new sibling can still hit that database constraint;
+    the transaction then fails atomically, never leaving a partially reverted batch.
+    """
+    token_by_id = _dedupe_review_tokens(list(review_tokens))
+    if not token_by_id:
+        return 0
+    pairs = values(column("id", PGUUID(as_uuid=True)), column("updated_at", DateTime(timezone=True)), name="undo_token").data(
+        [(token.proposal_id, token.updated_at) for token in token_by_id.values()]
+    )
+    unique_files = (
+        select(RenameProposal.file_id)
+        .join(pairs, RenameProposal.id == pairs.c.id)
+        .where(RenameProposal.status == ProposalStatus.APPROVED.value, RenameProposal.updated_at == pairs.c.updated_at)
+        .group_by(RenameProposal.file_id)
+        .having(func.count() == 1)
+        .correlate(None)
+    )
+    sibling = RenameProposal.__table__.alias("pending_sibling")
+    no_pending_sibling = (
+        ~select(sibling.c.id).where(sibling.c.file_id == RenameProposal.file_id, sibling.c.status == ProposalStatus.PENDING.value).exists()
+    )
+    statement = (
+        update(RenameProposal)
+        .where(
+            RenameProposal.id == pairs.c.id,
+            RenameProposal.status == ProposalStatus.APPROVED.value,
+            RenameProposal.updated_at == pairs.c.updated_at,
+            RenameProposal.file_id.in_(unique_files),
+            no_pending_sibling,
+        )
+        .values(status=ProposalStatus.PENDING.value)
+        .returning(RenameProposal.id)
+    )
+    result = await session.execute(statement)
     # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
     applied = len(result.scalars().all())
     await session.commit()

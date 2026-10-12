@@ -63,6 +63,7 @@
     "PATCH /api/internal/agent/tag-writes/{log_id}",
     "PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot",
     "PATCH /proposals/bulk",
+    "PATCH /proposals/bulk/undo",
     "PATCH /proposals/{proposal_id}/approve",
     "PATCH /proposals/{proposal_id}/edit",
     "PATCH /proposals/{proposal_id}/reject",

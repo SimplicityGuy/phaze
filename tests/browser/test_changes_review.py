@@ -61,6 +61,16 @@ async def test_bulk_preview_requires_confirmation_of_only_reviewed_eligible_rows
         assert len(patches) == 1
         assert await page.locator(f"#rename-row-{eligible.id}").count() == 0
         assert await page.locator(f"#rename-row-{low.id}").count() == 1
+        undo = page.get_by_role("button", name="Undo this approval batch", exact=True)
+        await undo.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / f"bulk-undo-{theme}.png"), full_page=True)
+        page.once("dialog", lambda dialog: dialog.accept())
+        await undo.click()
+        await page.get_by_text("1 reverted, 0 skipped. Edited, executed, or conflicting versions cannot be reverted.", exact=True).wait_for()
+        assert len(patches) == 2
+        assert await page.locator(f"#rename-row-{eligible.id}").count() == 1
+        assert await page.locator(f"#rename-row-{low.id}").count() == 1
+        assert await page.locator('input[name="threshold"]').input_value() == "99"
 
 
 async def test_approving_one_proposal_swaps_only_that_row(page: Any, seed: Any) -> None:

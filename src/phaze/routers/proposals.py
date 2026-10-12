@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import StringConstraints
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
@@ -31,7 +32,8 @@ from phaze.services.proposal_queries import (
     ProposalReviewToken,
     ProposalStaleWriteError,
     ProposalTransitionError,
-    bulk_approve_selected_above_confidence,
+    bulk_approve_selected_with_tokens,
+    bulk_undo_approved,
     bulk_update_status,
     get_proposal_with_file,
     preview_bulk_approval,
@@ -287,6 +289,29 @@ async def list_proposals() -> RedirectResponse:
     branch for; the dead list/pagination templates were deleted outright.
     """
     return RedirectResponse(url="/s/propose", status_code=302)
+
+
+@router.patch("/bulk/undo", response_class=HTMLResponse)
+async def bulk_undo(
+    request: Request,
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Undo only unchanged approved versions; executed or edited rows remain untouched."""
+    reviewed, selected = _parse_bulk_selection(review_tokens, [])
+    try:
+        reverted = await bulk_undo_approved(session, reviewed)
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Undo conflicts with a new pending proposal. No proposals were reverted; reload and review."
+        ) from exc
+    context = await build_changes_review_context(request, session, threshold=threshold)
+    context["changes_toast"] = (
+        f"{reverted} reverted, {len(selected) - reverted} skipped. Edited, executed, or conflicting versions cannot be reverted."
+    )
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=context)
 
 
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
@@ -566,11 +591,12 @@ def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> 
 
 async def _transition_selected_proposals(
     session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID], *, threshold: int = 90
-) -> tuple[int, str]:
+) -> tuple[int, str, list[ProposalReviewToken]]:
     """Apply the operator's chosen bulk action to the parsed selection.
 
-    Returns ``(applied, toast_action)`` -- the number of rows that ACTUALLY transitioned (never
-    the selection size, phaze-uu17) and the verb ``_bulk_toast`` phrases it with.
+    Returns ``(applied, toast_action, undo_tokens)`` -- the number of rows that ACTUALLY transitioned (never
+    the selection size, phaze-uu17), the verb ``_bulk_toast`` phrases it with, and the
+    post-approval versions returned by the guarded write.
 
     phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED rows
     selected via the "All" tab are skipped, and the returned count reflects only real transitions.
@@ -584,8 +610,9 @@ async def _transition_selected_proposals(
     rather than a repeat of the first answer.
     """
     if action == "approve_eligible":
-        return await bulk_approve_selected_above_confidence(session, reviewed, threshold=threshold / 100), "approve"
-    return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action
+        approved = await bulk_approve_selected_with_tokens(session, reviewed, threshold=threshold / 100)
+        return len(approved), "approve", approved
+    return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action, []
 
 
 @router.patch("/bulk", response_class=HTMLResponse)
@@ -625,7 +652,7 @@ async def bulk_action(
     if action not in ("approve_eligible", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve_eligible' or 'reject'")
     reviewed, uuids = _parse_bulk_selection(review_tokens, proposal_ids)
-    count, toast_action = await _transition_selected_proposals(session, action, reviewed, uuids, threshold=threshold)
+    count, toast_action, undo_tokens = await _transition_selected_proposals(session, action, reviewed, uuids, threshold=threshold)
 
     changes_context = await build_changes_review_context(request, session, threshold=threshold)
     changes_context |= {
@@ -636,6 +663,7 @@ async def bulk_action(
         # (already actioned)", never "50 approved". Reporting the selection size would be a
         # confident lie about an irreplaceable archive, which is the failure that bead names.
         "changes_toast": _bulk_toast(toast_action, requested=len(uuids), applied=count),
+        "bulk_undo_tokens": [f"{token.proposal_id}|{token.updated_at.isoformat()}|{token.content_digest}" for token in undo_tokens],
     }
     return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=changes_context)
 

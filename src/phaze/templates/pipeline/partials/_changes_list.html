@@ -157,6 +157,14 @@
     <p class="mb-4 text-xs text-muted" data-review-hotkeys>Keyboard: J/K move · A approve · E edit · S skip · Z undo. Shortcuts pause while editing or a dialog is open.</p>
     {% if changes_toast is defined and changes_toast %}
     <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
+    {% if bulk_undo_tokens | default([]) %}
+    <form hx-patch="/proposals/bulk/undo" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML"
+          hx-confirm="Return only unchanged approvals from this batch to pending? Executed or edited proposals will be skipped.">
+        <input type="hidden" name="threshold" value="{{ changes_threshold | default(90) }}">
+        {% for token in bulk_undo_tokens %}<input type="hidden" name="review_tokens" value="{{ token }}">{% endfor %}
+        <button type="submit" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'sm', 'mb-4') }}">Undo this approval batch</button>
+    </form>
+    {% endif %}
     {% endif %}
     <nav class="{{ ui.tab_nav_class }} mb-4" aria-label="Changes Review filters">
         {% set tabs = [

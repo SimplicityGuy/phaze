@@ -63,6 +63,38 @@ async def test_preview_shape_and_confirmation_bind_original_eligible_selection(
         assert response.json()["review_tokens"] == [token]
 
 
+async def test_bulk_undo_response_counts_actual_versions_and_replay(
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    from datetime import timedelta
+
+    from bs4 import BeautifulSoup
+    from sqlalchemy import update
+
+    from phaze.models.proposal import RenameProposal
+
+    rows = [await seed_pending_proposal(0.99, original_filename=f"undo-{i}.mp3") for i in range(3)]
+    body = (await client.get("/s/rename")).text
+    tokens = [html.unescape(token) for token in re.findall(r'<input(?=[^>]*name="review_tokens")(?=[^>]*value="([^"]+)")[^>]*>', body)]
+    response = await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": tokens})
+    form = BeautifulSoup(response.text, "html.parser").select_one('form[hx-patch="/proposals/bulk/undo"]')
+    assert form is not None
+    undo_tokens = [field["value"] for field in form.select('input[name="review_tokens"]')]
+    assert len(undo_tokens) == 3
+    await session.execute(
+        update(RenameProposal)
+        .where(RenameProposal.id == rows[1].id)
+        .values(proposed_filename="Edited.mp3", updated_at=rows[1].updated_at + timedelta(seconds=5))
+    )
+    await session.execute(update(RenameProposal).where(RenameProposal.id == rows[2].id).values(status=ProposalStatus.EXECUTED.value))
+    await session.commit()
+    response = await client.patch("/proposals/bulk/undo", data={"review_tokens": [*undo_tokens, undo_tokens[0]]})
+    assert response.status_code == 200
+    assert "1 reverted, 2 skipped" in response.text
+    assert "0 reverted, 3 skipped" in (await client.patch("/proposals/bulk/undo", data={"review_tokens": undo_tokens})).text
+    assert (await client.patch("/proposals/bulk/undo", data={"review_tokens": [undo_tokens[0]] * 501})).status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_changes_review_is_the_only_navigation_approval_surface(
     client: AsyncClient,

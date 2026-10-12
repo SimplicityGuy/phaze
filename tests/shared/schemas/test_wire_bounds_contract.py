@@ -415,7 +415,7 @@ def test_body_field_is_bounded_to_its_column(
 
 
 # TIER 2
-@pytest.mark.parametrize("path", ["/proposals/bulk", "/proposals/bulk/preview"])
+@pytest.mark.parametrize("path", ["/proposals/bulk", "/proposals/bulk/preview", "/proposals/bulk/undo"])
 def test_bulk_review_selection_has_500_token_wire_bound(path: str) -> None:
     route = next(route for route in iter_effective_routes(create_app()) if route.path == path)
     field = next(param for param in route.dependant.body_params if param.name == "review_tokens")
