@@ -79,6 +79,21 @@ The guarded effects view that the registry hands the provider exposes the minted
 invocation, read-only. The injected core effect keeps its `read(source, budget)` signature. A provider
 reads the next search page by copying a minted reference with a different `page`.
 
+#### Amendment (2026-10-12): a fact longer than a term is skipped
+
+Rule: a fact that is otherwise usable but whose value is longer than the 256-character term bound in
+section 1 is **skipped**, so it is not used as a search term. It is never truncated, and it is never a
+contract error. If every usable fact is skipped, nothing is minted, as above. The guarded effects view (`skipped_terms`)
+names each skipped fact by its **field name only** (for example `artist`), never by its value, so a
+provider can say in its discovery evidence that a term was not used and keep its completeness claim
+honest.
+
+Reason: a truncated value would be a query that core never saw as a fact. A contract error would let one
+pathological artist string make discovery unavailable for that recording.
+
+This is an implementer's decision, made by the dispatcher of epic phaze-oprdu on 2026-10-12 without
+putting it to the operator, for bead phaze-0wn41, where this record left the case open.
+
 ### 4. How the registry checks them
 
 In `_BoundedEffects.read`, a reference with `channel == "remote"` is authorized if and only if, with
