@@ -28,6 +28,20 @@
     {% set link = card.link %}{% set source = card.source %}{% set content = source.latest_stored_content if source else none %}
     <article class="min-w-0 rounded border p-3 space-y-2" {% if link %}data-companion-link{% endif %} {% if source %}data-source-object="{{ source.source_object_id }}"{% endif %}>
         <p class="font-medium break-all">{{ link.filename if link else (source.filename or source.channel or 'Retained source') }}</p>
+        {% set newer = namespace(labels=[]) %}
+        {% if content and content.status == 'found' and content.availability == 'current' %}
+        {% for kind, label in [('tracklist', 'tracklist'), ('release_metadata', 'release info')] %}
+        {% set selection = companion_selected.get(kind) if companion_selected is defined else none %}
+        {% if selection and selection.authority.source_object_id == source.source_object_id and selection.detail and selection.detail.summary.parent_id
+              and selection.detail.summary.parent_id != (content.parent_id or content.observation_id) %}
+        {% set newer.labels = newer.labels + [label] %}
+        {% endif %}
+        {% endfor %}
+        {% endif %}
+        {% if newer.labels %}
+        <p class="text-sm" data-unselected-source-version>New version — not selected for {{ newer.labels | join(' or ') }}. Review this version before changing what is used.</p>
+        {% for label in newer.labels %}<p class="text-xs text-muted">Previous {{ label }} is still in use.</p>{% endfor %}
+        {% endif %}
         <p class="text-xs text-muted">
             {% if content %}
                 {% if content.text_length == 0 and content.status != 'found' %}No readable text received. Read the file again when the file and storage agent are available.

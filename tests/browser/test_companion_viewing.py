@@ -16,6 +16,9 @@ from tests.integration.test_local_source_import import inventory
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+    from typing import Any
+
     from playwright.async_api import Page
 
     from tests.browser.seed import Seeder
@@ -160,7 +163,8 @@ async def test_workspace_links_keyboard_independent_release_and_tracklist_choice
     assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
 
 
-async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
+@pytest.mark.parametrize("viewport,theme", [("desktop", "light"), ("phone", "dark")])
+async def test_guided_raw_extract_choose_and_pinned_reread(open_page: Any, seed: Seeder, tmp_path: Path, viewport: str, theme: str) -> None:
     """The user's actual workflow: one card, immediate text, extract, independent choices."""
     from phaze.models.provider_source import ProviderSourceObservation
     from phaze.services.companion_capture import store_capture_report
@@ -172,7 +176,7 @@ async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
     )
     source_id = (await seed.session.get(ProviderSourceObservation, raw)).object_id
     await seed.session.commit()
-    await page.set_viewport_size({"width": 390, "height": 844})
+    page = await open_page(viewport, theme=theme)
     await open_shell(page, f"/files/{media.id}")
     overview = page.locator("[data-companion-overview]")
     await overview.get_by_role("button", name="Review content", exact=True).click()
@@ -189,6 +193,8 @@ async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
     await overview.locator('[data-current-source="release_metadata"] [data-current-release-field]').first.wait_for()
     assert await overview.get_by_role("button", name="Use this tracklist", exact=True).count() == 0
     assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+    await overview.scroll_into_view_if_needed()
+    await page.screenshot(path=str(tmp_path / f"selected-{viewport}-{theme}.png"), full_page=True)
     # A new capture must not replace the reviewed source or reuse the old extraction.
     companion.sha256_hash = "b" * 64
     await seed.session.flush()
@@ -197,6 +203,9 @@ async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
     await store_capture_report(seed.session, companion.agent_id, envelope)
     await seed.session.commit()
     await open_shell(page, f"/files/{media.id}")
+    assert "New version — not selected" in await overview.inner_text()
+    assert "Previous tracklist is still in use" in await overview.inner_text()
+    assert "Previous release info is still in use" in await overview.inner_text()
     await overview.get_by_role("button", name="Review content", exact=True).click()
     await overview.locator("[data-companion-text]").wait_for()
     assert "New version" in await overview.locator("[data-companion-text]").inner_text()
@@ -207,3 +216,59 @@ async def test_guided_raw_extract_choose_and_pinned_reread(page, seed):
     await pinned.wait_for()
     assert "Opening" in await pinned.inner_text() and "New version" not in await pinned.inner_text()
     assert await overview.locator(f'[data-source-review="{source_id}"]').count() == 1
+    await overview.locator("[data-unselected-source-version]").scroll_into_view_if_needed()
+    await page.screenshot(path=str(tmp_path / f"new-version-{viewport}-{theme}.png"), full_page=True)
+
+
+@pytest.mark.parametrize("status", ["found", "unavailable"])
+async def test_read_receipt_refreshes_card_and_opens_preview_without_claiming_job_completion(
+    page: Page, seed: Seeder, tmp_path: Path, status: str
+) -> None:
+    """The native read control and authenticated report drive the real poll and card replacement.
+
+    This covers the UI receipt boundary; the broker-seam test covers the physical agent read.
+    """
+    from sqlalchemy import text
+
+    from phaze.routers.agent_auth import hash_token
+    from tests.discovery.routers.test_agent_companion_capture import seed_pair
+    from tests.integration.test_companion_import_backfill import report
+
+    agent = await seed.agent(f"companion-reader-{status}")
+    token = "phaze_agent_synthetic_companion_reader"
+    agent.token_hash = hash_token(token)
+    companion, media = await seed_pair(seed.session, agent, tmp_path / "notes.txt", TEXT.encode())
+    try:
+        await open_shell(page, f"/files/{media.id}")
+        overview = page.locator("[data-companion-overview]")
+        assert "Not read yet" in await overview.inner_text()
+        await overview.get_by_role("button", name="Read file", exact=True).click()
+        await overview.get_by_text("Read requested. Waiting for the storage agent to send companion text.", exact=True).wait_for()
+        assert await overview.locator("[data-companion-text]").count() == 0
+        envelope = report(companion, status=status)
+        if status == "found":
+            envelope = envelope.model_copy(update={"read": envelope.read.model_copy(update={"text": TEXT})})
+        response = await page.request.post(
+            "/api/internal/agent/companion-captures",
+            headers={"Authorization": f"Bearer {token}"},
+            data=envelope.model_dump(mode="json"),
+        )
+        assert response.status == 200, await response.text()
+        # No reload/click after the receipt: the actual three-second poll opens the preview.
+        await overview.locator("[data-source-review]").wait_for()
+        if status == "found":
+            assert "Example Festival" in await overview.locator("[data-companion-text]").inner_text()
+            await overview.get_by_role("button", name="Extract tracklist and release info", exact=True).wait_for()
+        else:
+            assert "No readable text received" in await overview.inner_text()
+            assert await overview.locator("[data-companion-text]").count() == 0
+            await overview.get_by_role("button", name="Read file again", exact=True).wait_for()
+        assert await overview.locator("[data-source-decision]").count() == 0
+        assert "completed" not in (await overview.inner_text()).lower()
+        assert not await overview.locator("details").first.get_attribute("open")
+        await overview.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / f"receipt-{status}.png"), full_page=True)
+    finally:
+        # Only this test's private browser database and unique agent lane are touched.
+        await seed.session.execute(text("DELETE FROM saq_jobs WHERE queue = :queue"), {"queue": f"phaze-agent-{agent.id}-meta"})
+        await seed.session.commit()
