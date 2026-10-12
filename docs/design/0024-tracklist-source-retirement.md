@@ -59,3 +59,7 @@ new files. Negative tests demonstrate rejection of a changed numeric value, an u
 and a reintroduced identity. The production audit's accepted substitutions are unchanged; there are
 no file-level exclusions. This checkpoint arrangement is the implementer's mechanism for reconciling
 the source removal with the historical evidence guard, not an additional operator-selected design.
+
+## Boundary note (added 2026-10-12, bead phaze-j5sv2)
+
+This record retires scraping and scheduled acquisition. It does not forbid operator-triggered lookups through the provider framework, which are distinct from both: one person-initiated request at a time, through an official API, under a per-run budget and pacing, with results reviewed before use. This note does not revive scheduled acquisition, Ajax JSON search or captcha re-queue, which stay **CANCELED**. See `docs/design/tracklist-provider-trackid.md` for the first such provider's evidence and `docs/design/0025-remote-provider-sources.md` for the contract extension.
