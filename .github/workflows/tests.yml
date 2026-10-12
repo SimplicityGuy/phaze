@@ -365,15 +365,6 @@ jobs:
         if: ${{ matrix.bucket.name == 'shared-registry' }}
         run: uv run --no-sync python -m scripts.canonical_collection_receipt
 
-      - name: 📤 Upload canonical collection receipt
-        if: ${{ !cancelled() && matrix.bucket.name == 'shared-registry' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: canonical-collection
-          path: canonical-collection/
-          retention-days: 14
-          if-no-files-found: error
-
       - name: 🧪 Run shard tests with coverage
         # Every shard contains DB-fixture (integration-marked) tests — verified empirically at
         # execution: `pytest <paths> -m integration --collect-only` returns >0 for all shards.
@@ -410,6 +401,15 @@ jobs:
           name: coverage-${{ matrix.bucket.name }}
           path: .coverage.${{ matrix.bucket.name }}
           include-hidden-files: true
+          if-no-files-found: error
+
+      - name: 📤 Upload canonical collection receipt
+        if: ${{ !cancelled() && matrix.bucket.name == 'shared-registry' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: canonical-collection
+          path: canonical-collection/
+          retention-days: 14
           if-no-files-found: error
 
       - name: 🧾 Require complete canonical collection

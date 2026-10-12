@@ -161,3 +161,24 @@ def test_subprocess_start_failure_retains_attempt_and_incomplete_receipt(tmp_pat
     assert saved["collection"]["exit"] is None
     assert "unavailable" in saved["error"]
     assert saved["bindings"]["commit"] == "synthetic"
+
+
+def test_blocking_evidence_upload_cannot_suppress_existing_execution_or_reports() -> None:
+    steps = yaml.safe_load((ROOT / ".github/workflows/tests.yml").read_text())["jobs"]["test"]["steps"]
+    upload = next(step for step in steps if step.get("with", {}).get("name") == "canonical-collection")
+    upload_index = steps.index(upload)
+    # Any blocking failure here must occur only after the existing tests and their
+    # available reports: a missing artifact or network error cannot skip those steps.
+    for name in (
+        "🧪 Run shard tests with coverage",
+        "📤 Upload raw shard test results",
+        "📊 Upload test results to Codecov",
+        "📤 Upload coverage shard",
+    ):
+        assert next(i for i, step in enumerate(steps) if step["name"] == name) < upload_index
+    guard = next(step for step in steps if step["name"] == "🧾 Require complete canonical collection")
+    assert steps.index(guard) > upload_index
+    assert upload.get("continue-on-error", False) is False
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert "!cancelled()" in upload["if"]
+    assert "!cancelled()" in guard["if"]
