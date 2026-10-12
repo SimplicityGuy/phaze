@@ -31,10 +31,13 @@ class TagWriteStatus(enum.StrEnum):
     QUEUED = "queued"
     COMPLETED = "completed"
     FAILED = "failed"
+    # save() may have changed bytes before raising. Preserve its original snapshot as an
+    # Undo anchor, while ordinary pre-save FAILED attempts remain excluded.
+    SAVE_FAILED = "save_failed"
     DISCREPANCY = "discrepancy"
     # phaze-vq3g: the on-disk write SUCCEEDED but the immediate verify re-read failed (transient
     # I/O / mutagen re-parse error). Distinct from DISCREPANCY (write landed the WRONG values) and
-    # from FAILED (the write itself never landed): here the file is correctly tagged but could not
+    # from FAILED (save was never attempted) or SAVE_FAILED (save raised with an uncertain result): here the file is correctly tagged but could not
     # be confirmed, so it must NOT be audited as an all-field ``actual=None`` discrepancy. Like
     # FAILED/DISCREPANCY it is intentionally NON-terminal, so the file resurfaces and a later submit
     # re-verifies and self-heals to COMPLETED once the transient condition clears.

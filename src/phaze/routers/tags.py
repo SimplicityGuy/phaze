@@ -256,9 +256,10 @@ async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> Ta
 # phaze-soph: statuses whose TagWriteLog actually mutated the file on disk and can therefore be
 # reverted. COMPLETED and DISCREPANCY both ran ``write_tags`` (DISCREPANCY = wrote, but verify found a
 # normalization mismatch), and VERIFY_FAILED (phaze-vq3g) also LANDED on disk -- only its confirming
-# re-read failed -- so all three carry a real before_tags snapshot to restore. FAILED never wrote and
+# re-read failed. SAVE_FAILED attempted save and may have partially written; it must retain
+# its original anchor too. Ordinary FAILED never reached save and
 # NO_OP is a zero-change marker, so neither is a real write to undo.
-_UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED)
+_UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED, TagWriteStatus.SAVE_FAILED)
 
 
 async def _get_write_log_to_undo(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
