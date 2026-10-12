@@ -11,21 +11,36 @@ claimed. This is the optional task's explicit exclusion path, not a completed sh
 
 ## Readiness and source scope
 
-This leaf was provisioned and claimed at implementation parent
+The original preflight leaf was provisioned and claimed at implementation parent
 `4910c157ddb4134bf755a46f2861c1f9023c1418`. Beadhive warned that refreshing the parent from
 main conflicts and provisioned from the stale base. The recurring orphan recovery and waiting-job
-heartbeat repairs are merged on main, but their commits `63b27206` and `3d5ebbad` are **not
-ancestors of this leaf**. Assignment therefore did not deliver the task's intended worker baseline.
-No older worker implementation was edited and no upstream merge was performed in the container.
-The dispatcher must reconcile that baseline through the approved lifecycle before final verification.
+heartbeat repairs were merged on main, but their commits `63b27206` and `3d5ebbad` were **not
+ancestors of that original preflight source**. Assignment therefore did not deliver the task's
+intended worker baseline at that time. No older worker implementation was edited and no upstream
+merge was performed during that preflight. Its baseline required reconciliation through the approved
+lifecycle before final verification.
 
 On **2026-10-11**, the operator chose "Next 20 completed beads, grouped by change type" for
 the observation cohort, recorded in implementation molecule **phaze-75qpj** before the pilots
 (cutoff **2026-10-11T19:04:16Z**). A complete accepted-bead comparison is not available here. M0 documents
 unknown historical work-start boundaries; SB excludes unsupported immutable evidence generations;
-SC's reviewed disposition is not integrated into this parent. Those facts do not authorize an
-adoption or a speed claim. This report supplies a source-only exclusion without executing the denied
-pilot on an older worker baseline. It does not certify SC or reconcile its integration blocker.
+SC's reviewed disposition was not integrated into the original preflight parent. Those preflight
+facts did not authorize an adoption or a speed claim. This report supplied a source-only exclusion
+without executing the denied pilot on that older worker baseline; the preflight did not certify SC
+or reconcile its integration blocker.
+
+The supported resume and README-conflict rebase subsequently reconciled this leaf onto integration
+parent `48bd645d47cc29d1661cb5fb8301b2bab2729f68`, as recorded by source
+`c9eb55e3cc9243fa3e97ba5fb07833b76dd1493b` before this status correction. Ancestry checks on that
+source confirm worker repairs `63b27206` and `3d5ebbad` and SC disposition commit `abf429b9` are
+integrated; the [SC disposition](selector-equivalence-disposition.md) is present. This parent also
+retains the main refresh `f5ae72d0` and its main parent `75d9e1bf`. Latest-main source
+`4997133239ed6c8596178254bcdbe8ca8e62b635` is **not an ancestor** of this reconciled leaf: later
+main changes are not claimed here. The original preflight observations above remain historical
+evidence, and the explicit sharing exclusion remains unchanged. Integration establishes no pilot
+execution, adoption, runtime benefit, cohort outcome, real-model proof or final G0 coverage result.
+A fresh independent review and authoritative exact-source provider verdict remain required for this
+corrected source; final G0 verification of the assembled mandatory full population remains pending.
 
 ## Existing consumer contract inspected
 
