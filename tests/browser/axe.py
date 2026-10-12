@@ -33,7 +33,7 @@ maps to a defect that makes the product unusable rather than merely imperfect. W
 deliberately, one rule at a time, with the fixes in the same change.
 
 Loading
-=======
+-------
 
 axe is fetched once per session from a pinned CDN URL and verified against a pinned SHA-384 digest
 BEFORE it is injected, then handed to the page as inline script content. Reaching a CDN is not a new
