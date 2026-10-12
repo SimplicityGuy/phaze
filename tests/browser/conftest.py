@@ -212,6 +212,14 @@ def _seat_dsn() -> str:
 _PG_MAX_IDENTIFIER_BYTES = 63
 
 
+# A module that must boot the app with its own configuration (see `tests/browser/test_agents_detail_reopen.py`)
+# cannot reuse the session's server, and must not share its database either: `_recreate_database` DROPs
+# with FORCE, which severs the session server's connections and wipes its schema. Setting this suffix for
+# the module's duration points both the module's server AND `_browser_dsn()` callers (`seed`,
+# `browser_dsn`) at one private database, then restores the session's when the module is done.
+_BROWSER_DB_SUFFIX_ENV = "PHAZE_BROWSER_DB_SUFFIX"
+
+
 def _browser_dsn() -> str:
     """A dedicated database for the live app, derived from this seat's DSN.
 
@@ -225,7 +233,7 @@ def _browser_dsn() -> str:
     each other -- ``_recreate_database`` below does a DROP + CREATE, so the collision is destructive.
     """
     base, _, name = _seat_dsn().rpartition("/")
-    browser_name = f"{name}_browser"
+    browser_name = f"{name}_browser{os.environ.get(_BROWSER_DB_SUFFIX_ENV, '')}"
     if len(browser_name.encode()) > _PG_MAX_IDENTIFIER_BYTES:
         raise RuntimeError(
             f"browser database name {browser_name!r} is {len(browser_name.encode())} bytes, over Postgres's "
@@ -284,6 +292,11 @@ def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None
 @pytest.fixture(scope="session")
 def live_server() -> Iterator[str]:
     """A real uvicorn serving the real app against its own migrated database."""
+    yield from serve_live_app()
+
+
+def serve_live_app() -> Iterator[str]:
+    """Boot uvicorn against `_browser_dsn()`'s database; shared by `live_server` and module overrides."""
     dsn = _browser_dsn()
     _recreate_database(dsn)
 
