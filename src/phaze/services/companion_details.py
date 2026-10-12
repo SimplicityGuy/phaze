@@ -126,6 +126,11 @@ def _observation_query(media: FileRecord | type[FileRecord]) -> Any:
         .where(ProviderRecordingCandidate.media_id == media.id, ProviderRecordingCandidate.observation_id == Observation.id)
         .scalar_subquery()
     )
+    later = aliased(Observation)
+    # A remote object has no inventory: it stays current until a later stored read says the host reported it absent.
+    later_absent = exists(
+        select(later.id).where(later.object_id == Observation.object_id, later.status == "absent", later.retrieved_at > Observation.retrieved_at)
+    )
     marker = func.jsonb_path_query_first(Observation.payload, cast('$.provenance[*] ? (@ like_regex "^capture:inventory_sha256:")', JSONPATH))
     read_marker = func.jsonb_path_query_first(Observation.payload, cast('$.evidence[*] ? (@ like_regex "^capture:inventory_sha256:")', JSONPATH))
     return (
@@ -162,6 +167,7 @@ def _observation_query(media: FileRecord | type[FileRecord]) -> Any:
                 Observation.payload["evidence"].contains(["revision:sha256:full"]),
             ).label("full_sha_evidence"),
             func.coalesce(marker, read_marker).label("inventory_marker"),
+            later_absent.label("later_absent"),
         )
         .join(Source, Source.id == Observation.object_id)
         .outerjoin(source_file, source_file.id == Source.source_file_id)
@@ -181,6 +187,8 @@ def _summary(row: Mapping[Any, Any], media: MediaIdentity, authorities: Sequence
     channel = row["channel"]
     if channel is None:
         availability = "current"
+    elif channel == "remote":
+        availability = "absent" if row.get("later_absent") else "current"
     elif row["source_file_id"] is None or row["source_agent"] is None or row["missing_at"] is not None:
         availability = "missing"
     elif row["source_agent"] != media.agent_id:
@@ -380,7 +388,9 @@ async def get_companion_details(
         await session.execute(
             select(Source, source_file)
             .outerjoin(source_file, source_file.id == Source.source_file_id)
-            .where(Source.id.in_(_source_ids(media)))
+            # Remote objects are not companion files: their candidates are reviewed on the remote lookup surface
+            # (bead phaze-q6j9w). A selected remote tracklist still appears through ``selected``.
+            .where(Source.id.in_(_source_ids(media)), Source.channel.is_distinct_from("remote"))
             .order_by(Source.id)
             .offset(source_page.offset)
             .limit(source_page.limit + 1)

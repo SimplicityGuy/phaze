@@ -23,9 +23,9 @@ a module makes the inventory fail until this page is reconciled.
 | `cli/` | 2 | Operator commands, including agent management, projection backfill, companion import and the junk quarantine dispatch |
 | `enums/` | 5 | DB-free shared stage, execution, tag-write, junk-review, and tracklist vocabulary |
 | `models/` | 32 | SQLAlchemy application schema, including companion acquisition attempts, resumable import progress and the remote transport ledger |
-| `routers/` | 64 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
-| `schemas/` | 29 | Pydantic wire contracts; agent payloads remain ORM-free |
-| `services/` | 148 | Business rules and infrastructure adapters, including bounded companion acquisition/import, companion detail/view projection and the remote transport effect; includes `backends/` and `pipeline/` packages |
+| `routers/` | 65 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
+| `schemas/` | 30 | Pydantic wire contracts; agent payloads remain ORM-free |
+| `services/` | 149 | Business rules and infrastructure adapters, including bounded companion acquisition/import, companion detail/view projection, the remote transport effect and the operator-triggered remote lookup; includes `backends/` and `pipeline/` packages |
 | `tasks/` | 50 | SAQ controller/agent jobs and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 49 migrations (`039` baseline through head
-`087`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 52 migrations (`039` baseline through head
+`090`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 

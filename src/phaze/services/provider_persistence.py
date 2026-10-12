@@ -24,7 +24,7 @@ from phaze.models.provider_source import (
     ProviderSourceObservation,
 )
 from phaze.models.tracklist import Tracklist
-from phaze.tracklist_providers.domain import LoadOutcome, OutcomeStatus, Snapshot, SourceIdentity, SourceRead
+from phaze.tracklist_providers.domain import LoadOutcome, OutcomeStatus, ProviderCandidate, Snapshot, SourceIdentity, SourceRead
 
 
 MAX_NATIVE_BYTES = 16384
@@ -85,11 +85,14 @@ async def resolve_source(
     source_file_id: uuid.UUID | None = None,
     channel: str | None = None,
 ) -> ProviderSourceObject:
-    """Resolve full UTF-8 identity under a digest-bucket advisory lock; never commit."""
+    """Resolve full UTF-8 identity under a digest-bucket advisory lock; never commit.
+
+    A remote source object (channel ``remote``) has no inventory file, so it never binds one.
+    """
     identity = SourceIdentity.model_validate(identity)
     _bound(identity.native_id, MAX_NATIVE_BYTES, "native identity")
-    if channel not in {None, "companion", "embedded"} or (source_file_id is None) != (channel is None):
-        raise ValueError("Local source binding requires a file and companion/embedded channel")
+    if channel not in {None, "companion", "embedded", "remote"} or (source_file_id is None) != (channel in {None, "remote"}):
+        raise ValueError("Local source binding requires a file and companion/embedded channel; a remote source binds none")
     digest = await lock_source_bucket(session, identity)
     # Deletion locks inventory before FK SET NULL updates source objects. Match that order,
     # and lock before inserting a source so deletion cannot invalidate the new binding.
@@ -316,6 +319,38 @@ async def store_source_read(
     )
 
 
+DISCOVERED = "discovered"
+
+
+async def store_discovery(session: AsyncSession, candidate: ProviderCandidate, *, retrieved_at: datetime) -> StoredObservation:
+    """Retain a discovered remote candidate as evidence of its own source object, before any load.
+
+    The observation holds what discovery said about the object (no content), so it can carry a review
+    candidate. Its status ``discovered`` is never selectable: selection needs a loaded, parsed snapshot.
+    An equal candidate reuses its observation, so repeating a lookup appends nothing.
+    """
+    candidate = ProviderCandidate.model_validate(candidate)
+    return await _store(
+        session,
+        candidate.identity,
+        {"discovered": candidate.model_dump(mode="json")},
+        status=DISCOVERED,
+        code=DISCOVERED,
+        revision=candidate.observed_revision,
+        revision_scope="unknown",
+        parser_version="discovery-v1",
+        decoded_text=None,
+        encoding=None,
+        truncated=False,
+        retrieved_at=retrieved_at,
+        source_url=candidate.url,
+        source_file_id=None,
+        channel="remote",
+        parent_id=None,
+        snapshot=False,
+    )
+
+
 async def add_candidate(
     session: AsyncSession,
     media_id: uuid.UUID,
@@ -348,6 +383,26 @@ async def add_candidate(
     ).one()
 
 
+async def _remote_availability(session: AsyncSession, observation: ProviderSourceObservation, object_id: uuid.UUID) -> str:
+    """A remote object has no inventory, so availability is what core has STORED about it; the host is never asked.
+
+    A stored snapshot is current until a later stored read of the same object says the host reported it absent.
+    Transient outcomes (retry, pacing, budget, a stop) say nothing about the object and never change it.
+    """
+    if observation.status not in {"found", "incomplete", "ambiguous"}:
+        return observation.status
+    later_absent = await session.scalar(
+        select(ProviderSourceObservation.id)
+        .where(
+            ProviderSourceObservation.object_id == object_id,
+            ProviderSourceObservation.status == OutcomeStatus.ABSENT.value,
+            ProviderSourceObservation.retrieved_at > observation.retrieved_at,
+        )
+        .limit(1)
+    )
+    return "absent" if later_absent is not None else "current"
+
+
 async def source_availability(session: AsyncSession, observation: ProviderSourceObservation, media_id: uuid.UUID) -> str:
     """Current availability is separate from retained reviewed history; perform no I/O reads."""
     source = await session.scalar(
@@ -355,6 +410,8 @@ async def source_availability(session: AsyncSession, observation: ProviderSource
     )
     if source is None:
         return "missing"
+    if source.channel == "remote":
+        return await _remote_availability(session, observation, source.id)
     if source.channel is None:
         return "current" if observation.status in {"found", "incomplete", "ambiguous"} else observation.status
     file = (
