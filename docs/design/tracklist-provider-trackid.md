@@ -27,7 +27,7 @@ tracked file and outside the session transcript.
 
 | # | Fact | Measured value |
 |---|---|---|
-| 1 | Requests made, and their outcome | 5 GETs, all HTTP 200 |
+| 1 | Requests made, and their outcome | 5 GETs, all HTTP 200 (the first spike). The later revision-signal probe, `docs/spikes/phaze-rjsdy-trackid-revision-signal.md`, made 45 more, all HTTP 200 |
 | 2 | Where ordered tracks live | `GET /audiostreams/{slug}`, at `detectionProcesses[].detectionProcessMusicTracks[]`, each row carrying artist, title, label, track id, slug, `startTime`, `endTime` |
 | 3 | List endpoint track arrays | Returned empty, so a detail read is needed per stream |
 | 4 | Offset format | Stream-relative TimeSpan strings of **mixed precision**, for example `00:02:43` beside `00:00:00.2700000` (two formats in one API) |
@@ -35,7 +35,7 @@ tracked file and outside the session transcript.
 | 6 | `url=` filter | A known stream looked up by its exact canonical URL returned `rowCount` **1** |
 | 7 | Rate-limit signalling | No rate-limit, quota or retry headers; Cloudflare headers only |
 | 8 | Status codes | Status **3** means Ready |
-| 9 | Revision signal | **20** Ready streams sampled, all with empty amendments and exactly one detection process |
+| 9 | Revision signal | **20** Ready streams sampled at LIST level, all with empty amendments and one detection process. That was a list-level artefact: the list endpoint shows only the original detection process. At DETAIL level the probe in `docs/spikes/phaze-rjsdy-trackid-revision-signal.md` found 2 or 3 detection processes on every stream it fetched, later ones being reprocesses |
 | 10 | Catalog size | **391,795** Ready streams in the list `rowCount` |
 
 ### Rules that follow
@@ -44,6 +44,14 @@ tracked file and outside the session transcript.
   endpoint is right. A provider that trusted the detail field would report an empty tracklist for a stream that has one, which is a
   silent wrong answer rather than an error. The interpreter counts the rows it actually parses, and a stream with rows it could not
   read is incomplete, not empty.
+* **Merge the rows of every detection process.** A reprocessed stream carries several detection processes whose rows are disjoint
+  parts of one tracklist, and the list `trackCount` is their sum (`docs/spikes/phaze-rjsdy-trackid-revision-signal.md`). Taking only
+  the highest-id process returned 0 rows for a stream shaped 10 + 0 (the reprocess still in flight) and 3 rows for one shaped
+  17 + 1 + 3. The interpreter therefore merges rows from all processes ordered by start time (ties by process id, then row order),
+  drops only an exact repeat found in two processes (same track id, start and end; never by track id alone, since a track can be
+  played twice), records each row's process id, and marks the snapshot incomplete while any process has a null `endDate`. It
+  assumes rows within a process arrive in the API's list order. The highest process id and its `endDate` are recorded as revision
+  evidence only; `Snapshot.revision` stays unset.
 * **Parse both TimeSpan precisions.** Fact 4 means a fixed-width parser would reject half the rows. Whole-second text is second
   precision; text with a fractional part is recorded as unknown precision with its exact rational value preserved.
 * **Offsets are approximate and never qualified.** The origin of every offset is the platform stream, not the local recording. The two
@@ -94,13 +102,14 @@ them if the archive has changed materially.
 
 ## What is still open
 
-* **Revision signal: unproven.** Fact 9 sampled 20 Ready streams, every one with empty amendments and one detection process, so no
-  stream exercised a revised tracklist. The adapter cannot yet say how a changed upstream tracklist is detected. Until a stream with
-  amendments or several detection processes is observed, treat any revision handling as a hypothesis.
+* **Revision signal: unproven.** The list endpoint shows only the original detection process (fact 9), so it cannot reveal a
+  reprocess; `docs/spikes/phaze-rjsdy-trackid-revision-signal.md` found several processes only at detail level. No stream with
+  amendments has been observed, and the adapter cannot yet say how a changed upstream tracklist is detected, so any revision
+  handling is a hypothesis.
 * **Terms of service and snapshot-caching rights.** Neither is answerable from the API. The pacing record covers request pacing only.
   Whether fetched snapshots may be stored is a question for the operator that has not been put or answered.
 * **Rights in the data itself.** The API says nothing about reuse of the returned track data.
-* **Pagination and quota limits at scale.** Only five requests were made against a catalog of 391,795 Ready streams; behaviour under
+* **Pagination and quota limits at scale.** Only 50 requests in total (5 in the first spike, 45 in the revision-signal probe) were made against a catalog of 391,795 Ready streams; behaviour under
   sustained use is unmeasured, which is another reason the budget is conservative.
 
 ## Constraints on the adapter
