@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from phaze.config_remote_providers import RemoteProviderSpec
 from phaze.tracklist_providers.domain import ProviderDescriptor
 from phaze.tracklist_providers.host_profile import RemoteHostProfile
+from phaze.tracklist_providers.mixesdb import PROFILE as MIXESDB_PROFILE, MixesDbProvider
 from phaze.tracklist_providers.port import TracklistProvider
 from phaze.tracklist_providers.trackid import CREDENTIAL_NAME, TRACKID_PROFILE, TrackIdProvider, check_trackid_credential
 
@@ -45,7 +46,8 @@ class RemoteProviderBinding:
         return RemoteProviderSpec(provider_id=self.profile.provider_id, credential_names=(self.credential_name,) if self.credential_name else ())
 
 
-# The shipped remote adapters. Each adapter bead appends its binding here.
+# The shipped remote adapters. Each adapter bead appends its binding here. Every one ships disabled.
 REMOTE_PROVIDERS: tuple[RemoteProviderBinding, ...] = (
     RemoteProviderBinding(TrackIdProvider(), TRACKID_PROFILE, CREDENTIAL_NAME, credential_check=check_trackid_credential),
+    RemoteProviderBinding(MixesDbProvider(), MIXESDB_PROFILE, None),
 )
