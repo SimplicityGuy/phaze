@@ -45,6 +45,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Coverage Generation Disposition](quality-implementation/coverage-generation-disposition.md)** | 📏 Installed Repowise capability evidence and safe non-adoption of immutable generation publication |
 | **[Selector Equivalence Disposition](quality-implementation/selector-equivalence-disposition.md)** | Preserved selection authority, unfulfilled shadow prerequisites and explicit pilot exclusion |
 | **[Mixed Validation Disposition](quality-implementation/mixed-validation-disposition.md)** | Complete prose and code authority retained while the conditional mixed-mode pilot is excluded |
+| **[Consumer Mapping Disposition](quality-implementation/consumer-mapping-disposition.md)** | Files-table and revision-085 consumer boundaries, preserved escalation and explicit mapping-pilot exclusion |
 | **[Partial Tag-Save Undo Recovery](quality-implementation/tag-partial-save-undo.md)** | Partial-save audit classification, original Undo anchors, rollout ordering and regression evidence |
 | **[Durable Reviewed Tag Revisions](quality-implementation/tag-reviewed-revision.md)** | Revision refusal at queued/NO_OP authorization, metadata callback locks and regression limits |
 | **[Telemetry Capture Disposition](quality-implementation/telemetry-capture-disposition.md)** | Independent real SDK producers retained; bounded exclusion, stale baseline and unmeasured runtime limits |
