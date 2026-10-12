@@ -293,42 +293,73 @@ def test_a_record_path_with_a_nul_is_refused() -> None:
 
 _MIB = 1 << 20
 
+#: The baseline input is this many times smaller than the 1 MiB one, in total size and in line length.
+_SCALE = 16
 
-def _adversarial_inputs() -> dict[str, bytes]:
-    """Inputs built to make the survey's original patterns backtrack, as one line and as many long lines."""
-    shapes = {
-        "spaces after a number": b"1" + b" " * 1000 + b"x",
-        "spaced dashes": b"a - " * 250,
-        "a long word then one spaced dash": b"a" * 997 + b" - ",
-        "repeated www prefixes": b"www." * 250,
-        "a token with no stop character": b"a" * 1000 + b".mp3x",
-        "field dots": b"Artist" + b"." * 1000,
-        "timestamp separators": b"12" + b": " * 500,
-    }
-    inputs: dict[str, bytes] = {}
-    for name, line in shapes.items():
-        inputs[f"{name}, one line"] = (line * (_MIB // len(line) + 1))[:_MIB]
-        inputs[f"{name}, many lines"] = ((line[:1000] + b"\n") * (_MIB // 1001 + 1))[:_MIB]
-    return inputs
+#: Lines of ``n`` characters (``n`` + a short tail) built to make the survey's original patterns backtrack.
+_SHAPES: dict[str, typing.Callable[[int], bytes]] = {
+    "spaces after a number": lambda n: b"1" + b" " * n + b"x",
+    "spaced dashes": lambda n: b"a - " * (n // 4),
+    "a long word then one spaced dash": lambda n: b"a" * (n - 3) + b" - ",
+    "repeated www prefixes": lambda n: b"www." * (n // 4),
+    "a token with no stop character": lambda n: b"a" * n + b".mp3x",
+    "field dots": lambda n: b"Artist" + b"." * n,
+    "timestamp separators": lambda n: b"12" + b": " * (n // 2),
+}
+
+
+def _adversarial_input(name: str, scale: int = 1) -> bytes:
+    """``name``'s input, 1 MiB at ``scale`` 1: one line, or many lines of about 1,000 characters.
+
+    At ``scale`` k both the total size and the length of each of many lines are k times smaller, so
+    the work grows k-fold when it is linear and k**2-fold when it is quadratic in either one.
+    """
+    shape, _, layout = name.rpartition(", ")
+    total = _MIB // scale
+    line = _SHAPES[shape](1000) if layout == "one line" else _SHAPES[shape](1000 // scale) + b"\n"
+    return (line * (total // len(line) + 1))[:total]
+
+
+def _adversarial_inputs() -> list[str]:
+    return [f"{shape}, {layout}" for shape in _SHAPES for layout in ("one line", "many lines")]
+
+
+def _cpu_seconds(payload: bytes, suffix: str) -> tuple[float, int]:
+    """CPU time this thread spent extracting ``payload``, and the reference count it found."""
+    import time
+
+    started = time.thread_time()
+    features = extract_content_features(payload, suffix)
+    return time.thread_time() - started, features.reference_count
 
 
 @pytest.mark.parametrize("name", sorted(_adversarial_inputs()))
 @pytest.mark.parametrize("suffix", [".txt", ".nfo", ".cue", ".m3u", ".pls"])
 def test_an_adversarial_megabyte_line_is_extracted_in_bounded_time(name: str, suffix: str) -> None:
-    import time
+    """The work is linear in the input: 16 times the input costs about 16 times the CPU, never 256.
 
-    payload = _adversarial_inputs()[name]
+    Measured 2026-10-07: on ONE 20,000-character line the survey's numbered-line pattern took 1.59 s
+    and its Artist - Title pattern 1.26 s -- both quadratic in the line length.
+
+    A fixed wall-clock ceiling measured the machine, not the code (phaze-esjwp): this test took
+    5.06 s against a 5.0 s ceiling at load average 16-24, then 0.1 s alone. What is measured now is
+    the RATIO of this thread's CPU time on the 1 MiB input to a same-run baseline 1/16 its size --
+    CPU time, so time spent waiting for a core does not count, and a ratio, so a slow core slows
+    both sides. Measured 2026-10-12 at load average 53 on 10 cores: every input here scaled by at
+    most 19x. With the Artist - Title rule swapped back to the survey's ``\\w.*\\s-\\s.*\\w``, the
+    long-word-then-dash input scaled by 219x. The bound is the geometric midpoint of 16x and 256x: 64x.
+    """
+    payload = _adversarial_input(name)
     assert len(payload) == _MIB
+    baseline = min(_cpu_seconds(_adversarial_input(name, _SCALE), suffix)[0] for _ in range(3))
 
-    started = time.perf_counter()
-    features = extract_content_features(payload, suffix)
-    elapsed = time.perf_counter() - started
-
-    # Measured 2026-10-07: on ONE 20,000-character line the survey's numbered-line pattern took 1.59 s
-    # and its Artist - Title pattern 1.26 s -- both quadratic in the line length. The bounded
-    # extractor handles every 1 MiB input here in about 0.1 s; 5 s is a generous ceiling.
-    assert elapsed < 5.0, f"{name} {suffix}: {elapsed:.2f}s"
-    assert features.reference_count <= MAX_REFERENCES + 1
+    # The least of up to three runs: one unlucky run is noise, three slow ones are the code.
+    ratios: list[float] = []
+    while len(ratios) < 3 and (not ratios or min(ratios) >= _SCALE * 4):
+        seconds, references = _cpu_seconds(payload, suffix)
+        ratios.append(seconds / baseline)
+        assert references <= MAX_REFERENCES + 1
+    assert min(ratios) < _SCALE * 4, f"{name} {suffix}: {_SCALE}x the input cost {min(ratios):.0f}x the CPU ({baseline * 1000:.1f} ms baseline)"
 
 
 _PATTERN_CORPUS = [
