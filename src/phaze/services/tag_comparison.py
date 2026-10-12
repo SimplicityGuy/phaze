@@ -25,6 +25,8 @@ import uuid
 from sqlalchemy import Select, and_, exists, or_, select, tuple_
 
 from phaze.models.discogs_link import DiscogsLink
+from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObservation
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
@@ -38,7 +40,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from phaze.models.file import FileRecord
     from phaze.services.tag_proposal import TagFieldSource
 
 
@@ -220,8 +221,20 @@ def discogs_review_fields(link: DiscogsLink | None) -> dict[str, str | int | Non
 
 
 async def validate_reviewed_source_versions(session: AsyncSession, file_id: uuid.UUID, expected: dict[str, Any]) -> None:
-    """Fence selected inventory and accepted facts until the queued audit row commits."""
+    """Fence reviewed inputs until the queued audit row (or NO_OP marker) commits."""
     await validate_selected_tag_review(session, file_id, expected.get("selected_source_evidence"))
+    # The selected-source guard locks the media row, including when there is no selection.
+    # Read scalar revisions from Postgres rather than the bulk loop's cached ORM objects.
+    # FOR SHARE also fences metadata UPDATE/DELETE until authorization commits; the media
+    # FOR UPDATE lock fences FK-backed metadata insertion when the reviewed row was absent.
+    file_revision = await session.scalar(select(FileRecord.updated_at).where(FileRecord.id == file_id))
+    metadata_revision = await session.scalar(select(FileMetadata.updated_at).where(FileMetadata.file_id == file_id).with_for_update(read=True))
+    if (
+        file_revision is None
+        or file_revision.isoformat() != expected.get("file_updated_at")
+        or (metadata_revision.isoformat() if metadata_revision is not None else None) != expected.get("metadata_updated_at")
+    ):
+        raise ValueError("Reviewed file or tag metadata changed; refresh before approving tags")
     await session.execute(
         select(ProviderSourceObservation.id)
         .join(ProviderRecordingSelection, ProviderRecordingSelection.observation_id == ProviderSourceObservation.id)
