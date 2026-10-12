@@ -5,6 +5,8 @@
       hx-swap="outerHTML"
       x-data="{ selected: '{{ group.files | selectattr('keeper') | map(attribute='id') | first }}' }"
       class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+    {% if resolve_error | default('') %}<p role="alert" class="mb-3 text-sm text-danger">{{ resolve_error }}</p>{% endif %}
+    {% if action_message | default('') %}{{ ui.action_status(action_message) }}{% endif %}
     <fieldset>
         <legend class="w-full break-all font-jura text-[11px] font-medium tracking-wide text-gray-700 dark:text-gray-200">
             {{ group.group_name }} <span class="normal-case text-muted ">· {{ group.count | thousands }} copies</span>

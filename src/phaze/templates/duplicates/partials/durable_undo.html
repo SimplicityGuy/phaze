@@ -1,0 +1,17 @@
+{% import "ui/primitives.html" as ui %}
+{# Exact returned resolution proof; expiry of its acknowledgment never expires this control. #}
+<div data-dedupe-undo class="mt-3" x-data="{ undoFailed:false }">
+    <form hx-post="{{ '/duplicates/undo-all' if is_bulk else undo_url }}"
+          hx-target="#{{ undo_target }}" hx-swap="{{ undo_swap }}"
+          @htmx:target-error="undoFailed = true"
+          @htmx:response-error="undoFailed = true"
+          @htmx:send-error="undoFailed = true"
+          @htmx:timeout="undoFailed = true"
+          @htmx:after-request="undoFailed = !$event.detail.successful">
+        <input type="hidden" name="file_states" value="{{ undo_file_states }}">
+        {% if is_bulk %}{% for hash in undo_group_hashes %}<input type="hidden" name="group_hashes" value="{{ hash }}">{% endfor %}{% endif %}
+        <button type="submit" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'sm') }}">{{ 'Undo All' if is_bulk else 'Undo' }}</button>
+    </form>
+    <p role="alert" x-show="undoFailed" x-cloak class="mt-2 text-sm text-danger">Undo could not be confirmed. Check the current duplicate state before trying again.</p>
+    <p class="mt-2 text-xs text-muted">Undo applies only while the returned duplicate resolution is unchanged.</p>
+</div>

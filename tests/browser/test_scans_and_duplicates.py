@@ -10,10 +10,14 @@ somewhere other than where the click happened.
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 from typing import Any
+import uuid
 
 import pytest
+from sqlalchemy import select, update
 
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.scan_batch import ScanStatus
 from tests.browser.helpers import click_swap, open_shell, settled
 
@@ -72,7 +76,8 @@ async def test_deleting_a_terminal_scan_removes_its_row_without_reloading(page: 
     assert await page.locator(f"#recent-scans [hx-delete*='{keep.id}']").count() == 1, "the surviving scan lost its row in the re-render"
 
 
-async def test_resolving_a_duplicate_group_oob_swaps_its_undo_toast_into_the_shell(page: Any, seed: Any) -> None:
+@pytest.mark.parametrize("partial_undo", [False, True])
+async def test_resolving_a_duplicate_group_oob_swaps_its_undo_toast_into_the_shell(page: Any, seed: Any, partial_undo: bool) -> None:
     """THE out-of-band assertion (bead item 4), on the OOB swap that matters most.
 
     32 templates use ``hx-swap-oob`` and no test in the repo has ever proven htmx honoured one. The
@@ -138,6 +143,32 @@ async def test_resolving_a_duplicate_group_oob_swaps_its_undo_toast_into_the_she
 
     # The primary half of the same response landed too: the card is gone from the workspace.
     assert not await page.locator(f"#dupe-group-{group_hash}").is_visible(), "the resolved group card is still on screen"
+
+    durable = page.locator(f"#group-{group_hash} [data-dedupe-undo]")
+    payload = json.loads(await durable.locator('input[name="file_states"]').input_value())
+    assert len(payload) == 2
+    if partial_undo:
+        changed_id, new_canonical = uuid.UUID(payload[0]["id"]), uuid.UUID(payload[1]["id"])
+        await seed.session.execute(update(DedupResolution).where(DedupResolution.file_id == changed_id).values(canonical_file_id=new_canonical))
+        await seed.session.commit()
+
+    # A real reduced-motion expiry detaches the transient toast; the exact returned Undo proof survives.
+    await page.emulate_media(reduced_motion="reduce")
+    await page.locator("#toast-container > *").wait_for(state="detached", timeout=15000)
+    durable = page.locator(f"#group-{group_hash} [data-dedupe-undo]")
+    assert await durable.get_by_role("button", name="Undo", exact=True).is_enabled()
+    await click_swap(page, f"#group-{group_hash} [data-dedupe-undo] button")
+    assert await page.locator(f"#dupe-group-{group_hash}").is_visible()
+    if partial_undo:
+        card = page.locator(f"#dupe-group-{group_hash}")
+        alert = card.get_by_role("alert")
+        assert "1 file restored; 1 submitted entries skipped" in await alert.inner_text()
+        assert "inspect" in await alert.inner_text()
+        assert await card.locator("[data-action-status]").count() == 0
+        await page.wait_for_timeout(5500)
+        assert await alert.is_visible(), "partially refused Undo must outlive the brief success lifetime"
+        remaining = (await seed.session.execute(select(DedupResolution.file_id, DedupResolution.canonical_file_id))).all()
+        assert remaining == [(changed_id, new_canonical)], "the newer canonical decision must remain guarded"
 
 
 async def test_an_already_resolved_group_is_not_offered_for_resolution(page: Any, seed: Any) -> None:

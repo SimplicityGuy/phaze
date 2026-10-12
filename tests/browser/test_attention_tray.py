@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import html
+import json
 import os
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -12,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.routers.pipeline._common import templates
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.backends.lane_detail import claim_overdue_seconds
 from tests._saq_jobs_seed import now_ms, seed_job
@@ -23,6 +27,136 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.browser
+
+
+async def test_polled_incidents_announce_only_meaningful_changes(page: Any, seed: Any) -> None:
+    """Observe real HTMX OOB delivery, not source strings or a helper's return value."""
+    first = {
+        "id": "analysis-failed",
+        "title": "Failed analyses",
+        "count": 2,
+        "tone": "danger",
+        "detail": "Retry measured failures.",
+        "href": "/s/files",
+        "action": "Open failures",
+    }
+    current = [first]
+    measurement_known = True
+    polls = 0
+
+    async def poll(route: Any) -> None:
+        nonlocal polls
+        response = await route.fetch()
+        body = await response.text()
+        seed = (
+            '<div id="incident-announcement-seed" hidden hx-swap-oob="true" data-known="'
+            + str(measurement_known).lower()
+            + '" data-incidents="'
+            + html.escape(json.dumps(current), quote=True)
+            + '"></div>'
+        )
+        body = re.sub(r'<div id="incident-announcement-seed"[^>]*></div>', lambda _: seed, body)
+        card = templates.env.get_template("pipeline/partials/analysis_failed_card.html").render(
+            oob=True, analysis_incidents_known=measurement_known, analysis_incidents=current, analysis_failed_count=2 if current else 0
+        )
+        body = re.sub(r'<section id="analysis-health-card".*?</section>', lambda _: card, body, flags=re.S)
+        await route.fulfill(response=response, body=body)
+        polls += 1
+
+    await seed.file(filename="poll-controls.mp3")  # Mount visible Analyze controls, rather than the first-run hidden hosts.
+    await page.route("**/pipeline/stats*", poll)
+    await _open(page, "/s/analyze")
+    await page.evaluate("""() => {
+        window.announcements = [];
+        window.incidentPollsSettled = 0;
+        const poll = document.getElementById('pipeline-stats');
+        poll.setAttribute('hx-trigger', 'refresh');
+        htmx.process(poll);
+        document.body.addEventListener('htmx:afterSettle', event => {
+            if (event.detail.target.id === 'pipeline-stats') window.incidentPollsSettled++;
+        });
+        const region = document.getElementById('incident-announcement');
+        window.announcementObserver = new MutationObserver(() => window.announcements.push(region.textContent));
+        window.announcementObserver.observe(region, { childList:true, characterData:true, subtree:true });
+    }""")
+
+    async def refresh() -> None:
+        before = polls
+        settled_before = await page.evaluate("window.incidentPollsSettled")
+        await page.evaluate("htmx.trigger(document.getElementById('pipeline-stats'), 'refresh')")
+        await page.wait_for_function("before => window.incidentPollsSettled > before", arg=settled_before)
+        assert polls > before
+
+    await refresh()
+    baseline = await page.evaluate("window.announcements.length")
+    assert baseline == 1
+    assert await page.locator('#analysis-health-card [data-incident-id="analysis-failed"]').count() == 1
+    await page.locator("#analysis-health-summary").click()
+
+    async def retry_failure(route: Any) -> None:
+        await route.fulfill(status=503, body="Unavailable")
+
+    await page.route("**/pipeline/analysis-failed/retry", retry_failure)
+    page.once("dialog", lambda dialog: dialog.accept())
+    await page.locator("#analysis-retry-failed").click()
+    await page.locator("#retry-failed-result [data-action-failure]").wait_for()
+    await refresh()
+    await refresh()
+    error = page.locator("#retry-failed-result [data-action-failure]")
+    assert await error.is_visible(), "unchanged health polling must retain the originating control's action error"
+    assert await error.get_attribute("aria-live") == "off", "retained feedback must not reannounce during an unrelated poll"
+    assert await page.locator("#analysis-retry-failed").is_enabled()
+    await page.unroute("**/pipeline/analysis-failed/retry", retry_failure)
+    page.once("dialog", lambda dialog: dialog.accept())
+    async with page.expect_response("**/pipeline/analysis-failed/retry") as retry_response:
+        await page.locator("#analysis-retry-failed").click()
+    assert (await retry_response.value).status == 200
+    await page.locator("#retry-failed-result").get_by_text("No failed files to retry.", exact=True).wait_for()
+    assert await error.count() == 0, "the real response must clear the transferred transport error without claiming any work was queued"
+    status = page.locator("#retry-failed-result [data-action-status]")
+    expires = await status.get_attribute("data-action-expires")
+    assert expires is not None
+    await page.wait_for_timeout(3000)  # Poll near the original expiry: restarting five seconds would fail the deadline assertion.
+    await refresh()
+    await refresh()
+    assert await status.get_attribute("data-action-expires") == expires
+    remaining = await page.evaluate("expires => Number(expires) - Date.now()", expires)
+    await status.wait_for(state="detached", timeout=max(1000, remaining + 1000))
+    await page.route("**/pipeline/analysis-failed/retry", retry_failure)
+    page.once("dialog", lambda dialog: dialog.accept())
+    await page.locator("#analysis-retry-failed").click()
+    await error.wait_for()
+    await refresh()
+    await refresh()
+    await error.get_by_role("button", name="Dismiss action error").click()
+    assert await error.count() == 0, "dismissal must still work after the poll transfers response markup"
+    assert await page.evaluate("window.announcements.length") == baseline
+    measurement_known = False
+    await refresh()
+    assert "unavailable" in await page.locator("#incident-announcement").inner_text()
+    await refresh()
+    assert await page.evaluate("window.announcements.length") == baseline + 1
+    measurement_known = True
+    await refresh()
+    assert "available again" in await page.locator("#incident-announcement").inner_text()
+    baseline += 2
+    current = [{**first, "count": 3}]
+    await refresh()
+    assert await page.evaluate("window.announcements.length") == baseline + 1
+    current.append({**first, "id": "pipeline-orphans", "title": "Orphaned work", "count": 1})
+    await refresh()
+    assert await page.evaluate("window.announcements.length") == baseline + 2
+    current = []
+    await refresh()
+    assert await page.evaluate("window.announcements.length") == baseline + 3
+    assert "cleared" in await page.locator("#incident-announcement").inner_text()
+    assert await page.locator("#analysis-health-card [role=alert], #analysis-health-card [role=status], #analyze-lanes [role=alert]").count() == 0
+    assert await page.locator("#incident-announcement").get_attribute("role") == "status"
+    assert await page.locator("#incident-announcement").get_attribute("aria-live") == "polite"
+    assert await page.locator("#incident-announcement").get_attribute("aria-atomic") == "true"
+    current = [first]
+    await refresh()
+    assert await page.evaluate("window.announcements.length") == baseline + 4
 
 
 @pytest.mark.parametrize("viewport", ["phone", "tablet", "desktop"])
