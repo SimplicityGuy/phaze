@@ -209,20 +209,27 @@ def _parse_selected_ids(raw_value: str, limit: int = 100) -> list[str]:
     return selected
 
 
-async def build_changes_review_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+async def build_changes_review_context(request: Request, session: AsyncSession, *, threshold: int | None = None) -> dict[str, Any]:
     """Build the canonical review list from URL-borne filter, page, and selection state."""
     view = ListViewState.from_request(request, status="needs_review", sort="confidence")
     allowed_statuses = {"all", "needs_review", "approved", "blocked", "rejected"}
     if view.status not in allowed_statuses:
         view = view.with_(status="needs_review")
 
-    selected = _parse_selected_ids(request.query_params.get("selected", ""))
+    selected = _parse_selected_ids(request.query_params.get("selected", ""), limit=500)
+    try:
+        threshold = int(request.query_params.get("threshold", "90")) if threshold is None else threshold
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Threshold must be an integer from 90 to 99") from exc
+    if not 90 <= threshold <= 99:
+        raise HTTPException(status_code=422, detail="Threshold must be from 90 to 99")
 
     proposals = await get_changes_review_page(
         session,
         status=view.status,
         page=view.page,
         page_size=view.page_size,
+        threshold=threshold,
     )
     tag_page = await get_tagwrite_review_page(session)
     tag_rows = (
@@ -243,10 +250,13 @@ async def build_changes_review_context(request: Request, session: AsyncSession) 
     def url_for(*, status: str | None = None, page: int | None = None, selected_ids: list[str] | None = None) -> str:
         params = view.params(status=status or view.status, page=page or view.page)
         params["selected"] = ",".join(selected if selected_ids is None else selected_ids)
+        if threshold != 90:
+            params["threshold"] = str(threshold)
         return f"/s/rename?{urlencode(params)}"
 
     return {
         "changes_view": view,
+        "changes_threshold": threshold,
         "changes_proposals": proposals.rows,
         "changes_pagination": proposals.pagination,
         "changes_stats": changes_stats,

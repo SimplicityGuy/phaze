@@ -415,6 +415,13 @@ def test_body_field_is_bounded_to_its_column(
 
 
 # TIER 2
+@pytest.mark.parametrize("path", ["/proposals/bulk", "/proposals/bulk/preview"])
+def test_bulk_review_selection_has_500_token_wire_bound(path: str) -> None:
+    route = next(route for route in iter_effective_routes(create_app()) if route.path == path)
+    field = next(param for param in route.dependant.body_params if param.name == "review_tokens")
+    assert _bounds(list(field.field_info.metadata))[0] == 500
+
+
 @pytest.mark.parametrize(("path", "name", "annotation", "metadata"), _param_cases(), ids=lambda v: v if isinstance(v, str) else "")
 def test_path_query_form_param_is_classified(path: str, name: str, annotation: object, metadata: list[object]) -> None:
     """Every governed path/query/form param is bounded, paging-owned, or explicitly classified."""

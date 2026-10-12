@@ -177,11 +177,12 @@
     </nav>
 
     <form id="changes-bulk-form" hx-patch="/proposals/bulk?{{ changes_view.query() }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML">
+        <input type="hidden" name="threshold" value="{{ changes_threshold | default(90) }}">
         <section aria-labelledby="proposal-changes-heading" class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
             <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
                 <div>
                     <h2 id="proposal-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Filename + Destination</h2>
-                    <p class="mt-1 text-xs text-muted ">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
+                    <p class="mt-1 text-xs text-muted ">Approve selected accepts only rows still pending and at or above {{ changes_threshold | default(90) }}% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
                     <p class="mt-1 text-xs text-muted "><span x-text="selected.length">0</span> selected on this reviewed page.</p>
                 </div>
                 <!-- phaze-tckiy: #changes-bulk-form declares no method/action either, and hx-patch is
@@ -213,11 +214,11 @@
                      attribute), so the guard adds no new failure mode of its own. `border-0 p-0` are
                      belt-and-braces over Tailwind preflight's fieldset reset. -->
                 <fieldset :disabled="selected.length === 0" class="flex min-w-0 flex-wrap gap-2 border-0 p-0">
+                    <button type="button" hx-post="/proposals/bulk/preview" hx-target="#changes-bulk-result" hx-swap="innerHTML" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'md') }}">Preview eligible selection</button>
                     <button type="submit" name="action" value="approve_eligible" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('primary', 'md') }}">Approve selected eligible</button>
                     <button type="submit" name="action" value="reject" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'md') }}">Reject selected pending</button>
                 </fieldset>
             </div>
-            <div id="changes-bulk-result" aria-live="polite"></div>
             {% if changes_proposals %}
                 {% for p in changes_proposals %}
                 <div class="flex items-start gap-3 border-b border-gray-200 px-4 pt-3 dark:border-phaze-border">
@@ -232,13 +233,13 @@
                             diff_label="Filename", before=p.filename, after=p.proposed_filename,
                             secondary_label="Destination", secondary_before=p.current_path,
                             secondary_after=((p.proposed_path ~ "/" ~ p.proposed_filename) if p.proposed_path else (p.current_path.rsplit("/", 1)[0] ~ "/" ~ p.proposed_filename)),
-                             approve_url="/proposals/" ~ p.id ~ "/approve", skip_url="/proposals/" ~ p.id ~ "/reject",
-                            undo_url="/proposals/" ~ p.id ~ "/undo", edit_url="/proposals/" ~ p.id ~ "/edit",
+                             approve_url="/proposals/" ~ p.id ~ "/approve" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), skip_url="/proposals/" ~ p.id ~ "/reject" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""),
+                            undo_url="/proposals/" ~ p.id ~ "/undo" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), edit_url="/proposals/" ~ p.id ~ "/edit" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""),
                              edit_facet="filename", row_state=("executed" if p.raw_status == "executed" else ("failed" if p.raw_status == "failed" else ("pending" if p.status == "needs_review" else ("skipped" if p.status == "rejected" else p.status)))),
                              updated_at=p.updated_at, confidence=p.confidence, warnings=p.warnings, conflicts=p.conflicts,
                              show_approve=not p.conflicts,
                             consequences=("Rename in place on the owning file server." if not p.proposed_path else "Rename and move on the owning file server; execution remains separately gated."),
-                            eligibility_reason=("Eligible for selected bulk approval." if p.bulk_eligible else ("Individual approval only: confidence is below 90% or unavailable." if p.status == "needs_review" else "Disabled: this decision is already resolved.")) %}
+                            eligibility_reason=("Eligible for selected bulk approval." if p.bulk_eligible else ("Individual approval only: confidence is below " ~ (changes_threshold | default(90)) ~ "% or unavailable." if p.status == "needs_review" else "Disabled: this decision is already resolved.")) %}
                         {% include "pipeline/partials/_diff_row.html" %}
                     {% endwith %}
                     </div>
@@ -259,6 +260,7 @@
             {% endif %}
         </section>
     </form>
+    <div id="changes-bulk-result" aria-live="polite"></div>
 
     {% if changes_view.status in ("all", "needs_review", "blocked") %}
     <section aria-labelledby="tag-changes-heading" class="mt-4 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
@@ -294,7 +296,7 @@
                         diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
                          approve_url="/tags/" ~ f.file_id ~ "/write", approve_method="post",
                          review_token=f.review_token,
-                        undo_url="/tags/" ~ f.file_id ~ "/undo", undo_method="post",
+                        undo_url="/tags/" ~ f.file_id ~ "/undo" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), undo_method="post",
                         show_edit=false, show_skip=false, show_undo=f.has_prior_write,
                          row_state=("queued" if f.latest_status == "queued" else ("pending" if f.status == "needs_review" else "blocked")), warnings=tag_warnings,
                         consequences=(f.changed_count ~ " tag field" ~ ("s" if f.changed_count != 1 else "") ~ " will be written on the owning file server. The write is audited and reversible."),

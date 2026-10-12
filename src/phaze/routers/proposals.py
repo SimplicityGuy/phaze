@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Annotated
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import StringConstraints
 from sqlalchemy import select
@@ -17,6 +17,7 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 
 # Changes Review's container id + list context, so a bulk action re-renders that surface through
 # the SAME builder its GET uses. The edge is one-way -- routers/shell.py does not import this
@@ -33,9 +34,11 @@ from phaze.services.proposal_queries import (
     bulk_approve_selected_above_confidence,
     bulk_update_status,
     get_proposal_with_file,
+    preview_bulk_approval,
     update_proposal_fields,
     update_proposal_status,
 )
+from phaze.services.review_changes import _changes_review_warnings
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
@@ -196,7 +199,7 @@ def _diff_facet_fields(proposal: RenameProposal, file_record: FileRecord, facet:
     return before, after, edit_facet, extra_context
 
 
-def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> dict[str, object]:
+def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, threshold: int = 90) -> dict[str, object]:
     """Build the render context _diff_row.html expects for one proposal (phaze-3a2j).
 
     phaze-7tiqp: the builder used to take an ``oob`` keyword for a second consumer, the
@@ -209,20 +212,21 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
     file_record = proposal.file
     before, after, edit_facet, extra_context = _diff_facet_fields(proposal, file_record, facet)
     pid = proposal.id
+    threshold_query = f"?threshold={threshold}" if threshold != 90 else ""
     return {
         "row_id_prefix": row_id_prefix,
         "pid": pid,
         "file": file_record.original_filename,
         "before": before,
         "after": after,
-        "approve_url": f"/proposals/{pid}/approve",
-        "skip_url": f"/proposals/{pid}/reject",
-        "undo_url": f"/proposals/{pid}/undo",
-        "edit_url": f"/proposals/{pid}/edit",
+        "approve_url": f"/proposals/{pid}/approve{threshold_query}",
+        "skip_url": f"/proposals/{pid}/reject{threshold_query}",
+        "undo_url": f"/proposals/{pid}/undo{threshold_query}",
+        "edit_url": f"/proposals/{pid}/edit{threshold_query}",
         "edit_facet": edit_facet,
         "row_state": row_state,
         "confidence": proposal.confidence,
-        "warnings": ([proposal.reason] if proposal.reason else []),
+        "warnings": _changes_review_warnings(proposal, threshold=threshold),
         "consequences": (
             "Rename in place on the owning file server."
             if proposal.proposed_path is None
@@ -230,8 +234,10 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         ),
         "eligibility_reason": (
             "Eligible for selected bulk approval."
-            if ProposalStatus(proposal.status) == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9
-            else "Individual approval only, or this decision is already resolved."
+            if ProposalStatus(proposal.status) == ProposalStatus.PENDING
+            and proposal.confidence is not None
+            and proposal.confidence >= threshold / 100
+            else f"Individual approval only: confidence is below {threshold}% or unavailable, or this decision is already resolved."
         ),
         # phaze-exivg: the optimistic-concurrency token the APPROVE button round-trips back via
         # hx-vals. Always the row's LIVE updated_at at render time -- after an undo/edit/re-propose
@@ -248,9 +254,11 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
     }
 
 
-def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> HTMLResponse:
+def _diff_row_response(
+    request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, threshold: int = 90
+) -> HTMLResponse:
     """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
-    context = _diff_row_context(proposal, row_id_prefix, facet, row_state)
+    context = _diff_row_context(proposal, row_id_prefix, facet, row_state, threshold=threshold)
     context["request"] = request
     return templates.TemplateResponse(request=request, name="pipeline/partials/_diff_row.html", context=context)
 
@@ -287,6 +295,7 @@ async def approve_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
     expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats).
 
@@ -314,7 +323,7 @@ async def approve_proposal(
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved", threshold=threshold)
 
 
 @router.patch("/{proposal_id}/reject", response_class=HTMLResponse)
@@ -323,6 +332,7 @@ async def reject_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
     expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Reject a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
     proposal = await _guarded_status_update(
@@ -331,7 +341,7 @@ async def reject_proposal(
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped", threshold=threshold)
 
 
 @router.patch("/{proposal_id}/undo", response_class=HTMLResponse)
@@ -340,6 +350,7 @@ async def undo_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
     expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Revert a proposal to pending status and return the updated row (phaze-vvmh: no OOB stats)."""
     proposal = await _guarded_status_update(
@@ -348,7 +359,7 @@ async def undo_proposal(
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="pending")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="pending", threshold=threshold)
 
 
 @router.get("/{proposal_id}/detail", response_class=HTMLResponse)
@@ -472,6 +483,7 @@ async def edit_proposal(
     proposed: str = Form(...),
     facet: str = Form("filename"),
     session: AsyncSession = Depends(get_session),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """REVIEW-01 (D-05): persist an operator edit to a proposal BEFORE approve.
 
@@ -504,7 +516,7 @@ async def edit_proposal(
     # never re-rendered with pending affordances it no longer has.
     row_id_prefix, facet = _row_target(request, proposal_id)
     return _diff_row_response(
-        request, proposal, row_id_prefix, facet, row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending")
+        request, proposal, row_id_prefix, facet, row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending"), threshold=threshold
     )
 
 
@@ -539,7 +551,7 @@ def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> 
             )
         except (TypeError, ValueError):
             continue
-    uuids = [token.proposal_id for token in reviewed]
+    uuids = list(dict.fromkeys(token.proposal_id for token in reviewed))
     seen = set(uuids)
     for pid in proposal_ids:
         try:
@@ -553,7 +565,7 @@ def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> 
 
 
 async def _transition_selected_proposals(
-    session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID]
+    session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID], *, threshold: int = 90
 ) -> tuple[int, str]:
     """Apply the operator's chosen bulk action to the parsed selection.
 
@@ -572,7 +584,7 @@ async def _transition_selected_proposals(
     rather than a repeat of the first answer.
     """
     if action == "approve_eligible":
-        return await bulk_approve_selected_above_confidence(session, reviewed), "approve"
+        return await bulk_approve_selected_above_confidence(session, reviewed, threshold=threshold / 100), "approve"
     return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action
 
 
@@ -581,7 +593,8 @@ async def bulk_action(
     request: Request,
     action: str = Form(...),
     proposal_ids: list[str] = Form(default=[]),
-    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=100),
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk approve or reject the selection Changes Review submitted.
@@ -612,9 +625,9 @@ async def bulk_action(
     if action not in ("approve_eligible", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve_eligible' or 'reject'")
     reviewed, uuids = _parse_bulk_selection(review_tokens, proposal_ids)
-    count, toast_action = await _transition_selected_proposals(session, action, reviewed, uuids)
+    count, toast_action = await _transition_selected_proposals(session, action, reviewed, uuids, threshold=threshold)
 
-    changes_context = await build_changes_review_context(request, session)
+    changes_context = await build_changes_review_context(request, session, threshold=threshold)
     changes_context |= {
         "request": request,
         # The toast quotes `count` -- the rows that ACTUALLY transitioned -- and names the
@@ -625,3 +638,30 @@ async def bulk_action(
         "changes_toast": _bulk_toast(toast_action, requested=len(uuids), applied=count),
     }
     return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=changes_context)
+
+
+@router.post("/bulk/preview", response_model=None)
+async def bulk_approval_preview(
+    request: Request,
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse | HTMLResponse:
+    """Inspect the exact eligible selection without changing any proposal or dispatching work."""
+    reviewed, selected = _parse_bulk_selection(review_tokens, [])
+    eligible = await preview_bulk_approval(session, reviewed, threshold=threshold / 100)
+    context = {
+        "threshold": threshold,
+        "eligible_count": len(eligible),
+        "skipped_count": len(set(selected)) - len(eligible),
+        "eligible_ids": [str(token.proposal_id) for token in eligible],
+        "review_tokens": [f"{token.proposal_id}|{token.updated_at.isoformat()}|{token.content_digest}" for token in eligible],
+    }
+    if wants_fragment(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_changes_bulk_preview.html",
+            context=context,
+            headers=DUAL_SHAPE_RESPONSE_HEADERS,
+        )
+    return JSONResponse(context, headers=DUAL_SHAPE_RESPONSE_HEADERS)

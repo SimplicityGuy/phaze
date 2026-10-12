@@ -40,7 +40,7 @@ def test_capability_modules_do_not_depend_back_on_facade_or_routers(module_path:
 class _FakeChangesReader:
     def __init__(self, result: ChangesReviewPage) -> None:
         self.result = result
-        self.call: tuple[AsyncSession, str, int, int] | None = None
+        self.call: tuple[AsyncSession, str, int, int, int] | None = None
 
     async def get_changes_review_page(
         self,
@@ -49,13 +49,15 @@ class _FakeChangesReader:
         status: str,
         page: int,
         page_size: int,
+        threshold: int = 90,
     ) -> ChangesReviewPage:
-        self.call = (session, status, page, page_size)
+        self.call = (session, status, page, page_size, threshold)
         return self.result
 
 
 @pytest.mark.asyncio
-async def test_facade_can_substitute_changes_review_port(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("threshold", [90, 99])
+async def test_facade_can_substitute_changes_review_port(monkeypatch: pytest.MonkeyPatch, threshold: int) -> None:
     result = review.ChangesReviewPage(
         rows=[],
         pagination=Pagination(page=1, page_size=25, total=0),
@@ -65,10 +67,10 @@ async def test_facade_can_substitute_changes_review_port(monkeypatch: pytest.Mon
     session = object()
     monkeypatch.setattr(review, "_changes_reader", lambda: fake)
 
-    actual = await review.get_changes_review_page(session, status="approved", page=2, page_size=25)  # type: ignore[arg-type]
+    actual = await review.get_changes_review_page(session, status="approved", page=2, page_size=25, threshold=threshold)  # type: ignore[arg-type]
 
     assert actual is result
-    assert fake.call == (session, "approved", 2, 25)
+    assert fake.call == (session, "approved", 2, 25, threshold)
 
 
 class _FailingNested:

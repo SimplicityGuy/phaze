@@ -144,9 +144,10 @@ async def get_changes_review_page(
     status: str,
     page: int,
     page_size: int,
+    threshold: int = 90,
 ) -> ChangesReviewPage:
     """Return atomic filename/destination decisions under the canonical review vocabulary."""
-    return await _changes_reader().get_changes_review_page(session, status=status, page=page, page_size=page_size)
+    return await _changes_reader().get_changes_review_page(session, status=status, page=page, page_size=page_size, threshold=threshold)
 
 
 async def get_pending_proposal_rows(session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows:

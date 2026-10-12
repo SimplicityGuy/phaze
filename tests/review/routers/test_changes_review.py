@@ -18,6 +18,51 @@ if TYPE_CHECKING:
     from phaze.models.proposal import RenameProposal
 
 
+@pytest.mark.parametrize("threshold", [89, 90, 99, 100])
+async def test_bulk_preview_and_write_threshold_bounds(client: AsyncClient, threshold: int) -> None:
+    preview = await client.post("/proposals/bulk/preview", data={"threshold": threshold})
+    write = await client.patch("/proposals/bulk", data={"action": "approve_eligible", "threshold": threshold})
+    expected = 200 if 90 <= threshold <= 99 else 422
+    assert preview.status_code == write.status_code == expected
+    if expected == 200:
+        assert preview.json() == {"threshold": threshold, "eligible_count": 0, "skipped_count": 0, "eligible_ids": [], "review_tokens": []}
+
+
+async def test_active_threshold_controls_visible_eligibility_and_wire_limit(
+    client: AsyncClient, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    await seed_pending_proposal(0.95, original_filename="threshold.mp3")
+    body = (await client.get("/s/rename?threshold=99")).text
+    assert "Below the 99% bulk-approval threshold" in body
+    assert "confidence is below 99% or unavailable" in body
+    assert 'name="threshold" value="99"' in body
+    token = html.unescape(re.findall(r'<input(?=[^>]*name="review_tokens")(?=[^>]*value="([^"]+)")[^>]*>', body)[0])
+    for url, method in [("/proposals/bulk/preview", client.post), ("/proposals/bulk", client.patch)]:
+        accepted = await method(url, data={"action": "approve_eligible", "review_tokens": [token] * 500, "threshold": 99})
+        assert accepted.status_code == 200
+        refused = await method(url, data={"action": "approve_eligible", "review_tokens": [token] * 501, "threshold": 99})
+        assert refused.status_code == 422
+
+
+@pytest.mark.parametrize("headers", [{}, {"HX-Request": "true"}, {"HX-Request": "true", "HX-History-Restore-Request": "true"}])
+async def test_preview_shape_and_confirmation_bind_original_eligible_selection(
+    client: AsyncClient, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]], headers: dict[str, str]
+) -> None:
+    proposal = await seed_pending_proposal(0.99, original_filename="preview.mp3")
+    rendered = (await client.get("/s/rename")).text
+    token = html.unescape(re.findall(r'<input(?=[^>]*name="review_tokens")(?=[^>]*value="([^"]+)")[^>]*>', rendered)[0])
+    response = await client.post("/proposals/bulk/preview", data={"review_tokens": token, "threshold": 99}, headers=headers)
+    assert response.status_code == 200
+    assert "HX-Request" in response.headers["vary"] and "no-store" in response.headers["cache-control"]
+    if headers == {"HX-Request": "true"}:
+        assert "Nothing has been approved" in response.text
+        assert "Confirm reviewed eligible selection" in response.text
+        assert html.escape(token, quote=True) in response.text
+    else:
+        assert response.json()["eligible_ids"] == [str(proposal.id)]
+        assert response.json()["review_tokens"] == [token]
+
+
 @pytest.mark.asyncio
 async def test_changes_review_is_the_only_navigation_approval_surface(
     client: AsyncClient,
@@ -171,3 +216,26 @@ async def test_pending_destination_collision_is_visible_and_cannot_be_approved(
         data={"expected_updated_at": first.updated_at.isoformat()},
     )
     assert response.status_code == 409
+
+
+async def test_individual_edit_and_undo_keep_active_bulk_threshold(
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    proposal = await seed_pending_proposal(0.95, original_filename="threshold-row.mp3")
+    body = (await client.get("/s/rename?threshold=99")).text
+    assert f"/proposals/{proposal.id}/edit?threshold=99" in body
+    edited = await client.patch(f"/proposals/{proposal.id}/edit?threshold=99", data={"proposed": "Reviewed.mp3"})
+    assert edited.status_code == 200
+    assert "Below the 99% bulk-approval threshold" in edited.text
+    assert "Eligible for selected bulk approval." not in edited.text
+    assert f"/proposals/{proposal.id}/approve?threshold=99" in edited.text
+    refused = await client.patch(f"/proposals/{proposal.id}/approve?threshold=100")
+    assert refused.status_code == 422
+    await session.refresh(proposal)
+    approved = await client.patch(f"/proposals/{proposal.id}/approve?threshold=99", data={"expected_updated_at": proposal.updated_at.isoformat()})
+    assert approved.status_code == 200
+    assert f"/proposals/{proposal.id}/undo?threshold=99" in approved.text
+    reverted = await client.patch(f"/proposals/{proposal.id}/undo?threshold=99")
+    assert reverted.status_code == 200
+    assert "Below the 99% bulk-approval threshold" in reverted.text
+    assert f"/proposals/{proposal.id}/edit?threshold=99" in reverted.text

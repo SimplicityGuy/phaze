@@ -884,6 +884,30 @@ async def test_bulk_approve_returns_zero_for_an_empty_selection(session: AsyncSe
     assert await bulk_approve_selected_above_confidence(session, []) == 0
 
 
+@pytest.mark.parametrize("threshold", [0.90, 0.93, 0.96, 0.99])
+async def test_preview_matches_collision_stale_and_threshold_guarded_write(session: AsyncSession, threshold: float) -> None:
+    rows = [
+        await _create_proposal(session, original_filename=f"preview-{i}.mp3", proposed_filename=f"Reviewed-{i}.mp3", confidence=confidence)
+        for i, confidence in enumerate([0.89, 0.90, 0.93, 0.96, 0.99, None])
+    ]
+    collision_a = await _create_proposal(session, original_filename="collision-a.mp3", proposed_filename="Collision.mp3", confidence=0.99)
+    collision_b = await _create_proposal(session, original_filename="collision-b.mp3", proposed_filename="Collision.mp3", confidence=0.99)
+    collision_a.proposed_path = collision_b.proposed_path = "Shared/Destination"
+    await session.commit()
+    rows += [collision_a, collision_b]
+    stale = await _create_proposal(session, original_filename="stale.mp3", proposed_filename="Stale.mp3", confidence=0.99)
+    tokens = [await _review_token_for(session, row) for row in [*rows, stale]]
+    await session.execute(update(RenameProposal).where(RenameProposal.id == stale.id).values(updated_at=stale.updated_at + timedelta(seconds=1)))
+    await session.commit()
+    eligible = await proposal_queries.preview_bulk_approval(session, [*tokens, tokens[0]], threshold=threshold)
+    assert {token.proposal_id for token in eligible} == {row.id for row in rows[:5] if row.confidence >= threshold}
+    assert await _live_status(session, rows[4].id) == ProposalStatus.PENDING, "preview must not approve"
+    assert await bulk_approve_selected_above_confidence(session, tokens, threshold=threshold) == len(eligible)
+    for row in [*rows, stale]:
+        expected = ProposalStatus.APPROVED if row.id in {token.proposal_id for token in eligible} else ProposalStatus.PENDING
+        assert await _live_status(session, row.id) == expected
+
+
 @pytest.mark.asyncio
 async def test_bulk_approve_returns_zero_when_no_selected_row_is_eligible(session: AsyncSession) -> None:
     """A non-empty selection none of which qualifies still commits and reports 0 -- no UPDATE at all.

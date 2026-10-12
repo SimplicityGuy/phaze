@@ -123,6 +123,7 @@
     "POST /pipeline/stages/{stage}/pause",
     "POST /pipeline/stages/{stage}/priority",
     "POST /pipeline/stages/{stage}/resume",
+    "POST /proposals/bulk/preview",
     "POST /recording-discogs/{media_id}/links/{link_id}",
     "POST /recording-discogs/{media_id}/match",
     "POST /tags/bulk-write-no-discrepancies",
@@ -1964,6 +1965,11 @@
       [
         "button",
         "",
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "button",
+        "",
         "{\"hx-disabled-elt\": \"this\"}"
       ],
       [
@@ -2239,6 +2245,11 @@
         "a",
         "config-trigger",
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
       ],
       [
         "button",
@@ -2655,6 +2666,11 @@
         "a",
         "config-trigger",
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
       ],
       [
         "button",

@@ -342,6 +342,40 @@ def _bulk_approve_statement(
     )
 
 
+async def _reviewed_bulk_candidates(
+    session: AsyncSession, tokens: list[ProposalReviewToken], *, threshold: float
+) -> tuple[list[RenameProposal], dict[uuid_mod.UUID, ProposalReviewToken]]:
+    """Read the same collision-aware, version-bound eligible set for preview and approval."""
+    token_by_id = _dedupe_review_tokens(tokens)
+    if not token_by_id:
+        return [], token_by_id
+    proposals = (
+        (
+            await session.execute(
+                select(RenameProposal)
+                .options(selectinload(RenameProposal.file))
+                .where(RenameProposal.id == func.any(bindparam("reviewed_proposal_ids", value=list(token_by_id), type_=ARRAY(PGUUID(as_uuid=True)))))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    collision_ids = await get_review_collision_ids(session)
+    return [
+        proposal
+        for proposal in proposals
+        if _is_eligible_for_bulk_approval(proposal, token_by_id[proposal.id], collision_ids=collision_ids, threshold=threshold)
+    ], token_by_id
+
+
+async def preview_bulk_approval(
+    session: AsyncSession, review_tokens: Iterable[ProposalReviewToken], *, threshold: float = 0.9
+) -> list[ProposalReviewToken]:
+    """Read-only eligibility at this instant; the subsequent write still rechecks its guards."""
+    reviewed, token_by_id = await _reviewed_bulk_candidates(session, list(review_tokens), threshold=threshold)
+    return [token_by_id[proposal.id] for proposal in reviewed]
+
+
 async def bulk_approve_selected_above_confidence(
     session: AsyncSession,
     review_tokens: Iterable[ProposalReviewToken],
@@ -378,24 +412,7 @@ async def bulk_approve_selected_above_confidence(
     tokens = list(review_tokens)
     if not tokens:
         return 0
-    token_by_id = _dedupe_review_tokens(tokens)
-    proposals = (
-        (
-            await session.execute(
-                select(RenameProposal)
-                .options(selectinload(RenameProposal.file))
-                .where(RenameProposal.id == func.any(bindparam("reviewed_proposal_ids", value=list(token_by_id), type_=ARRAY(PGUUID(as_uuid=True)))))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    collision_ids = await get_review_collision_ids(session)
-    reviewed = [
-        proposal
-        for proposal in proposals
-        if _is_eligible_for_bulk_approval(proposal, token_by_id[proposal.id], collision_ids=collision_ids, threshold=threshold)
-    ]
+    reviewed, token_by_id = await _reviewed_bulk_candidates(session, tokens, threshold=threshold)
     if not reviewed:
         await session.commit()
         return 0
