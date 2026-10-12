@@ -364,6 +364,18 @@ jobs:
         # passing a third `-n auto` arg here.
         run: just test-bucket ${{ matrix.bucket.name }} "${{ matrix.bucket.paths }}"
 
+      # Keep the exact report for complete per-node timing and population evidence; Codecov's
+      # parsed test-results export does not preserve every execution. A failed test run still
+      # produces useful XML, while a missing report must be visible rather than silently skipped.
+      - name: 📤 Upload raw shard test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: junit-${{ matrix.bucket.name }}
+          path: junit.xml
+          retention-days: 14
+          if-no-files-found: error
+
       - name: 📊 Upload test results to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
