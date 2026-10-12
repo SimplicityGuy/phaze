@@ -55,8 +55,8 @@ tracked file and outside the session transcript.
 
 ## Operator records that bind this provider
 
-Each record is restated from the epic description of phaze-oprdu (the durable record until ADR-0025 restated it; see
-`docs/design/0025-remote-provider-sources.md`). All were given on 2026-10-11 in the planning session for phaze-5lovg.
+Each record is restated from the epic description of phaze-oprdu (the durable record until the ADR
+`docs/design/0025-remote-provider-sources.md` restated it). All were given on 2026-10-11 in the planning session for phaze-5lovg.
 
 **Pacing.** On 2026-10-11 (bead phaze-oprdu) the operator was asked: "Terms of service and caching rights can't be determined from the
 API. How should that gate the plan?" The answer, verbatim: "no rate limit currently, but please be responsible, let's not innundate
