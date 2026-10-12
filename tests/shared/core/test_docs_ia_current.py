@@ -218,8 +218,8 @@ def test_database_reference_tracks_migration_head_and_set_profile_relationship()
     """The database reference follows the live Alembic head and the set-profile relationship."""
     heads = migration_heads(_REPO_ROOT)
     text = _read_text(_DATABASE)
-    assert heads == {"089"}
-    assert "head, **`089`**" in text
+    assert heads == {"090"}
+    assert "head, **`090`**" in text
     assert "| `set_profile`" in text
 
     from phaze.models.file import FileRecord

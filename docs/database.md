@@ -267,10 +267,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-089)
+### Post-baseline chain (040-090)
 
-`alembic/versions/` holds **51** files: the `039` baseline plus a linear chain to the current
-head, **`089`**.
+`alembic/versions/` holds **52** files: the `039` baseline plus a linear chain to the current
+head, **`090`**.
 
 | Rev | Change |
 |-----|--------|
@@ -323,7 +323,8 @@ head, **`089`**.
 | `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) |
 | `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) |
 | `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs (phaze-c5v4x) |
-| `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists (phaze-gan2z) — **head** |
+| `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists (phaze-gan2z) |
+| `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists (phaze-b6430) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
