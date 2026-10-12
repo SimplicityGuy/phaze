@@ -42,6 +42,7 @@ from phaze.services.backends.lane_metrics import (
 from phaze.services.backends.local import LocalBackend
 from phaze.services.backends.registry import resolve_backends
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.services.pipeline.common import mark_read_degraded
 from phaze.services.route_control import get_route_control
 
 
@@ -115,6 +116,7 @@ async def _admission_by_backend_id(session: AsyncSession) -> dict[str, dict[str,
         # exception -- not just a SQLAlchemy one -- degrading this to {} rather than raising into the
         # hot poll, so this stays an unnarrowed catch-all.
         logger.warning("backend_lane_admission_degraded", exc_info=True)
+        mark_read_degraded("backend_lane_admission")
         await _rollback_and_log(session, "backend_lane_admission_rollback_failed")
         return {}
     return {
