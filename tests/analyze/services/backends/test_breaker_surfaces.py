@@ -125,12 +125,18 @@ def test_lane_card_without_breaker_keys_is_not_held() -> None:
 
 
 def test_health_card_leads_with_a_held_lane() -> None:
-    """The Analysis Health card turns red and names the held lane and its reason."""
+    """The shared incident policy names the held lane once, with the same recovery link."""
     from phaze.routers.pipeline import templates
+    from phaze.routers.shell.summary import SummaryOverviewInputs
+    from phaze.services.attention import derive_attention_items
 
-    body = templates.get_template("pipeline/partials/analysis_failed_card.html").render(lanes=[_held_lane(breaker_reason=None)], oob=False)
+    inputs = SummaryOverviewInputs(0, 0, 1, {}, 0, 0, 0, None, 0, {"metadata": False, "analyze": False}, 0, 0, 0, 0, lanes=[_held_lane()])
+    incidents = derive_attention_items({}, {}, (0, 0, 0), inputs)
+    body = templates.get_template("pipeline/partials/analysis_failed_card.html").render(
+        analysis_incidents=incidents, analysis_incidents_known=True, oob=False
+    )
 
-    assert 'role="alert"' in body
     assert "border-red-300" in body
-    assert "KUEUE · burst cannot reach the control plane" in body
-    assert "Breaker open." in body
+    assert body.count('data-incident-id="lane:burst:held"') == 1
+    assert _REASON in body
+    assert 'href="/s/analyze?lane=burst"' in body

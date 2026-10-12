@@ -3,8 +3,8 @@
 {% elif attention_items %}
 <ol class="space-y-3">
     {% for item in attention_items %}
-    <li class="min-w-0 border-b border-gray-200 pb-3 last:border-0 dark:border-phaze-border">
-        <h3 class="text-sm font-semibold {% if item.tone == 'danger' %}text-danger{% else %}text-warn{% endif %}">{{ item.title }}</h3>
+    <li data-incident-id="{{ item.id }}" data-incident-tone="{{ item.tone }}" class="min-w-0 border-b border-gray-200 pb-3 last:border-0 dark:border-phaze-border">
+        <h3 class="text-sm font-semibold {% if item.tone == 'danger' %}text-danger{% else %}text-warn{% endif %}">{{ item.title }} <span class="font-mono">· {{ item.count | thousands }}</span></h3>
         <p class="mt-1 text-xs text-muted">{{ item.detail }}</p>
         <a href="{{ item.href }}" hx-get="{{ item.href }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
            class="mt-2 inline-flex rounded text-xs font-semibold text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{{ item.action }}</a>

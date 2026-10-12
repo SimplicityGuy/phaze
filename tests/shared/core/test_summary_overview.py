@@ -81,7 +81,7 @@ def test_empty_and_partially_configured_states_recommend_real_destinations() -> 
     partial = _derive(_progress(total=0), active_fileservers=0)
     assert partial["is_partially_configured"] is True
     assert partial["attention"][0]["href"] == "/s/agents"  # type: ignore[index]
-    assert partial["recommended"]["title"] == "No file-server agent available"  # type: ignore[index]
+    assert partial["recommended"]["title"] == "Review pipeline incidents"  # type: ignore[index]
 
 
 def test_complete_state_has_no_attention_and_reports_parallel_enrichment() -> None:
@@ -119,14 +119,12 @@ def test_degraded_state_prioritizes_failures_then_orphans_and_capacity() -> None
         "Analysis failures",
         "Orphaned work",
         "Cloud jobs blocked by configuration",
-        "Files awaiting cloud routing",
-        "Cloud quota wait",
     ]
-    assert summary["recommended"]["href"] == "/s/files?stage=metadata&bucket=failed&scope=media"  # type: ignore[index]
+    assert summary["recommended"]["href"] == "#needs-attention-title"  # type: ignore[index]
     orphan_item = next(item for item in summary["attention"] if item["title"] == "Orphaned work")  # type: ignore[attr-defined,index]
     assert orphan_item["detail"] == "3 scheduled file(s) have no live job or domain result."
-    assert orphan_item["action"] == "Open Discover"
-    assert orphan_item["href"] == "/s/discover"
+    assert orphan_item["action"] == "Open recovery"
+    assert orphan_item["href"] == "/s/analyze#analyze-recovery"
 
 
 def test_in_flight_enrichment_recommends_runnable_parallel_work_then_monitoring() -> None:
@@ -148,7 +146,7 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
         _progress(metadata={"not_started": 4}, analyze={"not_started": 0, "done": 4}),
         stage_paused={"metadata": True, "analyze": False},
     )
-    assert metadata_paused["recommended"]["title"] == "Metadata enrichment is paused"  # type: ignore[index]
+    assert metadata_paused["recommended"]["title"] == "Review pipeline incidents"  # type: ignore[index]
     paused_attention = next(item for item in metadata_paused["attention"] if item["title"] == "Metadata enrichment is paused")  # type: ignore[union-attr]
     assert paused_attention["href"] == "/s/metadata"
     assert "4 not started" in paused_attention["detail"]
@@ -157,7 +155,7 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
         _progress(),
         stage_paused={"metadata": True, "analyze": False},
     )
-    assert paused_attention_stays_prioritized["recommended"]["title"] == "Metadata enrichment is paused"  # type: ignore[index]
+    assert paused_attention_stays_prioritized["recommended"]["title"] == "Review pipeline incidents"  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
@@ -165,11 +163,6 @@ def test_paused_stage_is_not_recommended_as_new_work() -> None:
     [
         ("cloud routing disabled", "/s/runtime-config", "Open Config"),
         ("held — cloud routing paused (force-local)", "/s/runtime-config", "Open Config"),
-        ("held — no cloud backend reachable", "/s/agents", "Open Agents & clusters"),
-        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Open Agents & clusters"),
-        ("held — no fileserver agent online", "/s/agents", "Open Agents & clusters"),
-        ("queued — 2 free slots, dispatching on next drain tick (~5 min)", "/s/analyze", "Open Analyze"),
-        ("held", "/s/analyze", "Open Analyze"),
     ],
 )
 def test_awaiting_cloud_reuses_exact_reason_and_routes_to_the_relevant_workspace(reason: str, href: str, action: str) -> None:

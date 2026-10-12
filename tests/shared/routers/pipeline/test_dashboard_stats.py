@@ -6,6 +6,9 @@ GET /pipeline/, /pipeline/stats, build_dashboard_context, and the cloud admissio
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
+
+from bs4 import BeautifulSoup
 
 from tests.shared.routers.pipeline._shared import (
     _ALL_SIX_CARD_IDS,
@@ -15,6 +18,7 @@ from tests.shared.routers.pipeline._shared import (
     CloudPhase,
     _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
     _make_file,
+    _publish_analysis_attention,
     _seed_analysis_failed,
     _seed_cloud_phase,
     _seed_running_scan,
@@ -328,72 +332,81 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
 
 @pytest.mark.asyncio
 async def test_dashboard_renders_analysis_health_card(client: AsyncClient) -> None:
-    """GET /pipeline/ renders the Analysis Health card with both buckets (zero by default)."""
+    """The existing OOB host reports an unmeasured incident snapshot honestly."""
+    from phaze.services.pipeline.attention_snapshot import set_attention_snapshot
+
+    set_attention_snapshot([], known=False)
     response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="analysis-health-card"' in response.text
-    assert "Stalled" in response.text
-    assert "Analysis failed" in response.text
+    assert "Incident status unavailable" in response.text
+    assert "No actionable analysis exceptions" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot_known", [False, True])
+async def test_unavailable_failure_read_does_not_render_zero_as_no_terminal_failures(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, snapshot_known: bool
+) -> None:
+    """A real stats route fallback must not reassure the operator that seeded failures vanished."""
+    from phaze.services.pipeline.attention_snapshot import set_attention_snapshot
+
+    await _seed_analysis_failed(session, 3)
+    if snapshot_known:
+        await _publish_analysis_attention(session)
+    else:
+        set_attention_snapshot([], known=False)
+    monkeypatch.setattr(
+        "phaze.routers.pipeline.dashboard_stats.get_analysis_failed_count",
+        AsyncMock(side_effect=RuntimeError("synthetic failure measurement unavailable")),
+    )
+    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    card = BeautifulSoup(response.text, "html.parser").select_one("#analysis-health-card")
+    assert card is not None
+    assert ("Incident status unavailable" in card.get_text()) is (not snapshot_known)
+    assert bool(card.select('[data-incident-id="analysis-failed"]')) is snapshot_known
+    if snapshot_known:
+        assert "3 file(s) reached terminal failure" in card.get_text()
+    assert "Refresh the measurement before deciding whether failures need retry" in card.get_text()
+    assert "No terminal failures" not in card.get_text()
+    assert card.select_one("#analysis-health-details") is not None
+    assert not card.select("[hx-post]")
 
 
 @pytest.mark.asyncio
 async def test_dashboard_seeds_analysis_failed_count(client: AsyncClient, session: AsyncSession) -> None:
-    """A file in ANALYSIS_FAILED bumps analysis_failed_count into the dashboard card render."""
+    """Shared snapshot failure counts render once, with a direct failed-file link."""
     await _seed_analysis_failed(session, 3)
-
-    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    await _publish_analysis_attention(session)
+    response = await client.get("/pipeline/stats")
     assert response.status_code == 200
-    # The failed bucket count (3) renders inside the card's red panel.
-    assert "Analysis failed" in response.text
-    # The count value reaches the card (degrade-safe service returns the real count).
-    import re
-
-    card = re.search(r'id="analysis-health-card".*', response.text, re.DOTALL)
-    assert card is not None
-    assert ">3<" in card.group(0)
+    assert response.text.count('data-incident-id="analysis-failed"') == 1
+    assert "3 file(s) reached terminal failure" in response.text
+    assert 'href="/s/files?stage=analyze&amp;bucket=failed&amp;scope=media"' in response.text
 
 
 @pytest.mark.asyncio
 async def test_dashboard_seeds_analysis_stalled_count(client: AsyncClient, session: AsyncSession) -> None:
-    """A heartbeat-STALLED failure bumps analysis_stalled_count; a non-stall failure does not (phaze-g84sk).
-
-    Seeds one stalled (error_message="timeout: ...") and one crashed (non-stall) ANALYSIS_FAILED
-    file: the amber Stalled tile must read 1 (not 2), proving the reader filters on the reason
-    prefix rather than counting every ANALYSIS_FAILED file.
-    """
+    """The watchdog subset remains part of its single terminal-failure cause, rather than a second incident."""
     await _seed_analysis_failed(session, 1, stalled=True)
     await _seed_analysis_failed(session, 1, stalled=False)
-
-    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    await _publish_analysis_attention(session)
+    response = await client.get("/pipeline/stats")
     assert response.status_code == 200
-    assert "Stalled" in response.text
-    import re
-
-    card = re.search(r'id="analysis-health-card".*', response.text, re.DOTALL)
-    assert card is not None
-    stalled_tile = card.group(0).split("Stalled")[0]
-    assert ">1<" in stalled_tile, "exactly one of the two failures was a heartbeat stall"
+    assert response.text.count('data-incident-id="analysis-failed"') == 1
+    assert "2 file(s) reached terminal failure; 1 stopped by the progress watchdog" in response.text
 
 
 @pytest.mark.asyncio
 async def test_stats_partial_seeds_counts_and_oob_card(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /pipeline/stats re-pushes the Analysis Health card out-of-band on the 5s poll.
-
-    The stats partial seeds analysis_failed_count + analysis_stalled_count into context and
-    emits the card with hx-swap-oob="true" (it lives outside #pipeline-stats, so the innerHTML
-    swap can never reach it). A seeded stalled ANALYSIS_FAILED file proves both counts ride the
-    poll.
-    """
+    """The shared incident list remains on the existing five-second OOB host."""
     await _seed_analysis_failed(session, 2, stalled=True)
-
+    await _publish_analysis_attention(session)
     response = await client.get("/pipeline/stats")
     assert response.status_code == 200
-    # OOB card re-render on the poll tick.
-    assert 'id="analysis-health-card"' in response.text
-    assert 'hx-swap-oob="true"' in response.text
-    # Both bucket labels present; the seeded failed+stalled counts (2 each) ride the poll context.
-    assert "Stalled" in response.text
-    assert "Analysis failed" in response.text
+    assert 'id="analysis-health-card" hx-swap-oob="true"' in response.text
+    assert "2 file(s) reached terminal failure; 2 stopped by the progress watchdog" in response.text
 
 
 def test_queue_progress_percent_formula() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 import uuid
 
 from bs4 import BeautifulSoup
@@ -13,6 +14,7 @@ from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import get_metadata_selection_summary, get_metadata_status_snapshot
+from phaze.services.pipeline.orphans import _compute_stage_orphan_counts
 
 
 if TYPE_CHECKING:
@@ -39,7 +41,15 @@ def _file(name: str, *, missing: bool = False) -> FileRecord:
 
 
 @pytest.mark.asyncio
-async def test_failure_attention_reaches_resolved_duplicate_with_no_eligible_files(client: AsyncClient, session: AsyncSession) -> None:
+async def test_failure_attention_reaches_resolved_duplicate_with_no_eligible_files(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pre-lifespan client has no lane measurement. Supply a measured lane while
+    # retaining the real SQL failure population and navigation endpoints.
+    monkeypatch.setattr(
+        "phaze.routers.shell.summary.get_backend_lane_snapshot",
+        AsyncMock(return_value=[{"id": "local", "kind": "local", "available": True, "stuck": 0}]),
+    )
     failed, keeper = _file("resolved-failure.mp3"), _file("successful-keeper.mp3")
     session.add_all([failed, keeper])
     await session.flush()
@@ -51,12 +61,15 @@ async def test_failure_attention_reaches_resolved_duplicate_with_no_eligible_fil
         ]
     )
     await session.commit()
+    orphan_counts = await _compute_stage_orphan_counts(session)
+    monkeypatch.setattr("phaze.routers.shell.summary.get_cached_stage_orphan_counts", lambda: orphan_counts)
+    monkeypatch.setattr("phaze.routers.shell.summary.stage_orphan_counts_known", lambda: True)
     assert (await get_metadata_status_snapshot(session)).failed == 1
     assert (await get_metadata_selection_summary(session)).eligible_count == 0
 
     summary = await client.get("/s/summary")
     assert summary.status_code == 200
-    summary_link = BeautifulSoup(summary.text, "html.parser").find("a", string="Open Files")
+    summary_link = BeautifulSoup(summary.text, "html.parser").select_one('[data-incident-id="metadata-failed"] a')
     assert summary_link is not None
     href = str(summary_link["href"])
     assert href == "/s/files?stage=metadata&bucket=failed&scope=media"

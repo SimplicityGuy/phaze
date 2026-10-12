@@ -129,7 +129,7 @@ def _all_summary_actions() -> list[dict[str, object]]:
             progress | {"metadata": done | {"not_started": 4, "done": 0}, "analyze": done},
             calm | {"stage_paused": {"metadata": True, "analyze": False}},
         ),
-        ({**progress, "discovery": {"done": 0, "total": 0}}, calm),
+        ({**progress, "discovery": {"done": 0, "total": 0}, "metadata": done | {"failed": 0}, "analyze": done | {"failed": 0}}, calm),
     ]
     actions: list[dict[str, object]] = []
     for scenario_progress, overrides in scenarios:
@@ -141,14 +141,25 @@ def _all_summary_actions() -> list[dict[str, object]]:
 
 
 def test_summary_link_labels_name_the_page_they_open() -> None:
-    """Every Summary alert / recommendation link reads ``Open <page name>`` for the page its href opens."""
+    """Ordinary navigation names its page; incident links identify their specific recovery destination."""
     actions = _all_summary_actions()
     assert actions, "the scenarios produced no summary actions at all"
     seen_hrefs = set()
     for item in actions:
-        stage = urlsplit(str(item["href"])).path.removeprefix("/s/")
+        href = str(item["href"])
+        if href == "#needs-attention-title":
+            assert item["action"] == "Review incidents"
+            continue
+        stage = urlsplit(href).path.removeprefix("/s/")
         assert stage in PAGE_NAMES, f"{item['href']!r} is not a shell page"
-        assert item["action"] == open_label(stage), item
+        if item.get("id") == "analysis-failed":
+            assert href == "/s/files?stage=analyze&bucket=failed&scope=media"
+            assert item["action"] == "Open failed files"
+        elif item.get("id") == "pipeline-orphans":
+            assert href == "/s/analyze#analyze-recovery"
+            assert item["action"] == "Open recovery"
+        else:
+            assert item["action"] == open_label(stage), item
         seen_hrefs.add(stage)
     # The two labels the review named as lying must have been exercised, not merely absent.
     assert {"discover", "agents", "runtime-config", "apply", "rename", "files"} <= seen_hrefs

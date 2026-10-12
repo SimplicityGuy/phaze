@@ -396,13 +396,16 @@ async def test_snapshot_still_grants_the_probe_when_arming_fails(session: AsyncS
 @pytest.mark.asyncio
 async def test_open_breakers_read_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """A breaker read that cannot complete reports every backend closed rather than silently stopping the lane."""
+    from phaze.services.pipeline.common import capture_read_degradations
 
     class _Broken:
         def begin_nested(self) -> Any:
             raise RuntimeError("db down")
 
     monkeypatch.setattr(backend_breaker.logger, "warning", lambda *_a, **_k: None)
-    assert await backend_breaker.load_open_breakers(_Broken()) == {}  # type: ignore[arg-type]
+    with capture_read_degradations() as failures:
+        assert await backend_breaker.load_open_breakers(_Broken()) == {}  # type: ignore[arg-type]
+    assert failures == ["backend_breakers"], "unchanged scheduler fallback must not become a measured healthy attention snapshot"
 
 
 @pytest.mark.asyncio
