@@ -1,0 +1,19 @@
+# Durable reviewed tag revision authorization
+
+`phaze-83205` closes the gap between initial tag review validation and the transaction that records a queued write or bulk NO_OP. Every genuine review token already contains the media and metadata revisions. The shared durable validator now reads those scalar revisions directly from Postgres and refuses changed, inserted or deleted metadata, or a changed media revision, before creating the audit row or dispatching a job. The existing selected companion, legacy tracklist and accepted Discogs checks remain in that same validator.
+
+This matters for bulk approval: candidates are copied before dispatch begins, and an earlier candidate commits independently. A normal metadata callback can commit a correction for a later candidate during that interval. The earlier accepted candidate remains queued; the stale later candidate records neither a queued audit nor a terminal NO_OP and needs refreshed review. Per-row approval uses the same durable check after its initial token validation.
+
+## Lock and commit boundary
+
+The existing selected-source guard takes ordered `FOR UPDATE` media/source-file locks, then selection and companion locks. Revision validation runs after that guard, reads the current media revision, and takes `FOR SHARE` on an existing metadata row. That metadata lock prevents updates and deletion until the authorization transaction commits. When metadata was absent, there is no metadata row to lock: the media `FOR UPDATE` lock instead conflicts with the foreign-key `KEY SHARE` check for a new metadata insertion. Independent-connection regressions observe both real waiting callbacks and their completion after the authorization commit.
+
+The ordinary metadata callback upserts metadata and clears its scheduling ledger before committing; it introduces no reverse metadata-to-media explicit row-lock acquisition. Its insertion path uses the ordinary foreign-key parent check. This change preserves the selected-source guard's existing file ordering and adds the metadata lock afterwards. It does not add a new lock to the callback or change callback retries.
+
+The enqueue transaction still commits its QUEUED audit before dispatch. Later extraction does not revoke an already-authorized queued payload. This is an authorization fence, not a worker-time freshness policy, a disk lease replacement, an atomic media rewrite, or a metadata backfill. The executor ownership and partial-save Undo contracts remain unchanged. Tokens rendered before deployment remain structurally valid when their source revisions are still current; a changed revision requires fresh review.
+
+## Regression evidence
+
+The new real-Postgres controls obtain genuine rendered review tokens, validate candidates through the real router, and commit the ordinary metadata callback on a separate connection after an earlier candidate has durably queued. They cover changed metadata, changed media, missing-to-present metadata, deleted metadata, stale bulk NO_OP and the shorter per-row validation-to-enqueue gap. They assert that the stale candidate has no audit and no dispatched payload while an earlier accepted candidate remains durable. Another control retains the authorized payload after a subsequent callback. Two bounded waiter controls observe update and missing-row insertion fences until commit.
+
+The captured dispatch uses the production SAQ serialize/deserialize consumer through the shared fake queue. No broker delivery, agent process, real music file or disk write is claimed by these controls. Existing real-format writes, executor ownership, selected-source, legacy, Discogs, normal bulk/per-row and Undo controls remain in the suite. A bounded negative control removes only the new revision refusal and must fail on the stale candidate's durable acceptance; the source is restored byte-for-byte afterwards.

@@ -44,6 +44,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Coverage Generation Disposition](quality-implementation/coverage-generation-disposition.md)** | 📏 Installed Repowise capability evidence and safe non-adoption of immutable generation publication |
 | **[Selector Equivalence Disposition](quality-implementation/selector-equivalence-disposition.md)** | Preserved selection authority, unfulfilled shadow prerequisites and explicit pilot exclusion |
 | **[Partial Tag-Save Undo Recovery](quality-implementation/tag-partial-save-undo.md)** | Partial-save audit classification, original Undo anchors, rollout ordering and regression evidence |
+| **[Durable Reviewed Tag Revisions](quality-implementation/tag-reviewed-revision.md)** | Revision refusal at queued/NO_OP authorization, metadata callback locks and regression limits |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
