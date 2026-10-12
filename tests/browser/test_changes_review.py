@@ -10,7 +10,7 @@ server-side assertion in the repo.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -19,6 +19,58 @@ from tests.browser.helpers import open_shell, settled
 
 
 pytestmark = pytest.mark.browser
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
+    from pathlib import Path
+
+    from playwright.async_api import Page
+
+    from tests.browser.seed import Seeder
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_bulk_preview_requires_confirmation_of_only_reviewed_eligible_rows(
+    page_at: Callable[..., AbstractAsyncContextManager[Page]], seed: Seeder, theme: str, tmp_path: Path
+) -> None:
+    eligible = await seed.proposal(filename="preview-high.mp3", confidence=0.99)
+    low = await seed.proposal(filename="preview-low.mp3", confidence=0.95)
+    async with page_at(viewport="phone", theme=theme) as page:
+        await open_shell(page, "/s/rename?threshold=99")
+        patches: list[str] = []
+        page.on("request", lambda request: patches.append(request.url) if request.method == "PATCH" else None)
+        for name in ("preview-high.mp3", "preview-low.mp3"):
+            await page.get_by_role("checkbox", name=f"Select {name}", exact=True).check()
+        await page.get_by_role("button", name="Preview eligible selection", exact=True).click()
+        preview = page.get_by_role("region", name="Bulk approval preview")
+        await preview.get_by_text("1 eligible at 99% · 1 excluded", exact=True).wait_for()
+        assert patches == []
+        assert await preview.locator('input[name="review_tokens"]').count() == 1
+        assert str(eligible.id) in (await preview.locator('input[name="review_tokens"]').input_value())
+        assert await page.locator(f"#rename-row-{eligible.id}").get_by_role("button", name="APPROVE", exact=True).count() == 1
+        await preview.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / f"bulk-preview-{theme}.png"), full_page=True)
+        page.once("dialog", lambda dialog: dialog.dismiss())
+        await preview.get_by_role("button", name="Confirm reviewed eligible selection", exact=True).click()
+        assert patches == []
+        page.once("dialog", lambda dialog: dialog.accept())
+        await preview.get_by_role("button", name="Confirm reviewed eligible selection", exact=True).click()
+        await page.get_by_text("1 proposal approved.", exact=True).wait_for()
+        assert len(patches) == 1
+        assert await page.locator(f"#rename-row-{eligible.id}").count() == 0
+        assert await page.locator(f"#rename-row-{low.id}").count() == 1
+        undo = page.get_by_role("button", name="Undo this approval batch", exact=True)
+        await undo.scroll_into_view_if_needed()
+        await page.screenshot(path=str(tmp_path / f"bulk-undo-{theme}.png"), full_page=True)
+        page.once("dialog", lambda dialog: dialog.accept())
+        await undo.click()
+        await page.get_by_text("1 reverted, 0 skipped. Edited, executed, or conflicting versions cannot be reverted.", exact=True).wait_for()
+        assert len(patches) == 2
+        assert await page.locator(f"#rename-row-{eligible.id}").count() == 1
+        assert await page.locator(f"#rename-row-{low.id}").count() == 1
+        assert await page.locator('input[name="threshold"]').input_value() == "99"
 
 
 async def test_approving_one_proposal_swaps_only_that_row(page: Any, seed: Any) -> None:
