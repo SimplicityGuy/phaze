@@ -74,19 +74,52 @@ async def test_details_reopen_after_clicking_close(page: Any, seed: Any, identit
         assert await trigger.evaluate("el => el === document.activeElement"), "close must return focus before removing the row"
 
 
-async def test_header_counts_all_configured_lanes_including_idle_clusters(page: Any) -> None:
+async def test_header_health_pill_survives_stats_poll_and_fits_phone(page: Any) -> None:
     await open_shell(page, "/s/agents")
     await settled(page)
     assert await page.locator("header").evaluate("el => getComputedStyle(el).display") == "flex", "build the stylesheet with just tailwind"
-    inventory = page.get_by_role("link", name="3 configured lanes; 2 configured clusters", exact=True)
-    await inventory.wait_for(state="visible")
-    assert "Lanes" in await inventory.inner_text()
-    assert "Clusters" in await inventory.inner_text()
-    # A poll must retain inventory totals even though both clusters have no running jobs.
+    pill = page.get_by_role("button").and_(page.locator("#attention-pill"))
+    await pill.wait_for(state="visible")
+    assert await pill.get_attribute("aria-controls") == "attention-tray"
+    assert await pill.get_attribute("aria-expanded") == "false"
+
+    async def assert_health_cue() -> None:
+        state = await page.evaluate("() => ({...Alpine.store('pipeline')})")
+        # Inventory remains actual configured capacity; it is not the health count.
+        assert state["laneCount"] == 3
+        assert state["clusterCount"] == 2
+        known = state["seedKnown"] and state["attentionKnown"]
+        label = await pill.get_attribute("aria-label")
+        assert label == await pill.get_attribute("title")
+        if known:
+            count = str(state["attentionCount"])
+            status = "Healthy" if state["attentionCount"] == 0 else "Attention"
+            assert " ".join((await pill.inner_text()).split()) == f"{status} {count}"
+            assert label == f"{count} attention items; open attention tray"
+        else:
+            assert " ".join((await pill.inner_text()).split()) == "Health —"
+            assert label == "Attention status unavailable; open attention tray"
+
+    await assert_health_cue()
+    # Prove the existing real poll retains truthful capacity and the health cue.
     async with page.expect_response(lambda response: "/pipeline/stats" in response.url and response.status == 200):
         pass
-    await inventory.wait_for(state="visible")
+    await settled(page)
+    await assert_health_cue()
     await page.set_viewport_size({"width": 390, "height": 844})
     await page.wait_for_function("() => window.innerWidth === 390")
     geometry = await page.locator("header").evaluate("el => ({width: el.scrollWidth, viewport: window.innerWidth})")
-    assert geometry["width"] <= geometry["viewport"], f"inventory badges must fit a phone header: {geometry}"
+    assert geometry["width"] <= geometry["viewport"], f"health controls must fit a phone header: {geometry}"
+    await pill.focus()
+    async with page.expect_response(lambda response: "/shell/attention" in response.url and response.status == 200):
+        await page.keyboard.press("Enter")
+    tray = page.locator("#attention-tray")
+    await tray.wait_for(state="visible")
+    assert await pill.get_attribute("aria-expanded") == "true"
+    assert await tray.get_attribute("aria-labelledby") == "attention-tray-heading"
+    assert await tray.get_attribute("aria-modal") is None
+    await page.wait_for_function("document.activeElement.id === 'attention-tray-heading'")
+    await page.keyboard.press("Escape")
+    await tray.wait_for(state="hidden")
+    await page.wait_for_function("document.activeElement.id === 'attention-pill'")
+    assert await pill.get_attribute("aria-expanded") == "false"
