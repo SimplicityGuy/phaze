@@ -138,6 +138,29 @@ Validators are **recorded evidence only** under this record. A weak `ETag` is ne
 The transport sends no conditional requests: conditional requests are unverified for MixesDB (epic
 phaze-oprdu), and enabling them is a later decision.
 
+#### Amendment (2026-10-12): conditional requests stay off in the transport
+
+The MixesDB probe (`docs/spikes/phaze-ue40z-mixesdb-slash-key-pagination-conditional.md`) has since
+verified `If-None-Match` and `If-Modified-Since` on the page route: 304 on a match, 200 otherwise. The
+transport bead still does **not** send a stored validator. The rule above stands. The reasons:
+
+1. A 304 has no typed outcome. `OutcomeStatus` has no member for "unchanged since the stored snapshot",
+   and an empty `found` is forbidden. Adding one is a contract change, and the transport cannot make it.
+2. A reference has no field for a header, by section 1. So the stored `ETag` would have to come from
+   core storage, keyed by identity, and that lookup belongs to the orchestration bead's reuse path.
+   That path does not exist yet.
+3. A 304 is charged against pacing and budget like any other request. It saves bytes, not requests.
+
+A 304 that arrives anyway is charged and maps to `unavailable` with code `http_304_not_requested`,
+never to `found`. To enable conditional requests later, three things are needed together: a contract
+outcome for "unchanged", a core-side validator lookup by identity, and orchestration reuse of the
+stored snapshot on that outcome. The `ETag` stays recorded evidence, not a revision, as above.
+
+This is an implementer's decision, made for bead phaze-gan2z on 2026-10-12 without putting it to the
+operator. The other transport choices are implementer's choices too, and they are documented in
+`src/phaze/services/remote_transport.py` and `src/phaze/tracklist_providers/host_profile.py`: no
+redirect is followed, the effect never retries by itself, and the conservative pacing defaults.
+
 **Serialization invariant.** An unset `validators` is omitted from every serialization of a
 `SourceRead`. Two consumers make this load-bearing:
 
