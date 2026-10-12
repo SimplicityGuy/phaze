@@ -1492,8 +1492,8 @@ async def test_dispatch_bulk_candidate_persists_a_noop_marker_for_a_zero_change_
     loaded = await _get_file_with_metadata(session, file_record.id)
     assert loaded is not None
     candidate = _snapshot_bulk_candidate(loaded)
-    reviewed = {"before": {}, "sources": {}}
     proposed = {"artist": "Old Artist", "title": "Old Title"}  # matches current metadata exactly
+    reviewed = _tag_review_payload(loaded, await _get_tracklist_for_file(session, file_record.id), None, proposed)
 
     outcome = await _dispatch_bulk_candidate(session, MagicMock(), candidate, {file_record.id: (reviewed, proposed)})
 
@@ -1514,8 +1514,8 @@ async def test_run_bulk_candidates_tallies_noop_outcomes(client: AsyncClient, se
     loaded = await _get_file_with_metadata(session, file_record.id)
     assert loaded is not None
     candidate = _snapshot_bulk_candidate(loaded)
-    reviewed = {"before": {}, "sources": {}}
     proposed = {"artist": "Old Artist", "title": "Old Title"}
+    reviewed = _tag_review_payload(loaded, await _get_tracklist_for_file(session, file_record.id), None, proposed)
 
     queued, noop, failed, resolved_ids = await _run_bulk_candidates(session, MagicMock(), [candidate], {file_record.id: (reviewed, proposed)})
 

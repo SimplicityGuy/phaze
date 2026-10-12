@@ -7,8 +7,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import uuid
 
 from bs4 import BeautifulSoup
+from httpx import AsyncClient
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.main import create_app
 from phaze.models.agent import Agent
@@ -293,6 +294,8 @@ async def test_new_raw_review_hides_old_candidates_and_keeps_current_selection(c
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id), actor="reviewer")
     source_id = (await session.get(ProviderSourceObservation, raw)).object_id
+    unchanged = await client.get(f"/files/{media.id}/companion-details", headers=HX)
+    assert "data-unselected-source-version" not in unchanged.text
     companion.sha256_hash = "b" * 64
     await session.flush()
     envelope = report(companion)
@@ -302,6 +305,9 @@ async def test_new_raw_review_hides_old_candidates_and_keeps_current_selection(c
     soup = BeautifulSoup(overview.text, "html.parser")
     current = soup.select_one('[data-current-source="tracklist"]')
     assert "First" in current.get_text()
+    card = soup.select_one(f'[data-source-object="{source_id}"]')
+    assert "New version — not selected" in card.get_text()
+    assert "Previous tracklist is still in use" in card.get_text()
     evidence = current.select_one('[hx-get*="/api/local-sources/recordings/"]')
     assert evidence is not None and evidence.find_parent("details") is not None
     assert evidence["hx-get"].endswith("?kind=tracklist")
@@ -315,6 +321,31 @@ async def test_new_raw_review_hides_old_candidates_and_keeps_current_selection(c
     pinned = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
     assert "First" in pinned.text and "New version" not in pinned.text
     assert "Use this tracklist" not in pinned.text
+
+
+async def test_new_version_notice_names_only_the_selection_still_using_previous_text(client: AsyncClient, session: AsyncSession) -> None:
+    """Independent tracklist/release choices must not label a partly selected version unselected everywhere."""
+    media, companion, raw = await inventory(session, "Artist: Original\nAlbum: Old release\n01. Artist - First\n", "nfo")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    old_track = await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id), actor="reviewer")
+    await decide_local_source(session, decision(media, companion, imported.release_observation_id, kind="release_metadata"), actor="reviewer")
+    companion.sha256_hash = "b" * 64
+    await session.flush()
+    envelope = report(companion)
+    envelope = envelope.model_copy(
+        update={"read": envelope.read.model_copy(update={"text": "Artist: New\nAlbum: New release\n01. Artist - Latest\n"})}
+    )
+    captured = await store_capture_report(session, companion.agent_id, envelope)
+    latest = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=captured.observation_id))
+    command = decision(media, companion, latest.tracklist_observation_id, token=old_track.selection_token)
+    await decide_local_source(session, command.model_copy(update={"accept_conflict": True}), actor="reviewer")
+    response = await client.get(f"/files/{media.id}/companion-details", headers=HX)
+    soup = BeautifulSoup(response.text, "html.parser")
+    notice = soup.select_one("[data-unselected-source-version]")
+    assert "not selected for release info" in notice.get_text()
+    assert "tracklist" not in notice.get_text()
+    assert "Latest" in soup.select_one('[data-current-source="tracklist"]').get_text()
+    assert "Old release" in soup.select_one('[data-current-source="release_metadata"]').get_text()
 
 
 async def test_source_review_includes_supported_parser_generations_for_same_capture(client, session):
