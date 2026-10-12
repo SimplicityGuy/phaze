@@ -922,7 +922,7 @@ async def test_bulk_undo_restores_only_returned_unchanged_approved_versions(sess
     await session.execute(
         update(RenameProposal)
         .where(RenameProposal.id == rows[1].id)
-        .values(proposed_filename="Edited.mp3", updated_at=rows[1].updated_at + timedelta(seconds=5))
+        .values(proposed_filename="Edited.mp3", updated_at=stored[rows[1].id] + timedelta(seconds=5))
     )
     await session.execute(update(RenameProposal).where(RenameProposal.id == rows[2].id).values(status=ProposalStatus.EXECUTED.value))
     await session.commit()
@@ -1297,3 +1297,62 @@ async def test_bulk_approve_commits_nothing_when_the_batched_write_fails(
 
     for proposal_id in proposal_ids:
         assert await _live_status(session, proposal_id) == ProposalStatus.PENDING
+
+
+@pytest.mark.parametrize("eligible_total", [0, 500, 501])
+async def test_population_preview_caps_at_501st_eligible_not_candidate(session: AsyncSession, eligible_total: int) -> None:
+    """Real early collisions must not consume the eligible sentinel or enter reviewed tokens."""
+    proposals: list[RenameProposal] = []
+    for index in range(120 + eligible_total):
+        file_id = uuid.uuid4()
+        filename = f"population-source-{index}.mp3"
+        session.add(
+            FileRecord(
+                id=file_id,
+                agent_id="test-fileserver",
+                sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                original_path=f"/music/population/{filename}",
+                original_filename=filename,
+                current_path=f"/music/{filename}",
+                file_type="music",
+                file_size=100,
+            )
+        )
+        proposal = RenameProposal(
+            id=uuid.UUID(int=index + 1),
+            file_id=file_id,
+            proposed_filename=f"collision-{index // 2}.mp3" if index < 120 else f"population-target-{index}.mp3",
+            confidence=0.99,
+            status=ProposalStatus.PENDING.value,
+            context_used={},
+            reason="Synthetic population preview",
+        )
+        session.add(proposal)
+        proposals.append(proposal)
+    await session.commit()
+    reads: list[tuple[str, object]] = []
+
+    def capture(_conn: object, _cursor: object, statement: str, parameters: object, _context: object, _many: bool) -> None:
+        if statement.startswith("SELECT proposals.") and "ORDER BY proposals.id" in statement:
+            reads.append((statement, parameters))
+
+    bind = session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        preview = await proposal_queries.preview_bulk_approval_page(session, None, threshold=0.99)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert len(preview.tokens) == len(preview.proposals) == min(eligible_total, 500)
+    assert preview.capped is (eligible_total > 500)
+    assert [token.proposal_id for token in preview.tokens] == [proposal.id for proposal in proposals[120:620]]
+    assert all(token.content_digest == proposal_review_digest(proposal) for token, proposal in zip(preview.tokens, preview.proposals, strict=True))
+    assert reads and all("LIMIT" in statement for statement, _parameters in reads)
+    assert all(isinstance(parameters, tuple) and parameters[-1] == 100 for _statement, parameters in reads)
+
+
+@pytest.mark.parametrize("status", ["approved", "blocked", "rejected"])
+async def test_population_preview_cannot_expand_a_resolved_status_scope(session: AsyncSession, status: str) -> None:
+    await _create_proposal(session, confidence=0.99)
+    preview = await proposal_queries.preview_bulk_approval_page(session, None, status=status, threshold=0.99)
+    assert preview.proposals == preview.tokens == []
+    assert not preview.capped

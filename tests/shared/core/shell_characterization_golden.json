@@ -1966,12 +1966,7 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
-      ],
-      [
-        "button",
-        "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
@@ -1992,6 +1987,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",
@@ -2250,12 +2250,7 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
-      ],
-      [
-        "button",
-        "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
@@ -2276,6 +2271,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",
@@ -2671,12 +2671,7 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
-      ],
-      [
-        "button",
-        "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
@@ -2697,6 +2692,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",

@@ -157,9 +157,9 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
     for proposal in done:
         assert await _status_of(session, proposal) == ProposalStatus.EXECUTED, "a terminal row must never be rewritten"
 
-    assert "1 proposal approved" in body, f"the toast must report REAL transitions, got: {body[:400]}"
+    assert "1 approved" in body, f"the toast must report REAL transitions, got: {body[:400]}"
     assert "2 skipped" in body, "the skipped remainder must be stated, not silently dropped"
-    assert "3 proposals approved" not in body, "reporting the selection size is the defect this asserts against"
+    assert "3 approved" not in body, "reporting the selection size is the defect this asserts against"
 
 
 @pytest.mark.asyncio
@@ -200,8 +200,8 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
     first = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
     second = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
 
-    assert "2 proposals approved" in first
-    assert "Nothing approved" in second, f"a replay must report zero transitions, got: {second[:400]}"
+    assert "2 approved" in first
+    assert "0 approved" in second, f"a replay must report zero transitions, got: {second[:400]}"
     for proposal in proposals:
         assert await _status_of(session, proposal) == ProposalStatus.APPROVED, "a replay must not corrupt the first result"
 
@@ -250,7 +250,7 @@ async def test_bulk_action_answers_with_the_changes_review_body_whatever_hx_targ
     ).text
 
     assert f'id="{CHANGES_LIST_CONTAINER_ID}"' in body, "every caller gets the Changes Review list body"
-    assert "1 proposal approved." in body, "the toast rides the Changes Review body, not a per-surface response"
+    assert "1 approved, 0 skipped." in body, "the toast rides the Changes Review body, not a per-surface response"
     assert f'id="{PROPOSE_LIST_CONTAINER_ID}"' not in body, "the retired Propose response shape is back"
     assert 'id="proposals-table"' not in body, "the LEGACY table no longer exists to render"
     assert 'id="stats-bar"' not in body, "the legacy OOB stats fragment no longer exists to render"

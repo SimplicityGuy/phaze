@@ -455,7 +455,7 @@ async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: Asy
         data={"action": "approve_eligible", "review_tokens": [_review_token(p1), "not-a-token"]},
     )
     assert response.status_code == 200
-    assert "1 proposal approved." in response.text
+    assert "1 approved, 0 skipped." in response.text
 
     updated1 = await session.get(RenameProposal, p1.id)
     assert updated1 is not None
@@ -486,7 +486,7 @@ async def test_bulk_approve_all_ids_malformed(client: AsyncClient, session: Asyn
         data={"action": "approve_eligible", "review_tokens": ["not-a-token", ""]},
     )
     assert response.status_code == 200
-    assert "0 proposals approved." in response.text
+    assert "0 approved, 0 skipped." in response.text
 
 
 @pytest.mark.asyncio
@@ -536,7 +536,7 @@ async def test_bulk_reject(client: AsyncClient, session: AsyncSession) -> None:
     # "2 proposals rejectd." -- this response-text assertion is what test_bulk_reject was missing;
     # without it, a regression to the concatenation shape would pass every status-column check here
     # and still ship a misspelled verb on the operator's only confirmation of a bulk reject.
-    assert "2 proposals rejected." in response.text
+    assert "2 rejected, 0 skipped." in response.text
     assert "rejectd" not in response.text
 
     updated1 = await session.get(RenameProposal, p1.id)
@@ -560,7 +560,7 @@ async def test_bulk_reject_skips_malformed_proposal_id(client: AsyncClient, sess
         data={"action": "reject", "proposal_ids": [str(p1.id), "not-a-uuid"]},
     )
     assert response.status_code == 200
-    assert "1 proposal rejected." in response.text
+    assert "1 rejected, 0 skipped." in response.text
 
     updated1 = await session.get(RenameProposal, p1.id)
     assert updated1 is not None
@@ -828,7 +828,7 @@ async def test_bulk_approve_skips_terminal_rows(client: AsyncClient, session: As
         data={"action": "approve_eligible", "review_tokens": [_review_token(pending), _review_token(executed)]},
     )
     assert response.status_code == 200
-    assert "1 proposal approved · 1 skipped (already actioned)." in response.text
+    assert "1 approved, 1 skipped." in response.text
 
     assert (await session.get(RenameProposal, pending.id)).status == ProposalStatus.APPROVED
     assert (await session.get(RenameProposal, executed.id)).status == ProposalStatus.EXECUTED
