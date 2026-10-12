@@ -193,6 +193,27 @@
             // phaze-s8xtd: merge the server's numbers over the defaults above, before any binding evaluates. (Double quotes on
             // purpose: test_theme_and_store_preserved counts the single-quoted literal to prove the store is defined ONCE.)
             Object.assign(Alpine.store("pipeline"), {{ (pipeline_seed or {}) | tojson }});
+            // Files row density is client-only. The shell store survives table swaps independently
+            // of column widths, and unexpected or inaccessible storage falls back to comfortable.
+            Alpine.store('filesDensity', {
+                _key: 'phaze-files-density',
+                mode: (() => {
+                    try {
+                        const saved = localStorage.getItem('phaze-files-density');
+                        return saved === 'compact' ? 'compact' : 'comfortable';
+                    } catch {
+                        return 'comfortable';
+                    }
+                })(),
+                setMode(mode) {
+                    this.mode = mode === 'compact' ? 'compact' : 'comfortable';
+                    try {
+                        localStorage.setItem(this._key, this.mode);
+                    } catch {
+                        // Keep the current view usable when browser storage is unavailable.
+                    }
+                }
+            });
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every
             // htmx sort/filter/pager swap of #files-table-view -- that swap replaces the WHOLE

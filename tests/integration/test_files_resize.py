@@ -137,7 +137,8 @@ async def test_file_cell_keeps_truncate_and_title_but_sheds_the_fixed_max_width(
     row = body[body.index("<tbody") :]
 
     assert f'title="{long_path}"' in row
-    file_cell_match = re.search(r'<td class="([^"]*)" title="' + re.escape(long_path) + '">', row)
+    # Density adds spacing attributes; attribute order is not the truncation/width contract.
+    file_cell_match = re.search(r'<td\b[^>]*class="([^"]*)"[^>]*title="' + re.escape(long_path) + '"[^>]*>', row)
     assert file_cell_match is not None, "could not locate the FILE cell for the seeded row"
     file_cell_class = file_cell_match.group(1)
     assert "truncate" in file_cell_class

@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import UTC, date, datetime
+import json
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -551,6 +553,7 @@ async def test_glyph_cells_legend_and_record_skip_refresh_keep_accessible_meanin
     assert await table.get_attribute("aria-label") == "Metadata: not started"
     assert await table.get_attribute("title") == "Metadata: not started"
     assert await table.get_attribute("data-status-variant") == "glyph"
+
     mobile = page.locator(f"#files-mobile-stage-pill-metadata-{file.id} [aria-label]")
     assert "not started" in (await mobile.text_content() or "")
     legend = page.locator("[data-stage-legend]")
@@ -587,3 +590,116 @@ async def test_glyph_cells_legend_and_record_skip_refresh_keep_accessible_meanin
     assert await table.inner_text() == "⊘"
     assert await table.get_attribute("aria-label") == "Metadata: skipped (force-completed)"
     assert await table.get_attribute("data-status-variant") == "glyph"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("viewport_width", [390, 1440])
+async def test_files_density_chips_keep_query_widths_and_history(page: Any, seed: Any, theme: str, viewport_width: int) -> None:
+    """Actual padding, native chip requests and history consume the persisted stores across swaps."""
+    failed = await seed.file(filename="density-failed.mp3")
+    await seed.file(filename="density-plain.mp3")
+    seed.session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC)))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await page.add_init_script("""if (!localStorage.getItem('c2-width-fixture-ready')) {
+        localStorage.setItem('phaze-pipeline-col-widths', JSON.stringify({File: 260, Metadata: 188}));
+        localStorage.setItem('c2-width-fixture-ready', 'true');
+    }""")
+    await open_shell(page, "/s/files?stage=metadata&page_size=20&scope=media&sort=type&order=desc")
+    assert await page.evaluate("document.documentElement.classList.contains('dark')") == (theme == "dark")
+    row_selector = "[data-files-density-card]" if viewport_width == 390 else f"{_DESKTOP_TABLE} tbody tr[id]"
+    cell_selector = "[data-files-density-card]" if viewport_width == 390 else f"{_DESKTOP_TABLE} [data-files-density-cell]"
+    row = page.locator(row_selector).first
+    cell = page.locator(cell_selector).first
+    comfortable = await row.bounding_box()
+    assert comfortable is not None
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (12 if viewport_width == 390 else 8)
+    compact_button = page.get_by_role("button", name="Compact row density", exact=True)
+    await compact_button.focus()
+    await page.keyboard.press("Enter")
+    await page.wait_for_function("() => document.querySelector('[data-files-density]').dataset.filesDensity === 'compact'")
+    compact = await row.bounding_box()
+    assert compact is not None and compact["height"] < comfortable["height"] - 4
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (8 if viewport_width == 390 else 4)
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingLeft)") == 12
+    assert await compact_button.get_attribute("aria-pressed") == "true"
+    assert await page.evaluate("localStorage.getItem('phaze-files-density')") == "compact"
+    await page.evaluate("window.__c2DocumentAlive = true")
+    for bucket in ("failed", "in_flight", "skipped"):
+        async with swap_settles(page):
+            await page.select_option("#filter-bucket", bucket)
+        select_query = parse_qs(urlsplit(page.url).query, keep_blank_values=True)
+        async with swap_settles(page):
+            await page.select_option("#filter-bucket", "")
+        chip = page.locator(f"#files-filter-{bucket}")
+        async with swap_settles(page):
+            await chip.focus()
+            await page.keyboard.press("Enter")
+        assert parse_qs(urlsplit(page.url).query, keep_blank_values=True) == select_query
+        assert select_query == {
+            "page_size": ["20"],
+            "stage": ["metadata"],
+            "bucket": [bucket],
+            "scope": ["media"],
+            "sort": ["type"],
+            "order": ["desc"],
+        }
+        assert await page.locator("#files-table-view").count() == 1
+        assert await page.evaluate("window.__c2DocumentAlive === true")
+        assert await chip.get_attribute("aria-current") == "true"
+        assert await chip.evaluate("el => el === document.activeElement")
+        assert await chip.evaluate("el => getComputedStyle(el).boxShadow !== 'none'")
+        assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+        assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+        if bucket == "failed":
+            assert await page.locator("col[data-col=Metadata]").evaluate("el => el.style.width") == "188px"
+            if viewport_width == 1440:
+                assert await page.locator("col[data-col=Metadata]").evaluate("el => el.getBoundingClientRect().width") == 188
+        else:
+            assert await page.get_by_text("No files match this filter", exact=True).is_visible()
+        assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    await page.go_back()
+    await settled(page)
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+    assert await page.locator(row_selector).count() == 2
+    assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+    assert await page.locator("col[data-col=Metadata]").evaluate("el => el.style.width") == "188px"
+    if viewport_width == 1440:
+        assert await page.locator("col[data-col=Metadata]").evaluate("el => el.getBoundingClientRect().width") == 188
+    await page.reload(wait_until="domcontentloaded")
+    await settled(page)
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (8 if viewport_width == 390 else 4)
+    assert await page.get_by_role("button", name="Compact row density").get_attribute("aria-pressed") == "true"
+    assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+    comfortable_button = page.get_by_role("button", name="Comfortable row density")
+    await comfortable_button.focus()
+    await page.keyboard.press("Space")
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (12 if viewport_width == 390 else 8)
+
+
+@pytest.mark.parametrize("stored", ["{broken", '"compact"', "unexpected"])
+async def test_files_density_rejects_malformed_storage(page: Any, seed: Any, stored: str) -> None:
+    await seed.file(filename="density.mp3")
+    await page.add_init_script(f"localStorage.setItem('phaze-files-density', {json.dumps(stored)})")
+    await open_shell(page, "/s/files")
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "comfortable"
+    assert await page.get_by_role("button", name="Comfortable row density").get_attribute("aria-pressed") == "true"
+
+
+async def test_files_density_remains_usable_when_storage_is_denied(page: Any, seed: Any) -> None:
+    await seed.file(filename="density.mp3")
+    await page.add_init_script("""const getItem = Storage.prototype.getItem, setItem = Storage.prototype.setItem;
+        Storage.prototype.getItem = function(key) {
+            if (key === 'phaze-files-density') throw new DOMException('Denied', 'SecurityError');
+            return getItem.call(this, key);
+        };
+        Storage.prototype.setItem = function(key, value) {
+            if (key === 'phaze-files-density') throw new DOMException('Denied', 'SecurityError');
+            return setItem.call(this, key, value);
+        };""")
+    await open_shell(page, "/s/files")
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "comfortable"
+    await page.get_by_role("button", name="Compact row density").click()
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"

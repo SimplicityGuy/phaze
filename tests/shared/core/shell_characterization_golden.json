@@ -1623,6 +1623,21 @@
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
+        "a",
+        "files-filter-failed",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=failed&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
+        "a",
+        "files-filter-in_flight",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=in_flight&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
+        "a",
+        "files-filter-skipped",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=skipped&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
         "button",
         "attention-pill",
         "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
