@@ -3,4 +3,5 @@
    so a screen reader hears it while focus moves to the refreshed card's heading. On a 409 this is
    the same shape: the refreshed card plus the reason nothing was applied. #}
 {% include "pipeline/partials/_junk_group.html" %}
-<div hx-swap-oob="innerHTML:#junk-review-status">{{ message }}</div>
+{% import "ui/primitives.html" as ui %}
+<div hx-swap-oob="innerHTML:#junk-review-status">{% if feedback_failed %}{{ message }}{% else %}{{ ui.action_status(message) }}{% endif %}</div>

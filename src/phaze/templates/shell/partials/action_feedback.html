@@ -1,0 +1,82 @@
+{# Document-lifetime listeners: never reinstall on workspace or poll replacement. #}
+<script>
+(function () {
+    const failures = new WeakMap();
+    function action(event) {
+        const detail = event.detail || {};
+        const element = detail.elt;
+        if (!element || !element.getAttribute) return null;
+        const verb = detail.requestConfig && detail.requestConfig.verb;
+        if (verb ? verb.toLowerCase() === 'get' : !element.closest('[hx-post], [hx-patch], [hx-put], [hx-delete]')) return null;
+        return element;
+    }
+    function failed(event) {
+        const element = action(event);
+        if (!element) return;
+        const detail = event.detail || {};
+        // These rows already own guarded refusal/transport feedback and retain original proof.
+        if (element.hasAttribute('data-tag-approve')) return;
+        if (detail.xhr && detail.xhr.status === 409 && detail.target && detail.target.hasAttribute('data-conflict-swap')) return;
+        if (failures.has(element) && failures.get(element).isConnected) return;
+        const panel = document.createElement('div');
+        panel.setAttribute('role', 'alert');
+        panel.setAttribute('data-action-failure', '');
+        panel.className = 'mt-2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-800 dark:bg-red-950';
+        const text = document.createElement('p');
+        text.textContent = 'Action could not be confirmed. Check the current state before trying again; no successful outcome has been confirmed.';
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'mt-2 underline focus-visible:ring-2 focus-visible:ring-blue-500';
+        dismiss.textContent = 'Dismiss action error';
+        dismiss.setAttribute('data-dismiss-action-error', '');
+        panel.append(text, dismiss);
+        const target = detail.target;
+        const host = target && target.hasAttribute('data-poll-preserve-response') ? target
+            : element.closest('[data-review-row], [data-junk-group], [data-dupe-group], article, form') || element.parentElement;
+        if (host) host.appendChild(panel);
+        failures.set(element, panel);
+    }
+    document.body.addEventListener('click', function (event) {
+        const dismiss = event.target.closest && event.target.closest('[data-dismiss-action-error]');
+        if (dismiss) dismiss.closest('[data-action-failure]').remove();
+    });
+    ['htmx:responseError', 'htmx:sendError', 'htmx:timeout', 'htmx:targetError'].forEach(function (name) {
+        document.body.addEventListener(name, failed);
+    });
+    document.body.addEventListener('htmx:afterRequest', function (event) {
+        const element = action(event);
+        if (!element || !event.detail.successful) return;
+        const panel = failures.get(element);
+        if (panel) panel.remove();
+        failures.delete(element);
+    });
+
+    let previous = new Map();
+    let known = null;
+    function announceIncidents() {
+        const seed = document.getElementById('incident-announcement-seed');
+        const live = document.getElementById('incident-announcement');
+        if (!seed || !live || !seed.hasAttribute('data-known')) return;
+        if (seed.dataset.known !== 'true') {
+            if (known !== false) live.textContent = 'Attention status unavailable. A fresh measurement is required.';
+            known = false;
+            return; // Degradation is not recovery; preserve prior identities.
+        }
+        let items;
+        try { items = JSON.parse(seed.dataset.incidents || '[]'); } catch (_) { return; }
+        const current = new Map();
+        const messages = [];
+        items.forEach(function (item) {
+            const fingerprint = JSON.stringify([item.title, item.count, item.tone, item.detail, item.href, item.action]);
+            current.set(item.id, fingerprint);
+            if (previous.get(item.id) !== fingerprint) messages.push(item.title + ': ' + item.count + '. ' + item.detail);
+        });
+        if (Array.from(previous.keys()).some(id => !current.has(id))) messages.push('Previously reported attention items have cleared.');
+        if (known === false && !messages.length) messages.push('Attention measurement is available again.');
+        if (messages.length) live.textContent = messages.join(' ');
+        previous = current;
+        known = true;
+    }
+    document.body.addEventListener('htmx:afterSettle', announceIncidents);
+})();
+</script>

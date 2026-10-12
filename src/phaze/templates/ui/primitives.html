@@ -112,13 +112,14 @@
    bold Inter one. `actionable_alert` below is the one alert; the orphaned-work alert on Discover, Analyze and Summary
    all read through this. #}
 {% set alert_heading_class = "font-jura text-xs font-medium uppercase tracking-[0.15em]" %}
-{% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}
+{% macro actionable_alert(title, message, tone='attention', id='', oob=false, role=none) %}
 {% set tones = {
     'attention': 'border-amber-300 bg-amber-50 text-warn dark:border-amber-700 dark:bg-amber-950 ',
     'danger': 'border-red-300 bg-red-50 text-danger dark:border-red-800 dark:bg-red-950 ',
     'info': 'border-blue-300 bg-blue-50 text-info dark:border-blue-800 dark:bg-blue-950 '
 } %}
-<section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} role="alert" class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
+{% set announcement_role = role if role is not none else ('status' if tone == 'info' else 'alert') %}
+<section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %}{% if announcement_role %} role="{{ announcement_role }}"{% endif %} class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
     <div class="flex items-start gap-3">
         <span aria-hidden="true" class="mt-0.5 shrink-0">{% if tone == 'danger' %}✕{% elif tone == 'info' %}ⓘ{% else %}⚠{% endif %}</span>
         <div class="min-w-0 flex-1">
@@ -128,6 +129,11 @@
         </div>
     </div>
 </section>
+{% endmacro %}
+
+{# Success acknowledgment is transient; callers keep Undo and action proof outside this node. #}
+{% macro action_status(message) %}
+<p role="status" data-action-status x-data="{ timer:null, init() { const expires = Number(this.$el.dataset.actionExpires) || Date.now() + 5000; this.$el.dataset.actionExpires = expires; this.timer = setTimeout(() => this.$el.remove(), Math.max(0, expires - Date.now())); }, destroy() { clearTimeout(this.timer); } }" class="text-sm text-info">{{ message }}</p>
 {% endmacro %}
 
 {# phaze-gmh3f: THE page banner -- a one-sentence statement of a boundary or stage, under the page header. One tone

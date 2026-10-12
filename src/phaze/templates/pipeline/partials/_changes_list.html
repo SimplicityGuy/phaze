@@ -230,7 +230,7 @@
       @htmx:after-settle.camel="triageSettled($event)">
     <p class="mb-4 text-xs text-muted" data-review-hotkeys>Keyboard: J/K move · A approve · E edit · S skip · Z undo. Shortcuts pause while editing or a dialog is open.</p>
     {% if changes_toast is defined and changes_toast %}
-    <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
+    {{ ui.action_status(changes_toast) }}
     {% if bulk_undo_tokens | default([]) %}
     <form data-bulk-undo-form hx-patch="/proposals/bulk/undo?{{ changes_bulk_query }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML"
           hx-confirm="Return only unchanged approvals from this batch to pending? Executed or edited proposals will be skipped.">

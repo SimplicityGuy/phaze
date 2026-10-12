@@ -5,9 +5,15 @@
    duplicate was deleted since resolving), fall back to an inert placeholder at the SAME id the
    resolve response created, so the swap always lands on a real element. #}
 {% if group %}
+    {% with action_message=((restored_count | string) ~ (" file" if restored_count == 1 else " files") ~ " restored; 0 submitted entries skipped." if restored_count and not skipped_count else ''), resolve_error=((restored_count | string) ~ (" file" if restored_count == 1 else " files") ~ " restored; " ~ (skipped_count | string) ~ " submitted entries skipped. The duplicate resolution may have changed; inspect the current state before another decision." if skipped_count or not restored_count else '') %}
     {% include "pipeline/partials/_dupe_group.html" %}
+    {% endwith %}
 {% else %}
-    <div id="group-{{ group_hash }}" style="display:none;"></div>
+    {% import "ui/primitives.html" as ui %}
+    <div id="group-{{ group_hash }}" class="rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+    {% if restored_count and not skipped_count %}{{ ui.action_status((restored_count | string) ~ (" file" if restored_count == 1 else " files") ~ " restored; 0 submitted entries skipped. This group is no longer available.") }}
+    {% else %}<p role="alert">{{ restored_count }} file{{ '' if restored_count == 1 else 's' }} restored; {{ skipped_count }} submitted entries skipped. The duplicate resolution may have changed; refresh to inspect its current state.</p>{% endif %}
+    </div>
 {% endif %}
 
 {# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see

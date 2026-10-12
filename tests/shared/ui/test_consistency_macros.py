@@ -47,6 +47,14 @@ def test_the_alert_heading_is_the_jura_eyebrow_with_a_tone_icon() -> None:
     assert "⚠" in html
 
 
+def test_alert_roles_distinguish_information_and_explicit_silent_visuals() -> None:
+    assert 'role="status"' in _render("{{ ui.actionable_alert('Information', 'Measured state', 'info') }}")
+    assert 'role="alert"' in _render("{{ ui.actionable_alert('Failure', 'Recovery required', 'danger') }}")
+    silent = _render("{{ ui.actionable_alert('Failure', 'Recovery required', 'danger', role='') }}")
+    assert "role=" not in silent
+    assert "Recovery required" in silent
+
+
 @pytest.mark.parametrize(
     "template",
     ["pipeline/partials/discover_workspace.html"],

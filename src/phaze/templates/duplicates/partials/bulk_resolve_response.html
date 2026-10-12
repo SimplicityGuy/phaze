@@ -5,7 +5,11 @@
    capped by find_duplicate_groups_with_metadata's default limit), and the "next page" affordance
    this text pointed operators at was deleted in the Phase-62 cutover. #}
 {% import "ui/primitives.html" as ui %}
-{{ ui.state('empty', 'All shown groups resolved', 'Use the undo toast to reverse, or re-open the Dedupe stage to load remaining groups.') }}
+{{ ui.action_status("Resolved " ~ resolved_groups ~ (" group" if resolved_groups == 1 else " groups") ~ " using auto-selected files") }}
+<p class="text-sm text-muted">Undo remains available below after the undo toast expires. Re-open the Dedupe stage to load remaining groups.</p>
+{% with is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML", undo_group_hashes=(group_hashes if group_hashes is defined else []) %}
+{% include "duplicates/partials/durable_undo.html" %}
+{% endwith %}
 
 {# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see
    resolve_response.html for the full rationale) -- its target id was deleted with
@@ -16,7 +20,7 @@
 <div hx-swap-oob="beforeend:#toast-container">
     {# undo_target: dedupe_workspace.html's persistent "#dedupe-bulk-response" status div, NOT the
        v7-cutover-deleted #duplicates-list (phaze-be1j) -- it always exists in the live shell. #}
-    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML", undo_group_hashes=(group_hashes if group_hashes is defined else []) %}
+    {% with toast_message="Resolved " ~ resolved_groups ~ (" group" if resolved_groups == 1 else " groups") ~ " using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML", undo_group_hashes=(group_hashes if group_hashes is defined else []) %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>

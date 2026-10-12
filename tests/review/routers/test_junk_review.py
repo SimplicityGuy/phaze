@@ -326,6 +326,8 @@ async def test_running_the_quarantine_dispatches_only_approved_copies(client: As
     assert quarantine.statuses_seen == [{"approved"}], "only rows whose approval already stands are handed over"
     assert quarantine.task_routers == [client._transport.app.state.task_router]  # type: ignore[attr-defined]
     assert "Quarantine queued for 3 copies of 3 copies approved." in response.text
+    assert "data-action-status" in response.text
+    assert '<p role="alert" class="mb-3 text-sm text-danger">' not in response.text
     assert await _statuses(session, HASH_EMPTY) == ["pending"], "a run touches only its own group"
 
 
@@ -362,6 +364,8 @@ async def test_running_a_group_with_nothing_approved_queues_nothing_and_says_why
     assert quarantine.calls == []
     assert await _statuses(session, HASH_STAMP) == ["pending"]
     assert "Nothing was quarantined: no copy is approved. Approve the group first, then run the quarantine." in response.text
+    assert "data-action-status" not in response.text
+    assert '<p role="alert" class="mb-3 text-sm text-danger">' in response.text
 
 
 async def test_a_failed_quarantine_run_keeps_the_approval_and_says_so(client: AsyncClient, session: AsyncSession, quarantine: _Quarantine) -> None:
@@ -373,6 +377,7 @@ async def test_a_failed_quarantine_run_keeps_the_approval_and_says_so(client: As
     assert await _statuses(session, HASH_STAMP) == ["approved"]
     assert "It could not be queued (agent unreachable): those copies stay approved and can be run again or undone." in response.text
     assert f'hx-post="/junk-review/{HASH_STAMP}/undo"' in response.text
+    assert "data-action-status" not in response.text
 
 
 async def test_a_partial_dispatch_is_reported_not_rounded_up(client: AsyncClient, session: AsyncSession, quarantine: _Quarantine) -> None:
@@ -382,6 +387,10 @@ async def test_a_partial_dispatch_is_reported_not_rounded_up(client: AsyncClient
     approved = await _approve(client, HASH_STAMP)
     response = await client.post(f"/junk-review/{HASH_STAMP}/quarantine", data=_card_vals(approved.text))
     assert "Quarantine queued for 1 copy of 2 copies approved. 1 copy could not be handed to an agent: unsent copies stay approved" in response.text
+    assert response.status_code == 200
+    assert "data-action-status" not in response.text, "a partial quarantine must retain local failure feedback, not expire as success"
+    assert '<p role="alert" class="mb-3 text-sm text-danger">Quarantine queued for 1 copy of 2 copies approved.' in response.text
+    assert await _statuses(session, HASH_STAMP) == ["approved", "approved"]
 
 
 async def test_approve_withdraws_a_duplicate_that_no_longer_qualifies(client: AsyncClient, session: AsyncSession, quarantine: _Quarantine) -> None:
@@ -392,6 +401,7 @@ async def test_approve_withdraws_a_duplicate_that_no_longer_qualifies(client: As
     assert await _statuses(session, HASH_DUP) == []
     assert quarantine.calls == []
     assert "Nothing was pending, so nothing was approved." in response.text
+    assert "data-action-status" not in response.text
 
 
 # Reject.

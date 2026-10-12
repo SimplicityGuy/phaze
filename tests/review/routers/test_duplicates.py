@@ -464,7 +464,7 @@ async def test_bulk_resolve_oob_removes_card_for_a_hash_that_resolved_to_nothing
     )
 
     assert response.status_code == 200
-    assert "Resolved 1 groups" in response.text, "only the real group should count towards resolved_groups"
+    assert "Resolved 1 group" in response.text, "only the real group should count towards resolved_groups"
     assert f'<div id="dupe-group-{HASH_A}" hx-swap-oob="delete"></div>' in response.text
     assert f'<div id="dupe-group-{unknown_hash}" hx-swap-oob="delete"></div>' not in response.text, (
         "an unreviewable caller-supplied hash must not enter the committed plan or its DOM effects"
@@ -704,8 +704,9 @@ async def test_undo_toast_targets_a_dom_id_that_exists_in_the_dedupe_shell(sessi
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
     assert resolve.status_code == 200
 
-    placeholder_match = re.search(r'<div id="(group-[a-f0-9]+)" style="display:none;">', resolve.text)
+    placeholder_match = re.search(r'<section id="(group-[a-f0-9]+)"', resolve.text)
     assert placeholder_match is not None, "resolve response no longer renders its group placeholder"
+    assert "data-dedupe-undo" in resolve.text, "the stable target must retain Undo after the toast expires"
     placeholder_id = placeholder_match.group(1)
 
     toast_target_match = re.search(
@@ -1156,6 +1157,8 @@ async def test_bulk_undo_replay_restores_no_duplicate_cards(session: AsyncSessio
     replay = await client.post("/duplicates/undo-all", data={"file_states": payload, "group_hashes": [HASH_A]})
     assert replay.status_code == 200
     assert "0 files restored" in replay.text
+    assert "data-action-status" not in replay.text
+    assert 'role="alert"' in replay.text
     assert "hx-swap-oob" not in replay.text, "a no-op replay must not re-append a card that is already on screen"
 
 
@@ -1248,7 +1251,7 @@ async def test_bulk_resolve_drops_invalid_hash_never_500(session: AsyncSession, 
     )
 
     assert response.status_code == 200
-    assert "Resolved 1 groups" in response.text
+    assert "Resolved 1 group" in response.text
 
 
 @pytest.mark.asyncio
@@ -1459,3 +1462,35 @@ async def test_load_more_groups_stays_paginated_when_more_remain(session: AsyncS
     assert more.text.count('id="dupe-group-') == GROUP_PAGE_SIZE
     assert f"Showing {2 * GROUP_PAGE_SIZE} of {total} duplicate groups" in more.text
     assert f'hx-get="/duplicates/groups?offset={2 * GROUP_PAGE_SIZE}"' in more.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_partial_guarded_undo_persists_actual_counts_without_complete_status(session: AsyncSession, client: AsyncClient, bulk: bool) -> None:
+    """One changed canonical proof is refused while the other original pair restores."""
+    from sqlalchemy import select, update
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    files = [_make_file(f"/m/partial-{index}.mp3", "mp3", HASH_A) for index in range(3)]
+    session.add_all(files)
+    await session.flush()
+    resolved = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(files[0].id)})
+    assert resolved.status_code == 200
+    payload = _extract_server_file_states(resolved.text)
+    pairs = json.loads(payload)
+    assert len(pairs) == 2
+    changed_id, new_canonical = uuid.UUID(pairs[0]["id"]), uuid.UUID(pairs[1]["id"])
+    await session.execute(update(DedupResolution).where(DedupResolution.file_id == changed_id).values(canonical_file_id=new_canonical))
+    await session.commit()
+
+    path = "/duplicates/undo-all" if bulk else f"/duplicates/{HASH_A}/undo"
+    response = await client.post(path, data={"file_states": payload, "group_hashes": [HASH_A]})
+    assert response.status_code == 200
+    assert "1 file restored; 1 submitted entries skipped" in response.text
+    assert 'role="alert"' in response.text
+    assert "inspect" in response.text
+    assert "data-action-status" not in response.text
+    assert "Undo All complete" not in response.text
+    remaining = (await session.execute(select(DedupResolution.file_id, DedupResolution.canonical_file_id))).all()
+    assert remaining == [(changed_id, new_canonical)], "Undo must retain the newer canonical decision"

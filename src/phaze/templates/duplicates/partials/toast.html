@@ -1,5 +1,5 @@
-<div x-data="{ show: true, undoFailed: false }"
-     x-init="setTimeout(() => show = false, 10000)"
+<div role="status" x-data="{ show: true, undoFailed: false, timer:null, cleanup:null, destroy() { clearTimeout(this.timer); clearTimeout(this.cleanup); } }"
+     x-init="timer = setTimeout(() => { if (!undoFailed) { show = false; cleanup = setTimeout(() => $el.remove(), 250); } }, 10000)"
      x-show="show"
      x-transition:leave="transition ease-in duration-200"
      x-transition:leave-start="opacity-100"
@@ -10,7 +10,7 @@
         hidden nodes and live Alpine components for the whole session. Removing the element once
         its leave transition finishes (whether triggered by the auto-dismiss timeout above or an
         Undo click) keeps the visible 10s window intact while actually detaching the node. #}
-     @transitionend="$el.remove()"
+     @transitionend="if (!show) $el.remove()"
      class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
     <span>{{ toast_message }}</span>
     {% if is_bulk is defined and is_bulk %}
@@ -30,6 +30,8 @@
           hx-swap="{{ undo_swap | default('innerHTML') }}"
           @htmx:target-error="undoFailed = true"
           @htmx:response-error="undoFailed = true"
+          @htmx:send-error="undoFailed = true"
+          @htmx:timeout="undoFailed = true"
           @htmx:after-request="if ($event.detail.successful) { show = false } else { undoFailed = true }"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
@@ -52,7 +54,7 @@
             Undo All
         </button>
     </form>
-    <p x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
+    <p role="alert" x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
         Undo failed — reopen the Dedupe stage and try again.
     </p>
     {% else %}
@@ -68,6 +70,8 @@
           hx-swap="{{ undo_swap | default('outerHTML') }}"
           @htmx:target-error="undoFailed = true"
           @htmx:response-error="undoFailed = true"
+          @htmx:send-error="undoFailed = true"
+          @htmx:timeout="undoFailed = true"
           @htmx:after-request="if ($event.detail.successful) { show = false } else { undoFailed = true }"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
@@ -77,7 +81,7 @@
             Undo
         </button>
     </form>
-    <p x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
+    <p role="alert" x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
         Undo failed — reopen the Dedupe stage and try again.
     </p>
     {% endif %}

@@ -60,7 +60,7 @@ async def test_stale_tag_approval_explains_refusal_and_requires_refresh(page: An
         metadata.album = "New enrichment after review"
     await seed.session.commit()
 
-    async with page.expect_response(lambda response: response.url.endswith(f"/tags/{file.id}/write")) as result:
+    async with page.expect_response(lambda response: response.url.split("?", 1)[0].endswith(f"/tags/{file.id}/write")) as result:
         await approve.click()
     assert (await result.value).status == 409
     alert = row.get_by_role("alert")
@@ -93,7 +93,7 @@ async def test_tag_approval_transport_failure_is_bounded_and_visible(page: Any, 
         else:
             await route.abort("failed")
 
-    await page.route(f"**/tags/{file.id}/write", fail)
+    await page.route(f"**/tags/{file.id}/write*", fail)
     await row.get_by_role("button", name="APPROVE", exact=True).click()
     alert = row.get_by_role("alert")
     await alert.wait_for(state="visible", timeout=5_000)

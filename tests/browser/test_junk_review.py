@@ -14,10 +14,48 @@ from typing import Any
 import pytest
 
 from phaze.models.companion_junk_review import CompanionJunkReview
-from tests.browser.helpers import click_swap, open_shell
+from tests.browser.helpers import click_swap, open_shell, settled
 
 
 pytestmark = pytest.mark.browser
+
+
+@pytest.mark.parametrize("failure", ["server", "network"])
+async def test_action_transport_error_persists_and_releases_control(page: Any, seed: Any, failure: str) -> None:
+    rows = await seed.junk_group(count=2)
+    sha = rows[0].sha256_hash
+    await open_shell(page, "/s/junk")
+    card = page.locator(f"#junk-group-{sha}")
+    button = card.get_by_role("button", name="Approve", exact=False)
+
+    async def refuse(route: Any) -> None:
+        if failure == "server":
+            await route.fulfill(status=503, body="Unexpected upstream failure " * 1000)
+        else:
+            await route.abort("failed")
+
+    await page.route(f"**/junk-review/{sha}/approve", refuse)
+    await button.click()
+    error = card.locator("[data-action-failure]")
+    await error.wait_for()
+    await settled(page)
+    assert await button.is_enabled()
+    assert await button.get_attribute("aria-busy") != "true"
+    assert await card.get_by_role("button", name="Undo", exact=False).count() == 0
+    assert await page.locator("[data-action-status]").count() == 0
+    assert len(await error.inner_text()) < 300
+    await page.wait_for_timeout(10500)  # Exceeds the previous timed failure lifetime.
+    assert await error.is_visible()
+    await error.get_by_role("button", name="Dismiss action error").click()
+    assert await error.count() == 0
+    await page.unroute(f"**/junk-review/{sha}/approve", refuse)
+    await button.click()
+    await card.get_by_role("button", name="Undo", exact=False).wait_for()
+    assert await card.locator("[data-action-failure]").count() == 0
+    status = page.locator("#junk-review-status [data-action-status]")
+    assert await status.get_attribute("role") == "status"
+    await status.wait_for(state="detached", timeout=8000)
+    assert await card.get_by_role("button", name="Undo", exact=False).is_enabled()
 
 
 @pytest.mark.parametrize("workspace", ["dedupe", "junk"])

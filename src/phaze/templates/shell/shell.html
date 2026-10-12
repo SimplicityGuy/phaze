@@ -306,6 +306,9 @@
 
     <!-- Toast container -->
     <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+    <div id="incident-announcement-seed" hidden></div>
+    <p id="incident-announcement" role="status" aria-live="polite" aria-atomic="true" class="sr-only"></p>
+    {% include "shell/partials/action_feedback.html" %}
 
     <!-- ⌘K skeleton command palette (D-04). Its x-init also reads the `palette` query param
          (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
@@ -453,7 +456,14 @@
             current.querySelectorAll('[data-poll-preserve-response][id]').forEach(function (response) {
                 const replacement = Array.from(incoming.querySelectorAll('[data-poll-preserve-response][id]'))
                     .find(function (candidate) { return candidate.id === response.id; });
-                if (replacement) replacement.innerHTML = response.innerHTML;
+                if (replacement) {
+                    replacement.innerHTML = response.innerHTML;
+                    // Retained action feedback was already announced on the action response.
+                    // Recreating it for an unrelated health poll must remain silent.
+                    replacement.querySelectorAll('[role="alert"], [role="status"], [aria-live]').forEach(function (message) {
+                        message.setAttribute('aria-live', 'off');
+                    });
+                }
             });
         }
         // Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick DOM churn on the #analyze-lanes grid.

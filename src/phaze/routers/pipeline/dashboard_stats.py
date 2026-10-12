@@ -380,6 +380,7 @@ def _shared_stats_context(
         "analysis_stalled_count": analysis_stalled_count,
         "analysis_incidents": [item for item in incidents if item.get("scope") in {"analyze", "pipeline"}] if incidents_known else [],
         "analysis_incidents_known": incidents_known,
+        "attention_incidents": incidents if incidents_known else [],
         "awaiting_cloud_count": awaiting_cloud_count,
         "awaiting_hold_reason": awaiting_hold_reason,
         "pushing_count": pushing_count,
