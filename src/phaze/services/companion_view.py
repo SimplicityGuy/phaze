@@ -337,6 +337,13 @@ async def capture_refresh_received(
 
     A receipt can come from another concurrent capture of this same revision. It is deliberately
     reported as observed after the request rather than asserted to complete one exact queue job.
+
+    "After the request" is decided by the attempt ORDINAL alone, never by ``received_at >= since``
+    (phaze-esjwp). ``clock_timestamp()`` is wall time and can step backwards: measured 2026-10-12 on
+    the test database under load, one backward step of 105.5 ms in 45 s. A step between the baseline
+    and the receipt hid a real receipt for good -- the panel said "Waiting" and then "No new text
+    received". The ordinal is assigned under the source bucket lock, so it is the received order.
+    ``since`` still bounds how long the panel waits.
     """
     pair = _capture_pair(media_id, companion_id)
     attempt = ProviderAcquisitionAttempt
@@ -353,7 +360,6 @@ async def capture_refresh_received(
                     pair.c.revision == baseline.revision,
                     attempt.agent_id == pair.c.owner,
                     attempt.ordinal > baseline.ordinal,
-                    attempt.received_at >= baseline.since,
                     attempt.envelope["target"]["expected_sha256"].astext == baseline.revision,
                     observation.parser_version == "source-read-v1",
                 )
