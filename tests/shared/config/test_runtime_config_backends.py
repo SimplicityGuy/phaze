@@ -10,6 +10,7 @@ the real ``session``/``make_file`` fixtures with real ``CloudJob`` rows.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -21,12 +22,10 @@ from phaze.config import ControlSettings, get_settings
 from phaze.config_backends import KueueBackend, LocalBackend
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.runtime_config import get_runtime_config_store
-from phaze.runtime_config_backends import BackendsRegistryReloader, build_backends_registry_reloader
+from phaze.runtime_config_backends import BackendsRegistryReloader, _content_digest, build_backends_registry_reloader
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -343,3 +342,37 @@ async def test_a_kueue_backend_with_no_secrets_is_unaffected(backends_toml_env: 
     assert isinstance(before_local, LocalBackend)
 
     await reloader.reload("file")  # same content -- no-op, proven by the digest-short-circuit test above.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [PermissionError, OSError])
+async def test_unreadable_registry_keeps_last_good_then_recovers(
+    backends_toml_env: Any, monkeypatch: pytest.MonkeyPatch, failure: type[OSError]
+) -> None:
+    body = '[[backends]]\nkind = "local"\nid = "local"\nrank = 99\ncap = 1\n'
+    backends_toml_env(body)
+    settings = ControlSettings()
+    last_good = settings.backends
+    buckets = settings.buckets
+    reloader = BackendsRegistryReloader(settings, session_factory=_UnusedSessionFactory())
+    path = reloader._path
+    backends_toml_env(body.replace("cap = 1", "cap = 3") + "\n# synthetic-secret-must-not-be-logged\n")
+    original_open = Path.open
+
+    def unavailable(target: Path, *args: Any, **kwargs: Any) -> Any:
+        if target == path:
+            raise failure("synthetic unreadable registry")
+        return original_open(target, *args, **kwargs)
+
+    with monkeypatch.context() as patch, capture_logs() as logs:
+        patch.setattr(Path, "open", unavailable)
+        assert _content_digest(path) is None
+        await reloader.reload("file")
+    assert settings.backends is last_good
+    assert settings.buckets is buckets
+    assert any("could not read backends.toml" in entry.get("event", "") for entry in logs)
+    assert any("reload rejected" in entry.get("event", "") for entry in logs)
+    assert "synthetic-secret-must-not-be-logged" not in repr(logs)
+    await reloader.reload("file")
+    assert settings.backends is not last_good
+    assert settings.backends[0].cap == 3

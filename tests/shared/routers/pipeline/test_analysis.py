@@ -1016,3 +1016,90 @@ async def test_analyze_skips_files_of_offline_owner_and_routes_the_rest(client: 
 
     await drain_router_background_tasks()
     assert [(q, kwargs["file_id"]) for q, _t, kwargs in capture] == [("phaze-agent-fileserver-east-analyze", str(east_file.id))]
+
+
+def _record_actual_template_cost(monkeypatch: pytest.MonkeyPatch, record_property) -> None:
+    """Time the actual synchronous Jinja render separately from route queries and fanout."""
+    from time import perf_counter
+
+    from phaze.routers.pipeline._common import templates
+
+    render = templates.TemplateResponse
+
+    def timed_render(*args, **kwargs):
+        started = perf_counter()
+        response = render(*args, **kwargs)
+        record_property("template_render_seconds", perf_counter() - started)
+        return response
+
+    monkeypatch.setattr(templates, "TemplateResponse", timed_render)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "failed"])
+async def test_analyze_fragment_sql_failure_preserves_filter_and_transaction(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, status: str | None, record_property
+) -> None:
+    """The actual HTTP/template consumer renders a safe empty page after a real SQL error."""
+    from time import perf_counter
+
+    from sqlalchemy import text
+
+    _record_actual_template_cost(monkeypatch, record_property)
+    execute = session.execute
+    injected = False
+
+    async def fail_page(stmt, *args, **kwargs):
+        nonlocal injected
+        if not injected and "FROM files" in str(stmt):
+            injected = True
+            return await execute(text("SELECT 1 / 0"))
+        return await execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", fail_page)
+    started = perf_counter()
+    response = await client.get("/pipeline/analyze-files", params={"status": status} if status else {})
+    record_property("degraded_route_render_seconds", perf_counter() - started)
+    assert injected and response.status_code == 200
+    assert 'id="analyze-filter-bar"' in response.text
+    assert "No files" in response.text
+    if status:
+        assert 'value="failed" selected' in response.text
+    assert (await session.execute(text("SELECT 42"))).scalar_one() == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("degraded", [True, False], ids=["unknown-routing", "observed-empty"])
+async def test_stats_renders_neutral_unknown_separately_from_observed_empty(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, degraded: bool, record_property
+) -> None:
+    """Real service derivation and real stats template retain null and honest hold reasons."""
+    from time import perf_counter
+    from types import SimpleNamespace
+
+    from phaze.services.backends import lane_snapshot
+
+    def resolve(_cfg):
+        if degraded:
+            raise RuntimeError("synthetic unreadable registry")
+        return []
+
+    async def local(_session, _state):
+        return 0, 0
+
+    monkeypatch.setattr(lane_snapshot, "get_settings", lambda: SimpleNamespace(cloud_enabled=True))
+    monkeypatch.setattr(lane_snapshot, "resolve_backends", resolve)
+    monkeypatch.setattr(lane_snapshot, "_local_lane_queued_working", local)
+    _record_actual_template_cost(monkeypatch, record_property)
+    started = perf_counter()
+    response = await client.get("/pipeline/stats")
+    record_property("routing_route_render_seconds", perf_counter() - started)
+    assert response.status_code == 200
+    expected = "null" if degraded else "0"
+    assert f"$store.pipeline.summaryRecentLive = {expected}" in response.text
+    if degraded:
+        assert "Awaiting cloud · held" in response.text
+        assert "Awaiting cloud · held — no cloud backend reachable" not in response.text
+        assert "all lanes at capacity" not in response.text
+    else:
+        assert "Awaiting cloud · held — no cloud backend reachable" in response.text

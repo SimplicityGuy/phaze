@@ -17,6 +17,7 @@ migration round-trip tests clean up their own real commits.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,6 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.testing import capture_logs
 
+from phaze import runtime_config_notify
 from phaze.config import ControlSettings
 from phaze.models.runtime_config_override import RuntimeConfigOverride
 from phaze.runtime_config import RuntimeConfigStore
@@ -155,3 +157,49 @@ async def test_a_stale_non_reloadable_row_is_ignored_reported_and_never_blocks_a
         assert (await store.reload("poll")).outcome == "unchanged"
     returned = [entry for entry in returned_logs if entry.get("event") == "phaze.runtime_config_notify ignoring stale override rows"]
     assert [entry["ignored"] for entry in returned] == [["database_url"]]
+
+
+@pytest.mark.asyncio
+async def test_native_dsn_poll_fault_recovery_and_cancellation_close_real_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fault injection covers the defensive loop; the retained tests above prove DB propagation."""
+    native_dsn = TEST_DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    assert runtime_config_notify._asyncpg_dsn(native_dsn) == native_dsn
+    original_connect = runtime_config_notify.asyncpg.connect
+    seen_dsns: list[str] = []
+
+    async def connect(dsn: str) -> object:
+        seen_dsns.append(dsn)
+        return await original_connect(dsn)
+
+    monkeypatch.setattr(runtime_config_notify.asyncpg, "connect", connect)
+    second_iteration = asyncio.Event()
+    cancelled = asyncio.Event()
+    calls: list[str] = []
+
+    class FaultingStore:
+        async def reload(self, source: str) -> None:
+            calls.append(source)
+            if len(calls) == 1:
+                raise RuntimeError("synthetic poll failure")
+            second_iteration.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    with capture_logs() as logs:
+        handle = await start_runtime_config_listener(store=FaultingStore(), database_url=native_dsn, poll_interval_sec=0)
+        try:
+            await asyncio.wait_for(second_iteration.wait(), timeout=2)
+            assert calls == ["poll", "poll"]
+            assert not handle.poll_task.done()
+            assert handle.connection is not None
+            assert not handle.connection.is_closed()
+        finally:
+            await asyncio.wait_for(handle.stop(), timeout=2)
+    assert seen_dsns == [native_dsn]
+    assert cancelled.is_set()
+    assert handle.poll_task.cancelled()
+    assert handle.connection is not None and handle.connection.is_closed()
+    assert any(entry.get("event") == "phaze.runtime_config_notify poll loop iteration failed; keeping last-good" for entry in logs)

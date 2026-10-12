@@ -2,10 +2,14 @@
 
 from datetime import UTC, datetime
 from fractions import Fraction
+from typing import Any
+from unittest.mock import Mock
 import uuid
 
+from httpx import AsyncClient
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
@@ -13,6 +17,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObservation
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.local_source_import import ImportLocalSource
+from phaze.services import source_workspace
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.cue_review import build_cue_tracks_for_file
 from phaze.services.local_source_import import decide_local_source, import_local_source
@@ -460,3 +465,51 @@ async def test_real_selected_workspace_routes_and_match_all_retry(session, clien
     assert retry.status_code == 200
     assert len(queue.captured) == 1
     assert queue.captured == [("match_recording_source_to_discogs", pins[0])]
+
+
+@pytest.mark.parametrize("inventory_view", [False, True])
+async def test_workspace_sql_failure_preserves_outer_transaction_and_refuses_rendered_authority(
+    session: AsyncSession, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, inventory_view: bool
+) -> None:
+    """Real server error inside each page SAVEPOINT; earlier outer writes survive."""
+    media, companion, raw = await inventory(session, CUE, "cue")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    media.original_filename = "pending-outer-write.mp3"
+    await session.flush()
+    execute = session.execute
+    failures = []
+
+    async def fail_page(stmt: Any, *args: Any, **kwargs: Any) -> Any:
+        if "LIMIT" in str(stmt) and "files" in str(stmt):
+            failures.append(True)
+            return await execute(text("SELECT 1 / 0"))
+        return await execute(stmt, *args, **kwargs)
+
+    warning = Mock(wraps=source_workspace.logger.warning)
+    with monkeypatch.context() as patch:
+        patch.setattr(source_workspace.logger, "warning", warning)
+        patch.setattr(session, "execute", fail_page)
+        page = (
+            await get_existing_cue_page(session, page=-5, page_size=100000)
+            if inventory_view
+            else await get_source_workspace_page(session, "cue", page=-5, page_size=100000)
+        )
+        assert page.rows == [] and not page.has_next and page.page == 1 and page.page_size == 100
+        assert await session.scalar(text("SELECT 42")) == 42
+        response = await client.get("/pipeline/local-source-sets?kind=cue&page=-5&page_size=100000" + ("&inventory=1" if inventory_view else ""))
+        assert response.status_code == 200
+        assert "Selected authority" not in response.text and "Preview generated CUE artifact" not in response.text
+        empty = "No linked CUE companions" if inventory_view else "No stored local-source observations"
+        assert empty in response.text
+    assert len(failures) == 2
+    assert warning.call_count == 2
+    assert all(
+        call.args[0] == ("companion_cue_workspace_degraded" if inventory_view else "local_source_workspace_degraded")
+        for call in warning.call_args_list
+    )
+    assert await session.scalar(select(FileRecord.original_filename).where(FileRecord.id == media.id)) == "pending-outer-write.mp3"
+    recovered = await get_existing_cue_page(session) if inventory_view else await get_source_workspace_page(session, "cue")
+    assert recovered.rows
+    if not inventory_view:
+        assert any(row["selected"] for row in recovered.rows)

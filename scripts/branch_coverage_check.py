@@ -80,6 +80,11 @@ from pathlib import Path
 import shutil
 import subprocess  # nosec B404 - fixed `git` argv, no shell, no caller-supplied strings
 import sys
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 DEFAULT_COVERAGE = "coverage.json"
@@ -216,10 +221,50 @@ def _module_row(summary: dict[str, float]) -> dict[str, float | None]:
     }
 
 
+def branch_diagnostics(info: dict[str, object], baseline: Mapping[str, object]) -> str:
+    """Counts and literal arc identities only; never alter the canonical phaze-pms85 policy.
+
+    Legacy baselines have no arc inventory. Missing evidence is unknown, not an empty set.
+    Equal coordinates do not prove semantic identity after source movement.
+    """
+
+    def counts(summary: Mapping[str, object]) -> str:
+        total = summary.get("num_branches")
+        covered = summary.get("covered_branches")
+        missing = total - covered if isinstance(total, (int, float)) and isinstance(covered, (int, float)) else "unknown"
+        return f"covered={covered if covered is not None else 'unknown'}, total={total if total is not None else 'unknown'}, missing={missing}"
+
+    def arcs(value: object) -> set[tuple[int, int]] | None:
+        if not isinstance(value, list):
+            return None
+        result: set[tuple[int, int]] = set()
+        for arc in value:
+            if not isinstance(arc, list) or len(arc) != 2 or any(type(n) is not int for n in arc):
+                return None
+            result.add((arc[0], arc[1]))
+        return result
+
+    def render(value: set[tuple[int, int]] | None) -> str:
+        return "unknown" if value is None else ", ".join(f"{start}->{end}" for start, end in sorted(value)) or "none"
+
+    before = arcs(baseline.get("missing_branches"))
+    current = arcs(info.get("missing_branches"))
+    inherited = before & current if before is not None and current is not None else None
+    new = current - before if before is not None and current is not None else None
+    return (
+        f"baseline [{counts(baseline)}]; current [{counts(_summary_of(info))}]; "
+        f"missing arcs baseline: {render(before)}; current: {render(current)}; "
+        f"inherited coordinates: {render(inherited)}; newly missing coordinates: {render(new)} "
+        "(literal coordinates, not source-movement equivalence; diagnostics only)"
+    )
+
+
 def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) -> int:
     files = _files_of(data)
     totals = data.get("totals")
-    rows: dict[str, dict[str, float | None]] = {path: _module_row(_summary_of(info)) for path, info in sorted(files.items())}
+    rows: dict[str, dict[str, object]] = {
+        path: {**_module_row(_summary_of(info)), "missing_branches": info.get("missing_branches")} for path, info in sorted(files.items())
+    }
     payload: dict[str, object] = {
         "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
         "commit": _git("rev-parse", "HEAD").strip(),
@@ -396,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   ―― {path}: not present in the coverage report (deleted, renamed, or never imported)")  # noqa: T201
             continue
         summary = _summary_of(info)
+        print(f"      {branch_diagnostics(info, baseline.get(path, {}))}")  # noqa: T201
         if scoped and summary.get("num_statements", 0) and not summary.get("covered_lines", 0):
             unjudgeable.append(path)
             print(f"   ❌ {path}: selected tests executed no lines; cannot judge this touched file")  # noqa: T201
