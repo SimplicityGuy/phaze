@@ -80,7 +80,13 @@ def build(env: dict[str, str]) -> tuple[ProviderRegistry, dict[str, FakeRemote],
     settings = load_remote_provider_settings(SPECS, env)
     providers = {spec.provider_id: FakeRemote(spec.provider_id) for spec in SPECS}
     profiles = [
-        RemoteHostProfile(provider_id=pid, search=RemoteSearchRoute(fields=frozenset({"artist"}), format="example_json")) for pid in providers
+        RemoteHostProfile(
+            provider_id=pid,
+            search=RemoteSearchRoute(fields=frozenset({"artist"}), format="example_json", path="/search", term_parameters=(("artist", "q"),)),
+            host=f"{pid.replace('_', '-')}.example.invalid",
+            user_agent="phaze-test/1 (+https://example.invalid)",
+        )
+        for pid in providers
     ]
     disabled = disabled_provider_ids((p.descriptor for p in providers.values()), settings)
     return ProviderRegistry(providers.values(), disabled=disabled, remote_profiles=profiles), providers, settings
