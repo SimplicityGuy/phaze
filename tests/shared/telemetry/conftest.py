@@ -15,6 +15,8 @@ is in production.
 from __future__ import annotations
 
 import math
+import threading
+import time
 from typing import TYPE_CHECKING, Any
 import wave
 
@@ -72,6 +74,58 @@ def strict_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv(_env.STRICT_ENV, "1")
     monkeypatch.delenv(_env.SDK_DISABLED_ENV, raising=False)
+
+
+#: The SDK's export worker threads (``OtelBatchSpanRecordProcessor``,
+#: ``OtelPeriodicExportingMetricReader``) and phaze's own bounded-shutdown thread.
+EXPORTER_THREAD_PREFIXES = ("OtelBatch", "OtelPeriodicExportingMetricReader", "phaze-telemetry-shutdown")
+
+#: How long a test's teardown waits for the exporter threads it started to exit. A ceiling on
+#: threads whose own work is already deadlined, not a performance claim. Against a black hole an
+#: abandoned ``BatchSpanProcessor`` keeps draining its queue one batch at a time, each export
+#: deadlined at phaze's ``OTEL_EXPORTER_OTLP_TIMEOUT`` = 5 s, until ``TracerProvider.shutdown``'s
+#: 30 s join gives up and stops it: at most ~35 s. Measured 2026-10-12 after the black-hole
+#: analysis test, at load average 23 on 10 cores: 24.3 s.
+EXPORTER_THREAD_EXIT_SEC = 60.0
+
+
+def exporter_threads() -> set[threading.Thread]:
+    """Every live OpenTelemetry export thread in this process."""
+    return {thread for thread in threading.enumerate() if thread.name.startswith(EXPORTER_THREAD_PREFIXES)}
+
+
+def exporter_threads_left(before: set[threading.Thread], *, wait_sec: float) -> list[str]:
+    """Join every exporter thread started since ``before``; return the names still alive.
+
+    ``wait_sec`` is shared by all of them, not granted to each.
+    """
+    started = [thread for thread in exporter_threads() if thread not in before]
+    deadline = time.monotonic() + wait_sec
+    for thread in started:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    return sorted(thread.name for thread in started if thread.is_alive())
+
+
+@pytest.fixture(autouse=True)
+def no_exporter_thread_survives() -> Iterator[None]:
+    """No test in this package may leave an exporter thread running into the next one.
+
+    MEASURED (phaze-esjwp): ``bootstrap.shutdown_telemetry`` is bounded by design and ABANDONS
+    an export it cannot finish inside its budget -- correct in a process about to exit, and a
+    leak in a test process that is not. Against the black-hole endpoint the abandoned
+    ``BatchSpanProcessor`` and ``PeriodicExportingMetricReader`` threads lived on for ~5 s and
+    then logged ``Failed to export spans batch`` / ``... metrics batch`` at ERROR into whatever
+    test was running by then. ``test_telemetry_slots.py::
+    test_an_absent_slot_resolves_to_none_and_says_nothing`` asserts ``caplog.records == []``
+    and went red on that foreign record in a full-suite run.
+
+    The fix is not to filter the record: it is that every thread a test starts has finished
+    before the next test begins, and this fixture holds every test here to that.
+    """
+    before = exporter_threads()
+    yield
+    survivors = exporter_threads_left(before, wait_sec=EXPORTER_THREAD_EXIT_SEC)
+    assert not survivors, f"exporter thread(s) outlived this test by {EXPORTER_THREAD_EXIT_SEC:.0f}s: {survivors}"
 
 
 def reset_otel_globals() -> None:
