@@ -219,7 +219,8 @@
             });
         }
      }"
-     @record:open.window="show($event.detail && $event.detail.el)"
+     @record:open.window="if (!window._recordHostFor || window._recordHostFor($event.detail && $event.detail.el) === 'modal') show($event.detail && $event.detail.el)"
+     @record:close-all.window="if (open) hide()"
      @keydown.escape.window="if (open && !paletteIsOpen() && !nestedModalOpen()) hide()">
 
     <div x-show="open"

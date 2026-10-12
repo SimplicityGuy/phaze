@@ -162,6 +162,7 @@ async def test_reserved_scrollbar_gutter_does_not_fake_room_to_the_right(page: A
     assert not await frame.evaluate("el => el.classList.contains('timeline-can-scroll-right')")
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timeline(page: Any, seed: Seeder) -> None:
     """HTMX drawer swaps initialize the same control without consuming the host's Escape key."""
     file = await seed.file(filename="<set-01>.mp3")

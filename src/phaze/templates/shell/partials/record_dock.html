@@ -1,0 +1,281 @@
+{#
+  phaze-7u4sy (C3): the NON-MODAL docked file-record inspector, used by the Files stage at xl and up.
+
+  A persistent sibling of <main> in shell.html's body row, so it lives OUTSIDE both swap hosts
+  (#stage-workspace and #files-table-view) and survives every rail, sort, filter and pager swap.
+  It is fed by the same GET /record/{file_id} fragment as the modal record_host.html, swapped into
+  #record-dock-body. Below xl, and on every non-Files stage, record_host.html stays the sole owner and
+  this aside is display:none (the hidden xl:flex classes) with an EMPTY body.
+
+  Contract, mirrored by tests/browser/test_files_record_dock.py:
+    * No role=dialog, no aria-modal, no x-trap, no inert: Tab walks the table and the dock normally.
+    * Selecting another row REPLACES the record; focus stays on the row (the dock never steals it).
+      The selected row carries aria-current=true. ArrowDown/ArrowUp move between visible rows, Enter
+      opens the focused row through the row's existing guarded GET.
+    * Escape closes the dock only while focus is INSIDE it (a nested open dialog or the palette keeps
+      its own Escape). Close returns focus to the row that opened it.
+    * ONE owner per open. recordHostFor() is the single decision; the capture-phase listeners below
+      aim the opener's hx-target at the chosen host BEFORE htmx resolves its target (a later change at
+      htmx:beforeRequest does not retarget the request), and BOTH hosts' record:open handlers consult
+      the same function, so one event can never open the modal and the dock together.
+    * Exactly one record tree exists at a time (stage-pill ids are unique): opening in the dock empties
+      #record-body, closing/crossing empties the dock, and a response that no longer owns its host is
+      rejected at htmx:beforeSwap instead of being repaired after it showed the wrong file.
+    * Crossing the xl boundary in either direction closes whatever is open (releasing the modal's
+      inert/trap through its own hide()), so no inert or trap survives a resize.
+
+  The component is a global function (as in cmdk_modal.html) so its source never sits inside a
+  double-quoted x-data attribute.
+#}
+<aside id="record-dock"
+       x-data="recordDock()"
+       x-show="open"
+       style="display:none"
+       aria-label="File record"
+       @record:open.window="onOpen($event)"
+       @record:close-all.window="closeAll()"
+       @keydown.escape="onEscape($event)"
+       class="relative hidden h-full w-[440px] shrink-0 flex-col overflow-y-auto border-l border-gray-200 bg-white xl:flex dark:border-phaze-border dark:bg-phaze-bg">
+    <div x-show="!loaded" x-cloak class="motion-safe:animate-pulse space-y-4 p-4" aria-hidden="true">
+        <div class="h-6 w-2/3 rounded bg-gray-200 dark:bg-phaze-border"></div>
+        <div class="h-4 w-1/2 rounded bg-gray-200 dark:bg-phaze-border"></div>
+        <div class="h-24 w-full rounded bg-gray-200 dark:bg-phaze-border"></div>
+    </div>
+    <div id="record-dock-body" x-show="loaded"></div>
+</aside>
+
+<script>
+    (function () {
+        if (window._recordHostFor) return;
+        const XL = '(min-width: 1280px)';
+        const OPENER = '[hx-get^="/record/"]';
+
+        // The single owner decision. Files context = the Files table is mounted in the workspace
+        // (#stage-workspace's own data-stage attribute is frozen at the first full-page render, so it
+        // cannot be read here). A palette result outside the table is still Files-context.
+        window._recordHostFor = function () {
+            return window.matchMedia(XL).matches && document.getElementById('files-table-view') ? 'dock' : 'modal';
+        };
+
+        function aim(event) {
+            const target = event.target;
+            const opener = target && target.closest ? target.closest(OPENER) : null;
+            if (!opener) return;
+            opener.setAttribute('hx-target', window._recordHostFor(opener) === 'dock' ? '#record-dock-body' : '#record-body');
+        }
+        // Capture phase: runs before htmx's own (bubble-phase) click/keyup listeners on the opener.
+        // Enter is chosen on keydown, ahead of the row's keyup GET.
+        document.addEventListener('click', aim, true);
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') aim(event);
+        }, true);
+
+        // ArrowDown/ArrowUp walk the visible Files rows. Only a focused ROW is intercepted, so a
+        // nested control keeps its own arrow keys, and only when the dock is the owner.
+        document.addEventListener('keydown', function (event) {
+            if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+            const row = event.target;
+            if (!row || !row.matches || !row.matches('tr[data-record-row]') || window._recordHostFor(row) !== 'dock') return;
+            const rows = Array.from(document.querySelectorAll('#files-table-view tr[data-record-row]')).filter((r) => r.getClientRects().length > 0);
+            const next = rows[rows.indexOf(row) + (event.key === 'ArrowDown' ? 1 : -1)];
+            if (!next) return;
+            event.preventDefault();
+            next.focus();
+            next.scrollIntoView({ block: 'nearest' });
+        });
+    })();
+
+    function recordDock() {
+        return {
+            open: false,
+            loaded: false,
+            opener: null,
+            url: null,
+            fromTable: true,
+            requestedSection: null,
+            init() {
+                document.body.addEventListener('htmx:beforeSwap', (event) => this.guard(event));
+                document.body.addEventListener('htmx:afterSwap', (event) => this.afterSwap(event));
+                const xl = window.matchMedia('(min-width: 1280px)');
+                xl.addEventListener('change', () => window.dispatchEvent(new CustomEvent('record:close-all')));
+            },
+            get body() {
+                return document.getElementById('record-dock-body');
+            },
+            onOpen(event) {
+                const el = event.detail && event.detail.el;
+                if (!el || window._recordHostFor(el) !== 'dock') return;
+                this.show(el);
+            },
+            show(el) {
+                // One record tree at a time: the modal's body is emptied before the dock fills.
+                const modalBody = document.getElementById('record-body');
+                if (modalBody) modalBody.replaceChildren();
+                this.body.replaceChildren();
+                this.opener = el;
+                this.url = el.getAttribute('hx-get');
+                this.fromTable = !!(el.closest && el.closest('#files-table-view'));
+                this.requestedSection = el.dataset ? el.dataset.recordSection || null : null;
+                this.loaded = false;
+                this.open = true;
+                this.select();
+                this.ensureFetch(el);
+            },
+            // The same early-click guard as record_host.html (phaze-fak5d): a row htmx has not
+            // processed yet fires no request, so after a zero-delay timeout we issue the identical GET
+            // ourselves, from the chosen opener into the chosen host.
+            ensureFetch(el) {
+                const url = this.url;
+                if (!url || url.indexOf('/record/') !== 0 || !window.htmx) return;
+                // A row htmx has already processed owns its own request: a click starts it in this very
+                // dispatch, and Enter starts it on the keyup that follows this keydown. Only an
+                // unprocessed row can be left without one.
+                if (el['htmx-internal-data']) return;
+                let started = false;
+                const note = (event) => {
+                    const d = event.detail;
+                    if (d && d.elt === el && d.target && d.target.id === 'record-dock-body') started = true;
+                };
+                document.body.addEventListener('htmx:beforeRequest', note);
+                setTimeout(() => {
+                    document.body.removeEventListener('htmx:beforeRequest', note);
+                    if (!started && this.open && !this.loaded && this.url === url) {
+                        window.htmx.ajax('GET', url, { source: el, target: '#record-dock-body', swap: 'innerHTML' });
+                    }
+                }, 0);
+            },
+            // Reject a response that no longer owns its host, BEFORE it is swapped in.
+            guard(event) {
+                const d = event.detail;
+                const target = d && d.target;
+                if (!target) return;
+                if (target.id === 'record-body') {
+                    // The modal can only be a legitimate target where it owns the open.
+                    if (window._recordHostFor() === 'dock') d.shouldSwap = false;
+                    return;
+                }
+                if (target.id !== 'record-dock-body') return;
+                const path = (d.requestConfig && d.requestConfig.path) || (d.pathInfo && d.pathInfo.requestPath) || null;
+                if (!this.open || !this.url || path !== this.url || window._recordHostFor() !== 'dock') {
+                    d.shouldSwap = false;
+                    return;
+                }
+                if (d.xhr && d.xhr.status === 404) {
+                    d.shouldSwap = true;
+                    d.isError = false;
+                }
+            },
+            afterSwap(event) {
+                const target = (event.detail && event.detail.target) || event.target;
+                if (!target) return;
+                if (target.id === 'record-dock-body') {
+                    this.landed(target);
+                    return;
+                }
+                if (!this.open) return;
+                if (target.id === 'stage-workspace' && !document.getElementById('files-table-view')) {
+                    this.reset();
+                    return;
+                }
+                // A paging/filter/sort swap re-rendered the rows: re-mark the selection by file identity.
+                this.select();
+            },
+            landed(body) {
+                if (window.Alpine) window.Alpine.initTree(body);
+                const heading = body.querySelector('h2');
+                this.$el.setAttribute('aria-label', heading ? 'File record: ' + heading.textContent.trim() : 'File record');
+                this.loaded = true;
+                let framesLeft = 120;
+                const afterReveal = () => {
+                    if (!this.open || !body.isConnected) return;
+                    if (body.getClientRects().length === 0) {
+                        if (framesLeft-- > 0) requestAnimationFrame(afterReveal);
+                        return;
+                    }
+                    const section = this.requestedSection ? body.querySelector('#' + CSS.escape(this.requestedSection)) : null;
+                    const fold = section ? section.closest('details') : null;
+                    if (fold) fold.open = true;
+                    if (section) section.scrollIntoView({ block: 'start' });
+                    // Row-origin opens leave focus on the row. A palette-origin open has no visible
+                    // opener (the palette is closing), so land on the file's row, else the heading.
+                    if (!this.fromTable) this.landFocus(heading);
+                };
+                afterReveal();
+            },
+            landFocus(heading) {
+                let framesLeft = 60;
+                const attempt = () => {
+                    if (!this.open) return;
+                    const row = this.visibleRow();
+                    const dest = row || heading;
+                    if (dest && dest.isConnected) dest.focus({ preventScroll: true });
+                    if ((!dest || document.activeElement !== dest) && framesLeft-- > 0) requestAnimationFrame(attempt);
+                };
+                attempt();
+            },
+            visibleRow() {
+                if (!this.url) return null;
+                for (const row of document.querySelectorAll('#files-table-view tr[data-record-row]')) {
+                    if (row.getAttribute('hx-get') === this.url && row.getClientRects().length > 0) return row;
+                }
+                return null;
+            },
+            select() {
+                for (const row of document.querySelectorAll('[data-record-row][aria-current]')) row.removeAttribute('aria-current');
+                if (!this.open || !this.url) return;
+                for (const row of document.querySelectorAll('[data-record-row]')) {
+                    if (row.getAttribute('hx-get') === this.url) row.setAttribute('aria-current', 'true');
+                }
+            },
+            paletteIsOpen() {
+                const palette = document.getElementById('cmdk-dialog');
+                return !!palette && palette.getClientRects().length > 0;
+            },
+            nestedModalOpen() {
+                const body = this.body;
+                if (!body) return false;
+                for (const dialog of body.querySelectorAll('[role=dialog][aria-modal=true]')) {
+                    if (dialog.getClientRects().length > 0) return true;
+                }
+                return false;
+            },
+            // The keydown is bound to the aside, so this runs only for an Escape pressed with focus
+            // inside the dock.
+            onEscape() {
+                if (this.open && !this.paletteIsOpen() && !this.nestedModalOpen()) this.hide();
+            },
+            reset() {
+                this.open = false;
+                this.loaded = false;
+                this.opener = null;
+                this.requestedSection = null;
+                this.url = null;
+                this.fromTable = true;
+                this.$el.setAttribute('aria-label', 'File record');
+                if (this.body) this.body.replaceChildren();
+                this.select();
+            },
+            hide() {
+                const hadFocus = this.$el.contains(document.activeElement);
+                const opener = this.opener;
+                const row = this.visibleRow();
+                this.reset();
+                if (!hadFocus) return;
+                this.$nextTick(() => {
+                    const dest = row && row.isConnected ? row : opener && opener.isConnected ? opener : null;
+                    if (dest) dest.focus();
+                    else if (window._focusStageHeading) window._focusStageHeading();
+                });
+            },
+            // The xl boundary was crossed (or another owner took over): whatever is open closes, the
+            // modal through its own hide() so its inert/trap are released, and any request still in
+            // flight is rejected by guard() because nothing owns it any more.
+            closeAll() {
+                if (this.open) this.hide();
+                const modalBody = document.getElementById('record-body');
+                if (modalBody) this.$nextTick(() => modalBody.replaceChildren());
+            },
+        };
+    }
+</script>

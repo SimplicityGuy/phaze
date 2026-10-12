@@ -258,7 +258,7 @@
                 {% for row in group_rows %}
                 {% set row_number.value = row_number.value + 1 %}
                 <tr id="files-row-{{ row_number.value }}"
-                    class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/5"
+                    class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 aria-[current=true]:bg-blue-50 dark:hover:bg-white/5 dark:aria-[current=true]:bg-white/10"
                     {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                     {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
                        `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
