@@ -13,10 +13,13 @@ import asyncio
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
+from bs4 import BeautifulSoup, Tag
+from jinja2 import Environment, FileSystemLoader
 import pytest
 from sqlalchemy import func, literal_column, select, table
 
@@ -27,6 +30,7 @@ from phaze.routers.shell import summary as summary_mod
 from phaze.routers.shell.summary import SummaryOverviewInputs, _build_flow_edges, _derive_bottleneck, _derive_summary_overview
 from phaze.services.pipeline import buckets as buckets_mod, stages as stages_mod
 from phaze.services.pipeline.common import capture_read_degradations, mark_read_degraded, measure_read
+from phaze.web.template_globals import register_page_name_globals
 from tests.shared.routers.pipeline._shared import _reset_saq_jobs_minimal
 
 
@@ -496,3 +500,145 @@ async def test_healthy_empty_archive_keeps_measured_zeros(session: AsyncSession)
     assert [edge["value"] for edge in overview["flow_edges"]] == [0] * 7
     assert {edge["state"] for edge in overview["flow_edges"]} == {"empty"}
     assert overview["bottleneck"]["node"] == "Discover"
+
+
+# --------------------------------------------------------------------------------------------
+# phaze-vvzam: the rendered flow board
+# --------------------------------------------------------------------------------------------
+
+_TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
+
+
+def _render(overview: dict[str, Any]) -> BeautifulSoup:
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    register_page_name_globals(env)
+    return BeautifulSoup(env.get_template("shell/partials/summary_overview.html").render(summary=overview), "html.parser")
+
+
+def _mixed_overview() -> dict[str, Any]:
+    progress = _progress(
+        total=10,
+        metadata=_bucket(8, not_started=0, done=6, failed=1, missing=1),
+        analyze=_bucket(8, not_started=8, done=0),
+        proposals={"done": 0, "total": None},
+        execute={"done": 0, "total": 2},
+    )
+    return _derive_summary_overview(progress, _inputs(proposal_pending=4, proposal_approved=7))
+
+
+def test_board_is_an_image_with_title_and_desc_and_the_links_stay_canonical() -> None:
+    soup = _render(_mixed_overview())
+    svg = soup.select_one("figure[data-flow-board] svg")
+    assert svg is not None
+    assert svg["role"] == "img"
+    title = soup.select_one(f"#{svg['aria-labelledby']}")
+    desc = soup.select_one(f"#{svg['aria-describedby']}")
+    assert title is not None and title.name == "title" and title.parent is svg
+    assert desc is not None and desc.name == "desc" and desc.parent is svg
+    assert not svg.select("a, [tabindex], [hx-get]"), "an image's children are presentational: no links inside it"
+    caption = soup.select_one("figure[data-flow-board] figcaption")
+    assert caption is not None
+    assert "files holding each stage's output" in caption.get_text()
+
+    rendered = str(soup)
+    assert "Parallel enrichment" in soup.get_text(" ", strip=True)
+    assert {"md:grid-cols-2", "md:grid-cols-3", "xl:grid-cols-3"} <= set(rendered.replace('"', " ").split())
+    assert "w-[" not in rendered
+    links = soup.select("a[hx-get]")
+    assert links
+    assert all(isinstance(link, Tag) and link.get("href") == link.get("hx-get") for link in links)
+    assert all(link.get("hx-target") == "#stage-workspace" for link in links)
+    ids = [element["id"] for element in soup.select("[id]")]
+    assert len(ids) == len(set(ids)), "no duplicate ids between the board and the rest of the page"
+
+
+def test_hidden_list_carries_every_node_and_edge_value_with_a_dash_for_unknown() -> None:
+    overview = _mixed_overview()
+    soup = _render(overview)
+    text = soup.select_one("[data-flow-text]")
+    assert text is not None and "sr-only" in text["class"]
+
+    nodes = {li["data-flow-text-node"]: li.get_text(" ", strip=True) for li in text.select("li[data-flow-text-node]")}
+    assert list(nodes) == [node["name"] for node in overview["flow"]]
+    assert nodes["Discover"].startswith("Discover: 10 files")
+    assert nodes["Metadata"].startswith("Metadata: 6 of 8 files; status complete, 1 failed, 1 missing")
+    assert nodes["Analyze"].startswith("Analyze: 0 of 8 files")
+    assert nodes["Propose"].startswith("Propose: 0 of — files; status unavailable")
+    assert nodes["Review"].startswith("Review: 4 awaiting decision")
+    assert nodes["Execute"].startswith("Execute: 0 files executed, 7 approved now")
+
+    edges = {li["data-flow-text-edge"]: li.get_text(" ", strip=True) for li in text.select("li[data-flow-text-edge]")}
+    assert list(edges) == [edge["id"] for edge in overview["flow_edges"]]
+    assert edges["join-propose"] == "Metadata + Analyze to Propose: — files with both, ready to propose"
+    assert edges["analyze-join"] == "Analyze to Propose: 0 files analyzed", "a measured zero reads 0, not a dash"
+    assert edges["review-apply"] == "Review to Execute: 2 files approved to execute"
+    desc = soup.select_one("svg desc")
+    assert desc is not None
+    for line in edges.values():
+        assert line in desc.get_text(), "the image description and the text list agree"
+
+
+def test_unknown_edge_is_dashed_at_a_fixed_width_and_zero_keeps_a_hairline() -> None:
+    soup = _render(_mixed_overview())
+    paths = {path["data-flow-edge"]: path for path in soup.select("svg path[data-flow-edge]")}
+    unknown = paths["join-propose"]
+    assert unknown["data-edge-state"] == "unknown"
+    assert unknown["stroke-dasharray"] == "4 4"
+    assert unknown["stroke-width"] == "2"
+    zero = paths["analyze-join"]
+    assert zero["data-edge-state"] == "empty"
+    assert zero["stroke-width"] == "1.0"
+    assert not zero.get("stroke-dasharray")
+    assert all(path["stroke-width"] not in {"0", "0.0", "None", ""} for path in paths.values())
+
+
+def test_outlined_node_and_callout_follow_the_top_attention_item() -> None:
+    overview = _mixed_overview()
+    soup = _render(overview)
+    top = overview["attention"][0]
+    assert top["id"] == "metadata-failed"
+    outlined = soup.select("svg g[data-bottleneck]")
+    assert [group["data-flow-node"] for group in outlined] == ["Metadata"]
+    callout = soup.select_one("[data-flow-bottleneck]")
+    assert callout is not None
+    assert callout.get_text(strip=True) == f"Bottleneck: Metadata — {top['title']}"
+
+
+def test_missing_and_failed_stay_distinct_on_the_board_and_the_cards() -> None:
+    soup = _render(_mixed_overview())
+    board = soup.select_one('svg g[data-flow-node="Metadata"]')
+    assert board is not None
+    assert "1 failed" in board.get_text() and "1 missing" in board.get_text()
+    badges = [badge.get_text(" ", strip=True) for badge in soup.select("a[href='/s/metadata'] span.rounded-full")]
+    assert any("1 failed" in badge for badge in badges)
+    assert any("1 missing" in badge for badge in badges)
+
+
+@pytest.mark.usefixtures("inject_faults")
+async def test_real_failure_reaches_the_rendered_board_as_unknown(client: Any, session: AsyncSession, make_file: Any) -> None:
+    await _seed(session, make_file)
+    healthy = BeautifulSoup((await client.get("/s/summary")).text, "html.parser")
+    assert healthy.select_one('svg path[data-flow-edge="analyze-join"]')["data-edge-state"] == "flow"  # type: ignore[index]
+
+    _FAULTS.set(frozenset({"analyze_bucket", "proposals_total"}))
+    try:
+        soup = BeautifulSoup((await client.get("/s/summary")).text, "html.parser")
+    finally:
+        _FAULTS.set(frozenset())
+
+    for edge_id in ("analyze-join", "join-propose"):
+        path = soup.select_one(f'svg path[data-flow-edge="{edge_id}"]')
+        assert path is not None and path["data-edge-state"] == "unknown" and path["stroke-dasharray"] == "4 4"
+        line = soup.select_one(f'[data-flow-text-edge="{edge_id}"]')
+        assert line is not None and ": —" in line.get_text()
+    assert _texts(soup, '[data-flow-text-node="Metadata"]')[0].startswith("Metadata: 2 of 2 files")
+    assert _texts(soup, '[data-flow-text-node="Analyze"]')[0].startswith("Analyze: — of 2 files; status unavailable")
+    analyze_card = soup.select_one("a[href='/s/analyze'] p")
+    assert analyze_card is not None and analyze_card.get_text(" ", strip=True).startswith("—")
+    assert _texts(soup, "[data-flow-bottleneck]") == ["Bottleneck unknown: Inspect unavailable status"]
+    assert soup.select("svg g[data-bottleneck]") == []
+    assert "Inspect unavailable status" in _texts(soup, "#next-action-title")
+
+
+def _texts(soup: BeautifulSoup, selector: str) -> list[str]:
+    return [element.get_text(" ", strip=True) for element in soup.select(selector)]
