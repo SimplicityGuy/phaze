@@ -139,7 +139,9 @@ class SqlTagwriteReviewReader:
             "has_prior_write": latest is not None,
             "latest_status": latest.status if latest is not None else None,
             "bulk_eligible": not has_blanking and (latest is None or (latest.source == "undo" and latest.status == TagWriteStatus.COMPLETED.value)),
-            "status": ("blocked" if latest is not None and latest.status in {"failed", "discrepancy", "verify_failed"} else "needs_review"),
+            "status": (
+                "blocked" if latest is not None and latest.status in {"failed", "save_failed", "discrepancy", "verify_failed"} else "needs_review"
+            ),
             "discrepancies": latest.discrepancies if latest is not None else None,
             "error_message": latest.error_message if latest is not None else None,
             "set_profile": file_record.set_profile,

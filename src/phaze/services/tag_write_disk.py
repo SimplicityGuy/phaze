@@ -92,6 +92,10 @@ _WRITE_ASF_MAP: dict[str, str] = {
 _CORE_TAG_FIELDS: tuple[str, ...] = ("artist", "title", "album", "year", "genre", "track_number")
 
 
+class TagSaveError(OSError):
+    """A mutagen save was attempted; its on-disk result may be partial."""
+
+
 def write_tags(file_path: str, tags: dict[str, str | int | list[str] | None]) -> None:
     """Write tags to an audio file using format-aware mutagen methods.
 
@@ -132,7 +136,12 @@ def write_tags(file_path: str, tags: dict[str, str | int | list[str] | None]) ->
     writer = _WRITERS[resolve_tag_format(audio, audio.tags)]
     writer(audio, tags)
 
-    audio.save()
+    try:
+        audio.save()
+    except Exception as exc:
+        # ID3.save writes v2 bytes before its v1 tail operation. A save exception cannot
+        # prove no mutation, unlike failures loading the file or preparing in-memory tags.
+        raise TagSaveError(str(exc)) from exc
 
 
 def _write_id3(audio: Any, tags: dict[str, str | int | list[str] | None]) -> None:
@@ -416,6 +425,8 @@ def write_and_verify_sync(
         discrepancies = verify_write(file_path, proposed_tags)
         status: TagWriteStatus = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
         return status, discrepancies, None, before_tags
+    except TagSaveError as exc:
+        return TagWriteStatus.SAVE_FAILED, None, str(exc), before_tags
     except TagReadError as exc:
         # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
         # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
