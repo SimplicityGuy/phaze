@@ -351,7 +351,13 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
     )
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(tracer_provider)
-    _require_provider_took(trace.get_tracer_provider(), tracer_provider, "TracerProvider")
+    try:
+        _require_provider_took(trace.get_tracer_provider(), tracer_provider, "TracerProvider")
+    except ProviderNotInstalledError:
+        # The processor above already started its export thread, and nothing will ever hold this
+        # provider again. Nothing was emitted into it, so this shutdown has nothing to export.
+        tracer_provider.shutdown()
+        raise
 
     meter_provider = MeterProvider(
         resource=Resource.create(_resource_attributes(role, service_name)),
@@ -360,7 +366,13 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
         shutdown_on_exit=False,
     )
     metrics.set_meter_provider(meter_provider)
-    _require_provider_took(metrics.get_meter_provider(), meter_provider, "MeterProvider")
+    try:
+        _require_provider_took(metrics.get_meter_provider(), meter_provider, "MeterProvider")
+    except ProviderNotInstalledError:
+        # Likewise its reader's thread. No instrument was ever created against this provider,
+        # so the final collection is empty and nothing is sent.
+        meter_provider.shutdown()
+        raise
     # The proxy meter created at import forwards to whatever provider is installed later,
     # but its instruments were built before the Views existed. Rebuild so every histogram
     # picks up its ladder.
