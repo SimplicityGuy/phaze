@@ -284,6 +284,9 @@ async def retry_metadata_failed_file(
     # stays "failed" until `put_metadata`'s clear-on-success later lands real metadata; pushing it
     # anyway keeps the pill's id fresh in the DOM rather than claiming a bucket flip that has not
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
-    buckets = await get_file_stage_buckets(session, file_id)
+    stage_history: dict[str, bool] = {}
+    buckets = await get_file_stage_buckets(session, file_id, history=stage_history)
     ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
-    return HTMLResponse(ack + _files_retry_oob(file_id, "metadata", buckets))
+    return HTMLResponse(
+        ack + _files_retry_oob(file_id, "metadata", buckets, file_type=file.file_type, missing=file.missing_at, history=stage_history)
+    )

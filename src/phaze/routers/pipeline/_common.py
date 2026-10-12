@@ -8,7 +8,7 @@ from __future__ import annotations
 # sibling module.
 import asyncio  # noqa: TC003
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # The suppression below is deliberate (runtime import, NOT type-only): this module carries
 # `from __future__ import annotations`, so ruff offers to move `uuid` into the TYPE_CHECKING block.
@@ -22,9 +22,14 @@ from fastapi import APIRouter
 from fastapi.templating import Jinja2Templates
 import structlog
 
+from phaze.services.pipeline.files import file_stage_applicability
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
+
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 # phaze-oau1o: the logger name is PINNED to the old module path rather than taken from ``__name__``.
@@ -102,20 +107,35 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: s
     return f'<span id="{id_prefix}-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 
 
-def _files_retry_oob(file_id: uuid.UUID, stage: str, buckets: dict[str, str]) -> str:
+def _files_retry_oob(
+    file_id: uuid.UUID,
+    stage: str,
+    buckets: dict[str, str],
+    *,
+    file_type: str | None = None,
+    missing: datetime | None = None,
+    history: dict[str, bool] | None = None,
+) -> str:
     """Refresh retry controls and current-state summaries on both responsive Files surfaces."""
     stage_label = _ENRICH_STAGE_LABELS[stage]
+    applicability = file_stage_applicability(file_type, buckets, history)
     controls = "".join(
         templates.get_template("pipeline/partials/_files_stage_control.html").render(
             file_id=file_id,
             key=stage,
             stage_label=stage_label,
             bucket=buckets.get(stage, "not_started"),
+            stage_applicable=applicability[stage],
             surface=surface,
             oob=True,
         )
         for surface in ("table", "mobile")
     )
-    current = templates.get_template("pipeline/partials/_files_current_status.html").render(buckets=buckets)
-    summaries = "".join(f'<span id="{prefix}-current-status-{file_id}" hx-swap-oob="true">{current}</span>' for prefix in ("files", "files-mobile"))
+    current = templates.get_template("pipeline/partials/_files_current_status.html").render(
+        buckets=buckets, missing=missing, stage_applicability=applicability
+    )
+    summaries = "".join(
+        f'<span id="{prefix}-current-status-{file_id}" class="block whitespace-normal" hx-swap-oob="true">{current}</span>'
+        for prefix in ("files", "files-mobile")
+    )
     return controls + summaries

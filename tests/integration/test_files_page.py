@@ -116,6 +116,11 @@ async def test_files_page_is_bounded_and_emits_no_count(db_env: tuple[AsyncSessi
 
     derivation_sql = [s for s in captured if "files" in s.lower() and "case" in s.lower()]
     assert derivation_sql, f"no per-row derivation SELECT captured; saw: {captured}"
+    # History is projected in that same bounded SELECT, not fetched separately for each row.
+    assert len(derivation_sql) == 1
+    assert len([sql for sql in captured if sql.lstrip().lower().startswith("select")]) == 2
+    assert "analysis_window" in derivation_sql[0].lower()
+    assert all(row.stage_history == {"metadata": False, "analyze": False, "tracklist": False} for row in page.rows)
     for sql in derivation_sql:
         lowered = sql.lower()
         assert "limit" in lowered, f"derivation query not LIMIT-bounded: {sql}"

@@ -14,6 +14,7 @@
    presentations -- which is what `test_record_full_page.py`'s text-equality assertion pins. #}
 {% import "ui/primitives.html" as ui %}
 {% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-muted ' %}
+{% set stage_applicability = stage_applicability|default({}) %}
 {% set _panel = 'rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel' %}
 <div data-record-content class="space-y-6 px-6 py-5">
         {# Pipeline evidence is independent of proposal review. Missing is a stored reconcile
@@ -28,6 +29,9 @@
             {% elif _failed_stages %}
             <p class="text-sm font-semibold text-danger">Processing failed: {{ _failed_stages | join(', ') }}.</p>
             <p class="mt-1 text-sm text-muted">Inspect the recorded error and resolve its cause before retrying.</p>
+            {% elif not stage_applicability.get('metadata', true) and not stage_applicability.get('analyze', true) %}
+            <p class="text-sm text-muted">Ordinary media processing is not applicable to this file type.</p>
+            <p class="mt-1 text-sm text-muted">Reasoned stage skips remain available below when downstream proposals need to proceed without enrichment.</p>
             {% elif _enrichment_complete %}
             <p class="text-sm text-muted">Metadata and analysis complete.</p>
             {% else %}
@@ -132,11 +136,11 @@
                         <span id="stage-pill-{{ stage_value }}-{{ file.id }}" class="inline-flex">
                         {# phaze-yyfax: Tracklist is worded by its lookup outcome in the Files matrix, so it takes the matrix's own pill. #}
                         {% if stage_value == 'tracklist' %}
-                            {% with bucket=stage_buckets[stage_value] %}
+                            {% with bucket=stage_buckets[stage_value], stage_applicable=stage_applicability.get(stage_value, true) %}
                                 {% include "pipeline/partials/_tracklist_pill.html" %}
                             {% endwith %}
                         {% else %}
-                        {% with stage_label=stage_label, bucket=stage_buckets[stage_value] %}
+                        {% with stage_label=stage_label, bucket=stage_buckets[stage_value], stage_applicable=stage_applicability.get(stage_value, true) %}
                             {% include "pipeline/partials/_stage_pill.html" %}
                         {% endwith %}
                         {% endif %}

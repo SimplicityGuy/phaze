@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 from datetime import UTC, date, datetime
 import json
+import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -116,8 +118,18 @@ async def test_stage_pills_fit_after_restoring_narrow_columns(page: Any, seed: A
             const c = cell.getBoundingClientRect(), p = pill.getBoundingClientRect();
             return {text: pill.innerText, left: p.left - c.left, right: c.right - p.right};
         }))""")
-    assert geometry, "the table must render status pills"
-    assert all(item["left"] >= 8 and item["right"] >= 8 for item in geometry), geometry
+    if viewport_width >= 1280:
+        assert geometry, "the xl table must render stage status pills"
+        assert all(item["left"] >= 8 and item["right"] >= 8 for item in geometry), geometry
+    else:
+        assert not geometry, "tablet stage columns stay hidden; Current State is next-action text"
+        layout = await page.evaluate("""() => [...document.querySelectorAll('#files-table-view [id^=files-current-status-]')].map(summary => {
+            const cell = summary.closest('td').getBoundingClientRect();
+            const details = summary.closest('td').nextElementSibling.getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(summary);
+            return {right: Math.max(...[...range.getClientRects()].map(r => r.right)), cellRight: cell.right, detailsLeft: details.left};
+        })""")
+        assert layout and all(item["right"] <= item["cellRight"] and item["cellRight"] <= item["detailsLeft"] for item in layout), layout
     assert (
         await page.locator(f"#files-stage-pill-metadata-{record.id}").evaluate("el => el.closest('tr').querySelector('td').textContent.trim()")
         == "song.mp3"
@@ -541,7 +553,7 @@ async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(pa
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-@pytest.mark.parametrize("viewport_width", [390, 1440])
+@pytest.mark.parametrize("viewport_width", [390, 1440, 1920])
 async def test_glyph_cells_legend_and_record_skip_refresh_keep_accessible_meaning(page: Any, seed: Any, theme: str, viewport_width: int) -> None:
     """Real keyboard skip preserves word record tokens; existing Files refresh restores glyph cells."""
     file = await seed.file(filename="glyph.mp3")
@@ -703,3 +715,104 @@ async def test_files_density_remains_usable_when_storage_is_denied(page: Any, se
     assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "comfortable"
     await page.get_by_role("button", name="Compact row density").click()
     assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+
+
+@pytest.mark.parametrize("viewport_width", [390, 1440, 1920])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_stage_scope_and_failure_next_action_match_native_files_and_record(page: Any, seed: Any, viewport_width: int, theme: str) -> None:
+    sidecar = await seed.file(filename="notes.nfo", file_type="nfo")
+    media = await seed.file(filename="song.mp3")
+    failed = await seed.file(filename="historical.txt", file_type="txt")
+    seed.session.add(AnalysisResult(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic decode failure"))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await open_shell(page, "/s/files")
+    prefix = "files-mobile" if viewport_width == 390 else "files"
+    if viewport_width == 390:
+        await page.locator(f"#{prefix}-current-status-{sidecar.id}").locator("..").locator("..").get_by_text("Stage details", exact=True).click()
+    scoped = page.locator(f"#{prefix}-stage-pill-metadata-{sidecar.id} [aria-label]")
+    await scoped.wait_for(state="visible")
+    assert await scoped.get_attribute("aria-label") == "Metadata: not applicable"
+    assert await scoped.get_attribute("data-status-variant") == ("glyph" if viewport_width >= 1440 else None)
+    assert (
+        await page.locator(f"#{prefix}-current-status-{sidecar.id}").inner_text()
+        == "Outside ordinary media processing; workflow awaits prerequisites"
+    )
+    assert await page.locator(f"#{prefix}-current-status-{media.id}").inner_text() == "Awaiting Metadata processing"
+    assert await page.locator(f"#{prefix}-current-status-{failed.id}").inner_text() == "Inspect Analyze error and recovery options"
+    assert await page.locator("[data-stage-applicability=not_applicable]").inner_text() == "∅ not applicable"
+    if viewport_width >= 1440:
+        geometry = await page.evaluate("""() => [...document.querySelectorAll('#files-table-view [id^=files-current-status-]')].map(summary => {
+            const cell = summary.closest('td').getBoundingClientRect();
+            const details = summary.closest('td').nextElementSibling.getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(summary);
+            return {right: Math.max(...[...range.getClientRects()].map(r => r.right)), cellRight: cell.right, detailsLeft: details.left};
+        })""")
+        assert all(item["right"] <= item["cellRight"] and item["cellRight"] <= item["detailsLeft"] for item in geometry), geometry
+
+    if evidence_dir := os.getenv("PHAZE_UI_EVIDENCE_DIR"):
+        await page.screenshot(path=str(Path(evidence_dir) / f"files-scope-{viewport_width}-{theme}.png"), full_page=True)
+    if viewport_width == 390:
+        details = (
+            page.locator(f"#{prefix}-current-status-{sidecar.id}")
+            .locator("..")
+            .locator("..")
+            .get_by_role("button", name="Open details for notes.nfo")
+        )
+    else:
+        details = page.locator(_details_button(sidecar.id))
+    await details.click()
+    await _wait_for_record(page)
+    assert await page.locator(f"#stage-pill-metadata-{sidecar.id} [aria-label]").get_attribute("aria-label") == "Metadata: not applicable"
+    assert await page.get_by_role("button", name="Skip metadata for this file").is_visible()
+    assert await page.get_by_role("button", name="Skip analyze for this file").is_visible()
+    assert await page.locator(f"#stage-pill-propose-{sidecar.id} [aria-label]").get_attribute("aria-label") == "Propose: not started"
+
+
+@pytest.mark.parametrize("viewport_width", [390, 1440])
+async def test_historical_nonmedia_retry_is_scoped_native_and_updates_matching_oob(page: Any, seed: Any, viewport_width: int) -> None:
+    failed = await seed.file(filename="failed.txt", file_type="txt")
+    failure = FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic metadata failure")
+    seed.session.add(failure)
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await open_shell(page, "/s/files")
+    prefix = "files-mobile" if viewport_width == 390 else "files"
+    if viewport_width == 390:
+        await page.locator(f"#{prefix}-current-status-{failed.id}").locator("..").locator("..").get_by_text("Stage details", exact=True).click()
+    retry = page.locator(f"#{prefix}-stage-pill-metadata-{failed.id}").get_by_role("button", name="Retry Metadata for this file")
+    await retry.wait_for(state="visible")
+    await retry.focus()
+    assert await retry.evaluate("el => el === document.activeElement")
+    endpoint = f"/pipeline/files/{failed.id}/metadata-failed/retry"
+    writes: list[str] = []
+    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" and request.url.endswith(endpoint) else None)
+    async with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith(endpoint)) as submitted:
+        await retry.press("Enter")
+    response = await submitted.value
+    assert response.status == 200
+    body = await response.text()
+    assert "re-queued 1 failed file(s)" in body.lower(), body
+    await page.wait_for_function(
+        "id => document.getElementById(id).textContent.toLowerCase().includes('re-queued')", arg=f"retry-result-{prefix}-{failed.id}-metadata"
+    )
+    assert len(writes) == 1
+    assert await page.locator("#record-body h2").count() == 0, "Retry must not activate the surrounding record row"
+    from bs4 import BeautifulSoup
+
+    pushed = BeautifulSoup(body, "html.parser")
+    token_id = f"{prefix}-stage-pill-metadata-{failed.id}"
+    summary_id = f"{prefix}-current-status-{failed.id}"
+    expected_token = pushed.select_one(f"#{token_id} [aria-label]")["aria-label"]
+    expected_summary = pushed.select_one(f"#{summary_id}").get_text(" ", strip=True)
+    assert expected_token in ("Metadata: failed", "Metadata: in flight")
+    assert await page.locator(f"#{token_id} [aria-label]").get_attribute("aria-label") == expected_token
+    assert await page.locator(f"#{summary_id}").inner_text() == expected_summary
+    await seed.session.refresh(failure)
+    assert failure.failed_at is not None, "Metadata retry retains real failure history until successful output"
+    fresh = await page.request.get("/pipeline/files", headers={"HX-Request": "true"})
+    assert fresh.status == 200
+    first = BeautifulSoup(await fresh.text(), "html.parser")
+    assert first.select_one(f"#{token_id} [aria-label]")["aria-label"] == expected_token
+    assert first.select_one(f"#{summary_id}").get_text(" ", strip=True) == expected_summary

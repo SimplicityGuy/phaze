@@ -9,15 +9,18 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, false, or_, select
+from sqlalchemy import and_, exists, false, or_, select
 from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.tracklist import Tracklist
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import ORPHANED_BUCKET
 from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
@@ -77,6 +80,37 @@ _FILES_PAGE_STAGES: tuple[Stage, ...] = (
 _ORPHAN_ELIGIBLE_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.ANALYZE)
 
 
+def file_stage_applicability(file_type: str | None, buckets: dict[str, str], history: dict[str, bool] | None = None) -> dict[str, bool]:
+    """Display scope for untouched media stages, without changing status or action eligibility.
+
+    Downstream proposal/review/execution work is type-agnostic. Real history takes precedence
+    over ordinary media scope, and an absent type is unknown rather than measured out of scope.
+    """
+    return {
+        stage.value: not (
+            file_type is not None
+            and file_type not in MUSIC_VIDEO_TYPES
+            and stage in (Stage.METADATA, Stage.ANALYZE, Stage.TRACKLIST)
+            and buckets.get(stage.value) == Status.NOT_STARTED.value
+            and history is not None
+            and history.get(stage.value) is False
+        )
+        for stage in _FILES_PAGE_STAGES
+    }
+
+
+def _stage_history_columns() -> list[ColumnElement[bool]]:
+    """Bounded file-correlated output-presence facts, including partial/non-authoritative output."""
+    return [
+        exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)),
+        or_(
+            exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)),
+            exists(select(AnalysisWindow.id).where(AnalysisWindow.file_id == FileRecord.id)),
+        ),
+        exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+    ]
+
+
 def _orphan_row_clause(stage: Stage) -> ColumnElement[bool]:
     """One stage's row-level orphaned predicate: in-flight per the CASE ladder AND orphaned_clause.
 
@@ -94,6 +128,12 @@ class FilesPageRow:
     file: FileRecord
     buckets: dict[str, str]
     scan_root: str = "Unassigned scan root"
+    stage_history: dict[str, bool] | None = None
+
+    @property
+    def stage_applicability(self) -> dict[str, bool]:
+        """Presentation only; controls and filters continue to use the raw buckets."""
+        return file_stage_applicability(self.file.file_type, self.buckets, self.stage_history)
 
     @property
     def filename(self) -> str:
@@ -166,14 +206,14 @@ def _files_page_stmt(
     and a single ineligible stage yields the empty set via ``false()`` rather than a 500 into the
     SAVEPOINT degrade path.
     """
-    cols = [display_status_case(s) for s in _FILES_PAGE_STAGES]
+    cols: list[ColumnElement[Any]] = [display_status_case(s) for s in _FILES_PAGE_STAGES]
     # phaze-x1qr3.9: ONE extra `SELECT ... WHERE set_profile.file_id IN (...)` for the whole
     # bounded page (selectinload, not a join on the correlated derivation above) -- never one
     # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
     # every `row.file.set_profile` the template reads would raise, not silently N+1.
     stmt = cast(
         "Select[Any]",
-        select(FileRecord, *cols, Agent.scan_roots, ScanBatch.configured_root)
+        select(FileRecord, *cols, *_stage_history_columns(), Agent.scan_roots, ScanBatch.configured_root)
         .outerjoin(Agent, Agent.id == FileRecord.agent_id)
         .outerjoin(ScanBatch, ScanBatch.id == FileRecord.batch_id)
         .options(selectinload(FileRecord.set_profile)),
@@ -255,13 +295,14 @@ async def get_files_page(
             file=row[0],
             buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
             scan_root=_scan_root(row[0].original_path, row[-2] or [], row[-1]),
+            stage_history={key: bool(row[len(_FILES_PAGE_STAGES) + idx + 1]) for idx, key in enumerate(("metadata", "analyze", "tracklist"))},
         )
         for row in page_rows
     ]
     return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)
 
 
-async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> dict[str, str]:
+async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID, *, history: dict[str, bool] | None = None) -> dict[str, str]:
     """Return ONE file's six derived per-stage buckets (keyed by ``Stage`` value) — the matrix row, single-file.
 
     The record slide-in's Stage-Eligibility pills must show the SAME derived status the Files matrix
@@ -271,7 +312,10 @@ async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> d
     all-``not_started`` mapping on any error (the pane renders, never 500s) — mirroring
     :func:`get_files_page`'s SAVEPOINT degrade posture.
     """
-    cols = [display_status_case(s) for s in _FILES_PAGE_STAGES]
+    cols: list[ColumnElement[Any]] = [display_status_case(s) for s in _FILES_PAGE_STAGES]
+    if history is not None:
+        history.clear()
+        cols.extend(_stage_history_columns())
     try:
         async with session.begin_nested():
             row = (await session.execute(select(*cols).where(FileRecord.id == file_id))).one_or_none()
@@ -280,6 +324,8 @@ async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> d
         row = None
     if row is None:
         return dict.fromkeys((s.value for s in _FILES_PAGE_STAGES), "not_started")
+    if history is not None:
+        history.update({key: bool(row[len(_FILES_PAGE_STAGES) + idx]) for idx, key in enumerate(("metadata", "analyze", "tracklist"))})
     return {stage_member.value: row[idx] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)}
 
 
