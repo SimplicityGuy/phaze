@@ -95,6 +95,33 @@ def _review_token(proposal: RenameProposal) -> str:
 _TEMPLATES_DIR = Path(phaze.__file__).parent / "templates"
 
 
+@pytest.mark.parametrize("action,status", [("reject", ProposalStatus.PENDING), ("undo", ProposalStatus.APPROVED)])
+async def test_skip_and_undo_refuse_a_changed_reviewed_version(client: AsyncClient, session: AsyncSession, action: str, status: str) -> None:
+    proposal = await create_test_proposal(session, status=status)
+    reviewed = proposal.updated_at.isoformat()
+    proposal.updated_at += timedelta(seconds=1)
+    proposal.proposed_filename = "Changed after review.mp3"
+    await session.commit()
+    response = await client.patch(f"/proposals/{proposal.id}/{action}", data={"expected_updated_at": reviewed})
+    assert response.status_code == 409
+    await session.refresh(proposal)
+    assert proposal.status == status
+    assert proposal.proposed_filename == "Changed after review.mp3"
+
+
+@pytest.mark.parametrize(
+    "action,status,target", [("reject", ProposalStatus.PENDING, ProposalStatus.REJECTED), ("undo", ProposalStatus.APPROVED, ProposalStatus.PENDING)]
+)
+async def test_skip_and_undo_accept_the_unchanged_reviewed_version(
+    client: AsyncClient, session: AsyncSession, action: str, status: str, target: str
+) -> None:
+    proposal = await create_test_proposal(session, status=status)
+    response = await client.patch(f"/proposals/{proposal.id}/{action}", data={"expected_updated_at": proposal.updated_at.isoformat()})
+    assert response.status_code == 200
+    await session.refresh(proposal)
+    assert proposal.status == target
+
+
 def test_no_template_reads_the_removed_file_state_column() -> None:
     """Source-scan (D-04 / Pitfall 4): no template reads ``file.state``; Phase 90 dropped that column.
 

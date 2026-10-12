@@ -60,6 +60,69 @@
 <div id="{{ changes_list_id }}" class="px-4 py-4 sm:px-6"
      x-data='{
         selected: {{ changes_selected | tojson }},
+        focusedRow: null,
+        shortcut: null,
+        triageRequest: null,
+        reviewRows() {
+            return Array.from(this.$root.querySelectorAll("[data-review-row]"));
+        },
+        markRow(row) {
+            if (!row) return;
+            this.focusedRow = row.id;
+            this.reviewRows().forEach(item => item.setAttribute("data-review-focused", String(item.id === row.id)));
+        },
+        focusRow(row) {
+            if (!row) return;
+            this.markRow(row);
+            row.focus({ preventScroll: true });
+            row.scrollIntoView({ block: "nearest" });
+        },
+        triage(event) {
+            if (event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || this.triageRequest) return;
+            if (event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) return;
+            if (Array.from(document.querySelectorAll("dialog[open], [role=dialog], [aria-modal=true]")).some(el => el.getClientRects().length && getComputedStyle(el).visibility !== "hidden")) return;
+            if (this.reviewRows().some(row => row.querySelector("input[name=proposed]"))) return;
+            const rows = this.reviewRows();
+            const row = rows.find(item => item.id === this.focusedRow) || rows[0];
+            if (!row) return;
+            const key = event.key.toLowerCase();
+            if (key === "j" || key === "k") {
+                event.preventDefault();
+                this.focusRow(rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + (key === "j" ? 1 : -1)))]);
+                return;
+            }
+            const action = { a: "approve", e: "edit", s: "skip", z: "undo" }[key];
+            if (!action) return;
+            const button = row.querySelector(`[data-review-action="${action}"]`);
+            if (!button || button.matches(":disabled") || !button.getClientRects().length) return;
+            event.preventDefault();
+            this.markRow(row);
+            this.shortcut = row.id;
+            button.click();
+            this.shortcut = null;
+        },
+        triageStarted(event) {
+            const row = event.detail.elt.closest("[data-review-row]");
+            if (!row || row.id !== this.shortcut) return;
+            const rows = this.reviewRows();
+            const next = rows[rows.indexOf(row) + 1];
+            this.triageRequest = { id: row.id, next: next ? next.id : row.id };
+        },
+        triageFinished(event) {
+            if (!this.triageRequest) return;
+            const row = event.detail.elt.closest("[data-review-row]");
+            if (!row || row.id !== this.triageRequest.id) return;
+            if (!event.detail.successful) {
+                this.focusRow(this.$root.querySelector(`[id="${this.triageRequest.id}"]`));
+                this.triageRequest = null;
+            }
+        },
+        triageSettled(event) {
+            if (!this.triageRequest || !event.detail.xhr || event.detail.xhr.status < 200 || event.detail.xhr.status >= 300) return;
+            if (event.detail.elt.id !== this.triageRequest.id) return;
+            this.focusRow(this.$root.querySelector(`[id="${this.triageRequest.next}"]`));
+            this.triageRequest = null;
+        },
         visible: [{% for p in changes_proposals %}{{ p.id | string | tojson }}{% if not loop.last %},{% endif %}{% endfor %}],
         reprocess(element) {
             if (window.htmx) window.htmx.process(element);
@@ -85,7 +148,13 @@
             }
         }
      }'
-      x-init="selected = selected.filter(id => visible.includes(id)); $nextTick(() => sync())">
+      x-init="selected = selected.filter(id => visible.includes(id)); $nextTick(() => { sync(); markRow(reviewRows()[0]); })"
+      @keydown.window="triage($event)"
+      @focusin="markRow($event.target.closest('[data-review-row]'))"
+      @htmx:before-request.camel="triageStarted($event)"
+      @htmx:after-request.camel="triageFinished($event)"
+      @htmx:after-settle.camel="triageSettled($event)">
+    <p class="mb-4 text-xs text-muted" data-review-hotkeys>Keyboard: J/K move · A approve · E edit · S skip · Z undo. Shortcuts pause while editing or a dialog is open.</p>
     {% if changes_toast is defined and changes_toast %}
     <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
     {% endif %}
