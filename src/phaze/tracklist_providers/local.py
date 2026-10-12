@@ -14,7 +14,7 @@ from phaze.tracklist_providers.domain import (
     RecordingContext,
     Snapshot,
 )
-from phaze.tracklist_providers.port import ProviderEffects, SourceInterpreter
+from phaze.tracklist_providers.port import AuthorizedEffects, SourceInterpreter
 from phaze.tracklist_providers.registry import context_key
 
 
@@ -31,7 +31,7 @@ class LocalProvider:
         self.interpreter = interpreter
 
     async def discover(
-        self, context: RecordingContext, budget: DiscoveryBudget, cursor: OpaqueCursor | None, effects: ProviderEffects
+        self, context: RecordingContext, budget: DiscoveryBudget, cursor: OpaqueCursor | None, effects: AuthorizedEffects
     ) -> DiscoveryOutcome:
         del effects
         sources = tuple(source for source in context.sources if source.identity.provider_id == self.descriptor.id)
@@ -55,7 +55,7 @@ class LocalProvider:
             cursor=None if complete else OpaqueCursor(provider_id="local", context_key=context_key(context), token=str(end)),
         )
 
-    async def load(self, candidate: ProviderCandidate, budget: LoadBudget, effects: ProviderEffects) -> LoadOutcome:
+    async def load(self, candidate: ProviderCandidate, budget: LoadBudget, effects: AuthorizedEffects) -> LoadOutcome:
         if candidate.source is None:
             return LoadOutcome(status=OutcomeStatus.CONTRACT_ERROR, code="missing_source_reference", scope=candidate.identity.native_id)
         content = await effects.read(candidate.source, budget)
