@@ -256,3 +256,42 @@ def test_analyze_lanes_content_hash_is_stable_and_state_sensitive() -> None:
     circular: dict[str, object] = {}
     circular["self"] = circular
     assert analyze_lanes_content_hash([circular], None) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filtered", [False, True], ids=["working-set", "filtered-page"])
+async def test_analyze_page_sql_failure_recovers_outer_transaction(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, filtered: bool, record_property
+) -> None:
+    """A real PostgreSQL error is isolated by the reader's savepoint, preserving pending work."""
+    from time import perf_counter
+
+    from sqlalchemy import select, text
+
+    from phaze.models.file import FileRecord
+
+    pending = _make_pipeline_file()
+    session.add(pending)
+    await session.flush()
+    execute = session.execute
+    injected = False
+
+    async def fail_page(stmt, *args, **kwargs):
+        nonlocal injected
+        if not injected and "FROM files" in str(stmt):
+            injected = True
+            return await execute(text("SELECT 1 / 0"))
+        return await execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", fail_page)
+    started = perf_counter()
+    if filtered:
+        page = await get_analyze_files_page(session, page=-3, page_size=1000, status="failed")
+    else:
+        page = await get_analyze_working_set(session, page=-3, page_size=1000)
+    record_property("degraded_query_seconds", perf_counter() - started)
+    assert injected
+    assert page.rows == [] and page.has_next is False
+    assert (page.page, page.page_size, page.status) == (1, 100, "failed" if filtered else None)
+    assert (await session.execute(text("SELECT 41 + 1"))).scalar_one() == 42
+    assert (await session.execute(select(FileRecord.id).where(FileRecord.id == pending.id))).scalar_one() == pending.id
