@@ -26,17 +26,19 @@ Each citation gives the question as put, the answer as given, the date and the d
 
 | Decision | Question as put | Answer as given | Date | Durable record |
 | --- | --- | --- | --- | --- |
-| Coverage criterion | "For the plan's acceptance criteria, should "over 95%" apply to overall line coverage only, or to both line and branch coverage? I recommend both overall, with explicit targets for the highest-risk modules." | "Line coverage only" (verbatim reply text) | 2026-10-10T23:07:13Z | recovered-decision comment on `phaze-8d5bs` |
-| Runtime targets | "Which runtime matters most for optimization? I recommend measuring all three, while prioritizing the full local validation gate." | "all 3" (verbatim reply text) | 2026-10-10T23:07:27Z | recovered-decision comment on `phaze-8d5bs` |
-| Observation cohort | "Before the velocity pilots run, which observation cohort should they use? Repairs and coverage backfills can proceed without this choice." | "Next 20 completed beads, grouped by change type" (verbatim reply text) | 2026-10-11T19:03:57Z | recovered-decision comment on `phaze-x45ht` |
+| Coverage criterion | "For the plan's acceptance criteria, should "over 95%" apply to overall line coverage only, or to both line and branch coverage? I recommend both overall, with explicit targets for the highest-risk modules." | "Line coverage only" (selected option label; the other option was "Both line and branch coverage") | 2026-10-10T23:07:13Z | recovered-decision comment on `phaze-8d5bs` and its follow-up |
+| Runtime targets | "Which runtime matters most for optimization? I recommend measuring all three, while prioritizing the full local validation gate." | "all 3" (free text, verbatim; it matches none of the offered options "Full local validation gate", "CI completion time", "Fast per-bead feedback") | 2026-10-10T23:07:27Z | recovered-decision comment on `phaze-8d5bs` and its follow-up |
+| Observation cohort | "Before the velocity pilots run, which observation cohort should they use? Repairs and coverage backfills can proceed without this choice." | "Next 20 completed beads, grouped by change type" (selected option label) | 2026-10-11T19:03:57Z | recovered-decision comment on `phaze-x45ht` and its follow-up |
 | R4 adoption | Quoted in full in the [PD manifest](pilot-disposition-manifest.md#r4-adopted-on-one-matched-ci-run) | "Adopt, gate on matched CI" (selected option label) | 2026-10-12 local (2026-10-13T01:30Z) | operator-decision comment on `phaze-l5uve` |
 
 **Citation limits:**
 
 - **Recovery path.** The first three were recovered by grep from local session transcripts.
-  `scripts/recover_operator_decisions.py` does not read that transcript format. The replies record
-  only the answer text, so it is unknown whether each answer was a preset option label. The
-  durable comments were written during this batch, not when the decisions were made.
+  `scripts/recover_operator_decisions.py` does not read that transcript format. Each reply records
+  only the answer text, but the matching question calls list the offered options. Comparing them
+  confirms two exact option labels and one free-text answer ("all 3"). The durable comments, and
+  follow-up comments recording the offered options, were written during this batch, not when the
+  decisions were made.
 - **Design GO (2026-10-11).** The plan records it at its decision section: answer **GO**, selected
   option "GO design + bounded follow-on planning", assessment bead `phaze-9dxnh`. **The question as
   put is not recorded there and was not recovered**, so this citation is incomplete.
@@ -98,7 +100,7 @@ Per-pilot reasoning is in the PD manifest and the reports it links. It is not re
 | Overall LINE coverage strictly above 95% | **Met in every run cited below; final assembled run pending** | See [Coverage by run](#coverage-by-run) |
 | Existing true branch checks unchanged | **No floor changed by this epic; final run pending** | One combined arc lost at the R4 head (`phaze-0r4p0`), see Limitations |
 | Lower matched fast/full/CI complete-gate medians, no tail/failure/bounce/starvation regression | **NOT proven** | Only CI shard balance was measured, on one matched pair; no fast or full medians were compared |
-| Seven-shard max/mean at most 1.5 | **Met on one run** | 1.130 (R4 CI run) |
+| Seven-shard max/mean at most 1.5, per the R4 option's conditions "<=1.5 max/mean incl. setup/browser/combine, lower critical wall, no missing contexts/skips" | **Met on one run** | Test step 1.130; whole shard jobs incl. setup 1.112; critical wall 712 s to 469 s; skips 15 to 15; contexts 20245 to 20252 with one teardown context re-attributed and no arc lost (see the PD manifest) |
 | Accepted-bead velocity only with authoritative joins | **NOT proven; no claim** | 0 of 20 cohort beads have an original work start |
 | Adopt only proven supported selection authority | **Nothing adopted** | SC/SD/SE excluded; full escalation retained |
 | Deferred branches recorded | **Met** | PD manifest deferred table |
@@ -119,8 +121,8 @@ recipes and populations. None is a delta of another. Unmatched populations prove
 | R3 normal provider submit, source `7e4b322e` | local two-lane full, 11,297 passed + 7 skipped (11,304-case union) | 28,045 / 28,324 | 99.01497 | retained R3 `coverage.json` (re-read for this document) |
 | PR #729 normal group submit, head `a93154e5` | local full, 11,317 unique identities | not stated | 99.02 | PR #729 body |
 | PR #730 normal submit, head `2e410625` | local full, 11,324 unique identities (11,317 + 7 new) | not stated | 99.02 | PR #730 body |
-| R4 baseline CI run 38317442319, head `a35be942` | seven CI shards, 11,313 executed, 15 skips | 28,051 / 28,332 | 99.0082 | combined `coverage.xml` artifact (re-read) |
-| R4 CI run 38335835547, head `413e1e1b` | seven CI shards, 11,320 executed, 15 skips | 28,051 / 28,332 | 99.0082 | combined `coverage.xml` artifact (re-read) |
+| R4 baseline CI run 38317442319, head `a35be942` | seven CI shards, 11,313 executed, 15 skips | 28,051 / 28,332 | 99.00819 | combined `coverage.xml` artifact (re-read) |
+| R4 CI run 38335835547, head `413e1e1b` | seven CI shards, 11,320 executed, 15 skips | 28,051 / 28,332 | 99.00819 | combined `coverage.xml` artifact (re-read) |
 
 The two R4 rows report line rate as `0.9901` in the XML; the percentages above are computed from
 the covered/valid counts. Branch coverage at the R4 pair is 6,505 / 6,768 at the baseline and
@@ -140,7 +142,7 @@ are; this difference must **never** be normalized away.
 
 | Comparison | Status |
 | --- | --- |
-| **CI**, matched pair: R4 run 38335835547 vs baseline run 38317442319 | Shard step max/mean **2.326 to 1.130**. Longest test-workflow part **712 s to 469 s**, now the browser job. **One run, not p95.** Re-derived in the PD manifest |
+| **CI**, matched pair: R4 run 38335835547 vs baseline run 38317442319 | Shard step max/mean **2.326 to 1.130**; whole shard jobs incl. setup **2.080 to 1.112**. Longest test-workflow part **712 s to 469 s**, now the browser job. **One run, not p95.** Re-derived in the PD manifest |
 | **Full local gate** | **No matched comparison.** Observations only: PR #724's full-test recipe took 1,052.64 s after a 1,440.339 s host queue (PR #724 body). Runs on other trees under other host load are not comparable |
 | **Fast gate** (`just check-fast`) | **No paired measurement.** The approved three-alternating-pair warm protocol was not run, because no selection or runtime change that it governs was adopted |
 | Stable p95, tail, bounce and starvation | **Not measured** |
@@ -171,8 +173,10 @@ lists what it must show. Until then, G0, and therefore this outcome, is not comp
 - **Unexplained first full-run failure in PR #724.** That PR's first grouped full run failed one
   ledger-reaper assertion on source unchanged from main. A retry passed. The original cause remains
   unproven (PR #724 body).
-- **SD's validation lost evidence.** It lost its final combined coverage and lane-B JUnit to a
-  full-disk error. They are not reconstructed. The PD manifest records it.
+- **SD's validation lost evidence.** It lost its final combined coverage (binary, JSON and XML) and
+  lane-B JUnit to an observer full-disk error (ENOSPC). They are not reconstructed. The durable
+  record is the bead comments on `phaze-t4pmg` and `phaze-tpv01` ("observer ENOSPC"); PR #729 says
+  only that the data was lost.
 
 ## Open follow-ups
 

@@ -45,9 +45,9 @@ An owned supervisor launched each cell in its own process group and recorded the
 - argv, Python 3.14.7, seat database names, HEAD and tree, and the worktree's dirty paths before and
   after (empty at every cell).
 - **Preimage check.** The target file's SHA-256 was compared to the planned repaired-source hash
-  before any operator, and the cell refused on a mismatch. All six matched final source.
-- **Fault operator.** Exactly one operator per fault cell. A row operator must occur exactly once (it
-  refuses otherwise) and is applied before launch. The faulty SHA-256 and diff are recorded.
+  before any fault operator, and the cell refused on a mismatch. All six matched final source.
+- **Fault operator.** Exactly one fault operator per fault cell. A row's fault operator preimage must
+  occur exactly once (the cell refuses otherwise) and is applied before launch. The faulty SHA-256 and diff are recorded.
 - **Restore.** The saved preimage is restored in `finally`, only after the child exited and was
   reaped. The file is then rehashed and re-diffed. Every cell restored byte-identically with an empty
   residual diff.
@@ -80,7 +80,8 @@ supervised process's elapsed time, interpreter startup included.
 | A5 | `37bac28da5b74501276ac7388d4b0f55d5bd9ccfccc6887cdf46ae901d6fdf06` | `9fb744e96306063e3b4ac4195b6599e4fa6973fc93464e980497bec591131ce3` | waiting relay `task = asyncio.create_task(relay()) if ...` becomes `task = None` | 60 s |
 | A6 | `85de17f8a6dcc14029a82c345a7d44ec7654fda3e60bcd51dcac8e3f186b746a` | `bb5d45c31ee17cb567d2abbbd1f2789c7f0308abc28ec166d0a8ace13cd958cc` | delete only the reuse-query `parent_id` constraint (two lines) | 60 s |
 
-Every faulty hash equals the hash derived in the preparatory execution plan.
+Every faulty hash also equals the hash derived before execution in private preparation notes. Those
+notes are not a durable record; the hashes above are the values the supervisor measured.
 
 | Row | Baseline | Fault (first semantic failure) | Cold restored |
 | --- | --- | --- | --- |
@@ -100,7 +101,7 @@ each fault cell the reported failure is still the semantic oracle. An `Assertion
 too.
 
 **A6 cell history.** A6's first fault launch stopped inside the supervisor before pytest started: a
-transient `git write-tree` failure while it recorded provenance. The operator had not yet been
+transient `git write-tree` failure while it recorded provenance. The fault operator had not yet been
 applied and the source was unchanged. The supervisor was hardened to retry a transient git read, and
 A6's fault cell then ran once, followed by a fresh cold restored cell. The earlier restored green,
 which never had a fault launched before it, was kept under a separate name and is not cited above.
@@ -126,8 +127,28 @@ and by the normal union:
 The amended test bytes were committed before any cell ran. Every cell bound the same HEAD, and
 historical receipts from the older harnesses stay separate evidence.
 
-- **A4.** The test previously bounded only `Worker.process` at 10 s, which does not meet the approved
-  per-transition 5 s bound. Every non-cleanup async transition now runs under
+**Where the bounds come from.** The approved
+[assertion proposal](../quality-assessment/assertion-proposal.md), merged with the assessment in
+PR #716, sets the containment budgets in its bounded-sample table (lines 175–176):
+
+- A4: "Each await 5 s; settle scheduler within 10 s".
+- A5: "controlled time advances 3,601 s beyond heartbeat 3,600", "At most three observed
+  relay/sweep cycles per variant, 5 s event waits and 10 s Worker/queue shutdown".
+
+The 3601 s figure itself traces to the original reproduction in the
+[analysis hunt](../quality-assessment/analysis-hunt.md) (line 78), which advanced the installed SAQ
+clock by 3601 seconds. **The exact forms below are the implementer's decision**, chosen to fit
+those budgets:
+
+- the A4 split into per-transition `asyncio.timeout(5)` blocks plus ONE 10 s aggregate cleanup
+  budget;
+- the A5 split into exactly three advances of 1200, 1200 and 1201 seconds;
+- A5's single 5 s gather inside a 10 s aggregate cleanup.
+
+The operator was not asked about these forms.
+
+- **A4.** The test previously bounded only `Worker.process` at 10 s, which does not meet the
+  proposal's "each await 5 s" budget. Every non-cleanup async transition now runs under
   `asyncio.timeout(5)`:
   - the whole schedule/read/process/read tick;
   - the boot helper and the snapshots;
@@ -252,6 +273,12 @@ following, from its own output:
   bound, which is why the owned subprocess supervisor and its termination record are part of each
   receipt.
 - **A5's historical 4x1201 receipts are separate.** They are not restated as 3601.
+- **A5 is now stricter, and could flake under heavy load.** Before, a waiter-touch observation that
+  missed its 0.5 s polling window was simply suppressed. Now each of the three steps MUST have
+  observed the committed touch within 0.5 s, asserted after the sweep. That is a real timing
+  requirement on relay cadence and PG commit visibility. On a heavily loaded host it could fail
+  without any regression. A red on that assertion alone, with the sweep oracle green, is a
+  limitation to investigate under load before reading it as a relay defect.
 - **Fault receipts are local scratch.** They do not outlive the batch worktree. This document copies
   the values that matter.
 - **No runtime, velocity or coverage-percentage claim** follows from any receipt here. A0 decides

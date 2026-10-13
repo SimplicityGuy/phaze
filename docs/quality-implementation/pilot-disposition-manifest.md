@@ -21,11 +21,13 @@ that decision.
 
 **Operator decision, 2026-10-11.** Question as put: *"Before the velocity pilots run, which
 observation cohort should they use? Repairs and coverage backfills can proceed without this
-choice."* Answer as given (verbatim reply text): *"Next 20 completed beads, grouped by change
-type"*. The reply arrived at 19:03:57 UTC. The cohort cutoff is **2026-10-11T19:04:16Z**. Durable
-record: the recovered-decision comment on bead `phaze-x45ht`. Before that comment was written, no
-bead comment or ADR section held it. The source exchange is a session transcript, and the reply
-records only the answer text. So whether that text was a preset option label is not recovered. The
+choice."* Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped
+by change type"*. The other offered option was "Seven days, grouped by Python/tests, docs, and
+template/migration changes". The reply arrived at 19:03:57 UTC. The cohort cutoff is
+**2026-10-11T19:04:16Z**. Durable record: the recovered-decision comment on bead `phaze-x45ht` and
+its follow-up comment, which records the offered options. Before those comments were written, no
+bead comment or ADR section held it. The source exchange is a session transcript whose question
+call lists the offered options, so the answer is confirmed to be an exact option label. The
 decision covers cohort membership only.
 
 The cohort is complete in membership: **20** beads, every one an accepted-review join. Its outcome
@@ -90,9 +92,11 @@ gate adoption', and every sibling pilot (R1, R3, SB, SC, SD, SE) recorded EXCLUD
 outcome authority is incomplete. Should R4 be adopted, i.e. changed live CI shard authority, gated
 only by matched green CI?"* Answer as given (selected option label, verbatim): *"Adopt, gate on
 matched CI"*. The answer arrived at 2026-10-13T01:30Z UTC, which is 2026-10-12 local. Durable
-record: the operator-decision comment on bead `phaze-l5uve`. Its stated scope: adoption is gated by
-matched green CI on the exact tree (at most 1.5 max/mean, lower critical wall, no missing contexts,
-skips or setup regression). It does **not** extend to any velocity claim or to any other pilot.
+record: the operator-decision comment on bead `phaze-l5uve`. The selected option's description,
+which is the assistant's framing of the choice rather than the operator's words, carried the
+adoption conditions verbatim: *"<=1.5 max/mean incl. setup/browser/combine, lower critical wall, no
+missing contexts/skips"*. The decision does **not** extend to any velocity claim or to any other
+pilot.
 
 **Matched measurement.** Both runs are the `CI` workflow, `pull_request` event, conclusion
 `success`. The baseline head is `a35be942` (tree `0ce62e2b`, the R4 parent tree). The candidate is
@@ -104,17 +108,34 @@ combined-coverage artifacts.
 | --- | ---: | ---: |
 | Seven "Run shard tests with coverage" steps (s) | 601 / 354 / 287 / 224 / 196 / 82 / 65 | 297 / 293 / 289 / 275 / 260 / 236 / 190 |
 | Step max/mean | **2.326** | **1.130** |
+| Seven whole shard job durations, started to completed, incl. per-job setup (s) | 647 / 394 / 336 / 276 / 238 / 162 / 124 | 349 / 331 / 331 / 325 / 299 / 285 / 276 |
+| Whole-job max/mean (inclusive) | **2.080** | **1.112** |
 | Longest test-workflow part, Setup start to last of {shards+combine, browser} (s) | **712** (shards+combine) | **469** (browser job) |
 | Executed JUnit nodes (unique, zero duplicates) | 11313 | 11320 = 11313 + exactly 7 new |
 | Skips / failures | 15 / 0 | 15 / 0 |
 | Per-module order violations against baseline | n/a | 0 |
 | Combined coverage lines (covered/valid) | 28051 / 28332 | 28051 / 28332 |
 | Combined coverage branches (covered/valid) | 6505 / 6768 | **6504** / 6768 |
+| Distinct coverage contexts, union of the seven shard `.coverage` context tables | 20245 | 20252 = 20245 + 8 new − 1 absent |
 
 The 7 new nodes are R4's own manifest controls in `tests/shared/scripts/test_parallel_test_manifests.py`:
 one positive receiver/lane check and six negative controls through the real validator. No baseline
-node is missing. The ratio target (at most 1.5) is met, and the longest part fell from 712 s to
-469 s. The critical path is now the browser job, which R4 did not touch.
+node is missing. The ratio condition (at most 1.5) is met both on the test step alone (1.130) and on
+whole shard jobs including setup (1.112). The longest part, which includes the browser job and the
+coverage combine, fell from 712 s to 469 s. The critical path is now the browser job, which R4 did
+not touch.
+
+**Contexts: one baseline context is absent at the R4 head, observed, cause unproven.** The 8 new
+contexts are the 7 new R4 manifest controls' `|setup` contexts and
+`tests/integration/test_live_retune_e2e.py::test_retune_through_sighup|teardown`. The one absent
+context is `tests/integration/test_live_retune_e2e.py::test_retune_through_an_admin_api_override|teardown`.
+Its 54 arcs, in `telemetry/http`, `telemetry/instruments`, `telemetry/catalogue`,
+`telemetry/tracing` and `routers/agent_heartbeat`, all reappear under the new
+`test_retune_through_sighup|teardown` context. That module ran in the `integration-shared-services`
+shard in both runs; R4 did not move it, though it did move other modules out of that shard. So
+this looks like teardown-time attribution shifting between two neighbouring tests, and no source
+arc was lost from coverage. That is an observation from the two runs' artifacts; the cause is not
+proven.
 
 **Limits.** This is **one** matched pair of runs, not a stable p95 and not a distribution. It
 measures CI shard balance. It does not measure local gate time, review latency or accepted-bead
