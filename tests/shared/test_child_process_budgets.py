@@ -42,7 +42,7 @@ _POPEN_WAITS = frozenset({"wait", "communicate"})
 
 # "<path relative to the repo root>::<enclosing function>" -> why its timeout is not a hang guard.
 EXEMPT: dict[str, str] = {
-    "tests/browser/conftest.py::live_server": (
+    "tests/browser/conftest.py::serve_live_app": (
         "a SIGTERM grace period at teardown: TimeoutExpired is suppressed and the server is then killed, so no test outcome depends on the value"
     ),
 }
