@@ -214,3 +214,90 @@ async def test_non_orphaned_file_renders_no_orphan_line(client: AsyncClient, ses
 
     body = (await client.get(f"/record/{file_id}")).text
     assert "Orphaned — scheduled" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["nested-entry", "inside-savepoint"])
+async def test_orphan_details_fault_degrades_the_record_and_keeps_the_outer_session_usable(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, fault: str
+) -> None:
+    """A fault in ``get_file_orphan_details`` degrades only its own diagnostics (G0, phaze-47gba).
+
+    The fault is scoped to the ONE orphan-details invocation the real record route makes -- the
+    route calls other readers on the same session first, so faulting every ``begin_nested`` would
+    mis-target the signal:
+
+    * ``nested-entry``: ``session.begin_nested`` raises at entry. No SAVEPOINT exists yet, so there
+      is nothing to roll back; the reader must still return the all-``None`` mapping.
+    * ``inside-savepoint``: the first statement that reads ``scheduling_ledger`` is replaced by one Postgres REALLY
+      rejects (division by zero) inside the established SAVEPOINT. Every reader the route runs
+      AFTER orphan details uses the same session, so a 200 proves the SAVEPOINT rollback left the
+      outer transaction usable -- an unrolled-back error would fail them with
+      InFailedSqlTransaction.
+
+    Both arms then remove the fault and prove the real diagnostics come back.
+    """
+    from sqlalchemy import select
+
+    import phaze.routers.record as record_module
+
+    await _pin_empty_saq_jobs(session)
+    file_id = await _seed_file(session)
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{file_id}", function="process_file", routing="agent", payload={"file_id": str(file_id)}, timeout=7200, retries=2
+        )
+    )
+    await session.commit()
+
+    real_details = record_module.get_file_orphan_details
+    real_begin_nested = session.begin_nested
+    real_execute = session.execute
+    results: list[dict[str, dict[str, object] | None]] = []
+
+    def failing_begin_nested(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("forced orphan-details nested-entry failure")
+
+    async def execute_rejecting_ledger_read(statement: object, *args: object, **kwargs: object) -> object:
+        if "scheduling_ledger" in str(statement):
+            return await real_execute(text("SELECT 1 / 0"))
+        return await real_execute(statement, *args, **kwargs)  # type: ignore[arg-type]
+
+    async def faulted_details(target_session: AsyncSession, target_file_id: uuid.UUID) -> dict[str, dict[str, object] | None]:
+        assert target_session is session
+        if fault == "nested-entry":
+            monkeypatch.setattr(session, "begin_nested", failing_begin_nested)
+        else:
+            monkeypatch.setattr(session, "execute", execute_rejecting_ledger_read)
+        try:
+            out = await real_details(target_session, target_file_id)
+        finally:
+            monkeypatch.setattr(session, "begin_nested", real_begin_nested)
+            monkeypatch.setattr(session, "execute", real_execute)
+        results.append(out)
+        return out
+
+    monkeypatch.setattr(record_module, "get_file_orphan_details", faulted_details)
+    with caplog.at_level("WARNING", logger="phaze.services.pipeline.files"):
+        response = await client.get(f"/record/{file_id}")
+
+    assert results == [{Stage.METADATA.value: None, Stage.ANALYZE.value: None}]
+    assert response.status_code == 200, response.text
+    assert "Orphaned — scheduled" not in response.text
+    degraded = [r for r in caplog.records if "file_orphan_details_degraded" in r.getMessage()]
+    assert len(degraded) == 1 and degraded[0].levelname == "WARNING"
+    expected = "forced orphan-details nested-entry failure" if fault == "nested-entry" else "division by zero"
+    # structlog renders the traceback into the record itself: the injected cause must be in it.
+    assert expected in degraded[0].getMessage()
+
+    # Outer state: the committed ledger row is still readable on the SAME session.
+    ledger = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{file_id}"))).scalar_one()
+    assert (ledger.timeout, ledger.retries) == (7200, 2)
+
+    # Recovery: with the fault removed, the real reader and record render the diagnostics again.
+    monkeypatch.setattr(record_module, "get_file_orphan_details", real_details)
+    recovered = await client.get(f"/record/{file_id}")
+    assert recovered.status_code == 200
+    assert "Orphaned — scheduled" in recovered.text
+    assert "timeout 7200s" in recovered.text
+    assert "retries 2" in recovered.text

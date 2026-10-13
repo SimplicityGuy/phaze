@@ -3,6 +3,7 @@
 import html as html_mod
 import json
 import re
+from typing import Any
 from urllib.parse import quote
 import uuid
 
@@ -942,6 +943,71 @@ async def test_undo_malformed_envelope_returns_422_never_500(client: AsyncClient
 
     assert response.status_code == 422, f"{path} with {payload!r} returned {response.status_code}"
     assert "file_states" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", _UNDO_PATHS)
+async def test_undo_parser_recursion_error_is_a_named_422_and_leaves_resolutions_intact(
+    session: AsyncSession, client: AsyncClient, verify: AsyncSession, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """A RecursionError from the real parser is the nested-too-deep 422, and nothing is undone.
+
+    The native ``"[" * 100_000`` envelope above cannot be the portable oracle for this arm: on some
+    CPython builds the C scanner reports JSONDecodeError first. So the parser itself is forced to
+    raise RecursionError, for ONE sentinel string only -- the real server-rendered payload, which
+    would otherwise undo real resolutions -- while every other ``json.loads`` call delegates. The
+    route, the guard and the persisted resolutions stay real.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+    from phaze.routers import request_guards
+
+    keeper = _make_file("/m/recursion-keep.mp3", "mp3", HASH_A, file_size=2000)
+    dup = _make_file("/m/recursion-dup.mp3", "mp3", HASH_A, file_size=1000)
+    session.add_all([keeper, dup])
+    await session.flush()
+    if path == "/duplicates/undo-all":
+        resolve = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    else:
+        resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert resolve.status_code == 200
+    sentinel = _extract_server_file_states(resolve.text)
+
+    async def resolutions() -> set[tuple[uuid.UUID, uuid.UUID | None]]:
+        rows = await verify.execute(select(DedupResolution.file_id, DedupResolution.canonical_file_id))
+        found = {(file_id, canonical) for file_id, canonical in rows.all()}
+        # Release the verify session's SAVEPOINT before the next request, so the request's own
+        # savepoints on the shared per-test connection stay correctly nested.
+        await verify.rollback()
+        return found
+
+    before = await resolutions()
+    # One resolution marker over exactly this pair (resolve-all picks its own canonical).
+    assert len(before) == 1 and set(next(iter(before))) == {keeper.id, dup.id}
+
+    real_loads = request_guards.json.loads
+    forced: list[str] = []
+
+    def loads(raw: Any, *args: Any, **kwargs: Any) -> Any:
+        if raw == sentinel:
+            forced.append(raw)
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+        return real_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(request_guards.json, "loads", loads)
+    response = await client.post(path, data={"file_states": sentinel, "group_hashes": [HASH_A]})
+    monkeypatch.setattr(request_guards.json, "loads", real_loads)
+
+    assert forced == [sentinel], "the forced RecursionError never reached the real parser"
+    assert response.status_code == 422, response.text
+    assert "file_states is nested too deeply to parse" in response.text
+    assert await resolutions() == before, "a rejected envelope must not undo any resolution"
+
+    # The sentinel was a live payload: with the real parser it really undoes the resolution.
+    undo = await client.post(path, data={"file_states": sentinel, "group_hashes": [HASH_A]})
+    assert undo.status_code == 200
+    assert await resolutions() == set()
 
 
 # Element failures (rule 2): the envelope is a valid array, but entries are unusable. These are

@@ -23,6 +23,8 @@ is monkeypatched, so no real session or PostgreSQL is ever touched (``shared`` b
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -113,6 +115,55 @@ async def test_degraded_refresh_keeps_last_good_value(monkeypatch: pytest.Monkey
 
     # No poison: the cache still holds the prior known-good value, not {0, 0, 0}.
     assert pipeline.get_cached_stage_orphan_counts() == good
+
+
+async def test_orphan_refresh_loop_warns_on_a_failed_iteration_and_keeps_polling(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ACTUAL app loop survives a failed refresh: named WARNING, last-good kept, polling continues.
+
+    Iterations are gated by the compute calls themselves (no timing-only sleep): the first raises,
+    the second succeeds, and the third parks until cancellation, which proves the loop polled again
+    after both outcomes. The cache value seen DURING the second iteration proves the failure left the
+    last-good value in place; the value after it proves the next refresh really landed.
+    """
+    import phaze.main as main_module
+
+    good = {"metadata": 4, "analyze": 1}
+    fresh = {"metadata": 0, "analyze": 3}
+    pipeline._orphan_cache = dict(good)
+    monkeypatch.setattr("phaze.database.async_session", _fake_async_session)
+    monkeypatch.setattr(main_module, "_ORPHAN_TTL_SECONDS", 0)
+    calls: list[dict[str, int]] = []
+    third_started = asyncio.Event()
+
+    async def _compute(_session: object) -> dict[str, int]:
+        calls.append(pipeline.get_cached_stage_orphan_counts())
+        if len(calls) == 1:
+            raise RuntimeError("forced first-iteration failure")
+        if len(calls) == 2:
+            return dict(fresh)
+        third_started.set()
+        await asyncio.Event().wait()  # park the third iteration until cancellation
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(pipeline, "_compute_stage_orphan_counts", _compute)
+    with caplog.at_level("WARNING", logger="phaze.main"):
+        task = asyncio.create_task(main_module._orphan_refresh_loop())
+        try:
+            async with asyncio.timeout(5):
+                await third_started.wait()
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert task.cancelled()
+    assert calls == [good, good, fresh]
+    assert pipeline.get_cached_stage_orphan_counts() == fresh
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "orphan refresh loop iteration failed; keeping last-good" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    # structlog renders the traceback into the record itself: the named exception must be in it.
+    assert "RuntimeError: forced first-iteration failure" in warnings[0].getMessage()
 
 
 def test_fresh_cache_seeds_all_zeros() -> None:

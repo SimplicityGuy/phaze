@@ -36,7 +36,9 @@ async def test_active_capacity_waiter_survives_real_sweep_and_completes_once(sta
     import saq.job
     import saq.queue.base
 
-    clock[0] = saq.job.now()
+    # Immutable origin recorded BEFORE the clock seams are patched; never reset after dispatch.
+    clock_origin = saq.job.now()
+    clock[0] = clock_origin
     monkeypatch.setattr(saq.job, "now", lambda: clock[0])
     monkeypatch.setattr(saq.queue.base, "now", lambda: clock[0])
     # Accelerate only heartbeat cadence; the stored deadline stays the real default 3600s.
@@ -79,13 +81,15 @@ async def test_active_capacity_waiter_survives_real_sweep_and_completes_once(sta
 
     worker = Worker(queue, functions=[("analyze", task)], concurrency=2, dequeue_timeout=0.1)
     worker.context["analysis_semaphore"] = limiter
-    first = await queue.enqueue("analyze", path="first.mp3", heartbeat=3600, timeout=0, retries=2)
+    async with asyncio.timeout(5):
+        first = await queue.enqueue("analyze", path="first.mp3", heartbeat=3600, timeout=0, retries=2)
     assert first is not None
     first_run = asyncio.create_task(worker.process())
     second_run = None
     try:
         await asyncio.wait_for(first_entered.wait(), 5)
-        second = await queue.enqueue("analyze", path="second.mp3", heartbeat=3600, timeout=0, retries=2)
+        async with asyncio.timeout(5):
+            second = await queue.enqueue("analyze", path="second.mp3", heartbeat=3600, timeout=0, retries=2)
         assert second is not None
         second_run = asyncio.create_task(worker.process())
 
@@ -94,36 +98,74 @@ async def test_active_capacity_waiter_survives_real_sweep_and_completes_once(sta
             return limiter.waiting == 1 and stored is not None and stored.status == Status.ACTIVE
 
         await _until(waiting)
-        original_waiter = await queue.job(second.key)
+        async with asyncio.timeout(5):
+            original_waiter = await queue.job(second.key)
         assert original_waiter is not None
+        assert original_waiter.status == Status.ACTIVE and original_waiter.attempts == 1 and original_waiter.error is None
+        assert original_waiter.heartbeat == 3600
+        assert limiter.borrowed_tokens == 1 and limiter.waiting == 1
         original_touch = original_waiter.touched
-        # Keep the synthetic first extraction healthy while advancing beyond the waiter's
-        # original deadline. Reads use independently committed broker connections.
-        for _ in range(4):
-            clock[0] += 1201 * 1000
-            await callbacks[0]()
+        # Worker dispatch stamps touched from the patched queue clock, so the waiter starts at age 0.
+        assert original_touch == clock_origin
+        # Exactly three synthetic advances, 1200 + 1200 + 1201 = 3601 s, so only the LAST one takes a
+        # relay-less waiter past SAQ's strict `age > heartbeat` (3600). Keep the synthetic first
+        # extraction healthy at every step. Reads use independently committed broker connections.
+        observations: list[tuple[int, bool, Any, Any, Any, Any]] = []
+        for advance_sec in (1200, 1200, 1201):
+            clock[0] += advance_sec * 1000
+            async with asyncio.timeout(5):
+                await callbacks[0]()
 
             async def waiter_touched() -> bool:
                 stored = await queue.job(second.key)
                 return stored is not None and stored.touched == clock[0]
 
-            with contextlib.suppress(TimeoutError):
+            observed = True
+            try:
                 await _until(waiter_touched, 0.5)
+            except TimeoutError:
+                # Recorded, not asserted yet: the real sweep below is the first semantic oracle.
+                observed = False
+            async with asyncio.timeout(5):
+                seen = await queue.job(second.key)
+            assert seen is not None
+            observations.append((clock[0], observed, seen.touched, seen.heartbeat, seen.status, seen.attempts))
+        assert clock[0] == clock_origin + 3601 * 1000
         assert clock[0] > original_touch + 3600 * 1000
-        assert await queue.sweep(abort=0.01) == []
-        stored = await queue.job(second.key)
+        async with asyncio.timeout(5):
+            swept = await queue.sweep(abort=0.01)
+        # First semantic oracle, captured before any cleanup can rewrite the broker row.
+        assert swept == [], f"real sweep expired the capacity waiter: swept={swept} observations={observations}"
+        # Positive proof AFTER the real sweep: each of the three steps observed a committed touch at
+        # exactly that step's clock, so a starved relay cannot pass on its final touch alone.
+        assert [(step, True, step, 3600, Status.ACTIVE, 1) for step, *_ in observations] == observations
+        async with asyncio.timeout(5):
+            stored = await queue.job(second.key)
         assert stored is not None and stored.status == Status.ACTIVE and stored.attempts == 1 and stored.error is None
         release_first.set()
         await asyncio.wait_for(asyncio.gather(first_run, second_run), 5)
         for job in (first, second):
-            stored = await queue.job(job.key)
+            async with asyncio.timeout(5):
+                stored = await queue.job(job.key)
             assert stored is not None and stored.status == Status.COMPLETE and stored.attempts == 1 and stored.error is None
         assert limiter.borrowed_tokens == 0 and limiter.waiting == 0
     finally:
+        # One aggregate ten-second settlement budget: release the held extraction, settle both
+        # direct process tasks (cancelling any survivor), then stop the worker. stage_env deletes
+        # the owned rows only after this, so no row is deleted under a live task.
         release_first.set()
-        for run in (first_run, second_run):
-            if run is not None:
-                await asyncio.wait_for(run, 5)
+        runs = [run for run in (first_run, second_run) if run is not None]
+        async with asyncio.timeout(10):
+            try:
+                await asyncio.wait_for(asyncio.gather(*runs, return_exceptions=True), 5)
+            finally:
+                for run in runs:
+                    if not run.done():
+                        run.cancel()
+                await asyncio.gather(*runs, return_exceptions=True)
+                await worker.stop()
+        assert all(run.done() for run in runs)
+        assert not worker.tasks and not worker.job_task_contexts
 
 
 async def test_cancelled_admission_waiter_settles_relay_and_keeps_limiter_capacity() -> None:
