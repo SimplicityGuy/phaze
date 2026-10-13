@@ -272,7 +272,7 @@ def _recreate_database(dsn: str) -> None:
     asyncio.run(_run())
 
 
-def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None:
+def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes], log_path: Path) -> None:
     """Poll until the app answers, failing loudly with its own output if it dies during boot."""
     import httpx
 
@@ -280,7 +280,7 @@ def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None
     with httpx.Client(timeout=5.0) as probe:
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                output = (process.stdout.read() if process.stdout else b"").decode(errors="replace")
+                output = log_path.read_bytes().decode(errors="replace") if log_path.exists() else ""
                 raise RuntimeError(f"the app exited during boot (rc={process.returncode}):\n{output[-4000:]}")
             with contextlib.suppress(Exception):
                 if probe.get(f"{base_url}/health").status_code == 200:
@@ -310,15 +310,24 @@ def serve_live_app() -> Iterator[str]:
         "PHAZE_REDIS_URL": os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0"),
         "PHAZE_ENABLE_SAQ_UI": "false",
     }
-    process = subprocess.Popen(  # noqa: S603 -- fixed argv, no shell, test harness
-        [sys.executable, "-m", "uvicorn", "phaze.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
-        cwd=_REPO_ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    # The server's output goes to a FILE, never an undrained PIPE. A pipe holds ~64 KiB; nothing reads
+    # it after boot, so once the app has logged that much (warnings accumulate across hundreds of
+    # tests) its next write() blocks the event-loop thread forever. /health stops answering, every
+    # later test times out, and CI sat silent until its 20-minute cap. A file cannot fill up that way,
+    # and doubles as the server log a failing run can be diagnosed from.
+    log_dir = _ARTIFACT_DIR / "server-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{dsn.rpartition('/')[2]}-{port}.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(  # noqa: S603 -- fixed argv, no shell, test harness
+            [sys.executable, "-m", "uvicorn", "phaze.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+            cwd=_REPO_ROOT,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
     try:
-        _wait_until_serving(base_url, process)
+        _wait_until_serving(base_url, process, log_path)
         yield base_url
     finally:
         process.terminate()
