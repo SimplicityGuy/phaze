@@ -29,6 +29,7 @@ on the Linux burst node) and live in the bead's before/after tables.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import hashlib
 import math
@@ -188,6 +189,48 @@ def _scaled_decode(path: str, rate: int, window: tuple[int, float, float], *, fa
     return pool["w"]
 
 
+def _analyze_with_one_pass_per_tier(audio: str, *, cached_trim_none: bool) -> list[Any]:
+    """Run the real ``analyze_file`` and assert one streaming pass per tier; return observed trims.
+
+    With ``cached_trim_none`` the facade's memoised ``_MALLOC_TRIM`` is forced to ``None`` -- what
+    musl/macOS resolve -- and the real decoder trim consumer is observed (then delegated to
+    unchanged), so the caller can prove that ``None`` is what the decode teardown actually used.
+    """
+    calls: list[tuple[int, int]] = []
+    real = analysis_mod._decode_windows_streaming
+    trims: list[Any] = []
+    wrong_source: list[int] = []
+    real_trim = analysis_mod.analysis_decoder._malloc_trim
+
+    def _counting(path: str, rate: int, windows: Any) -> dict[int, Any]:
+        calls.append((rate, len(windows)))
+        return real(path, rate, windows)
+
+    def _observed_trim(trim: Any, logger: Any) -> None:
+        trims.append(trim)
+        real_trim(trim, logger)
+
+    with contextlib.ExitStack() as stack:
+        if cached_trim_none:
+            stack.enter_context(patch.object(analysis_mod, "_MALLOC_TRIM", None))
+            # The decoder module's OWN memo is a recording callable: if the teardown consulted it
+            # instead of the facade's cached None, it would run -- on macOS and glibc alike.
+            stack.enter_context(patch.object(analysis_mod.analysis_decoder, "_MALLOC_TRIM", lambda pad: wrong_source.append(pad) or 0))
+            stack.enter_context(patch.object(analysis_mod.analysis_decoder, "_malloc_trim", side_effect=_observed_trim))
+        stack.enter_context(patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_counting))
+        stack.enter_context(patch.object(analysis_mod, "_predict_single", return_value=np.array([0.7, 0.3], dtype=np.float32)))
+        stack.enter_context(patch.object(analysis_mod, "_get_labels", return_value=["positive_class", "negative_class"]))
+        stack.enter_context(patch.object(analysis_mod.es, "EasyLoader", side_effect=AssertionError("the per-window decode must not run")))
+        result = analysis_mod.analyze_file(audio, "/fake/models", fine_window_sec=10, coarse_window_sec=20, fine_min_sec=5)
+
+    assert [rate for rate, _n in calls] == [_FINE_SAMPLE_RATE, _COARSE_SAMPLE_RATE], "expected exactly one pass per tier, fine first"
+    assert calls[0][1] == 4, "the fine pass must carry all 4 of the 10s windows"  # 40s / 10s
+    assert calls[1][1] == 2, "the coarse pass must carry all 2 of the 20s windows"  # 40s / 20s
+    assert result["bpm"] is not None
+    assert wrong_source == [], "the decode trimmed through the decoder's own memo, not the facade's cached capability"
+    return trims
+
+
 @pytest.mark.integration
 def test_analyze_file_decodes_each_tier_in_exactly_one_pass(audio: str) -> None:
     """One streaming pass per tier — two per file — regardless of how many windows there are.
@@ -196,25 +239,22 @@ def test_analyze_file_decodes_each_tier_in_exactly_one_pass(audio: str) -> None:
     and resampled twice per analysis instead of once per window. Asserting the call count is
     what would catch a regression back to a per-window loop, which no output assertion could.
     """
-    calls: list[tuple[int, int]] = []
-    real = analysis_mod._decode_windows_streaming
+    _analyze_with_one_pass_per_tier(audio, cached_trim_none=False)
 
-    def _counting(path: str, rate: int, windows: Any) -> dict[int, Any]:
-        calls.append((rate, len(windows)))
-        return real(path, rate, windows)
 
-    with (
-        patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_counting),
-        patch.object(analysis_mod, "_predict_single", return_value=np.array([0.7, 0.3], dtype=np.float32)),
-        patch.object(analysis_mod, "_get_labels", return_value=["positive_class", "negative_class"]),
-        patch.object(analysis_mod.es, "EasyLoader", side_effect=AssertionError("the per-window decode must not run")),
-    ):
-        result = analysis_mod.analyze_file(audio, "/fake/models", fine_window_sec=10, coarse_window_sec=20, fine_min_sec=5)
+@pytest.mark.integration
+def test_a_cached_none_trim_reaches_the_real_decode_teardown(audio: str) -> None:
+    """The cached no-trim capability flows through the REAL decode on every platform (G0, phaze-47gba).
 
-    assert [rate for rate, _n in calls] == [_FINE_SAMPLE_RATE, _COARSE_SAMPLE_RATE], "expected exactly one pass per tier, fine first"
-    assert calls[0][1] == 4, "the fine pass must carry all 4 of the 10s windows"  # 40s / 10s
-    assert calls[1][1] == 2, "the coarse pass must carry all 2 of the 20s windows"  # 40s / 20s
-    assert result["bpm"] is not None
+    Environment alone picks the trim here (macOS resolves ``None``, glibc a real symbol), so neither
+    platform otherwise proves the other's path. Forcing the facade's cached ``_MALLOC_TRIM`` to
+    ``None`` must leave the one-pass-per-tier analysis intact, and every decoder trim the teardown
+    and chunk boundaries make must have received that ``None``. The facade and the decoder trim
+    are not mocked; the consumer is only observed.
+    """
+    trims = _analyze_with_one_pass_per_tier(audio, cached_trim_none=True)
+    assert len(trims) >= 4, trims
+    assert all(trim is None for trim in trims), trims
 
 
 def test_a_network_failure_falls_back_to_the_per_window_decode() -> None:
