@@ -3,6 +3,7 @@
 from datetime import date as CalendarDate
 from enum import StrEnum
 from fractions import Fraction
+import re
 from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -12,6 +13,15 @@ Text = Annotated[str, Field(max_length=4096)]
 Identifier = Annotated[str, Field(min_length=1, max_length=4096)]
 ProviderId = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=64)]
 Evidence = Annotated[tuple[Text, ...], Field(max_length=64)]
+SearchField = Literal["artist", "event", "date"]
+MAX_SEARCH_TERMS = 4
+MAX_SEARCH_TERM_CHARACTERS = 256
+MAX_SEARCH_PAGE = 64
+
+
+def _unset(value: object) -> bool:
+    """An unset optional addition is omitted, so earlier payload digests and wire peers are unaffected."""
+    return value is None
 
 
 class DomainModel(BaseModel):
@@ -37,6 +47,7 @@ class Capability(StrEnum):
     REVISION_EVIDENCE = "revision_evidence"
     TRACK_PARSING = "track_parsing"
     TIMESTAMP_EVIDENCE = "timestamp_evidence"
+    REMOTE_TRANSPORT = "remote_transport"
 
 
 class ProviderDescriptor(DomainModel):
@@ -140,14 +151,54 @@ class TrackSection(DomainModel):
     evidence: Evidence = ()
 
 
+class SearchTerm(DomainModel):
+    """An opaque query value; the transport encodes it as a parameter, never a request target."""
+
+    field: SearchField
+    value: Annotated[str, Field(min_length=1, max_length=MAX_SEARCH_TERM_CHARACTERS)]
+
+
+class RemoteRequest(DomainModel):
+    """What a remote read asks for. Holds no URL, host, path, method, header or credential."""
+
+    kind: Literal["search", "fetch"]
+    terms: Annotated[tuple[SearchTerm, ...], Field(max_length=MAX_SEARCH_TERMS)] = ()
+    page: int = Field(default=1, gt=0, le=MAX_SEARCH_PAGE)
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> Self:
+        if self.kind == "fetch" and (self.terms or self.page != 1):
+            raise ValueError("A fetch has no terms and only page 1")
+        if self.kind == "search" and not self.terms:
+            raise ValueError("A search requires at least one term")
+        if len({term.field for term in self.terms}) != len(self.terms):
+            raise ValueError("Search term fields must be unique")
+        return self
+
+
 class SourceReference(DomainModel):
-    """Authorized opaque agent reference; never permission to open a path."""
+    """Authorized opaque reference; never permission to open a path or contact a host.
+
+    Local references name agent-owned sources. Remote references are minted by the registry from a
+    core-held host profile, and a caller-supplied one never authorizes a read.
+    """
 
     identity: SourceIdentity
-    channel: Literal["companion", "embedded"]
+    channel: Literal["companion", "embedded", "remote"]
     format: Text
     display_name: Text | None = None
     revision: Annotated[str, Field(max_length=2048)] | None = None
+    request: RemoteRequest | None = Field(default=None, exclude_if=_unset)
+
+    @model_validator(mode="after")
+    def validate_channel(self) -> Self:
+        if (self.channel == "remote") != (self.request is not None):
+            raise ValueError("A request is required for a remote reference and forbidden otherwise")
+        if self.channel == "remote" and self.revision is not None:
+            raise ValueError("A remote reference has no revision; it is a property of the response")
+        if self.request is not None and self.request.kind == "search" and re.fullmatch(r"search:[0-9a-f]{64}", self.identity.native_id) is None:
+            raise ValueError("A search identity is search:<context key>")
+        return self
 
 
 class RecordingContext(DomainModel):
@@ -194,6 +245,13 @@ class OpaqueCursor(DomainModel):
     token: Annotated[str, Field(max_length=4096)]
 
 
+class SourceValidators(DomainModel):
+    """Response validators exactly as sent. Recorded evidence only, never a revision by themselves."""
+
+    etag: Annotated[str, Field(max_length=512)] | None = None
+    last_modified: Annotated[str, Field(max_length=128)] | None = None
+
+
 class SourceRead(DomainModel):
     status: OutcomeStatus
     code: Text
@@ -206,6 +264,9 @@ class SourceRead(DomainModel):
     truncated: bool = False
     bytes_read: int = Field(default=0, ge=0, le=1048576)
     retrieved_at: AwareDatetime
+    # Omitted when unset: stored observations are reused on an equal payload digest, and the
+    # agent's CaptureReport.read reaches controllers that forbid unknown keys.
+    validators: SourceValidators | None = Field(default=None, exclude_if=_unset)
 
 
 class Snapshot(DomainModel):

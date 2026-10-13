@@ -1,0 +1,95 @@
+{# One remote provider object for this recording: discovery's statement, then every version loaded from it. #}
+{% import "record/remote/_parts.html" as parts %}
+<li data-candidate-group data-rejected="{{ 'true' if group.rejected else 'false' }}" class="min-w-0 space-y-3 rounded border p-3">
+    <div class="min-w-0">
+        <h5 class="text-sm font-semibold break-words">{{ group.display_name or 'Unnamed candidate' }}</h5>
+        <p class="text-xs text-muted break-words">Source: {{ group.provider_name }}{% if group.url %} ·
+            <a href="{{ group.url }}" target="_blank" rel="noopener noreferrer" data-attribution-link class="text-link underline">View on {{ group.provider_name }}<span class="sr-only"> (opens in a new tab)</span></a>
+            {% else %} · no source link was recorded{% endif %}</p>
+        <p class="text-xs text-muted">Phaze never fetches this link; it opens in your browser only if you follow it.</p>
+    </div>
+    {% if group.rejected %}
+        <p data-previously-rejected class="text-sm break-words">You rejected this candidate{% if group.rejected_at %} on {{ group.rejected_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}. It is not proposed again unless you reopen it.</p>
+        <form hx-post="/files/{{ file_id }}/remote-lookup/decision" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" class="space-y-2" data-reopen-form>
+            {{ parts.decision_fields(panel, group.reopen_observation_id, group.reopen_revision, group.decision_id) }}
+            <input type="hidden" name="action" value="reopen">
+            <label for="reopen-reason-{{ group.decision_id }}" class="block text-sm font-medium">Why reopen this candidate? (required)</label>
+            <textarea id="reopen-reason-{{ group.decision_id }}" name="reason" required maxlength="512" rows="2" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-100"></textarea>
+            <button type="submit" disabled data-hx-guard class="{{ parts.button_class('secondary') }}">Reopen for review</button>
+        </form>
+    {% else %}
+        {% with assessment=group.assessment %}{% include "record/remote/_assessment.html" %}{% endwith %}
+        <p data-rights class="text-sm text-muted">Rights: unknown. Search results do not state rights; load this candidate to see what {{ group.provider_name }} records.</p>
+        {% if group.can_load %}
+        <form hx-post="/files/{{ file_id }}/remote-lookup/load" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" data-load-form>
+            <input type="hidden" name="candidate_id" value="{{ group.discovered_candidate_id }}">
+            <p class="mb-1 text-xs text-muted">Loading asks {{ group.provider_name }} for this one tracklist and holds it for your review.</p>
+            <button type="submit" disabled data-hx-guard class="{{ parts.button_class('secondary') }}">Load tracklist for review</button>
+        </form>
+        {% endif %}
+        {% if group.can_reject_discovered %}
+        <form hx-post="/files/{{ file_id }}/remote-lookup/decision" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" data-reject-form>
+            {{ parts.decision_fields(panel, group.discovered_observation_id, group.discovered_revision, group.decision_id) }}
+            <input type="hidden" name="action" value="reject">
+            <button type="submit" disabled data-hx-guard class="{{ parts.button_class('ghost') }}">Reject candidate</button>
+        </form>
+        {% endif %}
+        {% for version in group.versions %}
+        <div data-loaded-version="{{ version.observation_id }}" class="min-w-0 space-y-2 rounded border border-dashed p-3">
+            <p class="text-sm font-medium">Loaded version
+                {% if version.selected %}<span class="text-ok" data-version-state="selected">· in use for this recording</span>
+                {% elif version.candidate_status == 'accepted' %}<span data-version-state="accepted">· previously selected</span>
+                {% elif version.candidate_status == 'rejected' %}<span data-version-state="rejected">· rejected</span>
+                {% else %}<span class="text-warn" data-version-state="pending">· pending your review</span>{% endif %}</p>
+            <p class="text-xs text-muted break-all">Revision {{ version.revision or 'not reported' }} · read {{ version.retrieved_at.strftime('%Y-%m-%d %H:%M') }} UTC</p>
+            {% if version.unreadable %}<p class="text-sm text-danger" role="alert">This stored version could not be read, so it cannot be selected.</p>{% endif %}
+            {% if version.completeness_state == 'incomplete' %}<p data-incomplete-scope class="text-sm text-warn break-words">Incomplete: {{ version.completeness_reason }}. It is held as evidence and cannot be selected as a complete tracklist. This is not evidence that no tracklist exists.</p>
+            {% elif version.completeness_state == 'complete' and version.status != 'found' %}<p class="text-sm text-warn">The provider reported this version as {{ version.status }}, so it cannot be selected.</p>{% endif %}
+            {% if version.conflicting_source %}<p data-source-conflict class="text-sm text-danger break-words">This version conflicts with other retained source data. Review the evidence before choosing.</p>{% endif %}
+            {% with assessment=version.assessment %}{% include "record/remote/_assessment.html" %}{% endwith %}
+            <p data-rights class="text-sm break-words">Rights (as recorded by {{ group.provider_name }}): {% if version.rights %}{{ version.rights | join('; ') }}{% else %}unknown. The provider recorded nothing about rights.{% endif %}</p>
+            <div data-version-tracks>
+                <p class="text-sm font-medium">{{ version.track_count }} track{{ '' if version.track_count == 1 else 's' }}</p>
+                <ol class="space-y-1 text-sm" data-track-list>
+                    {% for track in version.tracks %}
+                    <li data-track="{{ track.position }}"{% if track.unresolved %} data-track-unresolved{% endif %} class="break-words">{{ track.position }}.{% if track.section_ordinal %} <span class="text-muted">[section {{ track.section_ordinal }}]</span>{% endif %}
+                        {% if track.unresolved %}<span class="text-warn">Unresolved: the provider gave no artist or title for this row.</span>
+                        {% else %}{{ track.artist or 'Artist unknown' }} — {{ track.title or 'Title unknown' }}{% endif %}
+                        {% if track.timing %}<span class="text-muted"> · {% if track.timing_approximate %}approximate offset (not exact): {% endif %}{{ track.timing }}</span>{% endif %}</li>
+                    {% else %}<li class="text-muted">No tracks were recorded for this version.</li>{% endfor %}
+                </ol>
+                {% if version.track_count > version.tracks | length %}<p class="text-xs text-muted">First {{ version.tracks | length }} of {{ version.track_count }} tracks shown.</p>{% endif %}
+            </div>
+            {% if version.can_select or version.can_reject %}
+            <form hx-post="/files/{{ file_id }}/remote-lookup/decision" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" class="space-y-2" data-version-decision>
+                {{ parts.decision_fields(panel, version.observation_id, version.revision, version.decision_id) }}
+                {% if version.sections %}
+                <fieldset data-text-sections class="min-w-0 space-y-2">
+                    <legend class="text-sm font-medium">{{ version.sections | length }} section{{ '' if version.sections | length == 1 else 's' }} in this source. Sections are never joined together.{% if version.section_choice_required %} Choose the one that belongs to this recording (required).{% endif %}</legend>
+                    {% for section in version.sections %}
+                    <div data-text-section="{{ section.ordinal }}" class="min-w-0 text-sm">
+                        {% if version.can_select and version.section_choice_required and section.selectable %}
+                        <label class="flex items-start gap-2 break-words"><input type="radio" name="text_section_ordinal" value="{{ section.ordinal }}" required class="mt-1">
+                            <span>Section {{ section.ordinal }}: {{ section.title or 'Unnamed section' }} · {{ section.track_count }} track{{ '' if section.track_count == 1 else 's' }} · complete</span></label>
+                        {% else %}
+                        <p class="break-words">Section {{ section.ordinal }}: {{ section.title or 'Unnamed section' }} · {{ section.track_count }} track{{ '' if section.track_count == 1 else 's' }} · {{ 'complete' if section.complete else 'incomplete' }}{% if not section.selectable %} · cannot be selected{% endif %}</p>
+                        {% endif %}
+                        {% if section.warnings %}<ul data-section-warnings class="list-disc pl-5 text-warn break-words">{% for warning in section.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
+                    </div>
+                    {% endfor %}
+                    {% if version.can_select and version.sections_have_warnings %}
+                    <label class="flex items-start gap-2 text-sm break-words"><input type="checkbox" name="accept_text_warnings" value="true" class="mt-1">I reviewed the unresolved row structure in the section I chose. Unknown fields remain unknown.</label>
+                    {% endif %}
+                </fieldset>
+                {% endif %}
+                {% if version.can_select and version.conflicting_source %}<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="accept_conflict" value="true">I reviewed the conflicting source evidence.</label>{% endif %}
+                <div class="flex flex-wrap gap-2">
+                    {% if version.can_select %}<button type="submit" disabled data-hx-guard name="action" value="select" class="{{ parts.button_class('primary') }}">Use this tracklist for this recording</button>{% endif %}
+                    {% if version.can_reject %}<button type="submit" disabled data-hx-guard name="action" value="reject" formnovalidate class="{{ parts.button_class('secondary') }}">Reject this version</button>{% endif %}
+                </div>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% endif %}
+</li>

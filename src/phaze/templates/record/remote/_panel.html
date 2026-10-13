@@ -1,0 +1,64 @@
+{# The provider-neutral look-up panel of the recording page. Rendered from STORED state only: rendering it never issues
+   a lookup or any provider call. Every action below is an explicit operator POST that re-renders this same partial.
+   Provider names are the descriptor's display_name; nothing here branches on a provider. #}
+{% import "record/remote/_parts.html" as parts %}
+<section id="remote-lookup-{{ file_id }}" data-remote-lookup class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel min-w-0" aria-labelledby="remote-lookup-heading-{{ file_id }}">
+    <h3 id="remote-lookup-heading-{{ file_id }}" class="text-sm font-semibold mb-1">Look up tracklists</h3>
+    <p class="text-xs text-muted mb-3">Asks a provider for candidate tracklists using tag facts such as this recording's artist and year. No file content or path is sent. Candidates are held for your review, and nothing is selected unless you choose it.</p>
+    {% if notice %}{% include "record/remote/_notice.html" %}{% endif %}
+    {% if not panel.configured %}
+        <p class="text-sm text-muted">Remote look-up is not available in this deployment.</p>
+    {% elif not panel.providers %}
+        <p class="text-sm text-muted">No remote providers are registered.</p>
+    {% else %}
+    <ul class="space-y-3" data-provider-list aria-label="Remote providers">
+        {% for provider in panel.providers %}
+        <li data-provider="{{ provider.provider_id }}" data-provider-enabled="{{ 'true' if provider.enabled else 'false' }}" class="min-w-0 space-y-2">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class="text-sm font-medium break-words">{{ provider.display_name }}</span>
+                {% if not provider.enabled %}<span data-provider-off class="text-sm text-muted">Off: turned off in settings, so nothing can be requested from it.</span>
+                {% elif provider.stopped %}<span class="text-sm text-danger">Stopped</span>
+                {% else %}<span class="text-sm text-ok">On</span>{% endif %}
+            </div>
+            {% if provider.enabled and provider.stopped %}
+            <div data-provider-stop role="alert" class="min-w-0 space-y-2 rounded border p-3 text-sm">
+                <p class="break-words text-danger">Requests to {{ provider.display_name }} are stopped (stop code <code data-stop-code>{{ provider.stop_code }}</code>){% if provider.stopped_at %} since {{ provider.stopped_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}. Nothing is sent until you clear the stop.</p>
+                <form hx-post="/files/{{ file_id }}/remote-lookup/clear-stop" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" class="space-y-2" data-clear-stop-form>
+                    <input type="hidden" name="provider_id" value="{{ provider.provider_id }}">
+                    <label for="clear-reason-{{ file_id }}-{{ provider.provider_id }}" class="block font-medium">Why is it safe to resume? (required)</label>
+                    <textarea id="clear-reason-{{ file_id }}-{{ provider.provider_id }}" name="reason" required maxlength="512" rows="2" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-100"></textarea>
+                    <button type="submit" disabled data-hx-guard class="{{ parts.button_class('secondary') }}">Clear stop</button>
+                </form>
+            </div>
+            {% elif provider.enabled %}
+            <form hx-post="/files/{{ file_id }}/remote-lookup/lookup" hx-target="#remote-lookup-{{ file_id }}" hx-swap="outerHTML" data-lookup-form>
+                <input type="hidden" name="provider_id" value="{{ provider.provider_id }}">
+                <button type="submit" disabled data-hx-guard class="{{ parts.button_class('primary') }}">Look up on {{ provider.display_name }}</button>
+            </form>
+            {% endif %}
+            {% if provider.cleared_at %}<p class="text-xs text-muted break-words">Last stop cleared {{ provider.cleared_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if provider.cleared_by %} by {{ provider.cleared_by }}{% endif %}{% if provider.clear_reason %}: {{ provider.clear_reason }}{% endif %}.</p>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="mt-4 min-w-0">
+        <h4 class="text-sm font-semibold mb-2">Candidates held for review</h4>
+        {% if panel.groups %}
+        <ul class="space-y-3" data-candidate-list aria-label="Candidates held for review">
+            {% for group in panel.groups %}{% include "record/remote/_group.html" %}{% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-muted" data-no-candidates>No candidates are held. Either no look-up has been run, or the searched scope held none; neither is evidence that no tracklist exists.</p>
+        {% endif %}
+    </div>
+
+    {% if panel.rejected %}
+    <div class="mt-4 min-w-0" data-rejected-section>
+        <h4 class="text-sm font-semibold mb-2">Previously rejected</h4>
+        <ul class="space-y-3" aria-label="Previously rejected candidates">
+            {% for group in panel.rejected %}{% include "record/remote/_group.html" %}{% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+</section>
