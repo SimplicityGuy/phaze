@@ -33,6 +33,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Testing Risk Inventory](quality-assessment/testing-risk-inventory.md)** | Current coverage, churn, assertion and consumer gaps, and bounded hunt slices |
 | **[Test Runtime Assessment](quality-assessment/runtime-profile.md)** | Current floor, fixture, collection, local lane and CI shard measurements with safe experiment boundaries |
 | **[Runtime Optimization Proposal](quality-assessment/runtime-optimization-proposal.md)** | Ranked guard, fixture, admission and shard experiments with accepted-bead metrics and preserved safety contracts |
+| **[Immutable Parse Pilot Disposition](quality-implementation/immutable-parse-disposition.md)** | R1 bounded preflight, explicit execution exclusion, existing guard boundaries and unmeasured velocity |
 | **[Mutation and Replay Hunt](quality-assessment/mutation-hunt.md)** | Bounded first-round findings, independent verification, synthetic observations and checkpoint metrics |
 | **[Analysis and Worker Hunt](quality-assessment/analysis-hunt.md)** | Exhaustive analysis and orchestration slice, verified recovery/liveness findings, real-consumer limits and round metrics |
 | **[Companion Persistence and Consumer Hunt](quality-assessment/companion-hunt.md)** | Complete third-round slice, synthetic attribution failure, deferred source-only finding and browser limits |
@@ -41,10 +42,14 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
 | **[Selection and Evidence Proposal](quality-assessment/selector-proposal.md)** | Safe coverage refresh ownership, real consumer mappings, preserved floors and measured bead-velocity rollout |
+| **[Coverage Generation Disposition](quality-implementation/coverage-generation-disposition.md)** | 📏 Installed Repowise capability evidence and safe non-adoption of immutable generation publication |
+| **[Selector Equivalence Disposition](quality-implementation/selector-equivalence-disposition.md)** | Preserved selection authority, unfulfilled shadow prerequisites and explicit pilot exclusion |
+| **[Mixed Validation Disposition](quality-implementation/mixed-validation-disposition.md)** | Complete prose and code authority retained while the conditional mixed-mode pilot is excluded |
+| **[Consumer Mapping Disposition](quality-implementation/consumer-mapping-disposition.md)** | Files-table and revision-085 consumer boundaries, preserved escalation and explicit mapping-pilot exclusion |
 | **[Partial Tag-Save Undo Recovery](quality-implementation/tag-partial-save-undo.md)** | Partial-save audit classification, original Undo anchors, rollout ordering and regression evidence |
 | **[Durable Reviewed Tag Revisions](quality-implementation/tag-reviewed-revision.md)** | Revision refusal at queued/NO_OP authorization, metadata callback locks and regression limits |
 | **[Accepted Quality Increment](quality-implementation/accepted-increment.md)** | Frozen accepted coverage and diagnostics delivery, preserved histories, and remaining final verification obligations |
-| **[Coverage Generation Disposition](quality-implementation/coverage-generation-disposition.md)** | 📏 Installed Repowise capability evidence and safe non-adoption of immutable generation publication |
+| **[Telemetry Capture Disposition](quality-implementation/telemetry-capture-disposition.md)** | Independent real SDK producers retained; bounded exclusion, stale baseline and unmeasured runtime limits |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
