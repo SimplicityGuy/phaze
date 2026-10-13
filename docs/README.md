@@ -51,6 +51,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Accepted Quality Increment](quality-implementation/accepted-increment.md)** | Frozen accepted coverage and diagnostics delivery, preserved histories, and remaining final verification obligations |
 | **[Telemetry Capture Disposition](quality-implementation/telemetry-capture-disposition.md)** | Independent real SDK producers retained; bounded exclusion, stale baseline and unmeasured runtime limits |
 | **[Optional Pilot Disposition Manifest](quality-implementation/pilot-disposition-manifest.md)** | Every optional pilot adopted, excluded or deferred before final assembled verification; R4 matched-CI evidence and cohort limits |
+| **[Final Union Verification](quality-implementation/final-union-verification.md)** | G0 canonical A-row fault receipts, oracle-gap controls, harness bounds and what the assembled gate must show |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
