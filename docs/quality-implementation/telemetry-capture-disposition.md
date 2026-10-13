@@ -20,9 +20,16 @@ intended worker baseline at that time. No older worker implementation was edited
 merge was performed during that preflight. Its baseline required reconciliation through the approved
 lifecycle before final verification.
 
-On **2026-10-11**, the operator chose "Next 20 completed beads, grouped by change type" for
-the observation cohort, recorded in implementation molecule **phaze-75qpj** before the pilots
-(cutoff **2026-10-11T19:04:16Z**). A complete accepted-bead comparison is not available here. M0 documents
+**Operator decision, 2026-10-11.** Question as put: *"Before the velocity pilots run, which
+observation cohort should they use? Repairs and coverage backfills can proceed without this
+choice."* Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped
+by change type"*. The reply arrived at 19:03:57 UTC, before the pilots (cohort cutoff
+**2026-10-11T19:04:16Z**). Durable record: the recovered-decision comment on bead `phaze-x45ht`
+and its follow-up comment, which records the offered options; the
+[PD manifest](pilot-disposition-manifest.md#observation-cohort-and-outcome-authority) gives the
+recovery. Implementation molecule `phaze-75qpj` does not hold the decision: its description says
+only that the cohort still required operator selection. The decision covers cohort membership
+only. A complete accepted-bead comparison is not available here. M0 documents
 unknown historical work-start boundaries; SB excludes unsupported immutable evidence generations;
 SC's reviewed disposition was not integrated into the original preflight parent. Those preflight
 facts did not authorize an adoption or a speed claim. This report supplied a source-only exclusion
