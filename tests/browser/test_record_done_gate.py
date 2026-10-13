@@ -28,7 +28,7 @@ import uuid
 
 import pytest
 
-from tests.browser.helpers import open_shell, settled, settled_focus, swap_settles
+from tests.browser.helpers import open_shell, record_lookup_loaded, settled, settled_focus, swap_settles
 
 
 if TYPE_CHECKING:
@@ -127,6 +127,8 @@ async def _record_fingerprint(page: Any, scope: str) -> str:
         " return !root || root.dataset.timelineReady === 'true'; }",
         arg=scope,
     )
+    # The remote look-up section loads by its own GET after the record swaps in; snapshot it once it has.
+    await record_lookup_loaded(page, scope)
     await page.evaluate(
         "(scope) => { document.querySelectorAll(scope + ' details').forEach((d) => { d.open = true; }); }",
         arg=scope,

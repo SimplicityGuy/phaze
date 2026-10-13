@@ -9,7 +9,7 @@ import pytest
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.local_source_import import import_local_source
-from tests.browser.helpers import open_shell, swap_settles
+from tests.browser.helpers import open_shell, record_lookup_loaded, swap_settles
 from tests.browser.test_files_record import _details_button, _wait_for_record
 from tests.integration.test_companion_viewing import TEXT
 from tests.integration.test_local_source_import import inventory
@@ -126,6 +126,7 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
     await open_shell(page, f"/files/{media.id}")
     assert await page.locator("[data-visible-track]").first.is_visible()
     assert "Example Festival" in await page.locator("[data-release-metadata]").inner_text()
+    await record_lookup_loaded(page)
     page_text = await page.locator("[data-record-content]").inner_text()
     track = page.get_by_role("button", name="Review content").first
     await track.focus()
@@ -149,6 +150,7 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
     await open_shell(page, "/s/files")
     await page.locator(_details_button(media.id)).click()
     await _wait_for_record(page)
+    await record_lookup_loaded(page, "#record-body")
     drawer_text = await page.locator("#record-body [data-record-content]").inner_text()
     assert page_text == drawer_text
     assert await page.locator("#record-body [data-visible-release-field]").first.is_visible()
