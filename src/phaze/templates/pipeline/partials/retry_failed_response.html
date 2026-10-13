@@ -1,3 +1,13 @@
+{# Per-file retry (the Files-matrix row button) sets `toast`: the ack goes to the shell's #toast-container
+   as an auto-dismissing OOB toast. An inline span inside a table row overlapped the neighbouring cells. The bulk
+   cards leave `toast` unset and keep the inline span. #}
+{% macro ack(cls) %}
+{% if toast %}
+<div hx-swap-oob="beforeend:#toast-container"><div class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>{{ caller() }}</div></div>
+{% else %}
+<span class="text-sm {{ cls }} font-medium">{{ caller() }}</span>
+{% endif %}
+{% endmacro %}
 {# quick-260707-d79: HTMX ack for the "Retry failed" bulk action on the Analysis Health card.
 
    Renders one of three branches from ints/bools ONLY (Jinja autoescape; no operator free-text,
@@ -5,32 +15,21 @@
    hx-swap-oob id, so the 5s stats poll keeps re-pushing #analysis-health-card untouched and the
    red count drops on the next tick. #}
 {% if no_active_agent %}
-<span class="text-sm text-warn font-medium">
-    No active agent — nothing re-queued.
-</span>
+{% call ack("text-warn") %}No active agent — nothing re-queued.{% endcall %}
 {% elif enqueue_failed %}
 {# phaze-gcdih: the enqueue itself raised AFTER the failure marker was already cleared+committed.
    The handler re-stamped the marker before returning here, so the file is honestly back in the
    failed bucket (not silently vanished) -- surface that instead of a dropped 500. #}
-<span class="text-sm text-danger font-medium">
-    Retry failed — could not re-queue the file (see agent logs). It remains marked as failed.
-</span>
+{% call ack("text-danger") %}Retry failed — could not re-queue the file (see agent logs). It remains marked as failed.{% endcall %}
 {% elif blocked %}
 {# phaze-k0rv9: enqueue_process_file returned None (deterministic-key collision) and
    classify_process_file_collision found the key held by a DEAD job (aborting/failed/aborted,
    or a stuck active row) -- nothing was scheduled and nothing ever will be until the
    aborting-reaper clears the key. The failure marker was restored before this returned, so the
    file is honestly back in the failed bucket, not silently vanished. #}
-<span class="text-sm text-danger font-medium">
-    Retry not started — a previous analysis attempt for this file is stuck and holding its slot.
-    It remains marked as failed. Try again once it clears, or contact an operator if it persists.
-</span>
+{% call ack("text-danger") %}Retry not started — a previous analysis attempt for this file is stuck and holding its slot. It remains marked as failed. Try again once it clears, or contact an operator if it persists.{% endcall %}
 {% elif count == 0 %}
-<span class="text-sm text-muted font-medium">
-    No failed files to retry.
-</span>
+{% call ack("text-muted") %}No failed files to retry.{% endcall %}
 {% else %}
-<span class="text-sm text-ok font-medium">
-    Re-queued {{ count | thousands }} failed file(s) for analysis.
-</span>
+{% call ack("text-ok") %}Re-queued {{ count | thousands }} failed file(s) for analysis.{% endcall %}
 {% endif %}
