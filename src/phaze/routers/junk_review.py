@@ -187,7 +187,7 @@ async def act_on_group(
 ) -> HTMLResponse:
     """Approve, reject, undo or run quarantine for one content group, if it is still exactly what the operator reviewed."""
     token = _decode(review_token, sha256_hash)
-    context: dict[str, Any] = {"request": request, "focus_card": True}
+    context: dict[str, Any] = {"request": request, "focus_card": True, "feedback_failed": True}
     try:
         await validate_group_tokens(session, [token])
     except JunkReviewTokenStale:
@@ -197,7 +197,11 @@ async def act_on_group(
 
     outcome = await _apply(request, session, action, [sha256_hash])
     group = (await load_groups(session, [sha256_hash]))[sha256_hash]
-    context.update(group=group, message=_message(action, outcome, [group]))
+    context.update(
+        group=group,
+        message=_message(action, outcome, [group]),
+        feedback_failed=(outcome.queued < outcome.requested or not outcome.queued) if action == "quarantine" else not outcome.moved,
+    )
     return templates.TemplateResponse(request=request, name="junk_review/partials/card_response.html", context=context)
 
 
@@ -211,7 +215,7 @@ async def bulk_act(
     """Approve, reject or run quarantine for every selected group -- all of them, or none if any changed since review."""
     tokens = dict(_decode(review_token) for review_token in review_tokens)
     hashes = sorted(tokens)
-    context: dict[str, Any] = {"request": request, "groups": []}
+    context: dict[str, Any] = {"request": request, "groups": [], "feedback_failed": True}
     if not hashes:
         context["message"] = "Select at least one group first."
         return templates.TemplateResponse(request=request, name="junk_review/partials/bulk_response.html", context=context)
@@ -228,5 +232,9 @@ async def bulk_act(
     outcome = await _apply(request, session, action, hashes)
     groups = await load_groups(session, hashes)
     ordered = [groups[sha] for sha in hashes]
-    context.update(groups=ordered, message=_message(action, outcome, ordered))
+    context.update(
+        groups=ordered,
+        message=_message(action, outcome, ordered),
+        feedback_failed=(outcome.queued < outcome.requested or not outcome.queued) if action == "quarantine" else not outcome.moved,
+    )
     return templates.TemplateResponse(request=request, name="junk_review/partials/bulk_response.html", context=context)

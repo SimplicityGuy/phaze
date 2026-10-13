@@ -1,0 +1,32 @@
+{% import "ui/primitives.html" as ui %}
+<section aria-label="Bulk approval preview" class="mt-3 rounded-md border border-gray-200 p-3 dark:border-phaze-border" data-preview-threshold="{{ threshold }}">
+    <h3 class="text-sm font-semibold">{{ eligible_count }} eligible at {{ threshold }}%{% if scope == 'selected' %} · {{ skipped_count }} excluded from selection{% endif %}</h3>
+    {% if capped %}
+    <p class="mt-1 text-sm font-medium">More than 500 eligible proposals match. Preview capped at 500; only the 500 listed below can be approved. Review the remaining proposals in a later batch.</p>
+    {% elif scope == 'filtered' %}
+    <p class="mt-1 text-xs text-muted">{{ eligible_count }} eligible filename and destination proposals in this status filter. Tag writes are separate.</p>
+    {% endif %}
+    <p class="mt-1 text-xs text-muted">Nothing has been approved. Excluded: resolved decisions, confidence below {{ threshold }}% or unavailable, changed selected versions, and colliding destinations. Individual review remains available.</p>
+    {% if eligible_count %}
+    <ol aria-label="Exact proposals in this approval preview" class="relative mt-3 max-h-80 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-2 dark:border-phaze-border">
+        {% for row in preview_rows %}
+        <li data-preview-proposal="{{ row.id }}" class="border-b border-gray-200 pb-2 text-xs last:border-0 dark:border-phaze-border">
+            <p class="break-all"><span class="text-muted">Filename:</span> {{ row.before_filename }} → <strong>{{ row.after_filename }}</strong></p>
+            <p class="break-all"><span class="text-muted">Destination:</span> {{ row.before_destination }} → {{ row.after_destination }}</p>
+            <p class="text-muted">Confidence: {{ (row.confidence * 100) | round | int }}%</p>
+        </li>
+        {% endfor %}
+    </ol>
+    <form hx-patch="/proposals/bulk?{{ view_query }}" hx-target="#changes-workspace-list" hx-swap="outerHTML"
+          hx-confirm="Approve only these {{ eligible_count }} listed proposals at {{ threshold }}%?">
+        <input type="hidden" name="action" value="approve_eligible">
+        <input type="hidden" name="threshold" value="{{ threshold }}">
+        {% for token in review_tokens %}<input type="hidden" name="review_tokens" value="{{ token }}">{% endfor %}
+        <fieldset disabled :disabled="!previewReady" class="border-0 p-0">
+            <button type="submit" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('primary', 'sm', 'mt-3') }}">Approve these {{ eligible_count }} previewed proposals</button>
+        </fieldset>
+    </form>
+    {% else %}
+    <p class="mt-2 text-xs text-muted">No proposal qualifies for this preview. Lower the threshold, choose another status filter, or review exclusions individually.</p>
+    {% endif %}
+</section>

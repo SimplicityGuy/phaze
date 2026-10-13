@@ -36,9 +36,9 @@
         <p class="text-xs text-muted "><span class="font-mono tabular-nums">{{ _running_total | thousands }}</span> running · <span class="font-mono tabular-nums">{{ _waiting_total | thousands }}</span> waiting</p>
     </div>
     {% if _rows is none %}
-        <p role="status" class="px-4 py-3 text-sm text-muted ">Running analyses could not be read this cycle. It refreshes on the next update.</p>
+        <p class="px-4 py-3 text-sm text-muted ">Running analyses could not be read this cycle. It refreshes on the next update.</p>
     {% elif not _rows %}
-        <p role="status" class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total | thousands }} file(s) are waiting for a slot.{% endif %}</p>
+        <p class="px-4 py-3 text-sm text-muted ">Nothing is running right now.{% if _waiting_total %} {{ _waiting_total | thousands }} file(s) are waiting for a slot.{% endif %}</p>
     {% else %}
     {% call ui.data_table("Analyses running now", id="analyze-running-table") %}
         <thead class="table-head">

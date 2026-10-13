@@ -149,7 +149,8 @@ _REMOVED_SINCE_PRE_REFACTOR = {"current_path"}
 # since neither seeds a ``SetProfile`` row) before stripping it for the equality comparison, so an
 # accidental drop of the field still fails loudly. Add to this set ONLY for a field that is new,
 # additive, and recorded on a bead -- never to paper over a real divergence.
-_ADDED_SINCE_PRE_REFACTOR = {"set_profile"}
+# phaze-vssr1 separates generated confidence warnings from other reasons for live slider copy.
+_ADDED_SINCE_PRE_REFACTOR = {"set_profile", "other_warnings"}
 
 
 def _rekey(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -190,6 +191,7 @@ async def test_changes_review_page_parity(
     # phaze-x1qr3.9: the new side carries `set_profile` -- none of these seeded proposals' files
     # have one, so it must be None on every row, never silently dropped.
     assert all(row["set_profile"] is None for row in new_page.rows)
+    assert all(row["other_warnings"] == ["No destination change; the file will be renamed in its current directory."] for row in new_page.rows)
     assert _rekey(old_page.rows) == _strip_added(new_page.rows)
 
 

@@ -1,19 +1,6 @@
-{#
-  v7.0 shell header (h-14) — replaces the Plan-02 placeholder <header> via {% include %}.
-  Carries: the wave logo (lifted VERBATIM from base.html, links to /), the ⌘K search
-  affordance button, the D-05 agent status strip (dots + "Agents · {n}" link), and the
-  auto/dark/light theme toggle (lifted VERBATIM from base.html, SHELL-04).
-
-  Status strip (D-05): the agent dot + count bind to the EXISTING $store.pipeline.agentOnline
-  key and are refreshed by the EXISTING /pipeline/stats 5s OOB poll — this partial adds NO
-  second timer / poll loop of its own. The ⌘K button dispatches a bubbling `cmdk:open` event
-  caught by cmdk_modal.html (@cmdk:open.window); it carries id="cmdk-trigger" so the modal
-  returns focus here on close.
-
-  Inventory is separate from activity: laneCount includes every configured backend; clusterCount
-  includes the non-local subset, even while idle. agentOnline stays on its own link. The dot keeps
-  the existing agent/active-cluster activity signal. All values ride the same OOB poll.
-#}
+{# Persistent console header: native navigation trigger, command palette, one cached health pill,
+   routing override and theme toggle. The pill and lazy nonmodal tray share Summary attention policy.
+   Attention counts ride the existing pipeline stats poll; no second browser timer is introduced. #}
 {# phaze-tzy6s.14: tighter gap/padding below `sm`. Adding the .13 drawer trigger pushed the row 4px
    past a 390px viewport, so the whole PAGE scrolled sideways -- caught by the browser suite's
    horizontal-overflow assertion, and invisible to every markup test because it is pure computed
@@ -76,29 +63,56 @@
               x-text="/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'">⌘K</span>
     </button>
 
-    {# D-05 status strip: agent dot + "Agents · {n}" link, bound to $store.pipeline.agentOnline,
-       refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
     <div class="ml-auto flex items-center gap-1 sm:gap-2.5 text-xs text-muted " x-data>
         {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
            an explicit warning linked to the Config control that can revert it. #}
         {% with oob=false %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
-        <span class="flex items-center" aria-hidden="true">
-            <span class="w-2 h-2 rounded-full"
-                  :class="$store.pipeline.seedKnown && ($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
-        </span>
-        <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-           aria-label="Open registered agents"
-           class="font-jura tracking-wider px-2 sm:px-3 h-8 flex items-center gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-             <span><span class="hidden sm:inline">Agents online&nbsp;</span><span class="sm:hidden">Agents&nbsp;</span><span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'">{{ (pipeline_seed.agentOnline if pipeline_seed else '—') | thousands }}</span></span>
-        </a>
-        <a href="/s/analyze" hx-get="/s/analyze" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-           title="Configured scheduler lanes, including local and idle lanes; clusters are non-local backends"
-           :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.laneCount) + ' configured lanes; ' + formatCount($store.pipeline.clusterCount) + ' configured clusters' : 'Lane and cluster counts loading'"
-           class="font-jura tracking-wider px-2 sm:px-3 h-8 flex flex-col justify-center items-center gap-0 sm:flex-row sm:gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-             <span>Lanes&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.laneCount) : '—'">{{ (pipeline_seed.laneCount if pipeline_seed else '—') | thousands }}</span></span>
-             <span aria-hidden="true" class="hidden text-muted sm:inline">·</span>
-             <span>Clusters&nbsp;<span class="font-mono" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.clusterCount) : '—'">{{ (pipeline_seed.clusterCount if pipeline_seed else '—') | thousands }}</span></span>
-        </a>
+        <div class="relative" x-data="{
+            attentionOpen: false, expanded: false,
+            publishAttention() { this.$dispatch('attention:state', { open: this.attentionOpen }); },
+            focusAttention() {
+                this.$nextTick(() => requestAnimationFrame(() => {
+                    if (this.attentionOpen) this.$refs.heading.focus();
+                }));
+            },
+            toggleAttention() {
+                if (this.attentionOpen) { this.closeAttention(); return; }
+                this.attentionOpen = true;
+                this.publishAttention();
+                this.$refs.content.textContent = 'Loading attention items…';
+                this.$refs.pill.dispatchEvent(new CustomEvent('attention:load', { bubbles: true }));
+                this.focusAttention();
+            },
+            closeAttention() {
+                if (!this.attentionOpen) return;
+                this.attentionOpen = false;
+                this.publishAttention();
+                this.$nextTick(() => this.$refs.pill.focus());
+            }
+        }" @keydown.escape.window="closeAttention()" @htmx:after-request="if ($event.detail.successful && $event.detail.elt.closest('#attention-tray-content')) closeAttention()"
+           @htmx:after-settle="if (attentionOpen && $event.detail.target.id === 'attention-tray-content') focusAttention()">
+            {% set attention_label = ((pipeline_seed.attentionCount | thousands) ~ ' attention items; open attention tray') if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.attentionKnown else 'Attention status unavailable; open attention tray' %}
+            <button type="button" id="attention-pill" x-ref="pill"
+                    @attention:state.window="expanded = $event.detail.open" @click="toggleAttention()"
+                    aria-expanded="false" :aria-expanded="expanded" aria-controls="attention-tray"
+                    title="{{ attention_label }}" aria-label="{{ attention_label }}"
+                    hx-get="/shell/attention" hx-trigger="attention:load" hx-target="#attention-tray-content" hx-swap="innerHTML"
+                    :title="$store.pipeline.seedKnown && $store.pipeline.attentionKnown ? formatCount($store.pipeline.attentionCount) + ' attention items; open attention tray' : 'Attention status unavailable; open attention tray'"
+                    :aria-label="$store.pipeline.seedKnown && $store.pipeline.attentionKnown ? formatCount($store.pipeline.attentionCount) + ' attention items; open attention tray' : 'Attention status unavailable; open attention tray'"
+                    class="h-8 inline-flex shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 text-xs text-gray-700 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    :class="$store.pipeline.seedKnown && $store.pipeline.attentionKnown && $store.pipeline.attentionCount > 0 ? 'text-warn' : ''">
+                <span x-text="$store.pipeline.seedKnown && $store.pipeline.attentionKnown ? (formatCount($store.pipeline.attentionCount) === '0' ? 'Healthy' : 'Attention') : 'Health'">{{ ('Attention' if pipeline_seed.attentionCount > 0 else 'Healthy') if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.attentionKnown else 'Health' }}</span>
+                <span class="font-mono" x-text="$store.pipeline.seedKnown && $store.pipeline.attentionKnown ? formatCount($store.pipeline.attentionCount) : '—'">{{ (pipeline_seed.attentionCount if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.attentionKnown else '—') | thousands }}</span>
+            </button>
+            <section id="attention-tray" x-show="attentionOpen" x-cloak aria-labelledby="attention-tray-heading"
+                     class="fixed inset-x-2 top-14 z-40 mt-2 max-h-[70dvh] overflow-y-auto rounded-lg border border-gray-200 bg-white p-4 shadow-lg dark:border-phaze-border dark:bg-phaze-panel sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:w-[22rem]">
+                <div class="mb-3 flex items-center justify-between gap-2">
+                    <h2 id="attention-tray-heading" x-ref="heading" tabindex="-1" class="font-jura text-sm font-semibold focus:outline-none">Needs Attention</h2>
+                    <button type="button" @click="closeAttention()" aria-label="Close attention tray" class="rounded p-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">×</button>
+                </div>
+                <div id="attention-tray-content" x-ref="content"><p class="text-sm text-muted">Loading attention items…</p></div>
+            </section>
+        </div>
     </div>
 
     {# phaze-6hd58: Config opens from here, not from the rail. A native link (works without JS) that HTMX

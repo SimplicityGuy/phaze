@@ -7,6 +7,8 @@ domain module stay narrow instead of re-deriving them.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -17,11 +19,51 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Iterator
+
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
 
 
 logger = structlog.get_logger(__name__)
+_read_degradations: ContextVar[list[str] | None] = ContextVar("pipeline_read_degradations", default=None)
+
+
+@contextmanager
+def capture_read_degradations() -> Iterator[list[str]]:
+    """Observe fallback reads in this snapshot and its child tasks without changing legacy defaults."""
+    failures: list[str] = []
+    token = _read_degradations.set(failures)
+    try:
+        yield failures
+    finally:
+        _read_degradations.reset(token)
+
+
+def mark_read_degraded(node: str) -> None:
+    """Record a degraded source only when a caller is measuring snapshot availability."""
+    failures = _read_degradations.get()
+    if failures is not None:
+        failures.append(node)
+
+
+async def measure_read[T](read_failures: dict[str, tuple[str, ...]], source: str, read: Awaitable[T]) -> T:
+    """Await one degrade-safe read and record, under ``source``, exactly the fallbacks IT took.
+
+    The generic markers (``source_session``, ``stage_bucket``, ``stage_orphan_split``) say that
+    SOME read fell back, never which one, and a gather of sibling reads appends them all to one
+    inherited list. This captures the read's markers in a collector of its own, so ``source``
+    owns them: an empty tuple means the read was measured, a non-empty one names its fallbacks,
+    and an absent key (the read raised) means it was never measured. The markers are then
+    replayed into the enclosing collector, so a caller measuring the whole snapshot still sees
+    every failure. The read's return value -- including its legacy zero default -- is untouched.
+    """
+    with capture_read_degradations() as local:
+        result = await read
+    read_failures[source] = tuple(local)
+    for node in local:
+        mark_read_degraded(node)
+    return result
 
 
 # Music + video file types -- the shared denominator for the per-file parallel
@@ -72,6 +114,7 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
         async with session.begin_nested():
             return int((await session.execute(stmt)).scalar() or 0)
     except Exception:
+        mark_read_degraded(node)
         logger.warning("stage_progress_degraded", node=node, exc_info=True)
         return 0
 

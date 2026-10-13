@@ -392,7 +392,7 @@ async def test_apply_counter_row_accounts_for_executed_proposals(
 
     assert metric("Executed") == 1, "an executed proposal must have its own visible count"
     assert metric("Approved") == 1, "Approved must NOT absorb executed rows -- Execute reads it as 'still to dispatch'"
-    assert metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Rejected") == metric("Total"), (
+    assert metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Rejected by review") == metric("Total"), (
         "the per-status metrics must account for every proposal Total counts"
     )
 
@@ -428,7 +428,7 @@ async def test_apply_counter_row_accounts_for_failed_proposals(
         return int(after[1].split(">", 1)[1].split("<")[0].strip())
 
     assert metric("Blocked") == 1, "a failed proposal must have its own visible count"
-    assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected")) == metric("Total"), (
+    assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected by review")) == metric("Total"), (
         "the per-status metrics must account for every proposal Total counts, including Blocked"
     )
 
@@ -449,8 +449,8 @@ async def test_apply_workspace_disables_execute_with_nothing_approved(client: As
     assert 'hx-post="/execution/start"' not in body, "an empty batch must not be dispatchable"
     assert 'id="apply-confirm"' not in body, "no confirmation dialog should be rendered when nothing can execute"
 
-    assert "No approved proposals are ready to execute." in body, "the disabled reason must be visible text"
-    assert "Approve filename and destination changes in Changes Review first." in body, "the disabled state must name the next action"
+    assert "No approved operations ready to execute" in body, "the disabled reason must be visible text"
+    assert "Review filename and destination changes before starting an execution batch." in body, "the disabled state must name the next action"
     # The reason is wired to the button for assistive tech, not left as a floating paragraph.
     assert 'id="apply-blocked-reason"' in body
     assert 'aria-describedby="apply-blocked-reason"' in body
@@ -468,3 +468,44 @@ async def test_apply_rail_node_is_navigable(client: AsyncClient) -> None:
     assert 'data-rail-stage="apply"' in shell.text
     assert 'hx-get="/s/apply"' in shell.text
     assert 'aria-current="page"' in shell.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generated", [False, True])
+async def test_propose_empty_copy_distinguishes_eligible_files_from_generated_history(
+    client: AsyncClient, session: AsyncSession, generated: bool
+) -> None:
+    """Generation-ready files still need candidates even when this review-filtered list is empty."""
+    from datetime import UTC, datetime
+    import uuid
+
+    from phaze.models.analysis import AnalysisResult
+    from phaze.models.file import FileRecord
+    from phaze.models.metadata import FileMetadata
+    from phaze.models.proposal import RenameProposal
+    from phaze.services.pipeline import count_proposal_pending_files
+
+    file = FileRecord(
+        agent_id="test-fileserver",
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/test/music/ready.mp3",
+        current_path="/test/music/ready.mp3",
+        original_filename="ready.mp3",
+        file_type="mp3",
+        file_size=1,
+    )
+    session.add(file)
+    await session.flush()
+    session.add_all([FileMetadata(file_id=file.id), AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC))])
+    if generated:
+        session.add(RenameProposal(file_id=file.id, proposed_filename="Reviewed.mp3", status=ProposalStatus.APPROVED.value))
+    await session.commit()
+    assert await count_proposal_pending_files(session) == (0 if generated else 1)
+    for headers in ({}, {"HX-Request": "true", "HX-Target": "propose-workspace-list"}):
+        body = (await client.get("/s/propose", headers=headers)).text
+        assert ("No generated proposals awaiting review" if generated else "No proposals generated yet") in body
+        assert "Nothing to propose" not in body
+        assert "Every discovered file already has a rename proposal" not in body
+        if not generated:
+            assert "Files are ready for candidate generation" in body
+            assert 'href="#propose-generate"' in body

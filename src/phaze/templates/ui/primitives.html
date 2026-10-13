@@ -51,7 +51,7 @@
                      caller wrote it, so a test or screen reader sees the source string unchanged.
      * failed     -- the glyph for a failed/danger state is U+2715 everywhere; never U+2717.
    `aria_label` and `role` are the caller's: pass the same strings the pill carried before. #}
-{% macro status_pill(text, tone='neutral', aria_label='', icon='', pulse=false, role='') %}
+{% macro status_pill(text, tone='neutral', aria_label='', icon='', pulse=false, role='', variant='word') %}
 {% set tones = {
     'accent': ('bg-blue-100 dark:bg-blue-950 text-info ', 'bg-blue-500 dark:bg-blue-400'),
     'attention': ('bg-amber-100 dark:bg-amber-950 text-warn ', 'bg-amber-500 dark:bg-amber-400'),
@@ -63,7 +63,7 @@
     'neutral': ('bg-gray-100 dark:bg-gray-800/60 text-muted ', 'bg-gray-400 dark:bg-gray-500')
 } %}
 {% set _t = tones.get(tone, tones.neutral) %}
-<span class="inline-flex items-center gap-1.5 text-xs font-semibold uppercase px-2 py-0.5 rounded-full {{ _t[0] }}{% if pulse %} motion-safe:animate-pulse{% endif %}"{% if role %} role="{{ role }}"{% endif %}{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>{% if icon %}<span aria-hidden="true">{{ icon }}</span>{% else %}<span class="w-2 h-2 shrink-0 rounded-full {{ _t[1] }}" aria-hidden="true"></span>{% endif %}<span>{{ text }}</span></span>
+<span class="inline-flex items-center gap-1.5 text-xs font-semibold uppercase px-2 py-0.5 rounded-full {{ _t[0] }}{% if pulse %} motion-safe:animate-pulse{% endif %}"{% if role %} role="{{ role }}"{% endif %}{% if aria_label or variant == 'glyph' %} aria-label="{{ aria_label or text }}"{% endif %}{% if variant == 'glyph' %} title="{{ aria_label or text }}" data-status-variant="glyph"{% endif %}>{% if icon %}<span aria-hidden="true">{{ icon }}</span>{% else %}<span class="w-2 h-2 shrink-0 rounded-full {{ _t[1] }}" aria-hidden="true"></span>{% endif %}{% if variant != 'glyph' %}<span>{{ text }}</span>{% endif %}</span>
 {% endmacro %}
 
 {# phaze-x6ql9: the ONE lane / agent kind label. Every surface that names a lane or an agent kind
@@ -103,8 +103,8 @@
 {{ status_pill(_text, 'neutral', _aria ~ (', ' ~ name if name else ''), _icon) }}
 {% endmacro %}
 
-{% macro status_badge(label, status, tone='neutral', icon='', pulse=false, aria_label='', role='') %}
-{{ status_pill(status, tone, aria_label or (label ~ ': ' ~ status), icon, pulse, role) }}
+{% macro status_badge(label, status, tone='neutral', icon='', pulse=false, aria_label='', role='', variant='word') %}
+{{ status_pill(status, tone, aria_label or (label ~ ': ' ~ status), icon, pulse, role, variant) }}
 {% endmacro %}
 
 {# phaze-gmh3f: THE heading treatment of an alert -- Jura eyebrow, uppercase, tracked -- next to a tone icon. Exported so a
@@ -112,13 +112,14 @@
    bold Inter one. `actionable_alert` below is the one alert; the orphaned-work alert on Discover, Analyze and Summary
    all read through this. #}
 {% set alert_heading_class = "font-jura text-xs font-medium uppercase tracking-[0.15em]" %}
-{% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}
+{% macro actionable_alert(title, message, tone='attention', id='', oob=false, role=none) %}
 {% set tones = {
     'attention': 'border-amber-300 bg-amber-50 text-warn dark:border-amber-700 dark:bg-amber-950 ',
     'danger': 'border-red-300 bg-red-50 text-danger dark:border-red-800 dark:bg-red-950 ',
     'info': 'border-blue-300 bg-blue-50 text-info dark:border-blue-800 dark:bg-blue-950 '
 } %}
-<section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} role="alert" class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
+{% set announcement_role = role if role is not none else ('status' if tone == 'info' else 'alert') %}
+<section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %}{% if announcement_role %} role="{{ announcement_role }}"{% endif %} class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
     <div class="flex items-start gap-3">
         <span aria-hidden="true" class="mt-0.5 shrink-0">{% if tone == 'danger' %}✕{% elif tone == 'info' %}ⓘ{% else %}⚠{% endif %}</span>
         <div class="min-w-0 flex-1">
@@ -128,6 +129,11 @@
         </div>
     </div>
 </section>
+{% endmacro %}
+
+{# Success acknowledgment is transient; callers keep Undo and action proof outside this node. #}
+{% macro action_status(message) %}
+<p role="status" data-action-status x-data="{ timer:null, init() { const expires = Number(this.$el.dataset.actionExpires) || Date.now() + 5000; this.$el.dataset.actionExpires = expires; this.timer = setTimeout(() => this.$el.remove(), Math.max(0, expires - Date.now())); }, destroy() { clearTimeout(this.timer); } }" class="text-sm text-info">{{ message }}</p>
 {% endmacro %}
 
 {# phaze-gmh3f: THE page banner -- a one-sentence statement of a boundary or stage, under the page header. One tone

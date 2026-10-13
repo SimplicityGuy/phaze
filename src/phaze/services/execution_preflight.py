@@ -38,9 +38,9 @@ writes, duplicate resolution, or cue-sheet generation. Those are real operations
 queues and their own authorization records, and an operator who assumes EXECUTE APPROVED flushes
 them is wrong in a way that costs a debugging session.
 
-So the manifest reports them as *explicit exclusions with live counts*, never by omission. An
-operation type absent from a manifest reads as "there is none of it"; the honest statement is "there
-are 12 of these and this control will not run them, here is what will".
+The workspace reports adjacent queues as linked contextual guidance with live counts. They do not
+contribute to this approved batch's exclusions or its confirmation: only destination conflicts
+and approved proposals owned by revoked agents are batch exceptions.
 
 Per ADR-0008 (changes review approval boundary) one RenameProposal carries both the filename and destination decision, so the two
 participating operation types are facets of one row, split on ``proposed_path``:
@@ -51,7 +51,7 @@ participating operation types are facets of one row, split on ``proposed_path``:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -102,12 +102,12 @@ class PreflightAgent:
 
 @dataclass(frozen=True, slots=True)
 class PreflightExclusion:
-    """Work that exists but will NOT run in this batch, with the reason and the operator's next action.
+    """A work row with its reason and next action, used for batch exceptions and adjacent guidance.
 
     ``blocking`` distinguishes the two very different kinds. A blocking exclusion (a destination
     collision) stops the whole dispatch -- ``start_execution`` short-circuits on it before grouping.
-    A non-blocking exclusion (pending review, a revoked agent, a tag write) simply is not part of
-    this batch and does not prevent the rest from running.
+    Revoked-agent exclusions concern approved proposals. Pending review, rejected proposals, tag
+    writes and other adjacent queues are contextual guidance, separate from batch exceptions.
     """
 
     key: str
@@ -139,20 +139,20 @@ class ExecutionPreflight:
     can_execute: bool
     blocked_reason: str | None
     blocked_next_action: str | None
+    related_work: list[PreflightExclusion] = field(default_factory=list)
 
     @property
     def excluded_total(self) -> int:
-        """Every unit of work this batch will not touch, blocking or otherwise."""
+        """Sum of exception row counts; an operation count only when conflicts are absent.
+
+        Conflicts count destinations and block the entire batch, so that view presents per-row
+        units instead of an aggregate. An actionable confirmation contains only revoked operations.
+        """
         return sum(exclusion.count for exclusion in self.exclusions)
 
     @property
     def excluded_total_at_least(self) -> bool:
-        """True when :attr:`excluded_total` is a floor because some contributing row is (phaze-tzy6s.17).
-
-        A sum containing one saturated term is itself saturated, so the heading that renders
-        ``excluded_total`` has to carry the same "+" the row does. Omitting it would put an exact-looking
-        total directly above a row openly labelled approximate.
-        """
+        """Whether batch exceptions contain a capped count; adjacent queue floors never contribute."""
         return any(exclusion.at_least for exclusion in self.exclusions)
 
 
@@ -225,7 +225,7 @@ async def get_execution_preflight(
             )
         )
 
-    exclusions = _build_exclusions(
+    work_rows = _build_work_rows(
         conflicts=conflicts,
         skipped_revoked=skipped_revoked,
         pending=pending,
@@ -247,6 +247,9 @@ async def get_execution_preflight(
             "Execution is blocked for the whole batch, not just the conflicting rows."
         )
         blocked_next_action = "Resolve the conflicting destinations in Changes Review, then return here."
+    elif total == 0 and skipped_revoked:
+        blocked_reason = "All approved operations belong to revoked agents."
+        blocked_next_action = "Re-register the owning agents in Operations before executing these approved changes."
     elif total == 0:
         blocked_reason = "No approved proposals are ready to execute."
         blocked_next_action = "Approve filename and destination changes in Changes Review first."
@@ -256,14 +259,15 @@ async def get_execution_preflight(
         operations=operations,
         agents=agents,
         conflicts=conflicts,
-        exclusions=exclusions,
+        exclusions=[row for row in work_rows if row.key in {"conflict", "revoked"}],
+        related_work=[row for row in work_rows if row.key not in {"conflict", "revoked"}],
         can_execute=total > 0 and not conflicts,
         blocked_reason=blocked_reason,
         blocked_next_action=blocked_next_action,
     )
 
 
-def _build_exclusions(
+def _build_work_rows(
     *,
     conflicts: list[tuple[str, int]],
     skipped_revoked: int,
@@ -274,7 +278,7 @@ def _build_exclusions(
     cue_pending: int,
     tagwrite_pending_at_least: bool = False,
 ) -> list[PreflightExclusion]:
-    """Everything the batch will not touch, blocking first, then zero-count rows dropped.
+    """Batch exceptions and adjacent guidance, blocking first, then zero-count rows dropped.
 
     Zero-count rows are dropped rather than rendered as "0 excluded": a manifest's job is to make
     the exceptions visible, and a wall of zeroes buries the one row that is non-zero.

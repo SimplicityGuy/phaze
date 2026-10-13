@@ -27,6 +27,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | Document | Purpose |
 | -------- | ------- |
 | **[Gates and Isolation](gates-and-isolation.md)** | 🧪 Validation-boundary evidence, PostgreSQL/Redis seat isolation, and trustworthy gate output |
+| **[Zero-selection Review Release Verification](zero-selection-review-release-verification.md)** | Deployed empty-state control evidence and pending A5 release and eligible-selection checks |
 | **[Bead Feedback Readback](bead-feedback-readback.md)** | 📊 Existing validation and review acceptance evidence, explicit membership, and unknown velocity boundaries |
 | **[Coverage Baseline Refresh](coverage-baseline-refresh.md)** | 📏 Full-suite coverage provenance, every changed module, and repaired boundary gaps |
 | **[Current Quality Coverage Assessment](quality-assessment/coverage-baseline.md)** | Exact-commit CI line/context evidence, source growth, low-line candidates and selector limits |

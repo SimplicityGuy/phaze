@@ -10,10 +10,14 @@ dispatch it precedes.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from bs4 import BeautifulSoup
 import pytest
 
+from phaze.models.agent import Agent
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus
 
 
@@ -70,9 +74,9 @@ async def test_preflight_names_excluded_work_with_a_reason_and_next_action(
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """Pending and rejected proposals are excluded EXPLICITLY, not by silent omission.
+    """Pending and rejected proposals remain contextual guidance, outside batch exclusions.
 
-    An operation type absent from a manifest reads as "there is none of it". The operator needs to
+    An operation type absent from a workspace reads as "there is none of it". The operator needs to
     see that the 1 pending and 1 rejected row exist and are deliberately not part of this batch.
     """
     approved = await seed_pending_proposal(0.95, original_filename="ok.mp3", proposed_filename="Ok.mp3", proposed_path="Artist/Event")
@@ -85,7 +89,8 @@ async def test_preflight_names_excluded_work_with_a_reason_and_next_action(
 
     body = (await client.get("/s/apply", headers={"HX-Request": "true"})).text
 
-    assert "Will not run" in body
+    assert "Will not run" not in body
+    assert "Other work outside this approved batch" in body
     assert "Still needs review" in body
     assert "Not yet approved. Only approved proposals are executed." in body
     assert "Review them in Changes Review." in body
@@ -145,6 +150,9 @@ async def test_preflight_blocks_the_whole_batch_on_a_destination_conflict(
     assert "blocking" in body
     assert "Execution is blocked for the whole batch, not just the conflicting rows." in body
     assert "Resolve the conflicting destinations in Changes Review, then return here." in body
+    assert "Batch exceptions — execution blocked" in body
+    assert "1 destination" in body
+    assert "Will not run — 1 approved operation" not in body
 
     # Blocked means genuinely inert: no dialog to open and nothing that can post.
     assert 'id="apply-confirm"' not in body, "a blocked batch must not offer a confirmation dialog"
@@ -247,11 +255,10 @@ async def test_a_capped_tagwrite_count_renders_as_a_floor_not_a_total(
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """A saturated tag-write scan marks its exclusion ``at_least``, and the manifest total inherits it.
+    """A saturated tag-write scan marks contextual guidance ``at_least``, outside batch totals.
 
     Tag-write eligibility cannot be counted in SQL, so honesty here means labelling the number
-    rather than fixing it. The total must inherit the flag: an exact-looking sum printed directly
-    above a row marked "12+" is a worse reading than either number alone.
+    rather than fixing it. The approved execution batch must not inherit an unrelated queue's flag.
     """
     from phaze.services.execution_preflight import get_execution_preflight
 
@@ -261,8 +268,8 @@ async def test_a_capped_tagwrite_count_renders_as_a_floor_not_a_total(
     exact = await get_execution_preflight(session, pending=0, rejected=0, tagwrite_pending=12)
     floored = await get_execution_preflight(session, pending=0, rejected=0, tagwrite_pending=12, tagwrite_pending_at_least=True)
 
-    (exact_row,) = [e for e in exact.exclusions if e.key == "tagwrite"]
-    (floored_row,) = [e for e in floored.exclusions if e.key == "tagwrite"]
+    (exact_row,) = [e for e in exact.related_work if e.key == "tagwrite"]
+    (floored_row,) = [e for e in floored.related_work if e.key == "tagwrite"]
 
     assert exact_row.at_least is False
     assert exact.excluded_total_at_least is False
@@ -270,7 +277,8 @@ async def test_a_capped_tagwrite_count_renders_as_a_floor_not_a_total(
     assert floored_row.at_least is True, "a capped scan's length is a lower bound, and the row must say so"
     assert floored_row.count == 12, "the flag annotates the number; it does not replace or inflate it"
     assert "capped" in floored_row.reason, "the reason text must explain the +, not just render a symbol"
-    assert floored.excluded_total_at_least is True, "a sum with one saturated term is itself saturated"
+    assert floored.excluded_total == 0
+    assert floored.excluded_total_at_least is False, "adjacent queue floors do not belong to the execution batch"
 
 
 @pytest.mark.asyncio
@@ -279,11 +287,9 @@ async def test_the_execute_workspace_marks_a_floored_exclusion_total_in_the_rend
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """End-to-end: with nothing saturated, the rendered Execute page states its exclusions exactly.
+    """End-to-end: pending proposals appear as contextual guidance rather than batch exclusions.
 
-    The negative direction is the one worth pinning in the real render. A stray "+" on an exact
-    total would quietly teach the operator to distrust every number on the manifest, which is the
-    same class of harm as the saturated count itself.
+    A pending row is outside the approved population, so it must not inflate its excluded total.
     """
     approved = await seed_pending_proposal(0.95, original_filename="e.mp3", proposed_filename="E.mp3", proposed_path="Artist/Event")
     await seed_pending_proposal(0.50, original_filename="p.mp3", proposed_filename="P.mp3", proposed_path="Artist/Other")
@@ -293,7 +299,8 @@ async def test_the_execute_workspace_marks_a_floored_exclusion_total_in_the_rend
     assert response.status_code == 200
     body = response.text
 
-    assert "Will not run — 1 excluded" in body
+    assert "Will not run" not in body
+    assert "Other work outside this approved batch" in body
     assert "Will not run — 1+ excluded" not in body, "nothing here is capped, so nothing may be marked as a floor"
 
 
@@ -335,3 +342,95 @@ async def test_rendering_execute_never_calls_the_saturating_list_readers(
 
     response = await client.get("/s/apply")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_empty_execute_is_neutral_and_links_review_despite_duplicate_backlog(
+    client: AsyncClient,
+    seed_duplicate_group: Callable[..., Awaitable[list[object]]],
+) -> None:
+    """Unrelated duplicate work cannot turn an empty approved batch into an execution alarm."""
+    await seed_duplicate_group(count=2)
+    response = await client.get("/s/apply")
+    page = BeautifulSoup(response.text, "html.parser")
+    empty = page.select_one("[data-execute-empty]")
+    assert empty is not None
+    assert "No approved operations ready to execute" in empty.get_text()
+    assert "text-danger" not in str(empty) and "text-warn" not in str(empty)
+    review = empty.select_one("a")
+    assert review is not None and review["href"] == "/s/rename?status=needs_review"
+    assert review["hx-target"] == "#stage-workspace"
+    assert "Execution unavailable" not in response.text
+    assert "Will not run" not in response.text
+    assert page.select_one("#apply-confirm") is None
+    assert page.select_one('[hx-post="/execution/start"]') is None
+    guidance = page.select_one("[data-execute-related-work]")
+    assert guidance is not None and guidance.select_one('a[href="/s/dedupe"]') is not None
+    for label in ("Blocked", "Rejected by review"):
+        term = page.find("dt", string=label)
+        assert term is not None
+        value = term.find_next_sibling("dd")
+        assert value is not None and value.get_text(strip=True) == "0"
+        assert "text-danger" not in str(value) and "text-warn" not in str(value)
+
+
+@pytest.mark.asyncio
+async def test_partially_excluded_batch_counts_only_approved_revoked_operations(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """A live approved operation stays actionable while an approved revoked operation is explicit."""
+    from phaze.services.execution_preflight import get_execution_preflight
+
+    live = await seed_pending_proposal(0.95, original_filename="live.mp3", proposed_filename="Live.mp3", proposed_path="Artist/Live")
+    revoked = await seed_pending_proposal(0.95, original_filename="revoked.mp3", proposed_filename="Revoked.mp3", proposed_path="Artist/Revoked")
+    session.add(Agent(id="revoked-seat", name="Revoked seat", revoked_at=datetime.now(UTC)))
+    await session.flush()
+    file = await session.get(FileRecord, revoked.file_id)
+    assert file is not None
+    file.agent_id = "revoked-seat"
+    await _approve(session, live, revoked)
+
+    preflight = await get_execution_preflight(session, pending=99, rejected=25, dedupe_pending=1919)
+    assert preflight.can_execute is True and preflight.total == 1
+    assert [(row.key, row.count) for row in preflight.exclusions] == [("revoked", 1)]
+    assert preflight.excluded_total == 1
+    assert [(row.key, row.count) for row in preflight.related_work] == [("pending", 99), ("rejected", 25), ("dedupe", 1919)]
+
+    body = (await client.get("/s/apply")).text
+    assert "Will run — 1 operation" in body
+    assert "Will not run — 1 approved operation excluded" in body
+    assert "Owned by a revoked agent" in body
+    assert "Re-register the agent" in body
+    assert 'id="apply-confirm"' in body
+    assert 'hx-post="/execution/start"' in body
+
+
+@pytest.mark.asyncio
+async def test_all_approved_revoked_is_a_real_block_with_agent_recovery(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Zero runnable operations is not an empty approval queue when revocation excludes every row."""
+    from phaze.services.execution_preflight import get_execution_preflight
+
+    proposal = await seed_pending_proposal(0.95)
+    file = await session.get(FileRecord, proposal.file_id)
+    assert file is not None
+    agent = await session.get(Agent, file.agent_id)
+    assert agent is not None
+    agent.revoked_at = datetime.now(UTC)
+    await _approve(session, proposal)
+    preflight = await get_execution_preflight(session, pending=0, rejected=0)
+    assert preflight.total == 0 and preflight.can_execute is False
+    assert preflight.excluded_total == 1
+    assert preflight.blocked_reason == "All approved operations belong to revoked agents."
+    response = await client.get("/s/apply")
+    page = BeautifulSoup(response.text, "html.parser")
+    assert page.select_one("[data-execute-empty]") is None
+    assert "All approved operations belong to revoked agents" in response.text
+    assert page.select_one('a[href="/s/agents"]') is not None
+    assert page.select_one("#apply-confirm") is None
+    assert page.select_one('[hx-post="/execution/start"]') is None

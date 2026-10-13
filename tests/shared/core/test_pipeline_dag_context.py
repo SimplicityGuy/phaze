@@ -38,6 +38,18 @@ _SHELL_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "ph
 
 # Every per-node store sub-key the UI-SPEC "Store extension" mandates (35-UI-SPEC L294).
 _NEW_STORE_KEYS = (
+    "reviewPending",
+    "reviewDedupe",
+    "reviewJunk",
+    "reviewCue",
+    "reviewCountsKnown",
+    "attentionCount",
+    "attentionKnown",
+    "analyzeFailed",
+    "analyzeStalled",
+    "inadmissible",
+    "awaitingCloud",
+    "queuedBehindQuota",
     "metadataDone",
     "metadataTotal",
     "metadataStatusDone",

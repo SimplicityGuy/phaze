@@ -17,7 +17,7 @@ from phaze.models.companion_import import ProviderAcquisitionAttempt
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
-from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
+from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.companion_capture import store_capture_report
 from phaze.services.companion_view import source_review_context
@@ -32,6 +32,134 @@ from tests.integration.test_local_source_import import CUE, decision, inventory
 
 TEXT = 'EVENT: Example Festival\nDATE: 2024-06-02\nVENUE: Example Hall\nLABEL: Example Records\nQUALITY: 320 kbps\n01. Artist - Opening\n02. Other - Finale\n<script>alert("synthetic")</script>\n'
 HX = {"HX-Request": "true", "Origin": "http://test"}
+
+
+def _primary_text(html: str) -> str:
+    """Closed native disclosures keep diagnostic identifiers out of the main summary."""
+    soup = BeautifulSoup(html, "html.parser")
+    for details in soup.select("details"):
+        details.decompose()
+    return soup.get_text(" ", strip=True)
+
+
+@pytest.mark.parametrize("kind", ["release_metadata", "tracklist", "cue"])
+async def test_workspace_source_summary_keeps_exact_version_in_details(client: AsyncClient, session: AsyncSession, kind: str) -> None:
+    media, companion, raw = await inventory(session, CUE if kind == "cue" else TEXT, "cue" if kind == "cue" else "nfo")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    observation_id = imported.release_observation_id if kind == "release_metadata" else imported.tracklist_observation_id
+    observation = await session.get(ProviderSourceObservation, observation_id)
+    assert observation is not None
+    response = await client.get(f"/pipeline/local-source-sets?kind={kind}", headers=HX)
+    soup = BeautifulSoup(response.text, "html.parser")
+    row = next(row for row in soup.select("tbody tr") if str(observation_id) in row.get_text())
+    primary = _primary_text(str(row))
+    assert "Companion file" in primary and "Current source version" in primary and "Awaiting review" in primary
+    assert str(observation_id) not in primary and companion.sha256_hash not in primary and observation.parser_version not in primary
+    details = row.select_one("details")
+    assert details is not None and not details.has_attr("open")
+    assert str(observation_id) in details.get_text() and companion.sha256_hash in details.get_text()
+    assert observation.parser_version in details.get_text() and "full" in details.get_text()
+    assert row.find("a", href=f"/files/{media.id}#companion-sources") is not None
+    if kind == "cue":
+        # The CUE workspace contains separate release-info and tracklist interpretations.
+        for identifier in (imported.tracklist_observation_id, imported.release_observation_id):
+            interpretation = next(row for row in soup.select("tbody tr") if str(identifier) in row.get_text())
+            assert "CUE source" in _primary_text(str(interpretation))
+            assert "CUE tracklist" not in _primary_text(str(interpretation))
+
+
+@pytest.mark.parametrize("state", ["stale", "missing", "unknown_binding"])
+async def test_selected_source_warning_visible_on_workspace_and_both_record_surfaces(client: AsyncClient, session: AsyncSession, state: str) -> None:
+    from sqlalchemy import select
+
+    media, companion, raw = await inventory(session)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id), actor="reviewer")
+    if state == "stale":
+        companion.sha256_hash = "b" * 64
+    elif state == "missing":
+        companion.missing_at = datetime.now(UTC)
+    else:
+        selection = await session.scalar(select(ProviderRecordingSelection).where(ProviderRecordingSelection.media_id == media.id))
+        assert selection is not None
+        selection.target_mapping = None
+    await session.flush()
+    expected = {"stale": "Source version changed", "missing": "Source file missing", "unknown_binding": "Recording binding not verified"}[state]
+    for path in ("/pipeline/local-source-sets?kind=tracklist", f"/files/{media.id}", f"/record/{media.id}"):
+        response = await client.get(path, headers=HX)
+        soup = BeautifulSoup(response.text, "html.parser")
+        container = soup.select_one("tbody tr") if path.startswith("/pipeline") else soup.select_one(f"#tracklist-review-{media.id}")
+        assert container is not None
+        assert expected in _primary_text(str(container))
+        assert "Current source version" not in _primary_text(str(container))
+        assert str(imported.tracklist_observation_id) in container.select_one("details").get_text()
+    if state != "unknown_binding":
+        detail = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
+        assert expected in _primary_text(detail.text)
+        assert BeautifulSoup(detail.text, "html.parser").find("button", string="Use this tracklist") is None
+
+
+async def test_partial_source_warning_precedes_valid_section_choice_and_selected_record_summary(client: AsyncClient, session: AsyncSession) -> None:
+    text = "Part 1: Broken\n01. Artist - First\n01. Artist - Duplicate\nPart 2: Complete\n01. Other - Closing\n"
+    media, companion, raw = await inventory(session, text)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    assert imported.tracklist_status == "incomplete"
+    detail = await client.get(f"/files/{media.id}/companion-observations/{imported.tracklist_observation_id}", headers=HX)
+    soup = BeautifulSoup(detail.text, "html.parser")
+    assert "Partial extraction" in _primary_text(detail.text)
+    version = soup.find("summary", string="Version details and review evidence").parent
+    assert str(imported.tracklist_observation_id) in version.get_text()
+    assert companion.sha256_hash in version.get_text() and media.sha256_hash in version.get_text()
+    assert str(imported.tracklist_observation_id) not in _primary_text(detail.text)
+    form = soup.select_one("[data-source-decision]")
+    assert form is not None and form.find("button", string="Use this tracklist") is not None
+    values = {field["name"]: field.get("value", "") for field in form.select('input[type="hidden"]')}
+    values.update(action="select", text_section_ordinal="2")
+    selected = await client.post(form["hx-post"], data=values, headers=HX)
+    assert "Source selected" in selected.text
+    for path in (f"/files/{media.id}", f"/record/{media.id}"):
+        record = BeautifulSoup((await client.get(path)).text, "html.parser")
+        tracks = record.select_one(f"#tracklist-review-{media.id}")
+        assert "Partial extraction" in _primary_text(str(tracks))
+        assert "Selected tracklist · 1 tracks" in _primary_text(str(tracks))
+        assert "Stored tracklist" not in _primary_text(str(tracks))
+        assert "Closing" in tracks.get_text() and "Duplicate" not in tracks.get_text()
+
+
+async def test_cue_preview_retains_pin_in_details_and_refuses_stale_source(client: AsyncClient, session: AsyncSession) -> None:
+    from tests.integration.test_selected_source_consumers import CUE as TIMED_CUE
+
+    media, companion, raw = await inventory(session, TIMED_CUE, "cue")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    response = await client.get(f"/cue/files/{media.id}/preview", headers=HX)
+    soup = BeautifulSoup(response.text, "html.parser")
+    primary = _primary_text(response.text)
+    assert "Selected tracklist · current source version" in primary
+    assert str(imported.tracklist_observation_id) not in primary and companion.sha256_hash not in primary
+    assert "INDEX 01 00:01:01" in primary
+    details = soup.select_one("details")
+    assert str(imported.tracklist_observation_id) in details.get_text() and companion.sha256_hash in details.get_text()
+    companion.sha256_hash = "b" * 64
+    await session.flush()
+    stale = await client.get(f"/cue/files/{media.id}/preview", headers=HX)
+    assert "Selected source is stale" in stale.text
+    assert "Generate reviewed CUE artifact" not in stale.text and "<pre" not in stale.text
+
+
+async def test_unknown_extraction_is_visible_without_claiming_partial_or_complete(client: AsyncClient, session: AsyncSession) -> None:
+    media, _companion, raw = await inventory(session)
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    observation = await session.get(ProviderSourceObservation, imported.tracklist_observation_id)
+    assert observation is not None
+    observation.payload = {**observation.payload, "completeness": None}
+    await session.flush()
+    for path in ("/pipeline/local-source-sets?kind=tracklist", f"/files/{media.id}/companion-observations/{observation.id}"):
+        response = await client.get(path, headers=HX)
+        primary = _primary_text(response.text)
+        assert "Extraction completeness unknown" in primary
+        assert "Partial extraction" not in primary
+        assert "complete section" not in primary
 
 
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])

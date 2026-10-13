@@ -1,13 +1,9 @@
 {# Per-file retry (the Files-matrix row button) sets `toast`: the ack goes to the shell's #toast-container
-   as an auto-dismissing OOB toast. An inline span inside a table row overlapped the neighbouring cells. The bulk
-   cards leave `toast` unset and keep the inline span. #}
-{% macro ack(cls) %}
-{% if toast %}
-<div hx-swap-oob="beforeend:#toast-container"><div class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>{{ caller() }}</div></div>
-{% else %}
-<span class="text-sm {{ cls }} font-medium">{{ caller() }}</span>
-{% endif %}
-{% endmacro %}
+   as an OOB toast, because an inline span inside a table row overlapped the neighbouring cells. A
+   SUCCESS toast auto-dismisses after 5s; the "No active agent" FAILURE toast is role="alert" and stays
+   until the operator dismisses it (phaze-wzfzo.10). The bulk cards leave `toast` unset and keep the
+   inline span. #}
+{% import "pipeline/partials/_retry_ack.html" as retry_ack %}
 {# 81-06 (FAIL-03): HTMX ack for the "Retry failed" bulk action on the Metadata Health card.
 
    Stage-labelled twin of retry_failed_response.html (analyze). Renders one of three branches
@@ -17,10 +13,24 @@
 
    D-11: the retry LEAVES the failure row and re-enqueues; put_metadata's clear-on-success wipes
    failed_at only when real metadata lands, so this ack never implies the row was cleared. #}
+{% if toast %}
 {% if no_active_agent %}
-{% call ack("text-warn") %}No active agent — nothing re-queued.{% endcall %}
+{{ retry_ack.failure('No active agent — nothing re-queued.', 'warn', toast) }}
 {% elif count == 0 %}
-{% call ack("text-muted") %}No failed files to retry.{% endcall %}
+{{ retry_ack.success('No failed files to retry.', toast) }}
 {% else %}
-{% call ack("text-ok") %}Re-queued {{ count | thousands }} failed file(s) for metadata extraction.{% endcall %}
+{{ retry_ack.success('Re-queued ' ~ (count | thousands) ~ ' failed file(s) for metadata extraction.', toast) }}
+{% endif %}
+{% elif no_active_agent %}
+<span class="text-sm text-warn font-medium">
+    No active agent — nothing re-queued.
+</span>
+{% elif count == 0 %}
+<span class="text-sm text-muted font-medium">
+    No failed files to retry.
+</span>
+{% else %}
+<span class="text-sm text-ok font-medium">
+    Re-queued {{ count | thousands }} failed file(s) for metadata extraction.
+</span>
 {% endif %}

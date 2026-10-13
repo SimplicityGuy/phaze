@@ -748,6 +748,7 @@ async def retry_analysis_failed_file(
     # this surface never gets (files_table_view.html has NO self-poll by design). Re-derive the
     # bucket AFTER the commit and OOB-push the single Files-matrix pill this write invalidated,
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
-    buckets = await get_file_stage_buckets(session, file_id)
+    stage_history: dict[str, bool] = {}
+    buckets = await get_file_stage_buckets(session, file_id, history=stage_history)
     ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False, toast=True)
-    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets))
+    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets, file_type=file.file_type, missing=file.missing_at, history=stage_history))

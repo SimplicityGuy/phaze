@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from phaze.services.review_diff import changed_segments
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.utils.humanize import format_count, format_duration
 
@@ -155,6 +156,7 @@ def register_format_filters(env: Environment) -> None:
     """
     env.filters["duration"] = format_duration
     env.filters["thousands"] = format_count
+    env.filters["changed_segments"] = changed_segments
 
 
 __all__ = [

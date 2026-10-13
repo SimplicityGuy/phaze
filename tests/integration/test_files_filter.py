@@ -19,8 +19,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlencode, urlsplit
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 
 from phaze.models.file import FileRecord
@@ -34,6 +36,53 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(
+    "view_state",
+    [
+        {"stage": "", "sort": "file", "order": "asc"},
+        {"stage": "metadata", "sort": "type", "order": "desc"},
+        {"stage": "analyze", "scope": "media", "sort": "analyze", "order": "desc"},
+    ],
+)
+async def test_common_filter_chips_match_select_contract_without_form_duplicates(client: AsyncClient, view_state: dict[str, str]) -> None:
+    """Each real chip sends exactly the select form's axes, preserving scope/sort and resetting page."""
+    query = {**view_state, "page": "2", "page_size": "20", "bucket": "done"}
+    headers = {"HX-Request": "true", "HX-Target": "files-table-view"}
+    response = await client.get(f"/s/files?{urlencode(query)}", headers=headers)
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.text, "html.parser")
+    form = soup.find("form", id="status-filter-bar")
+    assert form is not None
+    selected = {str(el["name"]): str(el.get("value", "")) for el in form.select("input[name]")}
+    for select in form.select("select[name]"):
+        option = select.find("option", selected=True)
+        assert option is not None
+        selected[str(select["name"])] = str(option.get("value", ""))
+    chips = soup.select("[aria-label='Common file status filters'] a")
+    assert len(chips) == 3
+    for chip, bucket in zip(chips, ("failed", "in_flight", "skipped"), strict=True):
+        assert chip.find_parent("form") is None
+        assert chip["href"] == chip["hx-get"]
+        assert chip["hx-target"] == "#files-table-view"
+        assert chip["hx-swap"] == "innerHTML"
+        assert chip["hx-push-url"] == "true"
+        assert chip["aria-current"] == "false"
+        assert "focus-visible:ring-2" in chip["class"]
+        url = urlsplit(str(chip["href"]))
+        assert url.path == "/s/files"
+        assert parse_qs(url.query, keep_blank_values=True) == {key: [value] for key, value in {**selected, "bucket": bucket}.items()}
+        filtered = await client.get(str(chip["href"]), headers=headers)
+        assert filtered.status_code == 200
+        filtered_soup = BeautifulSoup(filtered.text, "html.parser")
+        assert filtered_soup.find(id=f"files-filter-{bucket}")["aria-current"] == "true"
+        assert filtered_soup.select_one("#filter-bucket option[selected]")["value"] == bucket
+        assert filtered_soup.find(id="files-table-view") is None
+        assert filtered_soup.select_one("[aria-label='Files row density']") is not None
+    for control in soup.select("[hx-get], input[name]"):
+        assert "density" not in str(control.get("hx-get", ""))
+        assert control.get("name") != "density"
 
 
 def _make_file(marker: str) -> FileRecord:

@@ -17,7 +17,7 @@
    WHAT THAT COST, measured in a browser (tests/browser/test_changes_facet_selection_wire.py):
    the operator could not DESELECT a row by unchecking it and switching facet tab. The uncheck
    rewrote the attributes, the tab shipped the stale server-rendered `selected=`, and the list
-   came back with the row re-checked and "Approve selected eligible" re-enabled -- on EVERY
+   came back with the row re-checked and "Preview eligible selection" re-enabled -- on EVERY
    switch, unboundedly, because each swap re-renders the tabs from the stale value it was just
    handed. Three consecutive rounds measured; it clears only by accident, when the destination
    tab happens not to contain the row (`x-init`'s visible-filter drops it).
@@ -60,34 +60,185 @@
 <div id="{{ changes_list_id }}" class="px-4 py-4 sm:px-6"
      x-data='{
         selected: {{ changes_selected | tojson }},
+        threshold: {{ changes_threshold | default(90) }},
+        previewGeneration: 0,
+        previewScope: "filtered",
+        previewSelection: {{ changes_selected | join(',') | tojson }},
+        previewReady: false,
+        previewLoading: true,
+        previewFailed: false,
+        invalidatePreview() {
+            this.previewGeneration++;
+            this.previewReady = false;
+            this.previewLoading = false;
+            this.previewFailed = false;
+            const result = this.$root.querySelector("#changes-approval-preview");
+            if (result) result.replaceChildren();
+        },
+        isPreview(event) {
+            return event.detail.elt && event.detail.elt.closest("[data-bulk-preview-request]");
+        },
+        previewConfig(event) {
+            if (!this.isPreview(event)) return;
+            this.previewGeneration++;
+            this.previewScope = event.detail.parameters.scope || "selected";
+            event.detail.parameters.threshold = this.threshold;
+            event.detail.parameters.scope = this.previewScope;
+            event.detail.parameters.preview_generation = this.previewGeneration;
+            const url = new URL(event.detail.path, window.location.origin);
+            url.searchParams.set("threshold", this.threshold);
+            if (this.selected.length) url.searchParams.set("selected", this.selected.join(",")); else url.searchParams.delete("selected");
+            event.detail.path = url.pathname + url.search;
+        },
+        previewStarted(event) {
+            if (!this.isPreview(event)) return;
+            this.previewReady = false;
+            this.previewLoading = true;
+            this.previewFailed = false;
+            const result = this.$root.querySelector("#changes-approval-preview");
+            if (result) result.replaceChildren();
+        },
+        previewBeforeSwap(event) {
+            if (!event.detail.target || event.detail.target.id !== "changes-approval-preview") return;
+            const parameters = event.detail.requestConfig.parameters;
+            if (document.getElementById(this.$root.id) !== this.$root || Number(parameters.preview_generation) !== this.previewGeneration || Number(parameters.threshold) !== this.threshold || parameters.scope !== this.previewScope) {
+                event.detail.shouldSwap = false;
+                return;
+            }
+            this.previewReady = event.detail.xhr.status >= 200 && event.detail.xhr.status < 300;
+        },
+        previewFinished(event) {
+            if (!this.isPreview(event)) return;
+            const parameters = event.detail.requestConfig.parameters;
+            if (Number(parameters.preview_generation) !== this.previewGeneration || Number(parameters.threshold) !== this.threshold) return;
+            this.previewLoading = false;
+            this.previewFailed = !event.detail.successful;
+            if (this.previewFailed) this.previewReady = false;
+        },
+        thresholdChanged() {
+            this.invalidatePreview();
+            this.sync();
+        },
+        focusedRow: null,
+        shortcut: null,
+        triageRequest: null,
+        reviewRows() {
+            return Array.from(this.$root.querySelectorAll("[data-review-row]"));
+        },
+        markRow(row) {
+            if (!row) return;
+            this.focusedRow = row.id;
+            this.reviewRows().forEach(item => item.setAttribute("data-review-focused", String(item.id === row.id)));
+        },
+        focusRow(row) {
+            if (!row) return;
+            this.markRow(row);
+            row.focus({ preventScroll: true });
+            row.scrollIntoView({ block: "nearest" });
+        },
+        triage(event) {
+            if (event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || this.triageRequest) return;
+            if (event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) return;
+            if (Array.from(document.querySelectorAll("dialog[open], [role=dialog], [aria-modal=true]")).some(el => el.getClientRects().length && getComputedStyle(el).visibility !== "hidden")) return;
+            if (this.reviewRows().some(row => row.querySelector("input[name=proposed]"))) return;
+            const rows = this.reviewRows();
+            const row = rows.find(item => item.id === this.focusedRow) || rows[0];
+            if (!row) return;
+            const key = event.key.toLowerCase();
+            if (key === "j" || key === "k") {
+                event.preventDefault();
+                this.focusRow(rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + (key === "j" ? 1 : -1)))]);
+                return;
+            }
+            const action = { a: "approve", e: "edit", s: "skip", z: "undo" }[key];
+            if (!action) return;
+            const button = row.querySelector(`[data-review-action="${action}"]`);
+            if (!button || button.matches(":disabled") || !button.getClientRects().length) return;
+            event.preventDefault();
+            this.markRow(row);
+            this.shortcut = row.id;
+            button.click();
+            this.shortcut = null;
+        },
+        triageStarted(event) {
+            const row = event.detail.elt.closest("[data-review-row]");
+            if (!row || row.id !== this.shortcut) return;
+            const rows = this.reviewRows();
+            const next = rows[rows.indexOf(row) + 1];
+            this.triageRequest = { id: row.id, next: next ? next.id : row.id };
+        },
+        triageFinished(event) {
+            if (!this.triageRequest) return;
+            const row = event.detail.elt.closest("[data-review-row]");
+            if (!row || row.id !== this.triageRequest.id) return;
+            if (!event.detail.successful) {
+                this.focusRow(this.$root.querySelector(`[id="${this.triageRequest.id}"]`));
+                this.triageRequest = null;
+            }
+        },
+        triageSettled(event) {
+            if (!this.triageRequest || !event.detail.xhr || event.detail.xhr.status < 200 || event.detail.xhr.status >= 300) return;
+            if (event.detail.elt.id !== this.triageRequest.id) return;
+            this.focusRow(this.$root.querySelector(`[id="${this.triageRequest.next}"]`));
+            this.triageRequest = null;
+        },
         visible: [{% for p in changes_proposals %}{{ p.id | string | tojson }}{% if not loop.last %},{% endif %}{% endfor %}],
         reprocess(element) {
             if (window.htmx) window.htmx.process(element);
         },
         sync() {
             const value = this.selected.join(",");
+            if (value !== this.previewSelection) {
+                this.previewSelection = value;
+                this.invalidatePreview();
+            }
             const current = new URL(window.location.href);
             if (value) current.searchParams.set("selected", value); else current.searchParams.delete("selected");
+            current.searchParams.set("threshold", this.threshold);
             history.replaceState(history.state, "", current);
             this.$root.querySelectorAll("[data-changes-nav]").forEach((element) => {
                 const url = new URL(element.getAttribute("href") || element.getAttribute("hx-get"), window.location.origin);
                 if (value) url.searchParams.set("selected", value); else url.searchParams.delete("selected");
+                url.searchParams.set("threshold", this.threshold);
                 element.setAttribute("href", url.pathname + url.search);
                 element.setAttribute("hx-get", url.pathname + url.search);
                 this.reprocess(element);
             });
-            const form = this.$root.querySelector("#changes-bulk-form");
-            if (form) {
+            this.$root.querySelectorAll("#changes-bulk-form, [data-bulk-undo-form]").forEach((form) => {
                 const action = new URL(form.getAttribute("hx-patch"), window.location.origin);
                 if (value) action.searchParams.set("selected", value); else action.searchParams.delete("selected");
+                action.searchParams.set("threshold", this.threshold);
                 form.setAttribute("hx-patch", action.pathname + action.search);
                 this.reprocess(form);
-            }
+            });
+            this.$root.querySelectorAll("[data-review-row] [hx-patch], [data-review-row] [hx-post]").forEach((element) => {
+                const verb = element.hasAttribute("hx-patch") ? "hx-patch" : "hx-post";
+                const url = new URL(element.getAttribute(verb), window.location.origin);
+                url.searchParams.set("threshold", this.threshold);
+                element.setAttribute(verb, url.pathname + url.search);
+                this.reprocess(element);
+            });
         }
      }'
-      x-init="selected = selected.filter(id => visible.includes(id)); $nextTick(() => sync())">
+      x-init="selected = selected.filter(id => visible.includes(id)); $watch('selected', () => sync()); $nextTick(() => { sync(); markRow(reviewRows()[0]); })"
+      @keydown.window="triage($event)"
+      @focusin="markRow($event.target.closest('[data-review-row]'))"
+      @htmx:config-request.camel="previewConfig($event)"
+      @htmx:before-request.camel="triageStarted($event); previewStarted($event)"
+      @htmx:before-swap.camel="previewBeforeSwap($event)"
+      @htmx:after-request.camel="triageFinished($event); previewFinished($event)"
+      @htmx:after-settle.camel="triageSettled($event)">
+    <p class="mb-4 text-xs text-muted" data-review-hotkeys>Keyboard: J/K move · A approve · E edit · S skip · Z undo. Shortcuts pause while editing or a dialog is open.</p>
     {% if changes_toast is defined and changes_toast %}
-    <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
+    {{ ui.action_status(changes_toast) }}
+    {% if bulk_undo_tokens | default([]) %}
+    <form data-bulk-undo-form hx-patch="/proposals/bulk/undo?{{ changes_bulk_query }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML"
+          hx-confirm="Return only unchanged approvals from this batch to pending? Executed or edited proposals will be skipped.">
+        <input type="hidden" name="threshold" value="{{ changes_threshold | default(90) }}" :value="threshold">
+        {% for token in bulk_undo_tokens %}<input type="hidden" name="review_tokens" value="{{ token }}">{% endfor %}
+        <button type="submit" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'sm', 'mb-4') }}">Undo this approval batch</button>
+    </form>
+    {% endif %}
     {% endif %}
     <nav class="{{ ui.tab_nav_class }} mb-4" aria-label="Changes Review filters">
         {% set tabs = [
@@ -107,12 +258,30 @@
         {% endfor %}
     </nav>
 
+    <section aria-labelledby="bulk-threshold-heading" class="mb-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+        <h2 id="bulk-threshold-heading" class="text-sm font-semibold">Preview bulk approval</h2>
+        <form data-bulk-preview-request hx-post="/proposals/bulk/preview?{{ changes_bulk_query }}" hx-target="#changes-approval-preview" hx-swap="innerHTML"
+              hx-trigger="load, input delay:180ms, submit" hx-sync="#changes-approval-preview:replace" hx-disabled-elt="find button">
+            <input type="hidden" name="scope" value="filtered">
+            <label for="changes-confidence-threshold" class="mt-2 block text-sm">Minimum confidence: <output for="changes-confidence-threshold" x-text="threshold + `%`">{{ changes_threshold }}%</output></label>
+            <input id="changes-confidence-threshold" name="threshold" type="range" min="90" max="99" step="1" value="{{ changes_threshold }}"
+                   x-model.number="threshold" @input="thresholdChanged()" class="mt-2 w-full accent-blue-600 motion-reduce:transition-none">
+            <p class="mt-1 text-xs text-muted">Only pending, collision-free filename and destination proposals qualify. Review the exact list below before approving. Tag writes are separate.</p>
+            <button type="submit" disabled data-hx-guard class="{{ ui.btn('secondary', 'sm', 'mt-2') }}">Refresh preview</button>
+        </form>
+        <p role="status" aria-live="polite" x-show="previewLoading" class="mt-2 text-xs text-muted">Updating preview… Approval waits for the current threshold.</p>
+        <p role="alert" x-show="previewFailed" x-cloak class="mt-2 text-sm">Preview unavailable. Refresh the preview or reload to review current proposals; approval remains unavailable.</p>
+        <p x-show="!previewReady && !previewLoading && !previewFailed" x-cloak class="mt-2 text-xs text-muted">Selection or threshold changed. Refresh the preview to review current eligibility.</p>
+        <div id="changes-approval-preview" aria-live="polite"></div>
+    </section>
+
     <form id="changes-bulk-form" hx-patch="/proposals/bulk?{{ changes_view.query() }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML">
+        <input type="hidden" name="threshold" value="{{ changes_threshold | default(90) }}" :value="threshold">
         <section aria-labelledby="proposal-changes-heading" class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
             <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
                 <div>
                     <h2 id="proposal-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Filename + Destination</h2>
-                    <p class="mt-1 text-xs text-muted ">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
+                    <p class="mt-1 text-xs text-muted ">Selected preview accepts only rows still pending and at or above the active confidence threshold. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
                     <p class="mt-1 text-xs text-muted "><span x-text="selected.length">0</span> selected on this reviewed page.</p>
                 </div>
                 <!-- phaze-tckiy: #changes-bulk-form declares no method/action either, and hx-patch is
@@ -126,7 +295,7 @@
                      owned by Alpine's `:disabled="selected.length === 0"`. Alpine binds during the
                      microtask after the swap inserts these nodes; shell.html's guard listener runs
                      from htmx's deferred settle task (defaultSettleDelay, 20ms) after that, so its
-                     `btn.disabled = false` would land LAST and leave "Approve selected eligible"
+                     `btn.disabled = false` would land LAST and leave "Preview eligible selection"
                      clickable with nothing selected. `data-hx-guard-keep` would avoid that clobber
                      but hand enablement back to Alpine, which knows nothing about htmx readiness --
                      and whenever the swapped-in URL carries ?selected= the list comes back with a
@@ -144,11 +313,10 @@
                      attribute), so the guard adds no new failure mode of its own. `border-0 p-0` are
                      belt-and-braces over Tailwind preflight's fieldset reset. -->
                 <fieldset :disabled="selected.length === 0" class="flex min-w-0 flex-wrap gap-2 border-0 p-0">
-                    <button type="submit" name="action" value="approve_eligible" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('primary', 'md') }}">Approve selected eligible</button>
+                    <button type="button" data-selected-preview data-bulk-preview-request hx-post="/proposals/bulk/preview?{{ changes_bulk_query }}" hx-target="#changes-approval-preview" hx-swap="innerHTML" hx-sync="#changes-approval-preview:replace" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('primary', 'md') }}">Preview eligible selection</button>
                     <button type="submit" name="action" value="reject" disabled data-hx-guard hx-disabled-elt="this" class="{{ ui.btn('secondary', 'md') }}">Reject selected pending</button>
                 </fieldset>
             </div>
-            <div id="changes-bulk-result" aria-live="polite"></div>
             {% if changes_proposals %}
                 {% for p in changes_proposals %}
                 <div class="flex items-start gap-3 border-b border-gray-200 px-4 pt-3 dark:border-phaze-border">
@@ -163,17 +331,17 @@
                             diff_label="Filename", before=p.filename, after=p.proposed_filename,
                             secondary_label="Destination", secondary_before=p.current_path,
                             secondary_after=((p.proposed_path ~ "/" ~ p.proposed_filename) if p.proposed_path else (p.current_path.rsplit("/", 1)[0] ~ "/" ~ p.proposed_filename)),
-                             approve_url="/proposals/" ~ p.id ~ "/approve", skip_url="/proposals/" ~ p.id ~ "/reject",
-                            undo_url="/proposals/" ~ p.id ~ "/undo", edit_url="/proposals/" ~ p.id ~ "/edit",
+                             approve_url="/proposals/" ~ p.id ~ "/approve" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), skip_url="/proposals/" ~ p.id ~ "/reject" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""),
+                            undo_url="/proposals/" ~ p.id ~ "/undo" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), edit_url="/proposals/" ~ p.id ~ "/edit" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""),
                              edit_facet="filename", row_state=("executed" if p.raw_status == "executed" else ("failed" if p.raw_status == "failed" else ("pending" if p.status == "needs_review" else ("skipped" if p.status == "rejected" else p.status)))),
-                             updated_at=p.updated_at, confidence=p.confidence, warnings=p.warnings, conflicts=p.conflicts,
+                             updated_at=p.updated_at, confidence=p.confidence, warnings=p.other_warnings, conflicts=p.conflicts,
+                             live_bulk_eligibility=true, bulk_collision=(p.conflicts | length > 0), bulk_threshold=(changes_threshold | default(90)),
                              show_approve=not p.conflicts,
                             consequences=("Rename in place on the owning file server." if not p.proposed_path else "Rename and move on the owning file server; execution remains separately gated."),
-                            eligibility_reason=("Eligible for selected bulk approval." if p.bulk_eligible else ("Individual approval only: confidence is below 90% or unavailable." if p.status == "needs_review" else "Disabled: this decision is already resolved.")) %}
+                            eligibility_reason=("Eligible for selected bulk approval." if p.bulk_eligible else ("Individual approval only: confidence is below " ~ (changes_threshold | default(90)) ~ "% or unavailable." if p.status == "needs_review" else "Disabled: this decision is already resolved.")) %}
                         {% include "pipeline/partials/_diff_row.html" %}
                     {% endwith %}
                     </div>
-                    <span id="changes-eligibility-{{ p.id }}" class="sr-only">{{ "Bulk eligible" if p.bulk_eligible else "Bulk excluded or disabled" }}</span>
                 </div>
                 {% endfor %}
             {% else %}
@@ -190,13 +358,14 @@
             {% endif %}
         </section>
     </form>
+    <div id="changes-bulk-result" aria-live="polite"></div>
 
     {% if changes_view.status in ("all", "needs_review", "blocked") %}
     <section aria-labelledby="tag-changes-heading" class="mt-4 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
         <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
             <div>
                 <h2 id="tag-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Tag Changes</h2>
-                <p class="mt-1 text-xs text-muted ">Available only after execution. Approval dispatches a reversible write and records before/after snapshots, verification discrepancies, and errors in the audit log.</p>
+                <p class="mt-1 text-xs text-muted ">Available only after execution. Approval dispatches a reversible write. Each file's History records its tag-write and undo events alongside rename/move execution; Audit lists rename/move execution only.</p>
             </div>
             <form hx-post="/tags/bulk-write-no-discrepancies" hx-target="#changes-bulk-result" hx-swap="innerHTML" hx-confirm="Approve the eligible tag changes visible on this reviewed page?" hx-disabled-elt="find button">
                 {% for f in changes_tag_rows if f.bulk_eligible %}<input type="hidden" name="review_tokens" value="{{ f.review_token }}">{% endfor %}
@@ -219,12 +388,13 @@
                 {% if f.has_blanking %}{% set _ = tag_warnings.append("An existing tag would be blanked; excluded from bulk approval.") %}{% endif %}
                 {% if f.discrepancies %}{% set _ = tag_warnings.append("Verification discrepancy: " ~ f.discrepancies) %}{% endif %}
                 {% if f.error_message %}{% set _ = tag_warnings.append("Last error: " ~ f.error_message) %}{% endif %}
+                <p class="px-4 py-2 text-xs"><a href="/files/{{ f.file_id }}#history" class="text-link hover:underline">{{ f.filename }} — History</a></p>
                 {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename,
                         profile=f.set_profile,
                         diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
                          approve_url="/tags/" ~ f.file_id ~ "/write", approve_method="post",
                          review_token=f.review_token,
-                        undo_url="/tags/" ~ f.file_id ~ "/undo", undo_method="post",
+                        undo_url="/tags/" ~ f.file_id ~ "/undo" ~ (("?threshold=" ~ changes_threshold) if (changes_threshold | default(90)) != 90 else ""), undo_method="post",
                         show_edit=false, show_skip=false, show_undo=f.has_prior_write,
                          row_state=("queued" if f.latest_status == "queued" else ("pending" if f.status == "needs_review" else "blocked")), warnings=tag_warnings,
                         consequences=(f.changed_count ~ " tag field" ~ ("s" if f.changed_count != 1 else "") ~ " will be written on the owning file server. The write is audited and reversible."),
@@ -233,8 +403,9 @@
                 {% endwith %}
             {% endfor %}
         {% else %}
-            {{ ui.state('empty', 'No tag decisions match this filter', 'Completed tag writes remain available in Audit.') }}
+            {{ ui.state('empty', 'No tag decisions match this filter', "Completed tag writes are outside this decision queue. Open the file's History using the links below.") }}
         {% endif %}
     </section>
     {% endif %}
+    {% include "record/_tagwrite_history_links.html" %}
 </div>

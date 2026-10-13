@@ -14,9 +14,14 @@ exactly) and asserts the UI-SPEC five-bucket token contract:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+import uuid
 
+from bs4 import BeautifulSoup
 from fastapi.templating import Jinja2Templates
+import pytest
 from starlette.requests import Request
 
 from phaze.web.template_globals import register_format_filters
@@ -44,11 +49,11 @@ def _fake_request() -> Request:
     return Request(scope=scope)  # type: ignore[arg-type]
 
 
-def _render_pill(*, stage_label: str, bucket: str) -> str:
+def _render_pill(*, stage_label: str, bucket: str, variant: str | None = None) -> str:
     response = _templates.TemplateResponse(
         request=_fake_request(),
         name="pipeline/partials/_stage_pill.html",
-        context={"stage_label": stage_label, "bucket": bucket},
+        context={"stage_label": stage_label, "bucket": bucket, **({"pill_variant": variant} if variant is not None else {})},
     )
     return response.body.decode()
 
@@ -68,6 +73,8 @@ def _render_matrix(*, buckets: dict[str, str] | None = None, legend: bool = Fals
 _BUCKET_CASES = [
     ("done", "✓", "done", "Meta: done", "bg-green-100", "text-ok"),
     ("in_flight", "●", "in flight", "Meta: in flight", "bg-blue-100", "text-info"),
+    ("queued", "◌", "queued", "Meta: queued", "bg-slate-100", "text-slate-700"),
+    ("missing", "✕", "missing", "Meta: file missing on disk", "bg-red-100", "text-danger"),
     ("not_started", "—", "not started", "Meta: not started", "bg-gray-100", "text-muted"),
     ("failed", "✕", "failed", "Meta: failed", "bg-red-100", "text-danger"),
     ("skipped", "⊘", "skipped", "Meta: skipped (force-completed)", "bg-violet-100", "dark:text-violet-300"),
@@ -173,11 +180,11 @@ def test_matrix_omits_tracklist() -> None:
     assert "racklist" not in html
 
 
-def test_matrix_legend_renders_all_five_buckets() -> None:
+def test_matrix_legend_renders_all_seven_buckets() -> None:
     """With legend=True the one-line legend names all five buckets."""
     buckets = dict.fromkeys(("metadata", "analyze", "propose", "review", "apply"), "done")
     html = _render_matrix(buckets=buckets, legend=True)
-    for fragment in ("✓ done", "● in-flight", "— not-started", "✕ failed", "⊘ skipped"):
+    for fragment in ("✓ done", "● in-flight", "◌ queued", "— not-started", "✕ failed", "! / ✕ missing on disk", "⊘ skipped"):
         assert fragment in html, f"legend missing {fragment!r}"
 
 
@@ -187,3 +194,96 @@ def test_matrix_legend_only_renders_legend_without_pills() -> None:
     assert "✓ done" in html
     # No pills -> no aria-labels.
     assert "aria-label=" not in html
+
+
+@pytest.mark.parametrize(("bucket", "glyph", "word", "aria", "tint", "tone"), _BUCKET_CASES)
+@pytest.mark.parametrize("variant", ["word", "glyph"])
+def test_all_seven_buckets_preserve_accessible_meaning_in_both_variants(
+    bucket: str, glyph: str, word: str, aria: str, tint: str, tone: str, variant: str
+) -> None:
+    pill = BeautifulSoup(_render_pill(stage_label="Meta", bucket=bucket, variant=variant), "html.parser").select_one("[aria-label]")
+    assert pill is not None
+    assert pill["aria-label"] == aria
+    assert tint in pill["class"] and tone in pill["class"]
+    expected_glyph = "!" if bucket == "missing" and variant == "glyph" else glyph
+    assert pill.select_one('[aria-hidden="true"]').get_text() == expected_glyph
+    if variant == "glyph":
+        assert pill.get_text(strip=True) == expected_glyph
+        assert pill["title"] == aria
+        assert pill["data-status-variant"] == "glyph"
+    else:
+        assert word in pill.get_text()
+        assert not pill.has_attr("data-status-variant")
+
+
+@pytest.mark.parametrize("bucket", [case[0] for case in _BUCKET_CASES] + [""])
+def test_word_variant_is_byte_identical_to_pre_c1_render(bucket: str) -> None:
+    baseline = json.loads((TEMPLATES_DIR.parents[2] / "tests/fixtures/stage_pill_default_sha256.json").read_text())
+    for variant in (None, "word"):
+        assert hashlib.sha256(_render_pill(stage_label="Meta", bucket=bucket, variant=variant).encode()).hexdigest() == baseline["renders"][bucket]
+
+
+def test_legend_is_accessible_and_names_each_bucket_once() -> None:
+    legend = BeautifulSoup(_render_matrix(legend_only=True), "html.parser").select_one("[data-stage-legend]")
+    assert legend is not None
+    assert not legend.has_attr("aria-hidden") and legend.find_parent(attrs={"aria-hidden": "true"}) is None
+    assert {item["data-stage-bucket"] for item in legend.select("[data-stage-bucket]")} == {case[0] for case in _BUCKET_CASES}
+    assert len(legend.select("[data-stage-bucket]")) == 7
+    missing = legend.select_one('[data-stage-bucket="missing"]')
+    assert "!" in missing.get_text() and "✕" in missing.get_text()
+
+
+@pytest.mark.parametrize("bucket", [case[0] for case in _BUCKET_CASES])
+def test_namespaced_stage_oob_matches_files_and_record_variants(bucket: str) -> None:
+    from phaze.routers.pipeline._common import _stage_pill_oob
+
+    file_id = uuid.uuid4()
+    for prefix, surface, variant in (("files-stage-pill", "table", "glyph"), ("files-mobile-stage-pill", "mobile", "word")):
+        first = _templates.env.get_template("pipeline/partials/_files_stage_control.html").render(
+            file_id=file_id, key="analyze", stage_label="Analyze", bucket=bucket, surface=surface, oob=False
+        )
+        pushed = _stage_pill_oob(file_id, "analyze", bucket, id_prefix=prefix)
+        a = BeautifulSoup(first, "html.parser").select_one("[aria-label]")
+        b = BeautifulSoup(pushed, "html.parser").select_one("[aria-label]")
+        assert str(a) == str(b)
+        assert (b.get("data-status-variant") == "glyph") == (variant == "glyph")
+    record = BeautifulSoup(_stage_pill_oob(file_id, "analyze", bucket), "html.parser").select_one("[aria-label]")
+    assert not record.has_attr("data-status-variant")
+
+
+@pytest.mark.parametrize("variant", ["word", "glyph"])
+def test_not_applicable_uses_shared_neutral_distinct_accessible_token(variant: str) -> None:
+    for template, label in [("pipeline/partials/_stage_pill.html", "Metadata"), ("pipeline/partials/_tracklist_pill.html", "Tracklist")]:
+        html = _templates.env.get_template(template).render(stage_label=label, bucket="not_started", stage_applicable=False, pill_variant=variant)
+        pill = BeautifulSoup(html, "html.parser").select_one("[aria-label]")
+        assert pill["aria-label"] == f"{label}: not applicable"
+        assert pill.select_one("[aria-hidden=true]").get_text() == "∅"
+        assert "bg-gray-100" in pill["class"] and "text-muted" in pill["class"]
+        if variant == "glyph":
+            assert pill["title"] == pill["aria-label"] and pill.get_text(strip=True) == "∅"
+        else:
+            assert "not applicable" in pill.get_text()
+    legend = BeautifulSoup(_render_matrix(legend_only=True), "html.parser")
+    assert legend.select_one("[data-stage-applicability=not_applicable]").get_text(strip=True) == "∅ not applicable"
+
+
+@pytest.mark.parametrize("bucket", [case[0] for case in _BUCKET_CASES if case[0] != "not_started"] + [""])
+def test_real_bucket_or_unknown_is_never_overwritten_by_display_scope(bucket: str) -> None:
+    for template in ("pipeline/partials/_stage_pill.html", "pipeline/partials/_tracklist_pill.html"):
+        html = _templates.env.get_template(template).render(stage_label="Metadata", bucket=bucket, stage_applicable=False)
+        assert "not applicable" not in html
+
+
+@pytest.mark.parametrize("file_type", ["mp3", "mp4", "txt", None])
+@pytest.mark.parametrize("bucket", ["not_started", "done", "failed", "missing", "in_flight", "queued", "skipped", ""])
+def test_display_scope_preserves_all_history_and_downstream_work(file_type: str | None, bucket: str) -> None:
+    from phaze.services.pipeline.files import file_stage_applicability
+
+    buckets = dict.fromkeys(("metadata", "analyze", "tracklist", "propose", "review", "apply"), bucket)
+    for history in (None, {}, dict.fromkeys(("metadata", "analyze", "tracklist"), True), dict.fromkeys(("metadata", "analyze", "tracklist"), False)):
+        actual = file_stage_applicability(file_type, buckets, history)
+        for stage in ("metadata", "analyze", "tracklist"):
+            expected = not (file_type == "txt" and bucket == "not_started" and history and history.get(stage) is False)
+            assert actual[stage] == expected
+        assert all(actual[stage] for stage in ("propose", "review", "apply"))
+        assert set(buckets.values()) == {bucket}

@@ -2,14 +2,16 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlencode
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import StringConstraints
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
@@ -17,11 +19,13 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 
 # Changes Review's container id + list context, so a bulk action re-renders that surface through
 # the SAME builder its GET uses. The edge is one-way -- routers/shell.py does not import this
 # module -- so there is no cycle.
 from phaze.routers.shell import build_changes_review_context
+from phaze.routers.view_state import ListViewState
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
@@ -30,12 +34,15 @@ from phaze.services.proposal_queries import (
     ProposalReviewToken,
     ProposalStaleWriteError,
     ProposalTransitionError,
-    bulk_approve_selected_above_confidence,
+    bulk_approve_selected_with_tokens,
+    bulk_undo_approved,
     bulk_update_status,
     get_proposal_with_file,
+    preview_bulk_approval_page,
     update_proposal_fields,
     update_proposal_status,
 )
+from phaze.services.review_changes import _changes_review_warnings
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
 
@@ -64,16 +71,12 @@ def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
     operator needs and the one a naive ``f"{len(ids)} approved"`` destroys, so it is stated rather
     than smoothed over: silence about 38 skipped rows reads as success on all 50.
 
-    The zero case gets its own sentence because "0 approved" alone invites the operator to conclude
-    the button is broken and click it harder, when in fact the answer is complete and stable.
+    Skipped rows retain their existing state. The shared approve/reject toast avoids attributing
+    every skip to confidence or collision checks, which apply only to approval.
     """
     verb = _PAST_TENSE[action]
-    if applied == requested:
-        return f"{applied} proposal{'' if applied == 1 else 's'} {verb}."
     skipped = requested - applied
-    if applied == 0:
-        return f"Nothing {verb} — all {skipped} selected proposal{'' if skipped == 1 else 's'} had already been actioned."
-    return f"{applied} proposal{'' if applied == 1 else 's'} {verb} · {skipped} skipped (already actioned)."
+    return f"{applied} {verb}, {skipped} skipped." + (" Skipped proposals remain unchanged; reload for individual review." if skipped else "")
 
 
 async def _guarded_status_update(
@@ -196,7 +199,7 @@ def _diff_facet_fields(proposal: RenameProposal, file_record: FileRecord, facet:
     return before, after, edit_facet, extra_context
 
 
-def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> dict[str, object]:
+def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, threshold: int = 90) -> dict[str, object]:
     """Build the render context _diff_row.html expects for one proposal (phaze-3a2j).
 
     phaze-7tiqp: the builder used to take an ``oob`` keyword for a second consumer, the
@@ -209,20 +212,21 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
     file_record = proposal.file
     before, after, edit_facet, extra_context = _diff_facet_fields(proposal, file_record, facet)
     pid = proposal.id
+    threshold_query = f"?threshold={threshold}" if threshold != 90 else ""
     return {
         "row_id_prefix": row_id_prefix,
         "pid": pid,
         "file": file_record.original_filename,
         "before": before,
         "after": after,
-        "approve_url": f"/proposals/{pid}/approve",
-        "skip_url": f"/proposals/{pid}/reject",
-        "undo_url": f"/proposals/{pid}/undo",
-        "edit_url": f"/proposals/{pid}/edit",
+        "approve_url": f"/proposals/{pid}/approve{threshold_query}",
+        "skip_url": f"/proposals/{pid}/reject{threshold_query}",
+        "undo_url": f"/proposals/{pid}/undo{threshold_query}",
+        "edit_url": f"/proposals/{pid}/edit{threshold_query}",
         "edit_facet": edit_facet,
         "row_state": row_state,
         "confidence": proposal.confidence,
-        "warnings": ([proposal.reason] if proposal.reason else []),
+        "warnings": _changes_review_warnings(proposal, threshold=threshold),
         "consequences": (
             "Rename in place on the owning file server."
             if proposal.proposed_path is None
@@ -230,8 +234,10 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         ),
         "eligibility_reason": (
             "Eligible for selected bulk approval."
-            if ProposalStatus(proposal.status) == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9
-            else "Individual approval only, or this decision is already resolved."
+            if ProposalStatus(proposal.status) == ProposalStatus.PENDING
+            and proposal.confidence is not None
+            and proposal.confidence >= threshold / 100
+            else f"Individual approval only: confidence is below {threshold}% or unavailable, or this decision is already resolved."
         ),
         # phaze-exivg: the optimistic-concurrency token the APPROVE button round-trips back via
         # hx-vals. Always the row's LIVE updated_at at render time -- after an undo/edit/re-propose
@@ -248,9 +254,16 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
     }
 
 
-def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> HTMLResponse:
+def _diff_row_response(
+    request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, threshold: int = 90
+) -> HTMLResponse:
     """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
-    context = _diff_row_context(proposal, row_id_prefix, facet, row_state)
+    context = _diff_row_context(proposal, row_id_prefix, facet, row_state, threshold=threshold)
+    if request.headers.get("HX-Target") == f"rename-row-{proposal.id}":
+        context["live_bulk_eligibility"] = True
+        context["bulk_collision"] = None  # A row swap has no current population collision proof.
+        context["bulk_threshold"] = threshold
+        context["warnings"] = _changes_review_warnings(proposal, threshold=threshold, include_confidence=False)
     context["request"] = request
     return templates.TemplateResponse(request=request, name="pipeline/partials/_diff_row.html", context=context)
 
@@ -281,12 +294,36 @@ async def list_proposals() -> RedirectResponse:
     return RedirectResponse(url="/s/propose", status_code=302)
 
 
+@router.patch("/bulk/undo", response_class=HTMLResponse)
+async def bulk_undo(
+    request: Request,
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Undo only unchanged approved versions; executed or edited rows remain untouched."""
+    reviewed, selected = _parse_bulk_selection(review_tokens, [])
+    try:
+        reverted = await bulk_undo_approved(session, reviewed)
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Undo conflicts with a new pending proposal. No proposals were reverted; reload and review."
+        ) from exc
+    context = await build_changes_review_context(request, session, threshold=threshold)
+    context["changes_toast"] = (
+        f"{reverted} reverted, {len(selected) - reverted} skipped. Edited, executed, or conflicting versions cannot be reverted."
+    )
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=context)
+
+
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
 async def approve_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
     expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats).
 
@@ -314,7 +351,7 @@ async def approve_proposal(
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved", threshold=threshold)
 
 
 @router.patch("/{proposal_id}/reject", response_class=HTMLResponse)
@@ -322,13 +359,17 @@ async def reject_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Reject a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM)
+    proposal = await _guarded_status_update(
+        session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM, expected_updated_at=_parse_updated_at_token(expected_updated_at)
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped", threshold=threshold)
 
 
 @router.patch("/{proposal_id}/undo", response_class=HTMLResponse)
@@ -336,13 +377,17 @@ async def undo_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """Revert a proposal to pending status and return the updated row (phaze-vvmh: no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM)
+    proposal = await _guarded_status_update(
+        session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM, expected_updated_at=_parse_updated_at_token(expected_updated_at)
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
-    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="pending")
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="pending", threshold=threshold)
 
 
 @router.get("/{proposal_id}/detail", response_class=HTMLResponse)
@@ -466,6 +511,7 @@ async def edit_proposal(
     proposed: str = Form(...),
     facet: str = Form("filename"),
     session: AsyncSession = Depends(get_session),
+    threshold: int = Query(default=90, ge=90, le=99),
 ) -> HTMLResponse:
     """REVIEW-01 (D-05): persist an operator edit to a proposal BEFORE approve.
 
@@ -498,7 +544,7 @@ async def edit_proposal(
     # never re-rendered with pending affordances it no longer has.
     row_id_prefix, facet = _row_target(request, proposal_id)
     return _diff_row_response(
-        request, proposal, row_id_prefix, facet, row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending")
+        request, proposal, row_id_prefix, facet, row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending"), threshold=threshold
     )
 
 
@@ -533,7 +579,7 @@ def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> 
             )
         except (TypeError, ValueError):
             continue
-    uuids = [token.proposal_id for token in reviewed]
+    uuids = list(dict.fromkeys(token.proposal_id for token in reviewed))
     seen = set(uuids)
     for pid in proposal_ids:
         try:
@@ -547,12 +593,13 @@ def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> 
 
 
 async def _transition_selected_proposals(
-    session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID]
-) -> tuple[int, str]:
+    session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID], *, threshold: int = 90
+) -> tuple[int, str, list[ProposalReviewToken]]:
     """Apply the operator's chosen bulk action to the parsed selection.
 
-    Returns ``(applied, toast_action)`` -- the number of rows that ACTUALLY transitioned (never
-    the selection size, phaze-uu17) and the verb ``_bulk_toast`` phrases it with.
+    Returns ``(applied, toast_action, undo_tokens)`` -- the number of rows that ACTUALLY transitioned (never
+    the selection size, phaze-uu17), the verb ``_bulk_toast`` phrases it with, and the
+    post-approval versions returned by the guarded write.
 
     phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED rows
     selected via the "All" tab are skipped, and the returned count reflects only real transitions.
@@ -566,8 +613,9 @@ async def _transition_selected_proposals(
     rather than a repeat of the first answer.
     """
     if action == "approve_eligible":
-        return await bulk_approve_selected_above_confidence(session, reviewed), "approve"
-    return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action
+        approved = await bulk_approve_selected_with_tokens(session, reviewed, threshold=threshold / 100)
+        return len(approved), "approve", approved
+    return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action, []
 
 
 @router.patch("/bulk", response_class=HTMLResponse)
@@ -575,7 +623,8 @@ async def bulk_action(
     request: Request,
     action: str = Form(...),
     proposal_ids: list[str] = Form(default=[]),
-    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=100),
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk approve or reject the selection Changes Review submitted.
@@ -606,9 +655,9 @@ async def bulk_action(
     if action not in ("approve_eligible", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve_eligible' or 'reject'")
     reviewed, uuids = _parse_bulk_selection(review_tokens, proposal_ids)
-    count, toast_action = await _transition_selected_proposals(session, action, reviewed, uuids)
+    count, toast_action, undo_tokens = await _transition_selected_proposals(session, action, reviewed, uuids, threshold=threshold)
 
-    changes_context = await build_changes_review_context(request, session)
+    changes_context = await build_changes_review_context(request, session, threshold=threshold)
     changes_context |= {
         "request": request,
         # The toast quotes `count` -- the rows that ACTUALLY transitioned -- and names the
@@ -617,5 +666,52 @@ async def bulk_action(
         # (already actioned)", never "50 approved". Reporting the selection size would be a
         # confident lie about an irreplaceable archive, which is the failure that bead names.
         "changes_toast": _bulk_toast(toast_action, requested=len(uuids), applied=count),
+        "bulk_undo_tokens": [f"{token.proposal_id}|{token.updated_at.isoformat()}|{token.content_digest}" for token in undo_tokens],
     }
     return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=changes_context)
+
+
+@router.post("/bulk/preview", response_model=None)
+async def bulk_approval_preview(
+    request: Request,
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=500),
+    threshold: int = Form(default=90, ge=90, le=99),
+    scope: Literal["selected", "filtered"] = Form(default="selected"),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse | HTMLResponse:
+    """Inspect the exact eligible selection without changing any proposal or dispatching work."""
+    reviewed, selected = _parse_bulk_selection(review_tokens, [])
+    view = ListViewState.from_request(request, status="needs_review", sort="confidence")
+    if view.status not in {"all", "needs_review", "approved", "blocked", "rejected"}:
+        view = view.with_(status="needs_review")
+    preview = await preview_bulk_approval_page(session, reviewed if scope == "selected" else None, status=view.status, threshold=threshold / 100)
+    eligible = preview.tokens
+    context = {
+        "threshold": threshold,
+        "scope": scope,
+        "capped": preview.capped,
+        "eligible_count": len(eligible),
+        "skipped_count": len(set(selected)) - len(eligible) if scope == "selected" else None,
+        "eligible_ids": [str(token.proposal_id) for token in eligible],
+        "review_tokens": [f"{token.proposal_id}|{token.updated_at.isoformat()}|{token.content_digest}" for token in eligible],
+        "view_query": urlencode(view.params() | {"selected": request.query_params.get("selected", ""), "threshold": str(threshold)}),
+        "preview_rows": [
+            {
+                "id": str(proposal.id),
+                "before_filename": proposal.file.original_filename,
+                "before_destination": proposal.file.current_path,
+                "after_filename": proposal.proposed_filename,
+                "after_destination": str(Path(proposal.proposed_path or str(Path(proposal.file.current_path).parent)) / proposal.proposed_filename),
+                "confidence": proposal.confidence,
+            }
+            for proposal in preview.proposals
+        ],
+    }
+    if wants_fragment(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_changes_bulk_preview.html",
+            context=context,
+            headers=DUAL_SHAPE_RESPONSE_HEADERS,
+        )
+    return JSONResponse(context, headers=DUAL_SHAPE_RESPONSE_HEADERS)

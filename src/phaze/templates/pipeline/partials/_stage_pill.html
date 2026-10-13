@@ -18,17 +18,19 @@
 #}
 {% import "ui/primitives.html" as ui %}
 {% if bucket == 'done' %}
-{{ ui.status_badge(stage_label, 'done', 'success', '✓') }}
+{{ ui.status_badge(stage_label, 'done', 'success', '✓', variant=pill_variant|default('word')) }}
 {% elif bucket == 'in_flight' %}
-{{ ui.status_badge(stage_label, 'in flight', 'accent', '●', true) }}
+{{ ui.status_badge(stage_label, 'in flight', 'accent', '●', true, variant=pill_variant|default('word')) }}
 {% elif bucket == 'queued' %}
-{{ ui.status_badge(stage_label, 'queued', 'slate', '◌') }}
+{{ ui.status_badge(stage_label, 'queued', 'slate', '◌', variant=pill_variant|default('word')) }}
 {% elif bucket == 'failed' %}
-{{ ui.status_badge(stage_label, 'failed', 'danger', '✕') }}
+{{ ui.status_badge(stage_label, 'failed', 'danger', '✕', variant=pill_variant|default('word')) }}
 {% elif bucket == 'missing' %}
-{{ ui.status_badge(stage_label, 'missing', 'danger', '✕', aria_label=stage_label ~ ': file missing on disk') }}
+{{ ui.status_badge(stage_label, 'missing', 'danger', '!' if pill_variant|default('word') == 'glyph' else '✕', aria_label=stage_label ~ ': file missing on disk', variant=pill_variant|default('word')) }}
 {% elif bucket == 'skipped' %}
-{{ ui.status_badge(stage_label, 'skipped', 'skipped', '⊘', false, stage_label ~ ': skipped (force-completed)') }}
+{{ ui.status_badge(stage_label, 'skipped', 'skipped', '⊘', false, stage_label ~ ': skipped (force-completed)', variant=pill_variant|default('word')) }}
+{% elif bucket == 'not_started' and not stage_applicable|default(true) %}
+{{ ui.status_badge(stage_label, 'not applicable', 'neutral', '∅', variant=pill_variant|default('word')) }}
 {% else %}
-{{ ui.status_badge(stage_label, 'not started', 'neutral', '—') }}
+{{ ui.status_badge(stage_label, 'not started', 'neutral', '—', variant=pill_variant|default('word')) }}
 {% endif %}

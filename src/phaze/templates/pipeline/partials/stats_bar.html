@@ -48,6 +48,7 @@
    count un-disables the buttons without clobbering their loading state. These three carry a
    "files ready" text node (kept hidden) for backward-compatible polling assertions. #}
 {% if oob_counts %}
+<div id="incident-announcement-seed" hidden hx-swap-oob="true" data-known="{{ 'true' if analysis_incidents_known else 'false' }}" data-incidents='{{ attention_incidents | default([]) | tojson }}'></div>
 <p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden">{{ stats.discovered | thousands }} files ready</p>
 <p id="metadata-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted | thousands }} files ready</p>
 <p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden">{{ stats.analyzed | thousands }} files ready</p>

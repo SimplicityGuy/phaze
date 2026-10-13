@@ -1,10 +1,10 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = '`${formatCount($store.pipeline.tracklistDone)} sets matched`' %}
+{% set subcount = '`Files with stored tracklists · ${formatCount($store.pipeline.tracklistDone)}`' %}
 {% set _btn = ui.btn('secondary', 'md') %}
 {% call ws.workspace(title=page_name('tracklist'), subcount=subcount) %}
     <div class="px-4 pt-4 sm:px-6">
-        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Review stored tracklists and link their tracks to Discogs. Local cue companions and embedded tags remain available.</p>
+        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Review stored tracklists and link their tracks to Discogs. The headline counts files with stored tracklists; Discogs links are counted separately below. Local cue companions and embedded tags remain available.</p>
     </div>
     <section class="p-4 sm:p-6" aria-labelledby="local-tracklists-heading">
         <h2 id="local-tracklists-heading" class="font-semibold">Local tracklists and reviewed sources</h2>
@@ -59,7 +59,7 @@
     <div class="border-t border-gray-200 p-4 sm:p-6 dark:border-phaze-border">
         <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
-                <h2 class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-700 dark:text-gray-300">Matched-set coverage</h2>
+                <h2 class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-700 dark:text-gray-300">Stored tracklists and Discogs coverage</h2>
                 <p class="mt-1 text-xs text-muted ">Inspect lookup and match results before generating candidate changes.</p>
             </div>
             <a href="/s/propose" hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="text-sm font-semibold text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ">Continue to Propose →</a>

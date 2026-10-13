@@ -433,18 +433,14 @@ async def test_theme_and_store_preserved(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_header_agent_count_sums_agent_online_and_compute_lanes_active(client: AsyncClient) -> None:
-    """COMPUTE-02: the header dot/count sum agentOnline + computeLanesActive (both keys, additive).
-
-    agentOnline's own 0-degrade fail-safe semantics are untouched -- computeLanesActive is a NEW
-    additive key, never a replacement.
-    """
+async def test_header_health_pill_consumes_shared_poll_attention_snapshot(client: AsyncClient) -> None:
     response = await client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert "computeLanesActive: 0" in body, "shell store must seed computeLanesActive to int 0 (no undefined flash)"
-    assert "($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0" in body
-    assert "$store.pipeline.agentOnline + $store.pipeline.computeLanesActive" in body
+    assert "attentionCount: 0" in body
+    assert "attentionKnown: 0" in body
+    assert 'id="attention-pill"' in body
+    assert 'hx-trigger="attention:load"' in body
 
 
 # History-restore response shape for the /s/* rail (phaze-64uy) -- the WORST instance of the

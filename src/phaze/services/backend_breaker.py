@@ -77,6 +77,7 @@ import structlog
 
 from phaze.models.backend_breaker import BackendBreaker
 from phaze.models.cloud_job import CloudJob
+from phaze.services.pipeline.common import mark_read_degraded
 
 
 if TYPE_CHECKING:
@@ -200,6 +201,7 @@ async def load_open_breakers(session: AsyncSession) -> dict[str, OpenBreaker]:
         async with session.begin_nested():
             rows = (await session.execute(select(BackendBreaker).where(BackendBreaker.tripped_at.is_not(None)))).scalars().all()
     except Exception:
+        mark_read_degraded("backend_breakers")
         logger.warning("backend_breaker_read_degraded", exc_info=True)
         return {}
     return {

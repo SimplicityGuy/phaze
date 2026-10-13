@@ -27,6 +27,7 @@ from sqlalchemy import select
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, install_fake_queues, make_agent_live
+from tests._retry_ack import assert_auto_dismissing_success_toast, assert_persistent_failure_toast
 
 
 if TYPE_CHECKING:
@@ -89,6 +90,7 @@ async def test_per_file_retry_enqueue_failure_restores_the_failure_marker(
     response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
     assert response.status_code == 200
     assert "could not re-queue" in response.text.lower()
+    assert_persistent_failure_toast(response.text, "could not re-queue")  # phaze-wzfzo.19
 
     # Independent-session read (92-04 CLEAN-02): the request's own session already committed the
     # restore write synchronously (this endpoint is NOT backgrounded, unlike the bulk twin), but
@@ -114,6 +116,7 @@ async def test_per_file_retry_enqueue_success_leaves_no_trace_of_the_restore_pat
     response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
     assert response.status_code == 200
     assert "re-queued 1 failed file(s) for analysis" in response.text.lower()
+    assert_auto_dismissing_success_toast(response.text, "Re-queued 1 failed file(s) for analysis.")  # phaze-wzfzo.19
 
     row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
     assert row.failed_at is None
@@ -158,6 +161,7 @@ async def test_per_file_retry_blocked_collision_restores_marker_and_reports_bloc
     assert response.status_code == 200
     assert queue.captured == []  # nothing was ever enqueued -- pure collision
     assert "stuck and holding its slot" in response.text.lower()
+    assert_persistent_failure_toast(response.text, "stuck and holding its slot")  # phaze-wzfzo.19
     assert "re-queued" not in response.text.lower()
     assert "deterministic key held by a dead job" in caplog.text
 

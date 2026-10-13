@@ -124,6 +124,17 @@
             // contract for the Discover recovery panel's "none detected" claim.
             Alpine.store('pipeline', {
                 seedKnown: 0, orphanKnown: 0,
+                reviewPending: 0,
+                reviewDedupe: 0,
+                reviewJunk: 0,
+                reviewCue: 0,
+                reviewCountsKnown: 0, attentionCount: 0, attentionKnown: 0,
+                analyzeFailed: 0,
+                analyzeStalled: 0,
+                inadmissible: 0,
+                awaitingCloud: 0,
+                queuedBehindQuota: 0,
+
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
@@ -182,6 +193,27 @@
             // phaze-s8xtd: merge the server's numbers over the defaults above, before any binding evaluates. (Double quotes on
             // purpose: test_theme_and_store_preserved counts the single-quoted literal to prove the store is defined ONCE.)
             Object.assign(Alpine.store("pipeline"), {{ (pipeline_seed or {}) | tojson }});
+            // Files row density is client-only. The shell store survives table swaps independently
+            // of column widths, and unexpected or inaccessible storage falls back to comfortable.
+            Alpine.store('filesDensity', {
+                _key: 'phaze-files-density',
+                mode: (() => {
+                    try {
+                        const saved = localStorage.getItem('phaze-files-density');
+                        return saved === 'compact' ? 'compact' : 'comfortable';
+                    } catch {
+                        return 'comfortable';
+                    }
+                })(),
+                setMode(mode) {
+                    this.mode = mode === 'compact' ? 'compact' : 'comfortable';
+                    try {
+                        localStorage.setItem(this._key, this.mode);
+                    } catch {
+                        // Keep the current view usable when browser storage is unavailable.
+                    }
+                }
+            });
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every
             // htmx sort/filter/pager swap of #files-table-view -- that swap replaces the WHOLE
@@ -270,10 +302,17 @@
                unaffected -- they resolve against the viewport regardless. #}
             <div id="stage-workspace" data-stage="{{ stage }}" data-document-title="{{ document_title }}" class="relative h-full overflow-y-auto">{% include stage_partial %}</div>
         </main>
+
+        {# phaze-7u4sy (C3): the non-modal docked record inspector (Files at xl+). Outside both
+           #stage-workspace and #files-table-view, so no swap re-renders it. #}
+        {% include "shell/partials/record_dock.html" %}
     </div>
 
     <!-- Toast container -->
     <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+    <div id="incident-announcement-seed" hidden></div>
+    <p id="incident-announcement" role="status" aria-live="polite" aria-atomic="true" class="sr-only"></p>
+    {% include "shell/partials/action_feedback.html" %}
 
     <!-- ⌘K skeleton command palette (D-04). Its x-init also reads the `palette` query param
          (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
@@ -421,7 +460,14 @@
             current.querySelectorAll('[data-poll-preserve-response][id]').forEach(function (response) {
                 const replacement = Array.from(incoming.querySelectorAll('[data-poll-preserve-response][id]'))
                     .find(function (candidate) { return candidate.id === response.id; });
-                if (replacement) replacement.innerHTML = response.innerHTML;
+                if (replacement) {
+                    replacement.innerHTML = response.innerHTML;
+                    // Retained action feedback was already announced on the action response.
+                    // Recreating it for an unrelated health poll must remain silent.
+                    replacement.querySelectorAll('[role="alert"], [role="status"], [aria-live]').forEach(function (message) {
+                        message.setAttribute('aria-live', 'off');
+                    });
+                }
             });
         }
         // Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick DOM churn on the #analyze-lanes grid.

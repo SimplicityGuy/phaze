@@ -305,7 +305,7 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
     This form also needed the guard applied differently, which is its own reason to race it. Its two
     buttons already carry an Alpine ``:disabled`` binding, and Alpine binds in the microtask after
     the swap while shell.html's listener runs from htmx's settle task ~20 ms later -- so the generic
-    ``btn.disabled = false`` would land last and leave "Approve selected eligible" clickable with
+    ``btn.disabled = false`` would land last and leave "Preview eligible selection" clickable with
     nothing selected. The guard therefore stays on the buttons unchanged and the business rule moved
     up to a wrapping ``<fieldset>`` Alpine owns alone (see the template comment). This test drives
     the composition: the click can only succeed if the guard released AND the fieldset agrees.
@@ -365,9 +365,13 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
     )
 
     # THE RACE: the swapped-in form is attached but not necessarily processed by htmx yet.
-    await page.click("button:has-text('Approve selected eligible')")
+    await page.click("button:has-text('Preview eligible selection')")
 
-    await page.wait_for_function("() => document.body.innerText.includes('proposal approved')")
+    preview = page.get_by_role("region", name="Bulk approval preview")
+    await preview.get_by_text("1 eligible at 90% · 0 excluded from selection", exact=True).wait_for()
+    page.once("dialog", lambda dialog: dialog.accept())
+    await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).click()
+    await page.wait_for_function("() => document.body.innerText.includes('1 approved')")
     assert await page.evaluate("window.__documentAlive === true"), "the bulk approve click fell through to a native form submission"
     assert "review_tokens=" not in page.url, f"the hx-patch click fell through to the native GET fallback: {page.url}"
 
@@ -379,6 +383,7 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
 # conditionally disabled can enable it when it should not be.
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_every_guarded_button_on_its_own_route_is_released_by_htmx(page: Any, seed: Any) -> None:
     """The three forms not raced above, each reached the way an operator reaches it.
 
@@ -446,7 +451,7 @@ async def test_the_guard_does_not_enable_a_bulk_action_that_business_logic_disab
     Two of the ten guarded buttons -- ``_changes_list.html``'s bulk approve and reject -- were
     ALREADY conditionally disabled before this change, by Alpine's ``:disabled="selected.length ===
     0"``. shell.html's listener enables a ``[data-hx-guard]`` button unconditionally, so applying
-    the guard to those two directly would have made "Approve selected eligible" clickable with
+    the guard to those two directly would have made "Preview eligible selection" clickable with
     nothing selected: a bulk write against an empty selection, introduced by a fix for a different
     bug. That is why the guard stayed on the buttons and the business rule moved up to a wrapping
     ``<fieldset>`` (see the template comment), and this is the test that says the composition holds
@@ -461,7 +466,7 @@ async def test_the_guard_does_not_enable_a_bulk_action_that_business_logic_disab
     target = await seed.proposal(status=ProposalStatus.PENDING, filename="<set-01>.mp3")
 
     await open_shell(page, "/s/rename")
-    approve = "button[value='approve_eligible']"
+    approve = "button[data-selected-preview]"
     reject = "button[value='reject']"
 
     # First: the guard really was released, so a failure below is about business logic and not about
@@ -472,7 +477,7 @@ async def test_the_guard_does_not_enable_a_bulk_action_that_business_logic_disab
         timeout=5_000,
     )
 
-    for selector, label in ((approve, "Approve selected eligible"), (reject, "Reject selected pending")):
+    for selector, label in ((approve, "Preview eligible selection"), (reject, "Reject selected pending")):
         assert await page.evaluate("sel => document.querySelector(sel).matches(':disabled')", selector), (
             f"{label!r} is clickable with nothing selected — the guard's release overrode the business rule that disabled it"
         )

@@ -322,6 +322,12 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
 @pytest.mark.asyncio
 async def test_page_turns_red_for_claims_never_started(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-lwz8n acceptance 3 end to end -- the phaze-tch4d signature (claimed, never run) is red."""
+    from types import SimpleNamespace
+
+    from phaze.services.attention import analysis_attention_known, derive_attention_items
+    from phaze.services.backends import get_backend_lane_snapshot
+    from phaze.services.pipeline.attention_snapshot import set_attention_snapshot
+
     wire_fakes(client)
     app_state = client._transport.app.state  # type: ignore[attr-defined]
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -339,11 +345,25 @@ async def test_page_turns_red_for_claims_never_started(client: AsyncClient, sess
         )
     await session.commit()
 
+    # The shared off-request cache now owns incident presentation. Publish a real lane read;
+    # do not let a pre-lifespan test's unmeasured cache pretend that these claims are healthy.
+    lanes = await get_backend_lane_snapshot(session, app_state)
+    inputs = SimpleNamespace(
+        lanes=lanes,
+        stalled_analyses=0,
+        inadmissible_count=0,
+        awaiting_cloud_count=0,
+        awaiting_hold_reason=None,
+        queued_behind_quota_count=0,
+        stage_paused={"metadata": False, "analyze": False},
+        active_fileservers=1,
+    )
+    set_attention_snapshot(derive_attention_items({}, {}, (0, 0, 0), inputs), known=analysis_attention_known(lanes, 0, None))
     body = (await client.get("/s/analyze", headers={"HX-Request": "true"})).text
     health = body[body.index('id="analysis-health-card"') :]
     health = health[: health.index("</section>")]
-    assert 'role="alert"' in health and "bg-red-50" in health
-    assert "STUCK" in health and "4 claimed but not started past the stall bound" in health
+    assert 'data-incident-id="lane:local:stuck"' in health and 'data-incident-tone="danger"' in health
+    assert "Stuck analysis work: local · local" in health and "· 4" in health
 
     waiting = (await client.get("/pipeline/analyze-queue/waiting")).text
     assert waiting.count("CLAIMED, NOT STARTED</span>") == 4

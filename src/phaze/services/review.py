@@ -144,9 +144,10 @@ async def get_changes_review_page(
     status: str,
     page: int,
     page_size: int,
+    threshold: int = 90,
 ) -> ChangesReviewPage:
     """Return atomic filename/destination decisions under the canonical review vocabulary."""
-    return await _changes_reader().get_changes_review_page(session, status=status, page=page, page_size=page_size)
+    return await _changes_reader().get_changes_review_page(session, status=status, page=page, page_size=page_size, threshold=threshold)
 
 
 async def get_pending_proposal_rows(session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows:
@@ -204,9 +205,12 @@ async def get_dedupe_groups(
     return await _dedupe_reader().get_dedupe_groups(session, limit=limit, offset=offset)
 
 
-async def count_cue_review_candidates(session: AsyncSession) -> int:
-    """Return the uncapped CUE candidate count without building preview text."""
-    return await _cue_reader().count_cue_review_candidates(session)
+async def count_cue_review_candidates(session: AsyncSession, *, strict: bool = False) -> int:
+    """Return the uncapped CUE candidate count; strict reads raise so caches can reject degraded zeros."""
+    reader = _cue_reader()
+    if strict:
+        return await reader.count_cue_review_candidates(session, strict=True)
+    return await reader.count_cue_review_candidates(session)
 
 
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:

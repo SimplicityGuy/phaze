@@ -41,11 +41,14 @@
 </div>
 {% endif %}
 {% if legend or legend_only %}
-<p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted " aria-hidden="true">
-    <span>✓ done</span>
-    <span>● in-flight</span>
-    <span>— not-started</span>
-    <span>✕ failed</span>
-    <span>⊘ skipped</span>
+<p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted " data-stage-legend>
+    <span data-stage-bucket="done">✓ done</span>
+    <span data-stage-bucket="in_flight">● in-flight</span>
+    <span data-stage-bucket="queued">◌ queued</span>
+    <span data-stage-bucket="not_started">— not-started</span>
+    <span data-stage-applicability="not_applicable">∅ not applicable</span>
+    <span data-stage-bucket="failed">✕ failed</span>
+    <span data-stage-bucket="missing">! / ✕ missing on disk</span>
+    <span data-stage-bucket="skipped">⊘ skipped</span>
 </p>
 {% endif %}

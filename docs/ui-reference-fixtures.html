@@ -84,7 +84,8 @@
     .rail-item svg { width: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
     .rail-item.active { color: var(--accent-soft); background: #00b0d81a; box-shadow: inset 3px 0 var(--accent); }
     .rail-count { margin-left: auto; color: var(--quiet); font-size: 11px; }
-    .rail-group.amber .rail-count { color: var(--amber); }
+    .rail-group.amber .rail-count { color: var(--quiet); }
+    .rail-group.amber .rail-item:nth-of-type(-n+3) .rail-count { color: var(--amber); }
     .workspace { min-width: 0; }
     .workspace-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border); }
     .workspace-head h2 { margin: 0; font-size: 18px; }
@@ -119,6 +120,45 @@
     .failed { color: var(--red); background: var(--red-bg); }
     .skipped { color: var(--violet); border: 1px dashed #a78bfa99; background: #2e1065; }
     .idle { color: var(--muted); background: #1f2937; }
+    .queued { color: #cbd5e1; background: #1e293b; }
+    .na { color: var(--quiet); background: #111827; }
+    .glyph { min-width: 28px; justify-content: center; padding: 2px 6px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0 0; color: var(--quiet); font-size: 11px; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-top: 16px; }
+    .toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .toolbar .jura { color: var(--quiet); font-size: 11px; letter-spacing: .2em; }
+    .chip { display: inline-flex; height: 28px; align-items: center; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel); font-size: 12px; }
+    .chip.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .workbench { display: flex; min-height: 360px; }
+    .workbench-main { min-width: 0; flex: 1; padding: 16px 24px; }
+    .workbench-main .table-wrap { margin-top: 12px; }
+    tr.selected td { background: #00b0d80f; }
+    tr.selected td:first-child { box-shadow: inset 3px 0 var(--accent); }
+    .dock { width: 440px; flex: none; padding: 16px; border-left: 1px solid var(--border); background: var(--bg); }
+    .dock h3 { margin: 0 0 8px; font-size: 14px; }
+    .dock dl { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; margin: 12px 0 0; font-size: 12px; }
+    .dock dt { color: var(--quiet); }
+    .dock dd { margin: 0; }
+    .health-pill { gap: 6px; }
+    .health-pill.attn { color: var(--amber); }
+    .tray { max-width: 360px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+    .tray h3 { margin: 0 0 12px; font-size: 14px; }
+    .tray ol { margin: 0; padding: 0; list-style: none; }
+    .tray li { padding: 0 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .tray li:last-child { border-bottom: 0; }
+    .tray li strong { color: var(--amber); }
+    .tray li.danger strong { color: var(--red); }
+    .tray li p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .tray a { color: var(--accent-soft); font-size: 12px; font-weight: 600; }
+    .flow { display: block; width: 100%; height: auto; }
+    .flow text { font-family: Inter, sans-serif; fill: var(--text); }
+    .flow .node-name { font: 9px Jura, sans-serif; letter-spacing: 1.5px; text-transform: uppercase; }
+    .flow .node-value { font: 600 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .flow .node-status { font-size: 9px; fill: var(--muted); }
+    .flow .node-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+    .flow .node-box.bottleneck { stroke: var(--amber); stroke-width: 3; }
+    .flow .edge { fill: none; stroke: var(--accent-soft); stroke-opacity: .7; stroke-linecap: round; }
+    .flow .edge.unknown { stroke: var(--quiet); stroke-opacity: 1; stroke-width: 2; stroke-dasharray: 4 4; }
     .reference-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .state { min-height: 250px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
     .state-head { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--accent-soft); background: var(--panel); font: 500 11px Jura, sans-serif; letter-spacing: .2em; text-transform: uppercase; }
@@ -162,13 +202,9 @@
       .fixture-page { padding: 16px; }
       .fixture-intro { display: block; }
       .privacy { margin-top: 12px; }
-      .shell-body { grid-template-columns: 64px minmax(620px, 1fr); }
+      .shell-body { grid-template-columns: 280px minmax(620px, 1fr); }
       .frame { overflow-x: auto; }
-      .rail { padding-left: 4px; padding-right: 4px; }
-      .rail-title, .group-title, .rail-count { display: none; }
-      .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-      .rail-group { padding: 4px; border-color: transparent; background: transparent !important; }
-      .rail-item { justify-content: center; padding-left: 0; padding-right: 0; }
+      .workbench { min-width: 900px; }
       .reference-grid, .theme-pair { grid-template-columns: 1fr; }
     }
   </style>
@@ -199,6 +235,7 @@
           Search files, artists, tracklists
           <kbd>Cmd K</kbd>
         </div>
+        <span class="control health-pill attn" title="3 attention items; open attention tray"><span>Attention</span><span class="mono">3</span></span>
         <div class="agent"><span class="dot"></span><span class="control">Agents - 3</span></div>
         <span class="control theme-icon" title="Theme icon reference">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M3 13h18M9 21h6m-4-4-1 4m3-4 1 4"/></svg>
@@ -206,23 +243,31 @@
       </div>
       <div class="shell-body">
         <nav class="rail" aria-label="Pipeline navigation fixture">
-          <div class="rail-title jura">Pipeline</div>
-          <div class="rail-item">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8 12h8M12 8v8"/></svg><span class="rail-label">Discover</span><span class="rail-count mono">24</span>
+          <div class="rail-group">
+            <div class="group-title jura">Overview</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Summary</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Files</span><span class="rail-count mono">24</span></div>
           </div>
           <div class="rail-group">
-            <div class="group-title jura">Enrich - parallel</div>
-            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6zM9 10h6M9 14h6"/></svg><span class="rail-label">Metadata</span><span class="rail-count mono">18/24</span></div>
-            <div class="rail-item active"><svg viewBox="0 0 24 24"><path d="M9 4v6l-4 7h14l-4-7V4M8 4h8"/></svg><span class="rail-label">Analyze</span><span class="rail-count mono">12 / 24</span></div>
-          </div>
-          <div class="rail-group">
-            <div class="group-title jura">Identify</div>
-            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"/></svg><span class="rail-label">Tracklist</span><span class="rail-count mono">12</span></div>
+            <div class="group-title jura">Pipeline</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Discover</span><span class="rail-count mono">24</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Metadata</span><span class="rail-count mono">18 / 24</span></div>
+            <div class="rail-item active" aria-current="page"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Analyze</span><span class="rail-count mono">12 / 24</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Tracklists</span><span class="rail-count mono">12</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Propose changes</span><span class="rail-count mono">9 / 24</span></div>
           </div>
           <div class="rail-group amber">
-            <div class="group-title jura">Review &amp; apply</div>
-            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></svg><span class="rail-label">Rename / Path</span></div>
-            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg><span class="rail-label">Tag write</span></div>
+            <div class="group-title jura">Review</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Changes Review</span><span class="rail-count mono">6</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Duplicates</span><span class="rail-count mono">2</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Junk review</span><span class="rail-count mono">—</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Cue sheets</span><span class="rail-count mono">0</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Execute</span><span class="rail-count mono">4 / 6</span></div>
+          </div>
+          <div class="rail-group">
+            <div class="group-title jura">Operations</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Audit log</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/></svg><span class="rail-label">Agents &amp; clusters</span><span class="rail-count mono">3</span></div>
           </div>
         </nav>
         <div class="workspace">
@@ -239,17 +284,98 @@
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>File</th><th>Meta</th><th>Analyze</th><th>Prop</th><th>Appr</th><th>Exec</th></tr></thead>
+                <thead><tr><th>File</th><th>Metadata</th><th>Analyze</th><th>Tracklist</th><th>Propose</th><th>Review</th><th>Execute</th></tr></thead>
                 <tbody>
-                  <tr><td class="mono">&lt;set-01&gt;.flac</td><td><span class="pill done">✓ done</span></td><td><span class="pill flight">● in flight</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td></tr>
-                  <tr><td class="mono">&lt;track-01&gt;.mp3</td><td><span class="pill done">✓ done</span></td><td><span class="pill failed">✗ failed</span></td><td><span class="pill skipped">⊘ skipped</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td></tr>
+                  <tr><td class="mono">&lt;set-01&gt;.flac</td><td><span class="pill glyph done" aria-label="Metadata: done" title="Metadata: done">✓</span></td><td><span class="pill glyph flight" aria-label="Analyze: in flight" title="Analyze: in flight">●</span></td><td><span class="pill glyph idle" aria-label="Tracklist: not started" title="Tracklist: not started">—</span></td><td><span class="pill glyph idle" aria-label="Propose: not started" title="Propose: not started">—</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
+                  <tr><td class="mono">&lt;track-01&gt;.mp3</td><td><span class="pill glyph done" aria-label="Metadata: done" title="Metadata: done">✓</span></td><td><span class="pill glyph failed" aria-label="Analyze: failed" title="Analyze: failed">✕</span></td><td><span class="pill glyph queued" aria-label="Tracklist: queued" title="Tracklist: queued">◌</span></td><td><span class="pill glyph skipped" aria-label="Propose: skipped (force-completed)" title="Propose: skipped (force-completed)">⊘</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
                 </tbody>
               </table>
             </div>
+            <p class="legend" data-fixture-legend><span>✓ done</span><span>● in-flight</span><span>◌ queued</span><span>— not-started</span><span>∅ not applicable</span><span>✕ failed</span><span>! / ✕ missing on disk</span><span>⊘ skipped</span></p>
           </div>
         </div>
       </div>
     </section>
+
+    <div class="fixture-label">Files workbench + docked inspector (xl and wider)</div>
+    <section class="frame" aria-label="Files workbench with docked non-modal inspector">
+      <div class="workbench">
+        <div class="workbench-main">
+          <h2 class="jura" style="margin:0;font-size:18px">Files</h2>
+          <div class="toolbar">
+            <div class="toolbar-group" role="group" aria-label="Common file status filters"><span class="chip on" aria-current="true">Failed</span><span class="chip">In flight</span><span class="chip">Skipped</span></div>
+            <div class="toolbar-group" role="group" aria-label="Files row density"><span class="jura">Density</span><span class="chip on">Comfortable</span><span class="chip">Compact</span></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>File</th><th>Metadata</th><th>Analyze</th><th>Tracklist</th><th>Propose</th><th>Review</th><th>Execute</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">&lt;set-01&gt;.flac</td><td><span class="pill glyph done" aria-label="Metadata: done" title="Metadata: done">✓</span></td><td><span class="pill glyph flight" aria-label="Analyze: in flight" title="Analyze: in flight">●</span></td><td><span class="pill glyph idle" aria-label="Tracklist: not started" title="Tracklist: not started">—</span></td><td><span class="pill glyph idle" aria-label="Propose: not started" title="Propose: not started">—</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
+                <tr class="selected" aria-current="true"><td class="mono">&lt;track-01&gt;.mp3</td><td><span class="pill glyph done" aria-label="Metadata: done" title="Metadata: done">✓</span></td><td><span class="pill glyph failed" aria-label="Analyze: failed" title="Analyze: failed">✕</span></td><td><span class="pill glyph queued" aria-label="Tracklist: queued" title="Tracklist: queued">◌</span></td><td><span class="pill glyph skipped" aria-label="Propose: skipped (force-completed)" title="Propose: skipped (force-completed)">⊘</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
+                <tr><td class="mono">&lt;cover-01&gt;.jpg</td><td><span class="pill glyph na" aria-label="Metadata: not applicable" title="Metadata: not applicable">∅</span></td><td><span class="pill glyph na" aria-label="Analyze: not applicable" title="Analyze: not applicable">∅</span></td><td><span class="pill glyph na" aria-label="Tracklist: not applicable" title="Tracklist: not applicable">∅</span></td><td><span class="pill glyph idle" aria-label="Propose: not started" title="Propose: not started">—</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
+                <tr><td class="mono">&lt;track-03&gt;.m4a</td><td><span class="pill glyph failed" aria-label="Metadata: file missing on disk" title="Metadata: file missing on disk">!</span></td><td><span class="pill glyph idle" aria-label="Analyze: not started" title="Analyze: not started">—</span></td><td><span class="pill glyph idle" aria-label="Tracklist: not started" title="Tracklist: not started">—</span></td><td><span class="pill glyph idle" aria-label="Propose: not started" title="Propose: not started">—</span></td><td><span class="pill glyph idle" aria-label="Review: not started" title="Review: not started">—</span></td><td><span class="pill glyph idle" aria-label="Execute: not started" title="Execute: not started">—</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="legend" data-fixture-legend><span>&#10003; done</span><span>&#9679; in-flight</span><span>&#9676; queued</span><span>&#8212; not-started</span><span>&#8709; not applicable</span><span>&#10005; failed</span><span>! / &#10005; missing on disk</span><span>&#8856; skipped</span></p>
+          <p class="caption" style="margin-top:12px">Each stage cell is a glyph with an accessible name and title; the single legend spells the states. Only untouched Metadata, Analyze, and Tracklist cells of a non-music, non-video file read not applicable. The selected row is marked, not modal: the table stays reachable beside the dock.</p>
+        </div>
+        <aside class="dock" aria-label="File record: &lt;track-01&gt;.mp3">
+          <h3 class="jura">&lt;track-01&gt;.mp3</h3>
+          <p class="caption">Docked inspector: no dialog role, no focus trap, nothing inert. Escape closes it only while focus is inside.</p>
+          <dl>
+            <dt>Type</dt><dd>mp3</dd>
+            <dt>Location</dt><dd class="mono">&lt;archive-mount&gt;/incoming</dd>
+            <dt>Analyze</dt><dd><span class="pill failed">&#10005; failed</span></dd>
+            <dt>Propose</dt><dd><span class="pill skipped">&#8856; skipped</span></dd>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
+    <div class="fixture-label">Attention tray + Summary flow board</div>
+    <div class="reference-grid">
+      <section class="state" aria-label="Attention tray fixture">
+        <div class="state-head">Header health pill + attention tray</div>
+        <div class="state-body">
+          <p style="margin:0 0 12px"><span class="control health-pill attn">Attention <span class="mono">2</span></span></p>
+          <div class="tray" aria-label="Needs Attention">
+            <h3 class="jura">Needs Attention</h3>
+            <ol>
+              <li data-incident-tone="danger" class="danger"><strong>Analysis failed &middot; <span class="mono">2</span></strong><p>Gave up after retries (terminal).</p><a href="#">Open Analyze</a></li>
+              <li data-incident-tone="attention"><strong>Stalled &middot; <span class="mono">1</span></strong><p>No progress heartbeat from one analysis.</p><a href="#">Open Analyze</a></li>
+            </ol>
+            <a href="#">Open Summary</a>
+          </div>
+          <p class="caption" style="margin-top:12px">The tray is non-modal and loads its items on first open. Changes to this list are announced once through a hidden live region; a poll that changes nothing is silent.</p>
+        </div>
+      </section>
+      <section class="state" aria-label="Summary flow board fixture">
+        <div class="state-head">Summary flow board</div>
+        <div class="state-body">
+          <figure style="margin:0">
+            <svg class="flow" role="img" aria-labelledby="fx-flow-title" aria-describedby="fx-flow-desc" viewBox="0 0 840 200" focusable="false">
+              <title id="fx-flow-title">Pipeline flow board</title>
+              <desc id="fx-flow-desc">Discover: 24 files, done. Metadata: 18 of 24 files, in flight. Analyze: 12 of 24 files, in flight, 2 failed. Propose: 9 waiting. Review: 6 waiting. Execute: 4 files executed. Edge from Analyze to Propose: not measured. Bottleneck: Analyze.</desc>
+              <path class="edge" d="M120 100 C140 100 140 42 160 42" stroke-width="12"/>
+              <path class="edge" d="M120 100 C140 100 140 158 160 158" stroke-width="12"/>
+              <path class="edge" d="M300 42 C315 42 315 100 330 100" stroke-width="9"/>
+              <path class="edge unknown" data-edge-state="unknown" d="M300 158 C315 158 315 100 330 100"/>
+              <path class="edge" d="M330 100 L360 100" stroke-width="6"/>
+              <path class="edge" d="M490 100 L530 100" stroke-width="4"/>
+              <path class="edge" d="M660 100 L700 100" stroke-width="3"/>
+              <g><rect class="node-box" x="10" y="72" width="110" height="56" rx="6"/><text class="node-name" x="18" y="86">Discover</text><text class="node-value" x="18" y="101">24</text><text class="node-status" x="18" y="113">done</text></g>
+              <g><rect class="node-box" x="160" y="14" width="140" height="56" rx="6"/><text class="node-name" x="168" y="28">Metadata</text><text class="node-value" x="168" y="43">18 / 24</text><text class="node-status" x="168" y="55">in flight</text></g>
+              <g data-bottleneck="true"><rect class="node-box bottleneck" x="160" y="130" width="140" height="56" rx="6"/><text class="node-name" x="168" y="144">Analyze</text><text class="node-value" x="168" y="159">12 / 24</text><text class="node-status" x="168" y="171">in flight</text></g>
+              <g><rect class="node-box" x="360" y="72" width="130" height="56" rx="6"/><text class="node-name" x="368" y="86">Propose</text><text class="node-value" x="368" y="101">9 waiting</text></g>
+              <g><rect class="node-box" x="530" y="72" width="130" height="56" rx="6"/><text class="node-name" x="538" y="86">Review</text><text class="node-value" x="538" y="101">6 waiting</text></g>
+              <g><rect class="node-box" x="700" y="72" width="130" height="56" rx="6"/><text class="node-name" x="708" y="86">Execute</text><text class="node-value" x="708" y="101">4 executed</text></g>
+            </svg>
+            <figcaption class="caption">Edge widths show the files holding each stage&#39;s output. The dashed edge was not measured; it is never drawn as zero. The amber outline follows the top Needs Attention item.</figcaption>
+          </figure>
+        </div>
+      </section>
+    </div>
 
     <div class="fixture-label">Review + empty</div>
     <div class="reference-grid">
@@ -304,7 +430,7 @@
       <div class="theme-sample theme-light"><h3 class="jura">Light - supported peer</h3><div class="theme-card">White canvas, gray-50 panel, gray-200 border, the same semantic accent families and hierarchy.</div><div class="swatches"><span class="swatch" style="background:#fff;border-color:#d1d5db"></span><span class="swatch" style="background:#f9fafb;border-color:#d1d5db"></span><span class="swatch" style="background:#e5e7eb;border-color:#d1d5db"></span><span class="swatch" style="background:#00b0d8"></span><span class="swatch" style="background:#f59e0b"></span></div></div>
     </section>
 
-    <p class="fixture-note">Fixture coverage: persistent shell, operational lanes, tabular matrix, review diff, empty state, warning alert, terminal error, focus treatment, and both themes. Static documentation only; no controls perform actions.</p>
+    <p class="fixture-note">Fixture coverage: persistent shell with health pill and quiet rail, operational lanes, glyph stage cells and legend, Files workbench with docked inspector, attention tray, Summary flow board, review diff, empty state, warning alert, terminal error, focus treatment, and both themes. Static documentation only; no controls perform actions, and none of the keyboard, focus, or live-region behavior is exercised here.</p>
   </main>
 </body>
 </html>

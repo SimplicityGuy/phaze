@@ -29,7 +29,7 @@ from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pipeline.buckets import StageBucketSnapshot, _empty_buckets, _safe_bucket_counts, _safe_bucket_snapshot
-from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count
+from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count, mark_read_degraded, measure_read
 from phaze.services.selected_source_consumers import authoritative_tracklist_clause, explicit_tracklist_clause, selected_discogs_clause
 from phaze.services.stage_status import (
     done_clause,
@@ -142,11 +142,16 @@ async def _read_in_own_session[T](fanout: asyncio.Semaphore, fn: Callable[[Async
         async with fanout, async_session() as s:
             return await fn(s)
     except Exception:
+        mark_read_degraded("source_session")
         logger.warning("stage_progress_acquire_degraded", exc_info=True)
         return default
 
 
-async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:  # noqa: ARG001
+async def get_stage_progress(
+    session: AsyncSession,  # noqa: ARG001
+    *,
+    read_failures: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, dict[str, int | None]]:
     """Authoritative per-DAG-node reconcile source (D-03) -- counts each stage's OUTPUT table.
 
     The single-valued linear ``FileRecord.state`` (one enum per file) STRUCTURALLY cannot report
@@ -192,6 +197,15 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     byte-identical on a QUIESCENT DB; under concurrent writes two nodes may reflect MVCC snapshots
     microseconds apart -- acceptable for a 5s poll (RESEARCH Pitfall 1), NOT strict identity under
     live writes.
+
+    ``read_failures`` (opt-in, display-only): when supplied, each read records under its own
+    source label -- ``music_video_total``, ``tracklist_total``, ``discovery``, ``proposals_total``,
+    ``metadata_bucket``, ``analyze_bucket``, ``tracklist``, ``match``, ``proposals``, ``execute``,
+    ``execute_total`` -- the fallback markers IT took (an empty tuple when it was measured), via
+    :func:`~phaze.services.pipeline.common.measure_read`. A generic marker such as
+    ``stage_bucket`` is thereby attributed to the read that raised it rather than guessed from a
+    shared list. The returned dict, the statements, the legacy zero defaults and the fan-out
+    bound are identical with or without it.
     """
     # Pre-build the count statements so each gather task closes over a distinct, already-constructed
     # Select. Statement construction is pure (no I/O) -- only the execute() inside each own session
@@ -287,6 +301,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # collectively rather than per-poll (see _stats_fanout).
     fanout = _stats_fanout()
 
+    def owned[T](source: str, read: Awaitable[T]) -> Awaitable[T]:
+        return read if read_failures is None else measure_read(read_failures, source, read)
+
     # Fan out every independent read concurrently, each in its own session (D-01/D-02/D-03). The
     # _safe_count / _safe_bucket_counts wrappers stay VERBATIM (D-04) -- reused as the per-read body
     # -- and _read_in_own_session adds the acquisition-degrade belt (Pitfall 2). Assemble the SAME
@@ -310,17 +327,17 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     ) = type_cast(
         "tuple[int, int, int, int, StageBucketSnapshot, dict[str, int], int, int, int, int, int]",
         await asyncio.gather(
-            _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_bucket_snapshot(s, Stage.METADATA), metadata_bucket_default),
-            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_stmt, node="tracklist"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, proposals_stmt, node="proposals"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, execute_done_stmt, node="execute"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, execute_total_stmt, node="execute_total"), 0),
+            owned("music_video_total", _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0)),
+            owned("tracklist_total", _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0)),
+            owned("discovery", _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0)),
+            owned("proposals_total", _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0)),
+            owned("metadata_bucket", _read_in_own_session(fanout, lambda s: _safe_bucket_snapshot(s, Stage.METADATA), metadata_bucket_default)),
+            owned("analyze_bucket", _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default)),
+            owned("tracklist", _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_stmt, node="tracklist"), 0)),
+            owned("match", _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0)),
+            owned("proposals", _read_in_own_session(fanout, lambda s: _safe_count(s, proposals_stmt, node="proposals"), 0)),
+            owned("execute", _read_in_own_session(fanout, lambda s: _safe_count(s, execute_done_stmt, node="execute"), 0)),
+            owned("execute_total", _read_in_own_session(fanout, lambda s: _safe_count(s, execute_total_stmt, node="execute_total"), 0)),
         ),
     )
 
@@ -389,6 +406,7 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
                 out[r.stage] = {"paused": r.paused, "priority": r.priority}
         return out
     except Exception:
+        mark_read_degraded("stage_controls")
         logger.warning("stage_controls_degraded", exc_info=True)
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
 

@@ -1,0 +1,20 @@
+{# Read-only navigation to the existing merged per-file History. The execution audit table and
+   the pending tag-decision queue deliberately keep their own populations. #}
+<section data-tagwrite-history-links class="mt-4 rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+    <h2 class="text-sm font-medium">Completed tag-write history</h2>
+    <p class="mt-1 text-xs text-muted">The ten most recent completed tag writes and undo actions are linked below. Each file's History combines rename/move execution and tag-write events. For older events, open the file from <a href="/s/files" class="text-link hover:underline">Files</a> and choose History.</p>
+    {% if tagwrite_history_links.degraded %}
+        <p role="status" class="mt-3 text-sm text-muted">Recent tag-write links could not be loaded. Open the file from Files to view its recorded History.</p>
+    {% elif tagwrite_history_links.rows %}
+        <ul class="mt-3 space-y-2 text-sm">
+        {% for entry in tagwrite_history_links.rows %}
+            <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <a href="/files/{{ entry.file_id }}#history" class="min-w-0 break-words text-link hover:underline">{{ entry.original_filename }} — History</a>
+                <span class="text-xs text-muted">{{ 'Tag undo' if entry.source == 'undo' else 'Tag write' }} · Completed · {{ entry.written_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+            </li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p class="mt-3 text-sm text-muted">No completed tag writes or undo actions have been recorded.</p>
+    {% endif %}
+</section>

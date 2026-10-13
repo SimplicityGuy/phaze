@@ -266,7 +266,7 @@ async def undo_resolve_endpoint(
     raising asyncpg's ``CharacterNotInRepertoireError`` AFTER the undo has already committed.
     """
     parsed_states = parse_json_array_payload(file_states, field="file_states")
-    await undo_resolve(session, parsed_states)
+    restored_count = await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the undo is rolled back.
 
     # Re-fetch group data after undo
@@ -288,6 +288,8 @@ async def undo_resolve_endpoint(
         name="duplicates/partials/undo_response.html",
         context={
             "request": request,
+            "restored_count": restored_count,
+            "skipped_count": len(parsed_states) - restored_count,
             "group": dupe_group_card,
             "group_hash": group_hash,
         },
@@ -392,6 +394,7 @@ async def bulk_undo(
         context={
             "request": request,
             "restored_count": restored_count,
+            "skipped_count": len(parsed_states) - restored_count,
             "dedupe_groups": restored_groups,
         },
     )

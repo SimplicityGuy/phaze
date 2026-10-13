@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import event, select, text, update
+from sqlalchemy import delete, event, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from phaze.models.file import FileRecord
@@ -884,6 +886,230 @@ async def test_bulk_approve_returns_zero_for_an_empty_selection(session: AsyncSe
     assert await bulk_approve_selected_above_confidence(session, []) == 0
 
 
+@pytest.mark.parametrize("threshold", [0.90, 0.93, 0.96, 0.99])
+async def test_preview_matches_collision_stale_and_threshold_guarded_write(session: AsyncSession, threshold: float) -> None:
+    rows = [
+        await _create_proposal(session, original_filename=f"preview-{i}.mp3", proposed_filename=f"Reviewed-{i}.mp3", confidence=confidence)
+        for i, confidence in enumerate([0.89, 0.90, 0.93, 0.96, 0.99, None])
+    ]
+    collision_a = await _create_proposal(session, original_filename="collision-a.mp3", proposed_filename="Collision.mp3", confidence=0.99)
+    collision_b = await _create_proposal(session, original_filename="collision-b.mp3", proposed_filename="Collision.mp3", confidence=0.99)
+    collision_a.proposed_path = collision_b.proposed_path = "Shared/Destination"
+    await session.commit()
+    rows += [collision_a, collision_b]
+    stale = await _create_proposal(session, original_filename="stale.mp3", proposed_filename="Stale.mp3", confidence=0.99)
+    tokens = [await _review_token_for(session, row) for row in [*rows, stale]]
+    await session.execute(update(RenameProposal).where(RenameProposal.id == stale.id).values(updated_at=stale.updated_at + timedelta(seconds=1)))
+    await session.commit()
+    eligible = await proposal_queries.preview_bulk_approval(session, [*tokens, tokens[0]], threshold=threshold)
+    assert {token.proposal_id for token in eligible} == {row.id for row in rows[:5] if row.confidence >= threshold}
+    assert await _live_status(session, rows[4].id) == ProposalStatus.PENDING, "preview must not approve"
+    assert await bulk_approve_selected_above_confidence(session, tokens, threshold=threshold) == len(eligible)
+    for row in [*rows, stale]:
+        expected = ProposalStatus.APPROVED if row.id in {token.proposal_id for token in eligible} else ProposalStatus.PENDING
+        assert await _live_status(session, row.id) == expected
+
+
+async def test_bulk_undo_restores_only_returned_unchanged_approved_versions(session: AsyncSession) -> None:
+    rows = [await _create_proposal(session, original_filename=f"undo-{i}.mp3", proposed_filename=f"Undo-{i}.mp3", confidence=0.99) for i in range(3)]
+    before = [await _review_token_for(session, row) for row in rows]
+    approved = await proposal_queries.bulk_approve_selected_with_tokens(session, before)
+    assert {token.proposal_id for token in approved} == {row.id for row in rows}
+    stored = dict(
+        (await session.execute(select(RenameProposal.id, RenameProposal.updated_at).where(RenameProposal.id.in_([row.id for row in rows])))).all()
+    )
+    assert all(token.updated_at == stored[token.proposal_id] for token in approved)
+    await session.execute(
+        update(RenameProposal)
+        .where(RenameProposal.id == rows[1].id)
+        .values(proposed_filename="Edited.mp3", updated_at=stored[rows[1].id] + timedelta(seconds=5))
+    )
+    await session.execute(update(RenameProposal).where(RenameProposal.id == rows[2].id).values(status=ProposalStatus.EXECUTED.value))
+    await session.commit()
+    assert await proposal_queries.bulk_undo_approved(session, [*approved, approved[0]]) == 1
+    assert await _live_status(session, rows[0].id) == ProposalStatus.PENDING
+    assert await _live_status(session, rows[1].id) == ProposalStatus.APPROVED
+    assert await _live_status(session, rows[2].id) == ProposalStatus.EXECUTED
+    assert await proposal_queries.bulk_undo_approved(session, approved) == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["UPDATE proposals SET updated_at = updated_at + interval '5 seconds' WHERE id = :id", "UPDATE proposals SET status = 'executed' WHERE id = :id"],
+)
+async def test_bulk_undo_checks_versions_and_status_at_the_single_write(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    rows = [
+        await _create_proposal(session, original_filename=f"undo-race-{i}.mp3", proposed_filename=f"Race-{i}.mp3", confidence=0.99) for i in range(2)
+    ]
+    approved = await proposal_queries.bulk_approve_selected_with_tokens(session, [await _review_token_for(session, row) for row in rows])
+    real_execute = session.execute
+    real_commit = session.commit
+    updates = 0
+    commits = 0
+
+    async def race_then_execute(statement: object, *args: object, **kwargs: object) -> object:
+        nonlocal updates
+        if str(statement).startswith("UPDATE proposals"):
+            updates += 1
+            # The real database write lands after tokens were issued, immediately before the guarded statement.
+            await real_execute(text(change), {"id": rows[1].id})
+        return await real_execute(statement, *args, **kwargs)
+
+    async def commit_once() -> None:
+        nonlocal commits
+        commits += 1
+        await real_commit()
+
+    monkeypatch.setattr(session, "execute", race_then_execute)
+    monkeypatch.setattr(session, "commit", commit_once)
+    assert await proposal_queries.bulk_undo_approved(session, approved) == 1
+    assert updates == commits == 1
+    assert await _live_status(session, rows[0].id) == ProposalStatus.PENDING
+    assert await _live_status(session, rows[1].id) == (ProposalStatus.EXECUTED if "executed" in change else ProposalStatus.APPROVED)
+
+
+async def test_bulk_undo_skips_pending_siblings_and_same_file_ambiguity(session: AsyncSession) -> None:
+    row = await _create_proposal(session, original_filename="undo-sibling.mp3", proposed_filename="Approved.mp3", status=ProposalStatus.APPROVED)
+    token = await _review_token_for(session, row)
+    sibling = RenameProposal(file_id=row.file_id, proposed_filename="Pending.mp3", status=ProposalStatus.PENDING.value)
+    session.add(sibling)
+    await session.commit()
+    assert await proposal_queries.bulk_undo_approved(session, [token]) == 0
+    sibling.status = ProposalStatus.APPROVED.value
+    await session.commit()
+    tokens = [await _review_token_for(session, proposal) for proposal in (row, sibling)]
+    assert await proposal_queries.bulk_undo_approved(session, tokens) == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["UPDATE proposals SET updated_at = updated_at + interval '5 seconds' WHERE id = :id", "UPDATE proposals SET status = 'executed' WHERE id = :id"],
+)
+async def test_bulk_undo_rechecks_after_waiting_for_concurrent_transaction(async_engine: AsyncEngine, change: str) -> None:
+    """A real row-lock wait must recheck the edited/executed version after the competing commit."""
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    ids = []
+    file_ids = []
+    task = None
+    try:
+        async with factory() as setup:
+            rows = [
+                await _create_proposal(setup, original_filename=f"undo-locked-{i}.mp3", proposed_filename=f"Locked-{i}.mp3", confidence=0.99)
+                for i in range(2)
+            ]
+            ids = [row.id for row in rows]
+            file_ids = [row.file_id for row in rows]
+            approved = await proposal_queries.bulk_approve_selected_with_tokens(setup, [await _review_token_for(setup, row) for row in rows])
+        async with factory() as blocker, factory() as undo, factory() as observer:
+            await blocker.execute(text(change), {"id": ids[1]})
+            undo_pid = (await undo.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            task = asyncio.create_task(proposal_queries.bulk_undo_approved(undo, approved))
+            async with asyncio.timeout(5):
+                while not (
+                    await observer.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid = :pid AND wait_event_type = 'Lock')"
+                        ),
+                        {"pid": undo_pid},
+                    )
+                ).scalar_one():
+                    await asyncio.sleep(0.01)
+            assert not task.done(), "undo must be waiting on the actual edited proposal"
+            await blocker.commit()
+            assert await asyncio.wait_for(task, 5) == 1
+            assert await _live_status(observer, ids[0]) == ProposalStatus.PENDING
+            assert await _live_status(observer, ids[1]) == (ProposalStatus.EXECUTED if "executed" in change else ProposalStatus.APPROVED)
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        async with async_engine.begin() as cleanup:
+            if ids:
+                await cleanup.execute(delete(RenameProposal).where(RenameProposal.id.in_(ids)))
+                await cleanup.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+
+
+async def test_bulk_undo_pending_sibling_committed_during_wait_rolls_back_entire_statement(async_engine: AsyncEngine) -> None:
+    """The real unique index, not the earlier snapshot, protects an undo after a concurrent insert."""
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    ids = []
+    file_ids = []
+    task = None
+    try:
+        async with factory() as setup:
+            rows = [
+                await _create_proposal(setup, original_filename=f"undo-sibling-race-{i}.mp3", proposed_filename=f"Race-{i}.mp3", confidence=0.99)
+                for i in range(2)
+            ]
+            ids = [row.id for row in rows]
+            file_ids = [row.file_id for row in rows]
+            approved = await proposal_queries.bulk_approve_selected_with_tokens(setup, [await _review_token_for(setup, row) for row in rows])
+        async with factory() as blocker, factory() as undo, factory() as observer:
+            await blocker.execute(select(RenameProposal.id).where(RenameProposal.id == ids[1]).with_for_update())
+            blocker.add(RenameProposal(file_id=file_ids[1], proposed_filename="Concurrent pending.mp3", status=ProposalStatus.PENDING.value))
+            await blocker.flush()
+            undo_pid = (await undo.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            task = asyncio.create_task(proposal_queries.bulk_undo_approved(undo, approved))
+            async with asyncio.timeout(5):
+                while not (
+                    await observer.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid = :pid AND wait_event_type = 'Lock')"
+                        ),
+                        {"pid": undo_pid},
+                    )
+                ).scalar_one():
+                    await asyncio.sleep(0.01)
+            assert not task.done()
+            await blocker.commit()
+            with pytest.raises(IntegrityError, match="uq_proposals_file_id_pending"):
+                await asyncio.wait_for(task, 5)
+            await undo.rollback()
+            assert all([await _live_status(observer, proposal_id) == ProposalStatus.APPROVED for proposal_id in ids])
+            assert (
+                await observer.execute(
+                    select(RenameProposal.id).where(RenameProposal.file_id == file_ids[1], RenameProposal.status == ProposalStatus.PENDING.value)
+                )
+            ).scalar_one()
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        async with async_engine.begin() as cleanup:
+            if file_ids:
+                await cleanup.execute(delete(RenameProposal).where(RenameProposal.file_id.in_(file_ids)))
+                await cleanup.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+
+
+async def test_bulk_undo_commits_nothing_when_the_single_write_fails(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        await _create_proposal(session, original_filename=f"undo-atomic-{i}.mp3", proposed_filename=f"Atomic-{i}.mp3", confidence=0.99)
+        for i in range(2)
+    ]
+    approved = await proposal_queries.bulk_approve_selected_with_tokens(session, [await _review_token_for(session, row) for row in rows])
+    ids = [row.id for row in rows]
+    real_execute = session.execute
+    commits = 0
+
+    async def fail_write(statement: object, *args: object, **kwargs: object) -> object:
+        if str(statement).startswith("UPDATE proposals"):
+            raise IntegrityError("simulated pending sibling race", None, Exception())
+        return await real_execute(statement, *args, **kwargs)
+
+    async def count_commit() -> None:
+        nonlocal commits
+        commits += 1
+
+    monkeypatch.setattr(session, "execute", fail_write)
+    monkeypatch.setattr(session, "commit", count_commit)
+    with pytest.raises(IntegrityError):
+        await proposal_queries.bulk_undo_approved(session, approved)
+    assert commits == 0
+    await session.rollback()
+    for proposal_id in ids:
+        assert await _live_status(session, proposal_id) == ProposalStatus.APPROVED
+
+
 @pytest.mark.asyncio
 async def test_bulk_approve_returns_zero_when_no_selected_row_is_eligible(session: AsyncSession) -> None:
     """A non-empty selection none of which qualifies still commits and reports 0 -- no UPDATE at all.
@@ -1071,3 +1297,62 @@ async def test_bulk_approve_commits_nothing_when_the_batched_write_fails(
 
     for proposal_id in proposal_ids:
         assert await _live_status(session, proposal_id) == ProposalStatus.PENDING
+
+
+@pytest.mark.parametrize("eligible_total", [0, 500, 501])
+async def test_population_preview_caps_at_501st_eligible_not_candidate(session: AsyncSession, eligible_total: int) -> None:
+    """Real early collisions must not consume the eligible sentinel or enter reviewed tokens."""
+    proposals: list[RenameProposal] = []
+    for index in range(120 + eligible_total):
+        file_id = uuid.uuid4()
+        filename = f"population-source-{index}.mp3"
+        session.add(
+            FileRecord(
+                id=file_id,
+                agent_id="test-fileserver",
+                sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                original_path=f"/music/population/{filename}",
+                original_filename=filename,
+                current_path=f"/music/{filename}",
+                file_type="music",
+                file_size=100,
+            )
+        )
+        proposal = RenameProposal(
+            id=uuid.UUID(int=index + 1),
+            file_id=file_id,
+            proposed_filename=f"collision-{index // 2}.mp3" if index < 120 else f"population-target-{index}.mp3",
+            confidence=0.99,
+            status=ProposalStatus.PENDING.value,
+            context_used={},
+            reason="Synthetic population preview",
+        )
+        session.add(proposal)
+        proposals.append(proposal)
+    await session.commit()
+    reads: list[tuple[str, object]] = []
+
+    def capture(_conn: object, _cursor: object, statement: str, parameters: object, _context: object, _many: bool) -> None:
+        if statement.startswith("SELECT proposals.") and "ORDER BY proposals.id" in statement:
+            reads.append((statement, parameters))
+
+    bind = session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        preview = await proposal_queries.preview_bulk_approval_page(session, None, threshold=0.99)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert len(preview.tokens) == len(preview.proposals) == min(eligible_total, 500)
+    assert preview.capped is (eligible_total > 500)
+    assert [token.proposal_id for token in preview.tokens] == [proposal.id for proposal in proposals[120:620]]
+    assert all(token.content_digest == proposal_review_digest(proposal) for token, proposal in zip(preview.tokens, preview.proposals, strict=True))
+    assert reads and all("LIMIT" in statement for statement, _parameters in reads)
+    assert all(isinstance(parameters, tuple) and parameters[-1] == 100 for _statement, parameters in reads)
+
+
+@pytest.mark.parametrize("status", ["approved", "blocked", "rejected"])
+async def test_population_preview_cannot_expand_a_resolved_status_scope(session: AsyncSession, status: str) -> None:
+    await _create_proposal(session, confidence=0.99)
+    preview = await proposal_queries.preview_bulk_approval_page(session, None, status=status, threshold=0.99)
+    assert preview.proposals == preview.tokens == []
+    assert not preview.capped

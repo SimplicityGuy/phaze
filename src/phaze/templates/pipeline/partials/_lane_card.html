@@ -60,7 +60,7 @@
             {% elif _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
-            {% elif _capacity_full %}{{ ui.status_badge("Lane status", "AT CAPACITY", "attention", "!") }}
+            {% elif _capacity_full %}{{ ui.status_badge("Lane status", "AT CAPACITY", "neutral", "…") }}
             {% elif _active %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
             {% elif _local and _queued %}{{ ui.status_badge("Lane status", "WAITING", "neutral", "…") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
@@ -69,13 +69,13 @@
     </dl>
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-info sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
     {% if _stuck %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck | thousands }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
+    <p class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">{{ _stuck | thousands }} job(s) on this lane are stuck: claimed but never started, stranded, or silent past their heartbeat. See Running now and the waiting list.</p>
     {% elif _breaker_held %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">Dispatch held: this lane's pods cannot reach the control plane ({{ lane.breaker_reason or "breaker open" }}). No attempts are being charged. One probe file is sent{% if lane.breaker_next_probe_at %} from {{ lane.breaker_next_probe_at.strftime("%H:%M UTC") }}{% endif %}; the lane resumes on its own the first time a pod reaches the control plane. Check the burst cluster's DNS and network path to the control plane.</p>
+    <p class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">Dispatch held: this lane's pods cannot reach the control plane ({{ lane.breaker_reason or "breaker open" }}). No attempts are being charged. One probe file is sent{% if lane.breaker_next_probe_at %} from {{ lane.breaker_next_probe_at.strftime("%H:%M UTC") }}{% endif %}; the lane resumes on its own the first time a pod reaches the control plane. Check the burst cluster's DNS and network path to the control plane.</p>
     {% elif _capacity_over %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight | thousands }} exceeds scheduler cap {{ lane.cap | thousands }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
+    <p class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight | thousands }} exceeds scheduler cap {{ lane.cap | thousands }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% elif _capacity_full and lane.available %}
-    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-warn dark:bg-amber-950  sm:col-span-12">At scheduler cap {{ lane.cap | thousands }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
+    <p class="rounded-md bg-gray-50 px-3 py-2 text-xs text-muted dark:bg-phaze-bg sm:col-span-12">Connected; all {{ lane.cap | thousands }} slots are busy. New work waits for a slot to open.</p>
     {% endif %}
     <details id="lane-diagnostics-{{ lane.id }}" data-poll-preserve-disclosure class="sm:col-span-12"
              onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">

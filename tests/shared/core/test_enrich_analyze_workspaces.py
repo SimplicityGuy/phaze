@@ -38,6 +38,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.routers.shell.stage_maps import STAGE_PARTIALS, UTILITY_PANES
+from tests.shared.routers.pipeline._shared import _publish_analysis_attention
 
 
 if TYPE_CHECKING:
@@ -278,8 +279,8 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     Before the fix, EVERY stage (including Analyze) sank this OOB-emitted card into a `hidden
     aria-hidden` div, so the terminal analysis-failed count was invisible everywhere. With at
     least one file seeded (so Analyze renders the real workspace, not the empty-state guide),
-    the card must render for real: not hidden, carrying its live counts (Analysis failed +
-    Stalled, phaze-g84sk) and heading, exactly once, and the bulk Retry control gated on a
+    the card must render for real: not hidden, carrying its shared terminal-failure incident
+    and watchdog subset detail exactly once, and the bulk Retry control gated on a
     non-zero failed count.
     """
     file = await _seed_file(session)
@@ -289,6 +290,7 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
         AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="crashed: boom", analysis_completed_at=None)
     )
     await session.commit()
+    await _publish_analysis_attention(session)
 
     frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert frag.status_code == 200
@@ -297,10 +299,9 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     assert body.count('id="analysis-health-card"') == 1, "exactly one Analysis Health card"
     card = body.split('id="analysis-health-card"')[1].split("</section>")[0]
     assert "Analysis Health" in body
-    assert "Analysis failed" in body
-    assert "Stalled" in body
-    assert "1" in card, "the seeded terminal failure must be counted"
-    assert "0" in card, "the seeded failure was crashed, not stalled -- the Stalled tile reads 0"
+    assert body.count('data-incident-id="analysis-failed"') == 1
+    assert "1 file(s) reached terminal failure" in card
+    assert "stopped by the progress watchdog" not in card
     # The bulk retry control is gated on analysis_failed_count > 0 -- it must render for real here.
     assert 'hx-post="/pipeline/analysis-failed/retry"' in card
     assert "Retry failed" in card
@@ -445,7 +446,7 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
     assert "setInterval" not in md_body
     assert "automated extraction" in md_body
     assert "manual stage" not in md_body
-    for state in ("Eligible", "Queued", "Active", "Completed", "Failed", "idle"):
+    for state in ("Eligible", "Extraction queued", "Extraction active", "Extraction processed", "Failed", "idle"):
         assert state in md_body
     assert "Files updated · 24h" in md_body
     assert "Latest successful write" in md_body
@@ -848,6 +849,7 @@ async def test_local_lane_large_queue_renders_no_red(
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     await _seed_file(session)
+    await _publish_analysis_attention(session, lanes=[lane])
 
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
@@ -856,7 +858,7 @@ async def test_local_lane_large_queue_renders_no_red(
     for alarm in ("UNSAFE", "OVER LIMIT", "AT CAPACITY", "CONGESTED", "STUCK", "exceeds scheduler cap", "exceeds capacity"):
         assert alarm not in body, alarm
     assert "bg-red-50" not in health and 'role="alert"' not in health
-    assert "HEALTHY" in health
+    assert "No actionable analysis exceptions" in health
     assert "695/1" not in body
     lanes_start = body.index('id="analyze-lanes"')
     lane_grid = body[lanes_start : body.index('id="detail-pane', lanes_start)]
@@ -905,16 +907,17 @@ async def test_local_lane_stuck_jobs_render_red(
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     await _seed_file(session)
 
-    for lane, detail in (
+    for lane, _detail in (
         ({**base, "stranded": 0, "claimed_overdue": 4, "stuck": 4}, "4 claimed but not started past the stall bound"),
         ({**base, "stranded": 2, "claimed_overdue": 0, "stuck": 2}, "2 stranded"),
     ):
         state["lane"] = lane
+        await _publish_analysis_attention(session, lanes=[lane])
         body = (await client.get("/s/analyze", headers={"HX-Request": "true"})).text
         health = _health_card(body)
-        assert 'role="alert"' in health and "bg-red-50" in health
-        assert "STUCK" in health and detail in health
-        assert "LOCAL · local has" in health
+        assert 'data-incident-id="lane:local:stuck"' in health and 'data-incident-tone="danger"' in health
+        assert "Stuck analysis work: local · local" in health
+        assert f"· {lane['stuck']}" in health
         card = body[body.index('aria-label="Kind: local lane, local"') :]
         assert "STUCK" in card and "are stuck" in card
         # Still no capacity verdict for the local lane.
@@ -951,12 +954,14 @@ async def test_cloud_lane_over_limit_is_still_unsafe(
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     await _seed_file(session)
+    await _publish_analysis_attention(session, lanes=[lane])
 
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     health = _health_card(body)
-    assert "UNSAFE" in health
+    assert 'data-incident-id="lane:k8s:over-capacity"' in health
+    assert 'data-incident-tone="danger"' in health
     assert "3 in-flight jobs exceed scheduler cap 2" in health
     assert "Stop new admission and inspect the lane" in health
     assert "OVER LIMIT" in body
@@ -966,7 +971,7 @@ async def test_cloud_lane_over_limit_is_still_unsafe(
 
 
 @pytest.mark.asyncio
-async def test_cloud_lane_exact_capacity_is_amber_congestion(
+async def test_cloud_lane_exact_capacity_is_neutral_waiting(
     client: AsyncClient,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -995,16 +1000,18 @@ async def test_cloud_lane_exact_capacity_is_amber_congestion(
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     await _seed_file(session)
+    await _publish_analysis_attention(session, lanes=[lane])
 
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     health = _health_card(body)
-    assert "CONGESTED" in health and "2 in-flight jobs fill scheduler cap 2" in health
+    assert "No actionable analysis exceptions" in health
+    assert "data-incident-id" not in health
     assert "AT CAPACITY" in body
-    assert "New work remains queued until a slot opens" in body
+    assert "Connected; all 2 slots are busy" in body
     assert "OVER LIMIT" not in body and "UNSAFE" not in health
-    assert "bg-amber-50" in body and "bg-red-50" not in health
+    assert "bg-amber-50" not in body and "bg-red-50" not in health
 
 
 @pytest.mark.asyncio

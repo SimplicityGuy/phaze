@@ -73,6 +73,7 @@ from phaze.services.companion_view import (
 )
 from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
+from phaze.services.pipeline.files import file_stage_applicability
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
 from phaze.services.record_metadata import build_metadata_card
@@ -246,7 +247,8 @@ async def build_file_record_context(
 
     # CONSOLE-01: the six derived per-stage buckets — the SAME stage_status_case derivation the
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
-    stage_buckets = await get_file_stage_buckets(session, file_id)
+    stage_history: dict[str, bool] = {}
+    stage_buckets = await get_file_stage_buckets(session, file_id, history=stage_history)
     # phaze-cavai: the per-stage "why" facts the pills alone cannot answer. A failed pill gets the
     # STORED failure reason (FileMetadata / AnalysisResult error_message — written on failure,
     # previously never surfaced anywhere in the UI); an orphaned enrich stage gets the ledger facts
@@ -344,6 +346,7 @@ async def build_file_record_context(
     return {
         "file": file,
         "stage_buckets": stage_buckets,
+        "stage_applicability": file_stage_applicability(file.file_type, stage_buckets, stage_history),
         "analysis": analysis,
         "file_id": file_id,
         "set_profile": set_profile,

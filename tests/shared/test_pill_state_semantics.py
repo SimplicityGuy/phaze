@@ -287,7 +287,7 @@ async def test_review_card_is_not_amber_when_nothing_needs_review(client: AsyncC
     assert banner["data-review-state"] == "clear"
     assert "amber" not in " ".join(banner["class"])
     assert "text-warn" not in str(banner)
-    assert "up to date" in banner.get_text()
+    assert "No proposed changes awaiting review" in banner.get_text()
 
 
 @pytest.mark.asyncio

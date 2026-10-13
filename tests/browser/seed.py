@@ -187,7 +187,8 @@ async def reset(session: AsyncSession) -> None:
     result = await session.execute(
         text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"),
     )
-    tables = sorted(name for (name,) in result.all() if name not in _PRESERVED_TABLES)
+    existing = {name for (name,) in result.all()}
+    tables = sorted(existing - _PRESERVED_TABLES)
     if not tables:
         return
     # Interpolated rather than bound because identifiers cannot be parameters in SQL. Safe: every
@@ -211,6 +212,12 @@ async def reset(session: AsyncSession) -> None:
     for attempt in range(_RESET_DEADLOCK_RETRIES):
         try:
             await session.execute(text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE"))
+            if "saq_jobs" in existing:
+                # The SAQ TABLES stay (the server owns their schema), but the JOBS are test state: a
+                # job one test enqueued (Extract All) otherwise survives every later reset, so the
+                # Metadata stage reads as busy -- Extract disabled, the "no queued or active jobs"
+                # note absent -- for every test after it. Delete rows, never the table.
+                await session.execute(text("DELETE FROM saq_jobs"))
             await session.commit()
             return
         except DBAPIError as exc:

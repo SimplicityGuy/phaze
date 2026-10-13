@@ -9,23 +9,9 @@
    never valid to query at all), an inert placeholder takes its place at the SAME id so the outerHTML
    swap this endpoint's keeper radio issues always lands on a real element. #}
 {% if group %}
+    {% with resolve_error="Nothing to resolve — this group may have changed since it was shown. Refresh to see the current state." %}
     {% include "pipeline/partials/_dupe_group.html" %}
+    {% endwith %}
 {% else %}
-    <div id="dupe-group-{{ group_hash }}" style="display:none;"></div>
+    <div id="dupe-group-{{ group_hash }}" role="alert" class="rounded-lg border border-amber-300 p-4 text-warn dark:border-amber-700">Nothing to resolve — this group is no longer available. Refresh to see the current state.</div>
 {% endif %}
-
-{# OOB: an honest, non-dismissive-of-failure toast -- role="alert" so assistive tech announces it,
-   no Undo control (nothing was written, so nothing to reverse). #}
-<div hx-swap-oob="beforeend:#toast-container">
-    <div x-data="{ show: true }"
-         x-init="setTimeout(() => show = false, 10000)"
-         x-show="show"
-         x-transition:leave="transition ease-in duration-200"
-         x-transition:leave-start="opacity-100"
-         x-transition:leave-end="opacity-0"
-         @transitionend="$el.remove()"
-         role="alert"
-         class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
-        <span>Nothing to resolve — this group may have changed since it was shown. Refresh to see the current state.</span>
-    </div>
-</div>

@@ -40,6 +40,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.services.selected_tag_sources import SelectedTagSource
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_comparison import (
@@ -484,7 +485,23 @@ async def write_file_tags(
 
     if not review_token:
         raise HTTPException(status_code=400, detail="A reviewed tag payload is required")
-    reviewed, tags = await _validate_tag_review_token(session, file_record, review_token)
+    try:
+        reviewed, tags = await _validate_tag_review_token(session, file_record, review_token)
+    except HTTPException as exc:
+        # Only the rendered tag Approve control opts into this fragment. API callers retain the
+        # original JSON refusal; the reviewed decision and every write guard remain unchanged.
+        if exc.status_code != 409:
+            raise
+        exc.headers = {**(exc.headers or {}), **DUAL_SHAPE_RESPONSE_HEADERS}
+        if not wants_fragment(request) or request.headers.get("HX-Target") != f"tagwrite-row-{file_id}":
+            raise
+        return templates.TemplateResponse(
+            request=request,
+            name="tags/partials/approval_conflict.html",
+            context={"request": request, "reason": exc.detail},
+            status_code=409,
+            headers={**DUAL_SHAPE_RESPONSE_HEADERS, "HX-Retarget": f"#tagwrite-feedback-{file_id}", "HX-Reswap": "innerHTML"},
+        )
     tag_payload: dict[str, str | int | list[str] | None] = {field: value for field, value in tags.items() if value is not None}
 
     try:

@@ -198,13 +198,21 @@ async def test_admission_per_backend_group_by(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_admission_empty_when_no_rows(session: AsyncSession) -> None:
     """No cloud_job rows -> an empty attribution map (every lane falls back to zero)."""
-    assert await _admission_by_backend_id(session) == {}
+    from phaze.services.pipeline.common import capture_read_degradations
+
+    with capture_read_degradations() as failures:
+        assert await _admission_by_backend_id(session) == {}
+    assert failures == []
 
 
 @pytest.mark.asyncio
 async def test_admission_degrades_to_empty_on_db_error() -> None:
     """A DB error degrades the attribution to {} (never raises into the poll)."""
-    assert await _admission_by_backend_id(_ExplodingSession()) == {}  # type: ignore[arg-type]
+    from phaze.services.pipeline.common import capture_read_degradations
+
+    with capture_read_degradations() as failures:
+        assert await _admission_by_backend_id(_ExplodingSession()) == {}  # type: ignore[arg-type]
+    assert failures == ["backend_lane_admission"]
 
 
 @pytest.mark.asyncio

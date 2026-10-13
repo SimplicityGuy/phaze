@@ -212,6 +212,14 @@ def _seat_dsn() -> str:
 _PG_MAX_IDENTIFIER_BYTES = 63
 
 
+# A module that must boot the app with its own configuration (see `tests/browser/test_agents_detail_reopen.py`)
+# cannot reuse the session's server, and must not share its database either: `_recreate_database` DROPs
+# with FORCE, which severs the session server's connections and wipes its schema. Setting this suffix for
+# the module's duration points both the module's server AND `_browser_dsn()` callers (`seed`,
+# `browser_dsn`) at one private database, then restores the session's when the module is done.
+_BROWSER_DB_SUFFIX_ENV = "PHAZE_BROWSER_DB_SUFFIX"
+
+
 def _browser_dsn() -> str:
     """A dedicated database for the live app, derived from this seat's DSN.
 
@@ -225,7 +233,7 @@ def _browser_dsn() -> str:
     each other -- ``_recreate_database`` below does a DROP + CREATE, so the collision is destructive.
     """
     base, _, name = _seat_dsn().rpartition("/")
-    browser_name = f"{name}_browser"
+    browser_name = f"{name}_browser{os.environ.get(_BROWSER_DB_SUFFIX_ENV, '')}"
     if len(browser_name.encode()) > _PG_MAX_IDENTIFIER_BYTES:
         raise RuntimeError(
             f"browser database name {browser_name!r} is {len(browser_name.encode())} bytes, over Postgres's "
@@ -264,7 +272,7 @@ def _recreate_database(dsn: str) -> None:
     asyncio.run(_run())
 
 
-def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None:
+def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes], log_path: Path) -> None:
     """Poll until the app answers, failing loudly with its own output if it dies during boot."""
     import httpx
 
@@ -272,7 +280,7 @@ def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None
     with httpx.Client(timeout=5.0) as probe:
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                output = (process.stdout.read() if process.stdout else b"").decode(errors="replace")
+                output = log_path.read_bytes().decode(errors="replace") if log_path.exists() else ""
                 raise RuntimeError(f"the app exited during boot (rc={process.returncode}):\n{output[-4000:]}")
             with contextlib.suppress(Exception):
                 if probe.get(f"{base_url}/health").status_code == 200:
@@ -284,6 +292,11 @@ def _wait_until_serving(base_url: str, process: subprocess.Popen[bytes]) -> None
 @pytest.fixture(scope="session")
 def live_server() -> Iterator[str]:
     """A real uvicorn serving the real app against its own migrated database."""
+    yield from serve_live_app()
+
+
+def serve_live_app() -> Iterator[str]:
+    """Boot uvicorn against `_browser_dsn()`'s database; shared by `live_server` and module overrides."""
     dsn = _browser_dsn()
     _recreate_database(dsn)
 
@@ -297,15 +310,24 @@ def live_server() -> Iterator[str]:
         "PHAZE_REDIS_URL": os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0"),
         "PHAZE_ENABLE_SAQ_UI": "false",
     }
-    process = subprocess.Popen(  # noqa: S603 -- fixed argv, no shell, test harness
-        [sys.executable, "-m", "uvicorn", "phaze.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
-        cwd=_REPO_ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    # The server's output goes to a FILE, never an undrained PIPE. A pipe holds ~64 KiB; nothing reads
+    # it after boot, so once the app has logged that much (warnings accumulate across hundreds of
+    # tests) its next write() blocks the event-loop thread forever. /health stops answering, every
+    # later test times out, and CI sat silent until its 20-minute cap. A file cannot fill up that way,
+    # and doubles as the server log a failing run can be diagnosed from.
+    log_dir = _ARTIFACT_DIR / "server-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{dsn.rpartition('/')[2]}-{port}.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(  # noqa: S603 -- fixed argv, no shell, test harness
+            [sys.executable, "-m", "uvicorn", "phaze.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+            cwd=_REPO_ROOT,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
     try:
-        _wait_until_serving(base_url, process)
+        _wait_until_serving(base_url, process, log_path)
         yield base_url
     finally:
         process.terminate()
@@ -510,6 +532,28 @@ async def open_page(chromium_browser: Any, live_server: str, request: pytest.Fix
 async def page(open_page: Any) -> Any:
     """A desktop-width page."""
     return await open_page("desktop")
+
+
+@pytest_asyncio.fixture(loop_scope="session", params=[1024])
+async def modal_width(request: pytest.FixtureRequest, page: Any) -> int:
+    """Pin ``page`` below ``xl`` so a Files record opens in the MODAL host (phaze-7u4sy).
+
+    From ``xl`` up the Files stage opens records in the docked, non-modal inspector
+    (``record_dock.html``), so the tests that assert the modal's contract -- focus trap, inert
+    background, exact opener restore -- must run where the modal is the owner. Request it with
+    ``@pytest.mark.usefixtures("modal_width")``; the viewport is set before the test body navigates.
+    """
+    width = int(request.param)
+    await page.set_viewport_size({"width": width, "height": 1000})
+    return width
+
+
+@pytest_asyncio.fixture(loop_scope="session", params=[1024, 768])
+async def modal_widths(request: pytest.FixtureRequest, page: Any) -> int:
+    """:func:`modal_width` at both widths below ``xl`` the modal contract is held to (1024 and 768)."""
+    width = int(request.param)
+    await page.set_viewport_size({"width": width, "height": 1000})
+    return width
 
 
 @pytest_asyncio.fixture(loop_scope="session")

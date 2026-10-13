@@ -151,3 +151,27 @@ async def test_full_page_not_found_also_renders_inside_the_app_shell(client: Asy
     not_found = page.select_one("#stage-workspace [data-record-not-found]")
     assert not_found is not None
     assert "That file no longer exists" in not_found.get_text()
+
+
+@pytest.mark.asyncio
+async def test_full_records_host_every_stats_poll_target_without_seeding_drawers(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    stats = BeautifulSoup((await client.get("/pipeline/stats")).text, "html.parser")
+    target_ids = [target["id"] for target in stats.select("[hx-swap-oob][id]")]
+    assert "dag-seed-metadataDone" in target_ids
+    assert "analysis-health-card" in target_ids
+    assert "analyze-lanes" in target_ids
+
+    for file_id in (file.id, uuid.uuid4()):
+        page = BeautifulSoup((await client.get(f"/files/{file_id}")).text, "html.parser")
+        for target_id in target_ids:
+            assert len(page.select(f"#{target_id}")) == 1, f"poll target {target_id} must be mounted exactly once"
+        ids = [element["id"] for element in page.select("[id]")]
+        assert len(ids) == len(set(ids))
+        assert not page.select("#record-main [hx-trigger*=every]")
+
+        drawer = BeautifulSoup((await client.get(f"/record/{file_id}", headers={"HX-Request": "true"})).text, "html.parser")
+        assert not drawer.select('[id^="dag-seed-"]'), "drawer fragments must reuse their parent workspace's targets"

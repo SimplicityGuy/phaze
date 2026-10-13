@@ -9,7 +9,7 @@ import pytest
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.local_source_import import import_local_source
-from tests.browser.helpers import open_shell, swap_settles
+from tests.browser.helpers import open_shell, record_lookup_loaded, swap_settles
 from tests.browser.test_files_record import _details_button, _wait_for_record
 from tests.integration.test_companion_viewing import TEXT
 from tests.integration.test_local_source_import import inventory
@@ -25,6 +25,62 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.browser
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_source_summary_native_disclosures_across_workspaces_phone(open_page: Any, seed: Seeder, tmp_path: Path, theme: str) -> None:
+    """Real shell loads and keyboard disclosures retain diagnostics without leading with them."""
+    from phaze.services.local_source_import import decide_local_source
+    from tests.integration.test_local_source_import import decision
+    from tests.integration.test_selected_source_consumers import CUE
+
+    await seed.agent("test-fileserver")
+    media, companion, raw = await inventory(seed.session, CUE, "cue")
+    imported = await import_local_source(seed.session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    await decide_local_source(seed.session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
+    await seed.session.commit()
+    page = await open_page("phone", theme=theme)
+    for stage, kind in (("metadata", "release_metadata"), ("tracklist", "tracklist"), ("cue", "cue")):
+        await open_shell(page, f"/s/{stage}")
+        observation_id = imported.release_observation_id if kind == "release_metadata" else imported.tracklist_observation_id
+        row = page.locator(f"#local-{kind}-sources tbody tr").filter(has_text=str(observation_id))
+        await row.wait_for()
+        assert "Current source version" in await row.inner_text()
+        assert str(imported.tracklist_observation_id) not in await row.inner_text()
+        details = row.locator("details").first
+        await details.locator("summary").focus()
+        await page.keyboard.press("Enter")
+        assert await details.evaluate("el => el.open")
+        assert companion.sha256_hash in await details.inner_text()
+        await page.keyboard.press("Enter")
+        assert not await details.evaluate("el => el.open")
+        if kind == "cue":
+            async with swap_settles(page):
+                await row.get_by_role("button", name="Preview generated CUE artifact", exact=True).click()
+            preview = row.locator(f"#selected-cue-card-{media.id}")
+            assert "Selected tracklist · current source version" in await preview.inner_text()
+            assert str(imported.tracklist_observation_id) not in await preview.inner_text()
+            await preview.locator("summary").click()
+            assert str(imported.tracklist_observation_id) in await preview.inner_text()
+        await page.screenshot(path=str(tmp_path / f"source-summary-{stage}-phone-{theme}.png"), full_page=True)
+        assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+    await open_shell(page, f"/files/{media.id}")
+    record = page.locator(f"#tracklist-review-{media.id}")
+    assert "Selected tracklist" in await record.inner_text() and "Stored tracklist" not in await record.inner_text()
+    assert str(imported.tracklist_observation_id) not in await record.inner_text()
+    await record.locator("summary").focus()
+    await page.keyboard.press("Enter")
+    assert str(imported.tracklist_observation_id) in await record.inner_text()
+    await page.screenshot(path=str(tmp_path / f"source-summary-record-phone-{theme}.png"), full_page=True)
+    async with swap_settles(page):
+        await page.get_by_role("button", name="Review content", exact=True).first.click()
+    observation = page.locator(f'[data-stored-observation="{imported.tracklist_observation_id}"]')
+    await observation.wait_for()
+    assert str(imported.tracklist_observation_id) not in await observation.inner_text()
+    await observation.get_by_text("Version details and review evidence", exact=True).click()
+    assert str(imported.tracklist_observation_id) in await observation.inner_text()
+    assert companion.sha256_hash in await observation.inner_text() and media.sha256_hash in await observation.inner_text()
+    await page.screenshot(path=str(tmp_path / f"source-summary-guided-phone-{theme}.png"), full_page=True)
 
 
 async def test_hostile_native_discogs_form_refuses_valid_pin_then_same_origin_review_succeeds(page, seed, live_server):
@@ -70,6 +126,7 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
     await open_shell(page, f"/files/{media.id}")
     assert await page.locator("[data-visible-track]").first.is_visible()
     assert "Example Festival" in await page.locator("[data-release-metadata]").inner_text()
+    await record_lookup_loaded(page)
     page_text = await page.locator("[data-record-content]").inner_text()
     track = page.get_by_role("button", name="Review content").first
     await track.focus()
@@ -89,10 +146,11 @@ async def test_companion_both_kinds_keyboard_lazy_text_page_drawer_narrow(page, 
                 whiteSpace: getComputedStyle(el).whiteSpace})).slice(0, 12);
     }""")
     assert await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"), overflow
-    await page.set_viewport_size({"width": 1280, "height": 900})
+    await page.set_viewport_size({"width": 1024, "height": 900})  # below xl: the modal drawer, not the Files dock
     await open_shell(page, "/s/files")
     await page.locator(_details_button(media.id)).click()
     await _wait_for_record(page)
+    await record_lookup_loaded(page, "#record-body")
     drawer_text = await page.locator("#record-body [data-record-content]").inner_text()
     assert page_text == drawer_text
     assert await page.locator("#record-body [data-visible-release-field]").first.is_visible()

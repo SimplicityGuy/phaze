@@ -70,11 +70,45 @@
    re-render this subtree, so an in-progress inline edit is never clobbered).
 #}
 {% import "ui/primitives.html" as ui %}
+{# Segments stay plain text until this autoescaped macro. Removed/added changes also have a
+   weight/decorative channel, so the diff remains legible without colour. #}
+{% macro diff_value(value, segments, removed=false) -%}
+<code title="{{ value }}" data-diff-side="{{ 'before' if removed else 'after' }}"
+      class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono {{ 'bg-rose-50 text-danger line-through dark:bg-rose-500/10' if removed else 'bg-emerald-50 text-ok dark:bg-emerald-500/10' }}">{%- for segment in segments -%}{%- if segment.changed -%}{% if removed %}<del class="font-semibold decoration-2" data-diff-changed>{{ segment.text }}</del>{% else %}<ins class="font-semibold underline decoration-2" data-diff-changed>{{ segment.text }}</ins>{% endif %}{%- else -%}{{ segment.text }}{%- endif -%}{%- endfor -%}</code>
+{%- endmacro %}
+{% set _segments = before | changed_segments(after) %}
 {% set _primary = ui.btn('primary', 'sm') %}
 {% set _sec = ui.btn('secondary', 'sm') %}
+{% set _tag_approval = row_id_prefix == 'tagwrite-row' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
-     class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
-     x-data='{ editing:false, val:{{ after|tojson }} }'>
+     data-review-row tabindex="-1"
+     class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 data-[review-focused=true]:ring-2 data-[review-focused=true]:ring-inset data-[review-focused=true]:ring-blue-500{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
+     x-data='{ editing:false, proposalError:null, proposalRefused(event) {
+        try { this.proposalError = JSON.parse(event.detail.xhr.responseText).detail; }
+        catch { this.proposalError = "Review could not be confirmed. Refresh review evidence before trying again."; }
+     }{% if live_bulk_eligibility | default(false) %},
+     bulkFloor() { return typeof threshold === "undefined" ? {{ bulk_threshold }} : threshold; },
+     confidenceWarning() {
+        const confidence = {{ confidence | tojson }};
+        return confidence === null ? "Confidence unavailable; individual review required."
+            : confidence < this.bulkFloor() / 100 ? "Below the " + this.bulkFloor() + "% bulk-approval threshold; individual review required." : "";
+     },
+     bulkCue() {
+        if ({{ (row_state != "pending") | tojson }}) return "Disabled: this decision is already resolved.";
+        if ({{ bulk_collision | tojson }} === true) return "Excluded: destination conflict; approval is blocked.";
+        if (this.confidenceWarning()) return "Excluded: " + this.confidenceWarning();
+        return {{ bulk_collision | tojson }} === null
+            ? "Confidence meets " + this.bulkFloor() + "%; preview must confirm destinations and reviewed versions."
+            : "Eligible for selected bulk approval at " + this.bulkFloor() + "%.";
+     }{% endif %}, val:{{ after|tojson }}{% if _tag_approval %}, tagApprovalStale:false, tagApprovalError:false{% endif %} }'
+     {% if not _tag_approval %}
+     @htmx:response-error.camel="proposalRefused($event)"
+     {% endif %}
+     {% if _tag_approval %}
+     @htmx:response-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     @htmx:send-error.camel="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     @htmx:timeout="if ($event.detail.elt.hasAttribute('data-tag-approve')) { tagApprovalStale = true; tagApprovalError = true; }"
+     {% endif %}>
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ file }}">{{ file }}{% if profile is defined and profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(profile, height_class='h-2.5') }}</span>{% endif %}</div>
         {% if row_state and row_state != 'pending' %}
@@ -95,7 +129,7 @@
                branch, the pending branch below already templates the verb. Rename/move pass no
                undo_method (defaults to "patch") and their undo routes are PATCH, so templating the
                verb here is a no-op for them and the fix for the tag facet. #}
-            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
+            <button type="button" data-review-action="undo" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" {% if not _tag_approval %}hx-vals='{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}'{% endif %} hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
             {% endif %}
         </div>
         {% else %}
@@ -114,17 +148,22 @@
                caller-supplied like every other row field here (see the context contract at top);
                callers that don't pass one (the Tag facet, whose approve_url targets an unrelated
                /tags/{id}/write route) get an empty token, which the route treats as "no guard". #}
-            {% if show_approve|default(true) %}<button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
+            {% if show_approve|default(true) %}
+            {% if _tag_approval %}<fieldset :disabled="tagApprovalStale" class="border-0 p-0">{% endif %}
+            <button type="button" data-review-action="approve" hx-{{ approve_method|default('patch') }}="{{ approve_url }}"
+                    {% if _tag_approval %}data-tag-approve hx-request='{"timeout":15000}'{% endif %}
                     hx-vals='{% if review_token is defined and review_token %}{{ {"review_token": review_token} | tojson }}{% else %}{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}{% endif %}'
-                    hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>{% endif %}
+                    hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>
+            {% if _tag_approval %}</fieldset>{% endif %}
+            {% endif %}
             {% if show_edit|default(true) %}
-            <button type="button" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
+            <button type="button" data-review-action="edit" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
             {% endif %}
             {% if show_skip|default(true) %}
-            <button type="button" hx-patch="{{ skip_url }}" hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
+            <button type="button" data-review-action="skip" hx-patch="{{ skip_url }}" hx-vals='{{ {"expected_updated_at": updated_at.isoformat() if updated_at is defined and updated_at else ""} | tojson }}' hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
             {% endif %}
             {% if show_undo|default(false) %}
-            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
+            <button type="button" data-review-action="undo" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
             {% endif %}
         </div>
         {% if show_edit|default(true) %}
@@ -136,16 +175,28 @@
         {% endif %}
         {% endif %}
     </div>
-    {% if confidence is defined %}
-    <p class="mt-2 text-xs text-muted "><span class="font-semibold">Confidence:</span> {{ ((confidence * 100) | round | int) ~ '%' if confidence is not none else 'Unavailable' }}</p>
+    {% if not _tag_approval %}
+    <p role="alert" x-show="proposalError" x-cloak x-text="proposalError" class="mt-2 text-xs text-danger"></p>
     {% endif %}
+    {% if _tag_approval %}
+    {# Refusals replace only this local feedback, leaving the reviewed token, sibling edits and selections intact. #}
+    <div id="tagwrite-feedback-{{ pid }}" data-conflict-swap class="mt-2">
+        <div role="alert" x-show="tagApprovalError" x-cloak class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+            <p>Tag approval could not be confirmed. Refresh review evidence and check the current write status before approving again.</p>
+            <button type="button" @click="window.location.reload()" class="{{ ui.btn('secondary', 'sm', 'mt-2') }}">Refresh review evidence</button>
+        </div>
+    </div>
+    {% endif %}
+    <p class="mt-2 flex items-center gap-2 text-xs text-muted"><span><span class="font-semibold">Confidence:</span> {% if confidence is defined and confidence is not none %}{% set _confidence_percent = (confidence * 100) | round | int %}{{ _confidence_percent }}%{% else %}Unavailable{% endif %}</span>
+        {% if confidence is defined and confidence is not none %}<meter min="0" max="100" value="{{ _confidence_percent }}" aria-label="Confidence" aria-valuetext="{{ _confidence_percent }}% confidence" class="h-3 w-24 shrink-0 dark:[color-scheme:dark]">{{ _confidence_percent }}%</meter>{% endif %}
+    </p>
     {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ diff_label }}</p>{% endif %}
     <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-3 sm:items-center">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
-        <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-danger line-through dark:bg-rose-500/10 ">{{ before }}</code>
+        {{ diff_value(before, _segments.before, removed=true) }}
         <span class="text-muted " aria-hidden="true">&rarr;</span>
         {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
-        <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-ok dark:bg-emerald-500/10 ">{{ after }}</code></template>
+        <template x-if="!editing">{{ diff_value(after, _segments.after) }}</template>
         {% if show_edit|default(true) %}
         <template x-if="editing">
             <input x-ref="edit" x-model="val" name="proposed"
@@ -154,13 +205,19 @@
         {% endif %}
     </div>
     {% if secondary_label is defined and secondary_label %}
+    {% set _secondary_segments = secondary_before | changed_segments(secondary_after) %}
     <div class="mt-2 border-t border-gray-200 pt-2 dark:border-phaze-border">
         <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ secondary_label }}</p>
         <div class="grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
-            <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-danger line-through dark:bg-rose-500/10 ">{{ secondary_before }}</code>
+            {{ diff_value(secondary_before, _secondary_segments.before, removed=true) }}
             <span class="text-muted ">&rarr;</span>
-            <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-ok dark:bg-emerald-500/10 ">{{ secondary_after }}</code>
+            {{ diff_value(secondary_after, _secondary_segments.after) }}
         </div>
+    </div>
+    {% endif %}
+    {% if live_bulk_eligibility | default(false) %}
+    <div x-show="confidenceWarning()" class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+        <p data-live-confidence-warning x-text="confidenceWarning()">{% if confidence is none %}Confidence unavailable; individual review required.{% elif confidence < bulk_threshold / 100 %}Below the {{ bulk_threshold }}% bulk-approval threshold; individual review required.{% endif %}</p>
     </div>
     {% endif %}
     {% if warnings is defined and warnings %}
@@ -176,7 +233,11 @@
     {% if consequences is defined and consequences %}
     <p class="mt-2 text-xs text-muted "><span class="font-semibold">Operation:</span> {{ consequences }}</p>
     {% endif %}
-    {% if eligibility_reason is defined and eligibility_reason %}
+    {% if live_bulk_eligibility | default(false) %}
+    <p class="mt-1 text-xs text-muted"><span class="font-semibold">Bulk eligibility:</span>
+        <span id="changes-eligibility-{{ pid }}" x-text="bulkCue()">{% if row_state != "pending" %}Disabled: this decision is already resolved.{% elif bulk_collision is sameas true %}Excluded: destination conflict; approval is blocked.{% elif confidence is none %}Excluded: confidence unavailable; individual review required.{% elif confidence < bulk_threshold / 100 %}Excluded: confidence is below {{ bulk_threshold }}%.{% elif bulk_collision is none %}Confidence meets {{ bulk_threshold }}%; preview must confirm destinations and reviewed versions.{% else %}Eligible for selected bulk approval at {{ bulk_threshold }}%.{% endif %}</span>
+    </p>
+    {% elif eligibility_reason is defined and eligibility_reason %}
     <p class="mt-1 text-xs text-muted "><span class="font-semibold">Bulk eligibility:</span> {{ eligibility_reason }}</p>
     {% endif %}
     {% if show_edit|default(true) %}

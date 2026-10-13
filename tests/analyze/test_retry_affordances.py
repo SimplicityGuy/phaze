@@ -39,6 +39,7 @@ from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.web.template_globals import register_format_filters
 from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
+from tests._retry_ack import assert_persistent_failure_toast
 
 
 if TYPE_CHECKING:
@@ -124,6 +125,16 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     # from the record pane's "stage-pill-*" (they can be on screen simultaneously).
     assert f'id="files-stage-pill-analyze-{file.id}"' in response.text
     assert f'id="files-mobile-stage-pill-analyze-{file.id}"' in response.text
+    # Compare the actual pushed token with first paint after the guarded write commits.
+    fresh = BeautifulSoup((await client.get("/pipeline/files", headers={"HX-Request": "true"})).text, "html.parser")
+    pushed = BeautifulSoup(response.text, "html.parser")
+    for prefix, glyph in (("files", True), ("files-mobile", False)):
+        token_id = f"{prefix}-stage-pill-analyze-{file.id}"
+        first_pill = fresh.select_one(f"#{token_id} [aria-label]")
+        oob_pill = pushed.select_one(f"#{token_id} [aria-label]")
+        assert first_pill is not None and oob_pill is not None
+        assert str(first_pill) == str(oob_pill)
+        assert (oob_pill.get("data-status-variant") == "glyph") == glyph
     assert f'id="files-current-status-{file.id}"' in response.text
     assert f'id="files-mobile-current-status-{file.id}"' in response.text
     assert 'hx-swap-oob="true"' in response.text
@@ -162,6 +173,8 @@ async def test_per_file_retry_no_active_agent_mutates_nothing(client: AsyncClien
     response = await client.post(f"/pipeline/files/{fid}/analysis-failed/retry")
     assert response.status_code == 200
     assert "no active agent" in response.text.lower()
+    # phaze-wzfzo.19: a per-row failure is a persistent alert toast, never an auto-dismissing one or a row span.
+    assert_persistent_failure_toast(response.text, "No active agent")
     assert capture == []  # nothing enqueued anywhere, never the default queue
 
     session.expire_all()

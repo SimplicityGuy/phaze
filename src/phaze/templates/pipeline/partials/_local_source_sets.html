@@ -12,9 +12,14 @@
                     {% if inventory_view %}
                         <a class="text-link hover:underline" href="/files/{{ source.source_file_id }}#companion-sources">{{ source.source_filename }}</a>
                     {% else %}
-                        <a class="text-link hover:underline" href="/files/{{ source.media_id }}#companion-sources">{{ source.channel or 'retained source' }} · {{ source.parser_version }}</a>
-                        <p class="mt-1 break-all text-xs text-muted">Revision {{ source.revision or 'unknown' }} · {{ source.revision_scope }}</p>
-                        <p class="mt-1 text-xs text-muted">Observation {{ source.observation_id }}</p>
+                        <a class="text-link hover:underline" href="/files/{{ source.media_id }}#companion-sources">{{ 'Embedded tags' if source.channel == 'embedded' else 'Companion file' if source.channel == 'companion' else 'Retained source' }} · {{ 'release info' if source_kind == 'release_metadata' else 'CUE source' if source_kind == 'cue' else 'tracklist' }}</a>
+                        <details class="mt-1 text-xs text-muted"><summary class="cursor-pointer">Source details and evidence</summary>
+                            <p class="break-all">{{ source.parser_version }} · revision {{ source.revision or 'unknown' }} · {{ source.revision_scope }}</p>
+                            <p class="break-all">Observation {{ source.observation_id }}</p>
+                            <p>{{ source.availability }} · {{ source.status }} · {{ source.completeness_state or 'unknown completeness' }}</p>
+                            {% if source.selected %}<p>{{ source.selected_actor }} · {{ source.selected_at }}</p>{% endif %}
+                            {% if source.completeness_reason %}<p>{{ source.completeness_reason }}</p>{% endif %}
+                        </details>
                         {% if source.source_file_id %}<a class="mt-1 text-xs text-link hover:underline" href="/files/{{ source.source_file_id }}#companion-sources">Open source file</a>{% endif %}
                     {% endif %}
                 </td>
@@ -22,17 +27,19 @@
                     {% if inventory_view %}
                         {{ 'Missing' if source.missing_at else 'Ambiguous link' if source.companion_ambiguous_at else 'Inventoried companion' }}
                     {% elif source.selected %}
-                        <strong>Selected authority</strong><p class="mt-1 text-xs text-muted">{{ source.selected_actor }} · {{ source.selected_at }}</p>
+                        <strong>Selected for this recording</strong>
                     {% else %}
-                        {{ source.candidate_status }} candidate
+                        {{ {'pending': 'Awaiting review', 'accepted': 'Reviewed candidate', 'rejected': 'Skipped candidate'}.get(source.candidate_status, 'Candidate status unknown') }}
                     {% endif %}
-                    {% if not inventory_view %}<p class="mt-1 text-xs text-muted">{{ source.availability }} · {{ source.status }} · {{ source.completeness_state or 'unknown completeness' }}</p>{% endif %}
+                    {% if not inventory_view %}
+                        <p class="mt-1 text-xs {{ 'text-muted' if source.availability == 'current' else 'text-warn' }}" data-source-availability>{{ {'current': 'Current source version', 'stale': 'Source version changed — review the latest version', 'unverified': 'Source not verified', 'unknown_binding': 'Recording binding not verified', 'missing': 'Source file missing', 'unavailable': 'Source unavailable', 'unlinked': 'Source no longer linked to this recording', 'ambiguous': 'Source link is ambiguous', 'absent': 'No recognized source content', 'unsupported': 'Source format unsupported', 'retry': 'Source read needs retry', 'contract_error': 'Source read or extraction failed'}.get(source.availability, 'Source status unknown — inspect the evidence') }}</p>
+                        {% if source.completeness_state != 'complete' %}<p class="mt-1 text-xs text-warn" data-source-completeness>{{ 'Partial extraction — review original text and section boundaries' if source.completeness_state == 'incomplete' else 'Extraction completeness unknown — review original text' }}</p>{% endif %}
+                    {% endif %}
                 </td>
                 <td class="p-3 text-xs text-muted">
                     {% if inventory_view %}Linked input file; generating a CUE creates a separate versioned artifact.
                     {% else %}{{ source.track_count }} tracks · {{ source.release_fact_count }} release facts
                         {% if source.conflict_with_id %}<p>Conflicting source revision retained</p>{% endif %}
-                        {% if source.completeness_reason %}<p class="mt-1">{{ source.completeness_reason }}</p>{% endif %}
                         <p class="mt-1">Open the recording to inspect original text, facts and timing usability.</p>
                         {% if source.selected and source_kind in ['tracklist', 'cue'] and source.track_count %}
                             <button type="button" class="mt-2 text-link hover:underline" hx-get="/recording-discogs/{{ source.media_id }}" hx-target="#selected-discogs-{{ source.candidate_id }}" hx-swap="innerHTML">Review Discogs links for selected tracks</button>

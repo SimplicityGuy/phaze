@@ -17,7 +17,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import UTC, date, datetime
+import json
+import os
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -64,8 +68,10 @@ async def _wait_for_record(page: Any) -> None:
     Alpine tick before either has happened. Visibility is the honest post-condition: it is the last
     of the three to land.
     """
-    await page.wait_for_selector("#record-body h2")
-    await page.wait_for_function("() => document.getElementById('record-body').checkVisibility()")
+    await page.wait_for_selector("#record-body h2, #record-dock-body h2")
+    await page.wait_for_function(
+        "() => [...document.querySelectorAll('#record-body, #record-dock-body')].some(host => host.checkVisibility() && host.querySelector('h2'))"
+    )
 
 
 async def _settled_focus_in_record(page: Any, *, timeout_ms: int = 5_000) -> str:
@@ -114,13 +120,25 @@ async def test_stage_pills_fit_after_restoring_narrow_columns(page: Any, seed: A
             const c = cell.getBoundingClientRect(), p = pill.getBoundingClientRect();
             return {text: pill.innerText, left: p.left - c.left, right: c.right - p.right};
         }))""")
-    assert geometry, "the table must render status pills"
-    assert all(item["left"] >= 8 and item["right"] >= 8 for item in geometry), geometry
+    if viewport_width >= 1280:
+        assert geometry, "the xl table must render stage status pills"
+        assert all(item["left"] >= 8 and item["right"] >= 8 for item in geometry), geometry
+    else:
+        assert not geometry, "tablet stage columns stay hidden; Current State is next-action text"
+        layout = await page.evaluate("""() => [...document.querySelectorAll('#files-table-view [id^=files-current-status-]')].map(summary => {
+            const cell = summary.closest('td').getBoundingClientRect();
+            const details = summary.closest('td').nextElementSibling.getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(summary);
+            return {right: Math.max(...[...range.getClientRects()].map(r => r.right)), cellRight: cell.right, detailsLeft: details.left};
+        })""")
+        assert layout and all(item["right"] <= item["cellRight"] and item["cellRight"] <= item["detailsLeft"] for item in layout), layout
     assert (
         await page.locator(f"#files-stage-pill-metadata-{record.id}").evaluate("el => el.closest('tr').querySelector('td').textContent.trim()")
         == "song.mp3"
     )
-    legend = page.locator('#files-table-view p[aria-hidden="true"]')
+    legend = page.locator("#files-table-view [data-stage-legend]")
+    assert await legend.locator("[data-stage-bucket]").count() == 7
+    assert await legend.get_attribute("aria-hidden") is None
     gap = await legend.evaluate("el => el.parentElement.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom")
     assert gap >= 16
 
@@ -141,6 +159,7 @@ async def test_analyze_lanes_heading_has_top_padding(page: Any) -> None:
     assert gap >= 16
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> None:
     """The open contract of the record slide-in, which no server-side assertion reaches.
 
@@ -175,6 +194,7 @@ async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> No
     assert target.current_path in await page.locator("#record-body").inner_text(), "the record shows a different file than the row that opened it"
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed: Any) -> None:
     """The drawer's ordinary link reaches an addressable page with stable section anchors."""
     target = await seed.file(filename="<track-01>.mp3")
@@ -198,6 +218,7 @@ async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed:
         assert await page.locator(f'a[href="#{anchor}"]').count() == 1
 
 
+@pytest.mark.usefixtures("modal_width")
 async def test_record_drawer_and_full_page_show_the_same_complete_latest_tracklist(page: Any, seed: Any) -> None:
     """The shared record partial keeps stored track order identical in both views."""
     from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -253,6 +274,7 @@ async def test_record_drawer_and_full_page_show_the_same_complete_latest_trackli
     assert page_text == drawer_text
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any) -> None:
     """A modal dialog must take the keyboard with it when it opens.
 
@@ -284,6 +306,7 @@ async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_record_from_the_command_palette_also_moves_focus_into_it(page: Any, seed: Any) -> None:
     """The ⌘K Files row is the second opener of the SAME host, so it gets the same guarantee.
 
@@ -313,6 +336,7 @@ async def test_opening_a_record_from_the_command_palette_also_moves_focus_into_i
     assert where.startswith("IN "), f"a record opened from the command palette left focus outside it — landed on {where}"
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_dismissing_a_record_returns_focus_to_the_row_that_opened_it(page: Any, seed: Any) -> None:
     """Esc closes the slide-in and puts the keyboard back where it was.
 
@@ -339,6 +363,7 @@ async def test_dismissing_a_record_returns_focus_to_the_row_that_opened_it(page:
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_opening_a_second_record_never_leaves_the_first_file_on_screen(page: Any, seed: Any) -> None:
     """phaze-7yet: the panel must not display the PREVIOUS file while the next one is in flight.
 
@@ -477,6 +502,7 @@ async def _focus_state(page: Any) -> dict[str, Any]:
     )
 
 
+@pytest.mark.usefixtures("modal_widths")
 async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(page: Any, seed: Any) -> None:
     """The drawer's whole focus contract, observed from the very first moment (phaze-x1cv5).
 
@@ -534,3 +560,309 @@ async def test_record_drawer_takes_focus_at_once_traps_tab_and_restores_focus(pa
     assert await page.evaluate("document.querySelectorAll('[inert]').length") == 0, "the page stayed inert after the drawer closed"
     blocked = [m for m in messages if "aria-hidden" in m.lower()]
     assert not blocked, f"console reported an aria-hidden problem: {blocked}"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("viewport_width", [390, 1440, 1920])
+async def test_glyph_cells_legend_and_record_skip_refresh_keep_accessible_meaning(page: Any, seed: Any, theme: str, viewport_width: int) -> None:
+    """Real keyboard skip preserves word record tokens; existing Files refresh restores glyph cells."""
+    file = await seed.file(filename="glyph.mp3")
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await open_shell(page, "/s/files")
+    table = page.locator(f"#files-stage-pill-metadata-{file.id} [aria-label]")
+    assert await table.inner_text() == "—"
+    assert await table.get_attribute("aria-label") == "Metadata: not started"
+    assert await table.get_attribute("title") == "Metadata: not started"
+    assert await table.get_attribute("data-status-variant") == "glyph"
+
+    mobile = page.locator(f"#files-mobile-stage-pill-metadata-{file.id} [aria-label]")
+    assert "not started" in (await mobile.text_content() or "")
+    legend = page.locator("[data-stage-legend]")
+    assert await legend.locator("[data-stage-bucket]").count() == 7
+    assert await legend.evaluate("el => !el.closest('[aria-hidden=true]')")
+    assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    if viewport_width == 390:
+        disclosure = page.get_by_text("Stage details", exact=True)
+        await disclosure.focus()
+        await page.keyboard.press("Enter")
+        assert await mobile.is_visible()
+        assert "not started" in (await mobile.inner_text()).lower()
+    details = page.get_by_role("button", name="Open details for glyph.mp3", exact=True)
+    await details.focus()
+    await page.keyboard.press("Enter")
+    await _wait_for_record(page)
+    record = page.locator(f"#stage-pill-metadata-{file.id} [aria-label]")
+    assert "not started" in (await record.inner_text()).lower()
+    assert await record.get_attribute("data-status-variant") is None
+    skip = page.get_by_role("button", name="Skip metadata for this file", exact=True)
+    await skip.focus()
+    await page.keyboard.press("Enter")
+    dialog = page.get_by_role("dialog", name="Skip metadata for this file")
+    await dialog.wait_for(state="visible")
+    await dialog.locator("textarea[name=reason]").fill("synthetic unreadable tags")
+    submit = dialog.get_by_role("button", name="Skip stage", exact=True)
+    await submit.focus()
+    await page.keyboard.press("Enter")
+    await page.wait_for_function("id => document.getElementById('stage-pill-metadata-' + id).textContent.includes('skipped')", arg=str(file.id))
+    assert await record.get_attribute("aria-label") == "Metadata: skipped (force-completed)"
+    assert await record.get_attribute("data-status-variant") is None
+    await page.goto("/s/files", wait_until="domcontentloaded")
+    await settled(page)
+    assert await table.inner_text() == "⊘"
+    assert await table.get_attribute("aria-label") == "Metadata: skipped (force-completed)"
+    assert await table.get_attribute("data-status-variant") == "glyph"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("viewport_width", [390, 1440])
+async def test_files_density_chips_keep_query_widths_and_history(page: Any, seed: Any, theme: str, viewport_width: int) -> None:
+    """Actual padding, native chip requests and history consume the persisted stores across swaps."""
+    failed = await seed.file(filename="density-failed.mp3")
+    await seed.file(filename="density-plain.mp3")
+    seed.session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC)))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await page.add_init_script("""if (!localStorage.getItem('c2-width-fixture-ready')) {
+        localStorage.setItem('phaze-pipeline-col-widths', JSON.stringify({File: 260, Metadata: 188}));
+        localStorage.setItem('c2-width-fixture-ready', 'true');
+    }""")
+    await open_shell(page, "/s/files?stage=metadata&page_size=20&scope=media&sort=type&order=desc")
+    assert await page.evaluate("document.documentElement.classList.contains('dark')") == (theme == "dark")
+    row_selector = "[data-files-density-card]" if viewport_width == 390 else f"{_DESKTOP_TABLE} tbody tr[id]"
+    cell_selector = "[data-files-density-card]" if viewport_width == 390 else f"{_DESKTOP_TABLE} [data-files-density-cell]"
+    row = page.locator(row_selector).first
+    cell = page.locator(cell_selector).first
+    comfortable = await row.bounding_box()
+    assert comfortable is not None
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (12 if viewport_width == 390 else 8)
+    compact_button = page.get_by_role("button", name="Compact row density", exact=True)
+    await compact_button.focus()
+    await page.keyboard.press("Enter")
+    await page.wait_for_function("() => document.querySelector('[data-files-density]').dataset.filesDensity === 'compact'")
+    compact = await row.bounding_box()
+    assert compact is not None and compact["height"] < comfortable["height"] - 4
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (8 if viewport_width == 390 else 4)
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingLeft)") == 12
+    assert await compact_button.get_attribute("aria-pressed") == "true"
+    assert await page.evaluate("localStorage.getItem('phaze-files-density')") == "compact"
+    await page.evaluate("window.__c2DocumentAlive = true")
+    for bucket in ("failed", "in_flight", "skipped"):
+        async with swap_settles(page):
+            await page.select_option("#filter-bucket", bucket)
+        select_query = parse_qs(urlsplit(page.url).query, keep_blank_values=True)
+        async with swap_settles(page):
+            await page.select_option("#filter-bucket", "")
+        chip = page.locator(f"#files-filter-{bucket}")
+        async with swap_settles(page):
+            await chip.focus()
+            await page.keyboard.press("Enter")
+        assert parse_qs(urlsplit(page.url).query, keep_blank_values=True) == select_query
+        assert select_query == {
+            "page_size": ["20"],
+            "stage": ["metadata"],
+            "bucket": [bucket],
+            "scope": ["media"],
+            "sort": ["type"],
+            "order": ["desc"],
+        }
+        assert await page.locator("#files-table-view").count() == 1
+        assert await page.evaluate("window.__c2DocumentAlive === true")
+        assert await chip.get_attribute("aria-current") == "true"
+        assert await chip.evaluate("el => el === document.activeElement")
+        assert await chip.evaluate("el => getComputedStyle(el).boxShadow !== 'none'")
+        assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+        assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+        if bucket == "failed":
+            assert await page.locator("col[data-col=Metadata]").evaluate("el => el.style.width") == "188px"
+            if viewport_width == 1440:
+                assert await page.locator("col[data-col=Metadata]").evaluate("el => el.getBoundingClientRect().width") == 188
+        else:
+            assert await page.get_by_text("No files match this filter", exact=True).is_visible()
+        assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    await page.go_back()
+    await settled(page)
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+    assert await page.locator(row_selector).count() == 2
+    assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+    assert await page.locator("col[data-col=Metadata]").evaluate("el => el.style.width") == "188px"
+    if viewport_width == 1440:
+        assert await page.locator("col[data-col=Metadata]").evaluate("el => el.getBoundingClientRect().width") == 188
+    await page.reload(wait_until="domcontentloaded")
+    await settled(page)
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (8 if viewport_width == 390 else 4)
+    assert await page.get_by_role("button", name="Compact row density").get_attribute("aria-pressed") == "true"
+    assert await page.evaluate("Alpine.store('colResize').width('Metadata')") == 188
+    comfortable_button = page.get_by_role("button", name="Comfortable row density")
+    await comfortable_button.focus()
+    await page.keyboard.press("Space")
+    assert await cell.evaluate("el => parseFloat(getComputedStyle(el).paddingTop)") == (12 if viewport_width == 390 else 8)
+
+
+@pytest.mark.parametrize("stored", ["{broken", '"compact"', "unexpected"])
+async def test_files_density_rejects_malformed_storage(page: Any, seed: Any, stored: str) -> None:
+    await seed.file(filename="density.mp3")
+    await page.add_init_script(f"localStorage.setItem('phaze-files-density', {json.dumps(stored)})")
+    await open_shell(page, "/s/files")
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "comfortable"
+    assert await page.get_by_role("button", name="Comfortable row density").get_attribute("aria-pressed") == "true"
+
+
+async def test_files_density_remains_usable_when_storage_is_denied(page: Any, seed: Any) -> None:
+    await seed.file(filename="density.mp3")
+    await page.add_init_script("""const getItem = Storage.prototype.getItem, setItem = Storage.prototype.setItem;
+        Storage.prototype.getItem = function(key) {
+            if (key === 'phaze-files-density') throw new DOMException('Denied', 'SecurityError');
+            return getItem.call(this, key);
+        };
+        Storage.prototype.setItem = function(key, value) {
+            if (key === 'phaze-files-density') throw new DOMException('Denied', 'SecurityError');
+            return setItem.call(this, key, value);
+        };""")
+    await open_shell(page, "/s/files")
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "comfortable"
+    await page.get_by_role("button", name="Compact row density").click()
+    assert await page.locator("[data-files-density]").get_attribute("data-files-density") == "compact"
+
+
+@pytest.mark.parametrize("viewport_width", [390, 1440, 1920])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_stage_scope_and_failure_next_action_match_native_files_and_record(page: Any, seed: Any, viewport_width: int, theme: str) -> None:
+    sidecar = await seed.file(filename="notes.nfo", file_type="nfo")
+    media = await seed.file(filename="song.mp3")
+    failed = await seed.file(filename="historical.txt", file_type="txt")
+    seed.session.add(AnalysisResult(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic decode failure"))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await page.add_init_script(f"localStorage.setItem('phaze-theme', '{theme}')")
+    await open_shell(page, "/s/files")
+    prefix = "files-mobile" if viewport_width == 390 else "files"
+    if viewport_width == 390:
+        await page.locator(f"#{prefix}-current-status-{sidecar.id}").locator("..").locator("..").get_by_text("Stage details", exact=True).click()
+    scoped = page.locator(f"#{prefix}-stage-pill-metadata-{sidecar.id} [aria-label]")
+    await scoped.wait_for(state="visible")
+    assert await scoped.get_attribute("aria-label") == "Metadata: not applicable"
+    assert await scoped.get_attribute("data-status-variant") == ("glyph" if viewport_width >= 1440 else None)
+    assert (
+        await page.locator(f"#{prefix}-current-status-{sidecar.id}").inner_text()
+        == "Outside ordinary media processing; workflow awaits prerequisites"
+    )
+    assert await page.locator(f"#{prefix}-current-status-{media.id}").inner_text() == "Awaiting Metadata processing"
+    assert await page.locator(f"#{prefix}-current-status-{failed.id}").inner_text() == "Inspect Analyze error and recovery options"
+    assert await page.locator("[data-stage-applicability=not_applicable]").inner_text() == "∅ not applicable"
+    if viewport_width >= 1440:
+        geometry = await page.evaluate("""() => [...document.querySelectorAll('#files-table-view [id^=files-current-status-]')].map(summary => {
+            const cell = summary.closest('td').getBoundingClientRect();
+            const details = summary.closest('td').nextElementSibling.getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(summary);
+            return {right: Math.max(...[...range.getClientRects()].map(r => r.right)), cellRight: cell.right, detailsLeft: details.left};
+        })""")
+        assert all(item["right"] <= item["cellRight"] and item["cellRight"] <= item["detailsLeft"] for item in geometry), geometry
+
+    if evidence_dir := os.getenv("PHAZE_UI_EVIDENCE_DIR"):
+        await page.screenshot(path=str(Path(evidence_dir) / f"files-scope-{viewport_width}-{theme}.png"), full_page=True)
+    if viewport_width == 390:
+        details = (
+            page.locator(f"#{prefix}-current-status-{sidecar.id}")
+            .locator("..")
+            .locator("..")
+            .get_by_role("button", name="Open details for notes.nfo")
+        )
+    else:
+        details = page.locator(_details_button(sidecar.id))
+    await details.click()
+    await _wait_for_record(page)
+    assert await page.locator(f"#stage-pill-metadata-{sidecar.id} [aria-label]").get_attribute("aria-label") == "Metadata: not applicable"
+    assert await page.get_by_role("button", name="Skip metadata for this file").is_visible()
+    assert await page.get_by_role("button", name="Skip analyze for this file").is_visible()
+    assert await page.locator(f"#stage-pill-propose-{sidecar.id} [aria-label]").get_attribute("aria-label") == "Propose: not started"
+
+
+@pytest.mark.parametrize("viewport_width", [390, 1440])
+async def test_historical_nonmedia_retry_is_scoped_native_and_updates_matching_oob(page: Any, seed: Any, viewport_width: int) -> None:
+    failed = await seed.file(filename="failed.txt", file_type="txt")
+    failure = FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic metadata failure")
+    seed.session.add(failure)
+    await seed.session.commit()
+    await page.set_viewport_size({"width": viewport_width, "height": 1000})
+    await open_shell(page, "/s/files")
+    prefix = "files-mobile" if viewport_width == 390 else "files"
+    if viewport_width == 390:
+        await page.locator(f"#{prefix}-current-status-{failed.id}").locator("..").locator("..").get_by_text("Stage details", exact=True).click()
+    retry = page.locator(f"#{prefix}-stage-pill-metadata-{failed.id}").get_by_role("button", name="Retry Metadata for this file")
+    await retry.wait_for(state="visible")
+    await retry.focus()
+    assert await retry.evaluate("el => el === document.activeElement")
+    endpoint = f"/pipeline/files/{failed.id}/metadata-failed/retry"
+    writes: list[str] = []
+    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" and request.url.endswith(endpoint) else None)
+    async with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith(endpoint)) as submitted:
+        await retry.press("Enter")
+    response = await submitted.value
+    assert response.status == 200
+    body = await response.text()
+    assert "re-queued 1 failed file(s)" in body.lower(), body
+    # phaze-itjat: the per-row ack is an OOB toast, not text in the row (an inline ack overlapped the neighbouring cells).
+    toast = page.locator("#toast-container [role=status]", has_text="Re-queued 1 failed file(s)")
+    await toast.wait_for(state="visible")
+    assert (await page.locator(f"#retry-result-{prefix}-{failed.id}-metadata").inner_text()).strip() == ""
+    # A success is transient: main 7719069a's toast hides itself after 5 s. This is also the control for the failure
+    # test below -- the same wait that sees this toast go is the one a failure toast must survive.
+    await toast.wait_for(state="hidden", timeout=_SUCCESS_TOAST_GONE_MS)
+    assert len(writes) == 1
+    assert await page.locator("#record-body h2").count() == 0, "Retry must not activate the surrounding record row"
+    from bs4 import BeautifulSoup
+
+    pushed = BeautifulSoup(body, "html.parser")
+    token_id = f"{prefix}-stage-pill-metadata-{failed.id}"
+    summary_id = f"{prefix}-current-status-{failed.id}"
+    expected_token = pushed.select_one(f"#{token_id} [aria-label]")["aria-label"]
+    expected_summary = pushed.select_one(f"#{summary_id}").get_text(" ", strip=True)
+    assert expected_token in ("Metadata: failed", "Metadata: in flight")
+    assert await page.locator(f"#{token_id} [aria-label]").get_attribute("aria-label") == expected_token
+    assert await page.locator(f"#{summary_id}").inner_text() == expected_summary
+    await seed.session.refresh(failure)
+    assert failure.failed_at is not None, "Metadata retry retains real failure history until successful output"
+    fresh = await page.request.get("/pipeline/files", headers={"HX-Request": "true"})
+    assert fresh.status == 200
+    first = BeautifulSoup(await fresh.text(), "html.parser")
+    assert first.select_one(f"#{token_id} [aria-label]")["aria-label"] == expected_token
+    assert first.select_one(f"#{summary_id}").get_text(" ", strip=True) == expected_summary
+
+
+# main 7719069a's success toast hides at 5 s; this budget is that timer plus slack for the x-transition leave.
+_SUCCESS_TOAST_GONE_MS = 8_000
+
+
+async def test_per_row_retry_failure_is_a_persistent_alert_toast_outside_the_row(page: Any, seed: Any) -> None:
+    """phaze-wzfzo.19: a per-row retry FAILURE is announced and stays until dismissed, and never lands in the row.
+
+    The owning agent is revoked, so the real route takes its ``NoActiveAgentError`` branch. Main 7719069a made this an
+    auto-dismissing toast; phaze-wzfzo.10 says an action failure never disappears on a timer. The success test above
+    proves ``_SUCCESS_TOAST_GONE_MS`` is long enough to watch an auto-dismissing toast go.
+    """
+    await seed.agent("offline-fileserver", revoked=True)
+    failed = await seed.file(filename="failed.mp3", agent_id="offline-fileserver")
+    seed.session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic metadata failure"))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": 1440, "height": 1000})
+    await open_shell(page, "/s/files")
+    retry = page.locator(f"#files-stage-pill-metadata-{failed.id}").get_by_role("button", name="Retry Metadata for this file")
+    await retry.wait_for(state="visible")
+    endpoint = f"/pipeline/files/{failed.id}/metadata-failed/retry"
+    async with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith(endpoint)) as submitted:
+        await retry.click()
+    assert (await submitted.value).status == 200
+
+    alert = page.locator("#toast-container [role=alert][data-action-failure]", has_text="No active agent")
+    await alert.wait_for(state="visible")
+    assert (await page.locator(f"#retry-result-files-{failed.id}-metadata").inner_text()).strip() == ""
+    assert await page.locator("#files-table-view [role=alert]", has_text="No active agent").count() == 0
+
+    await page.wait_for_timeout(_SUCCESS_TOAST_GONE_MS)
+    assert await alert.is_visible(), "a per-row retry failure must not auto-dismiss (phaze-wzfzo.10)"
+
+    await alert.get_by_role("button", name="Dismiss action error").click()
+    await alert.wait_for(state="detached")

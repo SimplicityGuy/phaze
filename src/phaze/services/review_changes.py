@@ -65,6 +65,7 @@ class ChangesReviewReader(Protocol):
         status: str,
         page: int,
         page_size: int,
+        threshold: int = 90,
     ) -> ChangesReviewPage: ...
 
     async def get_pending_proposal_rows(self, session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows: ...
@@ -107,12 +108,12 @@ async def _changes_review_stats(session: AsyncSession) -> ChangesReviewStats:
     )
 
 
-def _changes_review_warnings(proposal: RenameProposal) -> list[str]:
+def _changes_review_warnings(proposal: RenameProposal, *, threshold: int = 90, include_confidence: bool = True) -> list[str]:
     warnings: list[str] = []
-    if proposal.confidence is None:
+    if include_confidence and proposal.confidence is None:
         warnings.append("Confidence unavailable; individual review required.")
-    elif proposal.confidence < 0.9:
-        warnings.append("Below the 90% bulk-approval threshold; individual review required.")
+    elif include_confidence and proposal.confidence is not None and proposal.confidence < threshold / 100:
+        warnings.append(f"Below the {threshold}% bulk-approval threshold; individual review required.")
     if proposal.proposed_path is None:
         warnings.append("No destination change; the file will be renamed in its current directory.")
     if proposal.reason:
@@ -124,6 +125,8 @@ def _build_changes_review_row(
     proposal: RenameProposal,
     collision_ids: set[str],
     proposal_review_digest: Callable[[RenameProposal], str],
+    *,
+    threshold: int = 90,
 ) -> dict[str, Any]:
     raw_status = ProposalStatus(proposal.status)
     review_status = next((label for label, values in _CHANGES_STATUS_MAP.items() if raw_status in values), "blocked")
@@ -138,9 +141,12 @@ def _build_changes_review_row(
         "confidence": proposal.confidence,
         "status": review_status,
         "raw_status": proposal.status,
-        "warnings": _changes_review_warnings(proposal),
+        "warnings": _changes_review_warnings(proposal, threshold=threshold),
+        "other_warnings": _changes_review_warnings(proposal, threshold=threshold, include_confidence=False),
         "conflicts": conflicts,
-        "bulk_eligible": (raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9 and not conflicts),
+        "bulk_eligible": (
+            raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= threshold / 100 and not conflicts
+        ),
         "updated_at": proposal.updated_at,
         "review_token": f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}",
         "set_profile": proposal.file.set_profile,
@@ -199,6 +205,7 @@ class SqlChangesReviewReader:
         status: str,
         page: int,
         page_size: int,
+        threshold: int = 90,
     ) -> ChangesReviewPage:
         active_status = status if status in {"all", *_CHANGES_STATUS_MAP} else "needs_review"
         try:
@@ -217,7 +224,9 @@ class SqlChangesReviewReader:
                 )
                 proposals = (await session.execute(query)).scalars().all()
                 collision_ids = await self._get_review_collision_ids(session)
-                rows = [_build_changes_review_row(proposal, collision_ids, self._proposal_review_digest) for proposal in proposals]
+                rows = [
+                    _build_changes_review_row(proposal, collision_ids, self._proposal_review_digest, threshold=threshold) for proposal in proposals
+                ]
                 return ChangesReviewPage(
                     rows=rows,
                     pagination=Pagination(page=current_page, page_size=page_size, total=filtered_total),

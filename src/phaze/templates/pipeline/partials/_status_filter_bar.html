@@ -82,3 +82,27 @@
        class="text-sm px-2 py-1 rounded text-link hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</a>
     {% endif %}
 {% endcall %}
+{# Outside the select form: a chip sends exactly one bucket, with the same existing query axes.
+   Density never enters that query contract; its shell store is untouched by this fragment swap. #}
+<div class="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6">
+    <div class="flex flex-wrap gap-2" role="group" aria-label="Common file status filters">
+        {% for value, label in [('failed', 'Failed'), ('in_flight', 'In flight'), ('skipped', 'Skipped')] %}
+        {% set chip_url = '/s/files?page_size=' ~ files_page.page_size ~ '&stage=' ~ (active_stage or '') ~ '&bucket=' ~ value ~ ('&scope=media' if active_scope == 'media' else '') ~ ('&sort=' ~ sort.key ~ '&order=' ~ sort.order if sort else '') %}
+        <a id="files-filter-{{ value }}" href="{{ chip_url }}" hx-get="{{ chip_url }}"
+           hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
+           aria-current="{{ 'true' if active_bucket == value else 'false' }}"
+           class="{{ ui.btn('secondary', 'sm') }}">{{ label }}</a>
+        {% endfor %}
+    </div>
+    <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Files row density">
+        <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-muted">Density</span>
+        <button type="button" aria-label="Comfortable row density" aria-pressed="true"
+                :aria-pressed="$store.filesDensity.mode === 'comfortable'"
+                :class="{ 'ring-2 ring-blue-500': $store.filesDensity.mode === 'comfortable' }"
+                @click="$store.filesDensity.setMode('comfortable')" class="{{ ui.btn('secondary', 'sm') }}">Comfortable</button>
+        <button type="button" aria-label="Compact row density" aria-pressed="false"
+                :aria-pressed="$store.filesDensity.mode === 'compact'"
+                :class="{ 'ring-2 ring-blue-500': $store.filesDensity.mode === 'compact' }"
+                @click="$store.filesDensity.setMode('compact')" class="{{ ui.btn('secondary', 'sm') }}">Compact</button>
+    </div>
+</div>

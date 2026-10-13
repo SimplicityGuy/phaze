@@ -17,7 +17,7 @@
    never the only carrier of a label: the visible <span> and the accessible name always agree. #}
 {# phaze-gmh3f: EVERY destination -- Pipeline, Review, Operations -- has the SAME rest and active treatment (normal
    text colour at rest; blue wash + inset blue bar when current). `tone` is accepted for the call sites' sake and
-   changes nothing: Review is told apart by its SECTION tint (the amber panel and heading), never by tinting each
+   changes nothing: Review is told apart by its thin SECTION label and non-empty queue counts, never by tinting each
    item's text, which read as permanently highlighted and drowned the current page. #}
 {% macro nav_link(route, label, icon, tone='pipeline') %}
 <a href="/s/{{ route }}"
@@ -33,6 +33,7 @@
 {% endmacro %}
 
 {% set count_class = "font-mono text-xs text-muted shrink-0 whitespace-nowrap" %}
+{% set queue_count_class = "font-mono text-xs shrink-0 whitespace-nowrap" %}
 {% set group_class = "mx-2 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5" %}
 {% set heading_class = "font-jura text-[10px] uppercase tracking-[0.2em] text-muted px-1.5 mb-1" %}
 
@@ -64,19 +65,51 @@
         {% endcall %}
     </section>
 
-    <section class="{{ group_class }} bg-amber-500/[0.06] border-amber-500/25" aria-labelledby="nav-review">
+    <section class="{{ group_class }}" aria-labelledby="nav-review">
         <h2 id="nav-review" class="{{ heading_class }} text-warn">Review</h2>
-        {% call nav_link('rename', page_name('rename'), 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
-        {% call nav_link('dedupe', page_name('dedupe'), 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}{% endcall %}
-        {% call nav_link('junk', page_name('junk'), 'M14.74 9l-.35 9m-4.78 0L9.26 9m9.97-3.21c.34.05.68.11 1.02.17m-1.02-.17L18.16 19.67a2.25 2.25 0 0 1-2.24 2.08H8.08a2.25 2.25 0 0 1-2.24-2.08L4.77 5.79m14.46 0a48.1 48.1 0 0 0-3.48-.4m-12 .57c.34-.06.68-.12 1.02-.17m0 0a48.1 48.1 0 0 1 3.48-.4m7.5 0v-.92c0-1.18-.91-2.16-2.09-2.2a51.96 51.96 0 0 0-3.32 0c-1.18.04-2.09 1.02-2.09 2.2v.92m7.5 0a48.67 48.67 0 0 0-7.5 0', 'review') %}{% endcall %}
-        {% call nav_link('cue', page_name('cue'), 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}{% endcall %}
-        {% call nav_link('apply', page_name('apply'), 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}{% endcall %}
+        {% call nav_link('rename', page_name('rename'), 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}
+            <span class="{{ queue_count_class }} {{ 'text-warn' if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown and pipeline_seed.reviewPending > 0 else 'text-muted' }}"
+                  :class="{ 'text-warn': $store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewPending > 0, 'text-muted': !($store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewPending > 0) }"
+                  x-text="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewPending) : '—'"
+                  :title="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewPending) + ' changes awaiting review' : 'Review count unavailable'"
+                  :aria-label="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewPending) + ' changes awaiting review' : 'Review count unavailable'">{{ (pipeline_seed.reviewPending if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown else '—') | thousands }}</span>
+        {% endcall %}
+        {% call nav_link('dedupe', page_name('dedupe'), 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}
+            <span class="{{ queue_count_class }} {{ 'text-warn' if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown and pipeline_seed.reviewDedupe > 0 else 'text-muted' }}"
+                  :class="{ 'text-warn': $store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewDedupe > 0, 'text-muted': !($store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewDedupe > 0) }"
+                  x-text="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewDedupe) : '—'"
+                  :title="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewDedupe) + ' duplicate groups awaiting review' : 'Review count unavailable'"
+                  :aria-label="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewDedupe) + ' duplicate groups awaiting review' : 'Review count unavailable'">{{ (pipeline_seed.reviewDedupe if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown else '—') | thousands }}</span>
+        {% endcall %}
+        {% call nav_link('junk', page_name('junk'), 'M14.74 9l-.35 9m-4.78 0L9.26 9m9.97-3.21c.34.05.68.11 1.02.17m-1.02-.17L18.16 19.67a2.25 2.25 0 0 1-2.24 2.08H8.08a2.25 2.25 0 0 1-2.24-2.08L4.77 5.79m14.46 0a48.1 48.1 0 0 0-3.48-.4m-12 .57c.34-.06.68-.12 1.02-.17m0 0a48.1 48.1 0 0 1 3.48-.4m7.5 0v-.92c0-1.18-.91-2.16-2.09-2.2a51.96 51.96 0 0 0-3.32 0c-1.18.04-2.09 1.02-2.09 2.2v.92m7.5 0a48.67 48.67 0 0 0-7.5 0', 'review') %}
+            <span class="{{ queue_count_class }} {{ 'text-warn' if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown and pipeline_seed.reviewJunk > 0 else 'text-muted' }}"
+                  :class="{ 'text-warn': $store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewJunk > 0, 'text-muted': !($store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewJunk > 0) }"
+                  x-text="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewJunk) : '—'"
+                  :title="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewJunk) + ' junk groups awaiting review' : 'Review count unavailable'"
+                  :aria-label="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewJunk) + ' junk groups awaiting review' : 'Review count unavailable'">{{ (pipeline_seed.reviewJunk if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown else '—') | thousands }}</span>
+        {% endcall %}
+        {% call nav_link('cue', page_name('cue'), 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}
+            <span class="{{ queue_count_class }} {{ 'text-warn' if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown and pipeline_seed.reviewCue > 0 else 'text-muted' }}"
+                  :class="{ 'text-warn': $store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewCue > 0, 'text-muted': !($store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown && $store.pipeline.reviewCue > 0) }"
+                  x-text="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewCue) : '—'"
+                  :title="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewCue) + ' cue sheets awaiting review' : 'Review count unavailable'"
+                  :aria-label="$store.pipeline.seedKnown && $store.pipeline.reviewCountsKnown ? formatCount($store.pipeline.reviewCue) + ' cue sheets awaiting review' : 'Review count unavailable'">{{ (pipeline_seed.reviewCue if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.reviewCountsKnown else '—') | thousands }}</span>
+        {% endcall %}
+        {% call nav_link('apply', page_name('apply'), 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}
+            <span class="{{ count_class }}" x-text="$store.pipeline.seedKnown ? `${formatCount($store.pipeline.executedDone)} / ${formatCount($store.pipeline.executedTotal)}` : '— / —'"
+                  :title="$store.pipeline.seedKnown ? formatCount($store.pipeline.executedDone) + ' of ' + formatCount($store.pipeline.executedTotal) + ' approved operations executed' : 'Execution progress unavailable'"
+                  :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.executedDone) + ' of ' + formatCount($store.pipeline.executedTotal) + ' approved operations executed' : 'Execution progress unavailable'">{{ ((pipeline_seed.executedDone | thousands) ~ ' / ' ~ (pipeline_seed.executedTotal | thousands)) if pipeline_seed and pipeline_seed.seedKnown else '— / —' }}</span>
+        {% endcall %}
     </section>
 
     <section class="{{ group_class }}" aria-labelledby="nav-operations">
         <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
         {% call nav_link('audit', page_name('audit'), 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
-        {% call nav_link('agents', page_name('agents'), 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}{% endcall %}
+        {% call nav_link('agents', page_name('agents'), 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}
+            <span class="{{ count_class }}" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'"
+                  :title="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online' : 'Agent count unavailable'"
+                  :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online' : 'Agent count unavailable'">{{ (pipeline_seed.agentOnline if pipeline_seed and pipeline_seed.seedKnown else '—') | thousands }}</span>
+        {% endcall %}
     </section>
 </nav>
 {% endmacro %}

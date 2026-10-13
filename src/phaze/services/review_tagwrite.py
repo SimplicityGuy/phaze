@@ -35,6 +35,32 @@ class TagwriteReviewPage(NamedTuple):
     partial: bool
 
 
+class TagwriteHistoryLinks(NamedTuple):
+    """A bounded navigation index into existing per-file history, never a second audit ledger."""
+
+    rows: list[dict[str, Any]]
+    degraded: bool
+
+
+async def get_recent_completed_tagwrite_links(session: AsyncSession) -> TagwriteHistoryLinks:
+    """Link the ten most recent completed writes/undos to their file's complete History."""
+    try:
+        async with session.begin_nested():
+            records = (
+                await session.execute(
+                    select(TagWriteLog.file_id, FileRecord.original_filename, TagWriteLog.source, TagWriteLog.written_at)
+                    .join(FileRecord, FileRecord.id == TagWriteLog.file_id)
+                    .where(TagWriteLog.status == TagWriteStatus.COMPLETED.value)
+                    .order_by(TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
+                    .limit(10)
+                )
+            ).all()
+            return TagwriteHistoryLinks(rows=[dict(row._mapping) for row in records], degraded=False)
+    except Exception:
+        logger.warning("tagwrite_history_links_degraded", exc_info=True)
+        return TagwriteHistoryLinks(rows=[], degraded=True)
+
+
 class TagwriteReviewReader(Protocol):
     """Consumer-facing port for the bounded Tag-write workspace read."""
 

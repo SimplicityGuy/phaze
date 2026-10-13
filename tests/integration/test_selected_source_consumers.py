@@ -432,7 +432,7 @@ async def test_real_selected_workspace_routes_and_match_all_retry(session, clien
     media, companion, raw = await inventory(session, CUE, "cue")
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     pending = await client.get("/pipeline/local-source-sets?kind=tracklist&page=bad&page_size=bad")
-    assert pending.status_code == 200 and "pending candidate" in pending.text
+    assert pending.status_code == 200 and "Awaiting review" in pending.text
     fallback = await client.get("/pipeline/local-source-sets?kind=unsupported")
     assert fallback.status_code == 200 and "Stored source" in fallback.text
     inventory_response = await client.get("/pipeline/local-source-sets?kind=cue&inventory=1")
@@ -447,7 +447,7 @@ async def test_real_selected_workspace_routes_and_match_all_retry(session, clien
     assert len(pins) == 1 and pins[0]["expected_observation_id"] == str(imported.tracklist_observation_id)
     assert pins[0]["expected_selection_token"]
     reviewed = await client.get("/pipeline/local-source-sets?kind=tracklist")
-    assert "Selected authority" in reviewed.text and "reviewer" in reviewed.text
+    assert "Selected for this recording" in reviewed.text and "reviewer" in reviewed.text
     queue, _ = install_fake_queues(client)
     original_enqueue = queue.enqueue
 

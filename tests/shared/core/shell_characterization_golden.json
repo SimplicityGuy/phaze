@@ -55,6 +55,7 @@
     "GET /s/operations",
     "GET /s/{stage}",
     "GET /search/",
+    "GET /shell/attention",
     "GET /tags/",
     "GET /tracklists/",
     "PATCH /api/internal/agent/execution-log/{execution_log_id}",
@@ -64,6 +65,7 @@
     "PATCH /api/internal/agent/tag-writes/{log_id}",
     "PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot",
     "PATCH /proposals/bulk",
+    "PATCH /proposals/bulk/undo",
     "PATCH /proposals/{proposal_id}/approve",
     "PATCH /proposals/{proposal_id}/edit",
     "PATCH /proposals/{proposal_id}/reject",
@@ -132,6 +134,7 @@
     "POST /pipeline/stages/{stage}/pause",
     "POST /pipeline/stages/{stage}/priority",
     "POST /pipeline/stages/{stage}/resume",
+    "POST /proposals/bulk/preview",
     "POST /recording-discogs/{media_id}/links/{link_id}",
     "POST /recording-discogs/{media_id}/match",
     "POST /tags/bulk-write-no-discrepancies",
@@ -686,26 +689,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -809,6 +792,11 @@
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -824,16 +812,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -936,6 +914,11 @@
         "{\"hx-get\": \"/admin/agents/_table?sort=last_seen&order=desc\", \"hx-push-url\": \"/s/agents?agent=test-fileserver&sort=last_seen&order=desc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\", \"hx-vals\": \"{\\\"agent\\\": \\\"test-fileserver\\\", \\\"clane\\\": \\\"\\\"}\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -960,16 +943,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1036,6 +1009,11 @@
         "a",
         "config-trigger",
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -1057,16 +1035,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1122,6 +1090,11 @@
       [
         "a",
         "",
+        "{\"hx-get\": \"/s/rename?status=needs_review\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
         "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1133,6 +1106,11 @@
         "a",
         "config-trigger",
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -1150,16 +1128,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1257,6 +1225,11 @@
         "{\"hx-get\": \"/audit/?status=pending&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -1272,16 +1245,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1354,6 +1317,11 @@
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "local-cue-inventory",
         "{\"hx-get\": \"/pipeline/local-source-sets?kind=cue&inventory=1\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
@@ -1379,16 +1347,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1466,6 +1424,11 @@
         "{\"hx-disabled-elt\": \"this\", \"hx-include\": \"#dedupe-group-hash-inputs\", \"hx-post\": \"/duplicates/review-all\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#dedupe-bulk-response\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -1481,16 +1444,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1578,6 +1531,11 @@
         "{\"hx-get\": \"/pipeline/scans/recent?poll=0&sort=started&order=desc\", \"hx-indicator\": \"#recent-scans-refresh-status\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#recent-scans\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -1607,16 +1565,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1683,6 +1631,26 @@
         "a",
         "config-trigger",
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "files-filter-failed",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=failed&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
+        "a",
+        "files-filter-in_flight",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=in_flight&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
+        "a",
+        "files-filter-skipped",
+        "{\"hx-get\": \"/s/files?page_size=50&stage=&bucket=skipped&sort=file&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -1709,16 +1677,6 @@
       [
         "a",
         "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
         "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
@@ -1787,6 +1745,11 @@
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -1802,16 +1765,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -1909,6 +1862,11 @@
         "{\"hx-post\": \"/pipeline/stages/metadata/resume\", \"hx-swap\": \"none\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "local-release_metadata-sources",
         "{\"hx-get\": \"/pipeline/local-source-sets?kind=release_metadata\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
@@ -1934,16 +1892,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2043,12 +1991,17 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
         "",
         "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -2059,6 +2012,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",
@@ -2076,16 +2034,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2199,6 +2147,11 @@
       ],
       [
         "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
+        "button",
         "propose-generate",
         "{\"hx-confirm\": \"Generate AI proposals for all 0 pending files? This enqueues 0 litellm jobs.\", \"hx-disabled-elt\": \"this\", \"hx-indicator\": \"#propose-trigger-spinner\", \"hx-post\": \"/pipeline/proposals\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-trigger-response\"}"
       ],
@@ -2223,16 +2176,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2332,12 +2275,17 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
         "",
         "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -2348,6 +2296,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",
@@ -2365,16 +2318,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2453,6 +2396,11 @@
       ],
       [
         "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
+        "button",
         "force-local-pill",
         "{\"hx-confirm\": \"Force all analysis routing to local? Cloud and Kueue backends will be bypassed until an operator restores normal routing.\", \"hx-post\": \"/pipeline/routing/force-local\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"this\", \"hx-vals\": \"{\\\"engage\\\": true}\"}"
       ],
@@ -2522,26 +2470,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2649,6 +2577,11 @@
         "{\"hx-get\": \"/s/runtime-config\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
         "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
@@ -2664,16 +2597,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2773,12 +2696,17 @@
       [
         "button",
         "",
-        "{\"hx-disabled-elt\": \"this\"}"
+        "{\"hx-disabled-elt\": \"this\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\"}"
       ],
       [
         "button",
         "",
         "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -2789,6 +2717,11 @@
         "form",
         "",
         "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-disabled-elt\": \"find button\", \"hx-post\": \"/proposals/bulk/preview?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=&threshold=90\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-approval-preview\", \"hx-trigger\": \"load, input delay:180ms, submit\"}"
       ],
       [
         "form",
@@ -2806,16 +2739,6 @@
         "a",
         "",
         "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
-      ],
-      [
-        "a",
-        "",
-        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
       ],
       [
         "a",
@@ -2896,6 +2819,11 @@
         "button",
         "",
         "{\"hx-confirm\": \"Enqueue matching for all pending tracklists?\", \"hx-post\": \"/pipeline/match-tracklists\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#match-trigger-response\"}"
+      ],
+      [
+        "button",
+        "attention-pill",
+        "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
       ],
       [
         "div",
@@ -3446,6 +3374,11 @@
       "/s/{stage}",
       "GET",
       "shell_stage"
+    ],
+    [
+      "/shell/attention",
+      "GET",
+      "shell_attention"
     ]
   ],
   "STAGE_CONTEXT_BUILDERS": [

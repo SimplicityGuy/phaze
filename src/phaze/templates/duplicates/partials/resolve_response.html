@@ -1,5 +1,11 @@
 {# Primary response: empty div removes the card #}
-<div id="group-{{ group_hash }}" style="display:none;"></div>
+{% import "ui/primitives.html" as ui %}
+<section id="group-{{ group_hash }}" class="rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+    {{ ui.action_status("Group resolved — " ~ resolved_count ~ (" file" if resolved_count == 1 else " files") ~ " marked as duplicates") }}
+    {% with undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, undo_target="group-" ~ group_hash, undo_swap="outerHTML", is_bulk=False %}
+    {% include "duplicates/partials/durable_undo.html" %}
+    {% endwith %}
+</section>
 
 {# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE, along with
    duplicates/partials/stats_header.html itself. Its sole host, the legacy duplicates/list.html,
@@ -16,7 +22,7 @@
     {# undo_target: the placeholder div THIS response just rendered above ("group-{{ group_hash }}"),
        NOT the v7-cutover-deleted #duplicates-list (phaze-be1j) -- /undo restores it (outerHTML) to a
        live _dupe_group.html card. #}
-    {% with toast_message="Group resolved — " ~ resolved_count ~ " files marked as duplicates", undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, undo_target="group-" ~ group_hash, undo_swap="outerHTML", is_bulk=False %}
+    {% with toast_message="Group resolved — " ~ resolved_count ~ (" file" if resolved_count == 1 else " files") ~ " marked as duplicates", undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, undo_target="group-" ~ group_hash, undo_swap="outerHTML", is_bulk=False %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>
