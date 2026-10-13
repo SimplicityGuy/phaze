@@ -1,0 +1,17 @@
+{# The matcher's recorded evidence for one candidate. It never authorizes anything: the operator decides. #}
+{% if assessment %}
+<div data-candidate-evidence class="min-w-0 space-y-1 text-sm">
+    <p data-evidence-band="{{ assessment.band }}" class="{{ 'text-danger' if assessment.band == 'conflicting' else 'text-muted' }}"><span class="font-medium">Match evidence:</span> {{ assessment.band_text }}. Always needs your review.</p>
+    <ul class="list-disc pl-5 space-y-0.5">
+        {% for field in assessment.fields %}
+        <li data-evidence-field="{{ field.label | lower }}" data-evidence-relation="{{ field.relation }}" class="break-words{% if field.conflicting %} text-danger{% endif %}">{% if field.conflicting %}<span aria-hidden="true">⚠ </span>{% endif %}{{ field.label }}: {{ field.text }}</li>
+        {% endfor %}
+    </ul>
+    {% if assessment.date_alternatives %}<p data-date-alternatives class="break-words">The recording's date is ambiguous. Possible dates: {{ assessment.date_alternatives | join(', ') }}.</p>{% endif %}
+    {% if assessment.tied_with %}<p class="text-warn">{{ assessment.tied_with }} other candidate(s) matched equally well. Display order does not rank them.</p>{% endif %}
+    {% if assessment.scope_state == 'incomplete' %}<p data-incomplete-scope class="text-warn break-words">Search scope incomplete{% if assessment.scope_reason %}: {{ assessment.scope_reason }}{% endif %}. Candidates missing from this list are not evidence that no tracklist exists.</p>{% endif %}
+    {% if assessment.reasons %}<details><summary class="cursor-pointer text-xs text-muted">Why this band</summary><ul class="list-disc pl-5 text-xs break-words">{% for reason in assessment.reasons %}<li>{{ reason }}</li>{% endfor %}</ul></details>{% endif %}
+</div>
+{% else %}
+<p class="text-sm text-muted">No match evidence was recorded for this candidate.</p>
+{% endif %}

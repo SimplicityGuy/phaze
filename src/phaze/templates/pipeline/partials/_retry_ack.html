@@ -1,0 +1,32 @@
+{# The two acknowledgement shapes shared by retry_failed_response.html and metadata_retry_response.html.
+
+   `toast` is set by the per-file retry (the Files-matrix row button). Its ack must not land in the row: an inline
+   span there overlapped the neighbouring cells (phaze-itjat), so both shapes go OOB to the shell's #toast-container
+   and the row's own result span is left empty. The bulk health cards leave `toast` unset and get the ack inline.
+
+   success -- transient either way: an auto-dismissing toast per file, ui.action_status in bulk.
+   failure -- persistent and announced either way (phaze-wzfzo.10): role="alert", never on a timer. The per-file toast
+              wears the shell's action-failure contract (`data-action-failure` + `data-dismiss-action-error`, handled
+              by shell/partials/action_feedback.html), so it stays until the operator dismisses it. #}
+{% import "ui/primitives.html" as ui %}
+
+{% macro success(message, toast=false) %}
+{% if toast %}
+<div hx-swap-oob="beforeend:#toast-container"><div class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>{{ message }}</div></div>
+{% else %}
+{{ ui.action_status(message) }}
+{% endif %}
+{% endmacro %}
+
+{% macro failure(message, tone='danger', toast=false) %}
+{% set tones = {
+    'warn': 'border-amber-300 bg-amber-50 text-warn dark:border-amber-700 dark:bg-amber-950',
+    'danger': 'border-red-300 bg-red-50 text-danger dark:border-red-800 dark:bg-red-950'
+} %}
+{% set text_tones = {'warn': 'text-warn', 'danger': 'text-danger'} %}
+{% if toast %}
+<div hx-swap-oob="beforeend:#toast-container"><div role="alert" data-action-failure class="max-w-sm rounded-md border px-4 py-2 text-sm font-medium shadow dark:shadow-none {{ tones.get(tone, tones.danger) }}"><p>{{ message }}</p><button type="button" data-dismiss-action-error class="mt-1 underline focus-visible:ring-2 focus-visible:ring-blue-500">Dismiss action error</button></div></div>
+{% else %}
+<span role="alert" class="text-sm {{ text_tones.get(tone, text_tones.danger) }} font-medium">{{ message }}</span>
+{% endif %}
+{% endmacro %}

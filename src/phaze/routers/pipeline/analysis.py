@@ -649,7 +649,7 @@ async def retry_analysis_failed_file(
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/retry_failed_response.html",
-            context={"request": request, "count": 0, "no_active_agent": False},
+            context={"request": request, "count": 0, "no_active_agent": False, "toast": True},
         )
 
     try:
@@ -661,7 +661,7 @@ async def retry_analysis_failed_file(
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/retry_failed_response.html",
-            context={"request": request, "count": 0, "no_active_agent": True},
+            context={"request": request, "count": 0, "no_active_agent": True, "toast": True},
         )
 
     # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
@@ -696,7 +696,7 @@ async def retry_analysis_failed_file(
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/retry_failed_response.html",
-            context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True},
+            context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True, "toast": True},
         )
 
     if job is None:
@@ -738,7 +738,7 @@ async def retry_analysis_failed_file(
             return templates.TemplateResponse(
                 request=request,
                 name="pipeline/partials/retry_failed_response.html",
-                context={"request": request, "count": 0, "no_active_agent": False, "blocked": True},
+                context={"request": request, "count": 0, "no_active_agent": False, "blocked": True, "toast": True},
             )
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
@@ -750,5 +750,5 @@ async def retry_analysis_failed_file(
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
     stage_history: dict[str, bool] = {}
     buckets = await get_file_stage_buckets(session, file_id, history=stage_history)
-    ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
+    ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False, toast=True)
     return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets, file_type=file.file_type, missing=file.missing_at, history=stage_history))

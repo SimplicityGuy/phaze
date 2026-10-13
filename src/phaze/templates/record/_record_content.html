@@ -95,6 +95,12 @@
             {% with details=companion_details, file_id=file.id %}{% include "record/companions/_overview.html" %}{% endwith %}
         </section>
 
+        {# Provider-neutral remote look-up. Loaded lazily by a read-only GET that issues no lookup and no provider call;
+           every lookup, load, select, reject, reopen and stop-clear is a separate explicit operator POST. #}
+        <section id="remote-lookup-{{ file.id }}" data-remote-lookup-slot class="{{ _panel }}" aria-label="Look up tracklists" hx-get="/files/{{ file.id }}/remote-lookup" hx-trigger="load" hx-swap="outerHTML">
+            <p class="text-sm text-muted">Loading look-up…</p>
+        </section>
+
         {# 4 — Expanded stage matrix (trace triggers) + enrich-only force-skip (UI-03 / UI-04,
            D-02/D-06..D-10): the right-pane half of the D-02 dual home. Each stage is a keyboard-
            accessible trace TRIGGER — a real <button> (native Enter/Space → click) that hx-gets the

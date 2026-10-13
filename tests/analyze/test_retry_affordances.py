@@ -39,6 +39,7 @@ from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.web.template_globals import register_format_filters
 from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
+from tests._retry_ack import assert_persistent_failure_toast
 
 
 if TYPE_CHECKING:
@@ -172,6 +173,8 @@ async def test_per_file_retry_no_active_agent_mutates_nothing(client: AsyncClien
     response = await client.post(f"/pipeline/files/{fid}/analysis-failed/retry")
     assert response.status_code == 200
     assert "no active agent" in response.text.lower()
+    # phaze-wzfzo.19: a per-row failure is a persistent alert toast, never an auto-dismissing one or a row span.
+    assert_persistent_failure_toast(response.text, "No active agent")
     assert capture == []  # nothing enqueued anywhere, never the default queue
 
     session.expire_all()

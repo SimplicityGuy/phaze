@@ -52,6 +52,8 @@ from phaze.routers import (
     proposals,
     record,
     recording_discogs,
+    remote_lookup_ui,
+    remote_lookups,
     routing,
     scan,
     search,
@@ -69,6 +71,7 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
 from phaze.services.pipeline.attention_snapshot import ATTENTION_REFRESH_SECONDS, set_attention_snapshot
 from phaze.services.pipeline.review_counts import _REVIEW_TTL_SECONDS, refresh_review_counts
+from phaze.services.remote_lookup import build_remote_lookup
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
@@ -209,6 +212,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     _app.state.task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
     # Tracklist cache consumers expect decoded strings.
     _app.state.redis = redis_async.Redis.from_url(settings.redis_url, decode_responses=True)
+    # The remote lookup (registry + paced transport) is built ONCE per process and opens nothing until an
+    # operator asks for a lookup; disabled providers stay listed but unreachable (phaze-b6430).
+    _app.state.remote_lookup = build_remote_lookup(settings.database_url, async_session)
 
     # Build the dashboard once, after queues and the agent roster exist. It reuses cached queues,
     # owns no resources, and includes only fileserver agents because compute work bypasses SAQ.
@@ -246,6 +252,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     with contextlib.suppress(asyncio.CancelledError):
         await _app.state.orphan_task
     await _app.state.task_router.close()
+    await _app.state.remote_lookup.aclose()
     await _app.state.redis.aclose()
     # WR-01: close the factory-attached cache_redis before the pool — disconnect()
     # closes only the psycopg3 pool, leaving the controller queue's Redis client open.
@@ -322,6 +329,8 @@ _ROUTERS: tuple[APIRouter, ...] = (
     agent_cue.router,
     recording_discogs.router,
     local_sources.router,
+    remote_lookups.router,
+    remote_lookup_ui.router,
     agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.

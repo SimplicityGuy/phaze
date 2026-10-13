@@ -804,9 +804,13 @@ async def test_historical_nonmedia_retry_is_scoped_native_and_updates_matching_o
     assert response.status == 200
     body = await response.text()
     assert "re-queued 1 failed file(s)" in body.lower(), body
-    await page.wait_for_function(
-        "id => document.getElementById(id).textContent.toLowerCase().includes('re-queued')", arg=f"retry-result-{prefix}-{failed.id}-metadata"
-    )
+    # phaze-itjat: the per-row ack is an OOB toast, not text in the row (an inline ack overlapped the neighbouring cells).
+    toast = page.locator("#toast-container [role=status]", has_text="Re-queued 1 failed file(s)")
+    await toast.wait_for(state="visible")
+    assert (await page.locator(f"#retry-result-{prefix}-{failed.id}-metadata").inner_text()).strip() == ""
+    # A success is transient: main 7719069a's toast hides itself after 5 s. This is also the control for the failure
+    # test below -- the same wait that sees this toast go is the one a failure toast must survive.
+    await toast.wait_for(state="hidden", timeout=_SUCCESS_TOAST_GONE_MS)
     assert len(writes) == 1
     assert await page.locator("#record-body h2").count() == 0, "Retry must not activate the surrounding record row"
     from bs4 import BeautifulSoup
@@ -826,3 +830,39 @@ async def test_historical_nonmedia_retry_is_scoped_native_and_updates_matching_o
     first = BeautifulSoup(await fresh.text(), "html.parser")
     assert first.select_one(f"#{token_id} [aria-label]")["aria-label"] == expected_token
     assert first.select_one(f"#{summary_id}").get_text(" ", strip=True) == expected_summary
+
+
+# main 7719069a's success toast hides at 5 s; this budget is that timer plus slack for the x-transition leave.
+_SUCCESS_TOAST_GONE_MS = 8_000
+
+
+async def test_per_row_retry_failure_is_a_persistent_alert_toast_outside_the_row(page: Any, seed: Any) -> None:
+    """phaze-wzfzo.19: a per-row retry FAILURE is announced and stays until dismissed, and never lands in the row.
+
+    The owning agent is revoked, so the real route takes its ``NoActiveAgentError`` branch. Main 7719069a made this an
+    auto-dismissing toast; phaze-wzfzo.10 says an action failure never disappears on a timer. The success test above
+    proves ``_SUCCESS_TOAST_GONE_MS`` is long enough to watch an auto-dismissing toast go.
+    """
+    await seed.agent("offline-fileserver", revoked=True)
+    failed = await seed.file(filename="failed.mp3", agent_id="offline-fileserver")
+    seed.session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="Synthetic metadata failure"))
+    await seed.session.commit()
+    await page.set_viewport_size({"width": 1440, "height": 1000})
+    await open_shell(page, "/s/files")
+    retry = page.locator(f"#files-stage-pill-metadata-{failed.id}").get_by_role("button", name="Retry Metadata for this file")
+    await retry.wait_for(state="visible")
+    endpoint = f"/pipeline/files/{failed.id}/metadata-failed/retry"
+    async with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith(endpoint)) as submitted:
+        await retry.click()
+    assert (await submitted.value).status == 200
+
+    alert = page.locator("#toast-container [role=alert][data-action-failure]", has_text="No active agent")
+    await alert.wait_for(state="visible")
+    assert (await page.locator(f"#retry-result-files-{failed.id}-metadata").inner_text()).strip() == ""
+    assert await page.locator("#files-table-view [role=alert]", has_text="No active agent").count() == 0
+
+    await page.wait_for_timeout(_SUCCESS_TOAST_GONE_MS)
+    assert await alert.is_visible(), "a per-row retry failure must not auto-dismiss (phaze-wzfzo.10)"
+
+    await alert.get_by_role("button", name="Dismiss action error").click()
+    await alert.wait_for(state="detached")

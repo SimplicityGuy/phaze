@@ -13,8 +13,14 @@ proof that immutable parse reuse can never help.
 
 ## Execution prerequisites
 
-The operator selected the next 20 completed beads, grouped by change type, after
-2026-10-11 19:04:16 UTC. Cohort selection is available. M0's readback is integrated, but original
+**Operator decision, 2026-10-11.** Question as put: *"Before the velocity pilots run, which
+observation cohort should they use? Repairs and coverage backfills can proceed without this
+choice."* Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped
+by change type"*. The reply arrived at 19:03:57 UTC; the cohort is the next 20 completed beads
+after 2026-10-11 19:04:16 UTC. Durable record: the recovered-decision comment on bead
+`phaze-x45ht` and its follow-up comment, which records the offered options; the
+[PD manifest](pilot-disposition-manifest.md#observation-cohort-and-outcome-authority) gives the
+recovery. The decision covers cohort membership only. Cohort selection is available. M0's readback is integrated, but original
 work-start and permit authority remain unavailable for joined accepted-bead velocity. Missing starts
 are censored, not reconstructed from validation timestamps. SC's supported selection/shadow
 disposition is still outstanding at this preflight. The filed R1 acceptance requires M0 outcome

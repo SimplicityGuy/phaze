@@ -23,8 +23,13 @@ inference labels, and checks source movement and missing consumer files. Reading
 consumers establishes potential scope; it does not pair every changed artifact byte and include
 edge to a proven, collectable, unskipped consumer population. Those refusals remain in force.
 
-The operator's observation cohort is the next **20 completed beads**, grouped by actual change
-type. The [measurement readback](../bead-feedback-readback.md) retains unknown original work
+**Operator decision, 2026-10-11.** Question as put: *"Before the velocity pilots run, which
+observation cohort should they use? Repairs and coverage backfills can proceed without this
+choice."* Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped
+by change type"*. Durable record: the recovered-decision comment on bead `phaze-x45ht` and its
+follow-up comment, which records the offered options; the
+[PD manifest](pilot-disposition-manifest.md#observation-cohort-and-outcome-authority) gives the
+recovery. The decision covers cohort membership only. The [measurement readback](../bead-feedback-readback.md) retains unknown original work
 starts. This incomplete cohort does not supply matched accepted-bead latency or permission to
 claim velocity gains from a reduced consumer run.
 

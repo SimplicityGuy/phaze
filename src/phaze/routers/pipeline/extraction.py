@@ -256,7 +256,7 @@ async def retry_metadata_failed_file(
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/metadata_retry_response.html",
-            context={"request": request, "count": 0, "no_active_agent": False},
+            context={"request": request, "count": 0, "no_active_agent": False, "toast": True},
         )
 
     try:
@@ -268,7 +268,7 @@ async def retry_metadata_failed_file(
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/metadata_retry_response.html",
-            context={"request": request, "count": 0, "no_active_agent": True},
+            context={"request": request, "count": 0, "no_active_agent": True, "toast": True},
         )
 
     # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
@@ -286,7 +286,7 @@ async def retry_metadata_failed_file(
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
     stage_history: dict[str, bool] = {}
     buckets = await get_file_stage_buckets(session, file_id, history=stage_history)
-    ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
+    ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False, toast=True)
     return HTMLResponse(
         ack + _files_retry_oob(file_id, "metadata", buckets, file_type=file.file_type, missing=file.missing_at, history=stage_history)
     )

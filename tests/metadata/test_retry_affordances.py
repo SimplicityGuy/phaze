@@ -33,6 +33,7 @@ from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
 from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
+from tests._retry_ack import assert_persistent_failure_toast
 
 
 if TYPE_CHECKING:
@@ -173,6 +174,8 @@ async def test_per_file_retry_no_active_agent_enqueues_nothing(client: AsyncClie
     response = await client.post(f"/pipeline/files/{file.id}/metadata-failed/retry")
     assert response.status_code == 200
     assert "no active agent" in response.text.lower()
+    # phaze-wzfzo.19: a per-row failure is a persistent alert toast, never an auto-dismissing one or a row span.
+    assert_persistent_failure_toast(response.text, "No active agent")
     assert capture == []
 
     still_failed = await get_metadata_failed_files(session)

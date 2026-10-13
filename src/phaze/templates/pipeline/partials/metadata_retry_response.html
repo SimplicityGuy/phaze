@@ -1,3 +1,9 @@
+{# Per-file retry (the Files-matrix row button) sets `toast`: the ack goes to the shell's #toast-container
+   as an OOB toast, because an inline span inside a table row overlapped the neighbouring cells. A
+   SUCCESS toast auto-dismisses after 5s; the "No active agent" FAILURE toast is role="alert" and stays
+   until the operator dismisses it (phaze-wzfzo.10). The bulk cards leave `toast` unset and keep the
+   inline span. #}
+{% import "pipeline/partials/_retry_ack.html" as retry_ack %}
 {# 81-06 (FAIL-03): HTMX ack for the "Retry failed" bulk action on the Metadata Health card.
 
    Stage-labelled twin of retry_failed_response.html (analyze). Renders one of three branches
@@ -7,7 +13,15 @@
 
    D-11: the retry LEAVES the failure row and re-enqueues; put_metadata's clear-on-success wipes
    failed_at only when real metadata lands, so this ack never implies the row was cleared. #}
+{% if toast %}
 {% if no_active_agent %}
+{{ retry_ack.failure('No active agent — nothing re-queued.', 'warn', toast) }}
+{% elif count == 0 %}
+{{ retry_ack.success('No failed files to retry.', toast) }}
+{% else %}
+{{ retry_ack.success('Re-queued ' ~ (count | thousands) ~ ' failed file(s) for metadata extraction.', toast) }}
+{% endif %}
+{% elif no_active_agent %}
 <span class="text-sm text-warn font-medium">
     No active agent — nothing re-queued.
 </span>

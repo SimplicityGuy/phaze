@@ -191,7 +191,13 @@ async def companion_overview_context(session: AsyncSession, details: CompanionDe
         selected[authority.kind] = {
             "authority": authority,
             "detail": detail,
-            "name": source_file.original_filename if source_file else (source.channel if source else "Retained source"),
+            "name": source_file.original_filename
+            if source_file
+            else (
+                f"{source.provider_id}: {source.native_id}"[:256]
+                if source and source.channel == "remote"
+                else (source.channel if source else "Retained source")
+            ),
         }
     # Independent pagination must not turn a retained source into a duplicate linked-file card.
     sources: dict[uuid.UUID, Any] = {source.source_file_id: source for source in details.sources if source.source_file_id}

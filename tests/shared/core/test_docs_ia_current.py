@@ -14,6 +14,7 @@ from itertools import chain
 from pathlib import Path
 import re
 
+from phaze.config_remote_providers import RemoteProviderSpec, load_remote_provider_settings
 from phaze.runtime_config import RELOADABLE_KEYS
 from scripts.check_documentation_integrity import migration_heads
 
@@ -217,8 +218,8 @@ def test_database_reference_tracks_migration_head_and_set_profile_relationship()
     """The database reference follows the live Alembic head and the set-profile relationship."""
     heads = migration_heads(_REPO_ROOT)
     text = _read_text(_DATABASE)
-    assert heads == {"088"}
-    assert "head, **`088`**" in text
+    assert heads == {"090"}
+    assert "head, **`090`**" in text
     assert "| `set_profile`" in text
 
     from phaze.models.file import FileRecord
@@ -277,3 +278,19 @@ def test_quick_start_has_no_stale_legacy_nav() -> None:
     text = _read_text(_QUICK_START)
     offenders = [url for url in _STALE_NAV_URLS if url in text]
     assert not offenders, f"quick-start.md still points at removed legacy pages: {offenders}"
+
+
+def test_documented_defaults_match_the_code() -> None:
+    """docs/configuration.md's "Remote tracklist providers" table is pinned to the loader's real defaults (phaze-c2zke)."""
+    section = _read_text(_CONFIGURATION).split("## Remote tracklist providers", 1)[1].split("\n## ", 1)[0]
+    rows = {m.group(1): m.group(2).strip("` ") for m in re.finditer(r"^\| `PHAZE_PROVIDER_<ID>_([A-Z_<>]+)` \|[^|]*\| ([^|]+) \|", section, re.M)}
+    default = load_remote_provider_settings((RemoteProviderSpec(provider_id="example_catalog", credential_names=("client_secret",)),), {})[
+        "example_catalog"
+    ]
+    assert rows["ENABLED"] == str(default.enabled).lower()
+    assert rows["MIN_INTERVAL_SECONDS"] == "unset"
+    assert default.min_interval_seconds is None
+    assert rows["MAX_REQUESTS_PER_RUN"] == "unset"
+    assert default.max_requests_per_run is None
+    assert rows["<CREDENTIAL>"] == "unset"
+    assert default.credentials == {}

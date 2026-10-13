@@ -105,6 +105,17 @@ jobs:
   # non-browser test file.
   # The operator accepted the measured 20.96% serial full-suite improvement
   # (26:40 baseline to 21:04.57) for phaze-b907a.7 on 2026-09-10.
+  # phaze-l5uve (R4 candidate, 2026-10-12): those local weights had drifted. CI run 38317442319
+  # (tree 0ce62e2b) measured coverage/test steps of integration-shared-services 601s,
+  # ingest-pipeline 354s, shared-root 287s, analyze-rest 224s, review-agents 196s,
+  # shared-telemetry 82s and shared-registry 65s: 2.33x the 258.43s mean. Whole directories and
+  # modules moved, each staying inside its local two-lane group (LANE_BUCKETS in
+  # scripts/parallel_test_manifests.py), so local lane membership is unchanged:
+  # tests/integration/test_migrations and tests/shared/core to shared-telemetry,
+  # tests/shared/routers to analyze-rest, and tests/shared/test_historical_evidence_audit.py
+  # to shared-registry. Test files stay where they are, so their conftests do not change.
+  # A static simulation over that run's per-test JUnit durations PREDICTS 1.37x. That is a
+  # prediction, not a measurement: matched CI on this tree decides.
   test:
     name: Tests (${{ matrix.bucket.name }})
     needs: [setup]
