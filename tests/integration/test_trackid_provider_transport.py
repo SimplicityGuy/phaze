@@ -4,19 +4,21 @@ Nothing here opens a socket or contacts any host. Every request is recorded by `
 URL, query and credential header the provider causes are asserted. Slugs, titles and ids are synthetic.
 """
 
+from dataclasses import dataclass
 import json
 import logging
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from pydantic import SecretStr
 import pytest
 from sqlalchemy import text
 
-from phaze.config_remote_providers import load_remote_provider_settings
 from phaze.services.remote_transport import RemoteTransport
 from phaze.tracklist_providers.domain import DiscoveryBudget, Fact, LoadBudget, OutcomeStatus, ProviderCandidate, RecordingContext, SourceIdentity
-from phaze.tracklist_providers.remote_registry import RemoteComposition, remote_composition
-from phaze.tracklist_providers.trackid import TRACKID_PROFILE, TRACKID_SPEC
+from phaze.tracklist_providers.host_profile import RemoteHostProfile
+from phaze.tracklist_providers.registry import ProviderRegistry
+from phaze.tracklist_providers.trackid import TRACKID_PROFILE, TrackIdProvider
 from tests.identify.services.trackid_fixtures import detail_document, list_page, process, row
 from tests.integration.test_remote_transport import FakeClock, FakeSocket, Reply
 
@@ -34,19 +36,26 @@ CONTEXT = RecordingContext(
 GAP = TRACKID_PROFILE.min_gap_seconds
 
 
-def composition() -> RemoteComposition:
-    environ = {
-        "PHAZE_PROVIDER_TRACKID_ENABLED": "true",
-        "PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS": f"{CLIENT}:{SECRET}",
-    }
-    return remote_composition(load_remote_provider_settings([TRACKID_SPEC], environ))
+@dataclass(frozen=True)
+class Wiring:
+    registry: ProviderRegistry
+    profiles: tuple[RemoteHostProfile, ...]
+    credentials: dict[str, SecretStr]
+
+    def __repr__(self) -> str:
+        return f"Wiring(profiles={len(self.profiles)})"
+
+
+def composition() -> Wiring:
+    registry = ProviderRegistry((TrackIdProvider(),), remote_profiles=(TRACKID_PROFILE,))
+    return Wiring(registry, (TRACKID_PROFILE,), {"trackid": SecretStr(f"{CLIENT}:{SECRET}")})
 
 
 def reply(body: object, **extra: Any) -> Reply:
     return Reply(body=(body if isinstance(body, bytes) else json.dumps(body).encode()), **extra)
 
 
-def transport(engine: Any, clock: FakeClock, socket: FakeSocket, wiring: RemoteComposition) -> RemoteTransport:
+def transport(engine: Any, clock: FakeClock, socket: FakeSocket, wiring: Wiring) -> RemoteTransport:
     return RemoteTransport(profiles=wiring.profiles, engine=engine, socket=socket, clock=clock, credentials=wiring.credentials)
 
 

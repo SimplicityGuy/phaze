@@ -3,7 +3,7 @@
 The provider does no I/O. Core owns the transport (``phaze.services.remote_transport``): it mints the search and
 fetch references from the :data:`TRACKID_PROFILE` declared here, paces and budgets every request and holds the
 credential. Importing this module registers nothing, reads no environment and opens no connection; the
-composition root (``phaze.tracklist_providers.remote_registry``) registers the provider explicitly.
+composition root registers it explicitly through its binding in ``phaze.services.remote_providers``.
 
 Decisions recorded for this adapter (implementer's decisions unless a record is cited):
 
@@ -27,9 +27,6 @@ import json
 import re
 from typing import Any
 
-from pydantic import SecretStr
-
-from phaze.config_remote_providers import RemoteProviderSettings, RemoteProviderSpec
 from phaze.tracklist_providers.domain import (
     Capability,
     Completeness,
@@ -79,10 +76,8 @@ RIGHTS_EVIDENCE = (
     "Redistribution, export, tag-writing and CUE-writing of the stored data are not addressed by this decision.",
 )
 
-TRACKID_SPEC = RemoteProviderSpec(provider_id=PROVIDER_ID, credential_names=(CREDENTIAL_NAME,))
 
-
-def _profile(min_gap_seconds: float, per_run_budget: int) -> RemoteHostProfile:
+def _profile() -> RemoteHostProfile:
     return RemoteHostProfile(
         provider_id=PROVIDER_ID,
         host=HOST,
@@ -98,8 +93,8 @@ def _profile(min_gap_seconds: float, per_run_budget: int) -> RemoteHostProfile:
             fixed_parameters=(("status", "Ready"), ("pageSize", str(PAGE_SIZE))),
         ),
         fetch=RemoteFetchRoute(native_id_pattern=SLUG_PATTERN, format=DETAIL_FORMAT, path_template="/api/integration/audiostreams/{native_id}"),
-        min_gap_seconds=min_gap_seconds,
-        per_run_budget=per_run_budget,
+        min_gap_seconds=DEFAULT_MIN_GAP_SECONDS,
+        per_run_budget=DEFAULT_PER_RUN_BUDGET,
         durable_budget=DEFAULT_DURABLE_BUDGET,
         max_response_bytes=MAX_RESPONSE_BYTES,
         credential=CredentialSlot(header="Authorization", prefix="Bearer "),
@@ -107,34 +102,17 @@ def _profile(min_gap_seconds: float, per_run_budget: int) -> RemoteHostProfile:
     )
 
 
-TRACKID_PROFILE = _profile(DEFAULT_MIN_GAP_SECONDS, DEFAULT_PER_RUN_BUDGET)
+TRACKID_PROFILE = _profile()
 
 
-def trackid_profile(settings: RemoteProviderSettings | None = None) -> RemoteHostProfile:
-    """The profile with the operator's pacing override applied, which can only make it MORE conservative."""
-    if settings is None:
-        return TRACKID_PROFILE
-    gap, budget = DEFAULT_MIN_GAP_SECONDS, DEFAULT_PER_RUN_BUDGET
-    if settings.min_interval_seconds is not None:
-        gap = max(gap, settings.min_interval_seconds)
-    if settings.max_requests_per_run is not None:
-        budget = min(budget, settings.max_requests_per_run)
-    return _profile(gap, budget)
+def check_trackid_credential(value: str) -> None:
+    """Reject anything but ``<client id>:<client secret>`` in printable ASCII, naming the setting and never the value.
 
-
-def trackid_credential(settings: RemoteProviderSettings) -> SecretStr | None:
-    """The one header value ``<client id>:<client secret>``, or None when the setting is absent.
-
-    The setting holds the API's own Authorization format; the transport's credential slot adds ``Bearer ``. A
-    malformed value is rejected by naming the setting, never by echoing any part of it.
+    The setting holds the API's own Authorization format; the transport's credential slot adds ``Bearer ``.
     """
-    value = settings.credential(CREDENTIAL_NAME)
-    if not value:
-        return None
     client_id, separator, client_secret = value.partition(":")
     if not separator or not client_id or not client_secret or ":" in client_secret or _CREDENTIAL_VALUE.fullmatch(value) is None:
         raise ValueError("PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS must be '<client id>:<client secret>' in printable ASCII without spaces")
-    return SecretStr(value)
 
 
 def _page_items(text: str | None) -> tuple[list[Any], int] | None:

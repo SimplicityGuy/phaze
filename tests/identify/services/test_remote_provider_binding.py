@@ -36,5 +36,5 @@ def test_binding_refuses_a_profile_for_another_provider_or_a_mismatched_credenti
         RemoteProviderBinding(Catalog(), PROFILE.model_copy(update={"credential": CredentialSlot(header="X-Api-Key")}))
 
 
-def test_no_remote_adapter_ships_yet() -> None:
-    assert REMOTE_PROVIDERS == ()
+def test_the_shipped_remote_adapters_are_exactly_the_registered_bindings() -> None:
+    assert [binding.profile.provider_id for binding in REMOTE_PROVIDERS] == ["trackid"]

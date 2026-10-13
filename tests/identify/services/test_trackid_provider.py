@@ -13,10 +13,10 @@ import textwrap
 import time
 from typing import Any
 
-from pydantic import SecretStr
 import pytest
 
-from phaze.config_remote_providers import RemoteProviderSettings, load_remote_provider_settings
+from phaze.config_remote_providers import load_remote_provider_settings
+from phaze.services.remote_providers import REMOTE_PROVIDERS
 from phaze.tracklist_providers import local_registry
 from phaze.tracklist_providers.domain import (
     Capability,
@@ -32,15 +32,12 @@ from phaze.tracklist_providers.domain import (
     SourceReference,
 )
 from phaze.tracklist_providers.registry import ProviderRegistry
-from phaze.tracklist_providers.remote_registry import remote_composition
 from phaze.tracklist_providers.trackid import (
     PAGE_SIZE,
     RIGHTS_EVIDENCE,
     TRACKID_PROFILE,
-    TRACKID_SPEC,
     TrackIdProvider,
-    trackid_credential,
-    trackid_profile,
+    check_trackid_credential,
 )
 from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 from tests.identify.services.trackid_fixtures import NOW, ScriptedEffects, detail_document, found, list_page, process, row
@@ -77,7 +74,7 @@ def test_registration_is_explicit_and_has_no_import_time_io() -> None:
         socket.create_connection = refuse
         import phaze.tracklist_providers as package
         import phaze.tracklist_providers.trackid
-        import phaze.tracklist_providers.remote_registry
+        import phaze.services.remote_providers
         assert [d.id for d in package.local_registry().descriptors()] == ["local"]
         print("ok")
         """
@@ -91,13 +88,12 @@ def test_registration_uses_no_entry_points() -> None:
     assert "entry-points" not in pyproject.read_text() and "entry_points" not in pyproject.read_text()
 
 
-def test_a_remote_provider_is_registered_only_by_the_composition_root_and_is_off_by_default() -> None:
-    composition = remote_composition({})
-    assert [d.id for d in composition.registry.descriptors()] == ["local", "trackid"]
-    assert composition.credentials == {}
-    off = load_remote_provider_settings([TRACKID_SPEC], {})
+def test_the_provider_is_registered_through_one_binding_and_is_off_by_default() -> None:
+    (binding,) = [b for b in REMOTE_PROVIDERS if b.profile.provider_id == "trackid"]
+    assert isinstance(binding.provider, TrackIdProvider) and binding.profile is TRACKID_PROFILE
+    assert binding.credential_name == "client_credentials" and binding.spec.credential_names == ("client_credentials",)
+    off = load_remote_provider_settings([binding.spec], {})
     assert off["trackid"].enabled is False
-    assert composition.registry._disabled == frozenset({"trackid"})
 
 
 def test_descriptor_declares_only_valid_capabilities() -> None:
@@ -461,62 +457,29 @@ def test_the_profile_is_pinned_to_the_documented_api_and_never_looser_than_the_e
     assert search.max_page * PAGE_SIZE <= DiscoveryBudget().max_candidates
 
 
-@pytest.mark.parametrize(("override", "expected"), [(0.1, 6.0), (1.0, 6.0), (6.0, 6.0), (30.0, 30.0)])
-def test_a_pacing_override_never_lowers_the_profile_gap(override: float, expected: float) -> None:
-    settings = RemoteProviderSettings(provider_id="trackid", enabled=True, min_interval_seconds=override)
-    assert trackid_profile(settings).min_gap_seconds == expected
-
-
-@pytest.mark.parametrize(("override", "expected"), [(1000, 16), (16, 16), (4, 4), (1, 1)])
-def test_a_budget_override_never_raises_the_profile_budget(override: int, expected: int) -> None:
-    settings = RemoteProviderSettings(provider_id="trackid", enabled=True, max_requests_per_run=override)
-    assert trackid_profile(settings).per_run_budget == expected
-    assert trackid_profile(RemoteProviderSettings(provider_id="trackid")) == TRACKID_PROFILE
-
-
 SECRET = "synthetic-secret-8d41"
 CLIENT = "tkid_synthetic01"
 
 
-def env(value: str | None = f"{CLIENT}:{SECRET}") -> dict[str, str]:
-    values = {"PHAZE_PROVIDER_TRACKID_ENABLED": "true"}
-    if value is not None:
-        values["PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS"] = value
-    return values
-
-
-def test_the_single_credential_is_the_apis_own_format_and_never_shows_in_repr_str_or_errors() -> None:
-    settings = load_remote_provider_settings([TRACKID_SPEC], env())["trackid"]
-    assert TRACKID_SPEC.credential_names == ("client_credentials",)
-    credential = trackid_credential(settings)
-    assert isinstance(credential, SecretStr) and credential.get_secret_value() == f"{CLIENT}:{SECRET}"
-    composition = remote_composition({"trackid": settings})
-    shown = [repr(credential), str(credential), repr(settings), str(settings), repr(composition), str(composition), repr(composition.registry)]
-    assert all(SECRET not in text and CLIENT not in text for text in shown)
-    assert set(composition.credentials) == {"trackid"} and composition.registry._disabled == frozenset()
-
-
 @pytest.mark.parametrize("bad", ["no-separator-value", ":only-secret", "only-id:", "a:b:c", "has space:x", "id:se cret", "id:sec\nret"])
 def test_a_malformed_credential_is_rejected_without_echoing_it(bad: str) -> None:
-    settings = load_remote_provider_settings([TRACKID_SPEC], env(bad))["trackid"]
     with pytest.raises(ValueError) as excinfo:
-        trackid_credential(settings)
+        check_trackid_credential(bad)
     message = str(excinfo.value)
     assert "PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS" in message
     assert all(part not in message for part in bad.replace("\n", ":").split(":") if len(part) > 3)
 
 
-def test_enabled_without_the_credential_fails_closed() -> None:
-    composition = remote_composition(load_remote_provider_settings([TRACKID_SPEC], env(None)))
-    assert composition.credentials == {} and composition.registry._disabled == frozenset({"trackid"})
+def test_a_well_formed_credential_is_accepted() -> None:
+    check_trackid_credential(f"{CLIENT}:{SECRET}")
 
 
 @pytest.mark.asyncio
 async def test_a_disabled_provider_is_listed_and_refuses_both_calls() -> None:
-    composition = remote_composition({})
-    assert "trackid" in [d.id for d in composition.registry.descriptors()]
-    discovery = await composition.registry.discover("trackid", CONTEXT, DiscoveryBudget(), ScriptedEffects())
-    loaded = await composition.registry.load(CANDIDATE, LoadBudget(), ScriptedEffects())
+    disabled = ProviderRegistry((TrackIdProvider(),), disabled=frozenset({"trackid"}), remote_profiles=(TRACKID_PROFILE,))
+    assert [d.id for d in disabled.descriptors()] == ["trackid"]
+    discovery = await disabled.discover("trackid", CONTEXT, DiscoveryBudget(), ScriptedEffects())
+    loaded = await disabled.load(CANDIDATE, LoadBudget(), ScriptedEffects())
     assert (discovery.status, discovery.code) == (OutcomeStatus.UNAVAILABLE, "disabled_provider")
     assert (loaded.status, loaded.code) == (OutcomeStatus.UNAVAILABLE, "disabled_provider")
 
