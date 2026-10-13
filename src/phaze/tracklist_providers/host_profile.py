@@ -66,12 +66,17 @@ class RemoteSearchRoute(DomainModel):
     # with one space in artist, event, date order.
     term_parameters: Annotated[tuple[tuple[SearchField, ParameterName], ...], Field(min_length=1)]
     page_parameter: ParameterName | None = None
+    # The number the host gives its first page. A reference's page is always 1-based; a host whose first
+    # page is 0 declares it here so the first page is requested as 0 and never skipped.
+    page_origin: Literal[0, 1] = 1
     fixed_parameters: Annotated[tuple[Parameter, ...], Field(max_length=8)] = ()
     etag_is_content_validator: bool = False
 
     @model_validator(mode="after")
     def validate_route(self) -> Self:
         _validate_path(self.path)
+        if self.page_origin != 1 and self.page_parameter is None:
+            raise ValueError("A page origin other than 1 needs a page parameter")
         mapped = [field for field, _ in self.term_parameters]
         if len(set(mapped)) != len(mapped) or set(mapped) != self.fields:
             raise ValueError("Every accepted search field maps to exactly one query parameter")

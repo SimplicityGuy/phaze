@@ -564,6 +564,22 @@ setting one through `runtime.toml` or the admin API is rejected by name. Credent
 [`tests/shared/core/test_docs_ia_current.py`](../tests/shared/core/test_docs_ia_current.py)
 pins the defaults in this table to the loader.
 
+### TrackId.net (`<ID>` = `TRACKID`)
+
+`src/phaze/tracklist_providers/trackid.py` declares one credential, `CLIENT_CREDENTIALS`
+(`PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS`, or `PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS_FILE`). Its value
+is TrackId's own Authorization format, `<client id>:<client secret>`, for example
+`tkid_EXAMPLE:example-not-a-real-secret` (a placeholder; never paste a real value into a tracked file). The
+transport adds the `Bearer ` prefix and sends it as the `Authorization` header. A value that is not exactly
+one id and one secret separated by a colon is rejected at startup by naming the setting, never the value. If
+the provider is enabled without the credential it is disabled (fail closed), never sent unauthenticated.
+
+The profile's own pacing is conservative and is a **floor**: a 6 s gap between requests, 16 requests per
+run, 60 per rolling hour, and a 262144-byte response bound. `MIN_INTERVAL_SECONDS` can only raise the gap
+and `MAX_REQUESTS_PER_RUN` can only lower the budget; a value on the wrong side of the profile is ignored.
+Discovery reads at most 3 list pages of 20, so one lookup costs at most 3 requests plus one per loaded
+stream.
+
 ## Agent role settings (`PHAZE_ROLE=agent`)
 
 These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=agent`, a model validator fails fast at startup if any **required** field is missing.

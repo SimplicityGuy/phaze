@@ -126,6 +126,10 @@ _MESSAGES: dict[str, tuple[LookupStatus, str]] = {
         "unavailable",
         "This recording has no artist, event or date to search with, so nothing was sent. That is not evidence that no tracklist exists.",
     ),
+    "no_search_hint": (
+        "unavailable",
+        "None of this recording's facts can be searched by this provider, so nothing was sent. That is not evidence that no tracklist exists.",
+    ),
     "unknown_provider": ("contract_error", "No provider with this id is registered."),
     "transport_stopped": (
         "unavailable",
@@ -334,15 +338,23 @@ class RemoteLookup:
         providers = tuple(binding.provider for binding in bindings)
         descriptors = tuple(ProviderDescriptor.model_validate(provider.descriptor) for provider in providers)
         self._descriptors = {descriptor.id: descriptor for descriptor in descriptors}
-        self._disabled = disabled_provider_ids(descriptors, settings)
-        self.registry = ProviderRegistry(providers, disabled=self._disabled, remote_profiles=profiles)
+        disabled = set(disabled_provider_ids(descriptors, settings))
         credentials: dict[str, SecretStr] = {}
         for binding in bindings:
-            provider_settings = settings.get(binding.profile.provider_id)
+            provider_id = binding.profile.provider_id
+            provider_settings = settings.get(provider_id)
             if binding.credential_name and provider_settings is not None and provider_settings.enabled:
                 secret = provider_settings.credentials.get(binding.credential_name)
-                if secret is not None:
-                    credentials[binding.profile.provider_id] = secret
+                if secret is None:
+                    # Enabled without its credential would send unauthenticated requests: fail closed.
+                    disabled.add(provider_id)
+                    logger.warning("remote_lookup.credential_missing", provider_id=provider_id)
+                    continue
+                if binding.credential_check is not None:
+                    binding.credential_check(secret.get_secret_value())
+                credentials[provider_id] = secret
+        self._disabled = frozenset(disabled)
+        self.registry = ProviderRegistry(providers, disabled=self._disabled, remote_profiles=profiles)
         self._clock = clock or SystemClock()
         self.transport = RemoteTransport(profiles=profiles, engine=engine, socket=socket, clock=self._clock, credentials=credentials)
         self._engine = engine
