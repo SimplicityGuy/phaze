@@ -1,0 +1,20 @@
+{# Every outcome is rendered as given: status, code and message. None is ever shown as "no tracklist exists". #}
+{% macro outcome_line(outcome) %}
+<p data-outcome-status="{{ outcome.status }}" data-outcome-code="{{ outcome.code }}" class="break-words"><span class="font-medium">{{ outcome.status | replace('_', ' ') | capitalize }}</span> <code class="text-xs">{{ outcome.code }}</code> {{ outcome.message }}{% if outcome.stop_code %} (stop code <code class="text-xs">{{ outcome.stop_code }}</code>){% endif %}</p>
+{% endmacro %}
+{% set _good = notice.outcome and notice.outcome.status in ['candidates', 'loaded'] %}
+<div data-remote-notice role="{{ 'status' if (not notice.failed and (not notice.outcome or _good or notice.outcome.status == 'no_candidates_in_scope')) else 'alert' }}" class="my-3 min-w-0 space-y-1 rounded border p-3 text-sm {{ 'text-danger' if notice.failed else ('text-ok' if _good else '') }}">
+    {% if notice.provider_name %}<p class="text-xs text-muted">{{ notice.provider_name }}</p>{% endif %}
+    {% if notice.message %}<p class="break-words">{{ notice.message }}</p>{% endif %}
+    {% if notice.outcome %}{{ outcome_line(notice.outcome) }}{% endif %}
+    {% if notice.lookup %}
+        {% for warning in notice.lookup.warnings %}<div data-outcome-warning class="text-warn">{{ outcome_line(warning) }}</div>{% endfor %}
+        {% if notice.lookup.scope %}<p data-lookup-scope="{{ notice.lookup.scope.state }}" class="break-words{% if notice.lookup.scope.state == 'incomplete' %} text-warn{% endif %}">Search scope: {{ notice.lookup.scope.state }}{% if notice.lookup.scope.reason %} ({{ notice.lookup.scope.reason }}){% endif %}.{% if notice.lookup.scope.state == 'incomplete' %} An incomplete search is not evidence that no tracklist exists.{% endif %}</p>{% endif %}
+        {% if notice.lookup.previously_rejected %}
+        <div data-previously-rejected-result>
+            <p>Not proposed again, because you rejected {{ 'it' if notice.lookup.previously_rejected | length == 1 else 'them' }} for this recording. Reopen from the list below to review again.</p>
+            <ul class="list-disc pl-5">{% for item in notice.lookup.previously_rejected %}<li class="break-all">{{ item.identity.native_id }}{% if item.rejected_at %} · rejected {{ item.rejected_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+    {% endif %}
+</div>

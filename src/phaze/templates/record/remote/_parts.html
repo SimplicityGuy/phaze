@@ -1,0 +1,14 @@
+{# Shared bits of the look-up panel. Macros take everything they print as arguments: an imported macro sees no request context. #}
+{% import "ui/primitives.html" as ui %}
+{% macro button_class(kind) -%}
+{{ ui.btn(kind, 'sm', 'max-w-full h-auto py-2') | replace('whitespace-nowrap', 'whitespace-normal') | replace('shrink-0', 'shrink') }}
+{%- endmacro %}
+{# The compare-and-set fields of an explicit decision. decision_id is minted per render on the server; the token, revision
+   and media hash are what the operator was looking at, and the server re-checks all three. #}
+{% macro decision_fields(panel, observation_id, revision, decision_id) %}
+<input type="hidden" name="observation_id" value="{{ observation_id }}">
+<input type="hidden" name="decision_id" value="{{ decision_id }}">
+<input type="hidden" name="expected_selection_token" value="{{ panel.expected_selection_token }}">
+<input type="hidden" name="expected_revision" value="{{ revision or '' }}">
+<input type="hidden" name="expected_media_sha256" value="{{ panel.media_sha256 }}">
+{% endmacro %}
