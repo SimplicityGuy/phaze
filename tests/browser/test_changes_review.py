@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from playwright.async_api import expect
 import pytest
 
 from phaze.models.proposal import ProposalStatus
@@ -264,7 +263,7 @@ async def test_selected_preview_response_cannot_restore_old_selection(page: Page
     import asyncio
     from urllib.parse import parse_qs
 
-    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import Error as PlaywrightError, expect
 
     first = await seed.proposal(filename="race-first.mp3", confidence=0.99)
     second = await seed.proposal(filename="race-second.mp3", confidence=0.99)
@@ -457,7 +456,7 @@ async def test_old_threshold_response_cannot_replace_current_99_preview(page: Pa
     import asyncio
     from urllib.parse import parse_qs
 
-    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import Error as PlaywrightError, expect
 
     high = await seed.proposal(filename="threshold-high.mp3", confidence=0.99)
     low = await seed.proposal(filename="threshold-low.mp3", confidence=0.95)
