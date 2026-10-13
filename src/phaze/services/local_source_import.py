@@ -319,15 +319,18 @@ def _project_tracks(snapshot: Snapshot, media_id: uuid.UUID, mapping: dict | Non
     return tuple(result)
 
 
-def _review_text_section(snapshot: Snapshot, command: SourceDecision) -> int | None:
-    """Map one fully enumerated section; no collection flattening or cap bypass."""
+def review_text_section(snapshot: Snapshot, text_section_ordinal: int | None, accept_text_warnings: bool) -> int | None:
+    """Map one fully enumerated section; no collection flattening or cap bypass.
+
+    Shared by local and remote selection: a sectioned snapshot projects only the mapped section's tracks.
+    """
     if not snapshot.sections:
-        if command.text_section_ordinal is not None or command.accept_text_warnings:
+        if text_section_ordinal is not None or accept_text_warnings:
             raise ValueError("Section mapping is only valid for sectioned text tracklists")
         return None
     if not snapshot.section_scan_complete:
         raise ValueError("Incomplete text scan cannot be selected by section")
-    ordinal = command.text_section_ordinal
+    ordinal = text_section_ordinal
     if ordinal is None and len(snapshot.sections) == 1:
         ordinal = snapshot.sections[0].ordinal
     section = next((item for item in snapshot.sections if item.ordinal == ordinal), None)
@@ -335,7 +338,7 @@ def _review_text_section(snapshot: Snapshot, command: SourceDecision) -> int | N
         raise ValueError("Collection requires an explicit text section-to-recording mapping")
     if section.completeness.state != "complete" or not any(track.section_ordinal == ordinal for track in snapshot.tracks):
         raise ValueError("Absent or incomplete text section cannot replace a reviewed tracklist")
-    if section.warnings and not command.accept_text_warnings:
+    if section.warnings and not accept_text_warnings:
         raise ValueError("Unresolved text row structure requires explicit acknowledgement")
     return ordinal
 
@@ -490,7 +493,9 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
             "source_sha256": file.sha256_hash,
             "source_revision": observation.revision or "unknown",
         }
-        text_ordinal = _review_text_section(snapshot, command) if command.kind == "tracklist" else None
+        text_ordinal = (
+            review_text_section(snapshot, command.text_section_ordinal, command.accept_text_warnings) if command.kind == "tracklist" else None
+        )
         if snapshot.completeness.state != "complete" and text_ordinal is None:
             raise ValueError("Incomplete candidate cannot be selected")
         if observation.conflict_with_id is not None and not command.accept_conflict:

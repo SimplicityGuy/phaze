@@ -873,9 +873,9 @@ def test_context_uses_only_bounded_tag_facts_and_never_guesses_an_event() -> Non
 async def test_the_composition_root_builds_once_and_closes_cleanly() -> None:
     sessions = async_sessionmaker(class_=AsyncSession)
     lookup = build_remote_lookup("postgresql+asyncpg://synthetic:synthetic@localhost:5433/synthetic_test", sessions)
-    assert [binding.profile.provider_id for binding in remote_lookup_module.REMOTE_PROVIDERS] == ["trackid"]
-    # Nothing is enabled by default: the shipped provider is listed but off.
-    assert repr(lookup) == "RemoteLookup(providers=['trackid'], disabled=['trackid'])"
+    assert [binding.profile.provider_id for binding in remote_lookup_module.REMOTE_PROVIDERS] == ["trackid", "mixesdb"]
+    # Nothing is enabled by default: every shipped provider is composed, listed and off.
+    assert repr(lookup) == "RemoteLookup(providers=['mixesdb', 'trackid'], disabled=['mixesdb', 'trackid'])"
     await lookup.aclose()
 
 
