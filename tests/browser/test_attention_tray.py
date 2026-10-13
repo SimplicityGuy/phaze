@@ -174,11 +174,25 @@ async def test_health_tray_lazy_keyboard_focus_and_layout(page_at: Any, viewport
         pill = page.locator("#attention-pill")
         assert await pill.get_attribute("aria-expanded") == "false"
         assert await pill.get_attribute("title") == await pill.get_attribute("aria-label")
+        # The header re-focuses the heading from a requestAnimationFrame queued by htmx:afterSettle on the
+        # lazily loaded content. "Content swapped" and "heading focused" are both already true BEFORE that
+        # settle, so Tab pressed on them races the re-focus and lands on the heading again. Wait for the
+        # settle itself, then for the frame that carries the re-focus.
+        await page.evaluate(
+            """() => {
+                window.__attentionSettled = false;
+                document.body.addEventListener('htmx:afterSettle', (event) => {
+                    if (event.detail.target && event.detail.target.id === 'attention-tray-content') window.__attentionSettled = true;
+                });
+            }"""
+        )
         await pill.focus()
         await page.keyboard.press("Enter")
         tray = page.locator("#attention-tray")
         await tray.wait_for(state="visible")
         await page.wait_for_function("document.getElementById('attention-tray-content').textContent.indexOf('Loading attention items') === -1")
+        await page.wait_for_function("window.__attentionSettled === true")
+        await page.evaluate("() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
         assert len(loads) == 1
         assert await pill.get_attribute("aria-expanded") == "true"
         assert await tray.get_attribute("role") != "dialog"
