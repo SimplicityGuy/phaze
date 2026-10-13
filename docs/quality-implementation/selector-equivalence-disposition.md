@@ -16,8 +16,13 @@ The [SB disposition](coverage-generation-disposition.md) establishes that instal
 protocol required by the proposed comparison. An isolated mutable store is not that protocol.
 No new generation API, private shadow oracle or shared-index refresh is introduced here.
 
-The operator selected the next **20 completed beads**, grouped by actual change type, for
-velocity observations. That prospective cohort is not complete. The
+**Operator decision, 2026-10-11.** Question as put: *"Before the velocity pilots run, which
+observation cohort should they use? Repairs and coverage backfills can proceed without this
+choice."* Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped
+by change type"*, for velocity observations. Durable record: the recovered-decision comment on
+bead `phaze-x45ht` and its follow-up comment, which records the offered options; the
+[PD manifest](pilot-disposition-manifest.md#observation-cohort-and-outcome-authority) gives the
+recovery. The decision covers cohort membership only. That prospective cohort is not complete. The
 [M0 readback](../bead-feedback-readback.md) records unknown original work-start timestamps;
 review-wait samples cannot substitute for accepted-bead velocity. Neither these lifecycle samples
 nor older full runs from different source trees are matched selected/full consumer comparisons.

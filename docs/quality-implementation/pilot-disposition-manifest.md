@@ -141,6 +141,13 @@ reading it against measurements required choices that the operator was not asked
   that reading it holds, though the run as a whole still lost 4 arcs (see "Arcs" below).
 - *"no missing ... skips"* is met: 15 skips in both runs.
 - *"lower critical wall"* is met: 712 s to 469 s.
+- *"combine/publication"*, from the durable comment's wider wording, is read as the `Combine
+  coverage` job, inside which publication runs. That job took **52 s** at the baseline and
+  **51 s** at the R4 head (job started to completed, from each run's job API timings). That is
+  within the critical wall above, and it is not claimed as a gain.
+- *"skips/setup regression"*, from the same wider wording, is read as the workflow's `Setup` job:
+  **7 s** at the baseline and **7 s** at the R4 head, so no setup regression was observed on this
+  one run. Neither figure is claimed as a gain; skips are covered by the bullet above.
 
 **Contexts: one baseline context is absent at the R4 head, observed, cause unproven.** The 8 new
 contexts are the 7 new R4 manifest controls' `|setup` contexts and
