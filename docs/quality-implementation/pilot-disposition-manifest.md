@@ -95,7 +95,10 @@ matched CI"*. The answer arrived at 2026-10-13T01:30Z UTC, which is 2026-10-12 l
 record: the operator-decision comment on bead `phaze-l5uve`. The selected option's description,
 which is the assistant's framing of the choice rather than the operator's words, carried the
 adoption conditions verbatim: *"<=1.5 max/mean incl. setup/browser/combine, lower critical wall, no
-missing contexts/skips"*. The decision does **not** extend to any velocity claim or to any other
+missing contexts/skips"*. The durable comment on `phaze-l5uve` words the scope more widely:
+*"<=1.5 max/mean incl. setup/browser/combine/publication"* and *"no missing contexts/skips/setup
+regression"*. Publication (the combined-report upload and the Codecov upload) runs inside the
+`Combine coverage` job. The decision does **not** extend to any velocity claim or to any other
 pilot.
 
 **Matched measurement.** Both runs are the `CI` workflow, `pull_request` event, conclusion
@@ -117,13 +120,27 @@ combined-coverage artifacts.
 | Combined coverage lines (covered/valid) | 28051 / 28332 | 28051 / 28332 |
 | Combined coverage branches (covered/valid) | 6505 / 6768 | **6504** / 6768 |
 | Distinct coverage contexts, union of the seven shard `.coverage` context tables | 20245 | 20252 = 20245 + 8 new − 1 absent |
+| Distinct arcs, union of the seven shard `.coverage` arc tables | 55118 | 55118 (4 lost, 4 gained) |
+| Eight-lane max/mean, browser job counted as an 8th lane (whole job durations, s) | 647 / 329.125 = **1.966** | 469 / 333.125 = **1.408** |
 
 The 7 new nodes are R4's own manifest controls in `tests/shared/scripts/test_parallel_test_manifests.py`:
 one positive receiver/lane check and six negative controls through the real validator. No baseline
-node is missing. The ratio condition (at most 1.5) is met both on the test step alone (1.130) and on
-whole shard jobs including setup (1.112). The longest part, which includes the browser job and the
-coverage combine, fell from 712 s to 469 s. The critical path is now the browser job, which R4 did
-not touch.
+node is missing. The longest part, which includes the browser job and the coverage combine, fell from
+712 s to 469 s. The critical path is now the browser job, which R4 did not touch.
+
+**How each condition was read: the implementer's decision.** The option text is compressed, so
+reading it against measurements required choices that the operator was not asked about:
+
+- *"<=1.5 max/mean incl. setup/browser/combine"* is read as follows. Per-job setup sits inside the
+  ratio, using whole shard job durations: **1.112**. Browser and combine sit inside the critical
+  wall: **712 s to 469 s**. On that reading the condition is met. The test step alone gives
+  **1.130**. The stricter reading counts the browser job as an 8th lane in the ratio and gives
+  **1.408**, which also stays under 1.5.
+- *"no missing contexts"* is **not literally met**: one baseline context is absent at the R4 head
+  (below). It is read as "no arc of the absent context is lost; the context was re-attributed". On
+  that reading it holds, though the run as a whole still lost 4 arcs (see "Arcs" below).
+- *"no missing ... skips"* is met: 15 skips in both runs.
+- *"lower critical wall"* is met: 712 s to 469 s.
 
 **Contexts: one baseline context is absent at the R4 head, observed, cause unproven.** The 8 new
 contexts are the 7 new R4 manifest controls' `|setup` contexts and
@@ -133,15 +150,29 @@ Its 54 arcs, in `telemetry/http`, `telemetry/instruments`, `telemetry/catalogue`
 `telemetry/tracing` and `routers/agent_heartbeat`, all reappear under the new
 `test_retune_through_sighup|teardown` context. That module ran in the `integration-shared-services`
 shard in both runs; R4 did not move it, though it did move other modules out of that shard. So
-this looks like teardown-time attribution shifting between two neighbouring tests, and no source
-arc was lost from coverage. That is an observation from the two runs' artifacts; the cause is not
-proven.
+this looks like teardown-time attribution shifting between two neighbouring tests. None of those 54
+arcs was lost. That is an observation from the two runs' artifacts; the cause is not proven.
+
+**Arcs: 4 lost and 4 gained, totals identical (55118 in both runs).** Source is byte-identical
+between the two heads.
+
+- Lost at the R4 head:
+  - `src/phaze/routers/pipeline/backfill.py` 114 -> 121
+  - `src/phaze/tasks/functions.py` 347 -> 347, 674 -> 674 and 764 -> 764
+- Gained at the R4 head:
+  - `src/phaze/runtime_config_triggers.py` 217 -> -216 and 217 -> 217
+  - `src/phaze/tasks/functions.py` 399 -> -397 and 399 -> 399
+
+The `functions.py` and `runtime_config_triggers.py` differences are same-line or negative arcs on
+`await` lines, the shape coroutine suspend/resume produces, so they look timing-dependent. That is
+inferred, not verified. The lost `functions.py` arcs are recorded on `phaze-0r4p0` as possibly in
+its scope.
 
 **Limits.** This is **one** matched pair of runs, not a stable p95 and not a distribution. It
 measures CI shard balance. It does not measure local gate time, review latency or accepted-bead
 velocity. The local two-lane split is unchanged and was not re-measured here.
 
-**One combined branch arc changed, and the cause is not established.** Branch
+**The lost branch arc, and the cause is not established.** Of the 4 lost arcs, one is a branch:
 `src/phaze/routers/pipeline/backfill.py:114 -> 121` was covered at baseline and not at the R4 head.
 That arc is the `if skipped:` false edge: live keys exist and no candidate is skipped. Source is
 byte-identical between the two heads. At baseline the arc's coverage contexts are

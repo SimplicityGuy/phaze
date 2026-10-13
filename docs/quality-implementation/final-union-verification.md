@@ -265,7 +265,10 @@ following, from its own output:
   was covered at the R4 baseline only through cross-test state, and is uncovered at the R4 head (see
   the PD manifest). It is tracked as its own bead and is out of G0's scope. G0's branch result must
   carry it as a stated, pre-existing gap. It must not be explained away, and it must not be fixed
-  inside G0.
+  inside G0. It is one of **4 arcs lost (and 4 gained) at the R4 head**, with totals identical at
+  55118. The other three lost arcs are same-line `await` arcs in `src/phaze/tasks/functions.py`
+  (347, 674, 764). The PD manifest lists all eight differences; the three `functions.py` arcs are
+  recorded on `phaze-0r4p0` as possibly in its scope.
 - **The fault cells collected no coverage.** Their receipts prove detection and restoration, not
   coverage. They do not replace the final full coverage, and partial fault coverage is not presented
   as gate coverage.
