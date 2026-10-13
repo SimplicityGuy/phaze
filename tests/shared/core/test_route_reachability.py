@@ -139,6 +139,9 @@ _NON_UI_PREFIXES: dict[str, str] = {
     # Programmatic trigger API for scripts and curl. The UI drives the same work through the
     # `/pipeline/*` endpoints, which ARE template-called and checked here.
     "/api/v1/": "public programmatic API -- the UI uses the /pipeline/* equivalents instead",
+    # Operator-triggered remote lookup (phaze-b6430): a JSON API, origin-guarded like /api/local-sources.
+    # Its provider-neutral review screens are a separate bead (phaze-q6j9w), which adds the template callers.
+    "/api/remote-lookups/": "operator JSON API for remote lookups -- its review screens are bead phaze-q6j9w",
 }
 
 # Individually allowlisted endpoints.

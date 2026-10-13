@@ -82,7 +82,7 @@ async def test_env_py_upgrade_survives_percent_in_database_url() -> None:
         try:
             async with engine.connect() as conn:
                 version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-            assert version == "089"
+            assert version == "090"
         finally:
             await engine.dispose()
     finally:
