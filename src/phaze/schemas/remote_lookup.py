@@ -94,6 +94,10 @@ class RemoteSourceDecision(BaseModel):
     expected_revision: Annotated[str, Field(max_length=2048)] | None
     expected_media_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     accept_conflict: bool = False
+    # The text section that belongs to this recording, as for a local selection. Omitted from the payload when
+    # unset, so a decision sent without them replays against the payload stored before they existed.
+    text_section_ordinal: int | None = Field(default=None, gt=0, le=4096, exclude_if=lambda value: value is None)
+    accept_text_warnings: bool = Field(default=False, exclude_if=lambda value: value is False)
     # Required to reopen a rejection: why the operator wants it proposed again. Recorded with the decision.
     reason: Annotated[str, Field(min_length=1, max_length=512)] | None = None
 

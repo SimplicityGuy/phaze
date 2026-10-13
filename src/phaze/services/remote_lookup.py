@@ -62,7 +62,7 @@ from phaze.schemas.remote_lookup import (
     RemoteSourceDecision,
 )
 from phaze.services.companion_content import MEDIA_FILE_TYPES
-from phaze.services.local_source_import import get_selected_recording_source, selection_token
+from phaze.services.local_source_import import get_selected_recording_source, review_text_section, selection_token
 from phaze.services.provider_persistence import (
     DISCOVERED,
     add_candidate,
@@ -684,11 +684,14 @@ async def decide_remote_candidate(session: AsyncSession, command: RemoteSourceDe
         )
         if snapshot is None or snapshot.completeness.state != "complete" or not snapshot.tracks:
             raise ValueError("Only a complete loaded snapshot with tracks can be selected")
+        text_ordinal = review_text_section(snapshot, command.text_section_ordinal, command.accept_text_warnings)
         if observation.conflict_with_id is not None and not command.accept_conflict:
             raise ValueError("Conflicting source requires explicit acknowledgement")
         if await source_availability(session, observation, media.id) != "current":
             raise ValueError("Source is not currently available for this recording")
         mapping = {"media_id": str(media.id), "media_sha256": media.sha256_hash, "source_revision": observation.revision or "unknown"}
+        if text_ordinal is not None:
+            mapping["text_section_ordinal"] = text_ordinal
         if current is None:
             current = ProviderRecordingSelection(
                 media_id=media.id, kind="tracklist", observation_id=observation.id, actor=actor, selected_at=datetime.now(UTC)
