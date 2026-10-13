@@ -140,8 +140,10 @@ _NON_UI_PREFIXES: dict[str, str] = {
     # `/pipeline/*` endpoints, which ARE template-called and checked here.
     "/api/v1/": "public programmatic API -- the UI uses the /pipeline/* equivalents instead",
     # Operator-triggered remote lookup (phaze-b6430): a JSON API, origin-guarded like /api/local-sources.
-    # Its provider-neutral review screens are a separate bead (phaze-q6j9w), which adds the template callers.
-    "/api/remote-lookups/": "operator JSON API for remote lookups -- its review screens are bead phaze-q6j9w",
+    # The recording page's look-up panel (phaze-q6j9w) drives the same service through its own /files/{id}/remote-lookup
+    # forms, which ARE template-called and checked here. These JSON routes keep no template caller: they are the
+    # programmatic surface (curl, scripts) over the identical service, so the prefix stays non-UI.
+    "/api/remote-lookups/": "operator JSON API for remote lookups -- the UI uses /files/{id}/remote-lookup, this is for scripts and curl",
 }
 
 # Individually allowlisted endpoints.

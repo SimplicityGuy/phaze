@@ -52,6 +52,7 @@ from phaze.routers import (
     proposals,
     record,
     recording_discogs,
+    remote_lookup_ui,
     remote_lookups,
     routing,
     scan,
@@ -291,6 +292,7 @@ _ROUTERS: tuple[APIRouter, ...] = (
     recording_discogs.router,
     local_sources.router,
     remote_lookups.router,
+    remote_lookup_ui.router,
     agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
