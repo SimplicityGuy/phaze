@@ -217,3 +217,13 @@ async def settled(page: Any) -> None:
     -- this only establishes that the network step finished.
     """
     await page.wait_for_function("() => document.querySelectorAll('.htmx-request').length === 0")
+
+
+async def record_lookup_loaded(page: Any, scope: str = "") -> None:
+    """Wait until every lazily-loaded remote look-up slot under ``scope`` has been replaced by its panel.
+
+    ``record/_record_content.html`` renders a ``[data-remote-lookup-slot]`` placeholder ("Loading look-up…") that an
+    ``hx-trigger="load"`` GET swaps for the stored panel. A test that snapshots the record's text must wait for that
+    swap, or two opens of the same file differ only by which one the GET had reached (phaze-wzfzo.19).
+    """
+    await page.wait_for_function("(scope) => !document.querySelector(`${scope} [data-remote-lookup-slot]`.trim())", arg=scope)
