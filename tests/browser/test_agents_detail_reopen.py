@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from tests.browser.conftest import live_server as standard_live_server
+from tests.browser.conftest import serve_live_app
 from tests.browser.helpers import open_shell, settled
 
 
@@ -47,14 +47,20 @@ bucket = "phaze-burst"
 """
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """Use the real server/database harness with configured, idle cluster backends."""
+    """A private server and database for this module's backend registry.
+
+    Module-scoped on purpose: a session-scoped override was a SECOND server on the session server's
+    database, whose DROP ... WITH (FORCE) severed the first server mid-run and left every later module
+    talking to a wiped schema (the epic's browser CI stalled after this module's tests).
+    """
     registry = tmp_path_factory.mktemp("reopen-registry") / "backends.toml"
     registry.write_text(_REGISTRY)
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(registry))
-        yield from standard_live_server.__wrapped__()
+        patch.setenv("PHAZE_BROWSER_DB_SUFFIX", "_reopen")
+        yield from serve_live_app()
 
 
 @pytest.mark.parametrize(("identity", "prefix"), [("burst-a", "compute-lane"), ("reopen-agent", "agent")])

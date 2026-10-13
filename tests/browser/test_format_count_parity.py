@@ -70,10 +70,12 @@ async def test_live_store_counts_keep_their_separators_after_every_update(page: 
     assert "94,772 / 103,338" in (analyze or "")
     proposals = await page.locator('[data-rail-stage="propose"]').text_content()
     assert "1,000 / 54,321" in (proposals or "")
-    header = await page.locator("header").first.text_content()
-    assert "1,200" in (header or "")
-    assert "3,400" in (header or "")
-    assert "3,399" in (header or "")
+    # The header status strip ("Agents online" / "Lanes" / "Clusters") was replaced by the health pill
+    # (e961918d), so the online-agent count is now rendered by the Agents rail node. Lane and cluster
+    # inventory ride the store only and no longer have a visible surface to format-check.
+    agents = await page.locator('[data-rail-stage="agents"]').text_content()
+    assert "1,200" in (agents or "")
+    assert "1200" not in (agents or "").replace("1,200", ""), "the raw, unformatted agent count is also on the page"
 
 
 @pytest.mark.asyncio(loop_scope="session")

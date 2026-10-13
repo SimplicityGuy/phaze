@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 import json
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -144,11 +144,14 @@ async def test_real_stale_versions_keep_row_conflict_and_focus(page: Any, seed: 
     await seed.session.commit()
     if key == "s":
         page.once("dialog", lambda dialog: dialog.accept())
-    async with page.expect_response(lambda response: response.url.endswith(f"/proposals/{proposal.id}/{action}")) as result:
+    async with page.expect_response(lambda response: urlsplit(response.url).path == f"/proposals/{proposal.id}/{action}") as result:
         await page.keyboard.press(key)
     assert (await result.value).status == 409
-    await row.get_by_role("alert").wait_for(state="visible")
-    assert "changed" in (await row.get_by_role("alert").inner_text()).lower()
+    # ab20b472 added a generic persistent action-failure alert beside the row's own conflict alert, so
+    # select the conflict by what it says rather than expecting the row to hold exactly one alert.
+    conflict = row.get_by_role("alert").filter(has_text="changed")
+    await conflict.wait_for(state="visible")
+    assert "changed" in (await conflict.inner_text()).lower()
     await focused(page, row_id)
     assert await row.evaluate("el => el === window.__reviewedRow")
     assert await row.locator("code[data-diff-side=after]").first.inner_text() != "changed-after-review.mp3"

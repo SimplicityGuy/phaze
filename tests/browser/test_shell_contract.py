@@ -293,8 +293,9 @@ async def test_execute_explains_its_disabled_state_in_visible_text(page: Any) ->
     reason = page.locator("#apply-blocked-reason")
     assert await reason.is_visible(), "the disabled reason is not visible on screen"
     text = await reason.inner_text()
-    assert "No approved proposals are ready to execute." in text
-    assert "Approve filename and destination changes in Changes Review first." in text, "no next action offered"
+    assert "No approved operations ready to execute" in text, "the disabled reason is not stated"
+    assert "Review filename and destination changes before starting an execution batch." in text, "no next action offered"
+    assert await reason.get_by_role("link", name="Open Review").is_visible(), "no visible control leads to the next action"
 
 
 async def test_execute_always_states_the_scope_it_will_not_dispatch(page: Any) -> None:
