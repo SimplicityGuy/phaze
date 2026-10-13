@@ -28,6 +28,13 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+# G0 containment bounds (phaze-47gba): every non-cleanup async transition settles within five
+# seconds, and the whole finally settlement block shares ONE ten-second aggregate budget rather
+# than a fresh ten seconds per resource. A bound that trips is a containment failure, never a
+# semantic verdict on the revisit itself.
+_TRANSITION_SEC = 5
+_CLEANUP_SEC = 10
+
 
 class _PreviousMinute(datetime):
     """Make the real croniter producer's next occurrence due without a wall-clock sleep."""
@@ -41,7 +48,7 @@ class _PreviousMinute(datetime):
 
 
 async def _snapshot(factory: async_sessionmaker[AsyncSession]) -> dict[uuid.UUID, tuple[str, int]]:
-    async with factory() as session:
+    async with asyncio.timeout(_TRANSITION_SEC), factory() as session:
         return {
             fid: (status, attempts)
             for fid, status, attempts in (await session.execute(select(CloudJob.file_id, CloudJob.status, CloudJob.attempts))).all()
@@ -51,12 +58,14 @@ async def _snapshot(factory: async_sessionmaker[AsyncSession]) -> dict[uuid.UUID
 async def _scheduled_tick(worker: Worker[Any], queue: PostgresQueue, *, expected_status: Status = Status.COMPLETE) -> Any:
     # No test-side enqueue of the reaper: production registration feeds the installed SAQ
     # scheduler, which writes the broker job, then Worker.process delivers the registered body.
-    await worker.schedule()
-    job = await queue.job("cron:reap_orphaned_backend_cloud_jobs")
-    assert job is not None, "controller scheduling must revisit deferred retired-backend staging rows"
-    assert job.scheduled < datetime.now(UTC).timestamp()
-    assert await asyncio.wait_for(worker.process(), timeout=10)
-    settled = await queue.job(job.key)
+    # The whole schedule/read/process/read transition shares one five-second bound.
+    async with asyncio.timeout(_TRANSITION_SEC):
+        await worker.schedule()
+        job = await queue.job("cron:reap_orphaned_backend_cloud_jobs")
+        assert job is not None, "controller scheduling must revisit deferred retired-backend staging rows"
+        assert job.scheduled < datetime.now(UTC).timestamp()
+        assert await worker.process()
+        settled = await queue.job(job.key)
     assert settled is not None and settled.status == expected_status, settled
     return settled.result if expected_status == Status.COMPLETE else settled.error
 
@@ -90,8 +99,9 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
     dsn, _ = integration_dsns()
     queue = PostgresQueue.from_url(dsn, name=f"orphan-revisit-{uuid.uuid4().hex}")
     submit_queue = PostgresQueue.from_url(dsn, name=f"orphan-submit-{uuid.uuid4().hex}")
-    await queue.connect()
-    await submit_queue.connect()
+    async with asyncio.timeout(_TRANSITION_SEC):
+        await queue.connect()
+        await submit_queue.connect()
     worker: Worker[Any] = Worker(
         queue,
         functions=controller.settings["functions"],
@@ -105,7 +115,7 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
     _PreviousMinute.tick = 0
     monkeypatch.setattr("saq.worker.datetime", _PreviousMinute)
     try:
-        async with factory() as session:
+        async with asyncio.timeout(_TRANSITION_SEC), factory() as session:
             session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
             await session.commit()
             target = await _seed_staging_cloud_job(
@@ -117,24 +127,27 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
             running = await _seed_staging_cloud_job(session, backend_id="retired-cloud", status=CloudJobStatus.RUNNING, age_sec=90_000)
         live_job = None
         if protected_by == "live-submit":
-            live_job = await submit_queue.enqueue("submit_cloud_job", file_id=str(target), key=f"submit_cloud_job:{target}", retries=0)
+            async with asyncio.timeout(_TRANSITION_SEC):
+                live_job = await submit_queue.enqueue("submit_cloud_job", file_id=str(target), key=f"submit_cloud_job:{target}", retries=0)
             assert live_job is not None
         before = await _snapshot(factory)
         # Same real boot helper/body used by controller.startup; constructor/network startup
         # wiring remains independently pinned by the existing controller startup tests.
-        tally = await controller._run_boot_reconcile_with_retry("test orphan boot", lambda: reap_orphaned_backend_cloud_jobs(worker.context))
+        async with asyncio.timeout(_TRANSITION_SEC):
+            tally = await controller._run_boot_reconcile_with_retry("test orphan boot", lambda: reap_orphaned_backend_cloud_jobs(worker.context))
         assert tally == {"requeued": 0, "surfaced": 2}
         assert await _snapshot(factory) == before
         assert await _scheduled_tick(worker, queue) == {"requeued": 0, "surfaced": 2}
         assert await _snapshot(factory) == before
         if live_job is not None:
             # Real delivery fails resolution of the retired backend BEFORE any remote call.
-            assert await asyncio.wait_for(submit_worker.process(), timeout=10)
-            failed = await submit_queue.job(live_job.key)
+            async with asyncio.timeout(_TRANSITION_SEC):
+                assert await submit_worker.process()
+                failed = await submit_queue.job(live_job.key)
             assert failed is not None and failed.status == Status.FAILED
             assert "no kueue backend resolves" in (failed.error or "")
         else:
-            async with factory() as session:
+            async with asyncio.timeout(_TRANSITION_SEC), factory() as session:
                 await session.execute(text("UPDATE cloud_job SET updated_at = now() - interval '901 seconds' WHERE file_id = :fid"), {"fid": target})
                 await session.commit()
         if protected_by == "transient-broker":
@@ -155,7 +168,7 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
         assert await _snapshot(factory) == expected
         assert await _scheduled_tick(worker, queue) == {"requeued": 0, "surfaced": 2}
         assert await _snapshot(factory) == expected  # no second attempt consumed
-        async with factory() as session:
+        async with asyncio.timeout(_TRANSITION_SEC), factory() as session:
             candidates = await get_cloud_staging_candidates(session, limit=10)
             assert {file.id for file, _ in candidates} == {target}
         assert expected[young] == (CloudJobStatus.UPLOADED.value, 0)
@@ -163,10 +176,17 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
         assert expected[submitted] == (CloudJobStatus.SUBMITTED.value, 0)
         assert expected[running] == (CloudJobStatus.RUNNING.value, 0)
     finally:
-        await worker.stop()
-        await submit_worker.stop()
-        # SAQ tables are outside ORM metadata; clean only this test's unique queues.
-        async with queue.pool.connection() as conn:
-            await conn.execute("DELETE FROM saq_jobs WHERE queue IN (%s, %s)", (queue.name, submit_queue.name))
-        await submit_queue.disconnect()
-        await queue.disconnect()
+        # One aggregate settlement budget for every owned resource, in dependency order: stop the
+        # workers (their job tasks first), then delete only this test's unique queue rows, then
+        # disconnect both pools.
+        async with asyncio.timeout(_CLEANUP_SEC):
+            await worker.stop()
+            await submit_worker.stop()
+            # SAQ tables are outside ORM metadata; clean only this test's unique queues.
+            async with queue.pool.connection() as conn:
+                await conn.execute("DELETE FROM saq_jobs WHERE queue IN (%s, %s)", (queue.name, submit_queue.name))
+            await submit_queue.disconnect()
+            await queue.disconnect()
+        # Settlement receipt: no owned scheduler/worker task or in-flight job context survives.
+        assert not worker.tasks and not worker.job_task_contexts
+        assert not submit_worker.tasks and not submit_worker.job_task_contexts
