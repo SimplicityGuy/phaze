@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from playwright.async_api import expect
 import pytest
 
 from phaze.models.proposal import ProposalStatus
@@ -324,7 +325,9 @@ async def test_selected_preview_response_cannot_restore_old_selection(page: Page
             expected = {str(first.id), str(second.id)}
         tokens = await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value.split('|')[0])")
         assert set(tokens) == expected
-        assert await preview.get_by_role("button", name=f"Approve these {len(expected)} previewed proposals", exact=True).is_enabled()
+        # The swapped-in button is released by the htmx guard a beat after its text appears, so poll for it
+        # rather than sampling the disabled flag once.
+        await expect(preview.get_by_role("button", name=f"Approve these {len(expected)} previewed proposals", exact=True)).to_be_enabled()
         assert not patches
         await seed.session.refresh(first)
         await seed.session.refresh(second)
@@ -498,7 +501,7 @@ async def test_old_threshold_response_cannot_replace_current_99_preview(page: Pa
         assert await preview.locator('input[name="review_tokens"]').evaluate_all("els => els.map(el => el.value)") == tokens
         assert await preview.locator(f'[data-preview-proposal="{low.id}"]').count() == 0
         assert await preview.locator('input[name="threshold"]').input_value() == "99"
-        assert await preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True).is_enabled()
+        await expect(preview.get_by_role("button", name="Approve these 1 previewed proposals", exact=True)).to_be_enabled()
         assert int(requests[-1]["preview_generation"][0]) > int(requests[0]["preview_generation"][0])
     finally:
         release.set()
