@@ -27,6 +27,57 @@ async def _open_record_page(page: Any, seed: Seeder, *, fine_count: int) -> tupl
     return file, timeline
 
 
+# Resolves once the inspector has held the same rectangle for three consecutive animation frames.
+# The page scrolls under a test whenever a tracklist row is hovered or focused, and a keyboard step
+# schedules a SMOOTH scroll, so a rectangle measured earlier is a position the inspector may no
+# longer occupy. Rejects after ten seconds so a rectangle that never settles is a loud failure
+# rather than a hang -- that bound is a hang guard, not a verdict on how long a settle should take.
+_INSPECTOR_AT_REST_JS = """() => new Promise((resolve, reject) => {
+    const el = document.querySelector('[data-timeline-inspector]');
+    const deadline = performance.now() + 10000;
+    let previous = '';
+    let still = 0;
+    const tick = () => {
+        const r = el.getBoundingClientRect();
+        const key = `${r.x},${r.y},${r.width},${r.height}`;
+        still = key === previous ? still + 1 : 0;
+        previous = key;
+        if (still >= 3) return resolve();
+        if (performance.now() > deadline) return reject(new Error('the inspector never stopped moving'));
+        requestAnimationFrame(tick);
+    };
+    tick();
+})"""
+
+
+async def _hover_inspector(page: Any, inspector: Any, fraction: float) -> None:
+    """Move the real pointer to ``fraction`` of the way along the inspector, wherever it is NOW.
+
+    The rectangle is measured here, after the page has stopped scrolling, and the point is checked
+    to be over the inspector before the pointer goes there. A rectangle measured once at the top
+    of a test goes stale as soon as a row is hovered or focused: the move then lands on whatever
+    sits at the old coordinates, and what that is depends on the viewport -- a different element in
+    each size, so the same test passed in one and read the previous state in another.
+    """
+    await inspector.scroll_into_view_if_needed()
+    await page.evaluate(_INSPECTOR_AT_REST_JS)
+    bounds = await inspector.bounding_box()
+    assert bounds is not None
+    x = bounds["x"] + bounds["width"] * fraction
+    y = bounds["y"] + 20
+    over_inspector = await page.evaluate("([x, y]) => !!document.elementFromPoint(x, y)?.closest('[data-timeline-inspector]')", [x, y])
+    assert over_inspector, f"({x:.0f}, {y:.0f}) is not over the inspector ({bounds}); the pointer would not hover it"
+    await page.mouse.move(x, y)
+
+
+async def _wait_for_inspected_time(page: Any, seconds: float, *, tolerance: float = 0.0005) -> None:
+    """Wait until the inspector reports ``seconds``: a pointer sample may apply a frame after the move."""
+    await page.wait_for_function(
+        "([expected, tolerance]) => Math.abs(Number(document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow')) - expected) <= tolerance",
+        arg=[seconds, tolerance],
+    )
+
+
 async def test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overflow(page: Any, seed: Seeder) -> None:
     """One control exposes every input mode while the native scrollport owns overflow."""
     _file, timeline = await _open_record_page(page, seed, fine_count=24)
@@ -49,9 +100,11 @@ async def test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overfl
     assert await polyline.get_attribute("stroke-linejoin") == "round"
     assert await polyline.get_attribute("stroke-width") == "2"
 
+    await _hover_inspector(page, inspector, 0.3)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.3, tolerance=2.0)
+    # Measured AFTER the hover: scrolling the inspector into view moves it.
     bounds = await inspector.bounding_box()
     assert bounds is not None
-    await page.mouse.move(bounds["x"] + bounds["width"] * 0.3, bounds["y"] + 20)
     pointer_text = await readout.inner_text()
     assert "At " in pointer_text and "BPM" in pointer_text and "key" in pointer_text
     assert "mood" in pointer_text and "style" in pointer_text
@@ -379,9 +432,8 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     assert _percent(resting["glyphLeft"]) == pytest.approx((4 + 0.5) / 6 * 100, abs=0.01)
 
     # --- 2. The pointer over the lanes moves every one of them together ----------------------
-    bounds = await inspector.bounding_box()
-    assert bounds is not None
-    await page.mouse.move(bounds["x"] + bounds["width"] * 0.1, bounds["y"] + 20)
+    await _hover_inspector(page, inspector, 0.1)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.1, tolerance=2.0)
     hovered = await _marks(page)
     assert float(hovered["valueNow"]) == pytest.approx(_INSPECTION_DURATION_SEC * 0.1, abs=2.0)
     assert "track 1 Opening Track" in hovered["valueText"]
@@ -394,9 +446,14 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
 
     # --- 3. The glyph is a pointer surface too, indexed by CELL, not by elapsed fraction ------
     glyph = page.locator("[data-set-glyph]").first
+    await glyph.scroll_into_view_if_needed()
+    await page.evaluate(_INSPECTOR_AT_REST_JS)
     glyph_bounds = await glyph.bounding_box()
     assert glyph_bounds is not None
     await page.mouse.move(glyph_bounds["x"] + glyph_bounds["width"] * 0.95, glyph_bounds["y"] + glyph_bounds["height"] / 2)
+    # This sample can land inside the frame of the one before it, which the page defers to the next
+    # frame -- so wait for the state rather than reading it the instant the move returns.
+    await _wait_for_inspected_time(page, 660.0)
     from_glyph = await _marks(page)
     # The sixth cell is coarse window [600, 720); the cursor lands on its midpoint, not on 95%
     # of the duration -- reading the glyph as a time axis is the bug this pins.
@@ -427,7 +484,10 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     assert "track 2 Closing Track" in from_focus["valueText"]
 
     # --- 6. Leaving returns the whole page to the peak ---------------------------------------
-    await page.mouse.move(bounds["x"] + bounds["width"] * 0.4, bounds["y"] + 20)
+    # The inspector was measured in step 2; hovering and focusing the rows since then has scrolled
+    # the page, so it is located again rather than aimed at where it used to be.
+    await _hover_inspector(page, inspector, 0.4)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.4, tolerance=2.0)
     assert (await _marks(page))["valueNow"] != resting["valueNow"]
     await page.mouse.move(4, 4)
     await page.wait_for_function(
@@ -437,6 +497,47 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     left = await _marks(page)
     assert "peak" in left["tooltip"].lower()
     assert left == resting
+
+
+async def test_the_inspection_wait_fails_when_the_pointer_sample_is_never_applied(page: Any, seed: Seeder) -> None:
+    """Negative control for `_wait_for_inspected_time`: a wait that cannot fail proves nothing.
+
+    The page's own `pointermove` handling is blocked, so the hover genuinely never reaches the
+    inspector's state. The wait must then time out instead of passing on the stale value. The
+    timeout is shortened for this test only; it is the hang guard, not the verdict.
+    """
+    # Imported here, not at module level: the module must still collect without the browser group.
+    from playwright.async_api import Error as PlaywrightError
+
+    _file, timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+    await inspector.evaluate("el => el.addEventListener('pointermove', (event) => event.stopImmediatePropagation(), true)")
+    page.set_default_timeout(1_500)
+
+    await _hover_inspector(page, inspector, 0.4)
+
+    with pytest.raises(PlaywrightError, match="Timeout"):
+        await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.4, tolerance=2.0)
+
+
+async def test_a_hover_aimed_at_a_point_that_is_not_over_the_inspector_is_refused(page: Any, seed: Seeder) -> None:
+    """Negative control for `_hover_inspector`'s aim check, and proof that it re-measures.
+
+    The record page's workspace is scrolled first, so the inspector is nowhere near where it was
+    when the page loaded; the hover must still land on it. Then the inspector is made
+    un-hittable, and aiming at it must fail loudly rather than move the pointer to a point that
+    would read the previous state -- the shape this suite's step-6 flake had.
+    """
+    _file, timeline, _rest_sec = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+    await page.evaluate("document.querySelector('#stage-workspace').scrollTop = 700")
+
+    await _hover_inspector(page, inspector, 0.4)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.4, tolerance=2.0)
+
+    await inspector.evaluate("el => { el.style.pointerEvents = 'none'; }")
+    with pytest.raises(AssertionError, match="not over the inspector"):
+        await _hover_inspector(page, inspector, 0.4)
 
 
 async def test_hovering_the_bpm_chart_shows_the_fine_window_bpm_and_a_marker_at_the_cursor(page: Any, seed: Seeder) -> None:
@@ -469,9 +570,8 @@ async def test_hovering_the_bpm_chart_shows_the_fine_window_bpm_and_a_marker_at_
 
     # Hovering a different window moves the tooltip, cursor, and dot together -- the fixture's
     # window 2 ([60, 90)) carries BPM 128.0, and the dot's fraction moves with it.
-    bounds = await inspector.bounding_box()
-    assert bounds is not None
-    await page.mouse.move(bounds["x"] + bounds["width"] * (75.0 / _INSPECTION_DURATION_SEC), bounds["y"] + 20)
+    await _hover_inspector(page, inspector, 75.0 / _INSPECTION_DURATION_SEC)
+    await _wait_for_inspected_time(page, 75.0, tolerance=2.0)
     moved_text = await tooltip.inner_text()
     assert "BPM 128" in moved_text
     assert _percent(await marker.evaluate("el => el.style.top")) == pytest.approx(20.0, abs=0.5)
@@ -734,9 +834,8 @@ async def test_the_tracklist_rows_are_re_resolved_after_an_htmx_swap_replaces_th
     inspector = timeline.locator("[data-timeline-inspector]")
 
     # Warm the cache: hover once so the row list is resolved and held.
-    bounds = await inspector.bounding_box()
-    assert bounds is not None
-    await page.mouse.move(bounds["x"] + bounds["width"] * 0.1, bounds["y"] + 20)
+    await _hover_inspector(page, inspector, 0.1)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.1, tolerance=2.0)
     assert (await _marks(page))["rowPositions"] == ["1"]
 
     # Replace every row node with a fresh clone and announce it exactly as htmx would.
@@ -749,7 +848,13 @@ async def test_the_tracklist_rows_are_re_resolved_after_an_htmx_swap_replaces_th
         }"""
     )
 
-    await page.mouse.move(bounds["x"] + bounds["width"] * 0.9, bounds["y"] + 20)
+    # Not read the instant the move returns: this sample follows the one above by less than a
+    # frame, and the page applies a sample that close behind its predecessor on the next frame.
+    # 0.45 rather than further along: the inspector is wider than the scrollport that clips it, so
+    # a point past the scrollport's right edge is over whatever sits beside it, not the inspector.
+    # Still inside track 2, which starts at 300 s (fraction 0.4167).
+    await _hover_inspector(page, inspector, 0.45)
+    await _wait_for_inspected_time(page, _INSPECTION_DURATION_SEC * 0.45, tolerance=2.0)
     after_swap = await _marks(page)
 
     assert after_swap["rowPositions"] == ["2"], "a row that arrived from a swap must still follow the cursor"
