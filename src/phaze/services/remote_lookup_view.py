@@ -90,6 +90,19 @@ class TrackView:
     timing: str | None
     timing_approximate: bool
     unresolved: bool
+    section_ordinal: int | None = None
+
+
+@dataclass(frozen=True)
+class SectionView:
+    """One section of a sectioned snapshot, a candidate for the recording the operator must pick explicitly."""
+
+    ordinal: int
+    title: str | None
+    track_count: int
+    complete: bool
+    warnings: tuple[str, ...]
+    selectable: bool
 
 
 @dataclass(frozen=True)
@@ -113,6 +126,11 @@ class VersionView:
     can_reject: bool
     unreadable: bool
     decision_id: uuid.UUID
+    sections: tuple[SectionView, ...] = ()
+    section_scan_complete: bool = False
+    # True when the snapshot has several sections: the operator must choose which one belongs to this recording.
+    section_choice_required: bool = False
+    sections_have_warnings: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +243,7 @@ def _track_view(track: ProviderTrack) -> TrackView:
         timing=timing,
         timing_approximate=approximate,
         unresolved=not (track.artist and track.artist.strip()) and not (track.title and track.title.strip()),
+        section_ordinal=track.section_ordinal,
     )
 
 
@@ -254,7 +273,30 @@ async def _version_view(
         rights = tuple(snapshot.rights_evidence)
         state, reason = snapshot.completeness.state, snapshot.completeness.reason
     availability = await source_availability(session, observation, media_id)
-    complete = snapshot is not None and state == "complete" and track_count > 0 and observation.status == "found"
+    sections: tuple[SectionView, ...] = ()
+    if snapshot is not None and snapshot.sections:
+        per_section: dict[int, int] = {}
+        for track in snapshot.tracks:
+            if track.section_ordinal is not None:
+                per_section[track.section_ordinal] = per_section.get(track.section_ordinal, 0) + 1
+        sections = tuple(
+            SectionView(
+                ordinal=section.ordinal,
+                title=section.title,
+                track_count=per_section.get(section.ordinal, 0),
+                complete=section.completeness.state == "complete",
+                warnings=tuple(section.warnings),
+                selectable=section.completeness.state == "complete" and per_section.get(section.ordinal, 0) > 0,
+            )
+            for section in snapshot.sections
+        )
+    if sections:
+        # A sectioned snapshot is selectable through ONE complete section of a fully enumerated scan.
+        complete = (
+            snapshot is not None and snapshot.section_scan_complete and any(item.selectable for item in sections) and observation.status == "found"
+        )
+    else:
+        complete = snapshot is not None and state == "complete" and track_count > 0 and observation.status == "found"
     return VersionView(
         observation_id=observation.id,
         candidate_id=candidate.id,
@@ -275,6 +317,10 @@ async def _version_view(
         can_reject=candidate.status in {"pending", "accepted"} and not selected,
         unreadable=unreadable,
         decision_id=uuid.uuid4(),
+        sections=sections,
+        section_scan_complete=snapshot.section_scan_complete if snapshot is not None else False,
+        section_choice_required=len(sections) > 1,
+        sections_have_warnings=any(item.warnings for item in sections),
     )
 
 

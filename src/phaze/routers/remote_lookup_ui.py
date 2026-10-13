@@ -35,7 +35,7 @@ router = APIRouter(tags=["admin"])
 logger = structlog.get_logger(__name__)
 # The server-owned audit identity, as routers/local_sources.py and routers/remote_lookups.py record it.
 _ACTOR = "admin"
-_OPTIONAL_FORM_FIELDS = ("expected_selection_token", "expected_revision", "reason")
+_OPTIONAL_FORM_FIELDS = ("expected_selection_token", "expected_revision", "reason", "text_section_ordinal")
 
 
 @dataclass(frozen=True)
@@ -142,10 +142,15 @@ async def remote_decision_action(request: Request, file_id: uuid.UUID, session: 
             "expected_revision",
             "expected_media_sha256",
             "accept_conflict",
+            "text_section_ordinal",
+            "accept_text_warnings",
             "reason",
         )
         values.setdefault("expected_revision", None)
         values["accept_conflict"] = values.get("accept_conflict") == "true"
+        # Section mapping is carried only when the operator made a choice, so an unsectioned decision is unchanged.
+        if values.pop("accept_text_warnings", None) == "true":
+            values["accept_text_warnings"] = True
         command = RemoteSourceDecision.model_validate({**values, "media_id": file_id})
         async with session.begin_nested():
             await decide_remote_candidate(session, command, actor=_ACTOR)

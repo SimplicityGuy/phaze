@@ -35,7 +35,7 @@ from phaze.services.remote_lookup_view import (
     parse_assessment,
     safe_attribution_url,
 )
-from phaze.services.remote_providers import RemoteProviderBinding
+from phaze.services.remote_providers import REMOTE_PROVIDERS, RemoteProviderBinding
 from phaze.tracklist_providers.domain import Completeness, Fact, OutcomeStatus, ProviderTrack, RecordingContext, Snapshot, Timestamp
 from phaze.tracklist_providers.matching import AssessedSubject, assess_recording_match
 from tests.integration.test_remote_lookup import (
@@ -82,7 +82,9 @@ def soup(response: Any) -> BeautifulSoup:
 
 def form_fields(form: Any) -> dict[str, str]:
     """The fields a browser would submit from this native form (the clicked button's name/value included separately)."""
-    return {item["name"]: item.get("value", "") for item in form.find_all("input") if item.get("name") and item.get("type") != "checkbox"}
+    return {
+        item["name"]: item.get("value", "") for item in form.find_all("input") if item.get("name") and item.get("type") not in {"checkbox", "radio"}
+    }
 
 
 def page(media_id: uuid.UUID, path: str = "") -> str:
@@ -113,6 +115,20 @@ async def test_lookup_action_lists_only_enabled_providers(committed_db: Any) -> 
     assert off.select_one("[data-provider-off]") is not None
     assert off.select("form") == [] and off.select("button") == [], "a disabled provider offers no action"
     assert [form["hx-post"] for form in html.select("[data-lookup-form]")] == [page(media.id, "/lookup")]
+    assert h.socket.requests == []
+
+
+async def test_the_shipped_providers_are_all_listed_as_off_with_no_action_until_enabled(committed_db: Any) -> None:
+    assert len(REMOTE_PROVIDERS) >= 2, "the shipped registry holds more than one provider"
+    async with harness(committed_db, {}, bindings=tuple(REMOTE_PROVIDERS), settings={}) as h:
+        media = await seed(h.sessions)
+        async with client_for(h) as client:
+            html = soup(await client.get(page(media.id)))
+    listed = html.select("[data-provider]")
+    assert {item["data-provider"] for item in listed} == {binding.profile.provider_id for binding in REMOTE_PROVIDERS}
+    for item in listed:
+        assert item["data-provider-enabled"] == "false" and item.select_one("[data-provider-off]") is not None
+        assert item.select("form") == [] and item.select("button") == [], "a provider with no settings entry fails closed"
     assert h.socket.requests == []
 
 
