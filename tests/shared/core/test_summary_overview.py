@@ -295,7 +295,14 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
             finally:
                 active -= 1
 
-    async def stage_progress(_session: object) -> dict[str, dict[str, int | None]]:
+    async def stage_progress(_session: object, *, read_failures: dict[str, tuple[str, ...]]) -> dict[str, dict[str, int | None]]:
+        # phaze-g9gua: a healthy stage-progress read records every source as measured.
+        read_failures.update(
+            dict.fromkeys(
+                ("discovery", "music_video_total", "metadata_bucket", "analyze_bucket", "proposals_total", "proposals", "execute", "execute_total"),
+                (),
+            )
+        )
         return _progress(total=0)
 
     async def proposal_stats(_session: object) -> ProposalStats:

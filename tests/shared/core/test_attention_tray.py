@@ -17,7 +17,7 @@ from phaze.routers.shell.summary import SummaryOverviewInputs, _build_attention_
 from phaze.services.attention import analysis_attention_known, derive_attention_items
 from phaze.services.pipeline import attention_snapshot as snapshot
 from phaze.services.pipeline.buckets import _empty_buckets, _safe_bucket_counts, _safe_orphan_split
-from phaze.services.pipeline.common import _safe_count, capture_read_degradations, mark_read_degraded
+from phaze.services.pipeline.common import _safe_count, capture_read_degradations, mark_read_degraded, measure_read
 
 
 if TYPE_CHECKING:
@@ -327,10 +327,11 @@ async def test_source_measurement_faults_agree_across_real_summary_refresh_and_s
 
     read_progress = summary.get_stage_progress
 
-    async def progress(own_session: AsyncSession) -> dict:
-        result = await read_progress(own_session)
-        # Preserve the real source's zero fallback; the collector must retain its unavailability.
-        bucket = await _safe_bucket_counts(fault, Stage.ANALYZE)
+    async def progress(own_session: AsyncSession, *, read_failures: dict[str, tuple[str, ...]]) -> dict:
+        result = await read_progress(own_session, read_failures=read_failures)
+        # Preserve the real source's zero fallback; the collector must retain its unavailability, and
+        # the Analyze read that took it must own it (phaze-g9gua).
+        bucket = await measure_read(read_failures, "analyze_bucket", _safe_bucket_counts(fault, Stage.ANALYZE))
         result["analyze"] = bucket | {"total": sum(bucket.values())}
         return result
 

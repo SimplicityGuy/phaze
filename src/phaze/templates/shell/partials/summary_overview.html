@@ -12,10 +12,10 @@
        correct at any column count, no per-breakpoint divider rules. #}
     <section aria-label="Collection progress" class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
     <dl class="-mb-px -mr-px grid min-w-0 sm:grid-cols-2 xl:grid-cols-4 *:border-b *:border-r *:border-gray-200 dark:*:border-phaze-border">
-        {{ ui.metric("Files discovered", summary.total_files, "whole collection", "accent" if summary.total_files else "neutral") }}
+        {{ ui.metric("Files discovered", summary.total_files if summary.total_files is not none else '—', "whole collection", "accent" if summary.total_files else "neutral") }}
         {{ ui.metric("Fully enriched", summary.resolved_enrichment if summary.resolved_enrichment is not none else '—', "same files with metadata and analysis done", "success") }}
-        {{ ui.metric("Awaiting review", summary.proposal_pending, "current proposal queue", "attention" if summary.proposal_pending else "neutral") }}
-        {{ ui.metric("Approved now", summary.proposal_approved, "ready to execute", "attention" if summary.proposal_approved else "neutral") }}
+        {{ ui.metric("Awaiting review", summary.proposal_pending if summary.proposal_pending is not none else '—', "current proposal queue", "attention" if summary.proposal_pending else "neutral") }}
+        {{ ui.metric("Approved now", summary.proposal_approved if summary.proposal_approved is not none else '—', "ready to execute", "attention" if summary.proposal_approved else "neutral") }}
     </dl>
     </section>
 
@@ -35,6 +35,7 @@
             {% set propose = summary.flow[3] %}
             {% set review = summary.flow[4] %}
             {% set apply = summary.flow[5] %}
+            {% include "shell/partials/_summary_flow_board.html" %}
             <div class="mt-4 grid min-w-0 gap-3">
                 {% for item in [discover] %}
                 <a href="{{ item.href }}" hx-get="{{ item.href }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="flex min-w-0 flex-col gap-2 rounded-lg border border-gray-200 p-3 hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between dark:border-phaze-border dark:hover:bg-white/5 {{ _link_focus }}">

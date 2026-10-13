@@ -1,0 +1,88 @@
+{# phaze-vvzam: the Summary flow board. Values come from summary.flow / summary.flow_edges / summary.bottleneck
+   (routers/shell/summary.py, phaze-g9gua); nothing here computes a number.
+
+   The <svg> is role="img": a picture, so it holds NO links -- an image's children are presentational and a
+   focusable link inside one is unreachable to assistive technology. The stage links are the cards below it,
+   which carry the same status text. The picture is md+ only (it does not scale down to a phone legibly); the
+   cards stay at every width, and the visually hidden list carries every node and edge value at every width.
+
+   Unknown is never zero: an unmeasured edge has width None and is drawn dashed at a fixed stroke, a measured
+   zero keeps its own hairline, and both read in text as a dash or a 0 respectively. #}
+{% set _nodes = summary.flow %}
+{% set _box = {
+    0: {"x": 10, "y": 72, "w": 110},
+    1: {"x": 160, "y": 14, "w": 140},
+    2: {"x": 160, "y": 130, "w": 140},
+    3: {"x": 360, "y": 72, "w": 130},
+    4: {"x": 530, "y": 72, "w": 130},
+    5: {"x": 700, "y": 72, "w": 130},
+} %}
+{% set _paths = {
+    "discover-metadata": "M120 100 C140 100 140 42 160 42",
+    "discover-analyze": "M120 100 C140 100 140 158 160 158",
+    "metadata-join": "M300 42 C315 42 315 100 330 100",
+    "analyze-join": "M300 158 C315 158 315 100 330 100",
+    "join-propose": "M330 100 L360 100",
+    "propose-review": "M490 100 L530 100",
+    "review-apply": "M660 100 L700 100",
+} %}
+{% set _bottleneck = summary.bottleneck %}
+{% macro _value(node) -%}
+{%- if node.href == '/s/rename' -%}{{ node.detail }}
+{%- elif node.href == '/s/apply' -%}{{ node.done | thousands }} files executed, {{ node.detail }}
+{%- elif node.href == '/s/discover' -%}{{ node.done | thousands }} files
+{%- else -%}{{ node.done | thousands }} of {{ node.total | thousands }} files
+{%- endif -%}
+{%- endmacro %}
+{% macro _status(node) -%}
+{{ node.status.label }}{% if node.status.failed %}, {{ node.status.failed | thousands }} failed{% endif %}{% if node.status.missing %}, {{ node.status.missing | thousands }} missing{% endif %}
+{%- endmacro %}
+{% macro _bottleneck_text(bottleneck) -%}
+{%- if bottleneck.source == 'unavailable' -%}Bottleneck unknown: {{ bottleneck.title }}
+{%- elif bottleneck.node -%}Bottleneck: {{ bottleneck.node }} — {{ bottleneck.title }}
+{%- else -%}No stage bottleneck: {{ bottleneck.title }}
+{%- endif -%}
+{%- endmacro %}
+
+<p data-flow-bottleneck="{{ _bottleneck.source }}" class="mt-3 text-xs text-gray-700 dark:text-gray-300">{{ _bottleneck_text(_bottleneck) }}</p>
+
+<figure data-flow-board class="mt-3 hidden min-w-0 md:block">
+    <svg role="img" aria-labelledby="summary-flow-board-title" aria-describedby="summary-flow-board-desc" viewBox="0 0 840 200" preserveAspectRatio="xMidYMid meet" class="block h-auto w-full max-w-full" focusable="false">
+        <title id="summary-flow-board-title">Pipeline flow board</title>
+        <desc id="summary-flow-board-desc">{% for node in _nodes %}{{ node.name }}: {{ _value(node) }}, {{ _status(node) }}. {% endfor %}{% for edge in summary.flow_edges %}{{ edge.source }} to {{ edge.target }}: {{ edge.value | thousands }} {{ edge.unit }}. {% endfor %}{{ _bottleneck_text(_bottleneck) }}.</desc>
+        {% for edge in summary.flow_edges %}
+        <path data-flow-edge="{{ edge.id }}" data-edge-state="{{ edge.state }}" d="{{ _paths[edge.id] }}" fill="none" stroke-linecap="round"
+            {% if edge.state == 'unknown' %}stroke-width="2" stroke-dasharray="4 4" class="stroke-gray-400 dark:stroke-gray-500"
+            {% elif edge.state == 'empty' %}stroke-width="{{ edge.width }}" class="stroke-gray-300 dark:stroke-gray-600"
+            {% else %}stroke-width="{{ edge.width }}" class="stroke-blue-500/70 dark:stroke-blue-400/70"{% endif %}></path>
+        {% endfor %}
+        <circle cx="330" cy="100" r="3" class="fill-gray-400 dark:fill-gray-500"></circle>
+        {% for node in _nodes %}
+        {% set box = _box[loop.index0] %}
+        {% set outlined = _bottleneck.node == node.name %}
+        <g data-flow-node="{{ node.name }}"{% if outlined %} data-bottleneck="true"{% endif %}>
+            <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="56" rx="6"
+                {% if outlined %}stroke-width="3" class="fill-white stroke-amber-500 dark:fill-phaze-panel dark:stroke-amber-400"{% else %}stroke-width="1" class="fill-white stroke-gray-300 dark:fill-phaze-panel dark:stroke-phaze-border"{% endif %}></rect>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 14 }}" font-size="9" letter-spacing="1.5" class="fill-gray-900 uppercase dark:fill-gray-100">{{ node.name }}</text>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 29 }}" font-size="10" font-weight="600" class="fill-gray-900 font-mono dark:fill-gray-100">{% if node.href == '/s/discover' %}{{ node.done | thousands }}{% elif node.href == '/s/rename' %}{{ node.total | thousands }} waiting{% elif node.href == '/s/apply' %}{{ node.done | thousands }} executed{% else %}{{ node.done | thousands }} / {{ node.total | thousands }}{% endif %}</text>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 41 }}" font-size="9" class="fill-gray-600 dark:fill-gray-300">{{ node.status.label }}</text>
+            {% if node.status.failed or node.status.missing %}
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 52 }}" font-size="9" class="fill-red-700 dark:fill-red-300">{% if node.status.failed %}{{ node.status.failed | thousands }} failed{% endif %}{% if node.status.failed and node.status.missing %} · {% endif %}{% if node.status.missing %}{{ node.status.missing | thousands }} missing{% endif %}</text>
+            {% endif %}
+        </g>
+        {% endfor %}
+    </svg>
+    <figcaption class="mt-2 text-xs text-muted">Edge widths show the files holding each stage's output; Metadata and Analyze count music and video files only. Dashed edges were not measured.</figcaption>
+</figure>
+
+<div data-flow-text class="sr-only">
+    <h3>Pipeline flow values</h3>
+    <ul>
+        {% for node in _nodes %}
+        <li data-flow-text-node="{{ node.name }}">{{ node.name }}: {{ _value(node) }}; status {{ _status(node) }}{% if _bottleneck.node == node.name %}; bottleneck{% endif %}</li>
+        {% endfor %}
+        {% for edge in summary.flow_edges %}
+        <li data-flow-text-edge="{{ edge.id }}">{{ edge.source }} to {{ edge.target }}: {{ edge.value | thousands }} {{ edge.unit }}</li>
+        {% endfor %}
+    </ul>
+</div>
