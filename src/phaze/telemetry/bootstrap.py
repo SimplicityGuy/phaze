@@ -372,6 +372,11 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
         # Likewise its reader's thread. No instrument was ever created against this provider,
         # so the final collection is empty and nothing is sent.
         meter_provider.shutdown()
+        # phaze-xewaj: the caller is told telemetry is OFF, so the tracer provider installed above
+        # must not keep exporting. The tracer setter is one-way, so the install cannot be undone,
+        # only stopped: shutting it down ends its span processor and export thread. A shut-down
+        # provider exports nothing, which is what OFF means.
+        tracer_provider.shutdown()
         raise
     # The proxy meter created at import forwards to whatever provider is installed later,
     # but its instruments were built before the Views existed. Rebuild so every histogram

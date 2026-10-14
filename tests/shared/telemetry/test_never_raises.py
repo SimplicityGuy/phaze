@@ -413,13 +413,17 @@ def test_configure_reports_OFF_when_someone_else_owns_the_provider(monkeypatch: 
         bootstrap._reset_for_tests()
 
 
-def test_a_meter_provider_that_did_not_take_leaves_no_export_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The meter half of the guard above: phaze's own reader thread must not outlive the refusal.
+def test_a_meter_provider_that_did_not_take_rolls_the_tracer_install_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the meter API is owned by someone else: OFF must mean OFF for the tracer too (phaze-xewaj).
 
-    The tracer provider DID take here, because only the meter API was owned by someone else, and
-    ``configure_telemetry`` reports telemetry OFF while that tracer provider stays globally installed
-    and exporting. That state is pre-existing and outside this test; it is shut down in ``finally`` so
-    its thread does not outlive the test either.
+    ``configure_telemetry`` installs the tracer provider first. When the meter install is then
+    refused it reports telemetry OFF, so the tracer provider it already installed must not keep
+    exporting spans -- the reported state and the real state have to agree. The tracer setter is
+    one-way, so the install cannot be undone, only shut down: its span processor (and export
+    thread) is stopped, and the meter provider phaze built is stopped likewise.
+
+    Operator decision 2026-10-13 (asked via AskUserQuestion this session, option label
+    "Roll back tracer install (Recommended)"); durable record: bead ``phaze-xewaj``.
     """
     from opentelemetry import metrics
     from opentelemetry.sdk.metrics import MeterProvider
@@ -430,11 +434,11 @@ def test_a_meter_provider_that_did_not_take_leaves_no_export_thread(monkeypatch:
     foreign = MeterProvider(shutdown_on_exit=False)
     metrics.set_meter_provider(foreign)
     assert metrics.get_meter_provider() is foreign, "the foreign provider did not install; the simulation is not set up"
+    before = exporter_threads()
     try:
         assert bootstrap.configure_telemetry("api") is False
         assert metrics.get_meter_provider() is foreign
-        readers = [thread.name for thread in exporter_threads() if thread.name.startswith("OtelPeriodicExportingMetricReader")]
-        assert readers == [], "the meter provider phaze could not install left its reader thread running"
+        assert exporter_threads() == before, "OFF was reported but an exporter thread (tracer or meter) is still running"
     finally:
         installed = trace.get_tracer_provider()
         if isinstance(installed, bootstrap._resolved_once_tracer_provider()):
