@@ -8,7 +8,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from phaze.models.remote_lookup_batch import RemoteLookupMembership, RemoteLookupRead, RemoteLookupWork
 from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
@@ -141,6 +141,35 @@ async def test_disable_during_inflight_finishes_sent_request_and_stops_next_send
         result = await h.lookup.lookup(LookupCommand(media_id=media.id, provider_id=EXAMPLE))
         assert result.outcome.code == "disabled_provider" and len(h.socket.requests) == 1
         assert await count(h.sessions, RemoteTransportAttempt) == 1
+
+
+async def test_durable_provider_lock_contention_defers_without_waiting_or_charging(committed_db: Any) -> None:
+    from phaze.services.remote_transport import _lock_key
+
+    engine, _sessions = committed_db
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        await seed(h.sessions)
+        batch = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch)
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id))
+        async with engine.connect() as blocker:
+            key = _lock_key(EXAMPLE)
+            await blocker.execute(select(func.pg_advisory_lock(key)))
+            await blocker.commit()
+            try:
+                assert await asyncio.wait_for(execute_work(h.sessions, h.lookup, work_id), 2) == "deferred"
+                assert not h.socket.requests
+                assert await count(h.sessions, RemoteTransportAttempt) == 0
+                async with h.sessions() as session:
+                    work = await session.get(RemoteLookupWork, work_id)
+                    assert work.code == "paced" and work.failures == 0 and work.lease_until is None
+            finally:
+                await blocker.execute(select(func.pg_advisory_unlock(key)))
+                await blocker.commit()
+        await h.clock.sleep(6)
+        assert await execute_work(h.sessions, h.lookup, work_id) == "completed"
+        assert len(h.socket.requests) == 1
 
 
 async def test_settings_get_no_requests_global_forms_and_durable_empty_batch(committed_db: Any) -> None:

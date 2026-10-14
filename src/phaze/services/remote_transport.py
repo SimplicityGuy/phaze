@@ -428,7 +428,12 @@ class RemoteTransport:
         provider_id = profile.provider_id
         key = _lock_key(provider_id)
         async with self._engine.connect() as conn:
-            await conn.execute(select(func.pg_advisory_lock(key)))
+            if run.durable:
+                acquired = await conn.scalar(select(func.pg_try_advisory_lock(key)))
+                if not acquired:
+                    return _Exchange(self._result(OutcomeStatus.RETRY, "paced", scope, f"retry_after_seconds={gap:g}"), None)
+            else:
+                await conn.execute(select(func.pg_advisory_lock(key)))
             await conn.commit()
             try:
                 return await self._locked_exchange(conn, run, profile, plan, scope, budget, gap)
