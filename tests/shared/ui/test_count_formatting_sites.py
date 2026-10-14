@@ -33,7 +33,9 @@ _BINDING = re.compile(r"""(?<![\w-])(?:x-text|:title|:aria-label|x-bind:title|x-
 # Store keys that are not counts: readiness flags, the pause flag, and queue PRIORITY (a rank, not a tally).
 _NOT_COUNTS = re.compile(r"\$store\.pipeline\.\w*(?:Known|Paused|Priority)\b")
 _STORE_READ = re.compile(r"\$store\.pipeline\.\w+")
-_FORMATTED = re.compile(r"formatCount\(\s*\$store\.pipeline\.\w+\s*\)")
+# phaze-2dv18: a figure inside a store OBJECT (``summaryFlow?.analyzeDone``, or the macro's ``summaryFlow?.{{ key }}``) is still
+# a formatCount() argument; the optional ``?.<key>`` tail keeps that form from reading as an unformatted store read.
+_FORMATTED = re.compile(r"formatCount\(\s*\$store\.pipeline\.\w+(?:\?\.(?:\w+|\{\{\s*\w+\s*\}\}))?\s*\)")
 
 
 def _template(relative: str) -> str:
