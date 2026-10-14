@@ -62,6 +62,33 @@ resolution and the integration slot; it escalates conflicts rather than discardi
 Epic dispatch and grouped batches have additional molecule-level commands, so use the dispatcher
 role guide rather than applying the leaf sequence mechanically.
 
+## Queued seats and lease expiry
+
+Keep expensive gates serial when needed. A queued developer may be idle for tens of minutes;
+`bh worktree status` labels such as `ABANDONED`, inferred from absent file changes, and an expired
+claim lease are not evidence that its agent stopped. Use the dispatcher's agent layer to establish
+liveness before abandoning or reassigning work: **a record that reads as a status is not one**.
+For a still-assigned `in_progress` bead, treat lease expiry as informational for that liveness
+decision. Current tooling also uses stale leases to guard explicit foreign-claim recovery via
+`bh work abandon`; expiry alone does not authorize reaping a live queued seat.
+
+Decision: option (c) is chosen. Lease expiry is informational for a still-assigned `in_progress`
+bead, and the agent layer is the authoritative liveness read. Option (c) chosen; re-claim fix
+tracked upstream at beadhive/beadhive#95.
+
+The historical measurement on `phaze-48ghg.4` (2026-08-26): a lease of ~4 minutes between
+heartbeats, `Lease: expires expired (heartbeat 26 mins ago)`, and a same-owner re-claim that left the
+heartbeat at exactly "26 mins ago", HEAD unchanged at `0bdfd198`, and the worktree clean. The bead
+remained `in_progress`, assigned to its developer, and absent from `bh work ready`. Serialization was
+intentional: an escalating bead cost ~27 min of gate plus ~23 min of submit re-validation, and four
+seats hitting that together drove a 32 GB machine into swap.
+
+The same-owner re-claim defect still reproduces in the installed tooling (bh 0.24.4, re-checked
+2026-10-14): re-claiming prints `claimed` while the lease heartbeat is unchanged, and `bh work` has no
+heartbeat or touch verb. Do not use re-claim as a heartbeat or take that success line as evidence of
+renewal. The CLI correction (renew the lease with ownership guards, or report reattachment without
+renewal) is outside this repo and is tracked upstream at beadhive/beadhive#95.
+
 ## Test isolation
 
 Every concurrent worktree needs its own PostgreSQL databases and Redis logical database. Allocate

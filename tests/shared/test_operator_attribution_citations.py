@@ -245,7 +245,7 @@ pooled total:
 * ``operator said``: 2 matches, both FALSE POSITIVES -- ``scripts/recover_operator_decisions.py``
   and its test module both discuss, generically, the LABEL-vs-DESCRIPTION conflation ("quoting a
   description as if the operator said it"), not a specific decision.
-* ``operator selected``: 4 matches, all FALSE POSITIVES -- ``recover_operator_decisions.py``'s
+* ``operator selected``: 4 matches, all FALSE POSITIVES at that time (SUPERSEDED by phaze-isxib, see "THE SELECTED SHAPE") -- ``recover_operator_decisions.py``'s
   module docstring, ``proposal_queries.py``'s one-line docstring ("the exact proposal snapshot an
   operator selected"), and two test docstrings narrating generic API/scenario semantics ("the
   operator selected nothing", "the operator selected /data/music" as a test fixture's premise).
@@ -275,8 +275,46 @@ alongside ``_VOCAB_RE``, not by adding words to it. The single-verb widening tha
 explicitly rejected, not merely left undone, so a future seat does not re-measure the same
 rejected shape from scratch.
 
+THE SELECTED SHAPE (phaze-isxib, 2026-10-14 -- the implementer's decision, not the operator's; the bead's
+acceptance criteria hand the choice to whoever measures it). The 2026-09-24 measurement above found
+"operator selected" to be 4 matches, all false positives, and rejected it. That measurement was TRUE and
+the conclusion was wrong in the way a flood measurement can be: the guard could not see the claims it
+was blind to, so "no true positives" described the guard's vocabulary, not the tree. Re-measured against
+the whole in-scope tree on 2026-10-14 with the bare ``operator[- ]selected`` trigger, after the bead
+phaze-p65lt review found real claims phrased that way: ``docs/degenerate-audio.md`` ("The operator
+selected NULL values ..."), ``docs/design/0020-backfill-recovery-attempt-completion.md`` ("The operator
+selected this option ..."), and ``docs/quality-implementation/implementation-outcome.md`` ("The
+operator-selected cohort is the next 20 ... after 2026-10-11"), each with at most one of a date and a
+bead id in its own paragraph. They were repaired in place with citations recovered from a real record
+(a local Codex session transcript, which ``scripts/recover_operator_decisions.py`` does not read).
+
+The non-claims the trigger also reaches, and how each is handled -- NOT by a per-file allowlist:
+
+* the hyphenated ADJECTIVE ``operator-selected`` ("arbitrary operator-selected sort orders" in
+  ``services/pagination.py``; "not an additional operator-selected design" in
+  ``docs/design/0024-tracklist-source-retirement.md``) is a YIELDING ``_SHAPE_EXCLUSIONS`` entry, the same
+  mechanism and the same reason as ``operator-chosen``/``operator-approved``: it excuses the
+  adjective unless its own sentence carries a date or a bead id, which is how the cohort claim was
+  caught while ``pagination.py`` is not;
+* the VERB ``operator selected`` has NO grammatical signature separating a claim ("The operator
+  selected NULL values") from a non-claim ("the exact proposal snapshot an operator selected for bulk
+  authorization", "refused, because the operator selected ``/data/music``" -- a test premise). Excluding
+  by shape would therefore excuse the claim too, which is exactly the swallowing phaze-71q9y closed. So
+  the verb is not excluded at all; the two non-claim sites (``services/proposal_queries.py``,
+  ``tests/shared/routers/pipeline_scans/test_authorization_characterization.py``) were REWORDED to
+  ``submitted``, outside the vocabulary, the same remedy phaze-h8ug4 used for ``docs/k8s-burst.md``.
+  A future verb non-claim is therefore a build failure that asks for the same reword. That is the price
+  of soundness, and it is paid per occurrence, not hidden.
+
+What this trigger proves, and what it cannot: it demands a date and a bead id in the claim's own
+paragraph. It does NOT check that a "Question as put" is the question actually asked or that the
+quoted label was an offered option -- a paragraph can carry all four elements in form and be
+fabricated. Only a recovered record establishes that, which is why the repairs above cite one. A
+cheap structural check (``Question as put`` also requires ``Answer as given``) was considered and not
+added: it would prove completeness of form only, and the guard already refuses the weaker form.
+
 THE KNOWN LIMIT, stated rather than hidden (the "if no" half, for the shapes that stay
-unchecked): "operator selected", "operator said", "operator picked", and "operator responded" are
+unchecked): "operator said", "operator picked", and "operator responded" are
 NOT checked, on the measurement above -- each either produced no real hits or produced only false
 positives when tried alone, and none was shown to co-occur with a second word the way ``asked``
 co-occurs with ``answered``, so no compound analogous to the Q&A shape was found for them. A
@@ -340,6 +378,13 @@ _VOCAB_RE = re.compile(
 _ASKED_RE = re.compile(r"\boperator\s+(?:was|were)\s+asked\b", re.IGNORECASE)
 _ANSWERED_RE = re.compile(r"\b(?:answered|answers)\b", re.IGNORECASE)
 
+# A third vocabulary trigger, the verb/adjective "selected" (phaze-isxib). It is a bare single-word trigger,
+# which the module docstring's "A SECOND VOCABULARY SHAPE" section rejected on 2026-09-24 as a flood; what
+# changed is that the claims it hides were found (see "THE SELECTED SHAPE" in the module docstring), and the
+# non-claims are handled without an unsound allowlist: the hyphenated adjective ("operator-selected sort
+# orders") is a YIELDING `_SHAPE_EXCLUSIONS` entry, and the verb non-claims in the tree were reworded.
+_SELECTED_RE = re.compile(r"\boperator(?:-|\s+)selected\b", re.IGNORECASE)
+
 # Grammatical shapes that match the vocabulary but are not attribution claims -- see the module
 # docstring's "ALLOWLIST BY SHAPE" section for what each one is and where it was found. The third
 # field is YIELDS TO CITATION EVIDENCE (phaze-71q9y): when True, the exclusion does not fire on an
@@ -368,6 +413,14 @@ _SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
         re.compile(r"\b(?:is|are|remains?|stays?)\s+(?:an?\s+)?operator\s+decisions?\b[^.]{0,60}?,?\s*not\s", re.IGNORECASE),
         "an authority-contrast statement ('...is an operator decision, not a developer one') says WHO "
         "decides a class of choice, not that one specific decision WAS made on a date.",
+        True,
+    ),
+    # Appended last so the indices the tests above pin (0-3) do not move (phaze-isxib).
+    (
+        re.compile(r"\boperator-selected\b", re.IGNORECASE),
+        "'operator-selected' with a hyphen is an adjective describing an artifact ('operator-selected sort orders'), "
+        "not a verb recording that the operator selected something. Yields: a sentence carrying a date or a bead id "
+        "is citing, and 'The operator-selected cohort is ... after 2026-10-11' was exactly such a claim.",
         True,
     ),
 )
@@ -411,6 +464,12 @@ _KNOWN_SHAPE_EXCLUSIONS: tuple[tuple[str, str], ...] = (
     (
         "scripts/recover_operator_decisions.py",
         "is the standing example of a genuine null",
+    ),
+    # phaze-isxib: the module docstring names its own output heading, "ANSWER (operator selected this LABEL
+    # only)", while explaining the label-versus-description conflation. Prose ABOUT the vocabulary.
+    (
+        "scripts/recover_operator_decisions.py",
+        "THE LABEL IS THE ANSWER",
     ),
 )
 
@@ -647,8 +706,9 @@ def _has_unexcluded_vocab_match(text: str) -> bool:
     """True if at least one vocabulary occurrence in ``text`` is NOT covered by a shape
     exclusion's own match span.
 
-    Two INDEPENDENT vocabulary sources feed ``vocab_matches``: ``_VOCAB_RE``'s noun-phrase words
-    (decision/chose/approved/...), and -- phaze-lzb92 -- the verb-based Q&A shape, ``_ASKED_RE``
+    Three INDEPENDENT vocabulary sources feed ``vocab_matches``: ``_VOCAB_RE``'s noun-phrase words
+    (decision/chose/approved/...), -- phaze-isxib -- ``_SELECTED_RE`` ("operator selected" and
+    the hyphenated "operator-selected"), and -- phaze-lzb92 -- the verb-based Q&A shape, ``_ASKED_RE``
     occurrences, but ONLY when ``_ANSWERED_RE`` also matches somewhere in the same paragraph. That
     co-occurrence requirement is the false-positive guard the module docstring's "A SECOND
     VOCABULARY SHAPE" section measured: "the operator was asked" alone, never followed by an
@@ -674,6 +734,7 @@ def _has_unexcluded_vocab_match(text: str) -> bool:
     vocab_matches = list(_VOCAB_RE.finditer(text))
     if _ANSWERED_RE.search(text):
         vocab_matches.extend(_ASKED_RE.finditer(text))
+    vocab_matches.extend(_SELECTED_RE.finditer(text))
     if not vocab_matches:
         return False
     shape_spans = [
@@ -931,6 +992,59 @@ class TestScannerMechanics:
             "# The operator was asked whether to narrow it and declined every narrowing option.\n",
         )
         assert list(_iter_uncited_claims(iter(paragraphs))) == []
+
+    # phaze-isxib: the verb form, verbatim from the pre-repair ``docs/degenerate-audio.md`` opening
+    # paragraph (a date, no bead id) and in the cited form the repair gave it.
+    _SELECTED_VERB_CLAIM = "Measured 2026-10-03. The operator selected NULL values for unusable measurements."
+    _SELECTED_VERB_CITED = "Measured 2026-10-03. The operator selected NULL values for unusable measurements (phaze-nkucu)."
+
+    def test_a_selected_verb_claim_is_flagged_until_it_carries_a_date_and_a_bead(self) -> None:
+        """Mutation proof for the 'selected' trigger: each missing element turns the guard red.
+
+        The first assertion proves the fixture is seen through the new ``_SELECTED_RE`` alone, so a red
+        result is the trigger firing and not some older vocabulary word matching by accident.
+        """
+        assert _SELECTED_RE.search(self._SELECTED_VERB_CLAIM)
+        assert not _VOCAB_RE.search(self._SELECTED_VERB_CLAIM)
+        assert list(_iter_uncited_claims(iter([_Paragraph("fixture.md", 1, self._SELECTED_VERB_CITED)]))) == []
+
+        for removed in ("2026-10-03", " (phaze-nkucu)"):
+            mutated = _Paragraph("fixture.md", 1, self._SELECTED_VERB_CITED.replace(removed, ""))
+            assert len(list(_iter_uncited_claims(iter([mutated])))) == 1, f"removing {removed!r} was swallowed"
+
+    def test_the_selected_adjective_is_excused_bare_but_not_when_its_sentence_is_citing(self) -> None:
+        """``operator-selected`` is a non-claim adjective ('operator-selected sort orders') -- until its
+        own sentence names a date or a bead id, which is how the cohort claim in
+        ``implementation-outcome.md`` read before phaze-isxib repaired it.
+        """
+        non_claims = [
+            "Use OFFSET paging consistently; arbitrary operator-selected sort orders do not share one reusable cursor shape.",
+            "This is the implementer's mechanism, not an additional operator-selected design.",
+        ]
+        for text in non_claims:
+            assert _SELECTED_RE.search(text)
+            assert list(_iter_uncited_claims(iter([_Paragraph("fixture.py", 1, text)]))) == [], f"wrongly flagged: {text!r}"
+
+        claim = "The operator-selected cohort is the next 20 completed beads after 2026-10-11."
+        assert len(list(_iter_uncited_claims(iter([_Paragraph("fixture.md", 1, claim)])))) == 1, "the dated-only cohort claim was swallowed"
+        cited = claim + " Recorded on bead phaze-x45ht."
+        assert list(_iter_uncited_claims(iter([_Paragraph("fixture.md", 1, cited)]))) == []
+
+    def test_the_repaired_selected_claims_in_the_real_tree_are_seen_and_pass(self) -> None:
+        """Built on the REAL files, so a reword that drops the claim, or a scope change that stops
+        reaching them, cannot leave this green: each repaired paragraph is found by the 'selected'
+        trigger, passes, and fails once its bead id is deleted.
+        """
+        for rel in (
+            "docs/design/0020-backfill-recovery-attempt-completion.md",
+            "docs/quality-implementation/implementation-outcome.md",
+        ):
+            found = [p for p in _paragraphs_for_file(_REPO_ROOT / rel) if _SELECTED_RE.search(p.text)]
+            assert found, f"{rel} no longer contains a 'selected' claim; re-pick a real-tree fixture"
+            for paragraph in found:
+                assert list(_iter_uncited_claims(iter([paragraph]))) == [], f"{rel} is uncited"
+                stripped = _Paragraph(paragraph.path, paragraph.lineno, _BEAD_ID_RE.sub("", paragraph.text))
+                assert len(list(_iter_uncited_claims(iter([stripped])))) == 1, f"{rel}: removing the bead id was not caught"
 
     def test_a_child_bead_id_does_not_end_a_sentence(self) -> None:
         """``phaze-bk9el.19``'s dot is not a sentence end, so the bead id before it stays in the sentence.

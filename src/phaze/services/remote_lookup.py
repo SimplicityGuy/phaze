@@ -89,6 +89,7 @@ from phaze.tracklist_providers.domain import (
 from phaze.tracklist_providers.host_profile import RemoteHostProfile
 from phaze.tracklist_providers.matching import AssessedSubject, MatchAssessment, assess_candidates, assess_recording_match
 from phaze.tracklist_providers.port import ProviderEffects
+from phaze.tracklist_providers.recording_hints import hints_from_name
 from phaze.tracklist_providers.registry import ProviderRegistry
 
 
@@ -238,12 +239,27 @@ class _ObservedEffects:
         return tuple(operator_outcome(read.status, read.code, evidence=read.evidence) for _, read in self.reads if read.status != OutcomeStatus.FOUND)
 
 
-def context_from_metadata(media_id: uuid.UUID, metadata: FileMetadata | None) -> RecordingContext:
-    """The bounded facts a remote search may use: tag artist, tag year, duration. Never file content or paths.
+def _merged_date(tag_year: Fact, hinted: Fact) -> Fact:
+    """The name-derived date refines the tag year only when it agrees with it; on a different year the tag stands."""
+    if hinted.value is None:
+        return tag_year
+    if tag_year.value is None:
+        return hinted
+    if hinted.value[:4] == tag_year.value:
+        return Fact(value=hinted.value, certainty="inferred", evidence=(*hinted.evidence, *tag_year.evidence))
+    return tag_year
+
+
+def context_from_metadata(
+    media_id: uuid.UUID, metadata: FileMetadata | None, *, file_name: str | None = None, path: str | None = None
+) -> RecordingContext:
+    """The bounded facts a remote search may use: tag artist, tag year, duration, and date/event hints from the name.
 
     Per docs/spikes/phaze-fi8rs-recording-facts-for-remote-search.md: the artist tag is ``known``, a year alone is a
-    year-precision ``inferred`` date, and no URL fact exists. No event is derived here: the archive stores none, and an
-    album tag is not an event (operator record 3, 2026-10-11, epic phaze-oprdu, allows only artist, event, date and duration).
+    year-precision ``inferred`` date, and no URL fact exists. Date and event hints come only from the file name and
+    directory path via ``tracklist_providers.recording_hints`` (ambiguous dates keep both alternatives at reduced
+    precision; events are ``inferred`` with the source token as evidence). An album tag is not an event (operator
+    record 3, 2026-10-11, epic phaze-oprdu, allows only artist, event, date and duration), and the album is never read.
     """
     artist, date, duration = Fact(), Fact(), None
     if metadata is not None and metadata.failed_at is None:
@@ -253,7 +269,10 @@ def context_from_metadata(media_id: uuid.UUID, metadata: FileMetadata | None) ->
             date = Fact(value=f"{metadata.year:04d}", certainty="inferred", evidence=("tag:year",))
         if metadata.duration is not None and math.isfinite(metadata.duration) and metadata.duration >= 0:
             duration = metadata.duration
-    return RecordingContext(recording_id=str(media_id), artist=artist, date=date, duration_seconds=duration)
+    hints = hints_from_name(file_name, path)
+    return RecordingContext(
+        recording_id=str(media_id), artist=artist, event=hints.event, date=_merged_date(date, hints.date), duration_seconds=duration
+    )
 
 
 def _searchable(context: RecordingContext) -> bool:
@@ -268,7 +287,7 @@ async def _recording_context(session: AsyncSession, media_id: uuid.UUID) -> Reco
     if media is None or media.missing_at is not None or media.file_type not in MEDIA_FILE_TYPES:
         raise ValueError("Recording is unavailable")
     metadata = await session.scalar(select(FileMetadata).where(FileMetadata.file_id == media_id))
-    return context_from_metadata(media_id, metadata)
+    return context_from_metadata(media_id, metadata, file_name=media.original_filename_repaired or media.original_filename, path=media.original_path)
 
 
 async def _rejections(session: AsyncSession, media_id: uuid.UUID, provider_id: str) -> dict[str, datetime | None]:

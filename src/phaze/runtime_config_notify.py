@@ -39,6 +39,7 @@ import structlog
 
 from phaze.runtime_config import partition_overrides
 from phaze.services.runtime_config_overrides import RUNTIME_CONFIG_NOTIFY_CHANNEL, get_runtime_config_overrides
+from phaze.utils import raise_if_cancel_requested
 
 
 if TYPE_CHECKING:
@@ -176,6 +177,8 @@ async def start_runtime_config_listener(
 
     async def _poll_loop() -> None:
         while True:
+            # A cancel swallowed inside the previous reload's DB read must still end the loop (phaze-gurn3).
+            raise_if_cancel_requested()
             await asyncio.sleep(poll_interval_sec)
             try:
                 await store.reload("poll")

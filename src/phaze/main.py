@@ -76,6 +76,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
 from phaze.telemetry.db import instrument_engine
 from phaze.telemetry.http import TelemetryMiddleware
+from phaze.utils import raise_if_cancel_requested
 from phaze.version import APP_VERSION
 from phaze.web.saq_mount import build_saq_app
 from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
@@ -97,6 +98,8 @@ async def _orphan_refresh_loop() -> None:
             raise
         except Exception:
             logger.warning("orphan refresh loop iteration failed; keeping last-good", exc_info=True)
+        # A cancel a library turned into an exception must still end the loop (phaze-gurn3).
+        raise_if_cancel_requested()
         await asyncio.sleep(_ORPHAN_TTL_SECONDS)
 
 
@@ -109,6 +112,7 @@ async def _review_refresh_loop() -> None:
             raise
         except Exception:
             logger.warning("review refresh loop iteration failed; keeping last-good", exc_info=True)
+        raise_if_cancel_requested()
         await asyncio.sleep(_REVIEW_TTL_SECONDS)
 
 
@@ -124,6 +128,7 @@ async def _attention_refresh_loop(app: FastAPI) -> None:
         except Exception:
             set_attention_snapshot([], known=False)
             logger.warning("attention refresh iteration failed; retaining unknown snapshot", exc_info=True)
+        raise_if_cancel_requested()
         await asyncio.sleep(ATTENTION_REFRESH_SECONDS)
 
 

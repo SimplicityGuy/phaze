@@ -1736,8 +1736,11 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   `src/phaze/**.py` files changed against `--base-ref` (committed, staged *and* unstaged, so the
   FILE SELECTION itself is useful mid-flight even though artifact reuse is not), names every file
   it checked, and prints the **uncovered branch line numbers** rather than a bare percentage.
-  Raising branch coverage is welcome, holding it steady is fine, **lowering it fails the bead**. A
-  file the bead did not touch is out of scope for that bead's check.
+  The gate compares the uncovered-branch **count** (`num_branches - covered_branches`), not the
+  percentage (phaze-pms85; operator decision and its rationale in `CLAUDE.md`, "Branch coverage"):
+  lowering it is welcome, holding it steady is fine, **raising it fails the bead**. Removing
+  untested branches while adding the same number of new untested ones holds the count steady and
+  passes. A file the bead did not touch is out of scope for that bead's check.
 - **It fails closed on a missing baseline** — if the check could not perform a comparison, it did
   not pass. The baseline is written by `phaze-bk9el.1` (`just branch-check --write-baseline`); that
   bead alone passes `--allow-missing-baseline`, because it cannot be blocked by a check that

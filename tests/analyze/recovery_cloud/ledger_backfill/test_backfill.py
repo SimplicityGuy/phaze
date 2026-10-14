@@ -434,3 +434,17 @@ async def test_backfill_seeds_keyed_skips_random_is_idempotent_and_no_overwrite(
             async with engine.begin() as conn:
                 await conn.execute(text("DELETE FROM scheduling_ledger WHERE key = ANY(:keys)"), {"keys": [keyed_queued_key, keyed_active_key]})
         await engine.dispose()
+
+
+@pytest.mark.parametrize("key", [None, 42, b"process_file:abc", ["process_file:abc"]])
+def test_classify_skips_a_row_whose_key_is_not_a_str(key: object) -> None:
+    """The `isinstance(key, str)` operand of the classifier's fused guard (phaze-5f1sv).
+
+    The guard is `data is None or not isinstance(key, str)`; coverage.py counts it as one decision, so
+    no branch figure ever showed whether a non-`str` key was exercised. A parseable blob with a
+    keyed function must still be skipped when the key is not text.
+    """
+    from phaze.tasks.recovery_backfill import _classify_saq_job_row
+
+    blob = json.dumps({"function": "process_file", "kwargs": {}}).encode()
+    assert _classify_saq_job_row((blob, key)) is None

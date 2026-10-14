@@ -41,5 +41,5 @@
 </article>
 
 {% if toast_message is defined and toast_message %}
-<div hx-swap-oob="beforeend:#toast-container"><div class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>{{ toast_message }}</div></div>
+<div hx-swap-oob="beforeend:#toast-container"><div class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border" role="status" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>{{ toast_message }}</div></div>
 {% endif %}

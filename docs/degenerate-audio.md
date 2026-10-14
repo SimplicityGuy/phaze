@@ -1,6 +1,6 @@
 # Degenerate audio investigation (phaze-nkucu)
 
-Measured 2026-10-03. The operator selected NULL values for unusable measurements.
+Measured 2026-10-03. Unusable measurements are stored as NULL, per the operator decision recorded below (phaze-nkucu, 2026-10-03).
 
 ## Operator decision (phaze-nkucu, 2026-10-03)
 
@@ -11,6 +11,13 @@ Question as put:
 Answer as given (selected option label, verbatim):
 
 > Return NULL values for unusable measurements (Recommended)
+
+The other offered options were "Keep values and add an explicit quality field" and "Leave current
+behavior and close as wontfix". Asked 2026-10-03T19:36:27Z and answered 2026-10-03T19:39:27Z. Durable
+record: this section, recovered on 2026-10-14 (phaze-isxib) from the local Codex session transcript's
+`request_user_input_async` call and its question reply, in which the question text above and the label
+above appear verbatim. `scripts/recover_operator_decisions.py` does not read Codex transcripts, so the
+record was found by direct search.
 
 Completed windows remain present and count as analyzed even when their measurements are
 NULL. A missing value therefore means this completed window yielded no usable measurement;

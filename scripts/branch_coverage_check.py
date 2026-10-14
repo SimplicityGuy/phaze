@@ -1,4 +1,4 @@
-"""Per-bead branch-coverage gate: a bead may not LOWER branch coverage on a file it touched.
+"""Per-bead branch-coverage gate: a bead may not leave MORE branches uncovered on a file it touched.
 
 phaze-bk9el.21, operator decision 2026-08-21. Question as put: "Branch coverage is off, and runs
 4-8 points under line coverage on the refactor targets. What should this epic do about it?" Answer
@@ -19,8 +19,29 @@ primary exercisers): job_runner.py 97.12% lines / 89.13% branches, services/anal
 93.97%, services/video_audio.py 94.62% / 87.50%. All three pass the 95%/90% line gates while
 sitting below them on branches.
 
-THE RULE (criterion 5): raising branch coverage on a touched file is welcome, holding it steady is
-acceptable, LOWERING it fails. A file the bead did not touch is out of scope for that bead's check.
+THE RULE (criterion 5): leaving MORE branches untested on a touched file fails; holding the
+uncovered count steady or lowering it passes. A file the bead did not touch is out of scope.
+
+RATIO VERSUS UNCOVERED COUNT (phaze-pms85). The gate originally compared ``percent_branches_covered``.
+A ratio moves when its DENOMINATOR moves, so removing COVERED branches lowered it while losing
+nothing: phaze-n8o9p flattened a nest, baseline 44/46 (2 uncovered, 95.65%) became 42/44 (2
+uncovered, 95.45%) and the gate failed a bead that made nothing less tested -- on exactly the
+refactor class this gate exists to make safe. Operator decision 2026-10-13, question as put:
+"phaze-pms85 is a design question (branch-check: ratio vs uncovered COUNTS). How should I dispatch
+it?" Answer as given (option label): "Implement counts-based gate (Recommended)". Durable record:
+bead phaze-pms85. The gate now fails iff ``num_branches - covered_branches`` ROSE against the
+baseline. Every verdict line prints the absolute counts (covered/total/uncovered) alongside the
+percentages so a benign denominator shift is readable at a glance.
+
+Accepted weakness, stated rather than hidden: a bead that ADDS ten branches and covers nine raises
+the uncovered count by one and FAILS although its ratio rose. That is deliberate -- the gate's claim
+is "this bead did not leave more branches untested", and a newly added untested branch is that. The
+remedy is to cover it or say in the bead why it is unreachable.
+
+A baseline row recorded before counts were stored (percent and ``num_branches`` only, no
+``covered_branches``) cannot yield an uncovered count, so THAT row alone falls back to the old ratio
+comparison; the verdict line says ``ratio (legacy baseline)``. Rows written by ``--write-baseline``
+always carry the counts.
 
 Usage
 -----
@@ -51,7 +72,7 @@ Exit semantics (FAIL CLOSED, without exception)
 ----------------------------------------------
 0   -- no touched file lowered its branch coverage; or nothing tracked was touched; or
        ``--allow-missing-baseline`` was passed and no baseline exists.
-1   -- at least one touched file's branch coverage is below its baseline.
+1   -- at least one touched file has MORE uncovered branches than its baseline (phaze-pms85).
 2   -- the check could not perform a comparison: coverage.json missing/unparseable, carrying no
        branch data at all (which would otherwise read as "0 regressions" for the wrong reason), or
        NO BASELINE recorded and no ``--allow-missing-baseline``.
@@ -93,6 +114,16 @@ DEFAULT_BASELINE = ".coverage-baseline.json"
 # Only source files can regress a bead's branch coverage; tests are excluded from the coverage
 # report anyway (`omit = ["tests/*"]`), so a touched test file simply never appears here.
 TRACKED_PREFIX = "src/phaze/"
+
+
+def fused_guard_context(path: str) -> str | None:
+    """Context-only note on multi-operand guards in ``path`` (phaze-5f1sv); never affects the verdict."""
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from scripts.fused_guards import describe  # noqa: PLC0415 - sibling import only when reporting
+
+    return describe(Path(path))
 
 
 def _git(*args: str) -> str:
@@ -144,6 +175,37 @@ def branch_percent(summary: dict[str, float]) -> float | None:
     if "percent_branches_covered" in summary:
         return float(summary["percent_branches_covered"])
     return float(summary["covered_branches"]) / float(summary["num_branches"]) * 100.0
+
+
+def uncovered_count(summary: Mapping[str, object]) -> int | None:
+    """Branches not taken in ``summary`` (``num_branches - covered_branches``); ``None`` if either count is absent."""
+    total = summary.get("num_branches")
+    covered = summary.get("covered_branches")
+    if isinstance(total, (int, float)) and isinstance(covered, (int, float)):
+        return int(total) - int(covered)
+    return None
+
+
+def counts_text(summary: Mapping[str, object]) -> str:
+    """``covered/total, N uncovered`` for one summary, or ``counts unknown`` for a legacy baseline row."""
+    uncovered = uncovered_count(summary)
+    total = summary.get("num_branches")
+    if uncovered is None or not isinstance(total, (int, float)):
+        return "counts unknown"
+    return f"{int(total) - uncovered}/{int(total)} covered, {uncovered} uncovered"
+
+
+def lowered(current: Mapping[str, object], baseline: Mapping[str, object], delta_pct: float) -> tuple[bool, str]:
+    """Did the file leave more branches untested than its baseline? Returns ``(regressed, basis)``.
+
+    phaze-pms85: the verdict is the UNCOVERED COUNT, not the ratio, so removing covered branches is
+    free. A legacy baseline row without ``covered_branches`` has no count to compare and falls back
+    to the ratio (a hundredth of a point of slack, as before).
+    """
+    now, before = uncovered_count(current), uncovered_count(baseline)
+    if now is None or before is None:
+        return delta_pct < -0.005, "ratio (legacy baseline)"
+    return now > before, "uncovered count"
 
 
 def missing_branch_lines(info: dict[str, object]) -> list[int]:
@@ -222,7 +284,7 @@ def _module_row(summary: dict[str, float]) -> dict[str, float | None]:
 
 
 def branch_diagnostics(info: dict[str, object], baseline: Mapping[str, object]) -> str:
-    """Counts and literal arc identities only; never alter the canonical phaze-pms85 policy.
+    """Counts and literal arc identities for the reader only; the verdict is ``lowered()``, never this.
 
     Legacy baselines have no arc inventory. Missing evidence is unknown, not an empty set.
     Equal coordinates do not prove semantic identity after source movement.
@@ -442,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         summary = _summary_of(info)
         print(f"      {branch_diagnostics(info, baseline.get(path, {}))}")  # noqa: T201
+        if (fused := fused_guard_context(path)) is not None:
+            print(f"      ⚠️  {fused}")  # noqa: T201
         if scoped and summary.get("num_statements", 0) and not summary.get("covered_lines", 0):
             unjudgeable.append(path)
             print(f"   ❌ {path}: selected tests executed no lines; cannot judge this touched file")  # noqa: T201
@@ -454,38 +518,43 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             print(f"   ―― {path}: no branches to measure")  # noqa: T201
             continue
-        before = baseline.get(path, {}).get("percent_branches_covered") if have_baseline else None
+        base_row = baseline.get(path, {}) if have_baseline else {}
+        before = base_row.get("percent_branches_covered")
         uncovered = missing_branch_lines(info)
-        detail = f"uncovered branch lines: {', '.join(str(n) for n in uncovered)}" if uncovered else "all branches covered"
+        detail = (
+            f"currently uncovered branch lines (may predate this bead): {', '.join(str(n) for n in uncovered)}"
+            if uncovered
+            else "all branches covered"
+        )
         if before is None:
             marker = "✅" if not have_baseline else "🆕"
-            print(f"   {marker} {path}: {current:6.2f}%  ({detail})")  # noqa: T201
+            print(f"   {marker} {path}: {current:6.2f}% [{counts_text(summary)}]  ({detail})")  # noqa: T201
             continue
         delta = current - float(before)
-        # Float equality is the wrong test on two percentages computed from different runs; a
-        # hundredth of a point is below the reporting precision and is not a regression.
-        if delta < -0.005:
+        is_lowered, basis = lowered(summary, base_row, delta)
+        shown = (
+            f"{current:6.2f}% [{counts_text(summary)}] vs baseline {float(before):6.2f}% [{counts_text(base_row)}]  ({delta:+.2f}; judged by {basis})"
+        )
+        if is_lowered:
             if scoped:
                 unjudgeable.append(path)
-                print(  # noqa: T201
-                    f"   ❌ {path}: selected tests covered {current:6.2f}% vs full baseline {float(before):6.2f}%; cannot judge a regression — {detail}"
-                )
+                print(f"   ❌ {path}: selected tests: {shown}; cannot judge a regression against the full-suite baseline — {detail}")  # noqa: T201
             else:
                 regressions.append(path)
-                print(f"   ❌ {path}: {current:6.2f}% vs baseline {float(before):6.2f}%  ({delta:+.2f}) — {detail}")  # noqa: T201
+                print(f"   ❌ {path}: {shown} — {detail}")  # noqa: T201
         else:
-            print(f"   ✅ {path}: {current:6.2f}% vs baseline {float(before):6.2f}%  ({delta:+.2f}) — {detail}")  # noqa: T201
+            print(f"   ✅ {path}: {shown} — {detail}")  # noqa: T201
 
     if unjudgeable:
         print(f"\n❌ {len(unjudgeable)} touched file(s) cannot be judged from selected tests: {', '.join(unjudgeable)}")  # noqa: T201
         print("   Run the full suite for a complete branch comparison.")  # noqa: T201
         return 2
     if regressions:
-        print(f"\n❌ {len(regressions)} file(s) lowered branch coverage against the baseline: {', '.join(regressions)}")  # noqa: T201
+        print(f"\n❌ {len(regressions)} file(s) left more branches uncovered than the baseline: {', '.join(regressions)}")  # noqa: T201
         print("   Cover the branch lines listed above, or say in the bead why the branch is unreachable.")  # noqa: T201
         return 1
     if have_baseline:
-        print("\n✅ No touched file lowered its branch coverage against the baseline.")  # noqa: T201
+        print("\n✅ No touched file left more branches uncovered than the baseline.")  # noqa: T201
     return 0
 
 
