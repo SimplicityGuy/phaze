@@ -14,7 +14,7 @@ from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.companion_import import CompanionImportItem, CompanionImportRun, ProviderAcquisitionAttempt
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
-from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation
+from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation, ProviderSourceRead
 from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
 from phaze.services.companion_acquisition import get_latest_source_attempts
 from phaze.services.companion_capture import enqueue_companion_capture, store_capture_report
@@ -180,6 +180,7 @@ async def test_concurrent_attempt_uuid_cannot_cross_source_intents(async_engine,
         async with factory.begin() as db:
             source_ids = select(ProviderSourceObject.id).where(ProviderSourceObject.source_file_id.in_([row.id for row in companions]))
             await db.execute(delete(ProviderAcquisitionAttempt).where(ProviderAcquisitionAttempt.source_object_id.in_(source_ids)))
+            await db.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id.in_(source_ids)))
             await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id.in_(source_ids)))
             await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.source_file_id.in_([row.id for row in companions])))
             await db.execute(delete(FileRecord).where(FileRecord.id.in_([row.id for row in companions])))
