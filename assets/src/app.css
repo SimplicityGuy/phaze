@@ -7,12 +7,25 @@
  * Keep the standalone binary version in sync with the justfile `tailwind`
  * recipe and the Dockerfile css-build stage (currently v4.3.2).
  */
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 
-/* Scan every Jinja template for utility classes. All class strings are literal
- * in these files (macro call sites pass literals; Alpine :class bindings inline
- * literals), so no safelist is required. */
+/* The COMPLETE, explicit source set -- `source(none)` turns off Tailwind v4's
+ * automatic detection, which otherwise also scans the cwd and so made the repo-root
+ * build (`just tailwind`, the browser CI job) differ from the Dockerfile css-builder
+ * build (which copies only these paths): 1,266 vs 899 class selectors (phaze-oicyy).
+ * With nothing implicit, both producers scan exactly the paths below, and the
+ * Dockerfile css-builder stage must COPY exactly these paths
+ * (tests/shared/test_tailwind_source_parity.py pins both).
+ *
+ * Class strings are literal in the Jinja templates (macro call sites pass literals;
+ * Alpine :class bindings inline literals), AND in the Python modules below that build
+ * HTML fragments directly. Add any new Python module that emits `class="..."` markup
+ * here and to the css-builder COPY lines, or its utilities will be missing in production. */
 @source "../../src/phaze/templates";
+@source "../../src/phaze/routers/execution.py";
+@source "../../src/phaze/routers/remote_lookup_ui.py";
+@source "../../src/phaze/routers/pipeline/_common.py";
+@source "../../src/phaze/routers/pipeline/skip.py";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
