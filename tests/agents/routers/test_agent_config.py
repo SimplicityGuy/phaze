@@ -181,3 +181,34 @@ async def test_a_failed_override_read_is_a_5xx_and_the_agent_keeps_its_last_good
         assert store.current().worker_max_jobs == 12
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_and_typed_agents_get_compatible_persisted_policy(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A typed array cannot break an older int/string parser before its unknown-key filter."""
+    from pydantic import BaseModel
+
+    from phaze.schemas.agent_config import CONFIG_VERSION_HEADER, AgentConfigResponse
+
+    class LegacyResponse(BaseModel):
+        overrides: dict[str, int | str]
+        digest: str
+
+    _agent, raw_token = seed_test_agent
+    values = {
+        "worker_max_jobs": 3,
+        "convention_date_fallback_enabled": False,
+        "analysis_progress_interval_sec": 0.25,
+        "cloud_redrive_backoff_sec": [5, 15],
+    }
+    session.add_all(RuntimeConfigOverride(key=key, value=value) for key, value in values.items())
+    await session.flush()
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": f"Bearer {raw_token}"}) as client:
+        legacy = LegacyResponse.model_validate((await client.get("/api/internal/agent/config")).json())
+        assert legacy.overrides == {"worker_max_jobs": 3}
+        assert legacy.digest == compute_overrides_digest(legacy.overrides)
+        typed = AgentConfigResponse.model_validate((await client.get("/api/internal/agent/config", headers={CONFIG_VERSION_HEADER: "2"})).json())
+        assert typed.overrides == values
+        assert typed.overrides["convention_date_fallback_enabled"] is False
+        assert typed.digest == compute_overrides_digest(typed.overrides)

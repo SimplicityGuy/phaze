@@ -30,14 +30,14 @@ not to partition the response.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.runtime_config import RELOADABLE_KEYS
-from phaze.schemas.agent_config import AgentConfigResponse, compute_overrides_digest
+from phaze.schemas.agent_config import CONFIG_VERSION_HEADER, LEGACY_AGENT_CONFIG_KEYS, AgentConfigResponse, compute_overrides_digest
 from phaze.services.runtime_config_overrides import get_runtime_config_overrides
 
 
@@ -58,6 +58,7 @@ router = APIRouter(prefix="/api/internal/agent/config", tags=["agent-internal"])
 async def get_agent_config(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    config_version: Annotated[int, Header(alias=CONFIG_VERSION_HEADER, ge=1)] = 1,
 ) -> AgentConfigResponse:
     """Return the current DB-override layer, restricted to reloadable keys.
 
@@ -67,5 +68,6 @@ async def get_agent_config(
     """
     del agent  # authentication only -- the override layer is not per-agent, see module docstring.
     overrides = await get_runtime_config_overrides(session)
-    overrides = {key: value for key, value in overrides.items() if key in RELOADABLE_KEYS}
+    supported_keys = RELOADABLE_KEYS if config_version >= 2 else LEGACY_AGENT_CONFIG_KEYS
+    overrides = {key: value for key, value in overrides.items() if key in supported_keys}
     return AgentConfigResponse(overrides=overrides, digest=compute_overrides_digest(overrides))

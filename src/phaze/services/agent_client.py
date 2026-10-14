@@ -760,7 +760,9 @@ class PhazeAgentClient:
         (phaze-mvq8z.20): the heartbeat polls this every tick inside the beat's own deadline, before
         the POST that keeps the agent alive, and a missed poll is simply retried on the next tick.
         """
-        from phaze.schemas.agent_config import AgentConfigResponse  # noqa: PLC0415
+        from phaze.schemas.agent_config import CONFIG_VERSION_HEADER, AgentConfigResponse  # noqa: PLC0415
 
-        response = await self._request("GET", "/api/internal/agent/config", max_attempts=1, timeout=_CONFIG_POLL_TIMEOUT)
+        response = await self._request(
+            "GET", "/api/internal/agent/config", max_attempts=1, timeout=_CONFIG_POLL_TIMEOUT, headers={CONFIG_VERSION_HEADER: "2"}
+        )
         return AgentConfigResponse.model_validate(response.json())

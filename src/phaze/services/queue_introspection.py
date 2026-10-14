@@ -57,7 +57,7 @@ from sqlalchemy import text
 import structlog
 
 from phaze.config import get_settings
-from phaze.runtime_config import current as current_runtime_config
+from phaze.runtime_config import current as current_runtime_config, effective_settings
 from phaze.tasks._saq_reap import SAQ_DEFAULT_TIMEOUT_SECONDS
 from phaze.tasks._shared.live_worker import lane_concurrency
 
@@ -202,7 +202,7 @@ async def summarize_active_jobs(session: AsyncSession, queue_name: str, *, concu
     pre-migration env) rolls the nested scope back alone and returns a ``degraded`` breakdown rather
     than raising. A degraded breakdown never trips the guard.
     """
-    settings = get_settings()
+    settings = effective_settings(get_settings())
     bound = concurrency if concurrency is not None else concurrency_for_queue(queue_name)
     try:
         async with session.begin_nested():

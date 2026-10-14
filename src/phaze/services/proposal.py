@@ -44,6 +44,8 @@ from phaze.services.proposal_provider import check_rate_limit as _check_rate_lim
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -53,21 +55,25 @@ logger = structlog.get_logger(__name__)
 class ProposalService:
     """Coordinate provider requests while preserving the supported service contract."""
 
-    def __init__(self, model: str, prompt_template: str, max_rpm: int) -> None:
+    def __init__(self, model: str, prompt_template: str, max_rpm: int | Callable[[], int]) -> None:
         self.model = model
         self.prompt_template = prompt_template
         self.max_rpm = max_rpm
 
-    async def generate_batch(self, files_context: list[dict[str, Any]]) -> BatchProposalResponse:
+    async def generate_batch(self, files_context: list[dict[str, Any]], *, model: str | None = None) -> BatchProposalResponse:
         """Call the configured LLM and return its parsed proposal batch."""
         # The provider boundary deliberately retains the unchecked ``response.choices[0]`` access:
         # LiteLLM owns the empty-choices guard, and its vetted minor pin protects that contract.
+        selected_model = self.model if model is None else model
+        # Freeze the parser's model alongside the request. A concurrent batch can choose a
+        # different live model without mutating this shared service or an in-flight parser.
+        parser_service = self if selected_model == self.model else ProposalService(selected_model, self.prompt_template, self.max_rpm)
         return await _generate_batch(
-            model=self.model,
+            model=selected_model,
             prompt_template=self.prompt_template,
             files_context=files_context,
             completion_provider=acompletion,
-            completion_parser=self._parse_completion,
+            completion_parser=parser_service._parse_completion,
             date_guidance=_date_convention_guidance,
         )
 
@@ -89,7 +95,7 @@ class ProposalService:
         return clamp_confidence(value)
 
 
-async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
+async def check_rate_limit(redis_pool: Any, max_rpm: int | Callable[[], int]) -> None:
     """Block until a provider request slot is available."""
     await _check_rate_limit(redis_pool, max_rpm, sleep=asyncio.sleep)
 

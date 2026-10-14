@@ -4,7 +4,7 @@
 # This file was formerly docker-compose.override.yml, which `docker compose up`
 # AUTO-MERGES by default. That silently hijacked the documented production
 # bring-up (`just up`): it replaced the api command with plain-HTTP
-# `uvicorn --reload` + PHAZE_DEBUG=true, so the cert-bootstrap entrypoint
+# `uvicorn --reload`, so the cert-bootstrap entrypoint
 # (phaze.entrypoint → ensure_certs_present → uvicorn --ssl-*) never ran, no CA
 # was generated, and every agent's TLS handshake failed.
 #
@@ -17,8 +17,6 @@ services:
     command: uv run uvicorn phaze.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./src:/app/src
-    environment:
-      - PHAZE_DEBUG=true
 
   worker:
     volumes:

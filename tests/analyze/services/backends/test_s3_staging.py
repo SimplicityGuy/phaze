@@ -637,7 +637,7 @@ def test_client_is_bounded_with_explicit_timeouts(monkeypatch: pytest.MonkeyPatc
             return SimpleNamespace()
 
     monkeypatch.setattr(s3_staging, "get_session", _CapSession)
-    monkeypatch.setattr(s3_staging, "get_settings", lambda: SimpleNamespace(s3_client_timeout_sec=17))
+    monkeypatch.setattr(s3_staging, "current", lambda: SimpleNamespace(s3_client_timeout_sec=17))
 
     s3_staging._client(_bucket_config("http://s3.test", "b"))
 

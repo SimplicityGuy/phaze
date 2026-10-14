@@ -144,6 +144,21 @@ def test_the_log_level_applier_reconfigures_only_when_log_level_changes(tmp_path
     asyncio.run(scenario())
 
 
+def test_log_level_reload_preserves_one_shot_dual_rendering(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _store(tmp_path)
+        store.register_applier("log_level", log_level_applier(json_logs=True, friendly=True))
+        (tmp_path / RUNTIME_TOML_NAME).write_text('log_level = "WARNING"\n', encoding="utf-8")
+        assert (await store.reload("file")).outcome == "applied"
+        handlers = logging.getLogger().handlers
+        assert len(handlers) == 2
+        assert logging.getLogger().getEffectiveLevel() == logging.WARNING
+        assert any(isinstance(handler.formatter.processors[-1], structlog.processors.JSONRenderer) for handler in handlers)
+        assert any(isinstance(handler.formatter.processors[-1], structlog.dev.ConsoleRenderer) for handler in handlers)
+
+    asyncio.run(scenario())
+
+
 def test_every_process_registers_the_shared_log_level_applier() -> None:
     """The api lifespan, the control worker and the agent worker each register the SAME applier
     (built from their own settings' ``log_json``) -- a bare lambda re-resolving the format from the

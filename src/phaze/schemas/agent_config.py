@@ -14,7 +14,26 @@ from __future__ import annotations
 import hashlib
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+
+
+# Version1 agents parse the WHOLE override map as int/string before filtering unknown keys.
+# Keep this envelope fixed; a new retry array must not make every old agent lose its poll.
+LEGACY_AGENT_CONFIG_KEYS = frozenset(
+    {
+        "log_level",
+        "worker_max_jobs",
+        "lane_analyze_concurrency",
+        "lane_meta_concurrency",
+        "lane_io_concurrency",
+        "worker_process_pool_size",
+        "analysis_intra_op_threads",
+        "analysis_omp_threads",
+        "analysis_stall_timeout_sec",
+        "cloud_route_threshold_sec",
+    }
+)
+CONFIG_VERSION_HEADER = "X-Phaze-Config-Version"
 
 
 class AgentConfigResponse(BaseModel):
@@ -25,11 +44,13 @@ class AgentConfigResponse(BaseModel):
     :func:`~phaze.services.runtime_config_overrides.get_runtime_config_overrides` reports it).
     """
 
-    overrides: dict[str, int | str]
+    model_config = ConfigDict(strict=True)
+
+    overrides: dict[str, int | float | bool | str | list[int]]
     digest: str
 
 
-def compute_overrides_digest(overrides: dict[str, int | str]) -> str:
+def compute_overrides_digest(overrides: dict[str, int | float | bool | str | list[int]]) -> str:
     """Content hash of ``overrides`` -- equal digests mean the DB-override layer has not changed.
 
     Mirrors :meth:`phaze.runtime_config.RuntimeConfig.digest` (sha256 of the sorted-key JSON dump).

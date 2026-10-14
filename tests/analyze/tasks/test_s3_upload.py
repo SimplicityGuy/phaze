@@ -448,3 +448,108 @@ async def test_source_open_offloaded_even_when_missing(agent_env, tmp_path, monk
         )
 
     assert offloaded_names.count("open") == 1
+
+
+@pytest.mark.parametrize(("part_count", "fail_second"), [(2, False), (2, True), (64, False)])
+@respx.mock
+async def test_queued_multipart_limits_survive_live_rejection_and_inflight_policy_change(
+    agent_env, tmp_path, monkeypatch: pytest.MonkeyPatch, part_count: int, fail_second: bool
+):  # type: ignore[no-untyped-def]
+    from copy import deepcopy
+
+    from phaze import runtime_config
+    from phaze.config import AgentSettings
+    from phaze.runtime_config import RuntimeConfigStore
+    from phaze.tasks import s3_upload
+    from tests._queue_fakes import round_trip_enqueue_kwargs
+
+    settings = AgentSettings(push_timeout_sec=450)
+    changes = {}
+
+    async def provider():
+        return dict(changes)
+
+    store = RuntimeConfigStore(settings, runtime_toml=None, env={}, override_provider=provider, check_sizing=False)
+    monkeypatch.setattr(runtime_config, "get_runtime_config_store", lambda: store)
+    monkeypatch.setattr(s3_upload, "get_settings", lambda: settings)
+    src = _write_file(tmp_path, b"A" * part_count)
+    urls = [f"https://s3.test/bucket/key?partNumber={n}" for n in range(1, part_count + 1)]
+    file_id = uuid.uuid4()
+    payload, envelope = round_trip_enqueue_kwargs(
+        "test-upload",
+        "s3_upload",
+        {
+            "file_id": str(file_id),
+            "original_path": str(src),
+            "part_urls": urls,
+            "part_size_bytes": 1,
+            "agent_id": "fileserver-1",
+        },
+        {"timeout": s3_upload.upload_file_saq_timeout_sec(part_count), "retries": s3_upload.S3_UPLOAD_SAQ_RETRIES},
+    )
+    queued_before = deepcopy(envelope)
+    entered, release = asyncio.Event(), asyncio.Event()
+    reads = {"in-flight-upload": [], "queued-upload": []}
+    guards = {"in-flight-upload": [], "queued-upload": []}
+    real_wait_for = asyncio.wait_for
+    task_names = {}
+
+    async def record_guard(awaitable, timeout):
+        name = asyncio.current_task().get_name()
+        guards[name].append(timeout)
+
+        # The real PUT still runs under its real per-part asyncio deadline. Record
+        # the role before wait_for schedules the HTTP coroutine in a child task.
+        async def request_part():
+            task_names[asyncio.current_task()] = name
+            return await awaitable
+
+        return await real_wait_for(request_part(), timeout=timeout)
+
+    monkeypatch.setattr(s3_upload.asyncio, "wait_for", record_guard)
+
+    async def upload(request):
+        name = task_names[asyncio.current_task()]
+        reads[name].append(request.extensions["timeout"]["read"])
+        part = int(request.url.params["partNumber"])
+        if name == "in-flight-upload" and part == 1:
+            entered.set()
+            await release.wait()
+        if name == "queued-upload" and fail_second and part == 2:
+            raise httpx.ReadTimeout("synthetic part timeout", request=request)
+        return httpx.Response(200, headers={"ETag": f'"etag-{part}"'})
+
+    for url in urls:
+        respx.put(url).mock(side_effect=upload)
+    old_api, next_api = _FakeApiClient(), _FakeApiClient()
+    old = asyncio.create_task(s3_upload.upload_file_s3({"api_client": old_api}, **payload), name="in-flight-upload")
+    try:
+        await real_wait_for(entered.wait(), timeout=5)
+        original = store.snapshot()
+        changes["push_timeout_sec"] = 629
+        assert (await store.reload("api")).outcome == "rejected"
+        assert store.snapshot() is original
+        changes["push_timeout_sec"] = 600
+        assert (await store.reload("api")).successful
+        release.set()
+        assert (await old)["status"] == "uploaded"
+        next_task = asyncio.create_task(s3_upload.upload_file_s3({"api_client": next_api}, **payload), name="queued-upload")
+        if fail_second:
+            with pytest.raises(httpx.ReadTimeout):
+                await next_task
+            assert len(next_api.failed_calls) == 1 and next_api.complete_calls == []
+        else:
+            assert (await next_task)["status"] == "uploaded"
+            assert len(next_api.complete_calls) == 1 and next_api.failed_calls == []
+        assert reads["in-flight-upload"] == [450] * part_count
+        assert guards["in-flight-upload"] == [480] * part_count
+        assert reads["queued-upload"] == [600] * (2 if fail_second else part_count)
+        assert guards["queued-upload"] == [630] * (2 if fail_second else part_count)
+        assert sum(guards["in-flight-upload"]) < envelope["timeout"]
+        assert sum(guards["queued-upload"]) < envelope["timeout"]
+        assert envelope == queued_before and envelope["retries"] == 0
+    finally:
+        release.set()
+        if not old.done():
+            old.cancel()
+        await asyncio.gather(old, return_exceptions=True)

@@ -18,6 +18,51 @@ LIVE_HELP: dict[str, str] = {
     "cloud_route_threshold_sec": "Duration threshold used when choosing local versus cloud analysis. Raising it keeps more files on the local path; lowering it offers more files to cloud capacity. The next routing decision reads the new value.",
 }
 
+LIVE_HELP.update(
+    {
+        "worker_job_timeout": "Default timeout for newly enqueued finite-duration jobs. Existing job limits remain serialized; exhaustive analysis always retains its zero wall-clock timeout.",
+        "worker_max_retries": "Default retry budget on newly enqueued jobs. Explicit job limits and the analysis retry ceiling remain in force.",
+        "worker_keep_result": "Retention seconds on newly enqueued jobs; zero retains results indefinitely and negative values delete them immediately. Existing jobs retain their serialized retention.",
+        "aborting_reap_slack_seconds": "Grace added to each aborting job's own serialized timeout on the next reap. Changing it never changes job timeouts or progress-only analysis exclusions.",
+        "active_reap_slack_seconds": "Grace added to each stranded active job's own serialized timeout on the next reap. Progress-only heartbeat jobs remain excluded.",
+        "scan_stall_seconds": "No-progress seconds before the next scan reap considers a running scan stalled. Progress timestamps are retained.",
+        "scan_chunk_size": "Files per chunk for the next scan. The server's separate chunk ceiling always clamps this value; running scans retain their chunk size.",
+        "analysis_progress_interval_sec": "Minimum seconds between progress reports for the next analysis job. Final progress always flushes; zero disables throttling.",
+        "discogs_match_concurrency": "Matching concurrency in the next Discogs task. Running task semaphores drain normally.",
+        "llm_model": "Model for the next proposal batch. Already running calls and their parsers retain their model.",
+        "llm_max_rpm": "LLM request ceiling per minute. Waiting callers recheck after each wait; the same Redis window and consumed requests remain intact.",
+        "llm_batch_size": "Proposal items per batch at the next Generate action. Already queued batches keep their item lists.",
+        "llm_max_companion_chars": "Companion context character cap for the next proposal batch. More characters supply more context and tokens.",
+        "convention_date_fallback_enabled": "Include learned date conventions in the next proposal batch. Approval still gates filesystem changes.",
+        "convention_date_min_supporting": "Minimum supporting files for a learned convention in the next proposal batch.",
+        "convention_date_min_purity": "Minimum supporting share for a learned convention in the next proposal batch. One requires unanimity.",
+        "push_max_attempts": "Push redrive ceiling at the next failure decision. Existing attempt counters are retained.",
+        "cloud_node_loss_max_redrives": "Node-loss redrive ceiling at the next failure decision. Existing charges are retained.",
+        "cloud_redrive_backoff_sec": "JSON array of seconds before successive charged redrives. The last value repeats. New redrive decisions use it; already scheduled waits retain their deadline.",
+        "cloud_budget_cooldown_days": "Cloud cooldown checked at the next routing decision. Durable chain exhaustion timestamps remain intact; zero disables cooldown.",
+        "cloud_budget_max_chains": "Lifetime cloud-chain ceiling checked at the next routing decision. Spent chains remain recorded; zero disables the ceiling. Local remains eligible.",
+        "cloud_budget_max_node_loss": "Lifetime node-loss ceiling checked at the next routing decision. Spent redrives remain recorded; zero disables the ceiling.",
+        "cloud_spill_to_local_after_seconds": "Waiting seconds before full cloud capacity permits local spill at the next routing decision. Existing waiting timestamps remain intact.",
+        "s3_presign_put_ttl_sec": "Lifetime of newly signed upload URLs. Existing signatures remain valid for their original lifetime; upload job safety minimums still apply.",
+        "s3_presign_get_ttl_sec": "Lifetime of newly signed download URLs. Existing signatures retain their original lifetime.",
+        "s3_multipart_part_size_bytes": "Part size for the next staged upload. Existing upload manifests and part boundaries remain intact.",
+        "s3_client_timeout_sec": "Connect and read seconds in newly constructed S3 clients. An active SDK operation retains its client and timeout.",
+        "push_timeout_sec": "I/O silence timeout for the next transfer. Live values cannot exceed the 600-second policy used by already queued multipart jobs. Running transfers retain their captured timeout.",
+        "push_connect_timeout_sec": "SSH connection seconds for the next push. Running handshakes retain their limit.",
+    }
+)
+
+LIVE_HELP["analysis_tf_batch_size"] = (
+    "TensorFlow inference patches per batch in new analysis children. Smaller batches trade throughput for lower inference memory demand; measured peak RSS is flat below the default 32. Running children keep their original batch. Fixed-batch graphs retain their required size. An agent rejects live values above its deployment baseline (32 when unset); raising that ceiling requires deployment configuration and restart. The API host does not judge agent memory ceilings."
+)
+
+LIVE_HELP["watcher_settle_seconds"] = (
+    "Quiet seconds required before a newly discovered path is posted. The standalone watcher adopts policy on its next bounded poll; existing pending files keep their captured settle/grace policy and lineage."
+)
+LIVE_HELP["watcher_max_pending_seconds"] = (
+    "Maximum pending age before a newly discovered path receives its one grace extension. The standalone watcher adopts policy on its next bounded poll; existing pending entries retain their captured cap and grace state."
+)
+
 # Fields without a useful Pydantic description. These describe the effect without showing a
 # configured value, token, DSN, or filesystem path from the running installation.
 RESTART_HELP: dict[str, str] = {
@@ -27,7 +72,7 @@ RESTART_HELP: dict[str, str] = {
     "agent_token_prefix": "Prefix expected for generated agent tokens. Changing it affects token generation and validation on restart.",  # nosec B105
     "anthropic_api_key": "Credential for Anthropic LLM calls. Changing it selects a different credential for requests after restart.",
     "database_url": "Postgres connection for application data. Changing it points the process at another database after restart.",
-    "debug": "Enables development diagnostics. Turning it on increases diagnostic detail after restart.",
+    "debug": "Enable SQLAlchemy SQL statement echo on new database connections after restart. This is separate from application log detail.",
     "discogs_match_concurrency": "Number of simultaneous Discogs matching tasks. Raising it increases parallel requests; lowering it reduces load.",
     "discogsography_url": "Discogsography service endpoint. Changing it redirects lookup traffic after restart.",
     "llm_batch_size": "Number of proposal items sent in one LLM batch. Raising it reduces call count but increases request size; lowering it does the reverse.",

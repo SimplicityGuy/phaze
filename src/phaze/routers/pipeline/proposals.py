@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.routers.pipeline._common import _background_tasks, logger, router, templates
+from phaze.runtime_config import effective_settings
 from phaze.services import enqueue_router
 from phaze.services.pipeline import get_proposal_busy_count, get_proposal_pending_batches
 from phaze.utils.humanize import format_count
@@ -67,7 +68,7 @@ async def trigger_proposals(
     :func:`get_proposal_pending_batches`'s docstring), so this server-side gate -- not the SAQ
     key dedup -- is what prevents a mid-drain re-trigger from double-proposing the backlog.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     busy = await get_proposal_busy_count(session)
     if busy > 0:
         return {
@@ -106,7 +107,7 @@ async def trigger_proposals_ui(
     phaze-8qheu: gated on :func:`get_proposal_busy_count` -- see ``trigger_proposals`` (the API
     twin) for why the set-hash dedup key alone cannot make a re-trigger safe.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     busy = await get_proposal_busy_count(session)
     if busy > 0:
         return templates.TemplateResponse(
