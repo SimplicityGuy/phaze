@@ -72,7 +72,7 @@ def _registry_error(
 def test_empty_registry_error_wins_over_duplicate_bucket_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     bucket = _bucket("bucket-a")
 
-    assert _registry_error(monkeypatch, [], [bucket, bucket]) == "backend registry resolved to empty — refusing to start (REG-04)"
+    assert _registry_error(monkeypatch, [], [bucket, bucket]) == "backend registry resolved to empty — refusing to start"
 
 
 def test_duplicate_bucket_error_wins_over_duplicate_backend_ids(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,7 +80,7 @@ def test_duplicate_bucket_error_wins_over_duplicate_backend_ids(monkeypatch: pyt
     local = LocalBackend(kind="local", id="local", rank=99, cap=1)
 
     assert _registry_error(monkeypatch, [local, local], [bucket, bucket]) == (
-        "duplicate bucket ids in registry: ['bucket-a'] — each [[buckets]] id must be unique (REG-05)"
+        "duplicate bucket ids in registry: ['bucket-a'] — each [[buckets]] id must be unique"
     )
 
 
@@ -98,7 +98,7 @@ def test_duplicate_agent_ref_error_wins_over_invalid_bucket_list(monkeypatch: py
 
     assert _registry_error(monkeypatch, backends, []) == (
         "duplicate compute agent_ref(s) ['agent-a'] bound by backends {'agent-a': ['cloud-a', 'cloud-b']} — "
-        "each compute backend must bind a distinct agent_ref (D-04)"
+        "each compute backend must bind a distinct agent_ref"
     )
 
 

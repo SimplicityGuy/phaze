@@ -205,39 +205,43 @@ class AnalysisWritePayload(BaseModel):
 
 
 class AnalysisWriteResponse(BaseModel):
-    """Minimal echo response confirming the upsert (D-26 success body)."""
+    """Minimal echo response confirming the upsert."""
+
+    # Minimal echo response confirming the upsert (D-26 success body).
 
     agent_id: str
     file_id: uuid.UUID
 
 
 class AnalysisProgressPayload(BaseModel):
-    """Counter-only mid-flight progress body (D-01/D-02; widened phaze-bp9kz).
+    """Counter-only mid-flight progress body."""
 
-    Carries the window counts that advance during an in-flight analysis run. The two fine
-    fields are REQUIRED (no ``| None``, no default) -- a progress POST always carries both
-    (the START call sends ``fine_windows_analyzed=0, fine_windows_total=N``; bumps send
-    ``fine_windows_analyzed=k, fine_windows_total=N``). ``extra='forbid'`` rejects any
-    attempt to ride an ``agent_id``/``file_id`` along in the body (AUTH-01, T-57.1-02 -> 422
-    at the route); the ``ge=0``/``le=50000`` bound malformed counts at the wire boundary --
-    same realistic-windows-per-file domain as ``AnalysisWritePayload.fine_windows_analyzed``/
-    ``.fine_windows_total`` (wire_bounds rule 3, phaze-01gh): these land in the same
-    ``analysis_results`` int4 counter columns, so an out-of-range value would otherwise
-    raise Postgres ``NumericValueOutOfRange`` unhandled, and here the abort happens BEFORE
-    the ledger clear, re-queuing the file.
-
-    **phaze-bp9kz supersedes the prior fine-only scope cut (WORK-04).** That cut
-    left the coarse tier -- 50.7 to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b
-    / phaze-bg115 -- invisible on this channel, so the in-flight bar read a false 100% for
-    the rest of every run. ``coarse_windows_analyzed``/``coarse_windows_total`` are ADDITIVE
-    fields, ``int | None`` with a ``None`` default rather than required: a job pod running an
-    older image during a rolling upgrade (the same tolerance ``AnalysisWritePayload``'s
-    ``sampled``-drop shim documents) sends only the two fine fields, which still validates,
-    and the router leaves the coarse columns untouched on that POST rather than clobbering
-    them with a false ``0``. A fully-upgraded pod always sends both (real counts, ``0``
-    before the coarse tier begins) -- see ``job_runner._make_progress_cb`` /
-    ``tasks.functions._run_analysis_with_progress``.
-    """
+    # Counter-only mid-flight progress body (D-01/D-02; widened phaze-bp9kz).
+    #
+    #     Carries the window counts that advance during an in-flight analysis run. The two fine
+    #     fields are REQUIRED (no ``| None``, no default) -- a progress POST always carries both
+    #     (the START call sends ``fine_windows_analyzed=0, fine_windows_total=N``; bumps send
+    #     ``fine_windows_analyzed=k, fine_windows_total=N``). ``extra='forbid'`` rejects any
+    #     attempt to ride an ``agent_id``/``file_id`` along in the body (AUTH-01, T-57.1-02 -> 422
+    #     at the route); the ``ge=0``/``le=50000`` bound malformed counts at the wire boundary --
+    #     same realistic-windows-per-file domain as ``AnalysisWritePayload.fine_windows_analyzed``/
+    #     ``.fine_windows_total`` (wire_bounds rule 3, phaze-01gh): these land in the same
+    #     ``analysis_results`` int4 counter columns, so an out-of-range value would otherwise
+    #     raise Postgres ``NumericValueOutOfRange`` unhandled, and here the abort happens BEFORE
+    #     the ledger clear, re-queuing the file.
+    #
+    #     **phaze-bp9kz supersedes the prior fine-only scope cut (WORK-04).** That cut
+    #     left the coarse tier -- 50.7 to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b
+    #     / phaze-bg115 -- invisible on this channel, so the in-flight bar read a false 100% for
+    #     the rest of every run. ``coarse_windows_analyzed``/``coarse_windows_total`` are ADDITIVE
+    #     fields, ``int | None`` with a ``None`` default rather than required: a job pod running an
+    #     older image during a rolling upgrade (the same tolerance ``AnalysisWritePayload``'s
+    #     ``sampled``-drop shim documents) sends only the two fine fields, which still validates,
+    #     and the router leaves the coarse columns untouched on that POST rather than clobbering
+    #     them with a false ``0``. A fully-upgraded pod always sends both (real counts, ``0``
+    #     before the coarse tier begins) -- see ``job_runner._make_progress_cb`` /
+    #     ``tasks.functions._run_analysis_with_progress``.
+    #
 
     model_config = ConfigDict(extra="forbid")  # strict body parsing -- forged agent_id/file_id -> 422
 
@@ -260,14 +264,16 @@ class AnalysisProgressResponse(BaseModel):
 
 
 class AnalysisFailurePayload(BaseModel):
-    """Terminal analysis-failure report body.
+    """Terminal analysis-failure report body."""
 
-    The Postgres-free worker POSTs this to ``/analysis/{file_id}/failed`` when
-    windowed analysis terminally fails (timeout / crash / error). ``reason`` is a
-    ``Literal`` so the wire can only carry the three classifications; ``error`` is
-    a bounded free-text detail string (``max_length`` caps the DoS-via-huge-string
-    threat, T-43-06). ``extra='forbid'`` rejects any attempt to smuggle an
-    ``agent_id``/``file_id`` in the body (AUTH-01)."""
+    # Terminal analysis-failure report body.
+    #
+    #     The Postgres-free worker POSTs this to ``/analysis/{file_id}/failed`` when
+    #     windowed analysis terminally fails (timeout / crash / error). ``reason`` is a
+    #     ``Literal`` so the wire can only carry the three classifications; ``error`` is
+    #     a bounded free-text detail string (``max_length`` caps the DoS-via-huge-string
+    #     threat, T-43-06). ``extra='forbid'`` rejects any attempt to smuggle an
+    #     ``agent_id``/``file_id`` in the body (AUTH-01).
 
     model_config = ConfigDict(extra="forbid")
 
@@ -284,24 +290,26 @@ class AnalysisFailureResponse(BaseModel):
 
 
 class PresignDownloadMetadata(BaseModel):
-    """Optional display-metadata block threaded through ``PresignDownloadResponse`` (phaze-sfbx.1).
+    """Optional display-metadata block threaded through ``PresignDownloadResponse``."""
 
-    The Postgres-less one-shot pod (``job_runner.py``) knows only ``PHAZE_JOB_FILE_ID`` and the
-    presign response -- it has no human-readable identity to print in its startup banner
-    (phaze-sfbx.3 consumes this block for that banner, OBS-02). Populated SERVER-side by the
-    presign-download handler from the ``FileRecord`` + ``CloudJob`` rows it ALREADY loads for the
-    existing readiness gating (design decision 1, epic phaze-sfbx), plus one narrow extra select
-    against ``FileMetadata.duration`` (a separate 1:1-with-files table the handler otherwise
-    never touches) -- neither of which changes the auth gating or the 404/409 readiness paths,
-    which are both fully resolved before either query runs.
-
-    Every field is individually optional so a partially-populated control-plane row degrades
-    field-by-field instead of omitting the whole block: a ``CloudJob`` with no ``backend_id``
-    stamped yet (D-06 shipped it with no backfill) yields ``backend_id=None``, and a
-    file with no ``FileMetadata`` row yet (extraction is operator-triggered, MANUAL-META --
-    D-06) yields ``duration_sec=None``. The pod tolerates unknown additive keys
-    (``extra='ignore'``) for the same rolling-deploy forward-compat reason as the parent response.
-    """
+    # Optional display-metadata block threaded through ``PresignDownloadResponse`` (phaze-sfbx.1).
+    #
+    #     The Postgres-less one-shot pod (``job_runner.py``) knows only ``PHAZE_JOB_FILE_ID`` and the
+    #     presign response -- it has no human-readable identity to print in its startup banner
+    #     (phaze-sfbx.3 consumes this block for that banner, OBS-02). Populated SERVER-side by the
+    #     presign-download handler from the ``FileRecord`` + ``CloudJob`` rows it ALREADY loads for the
+    #     existing readiness gating (design decision 1, epic phaze-sfbx), plus one narrow extra select
+    #     against ``FileMetadata.duration`` (a separate 1:1-with-files table the handler otherwise
+    #     never touches) -- neither of which changes the auth gating or the 404/409 readiness paths,
+    #     which are both fully resolved before either query runs.
+    #
+    #     Every field is individually optional so a partially-populated control-plane row degrades
+    #     field-by-field instead of omitting the whole block: a ``CloudJob`` with no ``backend_id``
+    #     stamped yet (D-06 shipped it with no backfill) yields ``backend_id=None``, and a
+    #     file with no ``FileMetadata`` row yet (extraction is operator-triggered, MANUAL-META --
+    #     D-06) yields ``duration_sec=None``. The pod tolerates unknown additive keys
+    #     (``extra='ignore'``) for the same rolling-deploy forward-compat reason as the parent response.
+    #
 
     model_config = ConfigDict(extra="ignore")
 
@@ -325,38 +333,42 @@ class PresignDownloadMetadata(BaseModel):
 
 
 class PresignDownloadResponse(BaseModel):
-    """Presign-download response consumed by the DB-less one-shot pod (KJOB-02).
+    """Presign-download response consumed by the DB-less one-shot pod."""
 
-    The control plane mints a short-TTL presigned GET URL for a file's bytes and
-    returns it alongside ``expected_sha256`` -- the ONLY hash a Postgres-free pod
-    can integrity-verify the download against (Pitfall 3). ``expected_sha256`` is
-    sourced server-side from ``FileRecord.sha256_hash``, exactly as
-    ``ProcessFilePayload.expected_sha256`` is pinned in v5.0. ``expected_sha256`` is
-    required so a response missing the integrity hash fails validation rather than
-    silently disabling the verify step.
+    # Presign-download response consumed by the DB-less one-shot pod (KJOB-02).
 
-    NOTE: the SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
-    ships in  (KSTAGE-03).  defines and unit-tests the CLIENT-consumed
-    shape only.
-
-    Forward-compat (cloud-analyze-empty-no-ext specialist review): this is a
-    RESPONSE-only model the pod TRUSTS from the control plane -- NOT an attacker-facing
-    request body -- so it must use ``extra='ignore'`` (Pydantic's default), NOT
-    ``extra='forbid'``. During a rolling deploy the control plane may ship a NEWER
-    schema first (e.g. an additive ``audio_ext`` key) while an OLDER Kueue Job pod
-    still runs the previous image. With ``extra='forbid'`` that additive-but-backward-
-    compatible field would raise ``ValidationError`` on ``model_validate`` -> the pod's
-    presign call fails -> EXIT_DOWNLOAD (10, fail-fast, no retry), permanently failing
-    every file for the rollout window. Tolerating unknown additive fields keeps old
-    pods forward-compatible. (The request-body models KEEP ``extra='forbid'`` -- there
-    it guards against smuggled ``agent_id``/``file_id``.)
-
-    phaze-sfbx.1: ``metadata`` is a further OPTIONAL, ADDITIVE block (see
-    ``PresignDownloadMetadata``) carrying human-readable display identity for the pod's console
-    banner (phaze-sfbx.3). It defaults to ``None`` so an older pod build that doesn't know the
-    field simply never reads it, and a newer pod against an older control plane that never sends
-    it degrades to a UUID-only banner rather than failing.
-    """
+    # Presign-download response consumed by the DB-less one-shot pod (KJOB-02).
+    #
+    #     The control plane mints a short-TTL presigned GET URL for a file's bytes and
+    #     returns it alongside ``expected_sha256`` -- the ONLY hash a Postgres-free pod
+    #     can integrity-verify the download against (Pitfall 3). ``expected_sha256`` is
+    #     sourced server-side from ``FileRecord.sha256_hash``, exactly as
+    #     ``ProcessFilePayload.expected_sha256`` is pinned in v5.0. ``expected_sha256`` is
+    #     required so a response missing the integrity hash fails validation rather than
+    #     silently disabling the verify step.
+    #
+    #     NOTE: the SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
+    #     ships in  (KSTAGE-03).  defines and unit-tests the CLIENT-consumed
+    #     shape only.
+    #
+    #     Forward-compat (cloud-analyze-empty-no-ext specialist review): this is a
+    #     RESPONSE-only model the pod TRUSTS from the control plane -- NOT an attacker-facing
+    #     request body -- so it must use ``extra='ignore'`` (Pydantic's default), NOT
+    #     ``extra='forbid'``. During a rolling deploy the control plane may ship a NEWER
+    #     schema first (e.g. an additive ``audio_ext`` key) while an OLDER Kueue Job pod
+    #     still runs the previous image. With ``extra='forbid'`` that additive-but-backward-
+    #     compatible field would raise ``ValidationError`` on ``model_validate`` -> the pod's
+    #     presign call fails -> EXIT_DOWNLOAD (10, fail-fast, no retry), permanently failing
+    #     every file for the rollout window. Tolerating unknown additive fields keeps old
+    #     pods forward-compatible. (The request-body models KEEP ``extra='forbid'`` -- there
+    #     it guards against smuggled ``agent_id``/``file_id``.)
+    #
+    #     phaze-sfbx.1: ``metadata`` is a further OPTIONAL, ADDITIVE block (see
+    #     ``PresignDownloadMetadata``) carrying human-readable display identity for the pod's console
+    #     banner (phaze-sfbx.3). It defaults to ``None`` so an older pod build that doesn't know the
+    #     field simply never reads it, and a newer pod against an older control plane that never sends
+    #     it degrades to a UUID-only banner rather than failing.
+    #
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
 

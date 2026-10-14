@@ -589,7 +589,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     }
 
 
-@router.get("", response_class=HTMLResponse)
+@router.get("", response_class=HTMLResponse, description="GET /admin/agents -- redirect (301) to /s/agents, preserving the query string.")
 async def page(request: Request) -> Response:
     """GET /admin/agents -- redirect (301) to /s/agents, preserving the query string (phaze-uvmcr.4).
 
@@ -624,7 +624,7 @@ async def page(request: Request) -> Response:
     return RedirectResponse(url=f"/s/agents?{query}" if query else "/s/agents", status_code=301)
 
 
-@router.get("/_table", response_class=HTMLResponse)
+@router.get("/_table", response_class=HTMLResponse, description="Return the agents_table partial UNCONDITIONALLY.")
 async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -727,7 +727,11 @@ def _effective_config_view(last_status: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
-@router.get("/{agent_id}/_activity", response_class=HTMLResponse)
+@router.get(
+    "/{agent_id}/_activity",
+    response_class=HTMLResponse,
+    description="Render the agent-activity body fragment swapped into its expanded-row slot .",
+)
 async def agent_activity(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -799,7 +803,11 @@ async def agent_activity(
     )
 
 
-@router.get("/compute-lanes/{backend_id}", response_class=HTMLResponse)
+@router.get(
+    "/compute-lanes/{backend_id}",
+    response_class=HTMLResponse,
+    description="Return the burst-lane workload drill-down fragment, innerHTML-swapped into its EXPANDED ROW's body slot.",
+)
 async def compute_lane_detail(
     request: Request,
     backend_id: str,

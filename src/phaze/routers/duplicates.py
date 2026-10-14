@@ -60,7 +60,7 @@ templates.env.filters["filesizeformat"] = _filesizeformat
 router = APIRouter(prefix="/duplicates", tags=["duplicates"])
 
 
-@router.get("/", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse, description="Resolve a legacy ``/duplicates/`` bookmark into the v7.0 shell.")
 async def list_duplicates() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/duplicates/`` bookmark into the v7.0 shell.
 
@@ -80,7 +80,11 @@ async def list_duplicates() -> RedirectResponse:
     return RedirectResponse(url="/s/dedupe", status_code=302)
 
 
-@router.get("/groups", response_class=HTMLResponse)
+@router.get(
+    "/groups",
+    response_class=HTMLResponse,
+    description='HTMX "Load more" fragment for the Dedupe workspace: the next GROUP_PAGE_SIZE duplicate groups.',
+)
 async def load_more_groups(
     request: Request,
     # phaze-4iq5t: mirrors companion.py's list_duplicates() bounds -- find_duplicate_groups(_with_metadata)
@@ -245,7 +249,7 @@ async def review_bulk_resolve(
     )
 
 
-@router.post("/{group_hash}/undo", response_class=HTMLResponse)
+@router.post("/{group_hash}/undo", response_class=HTMLResponse, description="Undo a group resolution, restoring files to previous states.")
 async def undo_resolve_endpoint(
     request: Request,
     group_hash: str,
@@ -326,7 +330,9 @@ async def bulk_resolve(
     )
 
 
-@router.post("/undo-all", response_class=HTMLResponse)
+@router.post(
+    "/undo-all", response_class=HTMLResponse, description="Undo a bulk resolution, restoring all files AND the group cards the resolve removed."
+)
 async def bulk_undo(
     request: Request,
     file_states: str = Form(...),

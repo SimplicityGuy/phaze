@@ -50,13 +50,15 @@ EFFECTIVE_CONFIG_LABEL_MAX_LENGTH = 64
 
 
 class EffectiveConfigLastReload(BaseModel):
-    """One reload attempt, as the agent's OWN :class:`~phaze.runtime_config.RuntimeConfigStore` last
-    resolved it -- mirrors :class:`phaze.runtime_config.ReloadResult` (a dataclass, not a pydantic
-    model, so it cannot ride a strict wire schema unmodified) with the ``changes``/``applier_errors``
-    maps dropped: a value that changed on THIS agent is already visible in ``values`` below, and
-    appliers are a control-plane-only concept today (phaze-mvq8z.7/.8) with none registered on the
-    agent role, so there is nothing yet to report from that map.
-    """
+    """One reload attempt, as the agent's OWN :class:`~phaze.runtime_config.RuntimeConfigStore` last resolved it -- mirrors :class:`phaze.runtime_config.ReloadResult` (a dataclass, not a pydantic model, so it cannot ride a strict wire schema unmodified) with the ``changes``/``applier_errors`` maps dropped: a value that changed on THIS agent is already visible in ``values`` below, and appliers are a control-plane-only concept today with none registered on the agent role, so there is nothing yet to report from that map."""
+
+    # One reload attempt, as the agent's OWN :class:`~phaze.runtime_config.RuntimeConfigStore` last
+    #     resolved it -- mirrors :class:`phaze.runtime_config.ReloadResult` (a dataclass, not a pydantic
+    #     model, so it cannot ride a strict wire schema unmodified) with the ``changes``/``applier_errors``
+    #     maps dropped: a value that changed on THIS agent is already visible in ``values`` below, and
+    #     appliers are a control-plane-only concept today (phaze-mvq8z.7/.8) with none registered on the
+    #     agent role, so there is nothing yet to report from that map.
+    #
 
     model_config = ConfigDict(extra="ignore")
 
@@ -99,11 +101,13 @@ class EffectiveConfig(BaseModel):
 
 
 class HeartbeatRequest(BaseModel):
-    """Heartbeat payload. The original three fields are required per CONTEXT.md D-17.
+    """Heartbeat payload. The original three fields are required."""
 
-    Persisted to `agents.last_status` JSONB by the handler (per-lane when `lane` is set --
-    see :mod:`phaze.routers.agent_heartbeat`).
-    """
+    # Heartbeat payload. The original three fields are required per CONTEXT.md D-17.
+    #
+    #     Persisted to `agents.last_status` JSONB by the handler (per-lane when `lane` is set --
+    #     see :mod:`phaze.routers.agent_heartbeat`).
+    #
 
     model_config = ConfigDict(extra="forbid")
 

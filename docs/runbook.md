@@ -12,19 +12,19 @@ legacy `GET /pipeline/` 302-redirects there):
   backends by rank and cap.
 - **[Per-backend `_FILE` secrets](#per-backend-_file-secrets)** — where backend credentials live and
   the one rule: never print a secret value.
-- **[Stranded `active` SAQ jobs (phaze-o0n6)](#legacy-finite-timeout-active-saq-jobs-phaze-o0n6)** — the
+- **[Stranded `active` SAQ jobs](#legacy-finite-timeout-active-saq-jobs)** — the
   `phaze queue status` guard, what its non-zero exit means, and how to clear a pre-existing backlog.
-- **[Removing fingerprint-era data (phaze-0jpe)](#removing-fingerprint-era-data-phaze-0jpe)** — a
+- **[Removing fingerprint-era data](#removing-fingerprint-era-data)** — a
   one-time, manual, post-deployment cleanup of the retired `audfprint`/Panako sidecars' on-host
   volumes and published images. Not part of routine operation.
-- **[One-time exhaustive-analysis re-enqueue backfill (phaze-kj8dl)](#one-time-exhaustive-analysis-re-enqueue-backfill-phaze-kj8dl)**
+- **[One-time exhaustive-analysis re-enqueue backfill](#one-time-exhaustive-analysis-re-enqueue-backfill)**
   — a one-time, manual, post-deployment re-enqueue of every file whose prior analysis was capped
   under the pre-exhaustive pipeline. Not part of routine operation.
 
 For the **config model** behind all of this — the `backends.toml` registry, the `[[backends]]` /
 `[[buckets]]` schema, and the trivial `cloud_target`→`backends` mapping — see
 [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) and
-[configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67). For standing
+[configuration.md → Cloud target](configuration.md#cloud-target-removed). For standing
 up a cloud target, see [cloud-burst.md](cloud-burst.md) (OCI A1 compute agent) and
 [k8s-burst.md](k8s-burst.md) (Kueue cluster). For adding a **2nd+ compute agent**, cost-tiered
 across mixed arm64/x86 hosts, see [multi-compute.md](multi-compute.md).
@@ -87,8 +87,8 @@ recovers.
 > outage, that is a manual re-drive, not an automatic effect of the toggle.
 
 This toggle replaces the old "set `PHAZE_CLOUD_TARGET=local` and restart the control plane" dance —
-that flat selector was removed in Phase 67 (see
-[configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67)).
+that flat selector was removed in backend registry migration (see
+[configuration.md → Cloud target](configuration.md#cloud-target-removed)).
 
 ## Reading the N lanes
 
@@ -207,7 +207,7 @@ stage_cloud_window: every candidate held on consecutive ticks -- the cloud lane 
 
 | Reason | Means | What to do |
 |---|---|---|
-| `cloud_attempts_exhausted` | These files spent their cloud budget (`cloud_submit_max_attempts`), so they can only route **local** — and local has no free slot. | **Act.** An attempt counter only grows, so this never clears on its own. Give the local backend headroom (raise its `cap`, or let its in-flight work finish), or investigate why those files kept failing their cloud submits. **Read `cloud_job.node_loss_redrives` first** — it tells you *which* budget ran out. `> 0` means the pod kept dying **with its node** (phaze-1q4g), not that the analysis kept failing: the file is a burst-node killer and the local route is deliberate, so look at the node's kernel journal rather than at the file's analyze logs. `= 0` is the ordinary case — the submits themselves kept failing. |
+| `cloud_attempts_exhausted` | These files spent their cloud budget (`cloud_submit_max_attempts`), so they can only route **local** — and local has no free slot. | **Act.** An attempt counter only grows, so this never clears on its own. Give the local backend headroom (raise its `cap`, or let its in-flight work finish), or investigate why those files kept failing their cloud submits. **Read `cloud_job.node_loss_redrives` first** — it tells you *which* budget ran out. `> 0` means the pod kept dying **with its node**, not that the analysis kept failing: the file is a burst-node killer and the local route is deliberate, so look at the node's kernel journal rather than at the file's analyze logs. `= 0` is the ordinary case — the submits themselves kept failing. |
 | `local_spill_not_reached` | Cloud is online but full, and the files have not yet waited out `cloud_spill_to_local_after_seconds`. | **Wait.** This is the staleness gate working; it clears itself when the clock elapses. |
 | `no_free_slots` | Every backend is offline or at cap. | Check the lane grid and the offline probes — this is fleet-wide saturation, not a per-file problem. |
 
@@ -247,7 +247,7 @@ does **not** restate the field table.
 > Phaze masks `SecretStr` fields in logs and reprs and logs the resolved registry as a secret-free
 > `{id, kind, rank, cap}` projection at boot; keep that discipline in everything you write down.
 
-## Legacy finite-timeout `active` SAQ jobs (phaze-o0n6)
+## Legacy finite-timeout `active` SAQ jobs
 
 ### What the alarm means
 
@@ -267,7 +267,7 @@ jobs are pinned at `timeout=0`, carry a heartbeat derived as `2 × analysis_stal
 use `retries=2`. An explicit zero timeout means unbounded in SAQ, so current rows are excluded from
 the generic `active` and `aborting` reapers and from the `stranded` count below; SAQ's heartbeat
 sweep owns their automatic liveness. This section therefore applies to other finite-timeout jobs and
-to legacy `process_file` rows whose serialized policy predates phaze-w55w1. For a current
+to legacy `process_file` rows whose serialized policy predates exhaustive analysis. For a current
 heartbeat-owned row reported as `blocked`, use the manual remediation in the exhaustive-analysis
 backfill section below.
 
@@ -277,13 +277,13 @@ Read the queue:
 docker compose exec api uv run phaze queue status --queue phaze-agent-<agent>-analyze
 ```
 
-> **`uv run` is required, not optional (phaze-u5k0d).** Every `phaze <subcommand>` example in
+> **`uv run` is required, not optional.** Every `phaze <subcommand>` example in
 > this runbook runs inside the `api` (or `worker`) container via `docker compose exec`, and
 > needs the `uv run` prefix: the container's `CMD` is `uv run uvicorn ...`, i.e. the project
 > resolves through uv's environment rather than an installed system Python, so a bare
 > `docker compose exec api phaze ...` fails with `executable file not found in $PATH`
 > (verified against a deployed container, image `2026.8.4`, 2026-08-17). The Dockerfile also
-> now puts the venv's `bin/` on `PATH` (phaze-u5k0d) so the bare form works too if you type it
+> now puts the venv's `bin/` on `PATH`  so the bare form works too if you type it
 > from memory; `uv run` is kept in this runbook anyway because it is correct independent of
 > that `PATH` env change.
 
@@ -320,7 +320,7 @@ it needs one operator action. After deploying:
 
    (`worker` — not `controller`, which is not a compose service name; `docker-compose.yml`'s
    `worker` service is the one that runs `PHAZE_ROLE=control`, i.e. the controller role.
-   phaze-u5k0d.)
+   the container uv invocation fix.)
 
    The log line names every released key, so it is also the record of which files were unblocked.
 
@@ -341,21 +341,23 @@ what keeps the reaper from deleting the broker row of a job a worker is still ex
 rather than lowering the slack. A current `timeout=0` `process_file` row never appears in this count;
 inspect its heartbeat state and follow the `blocked` remediation below instead.
 
-## Removing fingerprint-era data (phaze-0jpe)
+<a id="removing-fingerprint-era-data-phaze-0jpe"></a>
+
+## Removing fingerprint-era data
 
 > **Manual, operator-approved, post-deployment only.** Nothing in this section is automated and
 > no agent runs it. It is a one-time cleanup to perform **after** the fingerprint-removal epic
-> (`phaze-0jpe`) has been deployed to the file server and application server and confirmed
+>  has been deployed to the file server and application server and confirmed
 > healthy — not before, and not as part of that deployment. Until you have verified the new
 > images are running cleanly, leave everything below in place.
 
 **Why this waits for an explicit go.** The on-host `audfprint_data`/`panako_data` Docker volumes
 and the historical `fingerprint_results` investigation records are the **only surviving
 evidence** for two things this repo needed to make its removal decision: the two production
-outages (`phaze-p3hj`'s zero-byte audfprint database, `phaze-iq65`'s Panako silently storing 19
+outages (the audfprint outage investigation's zero-byte audfprint database, the Panako storage investigation's Panako silently storing 19
 of 11,411 files), and the capacity measurements in
 [docs/design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) that the deferred
-spike molecule `phaze-oof3` depends on if fingerprinting is ever reconsidered. Deleting this data
+spike molecule a future fingerprint capacity review depends on if fingerprinting is ever reconsidered. Deleting this data
 early destroys evidence that cannot be reconstructed. Do not delete it as a matter of tidiness —
 delete it only once you, the operator, have decided it is no longer needed.
 
@@ -371,13 +373,13 @@ docker volume rm audfprint_data panako_data                # or the compose-proj
 ```
 
 This is destructive and irreversible. If you have any doubt about whether the outage
-investigation or a future `phaze-oof3` capacity re-check might still need this data, **do not run
+investigation or a future a future fingerprint capacity review capacity re-check might still need this data, **do not run
 it** — keep the volumes until you are certain.
 
 ### 2. Prune the published sidecar images
 
 The CI matrix that built and published `ghcr.io/simplicityguy/phaze/audfprint` and
-`ghcr.io/simplicityguy/phaze/panako` was removed along with the sidecars themselves (`phaze-0jpe`,
+`ghcr.io/simplicityguy/phaze/panako` was removed along with the sidecars themselves (fingerprint removal,
 infra removal). Existing tags already pushed to GHCR are not deleted automatically. Once you no
 longer need them for rollback or forensics:
 
@@ -411,27 +413,27 @@ Two things worth knowing if you are reviewing that migration or debugging a rest
   the ordering *does* matter.
 
 Note this reverses the migration's original recorded decision to leave the rows in place; that
-earlier reasoning (they are inert — the `phaze-p1vy` source allowlist permanently excludes them
-from any re-read, and phaze-2akf carried that allowlist into the on-demand `refresh_tracklists`)
+earlier reasoning (they are inert — the tracklist source allowlist permanently excludes them
+from any re-read, and operator-triggered tracklist refresh carried that allowlist into the on-demand `refresh_tracklists`)
 still holds on the facts. The operator's call was that a
 tracklist attributed to a retired engine is not worth keeping as a record.
 
-## COMPANION archive rollout (phaze-8eq1i)
+## COMPANION archive rollout
 
-The one-time archive rollout is complete, with operational evidence recorded on `phaze-8eq1i`:
+The one-time archive rollout is complete, with operational evidence recorded on the companion archive rollout:
 25,866 files were scanned, producing 14,438 companion rows and 19,983 companion links. The scan
 also found 760 unmatched/orphan companion files and skipped them according to the documented
 same-directory media-sibling policy. This record intentionally contains aggregate counts only;
 archive filenames and paths remain outside tracked content.
 
-## One-time exhaustive-analysis re-enqueue backfill (phaze-kj8dl)
+## One-time exhaustive-analysis re-enqueue backfill
 
 > **Manual, operator-run, post-deployment only.** This is a one-time archive backfill, not an
 > automated step in any deploy pipeline. Run it once after the ordering below has completed;
 > re-running it later (e.g. after fixing a failed file) is safe and picks up whatever is still
 > incomplete.
 
-The exhaustive-analysis decision (ADR-0007 (windowed analysis) section 7, implemented by `phaze-w55w1`) removed the
+The exhaustive-analysis decision (ADR-0007 (windowed analysis) section 7, implemented by exhaustive analysis) removed the
 fine/coarse window caps: every file now gets every natural window of both tiers analyzed, not a
 strided subset. Files analyzed **before** that change have a partial analysis on record — every
 concert set past roughly 30/90 minutes was capped, not fully covered. This backfill re-enqueues
@@ -451,10 +453,9 @@ column is guaranteed to already be gone.
 
 ### 1. Merge to main
 
-Both `phaze-w55w1` (removes the window caps, ships migration
-`060_drop_analysis_sampled.py`) and `phaze-kj8dl` (this backfill) merge to `main`. `phaze-kj8dl`
-depends on `phaze-w55w1`, so this is naturally satisfied by the dependency graph — call it out
-explicitly here because it is what makes step 3 below true.
+Merge the exhaustive-analysis implementation and this backfill to `main` together. The
+implementation removes the window caps and ships migration `060_drop_analysis_sampled.py`; the
+backfill depends on that migration. This ordering makes step 3 below safe.
 
 ### 2. Cut a release and build/deploy images
 
@@ -491,10 +492,10 @@ From the `api` (or `worker` — both build from the same `Dockerfile`, both have
 docker compose exec api uv run phaze backfill reenqueue-incomplete-analyses
 ```
 
-> `uv run` is required here, not optional — see the phaze-u5k0d note under
-> ["Stranded `active` SAQ jobs"](#legacy-finite-timeout-active-saq-jobs-phaze-o0n6) above for why.
+> `uv run` is required here, not optional — see the container uv invocation note under
+> ["Stranded `active` SAQ jobs"](#legacy-finite-timeout-active-saq-jobs) above for why.
 
-The command prints, in order: the count of pre-Phase-43 legacy rows it is deliberately leaving
+The command prints, in order: the count of legacy rows from before bounded-window analysis it is deliberately leaving
 alone (all four windows columns NULL — see the module docstring for why), the count of
 incomplete-coverage files it is deliberately leaving alone because they have already been
 executed/moved by the approval workflow (re-analysis at their recorded `original_path` would fail —
@@ -513,8 +514,7 @@ still leaves a readable audit trail), and a final summary tally. `<outcome>` is 
 | `enqueue_error` | The enqueue call itself raised (a transient broker/pool error); unknown whether a job now exists for this file. Safe to just re-run the command. |
 | `no_active_agent` | The file's owning fileserver agent was offline at run time; never rerouted to a different agent. |
 
-Local candidates are enqueued **at once** — an explicit operator decision (2026-08-11, `phaze-kj8dl`;
-no throttling/batching) — and drain under the existing lane concurrency caps over the following days;
+Local candidates are enqueued **at once** — the backfill has no throttling/batching (2026-08-11) — and drain under the existing lane concurrency caps over the following days;
 held long files drain under the existing `stage_cloud_window` bounded window.
 
 Exit code: **0** when there was genuinely nothing to do (no incomplete-coverage candidates) or at
@@ -525,7 +525,7 @@ needs no operator action.
 
 #### "blocked" remediation
 
-`process_file` runs `timeout=0` (ADR-0007 (windowed analysis) section 8 / phaze-w55w1) — SAQ treats `timeout=0` as
+`process_file` runs `timeout=0` (ADR-0007 (windowed analysis) section 8 / exhaustive analysis) — SAQ treats `timeout=0` as
 unbounded, so a `process_file` row stuck in `status='aborting'` or stranded `status='active'` is
 **excluded** from both automatic key reapers (`aborting_reaper` / `active_reaper`, both built on
 the shared `timeout <> 0` guard in `tasks/_saq_reap.py`) and will **not** self-heal on any timer.
@@ -572,7 +572,7 @@ candidates and preserves reviewed selections. It does not apply tags or move fil
 See [the companion import implementation notes](design/companion-import-backfill-implementation.md)
 for deployment order, outcome meanings, retry behavior and the separate acquisition attempt history.
 
-## COMPANION archive-backfill proposal decision (phaze-cy1h7)
+## COMPANION archive-backfill proposal decision
 
 The 2026-09-14 post-backfill production measurement found zero existing rename proposals. The
 operator approved scope **none**: do not regenerate proposals; future first-pass proposal
@@ -637,7 +637,7 @@ prompt to investigate, never a safe retry predicate.
 
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the
   `backends.toml` schema (`[[backends]]` / `[[buckets]]`, ranks, caps, inline `*_file` secrets).
-- [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67) — the removed
+- [configuration.md → Cloud target](configuration.md#cloud-target-removed) — the removed
   `cloud_target` selector and the 1:1 `cloud_target`→`backends` equivalence.
 - [cloud-burst.md](cloud-burst.md) — provisioning an OCI A1 `compute` backend.
 - [k8s-burst.md](k8s-burst.md) — provisioning a `kueue` backend + its cluster-admin objects.
@@ -648,4 +648,4 @@ prompt to investigate, never a safe retry predicate.
   fine/coarse window caps (ADR-0007 (windowed analysis) section 7), the decision the re-enqueue backfill above pays off.
 
 The removal epic's file-by-file inventory was deleted on 2026-07-29 once the removal was
-complete: ADR-0002 (fingerprint removal) and the git history of epic phaze-0jpe are the record of what changed.
+complete: ADR-0002 (fingerprint removal) and the git history of fingerprint removal are the record of what changed.

@@ -92,7 +92,12 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/internal/agent/push", tags=["agent-internal"])
 
 
-@router.post("/{file_id}/pushed", status_code=status.HTTP_200_OK, response_model=PushedResponse)
+@router.post(
+    "/{file_id}/pushed",
+    status_code=status.HTTP_200_OK,
+    response_model=PushedResponse,
+    description="Record a successful rsync push: ``PUSHING -> PUSHED`` + ledger clear + ``process_file`` enqueue.",
+)
 async def report_pushed(
     file_id: uuid.UUID,
     request: Request,
@@ -258,7 +263,12 @@ async def report_pushed(
     return PushedResponse(file_id=file_id)
 
 
-@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=PushFailedResponse)
+@router.post(
+    "/{file_id}/failed",
+    status_code=status.HTTP_200_OK,
+    response_model=PushFailedResponse,
+    description="Record a TERMINAL ``push_file`` failure: spill the ``cloud_job`` back to ``awaiting``.",
+)
 async def report_push_failed(
     file_id: uuid.UUID,
     body: PushFailedRequest,
@@ -553,7 +563,12 @@ async def _redrive_under_cap_push(
     return PushMismatchResponse(file_id=file_id, cleared=False)
 
 
-@router.post("/{file_id}/mismatch", status_code=status.HTTP_200_OK, response_model=PushMismatchResponse)
+@router.post(
+    "/{file_id}/mismatch",
+    status_code=status.HTTP_200_OK,
+    response_model=PushMismatchResponse,
+    description="Record a post-transfer sha256 mismatch: attempt-capped re-drive, or terminal failure.",
+)
 async def report_push_mismatch(
     file_id: uuid.UUID,
     request: Request,

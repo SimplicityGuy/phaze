@@ -20,7 +20,7 @@ x86, so the main app and the api image stay on 3.14. But on **linux/aarch64 ther
 arm64 agent image **must** run on Python 3.13 and build essentia **from source** against
 the AWS-maintained aarch64 `tensorflow` wheel.
 
-### The scoped `requires-python` reconciliation (decision D-47-PY)
+### The scoped `requires-python` reconciliation
 
 The repo's `requires-python = ">=3.14,<3.15"` contract is **never relaxed**. The 3.13
 exception lives **only inside this Dockerfile**, mirroring the existing
@@ -52,7 +52,7 @@ resolve the interpreter — the image would fail its own boot/import-smoke. This
 every tool run *inside* the arm64 image (import-smoke, parity dump) uses `python3`
 directly, while the x86 (uv-based, 3.14) api image uses `uv run python`.
 
-The agent role is `phaze.tasks.agent_worker.settings` (D-25: must **not** import
+The agent role is `phaze.tasks.agent_worker.settings` (must **not** import
 `phaze.database`) — not the api uvicorn entry.
 
 ---
@@ -61,9 +61,9 @@ The agent role is `phaze.tasks.agent_worker.settings` (D-25: must **not** import
 
 | Knob | Value | Why |
 |------|-------|-----|
-| Base | `python:3.13-slim-trixie` | only `cp313` has aarch64 TF wheels; **trixie** (not bookworm) because Debian fixes the ffmpeg line per release and bookworm is 5.1.x — the tag is this image's only ffmpeg version control (phaze-b62ri) |
+| Base | `python:3.13-slim-trixie` | only `cp313` has aarch64 TF wheels; **trixie** (not bookworm) because Debian fixes the ffmpeg line per release and bookworm is 5.1.x — the tag is this image's only ffmpeg version control  |
 | TensorFlow | **`2.20.0`** (exact, `--build-arg TF_VERSION`) | 2.19 has **no** `cp313` aarch64 wheel; 2.20.0 is the spike-proven glue combo |
-| essentia | pinned commit `b9fa6cb674ca43dfb94d28d293aeda441c6745db` | hardcoded SHA — **no** floating `master`/`HEAD`, **no** build-time remote SHA resolution (T-47-01). MTG/essentia master resolved 2026-06-24, the spike-era state the TF-2.20.0 glue was proven against |
+| essentia | pinned commit `b9fa6cb674ca43dfb94d28d293aeda441c6745db` | hardcoded SHA — **no** floating `master`/`HEAD`, **no** build-time remote SHA resolution . MTG/essentia master resolved 2026-06-24, the spike-era state the TF-2.20.0 glue was proven against |
 
 The pinned essentia SHA is **trusted only once it passes the parity guard** (below): a
 fresh-master numeric divergence is caught there on real audio, never silently shipped.
@@ -105,7 +105,7 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
    runner (below).
 
    > **This `OMP_NUM_THREADS=1` is a CORRECTNESS mitigation, not a sizing choice — keep it
-   > set explicitly on arm64 (phaze-rvcn).** phaze now *derives* `OMP_NUM_THREADS` (along
+   > set explicitly on arm64.** phaze now *derives* `OMP_NUM_THREADS` (along
    > with the two TF thread variables) from the host's schedulable physical core count so
    > per-process peak RSS stops tracking the machine — on a 4-core arm64 box that derivation
    > would produce `4`, which is exactly the value this fix exists to avoid. The derivation
@@ -114,7 +114,7 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
    > derived `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS`. Do not "clean up" the
    > explicit `=1` on the arm64 path on the grounds that phaze derives it now.
    >
-   > **It also holds against a hot-reloaded `analysis_omp_threads`** (`phaze-mvq8z.22`). The
+   > **It also holds against a hot-reloaded `analysis_omp_threads`**. The
    > runtime-config override table is fleet-wide, and each analysis child is stamped from the live
    > snapshot, so an override raised for x86 agents would otherwise reach this image's children
    > too. A thread env var set in the agent's process environment is a **ceiling** for the
@@ -122,7 +122,7 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
    > ceiling"): the arm64 agent keeps `1`, logs the capped request, and reports
    > `analysis_omp_threads` with source `env` in its effective config.
 
-### Runtime-libs-or-crash-loop rule (T-47-06)
+### Runtime-libs-or-crash-loop rule
 
 The final image **must** carry these runtime native libs or the agent crash-loops on
 import (the v4.0.9 / v4.1.1 incident class): `libatomic1` (essentia's `_essentia` links
@@ -130,7 +130,7 @@ import (the v4.0.9 / v4.1.1 incident class): `libatomic1` (essentia's `_essentia
 extraction), `libsndfile1`, and `libpq5` (backs psycopg's SAQ `PostgresQueue` broker).
 
 **Nothing here carries an apt version pin, and the base image tag is why it does not need
-one** (phaze-b62ri). Debian locks the upstream MAJOR.MINOR line for the life of a release, so
+one**. Debian locks the upstream MAJOR.MINOR line for the life of a release, so
 `python:3.13-slim-trixie` *means* ffmpeg 7.1.x — and it means it for the CLI **and** for the
 `libav*-dev` set the source build compiles against, because both come from one Debian source
 package. That single lever is exactly what this image needs: the CLI extracts an audio
@@ -154,7 +154,7 @@ byte-identical fixtures, with a single 2.9e-08 spectral-centroid drift from the 
 change, ~3450× inside the 47-04 parity gate's `abs_tol=1e-4`. `libchromaprint-tools` (the runtime
 `fpcalc` binary, paired with the `-dev` headers the source build links against above) is
 also installed, but **not confirmed** to belong in the "or it crash-loops" list:
-phaze-0jpe.6 (2026-07-28) found no chromaprint link and a clean `import essentia` on the
+the fingerprint runtime dependency verification (2026-07-28) found no chromaprint link and a clean `import essentia` on the
 x86 essentia-tensorflow wheel via the same `ldd` check, with no `phaze` source calling
 `fpcalc`/`chromaprint`/`Chromaprinter`/`acoustid` — see
 `docs/design/0002-fingerprint-removal.md`. That check was not separately repeated against
@@ -188,7 +188,7 @@ docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \
 `type=gha,scope=arm64` build cache. It does **not** push — the registry push is gated on
 the parity guard (below).
 
-### The essentia compile runs through sccache (phaze-jfhr0)
+### The essentia compile runs through sccache
 
 The compile layer is the only from-source C++ build in the repo, and the Docker **layer**
 cache only replays it while nothing above it changed. A `python:3.13-slim-trixie` refresh
@@ -272,17 +272,17 @@ flowchart LR
    (`load: true`, identical digest), runs the **same** `dump_analysis.py` (via
    `python3`) over `reference.wav`, and compares against the downloaded golden. A
    non-zero `compare_analysis.py` exit **fails the build before the push step runs**, so
-   a divergent image is never pushed (CLOUDIMG-03 / T-47-08).
+   a divergent image is never pushed (CLOUDIMG-03 / ).
 3. **Gated push** (a later step in the same job, `if: github.event_name !=
    'pull_request'`) — pushes the validated image with `push: true`, `provenance: true`,
    `sbom: true`, the same `-arm64` tags **and** the OCI source/revision/version
-   **labels** the x86 image carries (`needs.build-arm64.outputs.labels` — T-47-04).
+   **labels** the x86 image carries (`needs.build-arm64.outputs.labels` — ).
    Reached only when the compare passes.
 
 Because this guard drives **real audio** through the actual `analyze_file`
 (MonoLoader + RhythmExtractor2013 + KeyExtractor + musicnn/vggish/effnet + numpy
 aggregation), a green run is the runtime proof that **fix #4** (dual-OpenMP) holds on
-real workloads — not the spike's `np.sin` (T-47-09 / CLOUDIMG-01). If it SIGSEGVs
+real workloads — not the spike's `np.sin` ( / CLOUDIMG-01). If it SIGSEGVs
 (faulthandler native stack names `libgomp`/`libomp`), apply the `LD_PRELOAD` fallback
 from fix #4 above.
 
@@ -294,11 +294,11 @@ investigate**, not a tolerance to widen.
 
 ---
 
-## Tag naming (consumed by Phase 51)
+## Tag naming (consumed by cloud agent deployment)
 
 The image is published as `ghcr.io/<owner>/phaze:<tag>-arm64` — `latest-arm64` on the
 default branch and `<version>-arm64` (e.g. `2026.8.4-arm64`) on a release tag (via
-`flavor: suffix=-arm64,onlatest=true`). The **Phase 51 cloud-agent compose** defaults to
+`flavor: suffix=-arm64,onlatest=true`). The **cloud agent deployment cloud-agent compose** defaults to
 `${PHAZE_IMAGE_TAG:-latest}-arm64` — i.e. **`latest-arm64` unless pinned**
 ([`docker-compose.cloud-agent.yml`](../docker-compose.cloud-agent.yml)). Production should
 **pin a specific `<version>-arm64`** by setting `PHAZE_IMAGE_TAG=2026.8.4` in the A1's `.env`,

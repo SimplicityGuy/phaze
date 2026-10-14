@@ -91,7 +91,12 @@ async def _reject_if_not_owner(session: AsyncSession, proposal_id: uuid.UUID, ag
         )
 
 
-@router.post("", status_code=status.HTTP_200_OK, response_model=ExecutionLogCreateResponse)
+@router.post(
+    "",
+    status_code=status.HTTP_200_OK,
+    response_model=ExecutionLogCreateResponse,
+    description="Create an ExecutionLog row. Agent supplies `id` ; replay POST is a no-op.",
+)
 async def create_execution_log(
     body: ExecutionLogCreate,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
@@ -136,7 +141,12 @@ async def create_execution_log(
     return ExecutionLogCreateResponse(agent_id=agent.id, execution_log_id=body.id)
 
 
-@router.patch("/{execution_log_id}", status_code=status.HTTP_200_OK, response_model=ExecutionLogPatchResponse)
+@router.patch(
+    "/{execution_log_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ExecutionLogPatchResponse,
+    description="Update an ExecutionLog row. Status transitions are monotonic.",
+)
 async def patch_execution_log(
     execution_log_id: uuid.UUID,
     body: ExecutionLogPatch,

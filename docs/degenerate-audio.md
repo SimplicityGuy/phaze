@@ -1,8 +1,8 @@
-# Degenerate audio investigation (phaze-nkucu)
+# Degenerate audio investigation
 
-Measured 2026-10-03. Unusable measurements are stored as NULL, per the operator decision recorded below (phaze-nkucu, 2026-10-03).
+Measured 2026-10-03. Unusable measurements are stored as NULL, following the historical record below (2026-10-03).
 
-## Operator decision (phaze-nkucu, 2026-10-03)
+## Historical operator record (2026-10-03)
 
 Question as put:
 
@@ -14,7 +14,7 @@ Answer as given (selected option label, verbatim):
 
 The other offered options were "Keep values and add an explicit quality field" and "Leave current
 behavior and close as wontfix". Asked 2026-10-03T19:36:27Z and answered 2026-10-03T19:39:27Z. Durable
-record: this section, recovered on 2026-10-14 (phaze-isxib) from the local Codex session transcript's
+record: this section, recovered on 2026-10-14  from the local Codex session transcript's
 `request_user_input_async` call and its question reply, in which the question text above and the label
 above appear verbatim. `scripts/recover_operator_decisions.py` does not read Codex transcripts, so the
 record was found by direct search.
@@ -83,7 +83,7 @@ not a full `analyze_file` reproduction or a representative measurement of musica
 with `best_mood = ""` and returns that empty string when no populated mood set is present.
 `aggregate_bpm` excludes confidence-zero windows, while window payloads omit confidence.
 
-D-07 chunking, D-08 stall liveness, D-09 streaming teardown, and payload bounds remain
+Chunked analysis, progress-based stall liveness, streaming teardown, and payload bounds remain
 untouched. No wall-clock bound was added.
 
 ## Implementation verification

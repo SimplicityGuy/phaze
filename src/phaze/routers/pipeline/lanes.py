@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-@router.get("/pipeline/lanes/{backend_id}", response_class=HTMLResponse)
+@router.get("/pipeline/lanes/{backend_id}", response_class=HTMLResponse, description="Return the lane-detail body fragment for a backend lane.")
 async def lane_detail(
     request: Request,
     backend_id: str,
@@ -89,7 +89,7 @@ async def lane_detail(
     )
 
 
-@router.get("/pipeline/analyze-queue/waiting", response_class=HTMLResponse)
+@router.get("/pipeline/analyze-queue/waiting", response_class=HTMLResponse, description="Return one page of the local lane's waiting list.")
 async def analyze_waiting(
     request: Request,
     page: int = Query(1, ge=1),

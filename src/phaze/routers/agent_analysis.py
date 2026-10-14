@@ -380,7 +380,12 @@ def _fold_wire_fields(dumped: dict[str, Any]) -> None:
         dumped["features"] = merged_features
 
 
-@router.put("/{file_id}", status_code=status.HTTP_200_OK, response_model=AnalysisWriteResponse)
+@router.put(
+    "/{file_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=AnalysisWriteResponse,
+    description="Idempotently upsert AnalysisResult for a file. Natural key: ``analysis.file_id`` (UQ).",
+)
 async def put_analysis(
     file_id: uuid.UUID,
     body: AnalysisWritePayload,
@@ -484,7 +489,12 @@ async def put_analysis(
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
 
-@router.post("/{file_id}/progress", status_code=status.HTTP_200_OK, response_model=AnalysisProgressResponse)
+@router.post(
+    "/{file_id}/progress",
+    status_code=status.HTTP_200_OK,
+    response_model=AnalysisProgressResponse,
+    description="Counter-only mid-flight progress upsert -- a SIBLING of ``put_analysis``, NOT a call into it.",
+)
 async def post_analysis_progress(
     file_id: uuid.UUID,
     body: AnalysisProgressPayload,
@@ -573,7 +583,12 @@ async def post_analysis_progress(
     return AnalysisProgressResponse(agent_id=agent.id, file_id=file_id)
 
 
-@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=AnalysisFailureResponse)
+@router.post(
+    "/{file_id}/failed",
+    status_code=status.HTTP_200_OK,
+    response_model=AnalysisFailureResponse,
+    description="Mark a file's analysis as terminally failed.",
+)
 async def report_analysis_failed(
     file_id: uuid.UUID,
     body: AnalysisFailurePayload,

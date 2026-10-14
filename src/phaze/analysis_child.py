@@ -88,7 +88,7 @@ _ERROR_MESSAGE_MAX = 2000
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the child argv. Windowing flags are optional: absent flags are NOT passed
     through to the target, so ``analyze_file``'s own defaults stay authoritative."""
-    parser = argparse.ArgumentParser(prog="phaze.analysis_child", description="phaze essentia analysis child (Phase 101)")
+    parser = argparse.ArgumentParser(prog="phaze.analysis_child", description="phaze essentia analysis child ")
     parser.add_argument("file_path", help="audio file to analyze")
     parser.add_argument("--models-dir", required=True, help="essentia TF models directory")
     parser.add_argument("--fine-window-sec", type=int, default=None)

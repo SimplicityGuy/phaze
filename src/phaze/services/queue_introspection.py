@@ -131,14 +131,14 @@ class ActiveJobBreakdown:
             f"queue {self.queue!r}: {self.total_active} row(s) in status='active' -- this is NOT the number running.",
             f"  running (attempts>=1, genuinely executing): {self.running}",
             f"  claimed-but-unrun (attempts=0, dequeued into the worker buffer, never executed): {self.claimed_unrun}",
-            f"  of those claimed, past their timeout (sweep-eligible, but the sweep does not keep up -- phaze-o0n6): {self.stuck_past_timeout}",
+            f"  of those claimed, past their timeout (sweep-eligible, but the sweep does not keep up): {self.stuck_past_timeout}",
             f"  STRANDED past their own timeout + reap slack (reap_stranded_active_jobs will delete these): {self.stranded}",
             f"  lane concurrency (the most that can legitimately be running): {self.concurrency}",
         ]
         if self.exceeds_concurrency:
             lines.append(
                 f"  ALARM: {self.stranded} stranded > concurrency {self.concurrency}. These rows hold their deterministic "
-                "keys, so their files cannot be re-enqueued by ANY path until reaped (phaze-o0n6)."
+                "keys, so their files cannot be re-enqueued by ANY path until reaped."
             )
         return lines
 
@@ -235,7 +235,7 @@ async def summarize_active_jobs(session: AsyncSession, queue_name: str, *, concu
         # Loud even when nobody is reading the CLI's exit code: this is the condition that went
         # unnoticed until it had reached 2,413 rows / 2,411 un-analyzable files.
         logger.error(
-            "stranded 'active' rows exceed lane concurrency -- deterministic keys are held and their files are un-requeueable (phaze-o0n6)",
+            "stranded 'active' rows exceed lane concurrency -- deterministic keys are held and their files are un-requeueable ",
             queue=queue_name,
             stranded=breakdown.stranded,
             concurrency=breakdown.concurrency,

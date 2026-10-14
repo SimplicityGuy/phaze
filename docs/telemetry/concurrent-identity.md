@@ -1,6 +1,6 @@
 # Concurrent analysis producers at a real collector — 2026-09-15
 
-Measured evidence for `phaze-21nnf`, taken on **2026-09-15**. It lives here rather than under
+Measured evidence for the overhead measurement, taken on **2026-09-15**. It lives here rather than under
 `measurements/` because that directory is a CLOSED historical corpus -- its population is
 pinned to one revision by `scripts/audit_historical_evidence.py`, which tolerates renames and
 no additions, so a new record there fails the build. The shipped behaviour is
@@ -184,10 +184,10 @@ concurrency. A burst-lane child runs in a one-shot Kueue pod that is Postgres-le
 memory with its peers, so its slot has to be injected by the controller at submit time — not built
 here.
 
-## 7. The burst lane, and why it needed no re-measurement (`phaze-w15ju`, 2026-09-16)
+## 7. The burst lane, and why it needed no re-measurement (the verification experiment, 2026-09-16)
 
 **When this record was written, concurrent burst pods each took slot 0 from their own pod-local pool
-and shared `phaze-analysis-0` — the same merge as §3 under a new name.** `phaze-w15ju` closed that:
+and shared `phaze-analysis-0` — the same merge as §3 under a new name.** the verification experiment closed that:
 the controller allocates a slot per in-flight burst Job against the `cloud_job` rows, persists it on
 `cloud_job.telemetry_slot`, and code-injects `PHAZE_TELEMETRY_SLOT` / `PHAZE_TELEMETRY_SLOT_MAX` into
 the Job env. The bound is the sum of the kueue backends' `cap` values.
@@ -199,7 +199,7 @@ shortcut.** §3 and §4 characterise the **collector**: what its Prometheus expo
 identity versus several, at a real version with this repo's own example configuration. That result is
 a property of the collector and is unchanged by which process allocated the index — arm B's per-slot
 exposition is what a burst pod's slot produces too, because the collector cannot tell the difference.
-What `phaze-w15ju` had to establish is different and is not a collector question: that two concurrent
+What the verification experiment had to establish is different and is not a collector question: that two concurrent
 burst **submissions** reach their pods with different bounded slots. That is a property of phaze's own
 code, and it is asserted against a real Postgres and through the pod's own
 `assign` → `_instance_id` chain by
@@ -207,7 +207,7 @@ code, and it is asserted against a real Postgres and through the pod's own
 **not** against the manifest alone, because a correct manifest whose slot the pod then overwrote with
 its own local 0 is exactly the failure that design invited.
 
-**The cross-lane collision is closed too** (`phaze-7nl67`). The two lanes used to share one slot
+**The cross-lane collision is closed too**. The two lanes used to share one slot
 space and one default base, so a host-lane child and a burst pod on the same index merged when
 `PHAZE_TELEMETRY_INSTANCE` was unset. Every burst Job now carries a code-injected
 `PHAZE_TELEMETRY_LANE=burst`, which gives burst pods `phaze-analysis-burst-<n>`.

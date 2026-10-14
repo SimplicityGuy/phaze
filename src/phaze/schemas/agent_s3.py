@@ -80,7 +80,9 @@ class UploadFileS3Payload(WirePayload):
 
 
 class UploadedPart(BaseModel):
-    """One completed multipart part: its 1-based number and the S3-returned ETag (D-04)."""
+    """One completed multipart part: its 1-based number and the S3-returned ETag."""
+
+    # One completed multipart part: its 1-based number and the S3-returned ETag (D-04).
 
     model_config = ConfigDict(extra="forbid")
 
@@ -92,11 +94,13 @@ class UploadedPart(BaseModel):
 
 
 class UploadedRequest(BaseModel):
-    """Body the agent POSTs on a successful upload: the ordered completed-part list.
+    """Body the agent POSTs on a successful upload: the ordered completed-part list."""
 
-    Upload metadata only -- NOT identity. ``file_id`` rides the URL path (AUTH-01);
-    ``extra="forbid"`` rejects any attempt to smuggle identity into the body.
-    """
+    # Body the agent POSTs on a successful upload: the ordered completed-part list.
+    #
+    #     Upload metadata only -- NOT identity. ``file_id`` rides the URL path (AUTH-01);
+    #     ``extra="forbid"`` rejects any attempt to smuggle identity into the body.
+    #
 
     model_config = ConfigDict(extra="forbid")
 
@@ -122,11 +126,13 @@ class UploadedResponse(BaseModel):
 
 
 class UploadFailedRequest(BaseModel):
-    """Body the agent POSTs on an upload failure: only an optional bounded diagnostic.
+    """Body the agent POSTs on an upload failure: only an optional bounded diagnostic."""
 
-    ``file_id`` is on the path (AUTH-01); ``detail`` is bounded to cap the
-    huge-string DoS surface (T-53-12) and MUST NOT carry identity.
-    """
+    # Body the agent POSTs on an upload failure: only an optional bounded diagnostic.
+    #
+    #     ``file_id`` is on the path (AUTH-01); ``detail`` is bounded to cap the
+    #     huge-string DoS surface (T-53-12) and MUST NOT carry identity.
+    #
 
     model_config = ConfigDict(extra="forbid")
 

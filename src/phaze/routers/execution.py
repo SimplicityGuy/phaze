@@ -293,7 +293,7 @@ def _render_dispatch_progress(
     )
 
 
-@router.post("/execution/start", response_class=HTMLResponse)
+@router.post("/execution/start", response_class=HTMLResponse, description="Dispatch approved proposals as per-agent SAQ sub-jobs.")
 async def start_execution(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
 
@@ -507,7 +507,7 @@ def _render_partial(request: Request, name: str, context: dict[str, object]) -> 
     return body.decode()
 
 
-@router.get("/execution/progress/{batch_id}")
+@router.get("/execution/progress/{batch_id}", description="Stream SSE events with real-time execution progress from Redis.")
 async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSourceResponse:
     """Stream SSE events with real-time execution progress from Redis (D-04 + D-11).
 
@@ -641,7 +641,7 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
     return EventSourceResponse(event_generator())
 
 
-@router.get("/execution/agents-table", response_class=HTMLResponse)
+@router.get("/execution/agents-table", response_class=HTMLResponse, description="Re-render the per-agent table under a new header-chosen sort.")
 async def execution_agents_table_sort(
     request: Request,
     batch_id: uuid.UUID = Query(...),
@@ -753,7 +753,11 @@ async def build_audit_log_context(
     }
 
 
-@router.get("/audit/", response_class=HTMLResponse)
+@router.get(
+    "/audit/",
+    response_class=HTMLResponse,
+    description="Render the audit-content fragment for a live htmx swap; redirect everything else to /s/audit.",
+)
 async def audit_log(
     request: Request,
     status: str | None = Query(None),
@@ -801,7 +805,7 @@ async def audit_log(
     )
 
 
-@router.get("/audit/{log_id}/detail", response_class=HTMLResponse)
+@router.get("/audit/{log_id}/detail", response_class=HTMLResponse, description="Return the expanded per-entry detail row for one audit-log entry.")
 async def audit_log_detail(
     request: Request,
     log_id: uuid.UUID,

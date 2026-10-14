@@ -26,7 +26,7 @@ feed the timeline, harmonic journey, record facts, track segments, glyph, poster
 similar-set ranking. There is no separate projection API; analysis completion writes it as part of
 the existing internal analysis callback, and the three record presentations are read-only.
 
-A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation, T-57-01).
+A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation).
 
 ## Health
 
@@ -46,15 +46,15 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 | POST   | `/pipeline/extract-metadata`   | HTMX trigger for metadata extraction     |
 | POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
 | POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
-| POST   | `/pipeline/match-tracklists`   | HTMX trigger for bulk Discogs matching over the pending set (Phase 41) |
-| POST   | `/pipeline/recover`            | HTMX trigger for manual restart/queue-loss recovery across all stages (Phase 42) |
+| POST   | `/pipeline/match-tracklists`   | HTMX trigger for bulk Discogs matching over the pending set  |
+| POST   | `/pipeline/recover`            | HTMX trigger for manual restart/queue-loss recovery across all stages  |
 | GET    | `/pipeline/recover/status`     | Poll the outcome of the most recent `/pipeline/recover` run (`{running, result, failed}`; process-local, non-durable) |
 
 Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) that wraps the same enqueue logic and returns a `trigger_response.html` fragment. Both forms enqueue work in a fire-and-forget background task and return immediately with the expected job count, so a large backlog never blocks the HTTP response.
 
-**Complete payloads (Phase 30 / 35).** The two agent-task triggers build and enqueue the *full* validated payload, never a bare `file_id`:
+**Complete payloads.** The two agent-task triggers build and enqueue the *full* validated payload, never a bare `file_id`:
 
-- `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer. The model carries two FURTHER fields that this local bulk path deliberately omits — `expected_sha256` and `scratch_path` (Phase 50, D-11), both defaulting to `None` so the local producer stays byte-identical under `extra="forbid"`. They are set only on the cloud push path: `expected_sha256` pins `FileRecord.sha256_hash` so the compute agent can verify the rsync'd copy before analysis, and `scratch_path is not None` is ITSELF the compute-read/ephemeral signal — there is no separate boolean flag.
+- `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer. The model carries two FURTHER fields that this local bulk path deliberately omits — `expected_sha256` and `scratch_path`, both defaulting to `None` so the local producer stays byte-identical under `extra="forbid"`. They are set only on the cloud push path: `expected_sha256` pins `FileRecord.sha256_hash` so the compute agent can verify the rsync'd copy before analysis, and `scratch_path is not None` is ITSELF the compute-read/ephemeral signal — there is no separate boolean flag.
 - `extract-metadata` → `extract_file_metadata` enqueues `ExtractMetadataPayload` (`file_id`, `original_path`, `file_type`, `agent_id`).
 
 The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook (35-01), letting a repeat enqueue of an in-flight file collapse to a no-op.
@@ -69,17 +69,17 @@ still bounded.
 
 **Routing & agent availability.** Both agent-task triggers resolve a target queue through `services.enqueue_router.resolve_queue_for_task`. When no non-revoked agent is active, the JSON triggers return `{"enqueued": 0, "message": "No active agent available — start an agent worker and retry"}` and the HTMX triggers render a `no_active_agent` fragment instead of enqueuing.
 
-**Metadata extraction is operator-triggered only (Phase 35, D-06).** The `POST /api/internal/agent/files` discovery upsert no longer auto-enqueues metadata extraction — discovery only persists file rows. `extract-metadata` (JSON or HTMX) is now the sole producer of `extract_file_metadata` jobs, and it queues every music/video file regardless of state (backfill/re-extraction).
+**Metadata extraction is operator-triggered only.** The `POST /api/internal/agent/files` discovery upsert no longer auto-enqueues metadata extraction — discovery only persists file rows. `extract-metadata` (JSON or HTMX) is now the sole producer of `extract_file_metadata` jobs, and it queues every music/video file regardless of state (backfill/re-extraction).
 
 **`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
 
-**External tracklist acquisition has been removed (phaze-7muoo).** Stored tracklists remain available for review, Discogs matching and cue generation.
+**External tracklist acquisition has been removed.** Stored tracklists remain available for review, Discogs matching and cue generation.
 
-**Bulk match (Phase 41).** `POST /pipeline/match-tracklists` enqueues one `match_tracklist_to_discogs` job per **pending match** tracklist (every tracklist **not** reachable from `discogs_links` via the `version → track → link` walk — the complement of `match.done`). It is a **controller** task (Phase-30 rule), routed through `enqueue_router.resolve_queue_for_task` to the **controller** queue — never the consumer-less default queue — and it never raises `NoActiveAgentError` (no agent empty-state). Already-linked tracklists are skipped, and the deterministic key `match_tracklist_to_discogs:<tracklist_id>` dedups in-flight replays, so a double-click/refresh cannot multiply the backlog. The button is gated disabled: **"Needs tracklist"** until at least one tracklist exists (`matchTotal === 0`); **"Matching…"** while a batch is in flight (`matchBusy > 0`, checked **before** the nothing-pending state so a running batch is always visible); and **"All matched"** once the pending set is empty. The endpoint enqueues nothing and returns 200 (rendering `No tracklists ready for matching`) when the pending set is empty. Manual only — no auto-trigger.
+**Bulk match.** `POST /pipeline/match-tracklists` enqueues one `match_tracklist_to_discogs` job per **pending match** tracklist (every tracklist **not** reachable from `discogs_links` via the `version → track → link` walk — the complement of `match.done`). It is a **controller** task (task routing rule), routed through `enqueue_router.resolve_queue_for_task` to the **controller** queue — never the consumer-less default queue — and it never raises `NoActiveAgentError` (no agent empty-state). Already-linked tracklists are skipped, and the deterministic key `match_tracklist_to_discogs:<tracklist_id>` dedups in-flight replays, so a double-click/refresh cannot multiply the backlog. The button is gated disabled: **"Needs tracklist"** until at least one tracklist exists (`matchTotal === 0`); **"Matching…"** while a batch is in flight (`matchBusy > 0`, checked **before** the nothing-pending state so a running batch is always visible); and **"All matched"** once the pending set is empty. The endpoint enqueues nothing and returns 200 (rendering `No tracklists ready for matching`) when the pending set is empty. Manual only — no auto-trigger.
 
-**Recovery-only automation model (Phase 42).** Steady state produces **zero** automatic enqueues — every stage advances only when the operator clicks its trigger. The **only** automatic enqueue is a single gated recovery pass on controller startup: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Phase 36 the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (phaze-2akf made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net (D-05): `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the Phase-32 doubling class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
+**Recovery-only automation model.** Steady state produces **zero** automatic enqueues — every stage advances only when the operator clicks its trigger. The **only** automatic enqueue is a single gated recovery pass on controller startup: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Postgres broker migration the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (operator-triggered tracklist refresh made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net: `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the duplicate-enqueue failure class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
 
-**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (Phase 39, the Search-node in-flight gate), `agentOnline` (online-agent count, drives the header's "Agents · N" badge), `scrapeDone`/`scrapeTotal`, `scrapeBusy` (Phase 41, the Scrape-node in-flight gate), `matchDone`/`matchTotal`, `matchBusy` (Phase 41, the Match-node in-flight gate), `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The `agentOnline` (online-agent count) read runs inside a degrade-safe SAVEPOINT and falls back to `0` on any DB error. The 35-05 DAG canvas mirrors these store keys.
+**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (tracklist search, the Search-node in-flight gate), `agentOnline` (online-agent count, drives the header's "Agents · N" badge), `scrapeDone`/`scrapeTotal`, `scrapeBusy` (tracklist matching, the Scrape-node in-flight gate), `matchDone`/`matchTotal`, `matchBusy` (tracklist matching, the Match-node in-flight gate), `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The `agentOnline` (online-agent count) read runs inside a degrade-safe SAVEPOINT and falls back to `0` on any DB error. The DAG canvas mirrors these store keys.
 
 ### Multi-cloud backend lanes (2026.7.1)
 
@@ -92,7 +92,7 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 
 `force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` routes through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue) and honors the force-local / cloud-enabled gates.
 
-> **Removed (phaze-w55w1):** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 (windowed analysis) §7). There is nothing left to deepen.
+> **Removed:** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 (windowed analysis) §7). There is nothing left to deepen.
 
 **Control-side agent callbacks (`/api/internal/agent`).** The Postgres-free file-server / compute / pod agents cannot touch the ORM, so the S3-staging and rsync-push transports report outcomes through these token-authed internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
 
@@ -107,7 +107,7 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 
 > **The names above are `cloud_job.status` values, not file states.** `PUSHING`/`PUSHED` read like
 > enum members but `CloudJobStatus` has none — its members are `awaiting`, `uploading`, `uploaded`,
-> `submitted`, `running`, `succeeded`, `failed`. Phase 90 removed the `FileState` enum and the
+> `submitted`, `running`, `succeeded`, `failed`. per-stage status migration removed the `FileState` enum and the
 > `files.state` column entirely; stage and status are **derived** from the `cloud_job` sidecar plus
 > the output tables via `services/stage_status.py`. See the caveat in
 > [cloud-burst.md → walkthrough](cloud-burst.md) for the same point in operator terms.
@@ -181,10 +181,10 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | PATCH  | `/proposals/{id}/edit`        | Inline-edit a pending proposal's filename/path |
 | PATCH  | `/proposals/bulk`             | Bulk approve/reject — the live Changes Review bulk path (`action=approve_eligible\|reject` over selected `review_tokens`) |
 
-> **Removed:** `PATCH /proposals/bulk-approve-high-confidence` (bead `phaze-7tiqp`). The
-> server-predicate bulk approve (confidence ≥ 0.9) lost its only two callers when phaze-tzy6s.11 /
+> **Removed:** `PATCH /proposals/bulk-approve-high-confidence`. The
+> server-predicate bulk approve (confidence ≥ 0.9) lost its only two callers when the review selection change /
 > ADR-0008 (changes review approval boundary) consolidated the Rename and Move workspaces into Changes Review, which bulk-approves a
-> reviewed *selection* through `/proposals/bulk` instead. phaze-tzy6s.17 re-verified the whole chain
+> reviewed *selection* through `/proposals/bulk` instead. the approval boundary verification re-verified the whole chain
 > was unreachable from any template and deferred the call; this bead made it. The route, its
 > `_BULK_HIGH_CONFIDENCE_TARGETS` map, the OOB row branch,
 > `_bulk_approve_high_confidence_response.html` and the `approve_pending_above_confidence` service
@@ -228,7 +228,7 @@ the group's current state with an honest "nothing changed" response rather than 
 renders `GROUP_PAGE_SIZE` groups at a time; this endpoint supplies the offset override, swapping the
 next page's cards in via `hx-swap-oob="beforeend:"` alongside the refreshed subcount. It is the only
 live caller of the offset plumbing in `services/dedup.py` — do not delete that plumbing on a
-"no live caller" reading without checking here first (`phaze-4iq5t`).
+"no live caller" reading without checking here first.
 
 > **Removed:** `GET /duplicates/{group_hash}/compare` (commit `053997bf`, 2026-08-20). The
 > standalone comparison table and its template were deleted; the live Dedupe workspace
@@ -265,7 +265,7 @@ status comes from the route, never from the form, and the decisions are
 
 ## Tracklists (`/tracklists`)
 
-The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s6); the tracklist workflow now lives in the shell's Tracklists workspace (`/s/tracklist`). A single legacy route remains:
+The interactive tracklists UI was removed with the v7.0 shell cutover; the tracklist workflow now lives in the shell's Tracklists workspace (`/s/tracklist`). A single legacy route remains:
 
 | Method | Path                                    | Description                          |
 |--------|-----------------------------------------|--------------------------------------|
@@ -285,15 +285,15 @@ The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s
 > `PATCH /api/internal/agent/tag-writes/{log_id}` (see the Distributed Agent API table below).
 > A second call while a write is already in flight for the same file raises
 > `TagWriteAlreadyQueuedError` and redraws the row as "queued" rather than dispatching a
-> concurrent second write (phaze-lwqk). Undo only becomes available once the agent has reported
-> the before-tags snapshot. This moved onto the agent in phaze-6bkk (DIST-01).
+> concurrent second write. Undo only becomes available once the agent has reported
+> the before-tags snapshot. This moved onto the agent in agent-side file writes.
 
 ## CUE Sheets (`/cue`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
 | GET    | `/cue/`                       | Legacy route: 302-redirects into the v7.0 shell's CUE workspace (`/s/cue`) |
-| POST   | `/cue/{tracklist_id}/generate`| **Enqueues** CUE generation: renders the CUE text in-process (pure string work over rows the api already holds) and dispatches the **bytes** as a `write_cue_sheet` task to the owning agent's **meta lane**, which writes the file. The api container has no media mount (phaze-6bkk DIST-01) |
+| POST   | `/cue/{tracklist_id}/generate`| **Enqueues** CUE generation: renders the CUE text in-process (pure string work over rows the api already holds) and dispatches the **bytes** as a `write_cue_sheet` task to the owning agent's **meta lane**, which writes the file. The api container has no media mount  |
 
 ## Search (`/search`)
 
@@ -320,7 +320,7 @@ Operator-facing liveness page for registered worker agents. Read-only; these end
 
 | Method | Path                                | Description                                       |
 |--------|-------------------------------------|----------------------------------------------------|
-| GET    | `/admin/agents`                     | 301-redirects into the shell's Agents pane (`/s/agents`), preserving the query string (phaze-uvmcr.4) |
+| GET    | `/admin/agents`                     | 301-redirects into the shell's Agents pane (`/s/agents`), preserving the query string  |
 | GET    | `/admin/agents/_table`              | Agent liveness table (HTMX poll partial, ~5s)       |
 | GET    | `/admin/agents/{agent_id}/_activity`| Agent-activity detail-pane fragment (per-agent stage counts, lane depths, recent scans) |
 | GET    | `/admin/agents/compute-lanes/{backend_id}` | Compute-lane detail fragment for a non-local backend lane |
@@ -339,7 +339,7 @@ The mount is gated by `PHAZE_ENABLE_SAQ_UI` (default on; see [configuration.md](
 
 ## Distributed Agent API (`/api/internal/agent`)
 
-These endpoints form the HTTP contract used by remote worker agents. They back the distributed-execution work added in Phases 26-29 (HTTP-backed agent worker, watcher service, and distributed execution dispatch): a remote agent walks the filesystem and analyzes audio, and reports results back to the central server over this API rather than touching the database directly.
+These endpoints form the HTTP contract used by remote worker agents. They back the distributed-execution work added in HTTP agent worker / agent security (HTTP-backed agent worker, watcher service, and distributed execution dispatch): a remote agent walks the filesystem and analyzes audio, and reports results back to the central server over this API rather than touching the database directly.
 
 **Authentication:** Every endpoint in this section requires a per-agent bearer token. Send it in the `Authorization` header:
 
@@ -352,9 +352,9 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | Method | Path                                                  | Description                                                                 |
 |--------|-------------------------------------------------------|----------------------------------------------------------------------------|
 | GET    | `/api/internal/agent/whoami`                          | Agent identity probe (returns the calling agent's identity)                 |
-| POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content). `HeartbeatRequest` may carry an optional `effective_config` (the agent's own resolved reloadable-config snapshot, phaze-mvq8z.9) |
-| GET    | `/api/internal/agent/config`                          | The DB-override layer for reloadable keys only (not per-agent); polled on the heartbeat cadence and reloaded locally only when the digest changes (phaze-mvq8z.9, ADR-0019 (runtime config hot-reload) §14) |
-| POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per Phase 35 D-06) |
+| POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content). `HeartbeatRequest` may carry an optional `effective_config` (the agent's own resolved reloadable-config snapshot, agent effective configuration) |
+| GET    | `/api/internal/agent/config`                          | The DB-override layer for reloadable keys only (not per-agent); polled on the heartbeat cadence and reloaded locally only when the digest changes (agent effective configuration, ADR-0019 (runtime config hot-reload) §14) |
+| POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per manual pipeline advancement) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
 | POST   | `/api/internal/agent/metadata/{file_id}/failed`       | Terminal-ack for a retries-exhausted `extract_file_metadata` run (clears the ledger row) |
 | PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent analysis/window upsert; also derives and stores the migration-`063` set projection |
@@ -365,7 +365,7 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | PATCH  | `/api/internal/agent/execution-log/{execution_log_id}`| Update an existing execution-log row                                        |
 | POST   | `/api/internal/agent/exec-batches/{batch_id}/progress`| Report a per-proposal terminal-state event for an execution batch           |
 | PATCH  | `/api/internal/agent/scan-batches/{batch_id}`         | Advance a scan-batch state-machine (with cross-tenant guard)               |
-| POST   | `/api/internal/agent/scratch/live`                    | Compute-scratch janitor liveness probe — answers "is a durable job still claiming this scratch entry?" off `saq_jobs` (phaze-5cvbz) |
-| PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued` (phaze-anrw4) |
-| PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`** (phaze-6bkk DIST-01) |
-| PATCH  | `/api/internal/agent/junk-quarantine/{review_id}`     | Outcome of an on-agent junk quarantine move: `quarantined` marks the `executing` review row and retires the moved file's `files` row, `failed` records the agent's reason; only the owning agent's rows, idempotent (phaze-lwuf6) |
+| POST   | `/api/internal/agent/scratch/live`                    | Compute-scratch janitor liveness probe — answers "is a durable job still claiming this scratch entry?" off `saq_jobs`  |
+| PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued`  |
+| PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`**  |
+| PATCH  | `/api/internal/agent/junk-quarantine/{review_id}`     | Outcome of an on-agent junk quarantine move: `quarantined` marks the `executing` review row and retires the moved file's `files` row, `failed` records the agent's reason; only the owning agent's rows, idempotent  |

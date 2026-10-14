@@ -69,7 +69,9 @@ async def _enqueue_recording_match_jobs(queue: Any, sources: list[dict[str, str]
             logger.exception("recording_discogs_enqueue_failed", media_id=source["media_id"])
 
 
-@router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/match-tracklists", response_class=HTMLResponse, description="HTMX endpoint: bulk-trigger Discogs matching over the pending set."
+)
 async def trigger_match_tracklists_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),

@@ -51,7 +51,7 @@ async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
         )
 
 
-@router.post("/api/v1/proposals/generate")
+@router.post("/api/v1/proposals/generate", description="Enqueue generate_proposals jobs for files with both metadata and analysis.")
 async def trigger_proposals(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -96,7 +96,9 @@ async def trigger_proposals(
     }
 
 
-@router.post("/pipeline/proposals", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/proposals", response_class=HTMLResponse, description="HTMX endpoint: trigger proposal generation and return response fragment."
+)
 async def trigger_proposals_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
