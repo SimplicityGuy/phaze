@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
+from sqlalchemy import event
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.set_profile import SetProfile
+from phaze.services import set_similarity
 from phaze.services.set_projection import ARC_POINTS, MOOD_ORDER
 from phaze.services.set_similarity import (
     CATEGORICAL_MATCH,
@@ -590,9 +592,10 @@ async def test_the_returned_profiles_are_the_winners_own_rows_with_their_glyphs(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corpus_size", [2_000])
-async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_file, corpus_size: int) -> None:
+async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_file, monkeypatch: pytest.MonkeyPatch, corpus_size: int) -> None:
     """Seeds ``corpus_size`` synthetic candidate profiles and scores one query against all of
-    them, printing rows-scored and wall-clock for the bead comment. Kept at 2,000 in the suite
+    them, printing rows-scored and wall-clock for the bead comment. The shape is asserted by
+    statement count and scorer-call count, never by seconds (phaze-l18wo). Kept at 2,000 in the suite
     (20,000 was also run manually for the bead comment -- seeding 20,000 ORM rows on every CI
     run would make this test itself the slow thing it is trying to measure); this still proves
     the ONE-query-plus-O(n)-scoring shape holds as ``n`` grows.
@@ -631,10 +634,37 @@ async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_fi
     await session.commit()
 
     query_profile = await session.get(SetProfile, query.id)
-    started = time.perf_counter()
-    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
-    elapsed_sec = time.perf_counter() - started
+
+    # Load-independent evidence of the ONE-query-plus-O(n)-scoring shape (phaze-l18wo). A wall-clock
+    # ceiling only approximates it and flaked at 5.88 s under heavy host load; the counts below do not
+    # move with load. Statements are counted at the cursor, so a per-row query (N+1) cannot hide behind
+    # the ORM; scoring calls are counted on the real scorer, so a quadratic pass shows up as > n.
+    statements: list[str] = []
+    scored_calls = 0
+    real_score_candidate = set_similarity._score_candidate
+
+    def _counting_score_candidate(**kwargs: Any) -> Any:
+        nonlocal scored_calls
+        scored_calls += 1
+        return real_score_candidate(**kwargs)
+
+    def _record_statement(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        statements.append(statement)
+
+    engine = session.bind.sync_engine  # type: ignore[union-attr]
+    monkeypatch.setattr(set_similarity, "_score_candidate", _counting_score_candidate)
+    event.listen(engine, "before_cursor_execute", _record_statement)
+    try:
+        started = time.perf_counter()
+        neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
+        elapsed_sec = time.perf_counter() - started
+    finally:
+        event.remove(engine, "before_cursor_execute", _record_statement)
 
     assert len(neighbours) == TOP_N
-    print(f"\n[SYNTHETIC set_similarity measurement] rows scored={corpus_size} wall_clock_sec={elapsed_sec:.4f}")
-    assert elapsed_sec < 5.0, "generous ceiling for a 2,000-row synthetic corpus on a shared test database"
+    # Exactly the candidate scan plus the one IN (...) for the winners' profiles, however big the corpus.
+    assert len(statements) == 2, f"expected 2 statements (scan + winners), got {len(statements)}: {statements[:3]}"
+    # Every candidate scored exactly once: O(n), not O(n * k).
+    assert scored_calls == corpus_size, f"scored {scored_calls} candidates for a {corpus_size}-row corpus"
+    # Timing is informational only -- never asserted, because it tracks host load rather than shape.
+    print(f"\n[SYNTHETIC set_similarity measurement] rows scored={scored_calls} statements={len(statements)} wall_clock_sec={elapsed_sec:.4f}")
