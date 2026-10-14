@@ -169,7 +169,7 @@ class ProposalStats:
 
 @dataclass(frozen=True, slots=True)
 class ProposalReviewToken:
-    """The exact proposal snapshot an operator selected for bulk authorization."""
+    """The exact proposal snapshot submitted for bulk authorization."""
 
     proposal_id: uuid_mod.UUID
     updated_at: datetime_mod.datetime

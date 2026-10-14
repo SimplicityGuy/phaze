@@ -12,8 +12,13 @@ Answer as given, quoting only the selected option label:
 
 > Compare completion time with ledger enqueue time (Recommended)
 
-The operator selected this option in the dispatch conversation on 2026-10-03. This document
-is the durable record of that exchange under [ADR-0012](0012-verification-fidelity-and-operator-attribution.md) rule 2. The implementation details below
+The operator selected this option on 2026-10-03 (phaze-za41v): asked 2026-10-03T19:36:27Z, answered
+2026-10-03T19:39:27Z. The other offered options were "Add an explicit analysis attempt identity" and
+"Keep investigation-only and defer the fix". This document is the durable record of that exchange under
+[ADR-0012](0012-verification-fidelity-and-operator-attribution.md) rule 2. It was recovered on 2026-10-14
+(phaze-isxib) from the local Codex session transcript's `request_user_input_async` call and its question
+reply, where the question text and the label above appear verbatim. `scripts/recover_operator_decisions.py`
+does not read Codex transcripts, so the record was found by direct search. The implementation details below
 are engineering choices implementing that decision, not additional operator statements.
 
 ## Reproduction
@@ -93,6 +98,10 @@ Exact question:
 Exact selected answer label:
 
 > Record the attempt’s terminal outcome (Recommended)
+
+The other offered option was "Keep timestamp-only recovery and accept retries of failed attempts". Asked
+2026-10-03T20:00:10Z and answered 2026-10-03T20:05:24Z (phaze-za41v), recovered from the same Codex session
+transcript as the decision above.
 
 Migration **077** adds nullable `scheduling_ledger.terminal_at`. A fresh analysis enqueue resets it;
 an acknowledgement stamps it only if its `attempt_enqueued_at` equals the ledger's current enqueue
