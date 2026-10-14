@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from phaze.models.provider_source import (
     ProviderSelectionEvent,
     ProviderSourceObject,
     ProviderSourceObservation,
+    ProviderSourceRead,
 )
 from phaze.models.tracklist import Tracklist
 from phaze.tracklist_providers.domain import LoadOutcome, OutcomeStatus, ProviderCandidate, Snapshot, SourceIdentity, SourceRead
@@ -161,6 +162,14 @@ async def _store(
         if parent is None or parent.object_id != source.id:
             raise ValueError("Parent observation must belong to this source")
     digest = _digest(serialized)
+    # resolve_source holds the object's row lock, so this advance is serialized with every other read of it.
+    read_seq = await session.scalar(
+        update(ProviderSourceObject)
+        .where(ProviderSourceObject.id == source.id)
+        .values(read_seq=ProviderSourceObject.read_seq + 1)
+        .returning(ProviderSourceObject.read_seq)
+        .execution_options(synchronize_session=False)
+    )
     after: uuid.UUID | None = None
     # A digest is a nonunique prefilter, never identity/equality authority. Load one
     # bounded payload at a time even when a test or adversary collides every digest.
@@ -183,6 +192,8 @@ async def _store(
         if row is None:
             break
         if row.payload == payload:
+            session.add(ProviderSourceRead(object_id=source.id, read_seq=read_seq, observation_id=row.id))
+            await session.flush()
             return StoredObservation(source, row, True, row.conflict_with_id is not None)
         after = row.id
     conflict_with: uuid.UUID | None = None
@@ -244,6 +255,8 @@ async def _store(
         conflict_with_id=conflict_with,
     )
     session.add(observation)
+    await session.flush()
+    session.add(ProviderSourceRead(object_id=source.id, read_seq=read_seq, observation_id=observation.id))
     await session.flush()
     return StoredObservation(source, observation, False, conflict_with is not None)
 
@@ -386,17 +399,21 @@ async def add_candidate(
 async def _remote_availability(session: AsyncSession, observation: ProviderSourceObservation, object_id: uuid.UUID) -> str:
     """A remote object has no inventory, so availability is what core has STORED about it; the host is never asked.
 
-    A stored snapshot is current until a later stored read of the same object says the host reported it absent.
+    A stored snapshot is current until a later stored read (by read sequence, not wall clock) of the same object says the host reported it absent.
     Transient outcomes (retry, pacing, budget, a stop) say nothing about the object and never change it.
     """
     if observation.status not in {"found", "incomplete", "ambiguous"}:
         return observation.status
+    # "Later" is the per-object read sequence, never retrieved_at: wall time can step backwards between two reads.
+    # The snapshot's position is its most recent read (an equal re-read reuses the observation and appends a read).
+    snapshot_seq = select(func.max(ProviderSourceRead.read_seq)).where(ProviderSourceRead.observation_id == observation.id).scalar_subquery()
     later_absent = await session.scalar(
-        select(ProviderSourceObservation.id)
+        select(ProviderSourceRead.object_id)
+        .join(ProviderSourceObservation, ProviderSourceObservation.id == ProviderSourceRead.observation_id)
         .where(
-            ProviderSourceObservation.object_id == object_id,
+            ProviderSourceRead.object_id == object_id,
             ProviderSourceObservation.status == OutcomeStatus.ABSENT.value,
-            ProviderSourceObservation.retrieved_at > observation.retrieved_at,
+            ProviderSourceRead.read_seq > snapshot_seq,
         )
         .limit(1)
     )

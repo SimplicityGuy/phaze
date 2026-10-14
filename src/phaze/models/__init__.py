@@ -26,6 +26,7 @@ from phaze.models.provider_source import (
     ProviderSelectionEvent,
     ProviderSourceObject,
     ProviderSourceObservation,
+    ProviderSourceRead,
 )
 from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
 from phaze.models.route_control import RouteControl
@@ -69,6 +70,7 @@ __all__ = [
     "ProviderSelectionEvent",
     "ProviderSourceObject",
     "ProviderSourceObservation",
+    "ProviderSourceRead",
     "RemoteTransportAttempt",
     "RemoteTransportLedger",
     "RenameProposal",

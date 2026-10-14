@@ -16,6 +16,7 @@ from phaze.models.provider_source import (
     ProviderSelectionEvent,
     ProviderSourceObject,
     ProviderSourceObservation,
+    ProviderSourceRead,
 )
 from phaze.models.tracklist import Tracklist
 from phaze.services import provider_persistence as storage
@@ -254,6 +255,7 @@ async def test_concurrent_equal_and_distinct_imports_converge(async_engine) -> N
     finally:
         async with maker.begin() as db:
             ids = select(ProviderSourceObject.id).where(ProviderSourceObject.native_id == native)
+            await db.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id.in_(ids)))
             await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id.in_(ids)))
             await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.native_id == native))
 
@@ -305,6 +307,7 @@ async def test_source_deletion_race_refuses_new_selection_and_preserves_observat
             await delete_file_cascade(db, media.id)
             await delete_file_cascade(db, companion.id)
             if source_id is not None:
+                await db.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id == source_id))
                 await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id == source_id))
                 await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.id == source_id))
 
@@ -332,3 +335,30 @@ async def test_parent_scoped_reuse_compares_full_payload_under_digest_collision(
     assert changed.observation.id not in {first.observation.id, second.observation.id} and changed.conflict
     assert changed.observation.conflict_with_id in {first.observation.id, second.observation.id}
     assert first.observation.parent_id == parents[0] and second.observation.parent_id == parents[1]
+
+
+async def test_remote_availability_follows_read_order_not_a_clock_that_stepped_backwards(session: AsyncSession) -> None:
+    """The later read decides availability by sequence; retrieved_at is display evidence a stepped clock can reorder (phaze-z9ea3)."""
+    identity = SourceIdentity(provider_id="example_catalog", native_id="remote-clock")
+    now = datetime.now(UTC)
+
+    def absent(at: datetime) -> SourceRead:
+        return SourceRead(status="absent", code="http_404", scope="source", retrieved_at=at)
+
+    found = await storage.store_snapshot(session, snapshot("remote-clock", retrieved_at=now), channel="remote")
+    assert await storage.source_availability(session, found.observation, uuid.uuid4()) == "current"
+
+    # The host reports it gone, but the clock stepped back an hour between the two reads.
+    gone = await storage.store_source_read(session, identity, absent(now - timedelta(hours=1)), parser_version="reader-v1", channel="remote")
+    assert gone.observation.retrieved_at < found.observation.retrieved_at
+    assert await storage.source_availability(session, found.observation, uuid.uuid4()) == "absent"
+
+    # The same snapshot is read again (an equal payload reuses the row), again behind the clock: it is now the later read.
+    again = await storage.store_snapshot(session, snapshot("remote-clock", retrieved_at=now - timedelta(hours=2)), channel="remote")
+    assert again.reused and again.observation.id == found.observation.id
+    assert await storage.source_availability(session, found.observation, uuid.uuid4()) == "current"
+
+    # A repeated 404 reuses the absent row yet is still the later read, with a clock further behind.
+    repeat = await storage.store_source_read(session, identity, absent(now - timedelta(hours=3)), parser_version="reader-v1", channel="remote")
+    assert repeat.reused and repeat.observation.id == gone.observation.id
+    assert await storage.source_availability(session, found.observation, uuid.uuid4()) == "absent"
