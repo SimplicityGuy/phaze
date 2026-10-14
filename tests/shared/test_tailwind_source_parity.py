@@ -25,6 +25,8 @@ import subprocess
 
 import pytest
 
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
+
 
 _ROOT = Path(__file__).resolve().parents[2]
 _APP_CSS = _ROOT / "assets" / "src" / "app.css"
@@ -70,7 +72,7 @@ def _compile(cwd: Path, out: Path) -> str:
         cwd=cwd,
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
     )
     return out.read_text(encoding="utf-8")
 
