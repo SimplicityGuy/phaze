@@ -54,6 +54,7 @@ from phaze.routers import (
     recording_discogs,
     remote_lookup_ui,
     remote_lookups,
+    remote_settings,
     routing,
     scan,
     search,
@@ -335,6 +336,7 @@ _ROUTERS: tuple[APIRouter, ...] = (
     recording_discogs.router,
     local_sources.router,
     remote_lookups.router,
+    remote_settings.router,
     remote_lookup_ui.router,
     agent_companion_features.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks

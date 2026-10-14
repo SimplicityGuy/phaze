@@ -1,0 +1,24 @@
+<section id="remote-provider-settings" class="space-y-4" aria-labelledby="remote-provider-heading">
+<h2 id="remote-provider-heading" class="font-semibold">Tracklist providers</h2>
+<p class="text-sm text-muted">Manage remote discovery globally. Live changes apply before the next request on API and workers. Requests already sent finish; quotas, reservations, Retry-After and stops stay in force. Credentials come from deployment secrets and require restart.</p>
+<a href="/api/remote-lookups/providers" class="text-link underline">Provider list as JSON</a>
+{% if message %}<p role="{{ 'alert' if failed else 'status' }}" class="text-sm">{{ message }}</p>{% endif %}
+{% for provider in providers %}
+<div class="rounded border p-3 space-y-2" data-provider="{{ provider.provider_id }}">
+<h3 class="font-medium">{{ provider.display_name }}</h3>
+<p class="text-sm">{{ 'Enabled' if provider.enabled else 'Disabled' }}{% if provider.unavailable_reason == 'credential_missing' %} · Credential missing: configure its deployment secret and restart{% endif %}{% if provider.stopped %} · Stopped: {{ provider.stop_code }}{% endif %}</p>
+<p class="text-xs text-muted">Effective gap {{ provider.min_interval_seconds }} seconds; {{ provider.max_requests_per_run }} requests per discovery; {{ provider.durable_budget }} requests per {{ provider.durable_window_seconds }} seconds across workers.</p>
+<form hx-post="/admin/remote-providers/{{ provider.provider_id }}/policy" hx-target="#remote-provider-settings" hx-swap="outerHTML" class="flex flex-wrap gap-3 items-end">
+<label class="text-sm"><input type="checkbox" name="enabled" value="true" {% if provider.enabled %}checked{% endif %}> Enable {{ provider.display_name }}</label>
+<label class="text-sm">Minimum interval (seconds)<input aria-label="{{ provider.display_name }} minimum interval" type="number" step="any" min="1" max="3600" name="min_interval_seconds" required value="{{ provider.min_interval_seconds }}" class="block rounded border px-2 py-1"></label>
+<label class="text-sm">Requests per discovery<input aria-label="{{ provider.display_name }} request budget" type="number" min="1" max="256" name="max_requests_per_run" required value="{{ provider.max_requests_per_run }}" class="block rounded border px-2 py-1"></label>
+<button type="submit" class="rounded border px-3 py-1">Save live policy</button>
+</form>
+{% if provider.stopped %}
+<form hx-post="/admin/remote-providers/{{ provider.provider_id }}/clear-stop" hx-target="#remote-provider-settings" hx-swap="outerHTML" class="space-y-2">
+<label class="text-sm">Why is it safe to resume {{ provider.display_name }}?<textarea aria-label="Reason to clear {{ provider.display_name }} stop" name="reason" required maxlength="512" class="block w-full rounded border p-2"></textarea></label><button type="submit" class="rounded border px-3 py-1">Clear stop</button>
+</form>{% endif %}
+{% if provider.cleared_at %}<p class="text-xs">Last clear {{ provider.cleared_at }} UTC by {{ provider.cleared_by }}: {{ provider.clear_reason }}</p>{% endif %}
+</div>{% else %}<p>No remote providers are registered.</p>{% endfor %}
+<p class="text-sm text-muted">Local companions and embedded sources remain available independently of remote policy.</p>
+</section>

@@ -44,7 +44,7 @@ the request is handed to httpx. It never appears in a log, repr, error or ``Sour
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -65,7 +65,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from sqlalchemy.pool import NullPool
 import structlog
 
+from phaze.models.remote_lookup_batch import RemoteLookupRead
 from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
+from phaze.services.remote_policy import EffectiveProviderPolicy
 from phaze.tracklist_providers.domain import DiscoveryBudget, OutcomeStatus, SourceRead, SourceReference, SourceValidators
 from phaze.tracklist_providers.host_profile import NATIVE_ID_PLACEHOLDER, RemoteFetchRoute, RemoteHostProfile, RemoteSearchRoute
 
@@ -264,9 +266,10 @@ def _http_outcome(status: int) -> tuple[OutcomeStatus, str]:
 class RemoteTransportRun:
     """The effect one operator-triggered run hands the registry. Holds the per-run budget."""
 
-    def __init__(self, transport: "RemoteTransport") -> None:
+    def __init__(self, transport: "RemoteTransport", *, run_id: uuid.UUID | None = None, durable: bool = False) -> None:
         self._transport = transport
-        self.run_id = uuid.uuid4()
+        self.run_id = run_id or uuid.uuid4()
+        self.durable = durable
         self.spent: dict[str, int] = {}
 
     def __repr__(self) -> str:
@@ -287,6 +290,7 @@ class RemoteTransport:
         socket: RemoteSocket,
         clock: Clock | None = None,
         credentials: Mapping[str, SecretStr] | None = None,
+        policy: Callable[[str], Awaitable[EffectiveProviderPolicy]] | None = None,
     ) -> None:
         self._profiles: dict[str, RemoteHostProfile] = {}
         for value in profiles:
@@ -295,6 +299,7 @@ class RemoteTransport:
                 raise ValueError(f"Duplicate remote host profile: {profile.provider_id}")
             self._profiles[profile.provider_id] = profile
         self._credentials = dict(credentials or {})
+        self._policy = policy
         for provider_id in self._credentials:
             profile_or_none = self._profiles.get(provider_id)
             if profile_or_none is None or profile_or_none.credential is None:
@@ -314,8 +319,8 @@ class RemoteTransport:
     def __repr__(self) -> str:
         return f"RemoteTransport(providers={sorted(self._profiles)})"
 
-    def run(self) -> RemoteTransportRun:
-        return RemoteTransportRun(self)
+    def run(self, *, run_id: uuid.UUID | None = None, durable: bool = False) -> RemoteTransportRun:
+        return RemoteTransportRun(self, run_id=run_id, durable=durable)
 
     async def aclose(self) -> None:
         await self._engine.dispose()
@@ -421,8 +426,6 @@ class RemoteTransport:
         self, run: RemoteTransportRun, profile: RemoteHostProfile, plan: _Plan, scope: str, budget: DiscoveryBudget, gap: float
     ) -> _Exchange:
         provider_id = profile.provider_id
-        if run.spent.get(provider_id, 0) >= profile.per_run_budget:
-            return _Exchange(self._result(OutcomeStatus.UNAVAILABLE, "run_budget_exhausted", scope), None)
         key = _lock_key(provider_id)
         async with self._engine.connect() as conn:
             await conn.execute(select(func.pg_advisory_lock(key)))
@@ -443,6 +446,28 @@ class RemoteTransport:
         self, conn: AsyncConnection, run: RemoteTransportRun, profile: RemoteHostProfile, plan: _Plan, scope: str, budget: DiscoveryBudget, gap: float
     ) -> _Exchange:
         provider_id = profile.provider_id
+        if self._policy is not None:
+            policy = await self._policy(provider_id)
+            if not policy.available:
+                return _Exchange(self._result(OutcomeStatus.UNAVAILABLE, policy.unavailable_reason or "disabled_provider", scope), None)
+            profile = policy.profile
+            gap = max(gap, profile.min_gap_seconds)
+        request_hash = hashlib.sha256(f"{plan.kind}:{plan.url(profile.host)}".encode()).hexdigest()
+        if run.durable:
+            cached = (
+                await conn.execute(
+                    select(RemoteLookupRead.payload, RemoteLookupRead.http_status).where(
+                        RemoteLookupRead.run_id == run.run_id, RemoteLookupRead.request_hash == request_hash
+                    )
+                )
+            ).one_or_none()
+            spent = await conn.scalar(
+                select(func.count()).where(RemoteTransportAttempt.run_id == run.run_id, RemoteTransportAttempt.provider_id == provider_id)
+            )
+            run.spent[provider_id] = spent or 0
+            await conn.commit()
+            if cached is not None:
+                return _Exchange(SourceRead.model_validate(cached.payload), cached.http_status)
         if not self._clock_ok(profile):
             return _Exchange(self._result(OutcomeStatus.UNAVAILABLE, "clock_discontinuity", scope), None)
         try:
@@ -459,7 +484,7 @@ class RemoteTransport:
         if ledger.not_before is not None:
             waits.append(_seconds(ledger.not_before - now))
         delay = max(waits)
-        if delay > budget.deadline_seconds:
+        if delay > budget.deadline_seconds or (run.durable and delay > 0):
             return _Exchange(self._result(OutcomeStatus.RETRY, "paced", scope, f"retry_after_seconds={delay:g}"), None)
         if delay > 0:
             await self._clock.sleep(delay)
@@ -471,6 +496,15 @@ class RemoteTransport:
                 return _Exchange(self._corrupt(provider_id, scope, str(exc)), None)
             if ledger.stop_code is not None:
                 return _Exchange(self._result(OutcomeStatus.UNAVAILABLE, "transport_stopped", scope, f"stop={ledger.stop_code}"), None)
+            await conn.commit()
+            # A direct lookup may have slept while global policy changed. Recheck every boundary.
+            if self._policy is not None:
+                current = await self._policy(provider_id)
+                if not current.available:
+                    return _Exchange(self._result(OutcomeStatus.UNAVAILABLE, current.unavailable_reason or "disabled_provider", scope), None)
+                if current.profile.min_gap_seconds > gap:
+                    return await self._locked_exchange(conn, run, current.profile, plan, scope, budget, current.profile.min_gap_seconds)
+                profile = current.profile
         now = self._clock.wall()
         window_start = now - timedelta(seconds=profile.durable_window_seconds)
         in_window = (
@@ -503,10 +537,31 @@ class RemoteTransport:
         exchange: _Exchange | None = None
         stop: str | None = None
         try:
+            if self._policy is not None:
+                current = await self._policy(provider_id)
+                if run.spent[provider_id] > current.profile.per_run_budget:
+                    exchange = _Exchange(self._result(OutcomeStatus.UNAVAILABLE, "run_budget_exhausted", scope), None)
+                    return exchange
+                if current.profile.min_gap_seconds > profile.min_gap_seconds:
+                    wait = current.profile.min_gap_seconds - profile.min_gap_seconds
+                    exchange = _Exchange(self._result(OutcomeStatus.RETRY, "paced", scope, f"retry_after_seconds={wait:g}"), None)
+                    return exchange
+                if not current.available:
+                    exchange = _Exchange(self._result(OutcomeStatus.UNAVAILABLE, current.unavailable_reason or "disabled_provider", scope), None)
+                    return exchange
             exchange, stop = await self._send(profile, plan, scope, budget)
             return exchange
         finally:
             await self._record(conn, provider_id, ordinal, exchange, stop)
+            if run.durable and exchange is not None and exchange.read.status in {OutcomeStatus.FOUND, OutcomeStatus.ABSENT}:
+                await conn.execute(
+                    insert(RemoteLookupRead)
+                    .values(
+                        run_id=run.run_id, request_hash=request_hash, payload=exchange.read.model_dump(mode="json"), http_status=exchange.http_status
+                    )
+                    .on_conflict_do_nothing()
+                )
+                await conn.commit()
 
     async def _load(self, conn: AsyncConnection, provider_id: str) -> _Ledger:
         """Read the ledger and prove it against the attempt log; create it only if there is no history."""
