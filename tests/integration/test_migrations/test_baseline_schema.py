@@ -40,6 +40,7 @@ the offline-mode seed test, which is connection-free by construction.
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 import contextlib
 from datetime import datetime
 import importlib.util
@@ -52,10 +53,11 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 import asyncpg
 import pytest
+import pytest_asyncio
 from sqlalchemy import DateTime, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from alembic import command
 import phaze.models  # noqa: F401  -- registers every table on Base.metadata for the autogenerate diff
@@ -702,6 +704,114 @@ async def test_autogenerate_drift_is_frozen(migrated_engine: AsyncEngine) -> Non
     resolved = _FROZEN_AUTOGEN_DRIFT - drift
     assert not unexpected, f"NEW ORM<->schema drift (add a migration or update the ORM): {sorted(unexpected)}"
     assert not resolved, f"drift silently resolved (adjust _FROZEN_AUTOGEN_DRIFT deliberately): {sorted(resolved)}"
+
+
+# phaze-lw5pr: the unit suite builds its schema with ``create_all`` and production builds it with Alembic. The drift
+# test above compares constraints by NAME and ignores server defaults, so a CHECK whose body changed in the ORM
+# without a migration (same name) or a new ORM ``server_default`` the migrations never added both pass it.
+_REFERENCE_SCHEMA = "orm_reference"
+
+# Columns whose migrated schema carries a server default the ORM declares only as a Python-side ``default=`` with
+# the same value (measured 2026-10-14, head 091). SAFE direction: the ORM always supplies the value. Frozen
+# explicitly -- an entry appearing here is a deliberate decision, never an allow-list to widen to make a red go green.
+_FROZEN_MIGRATED_ONLY_SERVER_DEFAULTS = frozenset(
+    {
+        ("proposals", "status"),
+        ("scan_batches", "status"),
+        ("scan_batches", "total_files"),
+        ("scan_batches", "processed_files"),
+        ("tracklists", "auto_linked"),
+        ("tracklist_tracks", "is_mashup"),
+    }
+)
+
+_CONSTRAINT_DEFS_SQL = """
+    SELECT t.relname, c.conname, pg_get_constraintdef(c.oid)
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = :schema AND c.contype IN ('c', 'u', 'x')
+"""
+_UNIQUE_INDEX_DEFS_SQL = "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = :schema AND indexdef LIKE 'CREATE UNIQUE INDEX%'"
+_SERVER_DEFAULTS_SQL = """
+    SELECT table_name, column_name, column_default
+      FROM information_schema.columns
+     WHERE table_schema = :schema AND column_default IS NOT NULL AND is_generated = 'NEVER'
+"""
+
+
+async def _schema_catalog(conn: AsyncConnection, schema: str, sql: str) -> dict[tuple[str, str], str]:
+    """Return ``{(table, name): definition}`` for ``schema``, with the schema qualifier stripped so two schemas compare."""
+    rows = (await conn.execute(text(sql), {"schema": schema})).all()
+    return {(row[0], row[1]): str(row[2]).replace(f"{schema}.", "").replace("public.", "") for row in rows}
+
+
+async def _orm_tables(conn: AsyncConnection, schema: str) -> set[str]:
+    """Tables ``create_all`` built. Migration-only tables (``alembic_version``, ``files_state_archive``) have no ORM side to drift from."""
+    rows = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = :schema"), {"schema": schema})
+    return set(rows.scalars())
+
+
+@pytest_asyncio.fixture
+async def create_all_reference(migrated_engine: AsyncEngine) -> AsyncGenerator[str]:
+    """Build the ``Base.metadata.create_all`` schema beside the migrated ``public`` one, on the SAME real server.
+
+    ``schema_translate_map`` re-points every table at ``orm_reference``; extensions (``pg_trgm``) live in ``public``
+    and stay resolvable. Same server, same version, same collation -- only the schema builder differs.
+    """
+    async with migrated_engine.begin() as conn:
+        await conn.execute(text(f"CREATE SCHEMA {_REFERENCE_SCHEMA}"))
+        translated = await conn.execution_options(schema_translate_map={None: _REFERENCE_SCHEMA})
+        await translated.run_sync(Base.metadata.create_all)
+    try:
+        yield _REFERENCE_SCHEMA
+    finally:
+        async with migrated_engine.begin() as conn:
+            await conn.execute(text(f"DROP SCHEMA {_REFERENCE_SCHEMA} CASCADE"))
+
+
+@pytest.mark.asyncio
+async def test_constraint_definitions_match_create_all(migrated_engine: AsyncEngine, create_all_reference: str) -> None:
+    """Every CHECK/UNIQUE/EXCLUDE constraint -- and every UNIQUE index -- has the same DEFINITION in both schemas.
+
+    ``test_autogenerate_drift_is_frozen`` compares by name, so a CHECK IN-list that grew a value in the ORM with no
+    migration keeps its name, stays green, and production rejects the value. 47 of 47 constraint definitions were
+    byte-identical when this was written (head 091); any difference now is real drift: add a migration.
+    """
+    async with migrated_engine.connect() as conn:
+        orm_tables = await _orm_tables(conn, create_all_reference)
+        for sql in (_CONSTRAINT_DEFS_SQL, _UNIQUE_INDEX_DEFS_SQL):
+            migrated = {k: v for k, v in (await _schema_catalog(conn, "public", sql)).items() if k[0] in orm_tables}
+            created = await _schema_catalog(conn, create_all_reference, sql)
+            assert migrated and created, "a catalog came back empty: the query or the reference schema is broken, not the schema clean"
+            assert set(migrated) == set(created), (
+                f"constraint/index NAME sets differ: migrated-only {sorted(set(migrated) - set(created))}, create_all-only {sorted(set(created) - set(migrated))}"
+            )
+            differing = {key: (migrated[key], created[key]) for key in migrated if migrated[key] != created[key]}
+            assert not differing, f"same-named constraint/index with a DIFFERENT definition (ORM changed without a migration?): {differing}"
+
+
+@pytest.mark.asyncio
+async def test_server_defaults_match_create_all(migrated_engine: AsyncEngine, create_all_reference: str) -> None:
+    """Server defaults are pinned: only the 6 measured safe-direction columns may exist solely in the migrated schema.
+
+    The dangerous direction -- an ORM ``server_default`` the migrations never added -- is never allowed, and a
+    default whose text differs between the two schemas fails. Anything new on the migrated side must be deliberate.
+    """
+    async with migrated_engine.connect() as conn:
+        orm_tables = await _orm_tables(conn, create_all_reference)
+        migrated = {k: v for k, v in (await _schema_catalog(conn, "public", _SERVER_DEFAULTS_SQL)).items() if k[0] in orm_tables}
+        created = await _schema_catalog(conn, create_all_reference, _SERVER_DEFAULTS_SQL)
+    assert migrated and created, "a server-default catalog came back empty: the query is broken, not the schema clean"
+    orm_only = sorted(set(created) - set(migrated))
+    assert not orm_only, f"ORM server_default with NO migration behind it (production lacks it): {orm_only}"
+    differing = {key: (migrated[key], created[key]) for key in migrated.keys() & created.keys() if migrated[key] != created[key]}
+    assert not differing, f"same column, DIFFERENT server default text: {differing}"
+    migrated_only = frozenset(set(migrated) - set(created))
+    assert migrated_only == _FROZEN_MIGRATED_ONLY_SERVER_DEFAULTS, (
+        f"NEW migrated-only server defaults {sorted(migrated_only - _FROZEN_MIGRATED_ONLY_SERVER_DEFAULTS)}; "
+        f"frozen entries now matching {sorted(_FROZEN_MIGRATED_ONLY_SERVER_DEFAULTS - migrated_only)}"
+    )
 
 
 @pytest.mark.asyncio
