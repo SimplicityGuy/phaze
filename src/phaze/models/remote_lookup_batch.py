@@ -30,7 +30,7 @@ class RemoteLookupWork(TimestampMixin, Base):
     media_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
-    code: Mapped[str | None] = mapped_column(String(64))
+    code: Mapped[str | None] = mapped_column(String(4096))
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

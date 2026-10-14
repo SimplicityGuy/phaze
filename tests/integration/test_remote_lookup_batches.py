@@ -523,3 +523,26 @@ async def test_transport_boundary_refuses_disabled_policy_even_for_previously_mi
         read = await h.lookup.transport.run().read(search_reference(), DiscoveryBudget())
         assert read.code == "disabled_provider"
         assert not h.socket.requests and await count(h.sessions, RemoteTransportAttempt) == 0
+
+
+async def test_provider_outcome_code_retains_the_domain_bound_without_loss(committed_db: Any) -> None:
+    code = "synthetic_" + "x" * 256
+
+    class LongCode(ExampleCatalog):
+        async def discover(self, context: Any, budget: Any, cursor: Any, effects: Any) -> DiscoveryOutcome:
+            del budget, cursor, effects
+            return DiscoveryOutcome(
+                status="absent", code=code, scope=context.recording_id, completeness=Completeness(state="complete", reason="synthetic scope")
+            )
+
+    async with harness(committed_db, {}, bindings=(RemoteProviderBinding(LongCode(), EXAMPLE_PROFILE),)) as h:
+        await seed(h.sessions)
+        batch_id = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch_id)
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id))
+        assert await execute_work(h.sessions, h.lookup, work_id) == "completed"
+        async with h.sessions() as session:
+            work = await session.get(RemoteLookupWork, work_id)
+            assert work.code == code and work.result["outcome"]["code"] == code
+        assert not h.socket.requests

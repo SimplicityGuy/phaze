@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("media_id", sa.UUID(), nullable=False),
         sa.Column("provider_id", sa.String(64), nullable=False),
         sa.Column("status", sa.String(16), nullable=False),
-        sa.Column("code", sa.String(64)),
+        sa.Column("code", sa.String(4096)),
         sa.Column("not_before", sa.DateTime(timezone=True)),
         sa.Column("lease_until", sa.DateTime(timezone=True)),
         sa.Column("failures", sa.Integer(), nullable=False),
