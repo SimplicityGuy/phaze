@@ -45,12 +45,15 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tomllib
 from typing import Any
 
 from packaging.requirements import Requirement
 import pytest
 import yaml
+
+from tests._child_process_budget import CHILD_PROCESS_HANG_GUARD_SEC
 
 
 # tests/shared/test_ci_workflow_wiring.py -> parents[2] == repo root.
@@ -270,6 +273,39 @@ def test_bucket_recipe_emits_legacy_junit_xml_for_codecov() -> None:
     assert re.search(r"(?:^|\s)-o\s+junit_family=legacy(?:\s|$)", recipe_body) is not None, (
         f"test-bucket recipe must use pytest's legacy JUnit family:\n{recipe_body}"
     )
+
+
+def test_bucket_recipe_dumps_a_hung_test_before_the_job_limit() -> None:
+    """phaze-gurn3: a hung shard must name its test before CI's job limit cancels it silently.
+
+    The threshold must sit below the test job's ``timeout-minutes``, or the dump never prints.
+    """
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "test-bucket")
+    match = re.search(r"(?:^|\s)-o\s+faulthandler_timeout=(\d+)(?:\s|$)", recipe_body)
+    assert match is not None, f"test-bucket recipe lost its hung-test faulthandler dump:\n{recipe_body}"
+    job_limit_sec = 60 * int(_load_workflow()["jobs"]["test"]["timeout-minutes"])
+    assert 0 < int(match.group(1)) < job_limit_sec
+
+
+def test_faulthandler_timeout_names_the_hung_test(tmp_path: Path) -> None:
+    """Runs pytest's own ``faulthandler_timeout`` (the backstop above) against a test that outlives it.
+
+    Checked here rather than assumed: the dump must carry the stuck test's own frame, or the
+    backstop would still leave a hang anonymous.
+    """
+    (tmp_path / "test_sleeper.py").write_text("import time\n\n\ndef test_outlives_the_threshold():\n    time.sleep(3)\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "test_sleeper.py", "-p", "no:cacheprovider", "-q", "-o", "faulthandler_timeout=1"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=CHILD_PROCESS_HANG_GUARD_SEC,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Timeout (0:00:01)!" in output, output
+    assert "in test_outlives_the_threshold" in output, output
 
 
 def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
