@@ -111,21 +111,15 @@ async def execute_work(sessions: async_sessionmaker[AsyncSession], service: Remo
         result = await service.queued_lookup(LookupCommand(media_id=media_id, provider_id=provider_id), work_id)
         outcomes = (result.outcome, *result.warnings)
         retry = next((item for item in outcomes if item.status == "retry"), None)
+        stop_codes = {"transport_stopped", "robots_disallow", "challenge", "disabled_provider", "credential_missing", "run_budget_exhausted"}
+        binding = service.policy.bindings.get(provider_id)
+        if binding is not None:
+            stop_codes.update(f"http_{status}" for status in binding.profile.stop_statuses)
         blocked = next(
             (
                 item
                 for item in outcomes
-                if item.code
-                in {
-                    "transport_stopped",
-                    "robots_disallow",
-                    "challenge",
-                    "http_403",
-                    "http_429",
-                    "disabled_provider",
-                    "credential_missing",
-                    "run_budget_exhausted",
-                }
+                if item.code in stop_codes or (item.code.startswith("robots_") and item.code.removeprefix("robots_") in stop_codes)
             ),
             None,
         )

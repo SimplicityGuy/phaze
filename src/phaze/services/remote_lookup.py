@@ -219,7 +219,8 @@ def operator_outcome(status: OutcomeStatus, code: str, *, evidence: tuple[str, .
     if code in _MESSAGES:
         kind, message = _MESSAGES[code]
     elif code.startswith("robots_"):
-        kind, message = "unavailable", f"Fetching the provider's robots.txt failed ({code.removeprefix('robots_')}), so nothing else was sent."
+        kind = _MESSAGES.get(code.removeprefix("robots_"), (_STATUS_FALLBACK[status], ""))[0]
+        message = f"Fetching the provider's robots.txt failed ({code.removeprefix('robots_')}), so nothing else was sent."
     elif code.startswith("http_5"):
         kind, message = "retry", "The provider had a server error. Try again later."
     else:

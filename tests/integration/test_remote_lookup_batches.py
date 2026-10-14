@@ -305,6 +305,50 @@ async def test_robots_continuation_and_missing_recording_explicit_outcome(commit
         assert len(h.socket.requests) == 2
 
 
+@pytest.mark.parametrize(
+    ("http_status", "code", "expected"),
+    [
+        (429, "robots_http_429", "blocked"),
+        (451, "robots_http_451", "blocked"),
+        (503, "robots_http_503", "deferred"),
+        (200, "robots_challenge", "blocked"),
+    ],
+)
+async def test_robots_failures_preserve_retry_or_stop_and_resume_saved_work(committed_db: Any, http_status: int, code: str, expected: str) -> None:
+    from tests.integration.test_remote_lookup import Reply
+
+    response = Reply(status=http_status, headers={"retry-after": "12", **({"cf-mitigated": "challenge"} if http_status == 200 else {})})
+    routes = {**ExampleUpstream().routes(), "/robots.txt": lambda _request: response}
+    binding = RemoteProviderBinding(
+        ExampleCatalog(), EXAMPLE_PROFILE.model_copy(update={"robots": "respect", "stop_statuses": frozenset({403, 429, 451})})
+    )
+    async with harness(committed_db, routes, bindings=(binding,)) as h:
+        await seed(h.sessions)
+        batch = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch)
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id))
+        await h.clock.sleep(6)
+        assert await execute_work(h.sessions, h.lookup, work_id) == expected
+        async with h.sessions() as session:
+            work = await session.get(RemoteLookupWork, work_id)
+            assert work.code == code
+            assert work.result["outcome"]["status"] == ("unavailable" if expected == "blocked" else "retry")
+        assert [urlsplit(request.url).path for request in h.socket.requests] == ["/robots.txt"]
+        response = Reply(body=b"User-agent: *\nAllow: /", headers={"content-type": "text/plain"})
+        if expected == "blocked":
+            await h.clock.sleep(12)
+            assert await execute_work(h.sessions, h.lookup, work_id) == "blocked"
+            assert len(h.socket.requests) == 1
+            await h.lookup.clear_stop(EXAMPLE, operator="admin", reason="Synthetic robots rate limit resolved")
+        else:
+            await h.clock.sleep(12)
+        assert await execute_work(h.sessions, h.lookup, work_id) == "deferred"
+        await h.clock.sleep(6)
+        assert await execute_work(h.sessions, h.lookup, work_id) == "completed"
+        assert [urlsplit(request.url).path for request in h.socket.requests] == ["/robots.txt", "/robots.txt", "/search"]
+
+
 async def test_independent_worker_process_observes_live_snapshot_without_restart(committed_db: Any) -> None:
     import json
 
