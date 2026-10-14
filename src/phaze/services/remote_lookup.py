@@ -123,6 +123,10 @@ def effective_profile(profile: RemoteHostProfile, settings: RemoteProviderSettin
 # Every code a lookup can surface, mapped to what the operator can do about it. None of them means "no tracklist".
 # ---------------------------------------------------------------------------------------------------------------
 _MESSAGES: dict[str, tuple[LookupStatus, str]] = {
+    "credential_missing": (
+        "unavailable",
+        "This provider is enabled but its required credential is missing. Configure its deployment secret and restart; nothing was sent.",
+    ),
     "disabled_provider": ("unavailable", "This provider is turned off in settings, so nothing was requested."),
     "no_usable_hint": (
         "unavailable",

@@ -65,7 +65,7 @@ class RemotePolicy:
             config = ProviderPolicy.model_validate(overrides.get(policy_key(provider_id), defaults))
             if config.min_interval_seconds < profile.min_gap_seconds or config.max_requests_per_run > profile.per_run_budget:
                 raise ValueError(
-                    f"{provider_id}: interval must be at least {profile.min_gap_seconds:g}s and per-run budget at most {profile.per_run_budget}"
+                    f"{binding.provider.descriptor.display_name}: interval must be at least {profile.min_gap_seconds:g}s and per-run budget at most {profile.per_run_budget}"
                 )
             missing = bool(binding.credential_name and not base.credentials.get(binding.credential_name))
             reason = "credential_missing" if missing else ("disabled_provider" if not config.enabled else None)

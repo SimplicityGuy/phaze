@@ -33,9 +33,10 @@ def _source(path: Path) -> str:
     return _JINJA.sub("", path.read_text())
 
 
-def _forms() -> list[tuple[str, BeautifulSoup]]:
+def _forms(*, include_global: bool = False) -> list[tuple[str, BeautifulSoup]]:
     found = []
-    for path in _PANEL_TEMPLATES:
+    paths = (*_PANEL_TEMPLATES, _SRC / "templates/admin/partials/_remote_providers.html") if include_global else _PANEL_TEMPLATES
+    for path in paths:
         for form in BeautifulSoup(_source(path), "html.parser").find_all("form"):
             found.append((path.name, form))
     return found
@@ -101,7 +102,7 @@ def test_decision_forms_carry_the_compare_and_set_values_and_a_server_minted_dec
 def test_reopen_and_clear_stop_require_a_labelled_reason() -> None:
     required = {"data-reopen-form": "reopen", "data-clear-stop-form": "clear-stop"}
     seen = set()
-    for _name, form in _forms():
+    for _name, form in _forms(include_global=True):
         for marker, label in required.items():
             if form.has_attr(marker):
                 seen.add(label)
