@@ -11,7 +11,7 @@
         its leave transition finishes (whether triggered by the auto-dismiss timeout above or an
         Undo click) keeps the visible 10s window intact while actually detaching the node. #}
      @transitionend="if (!show) $el.remove()"
-     class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
+     class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border px-4 py-3 flex items-center gap-3 text-sm">
     <span>{{ toast_message }}</span>
     {% if is_bulk is defined and is_bulk %}
     {# undo_target/undo_swap: the v7 shell has no #duplicates-list (its sole definer, list.html,
