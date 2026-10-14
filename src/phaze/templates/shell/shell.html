@@ -188,7 +188,9 @@
                 // dag-seed-analyzeOrphan (tests/shared/core/test_workspace_poll_seeds.py).
                 metadataOrphan: 0, analyzeOrphan: 0,
                 // Summary Recent Activity uses null as an explicit degraded/unknown value.
-                summaryRecentLive: null, summaryRecentToday: null, summaryRecentLifetime: null
+                summaryRecentLive: null, summaryRecentToday: null, summaryRecentLifetime: null,
+                // phaze-2dv18: the Summary flow card's figures, pushed by the same poll (null = not yet pushed / unmeasured).
+                summaryFlow: null
             });
             // phaze-s8xtd: merge the server's numbers over the defaults above, before any binding evaluates. (Double quotes on
             // purpose: test_theme_and_store_preserved counts the single-quoted literal to prove the store is defined ONCE.)

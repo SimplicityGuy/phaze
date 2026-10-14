@@ -78,6 +78,9 @@
 <p id="dag-seed-summaryRecentLive" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLive = {{ summary_recent_live if summary_recent_live is not none else 'null' }}" class="hidden"></p>
 <p id="dag-seed-summaryRecentToday" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentToday = {{ summary_recent_today if summary_recent_today is not none else 'null' }}" class="hidden"></p>
 <p id="dag-seed-summaryRecentLifetime" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLifetime = {{ summary_recent_lifetime if summary_recent_lifetime is not none else 'null' }}" class="hidden"></p>
+{# phaze-2dv18: the Summary Pipeline Flow card's figures (nullable ints; null = unmeasured, rendered as an em-dash).
+   Single-quoted attribute on purpose: tojson emits double quotes and escapes ' itself. #}
+<p id="dag-seed-summaryFlow" hx-swap-oob="true" x-init='$store.pipeline.summaryFlow = {{ summary_flow_counts | tojson }}' class="hidden"></p>
 {# Phase 44 (44-04): re-render the Analysis Health card (ANALYSIS_FAILED + STALLED)
    OUT-OF-BAND on the same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap
    never reaches it). Same id (#analysis-health-card) is the OOB contract; oob=True flips the

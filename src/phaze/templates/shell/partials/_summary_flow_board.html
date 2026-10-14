@@ -8,6 +8,7 @@
 
    Unknown is never zero: an unmeasured edge has width None and is drawn dashed at a fixed stroke, a measured
    zero keeps its own hairline, and both read in text as a dash or a 0 respectively. #}
+{% import "shell/partials/_flow_figure.html" as flow %}
 {% set _nodes = summary.flow %}
 {% set _box = {
     0: {"x": 10, "y": 72, "w": 110},
@@ -32,6 +33,14 @@
 {%- elif node.href == '/s/apply' -%}{{ node.done | thousands }} files executed, {{ node.detail }}
 {%- elif node.href == '/s/discover' -%}{{ node.done | thousands }} files
 {%- else -%}{{ node.done | thousands }} of {{ node.total | thousands }} files
+{%- endif -%}
+{%- endmacro %}
+{# The text list's twin of _value: the same words with each figure bound live (HTML context, so spans). #}
+{% macro _value_live(node) -%}
+{%- if node.href == '/s/rename' -%}{{ flow.fig(node.store_keys.total, node.total) }} {{ node.detail_suffix }}
+{%- elif node.href == '/s/apply' -%}{{ flow.fig(node.store_keys.done, node.done) }} files executed, {{ flow.fig(node.store_keys.total, node.total) }} {{ node.detail_suffix }}
+{%- elif node.href == '/s/discover' -%}{{ flow.fig(node.store_keys.done, node.done) }} files
+{%- else -%}{{ flow.fig(node.store_keys.done, node.done) }} of {{ flow.fig(node.store_keys.total, node.total) }} files
 {%- endif -%}
 {%- endmacro %}
 {% macro _status(node) -%}
@@ -64,7 +73,7 @@
             <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="56" rx="6"
                 {% if outlined %}stroke-width="3" class="fill-white stroke-amber-500 dark:fill-phaze-panel dark:stroke-amber-400"{% else %}stroke-width="1" class="fill-white stroke-gray-300 dark:fill-phaze-panel dark:stroke-phaze-border"{% endif %}></rect>
             <text x="{{ box.x + 8 }}" y="{{ box.y + 14 }}" font-size="9" letter-spacing="1.5" class="fill-gray-900 uppercase dark:fill-gray-100">{{ node.name }}</text>
-            <text x="{{ box.x + 8 }}" y="{{ box.y + 29 }}" font-size="10" font-weight="600" class="fill-gray-900 font-mono dark:fill-gray-100">{% if node.href == '/s/discover' %}{{ node.done | thousands }}{% elif node.href == '/s/rename' %}{{ node.total | thousands }} waiting{% elif node.href == '/s/apply' %}{{ node.done | thousands }} executed{% else %}{{ node.done | thousands }} / {{ node.total | thousands }}{% endif %}</text>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 29 }}" font-size="10" font-weight="600" class="fill-gray-900 font-mono dark:fill-gray-100">{% if node.href == '/s/discover' %}{{ flow.fig_svg(node.store_keys.done, node.done) }}{% elif node.href == '/s/rename' %}{{ flow.fig_svg(node.store_keys.total, node.total) }} waiting{% elif node.href == '/s/apply' %}{{ flow.fig_svg(node.store_keys.done, node.done) }} executed{% else %}{{ flow.fig_svg(node.store_keys.done, node.done) }} / {{ flow.fig_svg(node.store_keys.total, node.total) }}{% endif %}</text>
             <text x="{{ box.x + 8 }}" y="{{ box.y + 41 }}" font-size="9" class="fill-gray-600 dark:fill-gray-300">{{ node.status.label }}</text>
             {% if node.status.failed or node.status.missing %}
             <text x="{{ box.x + 8 }}" y="{{ box.y + 52 }}" font-size="9" class="fill-red-700 dark:fill-red-300">{% if node.status.failed %}{{ node.status.failed | thousands }} failed{% endif %}{% if node.status.failed and node.status.missing %} · {% endif %}{% if node.status.missing %}{{ node.status.missing | thousands }} missing{% endif %}</text>
@@ -79,10 +88,10 @@
     <h3>Pipeline flow values</h3>
     <ul>
         {% for node in _nodes %}
-        <li data-flow-text-node="{{ node.name }}">{{ node.name }}: {{ _value(node) }}; status {{ _status(node) }}{% if _bottleneck.node == node.name %}; bottleneck{% endif %}</li>
+        <li data-flow-text-node="{{ node.name }}">{{ node.name }}: {{ _value_live(node) }}; status {{ _status(node) }}{% if _bottleneck.node == node.name %}; bottleneck{% endif %}</li>
         {% endfor %}
         {% for edge in summary.flow_edges %}
-        <li data-flow-text-edge="{{ edge.id }}">{{ edge.source }} to {{ edge.target }}: {{ edge.value | thousands }} {{ edge.unit }}</li>
+        <li data-flow-text-edge="{{ edge.id }}">{{ edge.source }} to {{ edge.target }}: {{ flow.fig(edge.key, edge.value) }} {{ edge.unit }}</li>
         {% endfor %}
     </ul>
 </div>

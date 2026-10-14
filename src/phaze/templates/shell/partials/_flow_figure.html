@@ -1,0 +1,12 @@
+{# phaze-2dv18: one Summary flow figure, live. The server renders the first paint; the 5s /pipeline/stats poll then
+   moves $store.pipeline.summaryFlow (routers/shell/summary.py flow_counts) and x-text re-renders it, so the card, the
+   board and the text list can never hold a number the rail has already moved past. null renders as an em-dash.
+   Two macros with literal tag names rather than one with an interpolated tag: a template variable in tag-name position
+   is the XSS shape Semgrep's no-interpolation-in-tag rule flags, and nothing here needs it. #}
+{% macro fig(key, value) -%}
+<span x-text="formatCount($store.pipeline.summaryFlow?.{{ key }})">{{ value | thousands }}</span>
+{%- endmacro %}
+{# The board's <svg> variant: an HTML span there is an unknown SVG element and paints nothing, so it is a tspan. #}
+{% macro fig_svg(key, value) -%}
+<tspan x-text="formatCount($store.pipeline.summaryFlow?.{{ key }})">{{ value | thousands }}</tspan>
+{%- endmacro %}

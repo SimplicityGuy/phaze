@@ -41,7 +41,7 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline.common import capture_read_degradations, measure_read
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import done_clause, inflight_clause
-from phaze.utils.humanize import NO_DATA, format_count
+from phaze.utils.humanize import format_count
 from phaze.web.template_globals import PAGE_NAMES, open_label
 
 
@@ -273,6 +273,38 @@ def _flow_values(
     )
 
 
+def flow_counts(values: _FlowValues) -> dict[str, int | None]:
+    """Every figure the Summary flow card, board and text list print, keyed by the store name they bind to.
+
+    phaze-2dv18: ONE definition feeds both the server-rendered first paint (``summary.flow_counts``) and the
+    5s ``/pipeline/stats`` poll (``$store.pipeline.summaryFlow``), so a card cannot hold a figure the poll has
+    already moved past. ``None`` is an unmeasured figure and renders as an em-dash, never as a zero.
+    """
+    return {
+        "discovered": values.discovered,
+        "metadataDone": values.metadata["done"],
+        "metadataTotal": values.metadata_total,
+        "analyzeDone": values.analyze["done"],
+        "analyzeTotal": values.analyze_total,
+        "convergence": values.convergence,
+        "proposedDone": values.proposed,
+        "approvedFiles": values.approved_files,
+        "pendingRows": values.pending_rows,
+        "approvedRows": values.approved_rows,
+        "executed": values.executed,
+    }
+
+
+def build_flow_counts(
+    stage_progress: dict[str, dict[str, int | None]],
+    proposal_pending: int | None,
+    proposal_approved: int | None,
+    failures: Mapping[str, tuple[str, ...]] | None,
+) -> dict[str, int | None]:
+    """:func:`flow_counts` over raw reads -- the entry point the shell poll uses."""
+    return flow_counts(_flow_values(stage_progress, proposal_pending, proposal_approved, failures))
+
+
 def _flow_dag_nodes(values: _FlowValues) -> list[dict[str, Any]]:
     """The four progress-bucket flow tiles: Discover, Metadata, Analyze, Propose."""
     return [
@@ -281,6 +313,7 @@ def _flow_dag_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/discover",
             "done": values.discovered,
             "total": values.discovered,
+            "store_keys": {"done": "discovered", "total": "discovered"},
             "status": _flow_stage_status({"done": values.discovered}, values.discovered),
         },
         {
@@ -288,6 +321,7 @@ def _flow_dag_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/metadata",
             "done": values.metadata["done"],
             "total": values.metadata_total,
+            "store_keys": {"done": "metadataDone", "total": "metadataTotal"},
             "status": _flow_stage_status(values.metadata, values.metadata_total),
         },
         {
@@ -295,6 +329,7 @@ def _flow_dag_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/analyze",
             "done": values.analyze["done"],
             "total": values.analyze_total,
+            "store_keys": {"done": "analyzeDone", "total": "analyzeTotal"},
             "status": _flow_stage_status(values.analyze, values.analyze_total),
         },
         {
@@ -302,6 +337,7 @@ def _flow_dag_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/propose",
             "done": values.proposed,
             "total": values.convergence,
+            "store_keys": {"done": "proposedDone", "total": "convergence"},
             "status": _flow_stage_status({"done": values.proposed}, values.convergence),
         },
     ]
@@ -315,6 +351,8 @@ def _flow_review_apply_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/rename",
             "done": None,
             "total": values.pending_rows,
+            "store_keys": {"done": None, "total": "pendingRows"},
+            "detail_suffix": "awaiting decision",
             "detail": f"{format_count(values.pending_rows)} awaiting decision",
             "status": _flow_readiness_status(values.pending_rows, "attention"),
         },
@@ -323,7 +361,9 @@ def _flow_review_apply_nodes(values: _FlowValues) -> list[dict[str, Any]]:
             "href": "/s/apply",
             "done": values.executed,
             "total": values.approved_rows,
-            "detail": f"{values.approved_rows if values.approved_rows is not None else NO_DATA} approved now",
+            "store_keys": {"done": "executed", "total": "approvedRows"},
+            "detail_suffix": "approved now",
+            "detail": f"{format_count(values.approved_rows)} approved now",
             "status": _flow_readiness_status(values.approved_rows, "ready"),
         },
     ]
@@ -378,24 +418,24 @@ def _build_flow_edges(values: _FlowValues) -> list[dict[str, Any]]:
     ``value`` and ``width`` ``None`` and ``state`` ``"unknown"`` -- it is never drawn as zero.
     """
     specs = (
-        ("discover-metadata", "Discover", "Metadata", values.discovered, "files discovered"),
-        ("discover-analyze", "Discover", "Analyze", values.discovered, "files discovered"),
-        ("metadata-join", "Metadata", "Propose", values.metadata["done"], "files with metadata"),
-        ("analyze-join", "Analyze", "Propose", values.analyze["done"], "files analyzed"),
-        ("join-propose", "Metadata + Analyze", "Propose", values.convergence, "files with both, ready to propose"),
-        ("propose-review", "Propose", "Review", values.proposed, "files with a proposal"),
-        ("review-apply", "Review", PAGE_NAMES["apply"], values.approved_files, "files approved to execute"),
+        ("discover-metadata", "Discover", "Metadata", values.discovered, "files discovered", "discovered"),
+        ("discover-analyze", "Discover", "Analyze", values.discovered, "files discovered", "discovered"),
+        ("metadata-join", "Metadata", "Propose", values.metadata["done"], "files with metadata", "metadataDone"),
+        ("analyze-join", "Analyze", "Propose", values.analyze["done"], "files analyzed", "analyzeDone"),
+        ("join-propose", "Metadata + Analyze", "Propose", values.convergence, "files with both, ready to propose", "convergence"),
+        ("propose-review", "Propose", "Review", values.proposed, "files with a proposal", "proposedDone"),
+        ("review-apply", "Review", PAGE_NAMES["apply"], values.approved_files, "files approved to execute", "approvedFiles"),
     )
-    widest = max((value for *_rest, value, _unit in specs if value), default=0)
+    widest = max((spec[3] for spec in specs if spec[3]), default=0)
     edges = []
-    for edge_id, source, target, value, unit in specs:
+    for edge_id, source, target, value, unit, key in specs:
         if value is None:
             width, state = None, "unknown"
         elif value == 0:
             width, state = _EDGE_ZERO_WIDTH, "empty"
         else:
             width, state = round(_EDGE_MIN_WIDTH + (_EDGE_MAX_WIDTH - _EDGE_MIN_WIDTH) * value / widest, 1), "flow"
-        edges.append({"id": edge_id, "source": source, "target": target, "value": value, "unit": unit, "width": width, "state": state})
+        edges.append({"id": edge_id, "source": source, "target": target, "value": value, "key": key, "unit": unit, "width": width, "state": state})
     return edges
 
 
@@ -625,6 +665,7 @@ def _derive_summary_overview(stage_progress: dict[str, dict[str, int | None]], i
         "proposal_pending": values.pending_rows,
         "proposal_approved": values.approved_rows,
         "flow": flow,
+        "flow_counts": flow_counts(values),
         "flow_edges": _build_flow_edges(values),
         "attention": attention,
         "recommended": recommended,
