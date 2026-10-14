@@ -149,8 +149,13 @@ are; this difference must **never** be normalized away.
 
 ### Velocity
 
-The operator-selected cohort is the next 20 completed beads after 2026-10-11T19:04:16Z, grouped by
-change type. All 20 are accepted-review joins. **0** have an authoritative original work start, so
+The cohort is the next 20 completed beads after 2026-10-11T19:04:16Z, grouped by change type. The operator
+selected it on 2026-10-11 (phaze-x45ht). Question as put: *"Before the velocity pilots run, which
+observation cohort should they use? Repairs and coverage backfills can proceed without this choice."*
+Answer as given (selected option label, verbatim): *"Next 20 completed beads, grouped by change type"*.
+Durable record: the recovered-decision comments on bead `phaze-x45ht` and the
+[PD manifest](pilot-disposition-manifest.md#observation-cohort-and-outcome-authority).
+All 20 are accepted-review joins. **0** have an authoritative original work start, so
 there are **0** velocity joins. **No accepted-bead velocity, paired-gain or stable-p95 claim is
 made.**
 

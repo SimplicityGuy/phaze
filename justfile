@@ -717,6 +717,13 @@ vulture:
 #
 # Pinned by `test_running_the_shard_flag_set_actually_writes_no_report`, which RUNS these flags
 # rather than reading them, because `--cov-report=` looks like a reset and is not one.
+#
+# phaze-gurn3: `-o faulthandler_timeout=300` is a BACKSTOP, not a fix. Under `-q` a hung test
+# prints nothing, so three CI hangs of the shared-telemetry shard burned the 15-minute job limit
+# without naming a test. Any test still running after 300 s now gets every thread's stack dumped
+# to the log, test function included; the run is not stopped or failed, so a legitimately slow
+# test that trips it costs only log noise. In all three hangs the stuck test started 3m38s-3m40s
+# into the job, so a 300 s threshold dumps with about 6 minutes of the 15-minute limit to spare.
 [doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. MODE is serial or parallel.')]
 [group('test')]
 test-bucket NAME PATHS MODE="serial":
@@ -739,7 +746,7 @@ test-bucket NAME PATHS MODE="serial":
         parallel) xdist_args=(-n auto) ;;
         *) echo "❌ MODE must be serial or parallel" >&2; exit 2 ;;
     esac
-    PHAZE_COVERAGE_GREENLET=greenlet COVERAGE_FILE=".coverage.${name}" uv run pytest "${path_args[@]}" "${xdist_args[@]}" --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
+    PHAZE_COVERAGE_GREENLET=greenlet COVERAGE_FILE=".coverage.${name}" uv run pytest "${path_args[@]}" "${xdist_args[@]}" --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -o faulthandler_timeout=300 -q
 
 # phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
 #

@@ -549,8 +549,23 @@ is visible everywhere. The **gate** is deliberately narrow:
   only the `src/phaze/**.py` files that bead changed against `--base-ref` (committed, staged
   *and* unstaged, so the FILE SELECTION itself is useful mid-flight even though artifact reuse is
   not), names every file it checked, and prints the **uncovered branch line numbers** rather than
-  a bare percentage. Raising is welcome, holding steady is fine, **lowering fails the bead**.
-  Files the bead did not touch are out of scope.
+  a bare percentage. Files the bead did not touch are out of scope.
+- **The gate compares the uncovered-branch COUNT (`num_branches - covered_branches`), not the
+  percentage.** Lowering it is welcome, holding it steady is fine, **raising it fails the bead**.
+  A ratio moves with its denominator, so the old comparison failed a bead that merely removed
+  *covered* branches (`phaze-n8o9p`: 44/46 → 42/44, two uncovered before and after, 95.65% →
+  95.45%); the count does not. The same rule fails a bead that adds ten branches and covers nine —
+  the count rose by one although the ratio did — deliberately: cover it, or say in the bead why it
+  is unreachable. **The hole, stated plainly:** removing untested branches while adding the same
+  number of new untested ones holds the count steady, so it passes. Every verdict line prints
+  covered/total/uncovered for baseline and current. A baseline row recorded without
+  `covered_branches` cannot yield a count, falls back to the old ratio comparison for that file
+  alone, and the verdict line says `ratio (legacy baseline)`.
+
+  > **Operator decision 2026-10-13.** Question as put: *"phaze-pms85 is a design question
+  > (branch-check: ratio vs uncovered COUNTS). How should I dispatch it?"* Answer as given
+  > (selected option label, verbatim): *"Implement counts-based gate (Recommended)"*. Durable
+  > record: bead `phaze-pms85`.
 - **It fails closed on a missing baseline.** Only `phaze-bk9el.1` may pass
   `--allow-missing-baseline` — it cannot be blocked by a check consuming the artifact it exists to
   produce. **No other bead should pass that flag**; seeing it is a signal something is wrong. An

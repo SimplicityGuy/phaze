@@ -91,26 +91,85 @@ def test_a_file_that_lowers_branch_coverage_fails(tmp_path: Path, capsys: pytest
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "src/phaze/core/job_runner.py" in out
-    assert "lowered branch coverage" in out
+    assert "left more branches uncovered" in out
 
 
-@pytest.mark.parametrize("covered,total,missing", [(42, 44, [[120, 121], [204, -1]]), (43, 46, [[120, 121], [204, -1], [250, 251]])])
-def test_count_diagnostics_never_replace_ratio_guard(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], covered: int, total: int, missing: list[list[int]]
-) -> None:
-    """Canonical pms85 unchanged misses and genuinely new misses both retain the existing refusal."""
+def _counts_baseline(tmp_path: Path, path: str, *, covered: int, total: int, missing: list[list[int]]) -> Path:
+    baseline = tmp_path / "baseline.json"
+    row = {**_summary(num_branches=total, covered=covered), "missing_branches": missing}
+    baseline.write_text(json.dumps({"files": {path: row}}))
+    return baseline
+
+
+def test_removing_covered_branches_with_a_flat_uncovered_count_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-pms85 worked instance (phaze-n8o9p): 44/46 -> 42/44, uncovered flat at 2, ratio 95.65% -> 95.45%.
+
+    Two COVERED branches were deleted; nothing became less tested. The ratio gate failed this bead.
+    """
     module = _load()
     path = "src/phaze/a.py"
+    missing = [[120, 121], [204, -1]]
+    coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=44, covered=42), "missing_branches": missing}})
+    baseline = _counts_baseline(tmp_path, path, covered=44, total=46, missing=missing)
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 0
+    out = capsys.readouterr().out
+    assert "42/44 covered, 2 uncovered" in out
+    assert "44/46 covered, 2 uncovered" in out
+    assert "judged by uncovered count" in out
+    assert "baseline [covered=44, total=46, missing=2]" in out
+    assert "current [covered=42, total=44, missing=2]" in out
+    assert "inherited coordinates: 120->121, 204->-1; newly missing coordinates: none" in out
+
+
+@pytest.mark.parametrize(
+    "covered,total,missing",
+    [
+        (43, 46, [[120, 121], [204, -1], [250, 251]]),
+        # Better ratio (95.71% vs 95.65%) yet one MORE branch is untested: still a regression.
+        (67, 70, [[120, 121], [204, -1], [250, 251]]),
+    ],
+)
+def test_a_risen_uncovered_count_fails_even_when_the_ratio_is_the_same_or_better(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], covered: int, total: int, missing: list[list[int]]
+) -> None:
+    module = _load()
+    path = "src/phaze/a.py"
+    baseline = _counts_baseline(tmp_path, path, covered=44, total=46, missing=[[120, 121], [204, -1]])
     coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=total, covered=covered), "missing_branches": missing}})
-    baseline = tmp_path / "baseline.json"
-    baseline.write_text(json.dumps({"files": {path: {**_summary(num_branches=46, covered=44), "missing_branches": [[204, -1], [120, 121]]}}}))
+
     assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 1
     out = capsys.readouterr().out
-    assert "baseline [covered=44, total=46, missing=2]" in out
-    assert f"current [covered={covered}, total={total}, missing={total - covered}]" in out
-    assert "inherited coordinates: 120->121, 204->-1" in out
-    assert f"newly missing coordinates: {'none' if covered == 42 else '250->251'}" in out
-    assert "diagnostics only" in out
+    assert f"{covered}/{total} covered, {total - covered} uncovered" in out
+
+
+def test_adding_ten_branches_and_covering_nine_fails_by_design(tmp_path: Path) -> None:
+    """The accepted weakness of the count rule, pinned so it stays a decision and not an accident."""
+    module = _load()
+    path = "src/phaze/a.py"
+    baseline = _counts_baseline(tmp_path, path, covered=44, total=46, missing=[[120, 121], [204, -1]])
+    coverage = _write_coverage(
+        tmp_path, {path: {"summary": _summary(num_branches=56, covered=53), "missing_branches": [[120, 121], [204, -1], [300, 301]]}}
+    )
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 1
+
+
+def test_a_legacy_baseline_row_without_counts_falls_back_to_the_ratio(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load()
+    path = "src/phaze/a.py"
+    coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=44, covered=42), "missing_branches": []}})
+    baseline = _write_baseline(tmp_path, {path: 95.65})
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 1
+    assert "judged by ratio (legacy baseline)" in capsys.readouterr().out
+
+
+def test_the_uncovered_lines_are_labelled_as_possibly_predating_the_bead(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load()
+    path = "src/phaze/a.py"
+    coverage = _write_coverage(tmp_path, {path: {"summary": _summary(num_branches=10, covered=8), "missing_branches": [[3, 4]]}})
+    baseline = _counts_baseline(tmp_path, path, covered=8, total=10, missing=[[3, 4]])
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", path) == 0
+    assert "may predate this bead" in capsys.readouterr().out
 
 
 def test_legacy_baseline_arc_identity_is_unknown(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -222,7 +281,7 @@ def test_uncovered_branch_line_numbers_are_reported(tmp_path: Path, capsys: pyte
 
     _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/a.py")
 
-    assert "uncovered branch lines: 42, 77" in capsys.readouterr().out
+    assert "uncovered branch lines (may predate this bead): 42, 77" in capsys.readouterr().out
 
 
 def test_a_report_without_branch_data_fails_closed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
