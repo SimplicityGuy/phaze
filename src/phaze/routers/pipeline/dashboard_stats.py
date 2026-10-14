@@ -50,8 +50,10 @@ from phaze.services.pipeline import (
     stage_orphan_counts_known,
 )
 from phaze.services.pipeline.attention_snapshot import get_attention_counts, get_attention_snapshot
+from phaze.services.pipeline.common import measure_read
 from phaze.services.pipeline.review_counts import get_cached_review_counts
 from phaze.services.pipeline_counters import read_counters
+from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import MISSING_BUCKET
 from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
@@ -622,7 +624,10 @@ async def pipeline_stats_partial(
     # Phase 82 (D-05, READ-02): ONE get_stage_progress read feeds the derived seven-key `stats` dict
     # (via _derive_stats -- the removed FileRecord.state get_pipeline_stats) AND the per-node DAG
     # context below (passed through so the heavy multi-count read runs once on the hot 5s poll).
-    stage_progress = await get_stage_progress(session)
+    # phaze-2dv18: the read-failure map rides along so the Summary flow figures pushed below keep an unmeasured
+    # count as unknown (an em-dash) instead of the read's fallback zero -- the same contract the Summary page renders.
+    flow_read_failures: dict[str, tuple[str, ...]] = {}
+    stage_progress = await get_stage_progress(session, read_failures=flow_read_failures)
     stats = _derive_stats(stage_progress)
 
     # Phase 95 (CONSOLE-04, DENORM-01 revisit): the ~12 reads below used to run as SERIAL awaits on
@@ -644,6 +649,9 @@ async def pipeline_stats_partial(
     # request `session` directly (unchanged from before this refactor) -- safe because nothing else
     # touches that session concurrently once the fan-out (which reads through its own sessions) is
     # under way.
+    # Function-level: routers.shell imports this package (store_seed), so a module-level import would be a cycle.
+    from phaze.routers.shell.summary import build_flow_counts  # noqa: PLC0415
+
     fanout = _stats_fanout()
     (
         activity,
@@ -658,11 +666,12 @@ async def pipeline_stats_partial(
         awaiting_hold_reason,
         analysis_live,
         analysis_activity,
+        proposal_stats,
         # asyncio.gather with >6 awaitables of mixed return types collapses to list[object] under
         # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
         # exact per-read tuple shape with a single cast.
     ) = cast(
-        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str, int | None, dict[str, int | None]]",
+        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str, int | None, dict[str, int | None], ProposalStats]",
         await asyncio.gather(
             # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
             # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
@@ -715,6 +724,18 @@ async def pipeline_stats_partial(
                 fanout,
                 get_analysis_activity_counts,
                 cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
+            # phaze-2dv18: the Summary flow card's Review / Execute rows are PROPOSAL-row counts (pending / approved),
+            # which no other poll read carries. One grouped aggregate on its own session, the same read the Summary
+            # page makes; measure_read records a fallback so an unmeasured figure is pushed as unknown, not as 0.
+            measure_read(
+                flow_read_failures,
+                "proposal_stats",
+                _read_in_own_session(
+                    fanout,
+                    get_proposal_stats,
+                    ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None),
+                ),
             ),
         ),
     )
@@ -794,5 +815,8 @@ async def pipeline_stats_partial(
             "summary_recent_live": analysis_live,
             "summary_recent_today": analysis_activity["today"],
             "summary_recent_lifetime": analysis_activity["lifetime"],
+            # phaze-2dv18: every Summary flow-card figure, from the SAME stage_progress read as the sidebar's counts,
+            # so the card and the rail can never hold different numbers within one tick.
+            "summary_flow_counts": build_flow_counts(stage_progress, proposal_stats.pending, proposal_stats.approved, flow_read_failures),
         },
     )

@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.metadata import FileMetadata
@@ -250,6 +251,52 @@ async def test_enriched_cannot_exceed_the_analyze_done_bucket_when_reanalysis_is
     assert metadata_done == 2, "metadata is done -- and not in flight -- for BOTH files"
     assert aggregates["enriched"] <= analyze_done, f"FULLY ENRICHED ({aggregates['enriched']}) must never exceed Analyze done ({analyze_done})"
     assert aggregates["enriched"] <= metadata_done, f"FULLY ENRICHED ({aggregates['enriched']}) must never exceed Metadata done ({metadata_done})"
+
+
+@pytest.mark.asyncio
+async def test_files_analyzed_and_analyses_completed_agree_on_a_settled_music_corpus(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2dv18: the flow card's "files analyzed" and Lifetime's "analyses completed" on a SETTLED system.
+
+    ``analysis_results.file_id`` is UNIQUE (models/analysis.py), so a completed row IS one distinct file: two
+    completed rows for one file cannot exist, and the rows-versus-files wording gap hides no double count. With no
+    analysis in flight and every analysed file a music/video file -- the only files the analyze enqueue path ever
+    selects (services/pipeline/pending.py) -- the two figures are the same number.
+    """
+    for index in range(3):
+        file = await make_file(original_filename=f"<track-{index:02d}>.mp3")
+        session.add(AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC)))
+    await make_file(original_filename="<track-03>.mp3")  # discovered, never analysed
+    await session.commit()
+
+    assert int((await get_stage_progress(session))["analyze"]["done"] or 0) == 3
+    assert (await get_analysis_activity_counts(session))["lifetime"] == 3
+
+    duplicate = AnalysisResult(file_id=(await make_file(original_filename="<track-04>.mp3")).id, analysis_completed_at=datetime.now(UTC))
+    session.add(duplicate)
+    session.add(AnalysisResult(file_id=duplicate.file_id, analysis_completed_at=datetime.now(UTC)))
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_files_analyzed_and_analyses_completed_can_differ_on_a_settled_system(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2dv18: the two definitions are NOT the same predicate, so equality rests on upstream scoping.
+
+    "Files analyzed" is the analyze ``done`` bucket: music/video files only, with ``in_flight`` ranked above ``done``.
+    "Analyses completed" is every ``analysis_results`` row whose ``analysis_completed_at`` is set, whatever the file's
+    type. A completed row on a file outside the music/video set (for instance a file re-typed after it was analysed)
+    therefore counts in Lifetime and not on the flow card -- with nothing in flight at all. The in-flight case
+    (re-analysis keeps its stale completion timestamp) is pinned separately above.
+    """
+    music = await make_file(original_filename="<track-00>.mp3")
+    retyped = await make_file(original_filename="<track-01>.txt", file_type="txt")
+    session.add(AnalysisResult(file_id=music.id, analysis_completed_at=datetime.now(UTC)))
+    session.add(AnalysisResult(file_id=retyped.id, analysis_completed_at=datetime.now(UTC)))
+    await session.commit()
+
+    assert int((await get_stage_progress(session))["analyze"]["done"] or 0) == 1
+    assert (await get_analysis_activity_counts(session))["lifetime"] == 2
 
 
 @pytest.mark.asyncio

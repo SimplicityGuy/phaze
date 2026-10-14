@@ -1,0 +1,7 @@
+{# phaze-2dv18: one Summary flow figure, live. The server renders the first paint; the 5s /pipeline/stats poll then
+   moves $store.pipeline.summaryFlow (routers/shell/summary.py flow_counts) and x-text re-renders it, so the card, the
+   board and the text list can never hold a number the rail has already moved past. null renders as an em-dash. #}
+{# `tag` is tspan inside the board's <svg>: an HTML span there is an unknown SVG element and paints nothing. #}
+{% macro fig(key, value, tag='span') -%}
+<{{ tag }} x-text="formatCount($store.pipeline.summaryFlow?.{{ key }})">{{ value | thousands }}</{{ tag }}>
+{%- endmacro %}
