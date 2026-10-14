@@ -324,3 +324,166 @@ asyncio.run(main())
                 process.terminate()
                 await process.wait()
         assert not h.socket.requests
+
+
+async def test_queue_routes_persist_delivery_outage_and_apply_valid_live_policy(committed_db: Any) -> None:
+    class Queue:
+        fail = False
+
+        async def enqueue(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            if self.fail:
+                raise ConnectionError("synthetic outage")
+
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        await seed(h.sessions)
+        app = FastAPI()
+        app.include_router(router)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+            assert (await client.get("/admin/remote-providers")).status_code == 503
+            app.state.remote_lookup = h.lookup
+            app.state.controller_queue = Queue()
+            response = await client.post(
+                f"/admin/remote-providers/{EXAMPLE}/policy",
+                headers={"Origin": "http://testserver"},
+                data={"enabled": "true", "min_interval_seconds": "12", "max_requests_per_run": "3"},
+            )
+            assert "Saved globally" in response.text
+            for fail in (False, True):
+                app.state.controller_queue.fail = fail
+                response = await client.post("/pipeline/remote-lookup-queue", headers={"Origin": "http://testserver"})
+                assert response.status_code == 200
+                assert ("queue delivery failed" if fail else "Batch saved") in response.text
+            response = await client.post(
+                f"/admin/remote-providers/{EXAMPLE}/clear-stop", headers={"Origin": "http://testserver"}, data={"reason": ""}
+            )
+            assert response.status_code == 422
+        assert not h.socket.requests
+
+
+async def test_work_claim_guards_metadata_change_and_bounded_failures(committed_db: Any, monkeypatch: Any) -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from phaze.models.metadata import FileMetadata
+
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        media = await seed(h.sessions)
+        batch_id = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch_id)
+        assert await expand_batch(h.sessions, batch_id)
+        assert await expand_batch(h.sessions, uuid.uuid4())
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id))
+        assert await execute_work(h.sessions, h.lookup, uuid.uuid4()) == "inactive"
+        assert await execute_work(h.sessions, h.lookup, work_id) == "deferred"
+        assert await execute_work(h.sessions, h.lookup, work_id) == "deferred", "not-before blocks premature redelivery"
+        async with h.sessions() as session, session.begin():
+            await session.execute(
+                update(RemoteLookupWork).where(RemoteLookupWork.id == work_id).values(lease_until=h.clock.wall() + timedelta(seconds=60))
+            )
+        assert await execute_work(h.sessions, h.lookup, work_id) == "busy"
+        async with h.sessions() as session, session.begin():
+            await session.execute(update(RemoteLookupWork).where(RemoteLookupWork.id == work_id).values(lease_until=None))
+            await session.execute(update(FileMetadata).where(FileMetadata.file_id == media.id).values(artist="Changed Synthetic Artist"))
+        await h.clock.sleep(6)
+        assert await execute_work(h.sessions, h.lookup, work_id) == "recording_metadata_changed"
+        assert await execute_work(h.sessions, h.lookup, work_id) == "inactive"
+        batch_id = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch_id)
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id).where(RemoteLookupWork.status == "queued"))
+
+        async def broken(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            raise RuntimeError("synthetic worker failure")
+
+        monkeypatch.setattr(h.lookup, "queued_lookup", broken)
+        for attempt in range(5):
+            assert await execute_work(h.sessions, h.lookup, work_id) == ("failed" if attempt == 4 else "deferred")
+            await h.clock.sleep(60)
+        async with h.sessions() as session:
+            work = await session.get(RemoteLookupWork, work_id)
+            assert work.failures == 5 and work.not_before is None
+        assert await batch_status(h.sessions, uuid.uuid4()) is None
+        assert not h.socket.requests
+
+
+@pytest.mark.parametrize("changed", ["disabled", "interval", "budget"])
+async def test_policy_change_after_reservation_preserves_charge_and_prevents_send(committed_db: Any, changed: str) -> None:
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        media = await seed(h.sessions)
+        await h.clock.sleep(6)
+        original = h.lookup.policy.resolve
+        calls = 0
+
+        async def resolve(provider_id: str) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await h.lookup.policy.set(
+                    EXAMPLE, policy(changed != "disabled", 12 if changed == "interval" else 6, 1 if changed == "budget" else 16), actor="admin"
+                )
+            return await original(provider_id)
+
+        h.lookup.transport._policy = resolve
+        # Budget reduction at the first reservation allows its already-charged one request;
+        # disable or a wider gap suppresses a not-yet-sent reservation.
+        result = await h.lookup.lookup(LookupCommand(media_id=media.id, provider_id=EXAMPLE))
+        assert len(h.socket.requests) == (1 if changed == "budget" else 0)
+        assert await count(h.sessions, RemoteTransportAttempt) == 1
+        if changed == "interval":
+            assert result.outcome.code == "paced"
+        elif changed == "disabled":
+            assert result.outcome.code == "disabled_provider"
+
+
+async def test_reviewed_selection_excluded_from_new_and_already_queued_work(committed_db: Any) -> None:
+    from phaze.schemas.remote_lookup import LoadCommand
+    from tests.integration.test_remote_lookup import decide
+
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        media = await seed(h.sessions)
+        batch_id = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, batch_id)
+        async with h.sessions() as session:
+            work_id = await session.scalar(select(RemoteLookupWork.id))
+        discovery = await h.lookup.lookup(LookupCommand(media_id=media.id, provider_id=EXAMPLE))
+        loaded = await h.lookup.load(LoadCommand(candidate_id=discovery.candidates[0].candidate_id))
+        selection = await decide(h.sessions, media, loaded.observation_id)
+        requests = len(h.socket.requests)
+        assert await execute_work(h.sessions, h.lookup, work_id) == "reviewed_selection"
+        next_batch = await create_batch(h.sessions, h.lookup)
+        await expand_batch(h.sessions, next_batch)
+        status = await batch_status(h.sessions, next_batch)
+        assert status["batch"].excluded == 1 and not status["work"]
+        assert len(h.socket.requests) == requests
+        assert selection is not None
+
+
+async def test_lowered_budget_between_second_reservation_and_send_is_conserved(committed_db: Any) -> None:
+    from phaze.tracklist_providers.domain import DiscoveryBudget
+    from tests.integration.test_remote_transport import search_reference
+
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        await h.clock.sleep(6)
+        run = h.lookup.transport.run()
+        assert (await run.read(search_reference(), DiscoveryBudget())).status == OutcomeStatus.FOUND
+        await h.clock.sleep(6)
+        original = h.lookup.policy.resolve
+        calls = 0
+
+        async def resolve(provider_id: str) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await h.lookup.policy.set(EXAMPLE, policy(True, budget=1), actor="admin")
+            return await original(provider_id)
+
+        h.lookup.transport._policy = resolve
+        refused = await run.read(search_reference(), DiscoveryBudget())
+        assert refused.code == "run_budget_exhausted"
+        assert len(h.socket.requests) == 1
+        assert await count(h.sessions, RemoteTransportAttempt) == 2
+        assert run.spent[EXAMPLE] == 2
