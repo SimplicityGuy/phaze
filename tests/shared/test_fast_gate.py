@@ -126,7 +126,10 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # phaze-1cwgr: 23 modules, 325 passed, 29.01 s pytest / 30.0 s wall (isolated seat, direct pytest).
 # phaze-eaf3y (test_selector_verdict_table.py, which reads tracked CLAUDE.md, joined the floor):
 # 24 modules, 335 passed, 30.72 s pytest / 36.47 s wall (seat `phaze-eaf3y`, direct pytest).
-MAX_DOCS_FLOOR_MODULES = 24
+# phaze-5rvda (test_runbook_log_greps.py, which reads tracked docs/runbook.md, joined the floor):
+# 25 modules, 381 passed + the cap test itself failing as expected, 94.68 s pytest / 99.99 s wall
+# on a heavily loaded machine (seat `phaze-5rvda`, direct pytest; the new module itself runs in 0.4 s).
+MAX_DOCS_FLOOR_MODULES = 25
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the local docs
