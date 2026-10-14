@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.provider_source import ProviderSelectionEvent, ProviderSourceObject, ProviderSourceObservation
+from phaze.models.provider_source import ProviderSelectionEvent, ProviderSourceObject, ProviderSourceObservation, ProviderSourceRead
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.cue_review import build_cue_tracks_for_file
@@ -67,6 +67,7 @@ async def committed_session(async_engine):
                 await cleanup.execute(delete(ProviderSelectionEvent).where(ProviderSelectionEvent.media_id.in_(owned)))
                 for file_id in owned:
                     await delete_file_cascade(cleanup, file_id)
+                await cleanup.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id.in_(source_ids)))
                 await cleanup.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id.in_(source_ids)))
                 await cleanup.execute(delete(ProviderSourceObject).where(ProviderSourceObject.id.in_(source_ids)))
 

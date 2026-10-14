@@ -64,6 +64,8 @@ async def test_seeded_upgrade_backfill_restart_and_lossy_downgrade_refusal() -> 
         # Unused expansion round-trips without rewriting a single legacy row.
         await asyncio.to_thread(downgrade_to, cfg, "084")
         await asyncio.to_thread(upgrade_to, cfg, "085")
+        # The ORM-driven backfill and store_snapshot below read the read sequence, which only exists from 091.
+        await asyncio.to_thread(upgrade_to, cfg, "091")
         async with AsyncSession(engine) as db:
             assert await backfill_legacy_identities(db, batch_size=1) == 1
             await db.commit()

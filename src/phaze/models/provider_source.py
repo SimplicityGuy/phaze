@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,8 @@ class ProviderSourceObject(Base):
     source_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id", ondelete="SET NULL"))
     original_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     channel: Mapped[str | None] = mapped_column(String(16))
+    # Last read sequence handed out for this object, advanced under the object's row lock (see ProviderSourceRead).
+    read_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
@@ -58,6 +60,22 @@ class ProviderSourceObservation(Base):
         CheckConstraint("revision IS NULL OR octet_length(revision) <= 8192", name="provider_revision_bound"),
         CheckConstraint("revision_scope IN ('full', 'bounded', 'unknown')", name="provider_revision_scope"),
     )
+
+
+class ProviderSourceRead(Base):
+    """Append-only: one row per stored read of an object, ordered by ``read_seq``, which a stepped wall clock cannot reorder.
+
+    Observations are immutable and deduplicated, so a repeated read of equal content reuses its observation; the read
+    row is what records that it happened again, and when relative to every other read. ``retrieved_at`` stays display evidence.
+    """
+
+    __tablename__ = "provider_source_reads"
+
+    object_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_objects.id"), primary_key=True)
+    read_seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    observation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_source_observations.id"), nullable=False)
+
+    __table_args__ = (Index("ix_provider_reads_observation", "observation_id", "read_seq"),)
 
 
 class ProviderRecordingCandidate(Base):

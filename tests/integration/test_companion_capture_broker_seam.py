@@ -21,7 +21,7 @@ from phaze.config import AgentSettings
 from phaze.models.agent import Agent
 from phaze.models.companion_content import CompanionContentFeatures
 from phaze.models.file import FileRecord
-from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation
+from phaze.models.provider_source import ProviderSourceObject, ProviderSourceObservation, ProviderSourceRead
 from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
 from phaze.services.agent_client import PhazeAgentClient
 from phaze.services.agent_task_router import AgentTaskRouter
@@ -154,6 +154,7 @@ async def test_bucket_lock_order_and_cached_inventory_revalidation(async_engine:
     finally:
         async with factory.begin() as db:
             if object_id is not None:
+                await db.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id == object_id))
                 await db.execute(delete(ProviderSourceObservation).where(ProviderSourceObservation.object_id == object_id))
                 await db.execute(delete(ProviderSourceObject).where(ProviderSourceObject.id == object_id))
             await db.execute(delete(FileRecord).where(FileRecord.id == source.id))

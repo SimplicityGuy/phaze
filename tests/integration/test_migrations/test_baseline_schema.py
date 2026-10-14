@@ -76,6 +76,7 @@ _BASELINE_PATH = Path(__file__).resolve().parents[3] / "alembic" / "versions" / 
 _EXPECTED_TABLES = frozenset(
     {
         "provider_source_objects",
+        "provider_source_reads",
         "provider_source_observations",
         "provider_recording_candidates",
         "provider_recording_selections",
@@ -371,6 +372,7 @@ def test_baseline_is_the_only_migration() -> None:
         "088_discogs_provider_track_binding.py",
         "089_remote_transport_ledger.py",
         "090_provider_source_remote_channel.py",
+        "091_provider_source_read_seq.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -399,10 +401,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` lands at the current head (090: remote provider source channel)."""
+    """A bare ``upgrade head`` lands at the current head (091: provider source read sequence)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "090"
+    assert version == "091"
 
 
 @pytest.mark.asyncio
@@ -728,7 +730,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "090"
+        assert version == "091"
     finally:
         if engine is not None:
             await engine.dispose()

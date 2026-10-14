@@ -29,6 +29,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
 | `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
 | `provider_source_objects` | Opaque provider/native identities and optional current source-file binding; source history survives file deletion |
+| `provider_source_reads` | Append-only read order of each source object, so a later read is decided by sequence, not by `retrieved_at` |
 | `provider_source_observations` | Immutable revisioned decoded text, parsed facts/tracks, read failures and provenance |
 | `provider_recording_candidates` | Pending or accepted source observations associated with each recording |
 | `provider_recording_selections` | Explicit current choices for tracklists and release metadata |
@@ -267,10 +268,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-090)
+### Post-baseline chain (040-091)
 
-`alembic/versions/` holds **52** files: the `039` baseline plus a linear chain to the current
-head, **`090`**.
+`alembic/versions/` holds **53** files: the `039` baseline plus a linear chain to the current
+head, **`091`**.
 
 | Rev | Change |
 |-----|--------|
@@ -324,7 +325,8 @@ head, **`090`**.
 | `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) |
 | `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs (phaze-c5v4x) |
 | `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists (phaze-gan2z) |
-| `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists (phaze-b6430) — **head** |
+| `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists (phaze-b6430) |
+| `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`) (phaze-z9ea3) — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

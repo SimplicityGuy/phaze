@@ -15,6 +15,7 @@ from phaze.models.provider_source import (
     ProviderSelectionEvent,
     ProviderSourceObject,
     ProviderSourceObservation,
+    ProviderSourceRead,
 )
 from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
 from phaze.schemas.local_source_import import ImportLocalSource
@@ -44,6 +45,7 @@ async def cleanup(maker, media, companion):
         await db.execute(delete(ProviderSelectionEvent).where(ProviderSelectionEvent.observation_id.in_(observations)))
         await db.execute(delete(ProviderRecordingSelection).where(ProviderRecordingSelection.media_id == media.id))
         await db.execute(delete(ProviderRecordingCandidate).where(ProviderRecordingCandidate.media_id == media.id))
+        await db.execute(delete(ProviderSourceRead).where(ProviderSourceRead.object_id.in_(objects)))
         # Remove child interpretations before their raw parent.
         await db.execute(
             delete(ProviderSourceObservation).where(
