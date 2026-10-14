@@ -130,10 +130,13 @@ async def test_automatic_association_commits_one_run_before_real_keyed_broker_en
             assert await db.scalar(text("SELECT count(*) FROM saq_jobs WHERE queue=:queue"), {"queue": queue_name}) == 1
             assert await db.scalar(select(func.count()).select_from(CompanionImportItem)) == 0
     finally:
+        # The enqueue committed on the queue's OWN pool connection, so the cleanup must too. `maker(session)` joins
+        # the test's rolled-back transaction as a savepoint: a DELETE through it is undone at teardown and the
+        # committed `queued` row leaks into every later test sharing the database (phaze-0r4p0).
+        async with queue.pool.connection() as conn:
+            await conn.execute("DELETE FROM saq_jobs WHERE queue = %s", (queue_name,))
         await queue.disconnect()
         await queue.cache_redis.aclose()
-        async with maker(session).begin() as db:
-            await db.execute(text("DELETE FROM saq_jobs WHERE queue=:queue"), {"queue": queue_name})
 
 
 async def test_new_eligible_inventory_without_retained_capture_requests_owner_read(session):
