@@ -487,3 +487,39 @@ async def test_lowered_budget_between_second_reservation_and_send_is_conserved(c
         assert len(h.socket.requests) == 1
         assert await count(h.sessions, RemoteTransportAttempt) == 2
         assert run.spent[EXAMPLE] == 2
+
+
+@pytest.mark.parametrize("disable", [False, True])
+async def test_direct_lookup_rechecks_live_policy_after_pacing_wait(committed_db: Any, monkeypatch: Any, disable: bool) -> None:
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        media = await seed(h.sessions)
+        sleep = h.clock.sleep
+        changed = False
+
+        async def during_wait(seconds: float) -> None:
+            nonlocal changed
+            await sleep(seconds)
+            if not changed:
+                changed = True
+                await h.lookup.policy.set(EXAMPLE, policy(not disable, 12.0 if not disable else 6.0), actor="admin")
+
+        monkeypatch.setattr(h.clock, "sleep", during_wait)
+        result = await h.lookup.lookup(LookupCommand(media_id=media.id, provider_id=EXAMPLE))
+        if disable:
+            assert result.outcome.code == "disabled_provider"
+            assert not h.socket.requests and await count(h.sessions, RemoteTransportAttempt) == 0
+        else:
+            assert result.candidates
+            assert (h.socket.sent_at[0] - h.clock._wall.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() == 12
+            assert await count(h.sessions, RemoteTransportAttempt) == 1
+
+
+async def test_transport_boundary_refuses_disabled_policy_even_for_previously_minted_read(committed_db: Any) -> None:
+    from phaze.tracklist_providers.domain import DiscoveryBudget
+    from tests.integration.test_remote_transport import search_reference
+
+    async with harness(committed_db, ExampleUpstream().routes()) as h:
+        await h.lookup.policy.set(EXAMPLE, policy(False), actor="admin")
+        read = await h.lookup.transport.run().read(search_reference(), DiscoveryBudget())
+        assert read.code == "disabled_provider"
+        assert not h.socket.requests and await count(h.sessions, RemoteTransportAttempt) == 0
