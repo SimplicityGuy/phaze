@@ -38,6 +38,7 @@ from tests.shared.routers.pipeline._shared import (
     text,
     timedelta,
     update,
+    uuid,
     wire_fakes,
 )
 
@@ -414,6 +415,36 @@ async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClien
     assert await _analysis_failed_at(session, live_reanalysis.id) is not None
     assert len(await _process_file_ledger_rows(session, live_reanalysis.id)) == 1
     assert not await _is_awaiting_cloud(session, live_reanalysis.id)
+
+
+@pytest.mark.asyncio
+async def test_backfill_live_jobs_for_other_files_do_not_skip_the_candidate(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-0r4p0: live ``saq_jobs`` keys that match NO candidate leave the candidate backfilled.
+
+    The ``if skipped:`` false edge (live keys exist, none is a candidate's ``process_file`` key) was only
+    ever covered by accident: a committed ``queued`` row leaked by an integration test (its cleanup ran in the
+    rolled-back test transaction) made the live-key set non-empty for whichever tests ran after it in the
+    same shard. Here the broker table is seeded deliberately -- a live job for an UNRELATED file -- so the
+    arc no longer depends on shard placement or test order. The unrelated live job must survive, and the
+    candidate must still be reset and held, since the double-dispatch guard only skips a file whose OWN
+    ``process_file:<id>`` key is live.
+    """
+    (candidate,) = await _persist_failed_with_duration(session, [_LONG])  # long + failed + ledger row
+    await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> held in AWAITING_CLOUD
+    unrelated_key = f"process_file:{uuid.uuid4()}"
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'queued')"), {"key": unrelated_key})
+    await session.commit()
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await drain_router_background_tasks()
+
+    assert await _is_awaiting_cloud(session, candidate.id)
+    assert await _analysis_failed_at(session, candidate.id) is None
+    assert await _process_file_ledger_rows(session, candidate.id) == []
+    assert await session.scalar(text("SELECT count(*) FROM saq_jobs WHERE key = :key"), {"key": unrelated_key}) == 1
 
 
 @pytest.mark.asyncio
