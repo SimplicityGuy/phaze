@@ -27,7 +27,9 @@
 #     baseline for the skip rate exists yet -- phaze-zaf2l did not measure one. Inventing a
 #     number would be exactly the unmeasured arithmetic these rules exist to avoid.
 #
-# Every threshold below cites the measurement it comes from. The measurements live in
+# The analysis thresholds cite measured baselines; the junk-review threshold is an explicit
+# implementer triage choice, described beside its rule (not a measured runtime bound).
+# The analysis measurements live in
 # docs/spikes/phaze-zaf2l-where-phaze-spends-time.md and
 # docs/design/0005-analyze-job-memory-limits.md.
 groups:
@@ -143,3 +145,29 @@ groups:
             class (+0.31 GiB per fine chunk, OOMKill past ~3 hours) and the fix is the chunk
             teardown, never a larger limit.
           runbook: "docs/telemetry/alerting.md#phazeanalysischunkpeakrssapproachinglimit"
+  - name: phaze-junk-review
+    interval: 1m
+    rules:
+      - alert: PhazeJunkReviewExecutionStuck
+        # phaze-co6ad: 1h is an IMPLEMENTER TRIAGE CHOICE, not a measured healthy-duration
+        # bound and not permission to cancel a job. Executing includes time queued on the meta
+        # lane. Investigate after one hour, sustained 5m; verify the agent before manual recovery.
+        # The observer runs each minute. Three minutes permits two missed observations; an older
+        # sample is unknown, not current evidence. No UI poll, automatic retry, or reaper.
+        expr: |
+          (phaze_junk_review_executing_oldest_age_seconds > 3600)
+          and on (job, instance)
+          (phaze_junk_review_executing_count > 0)
+          and on (job, instance)
+          (time() - phaze_junk_review_executing_observed_timestamp_seconds < 180)
+        for: 5m
+        labels:
+          severity: warning
+          service: phaze
+        annotations:
+          summary: "phaze junk-review execution has waited over one hour"
+          description: >-
+            A current controller sample reports at least one junk-review row executing for over
+            one hour. Check the owning agent and quarantine job before using Recover or manually
+            restoring approval. Age alone does not prove the job was lost; nothing is retried automatically.
+          runbook: "docs/telemetry/alerting.md#phazejunkreviewexecutionstuck"

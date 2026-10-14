@@ -397,6 +397,25 @@ RELOAD_OUTCOME = LabelSpec(
 
 
 CATALOGUE: tuple[MetricSpec, ...] = (
+    # Junk review (phaze-co6ad): no archive or agent identifiers, three series per controller.
+    MetricSpec(
+        name="phaze.junk_review.executing.count",
+        kind="gauge",
+        unit="{rows}",
+        description="Junk-review rows in executing, sampled every minute by the controller, including zero.",
+    ),
+    MetricSpec(
+        name="phaze.junk_review.executing.oldest_age",
+        kind="gauge",
+        unit="s",
+        description="Seconds since the oldest executing row entered that status (updated_at); zero when none remain.",
+    ),
+    MetricSpec(
+        name="phaze.junk_review.executing.observed_timestamp",
+        kind="gauge",
+        unit="s",
+        description="Database Unix time of the last successful junk-review observation; not advanced by a failed read.",
+    ),
     # Analysis
     # 94.69% of wall clock on the 4,761.835 s file phaze-zaf2l measured; the share is
     # DURATION-DEPENDENT (49.3% fine at 10 h 03 m -- phaze-bg115). The blindness is not.

@@ -578,6 +578,61 @@ The 2026-09-14 post-backfill production measurement found zero existing rename p
 operator approved scope **none**: do not regenerate proposals; future first-pass proposal
 generation will read the newly associated COMPANION context through the normal pipeline.
 
+## Junk-review rows stuck in executing
+
+`PhazeJunkReviewExecutionStuck` is a triage warning, not proof that a move failed. No timer resets
+these rows. First inspect the owning agent's meta worker, quarantine result and matching
+`quarantine_companion:<review-id>` job; a job that is active or may still report must finish before
+any reset. Confirm the actual source/quarantine destination on that agent, including an ambiguous
+move whose callback was lost. Do not replay a move blindly or reset a successfully moved file.
+
+**Recover needs a surviving ledger row.** If the matching `scheduling_ledger` entry exists and no
+live job holds its key, the admin **Recover** action replays that payload to its recorded owner.
+Bring that agent online first. Recover does not derive work from an executing review row alone;
+keep its ledger entry, and check the agent again after recovery.
+
+**Without a ledger or any job, manual re-approval is operator-only.** The review UI cannot approve
+an executing row: its status guard intentionally permits approval only from pending. The following
+is an implementer runbook method, not a new recovery product action. It requires a separate
+operator-authorized database write; the read-only dispatch authorization does not authorize it.
+After proving that the file is still at its source and no agent job can report, pause the controller,
+API dispatch/recovery callers and owning meta worker during this maintenance transaction. Do not
+resume an old in-memory worker with a pending callback. Supply the exact selected review id as a
+psql variable; table locks serialize database writers but do not establish agent quiescence.
+
+```sql
+-- psql: set review_id to the selected row id before BEGIN.
+BEGIN;
+LOCK TABLE saq_jobs, scheduling_ledger IN SHARE ROW EXCLUSIVE MODE;
+SELECT id, status FROM companion_junk_review
+WHERE id = :'review_id'::uuid FOR UPDATE;
+UPDATE companion_junk_review AS review
+SET status = 'approved', updated_at = now()
+WHERE review.id = :'review_id'::uuid
+  AND review.status = 'executing'
+  AND review.executed_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM saq_jobs
+    WHERE key = 'quarantine_companion:' || review.id::text
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM scheduling_ledger
+    WHERE key = 'quarantine_companion:' || review.id::text
+  )
+RETURNING id, status;
+-- Commit only when exactly the selected row returned; otherwise ROLLBACK and investigate.
+COMMIT;
+```
+
+This preserves the prior approval (`decided_at`) and content snapshot. After committing and
+resuming dispatch with the owning agent reachable, use the existing **Quarantine approved**
+action. It conditionally claims approved rows and dispatches them; the row returns to executing
+until its result arrives. That action runs all approved rows, so review its plan before running it.
+A terminal result reduces the executing count and recomputes the oldest age on the next successful
+minute sample; count and age become zero only when no executing rows remain. General rule:
+prove job absence and file state before retrying a filesystem operation; elapsed age is only a
+prompt to investigate, never a safe retry predicate.
+
 ## See also
 
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the

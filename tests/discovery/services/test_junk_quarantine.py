@@ -428,3 +428,36 @@ def test_a_lost_quarantine_job_is_left_to_ledger_recovery_which_replays_it_to_it
     assert not _is_orphaned(row, live={row.key}, done_sets=nothing_done, in_flight=set(), awaiting_cloud=set())
     assert _plan_replay([row]).other_agent_rows == (row,)
     assert [(group.owner_id, group.rows) for group in _plan_owner_groups([row]).groups] == [(_AGENT, (row,))]
+
+
+async def test_operator_restored_approval_uses_existing_quarantine_consumer(session: AsyncSession) -> None:
+    """Executing is not UI-reapprovable; a guarded maintenance reset then uses the normal claim/enqueue."""
+    from sqlalchemy import func, update
+
+    from phaze.services.companion_junk_review import JunkReviewTransitionRefused
+
+    await _agents(session)
+    row = await _review(session, f"{_ROOT}/manual/site.nfo", JunkReviewStatus.EXECUTING)
+    untouched = await _review(session, f"{_ROOT}/other/site.nfo", JunkReviewStatus.EXECUTING)
+    row_id, untouched_id = row.id, untouched.id
+    await session.commit()
+    with pytest.raises(JunkReviewTransitionRefused):
+        await transition_review(session, row_id, JunkReviewStatus.APPROVED)
+    await session.rollback()
+    # The runbook additionally requires quiescence and absence of both job and ledger.
+    # This test exercises the restored review through the actual existing dispatch consumer.
+    restored = (
+        await session.execute(
+            update(CompanionJunkReview)
+            .where(CompanionJunkReview.id == row_id, CompanionJunkReview.status == "executing", CompanionJunkReview.executed_at.is_(None))
+            .values(status="approved", updated_at=func.now())
+            .returning(CompanionJunkReview.id)
+        )
+    ).scalar_one()
+    assert restored == row_id
+    await session.commit()
+    router = _Router(session)
+    assert await enqueue_quarantine(session, [row_id], task_router=router) == 1  # type: ignore[arg-type]
+    assert router.status_at_enqueue == ["executing"]
+    assert router.enqueued[0][:2] == (_AGENT, QUARANTINE_TASK)
+    assert (await _status(session, untouched_id)).status == "executing"

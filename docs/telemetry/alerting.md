@@ -1,4 +1,4 @@
-# Alerting: three rules, and the four phaze deliberately does not ship
+# Alerting: four rules, and the four phaze deliberately does not ship
 
 **Audience: whoever runs homelab's Prometheus.** `alerts/phaze-alerts.yml` is a portable
 rules file you may load. **Nothing in this repo deploys it**; wiring, routing and any
@@ -12,7 +12,8 @@ the three, because a rule that should not exist is the more expensive mistake �
 something settled, the operator learns to ignore alerts, and then the one that matters is
 ignored too.
 
-Every threshold below cites its measurement.
+The three analysis thresholds below cite their measurements. The junk-review rule adds an
+explicit triage threshold, not a measured healthy-runtime bound.
 `docs/spikes/phaze-zaf2l-where-phaze-spends-time.md` and
 `docs/design/0005-analyze-job-memory-limits.md` are where the measurements live.
 
@@ -32,7 +33,7 @@ docker run --rm -v "$PWD/alerts:/alerts:ro" --entrypoint /bin/promtool \
 
 The unit tests are the interesting half. `alerts/phaze-alerts.test.yml` builds the
 accepted-drain-rate condition — an 8,079-file backlog draining at the measured 2.4480
-files/hour — and asserts that **every one of the three rules stays silent**, and it builds
+files/hour — and asserts that **every one of the four rules stays silent**, and it builds
 an idle pipeline and asserts the same. `tests/shared/telemetry/test_alert_rules.py` holds
 the CI-runnable half: the properties about what the rules must never become.
 
@@ -99,6 +100,27 @@ Growth is a bug, never a sizing input.
 > against 1.50–1.67 GiB on the burst node — because thread sizing and the allocator differ.
 > The threshold is a statement about the Linux pod under its cgroup, and the rule's selector
 > scopes it to the analysis service for that reason.
+
+______________________________________________________________________
+
+## PhazeJunkReviewExecutionStuck
+
+**Fires when:** an executing junk-review row has waited more than **3600 seconds**, sustained
+for **5 minutes**, with a successful controller observation less than **180 seconds** old.
+The controller samples count, oldest age and observation time every minute, without a browser.
+A failed read leaves the previous timestamp untouched; missing/stale observations mean unknown,
+not an empty queue. Producer identities must match across all three gauges.
+
+**Why one hour:** the implementer chose this triage interval for a normally small file move.
+It has no measured healthy-runtime baseline. Waiting includes queue time. The alert never
+cancels or retries work, and elapsed time alone does not establish that an agent lost its job.
+The five-minute hold avoids a transient sample and the three-minute freshness guard permits two
+missed minute observations. Test cases exercise the boundary, hold, clearing, freshness and
+producer isolation through real `promtool` evaluation.
+
+Check the owning agent before Recover or manual re-approval; follow the
+[junk-review execution runbook](../runbook.md#junk-review-rows-stuck-in-executing).
+There is deliberately no automatic reaper. This rules file still needs operator deployment.
 
 ______________________________________________________________________
 
