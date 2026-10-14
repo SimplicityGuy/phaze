@@ -45,6 +45,9 @@ tests:
       - eval_time: 7h
         alertname: PhazeAnalysisChunkPeakRssApproachingLimit
         exp_alerts: []
+      - eval_time: 7h
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
 
   # ======================================================================
   # An IDLE phaze is not a fault either. Nothing scheduled, nothing running.
@@ -221,3 +224,99 @@ tests:
                 class (+0.31 GiB per fine chunk, OOMKill past ~3 hours) and the fix is the chunk
                 teardown, never a larger limit.
               runbook: "docs/telemetry/alerting.md#phazeanalysischunkpeakrssapproachinglimit"
+
+  - interval: 1m
+    name: fresh stuck junk-review execution fires only after the hold
+    input_series:
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="control"}'
+        values: "2+0x10"
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "3601+60x10"
+      - series: 'phaze_junk_review_executing_observed_timestamp_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts:
+          - exp_labels:
+              alertname: PhazeJunkReviewExecutionStuck
+              severity: warning
+              service: phaze
+              job: phaze/phaze-control
+              instance: control
+            exp_annotations:
+              summary: "phaze junk-review execution has waited over one hour"
+              description: >-
+                A current controller sample reports at least one junk-review row executing for over
+                one hour. Check the owning agent and quarantine job before using Recover or manually
+                restoring approval. Age alone does not prove the job was lost; nothing is retried automatically.
+              runbook: "docs/telemetry/alerting.md#phazejunkreviewexecutionstuck"
+
+  - interval: 1m
+    name: junk-review age at threshold is silent
+    input_series:
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="control"}'
+        values: "1+0x10"
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "3600+0x10"
+      - series: 'phaze_junk_review_executing_observed_timestamp_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+
+  - interval: 1m
+    name: completed or manually reset junk execution clears the alert
+    input_series:
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="control"}'
+        values: "1+0x6 0+0x4"
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "7200+0x6 0+0x4"
+      - series: 'phaze_junk_review_executing_observed_timestamp_seconds{job="phaze/phaze-control", instance="control"}'
+        values: "0+60x11"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+
+  - interval: 1m
+    name: stale or missing junk-review observations are unknown
+    input_series:
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="stale"}'
+        values: "1+0x10"
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="stale"}'
+        values: "7200+0x10"
+      - series: 'phaze_junk_review_executing_observed_timestamp_seconds{job="phaze/phaze-control", instance="stale"}'
+        values: "0+0x10"
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="missing"}'
+        values: "1+0x10"
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="missing"}'
+        values: "7200+0x10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []
+
+  - interval: 1m
+    name: junk-review gauges from different producers do not combine
+    input_series:
+      - series: 'phaze_junk_review_executing_oldest_age_seconds{job="phaze/phaze-control", instance="one"}'
+        values: "7200+0x10"
+      - series: 'phaze_junk_review_executing_count{job="phaze/phaze-control", instance="two"}'
+        values: "1+0x10"
+      - series: 'phaze_junk_review_executing_observed_timestamp_seconds{job="phaze/phaze-control", instance="two"}'
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PhazeJunkReviewExecutionStuck
+        exp_alerts: []

@@ -61,6 +61,7 @@ from phaze.tasks.companion_association import associate_agent_companions
 from phaze.tasks.companion_import import import_agent_companions
 from phaze.tasks.discogs import match_recording_source_to_discogs, match_tracklist_to_discogs
 from phaze.tasks.filename_convention import learn_filename_conventions
+from phaze.tasks.junk_review_metrics import observe_junk_review_execution
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reap_orphaned_backend_cloud_jobs import reap_orphaned_backend_cloud_jobs
@@ -456,6 +457,8 @@ settings = {
         # the api after the events that can change a companion's links -- never by a cron.
         associate_agent_companions,
         import_agent_companions,
+        # phaze-co6ad: read-only metrics, independent of admin UI polling. No recovery or reaping.
+        observe_junk_review_execution,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors
@@ -494,6 +497,7 @@ settings = {
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
+        CronJob(observe_junk_review_execution, cron="* * * * *"),  # type: ignore[type-var]
         # phaze-e57w: every-minute reaper for zombie 'aborting' SAQ rows (control-only -- needs
         # ctx["async_session"]). Same cadence/shape as reap_stalled_scans.
         CronJob(reap_stuck_aborting_jobs, cron="* * * * *"),  # type: ignore[type-var]

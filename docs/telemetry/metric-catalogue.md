@@ -103,13 +103,16 @@ not what the naming rules suggest on paper.
 | `phaze_db_statement_duration_seconds` | histogram | `db_operation` (8) | 8 | 120 |
 | `phaze_db_statements_total` | counter | `db_operation` (8) | 8 | 8 |
 | `phaze_pipeline_stage_transitions_total` | counter | `stage` (64), `transition` (2) | 64 *(not 128)* | 64 |
+| `phaze_junk_review_executing_count` | gauge | none | 1 | 1 |
+| `phaze_junk_review_executing_oldest_age_seconds` | gauge | none | 1 | 1 |
+| `phaze_junk_review_executing_observed_timestamp_seconds` | gauge | none | 1 | 1 |
 | `phaze_pipeline_backlog` | gauge | `backlog` (12) | 12 | 12 |
 | `phaze_config_reloads_total` | counter | `source` (5), `outcome` (4) | 20 | 20 |
 | `phaze_config_last_reload_successful` | gauge | *none* | 1 | 1 |
 | `phaze_config_last_reload_success_timestamp_seconds` | gauge | *none* | 1 | 1 |
-| | | | **total** | **8,609** |
+| | | | **total** | **8,612** |
 
-### The instance multiplier: 8,609 becomes 24,639, and the reason it stops there
+### The instance multiplier: 8,612 becomes 24,642, and the reason it stops there
 
 **The table above is per INSTANCE.** `service.instance.id` becomes the Prometheus `instance`
 label, so the real ceiling is the table multiplied by the number of distinct identities phaze
@@ -127,8 +130,8 @@ truth ([the record](concurrent-identity.md),
 | --- | ---: |
 | analysis-role block (the `phaze_analysis_*` rows above) | 2,290 |
 | × (4 host-lane slots + 4 burst-lane slots) | 18,320 |
-| everything else, one instance | 6,319 |
-| **ceiling** | **24,639** |
+| everything else, one instance | 6,322 |
+| **ceiling** | **24,642** |
 
 **The multiplier is the CONCURRENCY, never the corpus.** A slot is reused by the next child,
 so this figure does not move as the archive grows. The rejected alternative shows what that
@@ -160,8 +163,8 @@ to the same base. So a host-lane child and a burst pod on the same index both re
 burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the lane between the
 base and the slot (`phaze-analysis-burst-<n>`). The analysis block is therefore
 `2,290 × (worker_process_pool_size + Σ kueue cap)` = `2,290 × 8` = **18,320**, and the ceiling is
-**24,639** (24,617 when this was decided; the runtime-config reload family, `phaze-mvq8z.4`, added
-22 per-instance series since). Before this change the lanes shared one slot space, and the block was
+**24,642** (24,617 when this was decided; the runtime-config reload family, `phaze-mvq8z.4`, added
+22 per-instance series to reach 24,639, and `phaze-co6ad` adds three controller gauges). Before this change the lanes shared one slot space, and the block was
 `2,290 × max(worker_process_pool_size, Σ kueue cap)` = 9,160, with a ceiling of 15,457. That lower
 figure came from the merge itself: 9,160 more series is the price of not merging. **No
 collision-free design costs less, because 8 concurrent producers need 8 identities.** Two producers
@@ -373,3 +376,11 @@ it is a recommendation.
 figure here is a quantity — 11,428 files, 34 models, 105 route templates, 43,466.880 s — and
 `tests/shared/telemetry/test_dashboards.py::test_no_local_identifier_in_committed_dashboard_json`
 enforces the same on the dashboard JSON.
+
+### Junk-review execution observations
+
+The controller's minute cron reads one aggregate over executing review rows. Count and oldest age
+use the status transition's `updated_at`, not the earlier approval time. The observation timestamp
+advances only after a successful read; empty results publish count/age zero, while failures publish
+nothing. These three unlabeled gauges add three series per controller identity. They do not depend
+on UI polling and carry no archive identifiers. See [alerting.md](alerting.md#phazejunkreviewexecutionstuck).
