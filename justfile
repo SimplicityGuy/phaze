@@ -668,7 +668,7 @@ test-browser-install-ci:
 [doc('Run the real-browser Playwright suite (needs `just test-db` up; excluded from the default run)')]
 [group('test')]
 test-browser: tailwind
-    uv run --group browser pytest tests/browser -m browser -q
+    uv run --group browser pytest tests/browser tests/shared/test_tailwind_source_parity.py -m browser -q
 
 # Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
 # code produces false-positives that need per-candidate human reachability judgment. A

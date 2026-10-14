@@ -46,10 +46,14 @@ RUN set -eux; \
     chmod +x /usr/local/bin/tailwindcss; \
     /usr/local/bin/tailwindcss --help >/dev/null
 
-# app.css's @source scans ../../src/phaze/templates relative to the input file,
-# so the templates must sit at that same path inside the stage.
+# app.css uses `source(none)` plus explicit @source paths relative to the input file, so
+# exactly those paths must sit at the same locations inside the stage -- the templates and
+# the Python modules that emit class="..." markup. Keep in step with assets/src/app.css
+# (tests/shared/test_tailwind_source_parity.py fails on any divergence; phaze-oicyy).
 COPY assets/ assets/
 COPY src/phaze/templates/ src/phaze/templates/
+COPY src/phaze/routers/execution.py src/phaze/routers/remote_lookup_ui.py src/phaze/routers/
+COPY src/phaze/routers/pipeline/_common.py src/phaze/routers/pipeline/skip.py src/phaze/routers/pipeline/
 RUN /usr/local/bin/tailwindcss \
         -i assets/src/app.css \
         -o src/phaze/static/css/app.css \
