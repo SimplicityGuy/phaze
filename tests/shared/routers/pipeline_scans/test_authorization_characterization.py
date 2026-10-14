@@ -310,7 +310,7 @@ async def test_authorize_scan_root_rejects_a_path_under_a_DIFFERENT_configured_r
     rejected ``joined`` is outside *all* the agent's roots -- so "outside the root you named" and
     "outside every root you configured" give the same verdict. Here they do not: ``/data/videos/a``
     is inside a root this agent legitimately holds, and is nevertheless refused, because the
-    operator selected ``/data/music``. Delete this test and the gate can silently widen back to
+    submitted scan root is ``/data/music``. Delete this test and the gate can silently widen back to
     ``any(... for r in scan_roots_nfc)`` with the whole suite green.
 
     ITS HISTORY, WHICH IS THE POINT. It was written by phaze-bk9el.22 asserting the OPPOSITE
