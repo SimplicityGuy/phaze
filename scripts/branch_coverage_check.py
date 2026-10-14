@@ -95,6 +95,16 @@ DEFAULT_BASELINE = ".coverage-baseline.json"
 TRACKED_PREFIX = "src/phaze/"
 
 
+def fused_guard_context(path: str) -> str | None:
+    """Context-only note on multi-operand guards in ``path`` (phaze-5f1sv); never affects the verdict."""
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from scripts.fused_guards import describe  # noqa: PLC0415 - sibling import only when reporting
+
+    return describe(Path(path))
+
+
 def _git(*args: str) -> str:
     """Run ``git`` and return stdout, or "" if the command failed.
 
@@ -442,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         summary = _summary_of(info)
         print(f"      {branch_diagnostics(info, baseline.get(path, {}))}")  # noqa: T201
+        if (fused := fused_guard_context(path)) is not None:
+            print(f"      ⚠️  {fused}")  # noqa: T201
         if scoped and summary.get("num_statements", 0) and not summary.get("covered_lines", 0):
             unjudgeable.append(path)
             print(f"   ❌ {path}: selected tests executed no lines; cannot judge this touched file")  # noqa: T201
