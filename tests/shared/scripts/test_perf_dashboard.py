@@ -5,14 +5,26 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 import json
+from urllib.parse import urlunsplit
 
 import pytest
 
 from scripts.perf_dashboard import _CURRENT, MeasuredSemaphore, Sample, fingerprint, measured_async, validate_targets
 
 
+def _parser_only_redis_url(
+    *, scheme: str = "redis", host: str = "localhost", port: int = 6380, index: str = "18", query: str = "", fragment: str = ""
+) -> str:
+    """Build deterministic policy inputs; these URLs are never passed to a Redis client.
+
+    Connection tests below use the environment's isolated allocation. This parser-only
+    fixture must exercise the profiler's exact local port policy independently of it.
+    """
+    return urlunsplit((scheme, f"{host}:{port}", f"/{index}", query, fragment))
+
+
 def test_only_isolated_local_targets_are_allowed() -> None:
-    redis_url = "redis://localhost:6380/18"
+    redis_url = _parser_only_redis_url()
     validate_targets("postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_profile_test", redis_url)
     validate_targets("postgresql://phaze:phaze@localhost:5545/phaze_benchmark", redis_url)
     for dsn in (
@@ -28,16 +40,16 @@ def test_only_isolated_local_targets_are_allowed() -> None:
         with pytest.raises(ValueError, match="isolated local"):
             validate_targets(dsn, redis_url)
     for redis_url in (
-        "redis://localhost:6380/0",
-        "redis://localhost:6379/18",
-        "redis://host-prod:6380/18",
-        "redis://localhost:6380/",
-        "redis://localhost:6380/18?db=0",
-        "redis://localhost:6380/18?host=host-prod",
-        "redis://localhost:6380/18?port=6379",
-        "redis://localhost:6380/18#override",
-        "unix://localhost:6380/18",
-        "rediss://localhost:6380/18",
+        _parser_only_redis_url(index="0"),
+        _parser_only_redis_url(port=6379),
+        _parser_only_redis_url(host="host-prod"),
+        _parser_only_redis_url(index=""),
+        _parser_only_redis_url(query="db=0"),
+        _parser_only_redis_url(query="host=host-prod"),
+        _parser_only_redis_url(query="port=6379"),
+        _parser_only_redis_url(fragment="override"),
+        _parser_only_redis_url(scheme="unix"),
+        _parser_only_redis_url(scheme="rediss"),
     ):
         with pytest.raises(ValueError, match="dedicated local"):
             validate_targets("postgresql://phaze:phaze@localhost:5433/phaze_profile_test", redis_url)
