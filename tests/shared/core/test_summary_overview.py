@@ -325,10 +325,12 @@ async def test_summary_aggregate_clock_rejects_naive_time(session: AsyncSession)
 
 
 @pytest.mark.asyncio
-async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stage_degraded", [False, True])
+async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(monkeypatch: pytest.MonkeyPatch, stage_degraded: bool) -> None:
     active = 0
     peak = 0
     fanout = asyncio.Semaphore(2)
+    progress_snapshot = _progress(total=0)
 
     async def bounded_read(semaphore: asyncio.Semaphore, fn, default):  # type: ignore[no-untyped-def]
         nonlocal active, peak
@@ -350,7 +352,9 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
                 (),
             )
         )
-        return _progress(total=0)
+        if stage_degraded:
+            read_failures["metadata_bucket"] = ("stage_bucket",)
+        return progress_snapshot
 
     async def proposal_stats(_session: object) -> ProposalStats:
         return ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None)
@@ -389,6 +393,7 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
     context = await shell_mod._build_summary_context(SimpleNamespace(), object())  # type: ignore[arg-type]
 
     assert context["summary"]["total_files"] == 0
+    assert context["_stage_progress"] is (None if stage_degraded else progress_snapshot)
     assert peak == 2, "independent reads should overlap but never exceed the shared cap"
 
 

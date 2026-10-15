@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, false, func, select
 import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status
@@ -21,6 +21,7 @@ from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES, mark_read_degraded
 from phaze.services.stage_status import (
     MISSING_BUCKET,
     display_status_case,
+    inflight_clause,
     orphaned_clause,
 )
 
@@ -78,7 +79,11 @@ async def _safe_orphan_split(session: AsyncSession, stage: Stage, buckets: dict[
     """
     if stage not in ELIGIBLE_AFTER_FAILURE:  # enrich stages only -- orphaned_clause raises on downstream
         return
-    stmt = select(func.count()).select_from(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).where(orphaned_clause(stage))
+    # The orphan predicate already requires this non-null ledger EXISTS. A plain AND permits
+    # PostgreSQL to evaluate expensive retry/completion/broker/cloud probes for unscheduled files
+    # first. CASE preserves the predicate but restricts those probes to scheduled candidates.
+    orphan_predicate = case((inflight_clause(stage), orphaned_clause(stage)), else_=false())
+    stmt = select(func.count()).select_from(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).where(orphan_predicate)
     if agent_id is not None:
         stmt = stmt.where(FileRecord.agent_id == agent_id)
     try:

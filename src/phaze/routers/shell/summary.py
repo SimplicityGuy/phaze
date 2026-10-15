@@ -835,4 +835,6 @@ async def _read_summary_context(app_state: Any, session: AsyncSession) -> dict[s
         and stage_orphan_counts_known()
         and analysis_attention_known(lanes, awaiting_cloud_count, awaiting_hold_reason, aggregates["active_fileservers"])
     )
-    return {"summary": overview}
+    # A full Summary render seeds its rail from this SAME current-request snapshot. Retain the
+    # independent seed reread after a degraded source, so a transient failure may still recover.
+    return {"summary": overview, "_stage_progress": stage_progress if not any(flow_read_failures.values()) else None}
