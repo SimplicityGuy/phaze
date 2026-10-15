@@ -20,10 +20,25 @@ def test_only_isolated_local_targets_are_allowed() -> None:
         "postgresql://phaze:phaze@host-prod:5433/phaze_profile_test",
         "postgresql://phaze:phaze@localhost:5433/phaze_test",
         "postgresql://phaze:phaze@localhost:5433/phaze",
+        "postgresql://phaze:phaze@localhost:5433/phaze_profile_test?host=host-prod",
+        "postgresql://phaze:phaze@localhost:5433/phaze_profile_test?port=5432",
+        "postgresql://phaze:phaze@localhost:5433/phaze_profile_test#override",
+        "mysql://phaze:phaze@localhost:5433/phaze_profile_test",
     ):
         with pytest.raises(ValueError, match="isolated local"):
             validate_targets(dsn, redis_url)
-    for redis_url in ("redis://localhost:6380/0", "redis://localhost:6379/18", "redis://host-prod:6380/18", "redis://localhost:6380/"):
+    for redis_url in (
+        "redis://localhost:6380/0",
+        "redis://localhost:6379/18",
+        "redis://host-prod:6380/18",
+        "redis://localhost:6380/",
+        "redis://localhost:6380/18?db=0",
+        "redis://localhost:6380/18?host=host-prod",
+        "redis://localhost:6380/18?port=6379",
+        "redis://localhost:6380/18#override",
+        "unix://localhost:6380/18",
+        "rediss://localhost:6380/18",
+    ):
         with pytest.raises(ValueError, match="dedicated local"):
             validate_targets("postgresql://phaze:phaze@localhost:5433/phaze_profile_test", redis_url)
 
@@ -172,8 +187,13 @@ async def test_profile_refuses_real_pytest_session_before_queue_setup(monkeypatc
     # This harness never adopts pytest's opt-out: the connection actually holding its lock wins.
     monkeypatch.setenv("PHAZE_TEST_DB_ALLOW_SHARED", "1")
     args = Namespace(dsn=os.environ["TEST_DATABASE_URL"], redis_url=os.environ["PHAZE_REDIS_URL"])
+    # CI's real seat uses different ports; target policy is tested independently above.
+    # Isolate only that policy seam while exercising the actual held database lock.
+    target_validator = Mock()
+    monkeypatch.setattr(perf_dashboard, "validate_targets", target_validator)
     with pytest.raises(RuntimeError, match="owned by a pytest session"):
         await perf_dashboard.run(args)
+    target_validator.assert_called_once_with(args.dsn, args.redis_url)
     queue_factory.assert_not_called()
 
 

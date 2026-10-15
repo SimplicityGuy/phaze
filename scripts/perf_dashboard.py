@@ -156,10 +156,14 @@ class MeasuredSemaphore:
 def validate_targets(dsn: str, redis_url: str) -> None:
     """Queue.connect can provision tables: refuse every target except isolated local harnesses."""
     db = urlsplit(dsn)
+    if db.scheme not in {"postgresql", "postgresql+asyncpg"} or db.query or db.fragment:
+        raise ValueError("Use an isolated local PostgreSQL URL without query or fragment overrides")
     name = db.path.removeprefix("/")
     test_seat = db.port == 5433 and name.startswith("phaze_") and name.endswith("_test") and name != "phaze_test"
     benchmark = db.port == 5545 and name == "phaze_benchmark"
     cache = urlsplit(redis_url)
+    if cache.scheme != "redis" or cache.query or cache.fragment:
+        raise ValueError("Use the dedicated local Redis URL without query or fragment overrides")
     if db.hostname not in {"localhost", "127.0.0.1"} or not (test_seat or benchmark):
         raise ValueError("Use an isolated local :5433/phaze_<seat>_test or :5545/phaze_benchmark database")
     if cache.hostname not in {"localhost", "127.0.0.1"} or cache.port != 6380 or not cache.path[1:].isdigit() or int(cache.path[1:]) < 1:
