@@ -8,8 +8,10 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from typing import TYPE_CHECKING, Any
 
+from httpx import AsyncClient
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -19,11 +21,14 @@ from phaze.routers.pipeline._common import templates
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.backends.lane_detail import claim_overdue_seconds
 from tests._saq_jobs_seed import now_ms, seed_job
+from tests.browser import conftest as browser_harness
+from tests.browser.conftest import open_page_cm
+from tests.browser.seed import Seeder, sessionmaker_for
 from tests.browser.test_shell_contract import _open
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
 
 
 pytestmark = pytest.mark.browser
@@ -222,9 +227,70 @@ async def test_health_tray_lazy_keyboard_focus_and_layout(page_at: Any, viewport
         assert "/s/summary" in page.url
 
 
+@pytest.fixture(scope="module")
+def incident_generations() -> list[tuple[str, int]]:
+    return []
+
+
+@pytest.fixture
+def incident_server(request: pytest.FixtureRequest, incident_generations: list[tuple[str, int]]) -> Iterator[tuple[str, str]]:
+    """Own one process and database per theme; prior table resets cannot reset Python caches."""
+    processes: list[subprocess.Popen[bytes]] = []
+    original_popen = subprocess.Popen
+
+    def observe_process(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    theme = request.node.callspec.params["theme"]
+    assert theme in {"light", "dark"}
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("PHAZE_BROWSER_DB_SUFFIX", f"_incident_{theme}")
+        dsn = browser_harness._browser_dsn()
+        server = browser_harness.serve_live_app()
+        try:
+            # Observe the real child only during boot; do not replace the process or patch
+            # subprocess for the browser/test body. The handle proves ownership and reaping.
+            with pytest.MonkeyPatch.context() as startup:
+                startup.setattr(browser_harness.subprocess, "Popen", observe_process)
+                url = next(server)
+            assert len(processes) == 1
+            process = processes[0]
+            assert process.poll() is None
+            assert all(dsn != previous_dsn and process.pid != previous_pid for previous_dsn, previous_pid in incident_generations)
+            incident_generations.append((dsn, process.pid))
+            yield url, dsn
+        finally:
+            server.close()
+            assert all(process.poll() is not None for process in processes), "private application process was not reaped"
+
+
 @pytest_asyncio.fixture(loop_scope="session")
-async def incident_claim(seed: Any, redis_url: str) -> AsyncGenerator[None]:
+async def incident_seed(incident_server: tuple[str, str]) -> AsyncGenerator[Seeder]:
+    """Exercise the actual empty-generation boundary before writing any incident fixtures."""
+    url, dsn = incident_server
+    engine, make_session = sessionmaker_for(dsn)
+    try:
+        async with make_session() as session:
+            assert await session.scalar(text("SELECT current_database()")) == dsn.rsplit("/", 1)[1]
+            assert await session.scalar(text("SELECT count(*) FROM files")) == 0
+            async with AsyncClient(base_url=url) as client:
+                response = await client.get("/shell/attention", headers={"HX-Request": "true"})
+                response.raise_for_status()
+                # A new app can be unknown or report no fileserver before the seed registers
+                # one. Neither state may inherit the preceding theme's seeded incidents.
+                for identity in ("analysis-failed", "pipeline-orphans", "lane:local:stuck"):
+                    assert f'data-incident-id="{identity}"' not in response.text
+            yield Seeder(session)
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def incident_claim(incident_seed: Seeder, redis_url: str) -> AsyncGenerator[None]:
     """Own and remove the synthetic claim: the browser harness preserves SAQ tables between cases."""
+    seed = incident_seed
     agent = await seed.agent()
     router = AgentTaskRouter(
         queue_url=seed.session.bind.url.render_as_string(hide_password=False).replace("postgresql+asyncpg", "postgresql"),
@@ -251,7 +317,16 @@ async def incident_claim(seed: Any, redis_url: str) -> AsyncGenerator[None]:
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-async def test_incident_rows_and_recovery_safety_on_phone(page_at: Any, seed: Any, theme: str, tmp_path: Path, incident_claim: None) -> None:
+async def test_incident_rows_and_recovery_safety_on_phone(
+    chromium_browser: Any,
+    request: pytest.FixtureRequest,
+    incident_server: tuple[str, str],
+    incident_seed: Seeder,
+    theme: str,
+    tmp_path: Path,
+    incident_claim: None,
+) -> None:
+    seed = incident_seed
     for index in range(8):
         record = await seed.file(filename=f"failed-{index}.mp3")
         analysis = await seed.analysis(record, completed=False)
@@ -259,14 +334,23 @@ async def test_incident_rows_and_recovery_safety_on_phone(page_at: Any, seed: An
     orphan = await seed.file(filename="orphan.mp3")
     seed.session.add(SchedulingLedger(key=f"process_file:{orphan.id}", function="process_file", routing="agent", payload={"file_id": str(orphan.id)}))
     await seed.session.commit()
-    async with page_at(viewport="phone", theme=theme) as page:
+    async with open_page_cm(chromium_browser, incident_server[0], request, viewport="phone", theme=theme) as page:
         posts: list[str] = []
         page.on("request", lambda request: posts.append(request.url) if request.method == "POST" else None)
         await _open(page, "/s/analyze")
         card = page.locator("#analysis-health-card")
-        await card.locator('[data-incident-id="analysis-failed"]').wait_for(timeout=30000)
-        await card.locator('[data-incident-id="pipeline-orphans"]').wait_for(timeout=30000)
-        await card.locator('[data-incident-id="lane:local:stuck"]').wait_for(timeout=30000)
+        await page.wait_for_function(
+            """() => {
+                const rows = Array.from(document.querySelectorAll('#analysis-health-card [data-incident-id]'));
+                const expected = [['analysis-failed', 'danger', '8'], ['pipeline-orphans', 'attention', '1'], ['lane:local:stuck', 'danger', '1']];
+                return rows.length === expected.length && expected.every(([id, tone, count], index) => {
+                    const row = rows[index];
+                    return row.dataset.incidentId === id && row.dataset.incidentTone === tone
+                        && row.querySelector('h3 .font-mono')?.textContent.trim() === '· ' + count;
+                });
+            }""",
+            timeout=30000,
+        )
         expected = await card.locator("[data-incident-id]").evaluate_all(
             "rows => rows.map(row => [row.dataset.incidentId, row.dataset.incidentTone])"
         )
