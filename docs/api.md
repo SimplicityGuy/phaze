@@ -260,9 +260,8 @@ The page is the shell workspace `/s/junk`; these routes are its excerpt fragment
 
 **Approve, then run.** Approving only marks a group approved; the separate `quarantine` action is the
 only caller of `services/junk_quarantine.enqueue_quarantine`, and it dispatches only approved copies.
-Once a copy is handed to quarantine it can no longer be undone. The operator decision on
-2026-10-07 separated approval from the Run step; the current
-[`junk-review routes`](../src/phaze/routers/junk_review.py) preserve that boundary.
+Undo returns approved-but-not-run copies to pending; once a copy is executing it can no longer
+be undone. The [`junk-review routes`](../src/phaze/routers/junk_review.py) enforce this boundary.
 
 **Every action carries the card's review token**, the tags review's optimistic-concurrency
 pattern: the route recomputes a digest of the group's live `companion_junk_review` rows and answers

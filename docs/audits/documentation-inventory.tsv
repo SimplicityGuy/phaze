@@ -1613,6 +1613,7 @@ docs/tracklist-retirement.md	maintained	operator/developer	Phaze maintainers	mai
 docs/ui-design-reference.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
 docs/ui-reference-fixtures.html	maintained	operator/developer	Phaze maintainers	maintain against current source	inventory/provenance only
 docs/zero-selection-review-release-verification.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
+scripts/vendor/diagram_design/LICENSE	maintained	operator/developer	Phaze maintainers	maintain against current source	inventory/provenance only
 scripts/vendor/diagram_design/skills/diagram-design/references/style-guide.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current developer guide: source-traced review
 src/phaze/agent_watcher/README.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
 src/phaze/prompts/naming.md	runtime-loaded	maintainer	runtime prompt owner	preserve runtime behavior	inventory/provenance only
