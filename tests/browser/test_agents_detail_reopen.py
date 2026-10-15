@@ -129,3 +129,57 @@ async def test_header_health_pill_survives_stats_poll_and_fits_phone(page: Any) 
     await tray.wait_for(state="hidden")
     await page.wait_for_function("document.activeElement.id === 'attention-pill'")
     assert await pill.get_attribute("aria-expanded") == "false"
+
+
+@pytest.mark.parametrize(("viewport", "theme"), [("desktop", "light"), ("phone", "dark")])
+async def test_sidebar_inventory_agrees_with_heading_and_live_poll(open_page: Any, seed: Any, tmp_path: Any, viewport: str, theme: str) -> None:
+    """Real initial counts and ordinary 5s polls include configured, idle clusters."""
+    await seed.agent("inventory-agent", name="Inventory agent")
+    page = await open_page(viewport, theme=theme)
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    await open_shell(page, "/s/agents")
+    await settled(page)
+    if viewport == "phone":
+        await page.click("#rail-drawer-trigger")
+    link = page.locator('a[data-rail-stage="agents"]')
+    summary = link.locator("[data-worker-inventory]")
+    assert await summary.inner_text() == "1 agent · 2 clusters"
+    assert await page.locator("#agents-table-heading + p").inner_text() == "1 agent · 2 clusters"
+    assert await page.locator("#stage-workspace-subcount").inner_text() == "1 agent · 2 clusters"
+    assert await link.get_attribute("href") == "/s/agents"
+    assert "1 agent · 2 clusters" in await link.inner_text()
+    # Wait for the existing drawer transition before checking geometry/capturing
+    # evidence. CSS visibility alone also accepts an offscreen translated drawer.
+    if viewport == "phone":
+        await page.wait_for_function("document.querySelector('a[data-rail-stage=agents]').closest('aside').getBoundingClientRect().left >= -0.5")
+    await summary.scroll_into_view_if_needed()
+    boxes = await link.evaluate("""el => {
+        const label = el.querySelector('[data-rail-label]');
+        const summary = el.querySelector('[data-worker-inventory]');
+        return {labelBottom: label.getBoundingClientRect().bottom, summaryTop: summary.getBoundingClientRect().top,
+                scrollWidth: el.scrollWidth, clientWidth: el.clientWidth};
+    }""")
+    assert boxes["summaryTop"] >= boxes["labelBottom"]
+    assert boxes["scrollWidth"] <= boxes["clientWidth"]
+    assert await summary.evaluate(
+        "el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; }"
+    )
+    assert await summary.is_visible()
+    await link.focus()
+    assert await link.evaluate("el => el === document.activeElement")
+    await page.screenshot(path=str(tmp_path / f"worker-inventory-{viewport}-{theme}.png"))
+
+    # No navigation, synthetic store mutation or extra request loop: let both
+    # pre-existing pollers pick up a committed inventory change.
+    await seed.agent("inventory-second", name="Second inventory agent")
+    await page.wait_for_function(
+        """() => document.querySelector('[data-worker-inventory]')?.textContent.trim() === '2 agents · 2 clusters'""", timeout=15_000
+    )
+    await page.wait_for_function(
+        """() => document.querySelector('#agents-table-heading + p')?.textContent.trim() === '2 agents · 2 clusters'""", timeout=15_000
+    )
+    assert await page.locator("#stage-workspace-subcount").inner_text() == "2 agents · 2 clusters"
+    assert await page.evaluate("Alpine.store('pipeline').computeLanesActive") == 0
+    assert await summary.is_visible()
+    assert errors == []
