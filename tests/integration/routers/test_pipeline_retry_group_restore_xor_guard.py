@@ -120,7 +120,7 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     # unguarded restore would have lost as collateral damage from the raced row's CHECK violation.
     genuine_row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == genuinely_failed.id))).scalar_one()
     assert genuine_row.failed_at is not None, "an unrelated id's race must not void this file's restore (phaze-6ib1n)"
-    assert genuine_row.error_message is not None and "phaze-4ter" in genuine_row.error_message
+    assert genuine_row.error_message is not None and "retry_analysis_failed: enqueue error, see agent logs" in genuine_row.error_message
 
     # The raced file completed -- it must stay completed, NOT be knocked back to failed (that would
     # be a correctness regression of its own: a DONE file re-appearing in the red bucket).

@@ -154,7 +154,12 @@ def _log_upload_failed_result(result: UploadFailedResult, file_id: uuid.UUID, ag
             )
 
 
-@router.post("/{file_id}/uploaded", status_code=status.HTTP_200_OK, response_model=UploadedResponse)
+@router.post(
+    "/{file_id}/uploaded",
+    status_code=status.HTTP_200_OK,
+    response_model=UploadedResponse,
+    description="Record a successful upload: complete the multipart CONTROL-SIDE + ``UPLOADING -> UPLOADED``.",
+)
 async def report_uploaded(
     file_id: uuid.UUID,
     body: UploadedRequest,
@@ -183,7 +188,12 @@ async def report_uploaded(
     return UploadedResponse(file_id=file_id)
 
 
-@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=UploadFailedResponse)
+@router.post(
+    "/{file_id}/failed",
+    status_code=status.HTTP_200_OK,
+    response_model=UploadFailedResponse,
+    description="Record an upload failure: bounded re-drive, or terminal cleanup at the cap .",
+)
 async def report_upload_failed(
     file_id: uuid.UUID,
     body: UploadFailedRequest,

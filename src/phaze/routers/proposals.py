@@ -278,7 +278,7 @@ SPARK_W = 80.0
 SPARK_H = 24.0
 
 
-@router.get("/", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse, description="Resolve a legacy ``/proposals/`` bookmark into the v7.0 shell.")
 async def list_proposals() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/proposals/`` bookmark into the v7.0 shell.
 
@@ -317,7 +317,7 @@ async def bulk_undo(
     return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=context)
 
 
-@router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
+@router.patch("/{proposal_id}/approve", response_class=HTMLResponse, description="Approve a proposal and return the updated row.")
 async def approve_proposal(
     request: Request,
     proposal_id: uuid.UUID,
@@ -354,7 +354,7 @@ async def approve_proposal(
     return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved", threshold=threshold)
 
 
-@router.patch("/{proposal_id}/reject", response_class=HTMLResponse)
+@router.patch("/{proposal_id}/reject", response_class=HTMLResponse, description="Reject a proposal and return the updated row.")
 async def reject_proposal(
     request: Request,
     proposal_id: uuid.UUID,
@@ -372,7 +372,7 @@ async def reject_proposal(
     return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped", threshold=threshold)
 
 
-@router.patch("/{proposal_id}/undo", response_class=HTMLResponse)
+@router.patch("/{proposal_id}/undo", response_class=HTMLResponse, description="Revert a proposal to pending status and return the updated row.")
 async def undo_proposal(
     request: Request,
     proposal_id: uuid.UUID,
@@ -407,7 +407,11 @@ async def row_detail(
     )
 
 
-@router.get("/{proposal_id}/timeline", response_class=HTMLResponse)
+@router.get(
+    "/{proposal_id}/timeline",
+    response_class=HTMLResponse,
+    description="Return the multi-lane analysis-window timeline fragment for a proposal's file.",
+)
 async def proposal_timeline(
     request: Request,
     proposal_id: uuid.UUID,
@@ -504,7 +508,7 @@ def _validate_proposed_value(proposed: str, *, is_path: bool) -> str:
     return _normalize_proposed_path(value)
 
 
-@router.patch("/{proposal_id}/edit", response_class=HTMLResponse)
+@router.patch("/{proposal_id}/edit", response_class=HTMLResponse, description="Persist an operator edit to a proposal BEFORE approve.")
 async def edit_proposal(
     request: Request,
     proposal_id: uuid.UUID,
@@ -618,7 +622,7 @@ async def _transition_selected_proposals(
     return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action, []
 
 
-@router.patch("/bulk", response_class=HTMLResponse)
+@router.patch("/bulk", response_class=HTMLResponse, description="Bulk approve or reject the selection Changes Review submitted.")
 async def bulk_action(
     request: Request,
     action: str = Form(...),

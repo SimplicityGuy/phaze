@@ -2,7 +2,7 @@
 
 **Status:** Historical analysis / decision record. Authored 2026-07-13; implementation update below.
 
-**2026-09-30 implementation update (phaze-0sec0):** The review branch selects one
+**2026-09-30 implementation update:** The review branch selects one
 `musicnn_msd` model for each of the 11 characteristic families plus the unchanged
 Discogs400 genre model. The July cost ranking below is historical. On an isolated
 4-vCPU UpCloud host, the incumbent analyzed eight files in 195.3 and 209.0 minutes;
@@ -39,7 +39,7 @@ File/fine-window BPM, key, and Discogs style remain on the same algorithms; the
 candidate's predictions for those attributes matched the incumbent runs. Mood
 label agreement with the incumbent was 143/208 windows (68.75%). The shifts are
 known behavior changes, not measured improvements in accuracy. The companion
-real-model coverage gap is tracked by phaze-28883.
+real-model coverage gap is tracked by the real-model coverage follow-up.
 
 This document answers a standing question: **can we replace `essentia-tensorflow`
 with something less compute-intensive without losing any features?** It maps where
@@ -64,15 +64,15 @@ Everything else that mentions essentia is plumbing:
 
 | File | Role (no DSP) |
 | ---- | ------------- |
-| `src/phaze/scripts/download_models.py` | Explicit provisioning tool: fetches the `.pb`/`.json` weights from `essentia.upf.edu` (~3.1 GB) into a named directory. Never called at runtime (phaze-ynv6w) |
+| `src/phaze/scripts/download_models.py` | Explicit provisioning tool: fetches the `.pb`/`.json` weights from `essentia.upf.edu` (~3.1 GB) into a named directory. Never called at runtime  |
 | `src/phaze/tasks/_shared/model_bootstrap.py` | Worker-boot validator: every manifest file present at its pinned size, or exit naming the directory and the missing files. Never downloads |
 | `src/phaze/services/kube_staging.py` | Mounts the read-only models PVC at `/models` for Kueue Jobs |
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
-| `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | Phase 101 subprocess boundary: `analyze_file` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
+| `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | analysis subprocess subprocess boundary: `analyze_file()` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
 
 `analyze_file()` in `analysis.py` runs **two passes per file**, analyzing one short window
 at a time (so no essentia algorithm ever sees more than one window — the architecture that
-fixed the long-file `RhythmExtractor2013` buffer overflow / OOM). Since `phaze-5lop` each
+fixed the long-file `RhythmExtractor2013` buffer overflow / OOM). Since streaming decode each
 pass gets its windows from **one streaming decode network per tier** —
 `MonoLoader(sampleRate=tier_rate)` fanned out to a `Scale(1.0) → Trimmer` branch per window,
 run once — rather than one `EasyLoader` call per window:
@@ -85,11 +85,10 @@ run once — rather than one `EasyLoader` call per window:
 ### Coverage is exhaustive; memory is bounded by the CHUNK
 
 **Every file gets every natural window of both tiers**, whatever its duration. There is no
-window cap, no even stride, and no `sampled` result — operator decision 2026-08-11, implemented
-by `phaze-w55w1`; see [ADR-0007](design/0007-windowed-analysis.md) for the rationale and the
+window cap, no even stride, and no `sampled` result — exhaustive analysis shipped following the 2026-08-11 record; see [ADR-0007](design/0007-windowed-analysis.md) for the rationale and the
 cost analysis it accepted.
 
-Phase 43 previously bounded per-file cost with `analysis_fine_cap=60` / `analysis_coarse_cap=30`
+Earlier analysis bounded per-file cost with `analysis_fine_cap=60` / `analysis_coarse_cap=30`
 and a stride across the whole file, so anything past ~30 min (fine) / ~90 min (coarse) — i.e.
 every concert set — was **sampled**. That made per-file cost `O(constant)`, which was the
 root-cause fix for the 4h-timeout incident, at the price of never fully analyzing the archive's
@@ -110,22 +109,22 @@ residency the capped implementation was measured at, so ADR-0005 (analyze job me
 across the removal instead of needing re-derivation. The two tiers never stack (fine's chunk is
 released and `malloc_trim`ed before coarse starts).
 
-Two costs are paid for that, both deliberate and both documented in the D-07 decision record
+Two costs are paid for that, both deliberate and both documented in the chunked-analysis decision record
 above `_FINE_CHUNK_WINDOWS`:
 
 - each of the 34 TF graphs is constructed once per COARSE CHUNK rather than once per file
-  (the phaze-15sw model-major invariant — never more than one graph resident — is unchanged);
+  (the model-major inference model-major invariant — never more than one graph resident — is unchanged);
 - each chunk needs its own decode pass, because `MonoLoader` cannot seek. Non-final chunks
   interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary. That
   gate **is** taken on the deployed essentia — measured, zero fallbacks, full window sets — and is
-  worth **18.5–36.0%** of a non-final chunk's decode in a controlled A/B (`phaze-b2qs9` §4c, §4e).
+  worth **18.5–36.0%** of a non-final chunk's decode in a controlled A/B (the exhaustive analysis measurement §4c, §4e).
   The `duration × (K + 1) / 2` figure describes the *audio volume* decoded, not the wall clock:
   measured per-chunk decode time is **not** proportional to the chunk boundary — across every
   full run it instead *falls* as chunk index rises, and the ungated final chunk, which decodes the
-  whole file, is consistently the **cheapest** chunk of all (`phaze-b2qs9` §4b, §4d).
+  whole file, is consistently the **cheapest** chunk of all (the exhaustive analysis measurement §4b, §4d).
 
 > **⚠️ Measured on real hardware, and the table above does NOT describe the process.**
-> `phaze-b2qs9` (2026-08-12, [report](spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) ran
+> the exhaustive analysis measurement (2026-08-12, [report](spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) ran
 > the shipped code on vox against real corpus audio from 1:00 to 12:04. The per-chunk PCM figures
 > are correct as *live working set*. **Whole-process peak RSS is not bounded by them and grows
 > linearly with duration** — `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB
@@ -145,13 +144,13 @@ analysis for taking too long. The child heartbeats every unit of progress (windo
 chunk decodes, each coarse model sweep) and the supervising layer kills it only after
 `analysis_stall_timeout_sec` (default 1800 s) of **total silence**:
 
-| Layer | Before (Phase 43) | Now (phaze-w55w1) |
+| Layer | Before  | Now  |
 | --- | --- | --- |
 | in-process child | `analysis_inner_timeout_sec` = 6600 s SIGKILL | stall watchdog in `services/analysis_exec.py` → `AnalysisStalledError` |
 | SAQ `process_file` job | `timeout=7200` | `timeout=0`, `retries=2`, and `heartbeat=analysis_job_heartbeat_sec` (derived as 2× the inner stall threshold), touched from child progress |
 | k8s burst pod | no bound at all | the same stall watchdog (`job_runner` passes `stall_timeout`) |
 
-A wall clock cannot tell a long analysis from a hang — `phaze-1b39` (2026-07-28) is the incident
+A wall clock cannot tell a long analysis from a hang — the stalled analysis incident (2026-07-28) is the incident
 where trying SIGTERM'd legitimate 2–6 hour concert sets and stalled the whole burst lane. A
 genuinely wedged child is still killed in bounded time, and the file gets a stored
 `error_message` naming the stall and the stage it died in.
@@ -176,11 +175,11 @@ that projection rather than turning the large raw feature JSONB into a request-t
 
 > **Removed, not essentia's concern:** audio **fingerprinting** was never part of essentia — it was
 > handled entirely by the `audfprint` and `panako` HTTP sidecars, which the app called over httpx.
-> Both engines and every integration point were removed (phaze-0jpe, 2026-07-28; see
+> Both engines and every integration point were removed (fingerprint removal, 2026-07-28; see
 > `docs/design/0002-fingerprint-removal.md`). There is no `pyacoustid` dependency and nothing
 > imports it. `libchromaprint` / `fpcalc` also survive in the images, but **not** because
 > `essentia-tensorflow` needs them at runtime — `ldd` on the shipped `_essentia` extension shows
-> no chromaprint link and `import essentia` succeeds without it (phaze-0jpe.6 correction, tested
+> no chromaprint link and `import essentia` succeeds without it (the fingerprint runtime dependency verification correction, tested
 > against the live deployment). They have no verified consumer anywhere in this codebase; see
 > `docs/design/0002-fingerprint-removal.md` for the full correction. This page is only about the
 > `essentia-tensorflow` analysis stage.
@@ -212,23 +211,23 @@ Corollaries already settled in prior investigation:
 
 > **⚠️ Half of this section is now falsified — measured, twice, on the Linux burst node.**
 > The claim that TF inference is "a negligible slice" was never measured; it is wrong, and it
-> was wrong even when written. Measured `analyze_file` on a 60-minute file at production caps
+> was wrong even when written. Measured `analyze_file()` on a 60-minute file at production caps
 > (vox, deployed image, synthetic audio):
 >
-> | | before `phaze-5lop` | after `phaze-5lop` |
+> | | before streaming decode | after streaming decode |
 > | --- | ---: | ---: |
 > | total wall | 3,205.05 s | **1,960.37 s** |
 > | audio decode + resample | 1,370.77 s (**42.8%**) | **126.98 s (6.5%)** |
 > | everything else (34 TF graphs × 20 windows, + `RhythmExtractor2013`/`KeyExtractor` × 60) | 1,834.28 s (57.2%) | 1,833.39 s (**93.5%**) |
 
-> *(That measurement predates `phaze-w55w1` and was taken at the then-saturated caps. Its
+> *(That measurement predates exhaustive analysis and was taken at the then-saturated caps. Its
 > proportions still hold — the model step still dominates — but the absolute figures are now a
 > per-60-minutes rate rather than a per-file total, since a longer file analyzes proportionally
 > more windows instead of striding down to the same 60/20.)*
 >
 > **What survives.** Decode + native DSP really did dominate — decode alone was 43% of a
-> 60-minute analyze, and `phaze-esut` §8 found why: `EasyLoader` does not seek, so every one of
-> the 80–90 windows re-decoded the file from byte 0. `phaze-5lop` removed that multiplier and
+> 60-minute analyze, and the analysis memory profile §8 found why: `EasyLoader` does not seek, so every one of
+> the 80–90 windows re-decoded the file from byte 0. streaming decode removed that multiplier and
 > decode fell to **6.5%**. The compute lever *was* the decode path, and it has now been pulled.
 >
 > **What does not survive: "the TF model step is a negligible slice."** It was 57% of the wall
@@ -236,9 +235,9 @@ Corollaries already settled in prior investigation:
 > is the point: nothing about the model step changed, it simply stopped being hidden behind the
 > decode. So the corollaries below are now *load-bearing in the opposite direction*: replacing
 > the classifiers with something cheaper, or `#4`'s ONNX/TFLite re-export, is no longer "image
-> size, RAM and cold-start but not CPU-seconds" — after `phaze-5lop` the inference **is** the
-> CPU-seconds. (The GPU/Edge-TPU corollary is unaffected for a different reason: `phaze-mqq5`
-> and `phaze-i93a` evaluated the runtime question directly and on its own terms.)
+> size, RAM and cold-start but not CPU-seconds" — after streaming decode the inference **is** the
+> CPU-seconds. (The GPU/Edge-TPU corollary is unaffected for a different reason: the alternative runtime investigation
+> and the C++ runtime evaluation evaluated the runtime question directly and on its own terms.)
 
 ______________________________________________________________________
 
@@ -258,7 +257,7 @@ Stored on `AnalysisResult` (`models/analysis.py`) and per-window on `AnalysisWin
 | `style` | `discogs-effnet` genre (coarse) | column + LLM prompt |
 | `danceability` | danceability set × 1 active variant by default | inside `features` / per-window |
 | `features` (full JSONB) | all 11 sets + genre — incl. `gender`, `tonality`, `voice_instrumental` | fed verbatim to the LLM |
-| progress counts | `fine/coarse_windows_analyzed/total` | the in-flight progress bar + the completion PUT (equal on a healthy file since phaze-w55w1) |
+| progress counts | `fine/coarse_windows_analyzed/total` | the in-flight progress bar + the completion PUT (equal on a healthy file since exhaustive analysis) |
 
 Load-bearing coupling to note: `aggregate_bpm()` **excludes windows with
 `confidence == 0.0`**, and `analysis.py` unpacks `confidence` from
@@ -312,10 +311,10 @@ essentia docs):
 - `TempoCNN` (`deeptemp-k16-*.pb`) — a small CNN at 11 kHz; ML tempo, accurate.
 
 > ⚠️ **Load-bearing caveat — do not switch naively.** Per the essentia reference,
-> `degara` **always returns confidence = 0**, and `PercivalBpmEstimator` returns no
+> `degara` **always returns confidence = 0**, and `PercivalBpmEstimator()` returns no
 > confidence at all. Because `aggregate_bpm()` filters on `confidence != 0.0`,
 > either would make it discard *every* window — silent BPM loss. This is a small
-> change to `aggregate_bpm`'s confidence handling **plus** a parity validation, not
+> change to `aggregate_bpm()`'s confidence handling **plus** a parity validation, not
 > a one-liner.
 
 Validate with the existing `scripts/parity/compare_analysis.py` +
@@ -344,7 +343,7 @@ in isolation.** Fold decode-sharing in only if the windowing is being restructur
 for another reason.
 
 > **Measured, and the verdict holds — but it was aimed at the wrong redundancy
-> (`phaze-rc1q` §8, shipped as `phaze-5lop` 2026-08-06).** Sharing ONE decode across both
+> (the streaming decoder evaluation §8, shipped as streaming decode 2026-08-06).** Sharing ONE decode across both
 > tiers was built and measured: it is **5.3% faster and costs +0.364 GiB** of peak, because
 > the two tiers cannot share the expensive stage at all — their **resamplers differ**
 > (44,100→44,100 is a near no-op, 44,100→16,000 is real libsamplerate work), so all a shared
@@ -390,14 +389,14 @@ intensive." Any of these is a separate implementation phase with parity validati
 this document only records the analysis.
 
 > **Re-read this against the compute-profile correction above (2026-08-06).** The decode half of
-> that sentence was the true half, and it has been dealt with: `phaze-5lop` cut audio decode
+> that sentence was the true half, and it has been dealt with: streaming decode cut audio decode
 > from **42.8% of a 60-minute analyze to 6.5%** by removing the 80–90 redundant full-file
 > decodes `EasyLoader`'s missing seek was causing — for byte-identical output, no window-size
 > change, and none of the feature risk this section weighs. **The remaining answer to "essentia
 > is compute-intensive" is the 34 TensorFlow graphs, which are now 93% of the wall clock.** So
 > the ranking here has inverted: **#4** (ONNX / quantized TFLite re-export) and **#2** (prune
 > redundant classifier variants) are now the CPU-second levers, and **#1** is a lever on ~2% of
-> the wall. `phaze-mqq5` and `phaze-i93a` evaluate that ground directly and supersede this
+> the wall. the alternative runtime investigation and the C++ runtime evaluation evaluate that ground directly and supersede this
 > ranking; read them first.
 
 ______________________________________________________________________
@@ -406,7 +405,7 @@ ______________________________________________________________________
 
 - [Essentia (MTG) — homepage & docs](https://essentia.upf.edu/)
 - Essentia beat-detection reference (`RhythmExtractor2013` `multifeature` vs
-  `degara`; `degara` outputs confidence = 0; `PercivalBpmEstimator`; `TempoCNN`) —
+  `degara`; `degara` outputs confidence = 0; `PercivalBpmEstimator()`; `TempoCNN`) —
   <https://essentia.upf.edu/tutorial_rhythm_beatdetection.html> and
   <https://essentia.upf.edu/reference/streaming_RhythmExtractor2013.html>
   (verified via Context7, 2026-07-13)

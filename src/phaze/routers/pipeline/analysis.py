@@ -215,7 +215,7 @@ async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: s
             await restore_session.execute(
                 update(AnalysisResult)
                 .where(_analysis_file_ids_scope(failed_ids, "restore_ids"), AnalysisResult.analysis_completed_at.is_(None))
-                .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
+                .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs "),
             )
             await restore_session.commit()
         logger.error(
@@ -364,7 +364,7 @@ async def _route_discovered_by_duration(
     }
 
 
-@router.post("/api/v1/analyze")
+@router.post("/api/v1/analyze", description="Enqueue process_file jobs for all DISCOVERED files, routed per-file by duration.")
 async def trigger_analysis(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -428,7 +428,11 @@ async def trigger_analysis(
     }
 
 
-@router.post("/pipeline/analyze", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/analyze",
+    response_class=HTMLResponse,
+    description="HTMX endpoint: trigger per-file duration-routed analysis and return the split-count fragment.",
+)
 async def trigger_analysis_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -482,7 +486,11 @@ async def trigger_analysis_ui(
     )
 
 
-@router.post("/pipeline/analysis-failed/retry", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/analysis-failed/retry",
+    response_class=HTMLResponse,
+    description="HTMX endpoint: operator-gated BULK retry of every ANALYSIS_FAILED file.",
+)
 async def retry_analysis_failed(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -610,7 +618,11 @@ async def retry_analysis_failed(
 # FINGERPRINTED + clears ``analysis.failed_at`` in ONE transaction and commits BEFORE enqueue (the
 # Phase-81 CR-01 rule) so the file leaves the failed disjunct -- it NEVER creates an auto-retry loop
 # (the 44.5K over-enqueue guard, behavior 8).
-@router.post("/pipeline/files/{file_id}/analysis-failed/retry", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/files/{file_id}/analysis-failed/retry",
+    response_class=HTMLResponse,
+    description="HTMX endpoint: operator-gated PER-FILE retry of ONE ANALYSIS_FAILED file.",
+)
 async def retry_analysis_failed_file(
     request: Request,
     file_id: uuid.UUID,
@@ -690,7 +702,7 @@ async def retry_analysis_failed_file(
         await session.execute(
             update(AnalysisResult)
             .where(AnalysisResult.file_id == file_id)
-            .values(failed_at=func.now(), error_message="retry_analysis_failed_file: enqueue error, see agent logs (phaze-gcdih)"),
+            .values(failed_at=func.now(), error_message="retry_analysis_failed_file: enqueue error, see agent logs "),
         )
         await session.commit()
         return templates.TemplateResponse(
@@ -732,7 +744,7 @@ async def retry_analysis_failed_file(
             await session.execute(
                 update(AnalysisResult)
                 .where(AnalysisResult.file_id == file_id)
-                .values(failed_at=func.now(), error_message="retry_analysis_failed_file: blocked by a dead job holding the key (phaze-k0rv9)"),
+                .values(failed_at=func.now(), error_message="retry_analysis_failed_file: blocked by a dead job holding the key "),
             )
             await session.commit()
             return templates.TemplateResponse(

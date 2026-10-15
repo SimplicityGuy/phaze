@@ -26,8 +26,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
 | `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
 | `file_companions`     | Many-to-many: companion files to media files                          |
-| `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row (phaze-bk5jp) |
-| `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; phaze-osy6j) |
+| `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row  |
+| `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; companion feature extraction) |
 | `provider_source_objects` | Opaque provider/native identities and optional current source-file binding; source history survives file deletion |
 | `provider_source_reads` | Append-only read order of each source object, so a later read is decided by sequence, not by `retrieved_at` |
 | `provider_source_observations` | Immutable revisioned decoded text, parsed facts/tracks, read failures and provenance |
@@ -35,11 +35,11 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `provider_recording_selections` | Explicit current choices for tracklists and release metadata |
 | `provider_selection_events` | Append-only reviewed choices with actor, target and observation |
 | `provider_acquisition_attempts` | Immutable physical-read attempts with received order, separate from deduplicated source observations |
-| `remote_transport_ledgers` | One row per remote provider: reservation counter, pacing anchor, Retry-After not-before and the persistent stop only an operator clears (phaze-gan2z) |
+| `remote_transport_ledgers` | One row per remote provider: reservation counter, pacing anchor, Retry-After not-before and the persistent stop only an operator clears  |
 | `remote_transport_attempts` | One row per remote request, committed before it is sent; the evidence the ledger is checked against, and the rolling-window budget count |
 | `companion_import_runs` | Fixed inventory boundary and durable continuation for a per-agent import run |
 | `companion_import_items` | Bounded resumable source work, lease and per-kind outcome checkpoints |
-| `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired (phaze-7muoo) |
+| `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired  |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
@@ -48,20 +48,20 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `pipeline_stage_control` | Durable per-stage pause/priority operator intent (one row per agent pipeline stage) |
 | `scheduling_ledger`   | Durable "this stage was scheduled for this item" record (recovery source of truth)  |
 | `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
-| `backend_breaker`     | Per-backend control-plane-unreachable circuit breaker (`backend_id` PK; `tripped_at` NULL = closed). Tripped by reconcile, read by the drain to hold the backend, closed by the presign endpoint (phaze-j0ixx) |
+| `backend_breaker`     | Per-backend control-plane-unreachable circuit breaker (`backend_id` PK; `tripped_at` NULL = closed). Tripped by reconcile, read by the drain to hold the backend, closed by the presign endpoint  |
 | `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
-| `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
+| `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence  |
 | `dedup_review_plan` | Opaque, immutable keeper choice plus the complete reviewed membership snapshot (`group_hash`, `canonical_file_id`, `member_ids`), committed at most once via `committed_at` (migration `061`) |
 
 One further table shares the database but is **not** in the list above because it is not an
-Alembic-managed model: **`saq_jobs`**. Since Phase 36 the SAQ broker is a `PostgresQueue`, and
+Alembic-managed model: **`saq_jobs`**. Since Postgres broker migration the SAQ broker is a `PostgresQueue`, and
 SAQ creates and owns this table itself (`CREATE TABLE IF NOT EXISTS`, outside the migration
 chain). phaze still reads and mutates it directly with raw parameterized SQL from
 `services/stage_control.py` — the per-stage pause / resume / priority helpers reorder or park
 the *existing* queued backlog that the `before_enqueue` hook can only stamp on new jobs. Because
 `saq_jobs` has no `function` column (the name lives inside the serialized `job` BYTEA blob),
-those helpers filter on the Phase-35 deterministic key prefix `key LIKE '<function>:%'`, always
+those helpers filter on the deterministic key prefix `key LIKE '<function>:%'`, always
 guarded by `status = 'queued'`.
 
 ### Style queries
@@ -94,7 +94,7 @@ deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with t
 `scan_batches` row; the remaining per-file sidecars (`metadata`,
 `analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
 tracklist chain use the default restricting FK (no cascade). `companion_junk_review` carries no foreign
-key at all, so neither scan nor file deletion can be blocked by it or erase it (phaze-bk5jp).
+key at all, so neither scan nor file deletion can be blocked by it or erase it.
 
 ```mermaid
 erDiagram
@@ -142,8 +142,7 @@ Migration `063` adds three nullable columns to `analysis_window`: `energy`, `cam
 `musical_key` through the 24-entry Camelot table, not a projection of the separate `features`
 JSONB the way `energy`/`mood_scores` are, so the JSONB-scale argument that justifies persisting
 those two does not apply to it. `AnalysisWindow.camelot` survives as a read-time `@property`
-computed from `musical_key` via `services.set_projection.camelot_code` (operator decision
-2026-09-16, bead `phaze-6r3eh`) — every reader still accesses `window.camelot` unchanged, with no
+computed from `musical_key` via `services.set_projection.camelot_code` (as recorded in the migration baseline, 2026-09-16) — every reader still accesses `window.camelot` unchanged, with no
 backfill. 063 also creates `set_profile`, whose `file_id` is both primary key and foreign key
 to `files.id`. The FK uses `ON DELETE CASCADE`; `FileRecord.set_profile` is the matching optional,
 one-to-one ORM relationship with `delete-orphan` plus `passive_deletes=True` so the database owns
@@ -170,7 +169,7 @@ requests a subpath; migration `064` conservatively backfills legacy rows from `s
 
 `proposals` carries a partial UNIQUE index `uq_proposals_file_id_pending` on `file_id`
 `WHERE status = 'pending'` (model `src/phaze/models/proposal.py`, migration `019`). It
-structurally guarantees at most one PENDING proposal per file (D-04). This index is the
+structurally guarantees at most one PENDING proposal per file. This index is the
 `ON CONFLICT` target for `services.proposal.store_proposals`' upsert
 (`on_conflict_do_update` with `index_elements=["file_id"]` and
 `index_where=status == 'pending'`): re-running proposal generation overwrites the single
@@ -181,7 +180,7 @@ structurally protected from being overwritten by a re-run.
 
 ### Derived per-stage status
 
-There is **no `files.state` column and no file-level state enum** — Phase 90 dropped the
+There is **no `files.state` column and no file-level state enum** — per-stage status migration dropped the
 `state` column, the file-level state `StrEnum`, and the `ix_files_state` index (in the
 pre-flatten chain's migration `039_drop_files_state_column`, now folded into the `039`
 baseline schema). A file's status is instead **derived on read**, per stage,
@@ -190,7 +189,7 @@ from its output tables (`metadata`, `analysis`, `proposals`,
 
 - `Stage` (`src/phaze/enums/stage.py`, 6 stages): `metadata`, `analyze`,
   `tracklist`, `propose`, `review`, `apply`. Audio fingerprinting was removed as a stage
-  (phaze-0jpe).
+.
 - `Status` (`src/phaze/enums/stage.py`, 5 states): `not_started`, `in_flight`, `done`,
   `skipped`, `failed`, resolved under the precedence ladder
   `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`. The durable `scheduling_ledger` is the
@@ -207,10 +206,10 @@ from its output tables (`metadata`, `analysis`, `proposals`,
 - `ScanStatus` (`scan_batch.py`): `running`, `completed`, `failed`, `live`.
 - `ProposalStatus` (`proposal.py`): `pending`, `approved`, `rejected`, `executed`, `failed`.
 - `TagWriteStatus` (`tag_write_log.py`, 5 members): `completed`, `failed`, `discrepancy`,
-  `verify_failed` (phaze-vq3g — the on-disk write landed but the immediate verify re-read
+  `verify_failed` (the startup serialization change — the on-disk write landed but the immediate verify re-read
   failed; distinct from `discrepancy`, where the write landed the *wrong* values, and from
   `failed`, where it never landed. Non-terminal, so the file resurfaces and a later submit
-  self-heals to `completed`), and `no_op` (WR-01 — a *terminal* marker for a file whose
+  self-heals to `completed`), and `no_op` (a *terminal* marker for a file whose
   server-computed proposal has zero changes; the idempotency anti-join evicts it from the
   candidate window so it can never starve qualifying files). The column is a plain
   `String(20)` (no PG enum / CHECK), so adding a member needs no migration.
@@ -244,7 +243,7 @@ chain's migration 009; now part of the `039` baseline schema.)
 Schema is managed by Alembic with the async template (`alembic/env.py` overrides
 `sqlalchemy.url` from application settings, so no URL is hard-coded in `alembic.ini`).
 
-**As of Phase 102 (phaze-8hfu), the entire linear chain was flattened into a single baseline
+**As of migration baseline flattening, the entire linear chain was flattened into a single baseline
 file: `alembic/versions/039_baseline_schema.py`.** It reuses revision id `039` with
 `down_revision = None` — so a production database already stamped `039` by the pre-flatten
 chain treats the next `upgrade head` as a no-op, while a fresh (CI / test / new) database
@@ -281,52 +280,52 @@ head, **`091`**.
 | `043` | Discogs link: one accepted per track |
 | `044` | `scan_batches` no-duplicate-running |
 | `045` | `files.original_filename_repaired` |
-| `046` | Drop the fingerprint schema (phaze-0jpe.4) |
+| `046` | Drop the fingerprint schema  |
 | `047` | Drop `analysis.fingerprint` |
 | `048` | `files (original_filename, id)` btree |
-| `049` | Convert every remaining naive timestamp column to `timestamptz` (phaze-cz3m) |
-| `050` | Create `tracklist_lookup_cache` — persisted positive/negative retired external source lookup cache (phaze-fq9h.3) |
-| `051` | Add tracklist propagation columns — one scraped tracklist propagated to a unique set's duplicates (phaze-fq9h.7) |
-| `052` | Create `tracklist_priority_flags` — persisted operator lookup-priority flag (phaze-fq9h.8) |
-| `053` | Create `filename_convention` — generic corpus-learned convention store (phaze-5fta.2) |
-| `054` | Add `cloud_job.node_loss_redrives` — independent node-loss re-drive budget (phaze-1q4g) |
-| `055` | Add the `cloud_budget` table — durable per-file cloud budget that outlives the `cloud_job` sidecar (phaze-2mwyo) |
-| `056` | Rename five double-prefixed CHECK constraints to the names the ORM actually renders (phaze-x8tof) |
-| `057` | Add `cloud_job.node_loss_pending` — durable carry for a verdict lost across the re-drive deferral (phaze-mwbz3) |
-| `058` | `analysis (analysis_completed_at)` partial btree for the lane cards' PROCESSED counts (phaze-5c6i2) |
+| `049` | Convert every remaining naive timestamp column to `timestamptz`  |
+| `050` | Create `tracklist_lookup_cache` — persisted positive/negative retired external source lookup cache  |
+| `051` | Add tracklist propagation columns — one scraped tracklist propagated to a unique set's duplicates  |
+| `052` | Create `tracklist_priority_flags` — persisted operator lookup-priority flag  |
+| `053` | Create `filename_convention` — generic corpus-learned convention store  |
+| `054` | Add `cloud_job.node_loss_redrives` — independent node-loss re-drive budget  |
+| `055` | Add the `cloud_budget` table — durable per-file cloud budget that outlives the `cloud_job` sidecar  |
+| `056` | Rename five double-prefixed CHECK constraints to the names the ORM actually renders  |
+| `057` | Add `cloud_job.node_loss_pending` — durable carry for a verdict lost across the re-drive deferral  |
+| `058` | `analysis (analysis_completed_at)` partial btree for the lane cards' PROCESSED counts  |
 | `059` | Durable operator ARM/DISARM state for the tracklist drain |
 | `060` | Drop the obsolete `analysis.sampled` column after exhaustive-window analysis shipped |
 | `061` | Durable duplicate-review plans |
 | `062` | Persist reviewed-before tags and review source versions |
 | `063` | Add `analysis_window` energy/Camelot/mood projections and the `set_profile` table |
 | `064` | Add `scan_batches.configured_root` and scan-owned orphan companion diagnostics |
-| `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity (phaze-w15ju) |
-| `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key` (phaze-6r3eh) |
-| `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths (phaze-z66hq) |
-| `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op (phaze-3agnm) |
-| `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted (phaze-1xngw) |
-| `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it (phaze-o71bf) |
-| `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on (phaze-j0ixx) |
-| `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting (phaze-d28sn) |
-| `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config (phaze-mvq8z.6); pure additive DDL, downgrade drops the table |
+| `065` | Add `cloud_job.telemetry_slot` — the burst pod's controller-allocated bounded telemetry identity  |
+| `066` | Drop `analysis_window.camelot` — it becomes a read-time property of `musical_key`  |
+| `067` | Rebuild ranked `analysis.style` score objects and `analysis.dominant_style` from coarse windows; index both query paths  |
+| `068` | `ANALYZE` `metadata` and `cloud_job` so filter columns added by `ALTER` without later writes (`metadata.failed_at`, `cloud_job.telemetry_slot`) carry planner statistics; data-free, downgrade is a no-op  |
+| `069` | Add `cloud_job.last_exit_code` / `last_failure_reason` / `last_failed_at` — the reconcile cron's record of why a cloud pod failed, kept after the Job is deleted  |
+| `070` | Create `tracklist_file_lookups` — the per-file tracklist drain outcome behind `Stage.TRACKLIST`'s status; no backfill, the next drain slice writes it  |
+| `071` | Add the `backend_breaker` table — the per-backend breaker that holds a backend whose pods cannot reach the control plane — and `ANALYZE` `cloud_job`, whose `last_exit_code` / `last_failed_at` its trip rule now filters on  |
+| `072` | Add `cloud_job.redrive_after` — when a charged cloud re-drive may enqueue its fresh submit, the backoff deadline that also tells a waiting row from one whose resubmit is already queued; no backfill, NULL means not waiting  |
+| `073` | Create `runtime_config_override` — the DB-override layer for hot-reloadable config; pure additive DDL, downgrade drops the table |
 | `074` | Create `deployments` — host-observed Phaze container and image versions; pure additive DDL, downgrade drops the table |
 | `075` | Add nullable `analysis.coarse_work_percent` for in-flight model-sweep progress, separate from completed-window counts |
 | `076` | Add nullable `cloud_job.started_at` for the current Kubernetes Job start time; reconcile fills it from `status.startTime`, and re-submit clears the prior attempt |
 | `077` | Add nullable `scheduling_ledger.terminal_at` for the current analysis attempt's terminal outcome, preserving older successful analysis results |
 | `078` | Add nullable `tracklist_lookup_cache.retry_url` — the detail-page URL a transient `BLOCKED` / `RENDER_FAILED` attempt chose, offered as a retry hint (never a result; cleared on success, any other outcome, and when the set parks) so the retry skips the search |
-| `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill (phaze-osy6j) |
-| `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL (phaze-bk5jp) |
-| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY` (phaze-4x319.5) |
-| `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual (phaze-7muoo) |
-| `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill (phaze-5rfev) |
-| `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill (phaze-st1ty) |
-| `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback (phaze-gq28d) |
-| `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence (phaze-67q4e) |
-| `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index (phaze-rbqca) |
-| `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs (phaze-c5v4x) |
-| `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists (phaze-gan2z) |
-| `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists (phaze-b6430) |
-| `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`) (phaze-z9ea3) — **head** |
+| `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill  |
+| `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL  |
+| `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY`  |
+| `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual  |
+| `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill  |
+| `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill  |
+| `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback  |
+| `086` | Add nullable fresh companion association derivation and target-specific source decision tokens/mappings; preserve unknown historical links and append-only review evidence  |
+| `087` | Add immutable acquisition attempts, resumable companion import progress and source-file lookup index  |
+| `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs  |
+| `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists  |
+| `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists  |
+| `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`)  — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

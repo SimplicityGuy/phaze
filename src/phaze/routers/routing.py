@@ -47,7 +47,11 @@ _ENGAGE_TOAST = "Routing forced to LOCAL — cloud & Kueue backends bypassed."
 _REVERT_TOAST = "Cloud routing restored — backends dispatch by rank."
 
 
-@router.post("/pipeline/routing/force-local", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/routing/force-local",
+    response_class=HTMLResponse,
+    description="Flip the ``'global'`` force-local row to ``engage`` and return the re-rendered pill + toast.",
+)
 async def force_local(
     request: Request,
     engage: Annotated[bool, Form()],

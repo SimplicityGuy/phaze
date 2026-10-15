@@ -94,21 +94,23 @@ class TagWriteResultResponse(BaseModel):
 
 
 class TagWriteBeforeSnapshotPayload(BaseModel):
-    """The pre-write on-disk snapshot, reported SEPARATELY and BEFORE any mutating write (phaze-anrw4).
+    """The pre-write on-disk snapshot, reported SEPARATELY and BEFORE any mutating write."""
 
-    ``PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot`` exists to close a gap the
-    main result callback cannot: on a SAQ retry of ``write_file_tags`` (the job body raises on a
-    failed result-callback so SAQ retries -- "only the CALLBACK is allowed to fail the job"), the
-    first attempt's write can have already landed on disk even though its result callback never
-    reached the control plane. A second attempt's ``_extract_before_tags`` then reads the
-    ALREADY-WRITTEN state, not the true original -- and the row is still ``queued``, so the main
-    callback's ``status != queued`` duplicate guard does not catch it either.
-
-    Reporting the snapshot here, before the disk is touched, makes it independent of which
-    attempt's write or result callback actually lands: the control plane accepts it FIRST-WRITE-WINS
-    (whichever call reaches it first while ``TagWriteLog.before_tags`` is still empty), so the
-    corrupted second extraction can never overwrite an already-captured original.
-    """
+    # The pre-write on-disk snapshot, reported SEPARATELY and BEFORE any mutating write (phaze-anrw4).
+    #
+    #     ``PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot`` exists to close a gap the
+    #     main result callback cannot: on a SAQ retry of ``write_file_tags`` (the job body raises on a
+    #     failed result-callback so SAQ retries -- "only the CALLBACK is allowed to fail the job"), the
+    #     first attempt's write can have already landed on disk even though its result callback never
+    #     reached the control plane. A second attempt's ``_extract_before_tags`` then reads the
+    #     ALREADY-WRITTEN state, not the true original -- and the row is still ``queued``, so the main
+    #     callback's ``status != queued`` duplicate guard does not catch it either.
+    #
+    #     Reporting the snapshot here, before the disk is touched, makes it independent of which
+    #     attempt's write or result callback actually lands: the control plane accepts it FIRST-WRITE-WINS
+    #     (whichever call reaches it first while ``TagWriteLog.before_tags`` is still empty), so the
+    #     corrupted second extraction can never overwrite an already-captured original.
+    #
 
     model_config = ConfigDict(extra="forbid")
 

@@ -7,7 +7,7 @@ next step: declaring **two or more** `kind="compute"` backends at different cost
 scheduler prefers the cheap one and **spills** to the pricier one under load — a free arm64 A1 that
 fills first, a paid/trial x86 box that only takes overflow, and local as the final safety net.
 
-Everything here runs on the already-shipped Phase 72/73 machinery (per-entry `agent_ref` binding,
+Everything here runs on the already-shipped compute backend binding / multi-compute routing machinery (per-entry `agent_ref` binding,
 per-agent push/scratch destination, rank/cap load-spread, per-backend failure isolation). There is
 **no new routing behavior** — this is the operator recipe for using it with N compute agents.
 
@@ -99,7 +99,7 @@ Ranks encode your cost preference; the scheduler always drains lowest rank first
 
 Raise a lane's `rank` to make it *less* preferred; lower it to make it *more* preferred. Two lanes
 at the **same** rank tie-break by **utilization first** (`in_flight / cap`, least-loaded wins), then
-by stable lexicographic `id` — the SCHED-04 sort key is `(rank, utilization, id)` (see
+by stable lexicographic `id` — the  sort key is `(rank, utilization, id)` (see
 [runbook.md → Spillover behavior](runbook.md#spillover-behavior)).
 
 ## Running the compose once per compute agent
@@ -152,7 +152,7 @@ Never inline a token, SSH key, or `DATABASE_URL` in any example. Use the existin
 pointers only (`PHAZE_QUEUE_URL_FILE`, `PHAZE_AGENT_TOKEN_FILE`, `PHAZE_PUSH_*_FILE`) read via
 `env_file: .env` — exactly as [cloud-burst.md](cloud-burst.md) documents. The compute agent reaches
 Postgres **only** via `PHAZE_QUEUE_URL` for the `saq_jobs` broker, Redis via `PHAZE_REDIS_URL` for
-cache/counters, and application state via the HTTP API — never the app ORM (DIST-04).
+cache/counters, and application state via the HTTP API — never the app ORM.
 
 ## Reading the lanes
 

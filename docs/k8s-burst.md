@@ -4,13 +4,13 @@
 [Kueue](https://kueue.sigs.k8s.io/), alongside the all-local default and the v5.0
 [OCI A1 compute agent](cloud-burst.md). A Kueue cluster is declared as a
 `[[backends]] kind="kueue"` entry in [`backends.toml`](configuration.md#backend-registry-backendstoml)
-(REG-01) — and you can declare **several at once**, each with its own cost-tier `rank`,
+ — and you can declare **several at once**, each with its own cost-tier `rank`,
 concurrency `cap`, `[backends.kube]` connection block, and `buckets` staging set. For every
 **long** audio set (duration ≥ `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`) the tiered drain routes the
 file rank-first to a Kueue backend: the control plane *orchestrates* staging into that backend's
 S3-compatible staging bucket — it initiates the multipart upload, presigns the part URLs, and
 completes the object, while the **file-server agent** (which owns the media mount) transfers the
-bytes via the `io` lane's `s3_upload` task; the control plane never touches file bytes (DIST-01).
+bytes via the `io` lane's `s3_upload` task; the control plane never touches file bytes.
 It then submits a **suspended one-shot Kueue `Job`**, and a pod analyzes
 the file and PUTs the result back to `/api/internal/agent/*` — reconciled by `file_id`. The
 object is deleted after analysis. There is **no persistent pod disk** and **no long-lived
@@ -20,30 +20,30 @@ compute host** — the execution unit is an ephemeral, quota-scheduled batch Job
 > `backends.toml` a fresh deploy behaves **all-local** with zero cloud activity — the zero-config
 > default is an implicit single `kind="local"` backend. On/off is **derived**: `cloud_enabled` is
 > True iff the registry holds a non-local backend (the old `PHAZE_CLOUD_TARGET=k8s` selector was
-> **removed** in Phase 67). Stand up the cluster objects in the **Cluster-admin runbook** below
+> **removed** in backend registry migration). Stand up the cluster objects in the **Cluster-admin runbook** below
 > first — in **each** cluster the registry targets — then add the `[[backends]] kind="kueue"`
 > entry and restart the control plane.
 
-> **Superseded in 2026.7.1 (Phase 67 / 70).** The single `PHAZE_CLOUD_TARGET=k8s` selector this
+> **Superseded in 2026.7.1.** The single `PHAZE_CLOUD_TARGET=k8s` selector this
 > page describes was **removed** in favor of the declarative **[backend registry](configuration.md#backend-registry-backendstoml)**
 > (`backends.toml`): a Kueue cluster is now one `[[backends]] kind="kueue"` entry — and you can
-> declare **several** at once, each staging to its own `[[buckets]]` set (REG-05), which the
+> declare **several** at once, each staging to its own `[[buckets]]` set, which the
 > scheduler drains across by rank. This page remains the authoritative **cluster-admin object**
 > spec (Kueue / RBAC / Secret); for the config model and the trivial `cloud_target`→`backends`
-> mapping, see [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67).
+> mapping, see [configuration.md → Cloud target](configuration.md#cloud-target-removed).
 
 **phaze does NOT create any cluster objects.** Kueue admission, RBAC, and the bearer-token
 Secret are **cluster-admin** responsibilities. Per Kueue backend, phaze references a LocalQueue
 **by name** (its `[backends.kube].local_queue`) and submits Jobs into it; it never authors quota,
 RBAC, or Secret objects at runtime. This document is the **authoritative spec** for those
-operator-owned objects (D-02), applied **once per cluster** the registry targets; the live
+operator-owned objects, applied **once per cluster** the registry targets; the live
 clusters are the operator's infrastructure. The ready-to-paste homelab change request is
 [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
 For the canonical per-field config reference (the `[[backends]]` / `[backends.kube]` / `[[buckets]]`
 schema, defaults, inline `*_file` secret support), see
 [configuration.md → Backend registry (`backends.toml`)](configuration.md#backend-registry-backendstoml).
-The flat `PHAZE_KUBE_*` / `PHAZE_S3_*` env-knob tables it links from Phase 54/53 are **superseded**
+The flat `PHAZE_KUBE_*` / `PHAZE_S3_*` env-knob tables it links from Kubernetes burst / S3 staging are **superseded**
 by that registry (retained there only as a historical field reference). This page does not duplicate
 those tables.
 
@@ -111,7 +111,7 @@ submit, no S3 staging. (all-local)_
 
 ## Multiple clusters, ranks, caps & the tiered drain
 
-Since 2026.7.1 (Phases 69/70) the control plane drives **N** Kueue clusters simultaneously. Each is
+Since 2026.7.1  the control plane drives **N** Kueue clusters simultaneously. Each is
 a `[[backends]] kind="kueue"` registry entry:
 
 - **`rank`** — cost-tier ordering; **lower runs sooner**. The tiered drain (`stage_cloud_window`,
@@ -136,7 +136,7 @@ a `[[backends]] kind="kueue"` registry entry:
   **`backend_id`-scoped** `reconcile` (`for b in resolve_backends(cfg): await b.reconcile(...)`), so
   one cluster's reconcile never touches another's `cloud_job` rows.
 
-**Per-cluster staging buckets (REG-05, MKUE-02).** Each Kueue backend owns a `buckets` list of
+**Per-cluster staging buckets .** Each Kueue backend owns a `buckets` list of
 `[[buckets]]` registry ids — there is no single shared bucket. Per file, `s3_staging.pick_bucket`
 deterministically hashes the `file_id` bytes (sha256, restart-stable) across the backend's bound,
 `sorted()` bucket set; the chosen id is recorded on `cloud_job.staging_bucket` and **read back**
@@ -159,13 +159,13 @@ buckets = ["stage-a", "stage-shared"]
 # cluster's one-shot job_runner pods authenticate with needs no registry binding: that row can never
 # heartbeat (job_runner pods never call the heartbeat endpoint), so /admin/agents keeps it out of the
 # heartbeating table on the strength of its KIND alone and represents the cluster in the "Compute /
-# burst lanes" panel instead (phaze-2u8v.4). A leftover `agent_ref` key here is ignored, not an error.
+# burst lanes" panel instead. A leftover `agent_ref` key here is ignored, not an error.
 
   [backends.kube]
   api_url = "https://kueue-a.mesh:6443"
   namespace = "phaze"
   local_queue = "phaze-lq"
-  context = "kueue-a"                      # per-cluster kubeconfig context (MKUE-01)
+  context = "kueue-a"                      # per-cluster kubeconfig context
   workload_api_version = "kueue.x-k8s.io/v1beta1"
   ca_secret_name = "phaze-internal-ca"     # operator-created §7 Secret name (cluster A)
   env_configmap_name = "phaze-agent-env"   # operator-created §6 ConfigMap name (cluster A)
@@ -187,7 +187,7 @@ buckets = ["stage-b"]
   context = "kueue-b"
   sa_token_file = "/run/secrets/kueue-b-sa-token"
 
-# Staging-bucket registry (REG-05). `id` is the registry key; `bucket` is the real S3 name.
+# Staging-bucket registry. `id` is the registry key; `bucket` is the real S3 name.
 [[buckets]]
 id = "stage-a"
 scope = "cluster-specific"                 # at most one kueue backend may reference it
@@ -213,7 +213,7 @@ access_key_id_file = "/run/secrets/s3-access-key"
 secret_access_key_file = "/run/secrets/s3-secret-key"
 ```
 
-## Submit → reconcile lifecycle (Phase 54)
+## Submit → reconcile lifecycle
 
 Instead of an rsync push to a long-lived agent, the file is staged into S3 (control plane initiates
 + presigns + completes; the file-server agent PUTs the bytes) and the control plane submits a
@@ -228,7 +228,7 @@ control-plane pieces own this:
   **cron-only** `*/5 * * * *` CronJob registered on the controller. There is **no live kube
   watch**: each tick it re-reads the in-flight Jobs/Workloads and reconciles them.
 
-**The callback is the only result channel (KSUBMIT-03).** The one-shot pod `PUT`s its analysis
+**The callback is the only result channel.** The one-shot pod `PUT`s its analysis
 result to the existing `/api/internal/agent/analysis/{file_id}` callback — the SAME endpoint the
 local/agent path uses, reconciled by `file_id`. `reconcile_cloud_jobs` **never** writes an
 analysis result; it only drives cleanup, re-drive, and alerting. This is what makes "a
@@ -340,7 +340,7 @@ dropped/expired watch never loses or duplicates a result" true.
   **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
   quota) is **silent** and waits forever — never mistaken for a failure.
 
-**The in-flight registry is wider than the Kueue read (phaze-ul2v).** `in_flight_count` — what
+**The in-flight registry is wider than the Kueue read.** `in_flight_count` — what
 consumes a backend's `cap` — counts `{UPLOADING, UPLOADED, SUBMITTED, RUNNING}`; only
 `{SUCCEEDED, FAILED}` are terminal. The pre-submit `{UPLOADING, UPLOADED}` half has no Kueue object
 to reconcile against and is normally terminalized *solely* by the agent's HTTP callbacks
@@ -355,7 +355,7 @@ callback path stays primary: a row whose `s3_upload` job is still live in the br
 reaped, and each reap increments `attempts`, so a repeatedly-stranding file eventually spends its
 cloud budget and routes local.
 
-`reconcile_cloud_jobs` is **control-only** (kube creds live on the control plane, DIST-01) and
+`reconcile_cloud_jobs` is **control-only** (kube creds live on the control plane) and
 **cron-only** — never operator-enqueued.
 
 ## Cluster-admin runbook
@@ -476,14 +476,14 @@ admits — it only changes which process the kernel kills when usage exceeds wha
 ```toml
 [backends.kube]
 # ... api_url / namespace / local_queue / job_image as usual ...
-memory_request = "3Gi"   # Kueue admits against this. 1.73x the measured 1.7383 GiB end-to-end peak (phaze-5lop).
+memory_request = "3Gi"   # Kueue admits against this. 1.73x the measured 1.7383 GiB end-to-end peak.
 memory_limit   = "4Gi"   # OPTIONAL, PROVISIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
 ```
 
 Both figures, their provenance, and the quota they must stay in lockstep with are in
 [Sizing the burst lane](#sizing-the-burst-lane--what-to-set-who-owns-it-what-measured-it) below.
 
-**All three quantities are format-checked when `backends.toml` loads** (phaze-frq98). `cpu_request`,
+**All three quantities are format-checked when `backends.toml` loads**. `cpu_request`,
 `memory_request` and `memory_limit` were free-form strings checked only for truthiness, so `"4GB"`
 where `"4Gi"` was meant was accepted by phaze, asserted on by phaze's own tests, and rejected only
 by a live cluster. They are now parsed against the Kubernetes Quantity grammar at config load, where
@@ -535,9 +535,9 @@ different ceilings** on concurrent analysis, they are far apart, and only one of
 
 | ceiling | on the measurement host (4 physical cores) | what sets it | measured by |
 | --- | ---: | --- | --- |
-| **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-configurable; recommended in [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
-| **Throughput knee** — where extra concurrency stops paying | **W=2** | 4 physical cores; node CPU is 85.4% busy at W=2 and ≥98.5% from W=4 | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md) — **63.7%** of everything concurrency buys arrives at W=2, **84.6%** by W=3 |
-| **Memory wall** — where the node would actually run out | **W≈33** | node RSS grows **+0.880 GiB per worker** (R² 0.9965) on 31.31 GiB | [`phaze-8r6t4` §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
+| **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-configurable; recommended in [the concurrent extractor measurement §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [the concurrency knee recheck §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
+| **Throughput knee** — where extra concurrency stops paying | **W=2** | 4 physical cores; node CPU is 85.4% busy at W=2 and ≥98.5% from W=4 | [the concurrency knee recheck §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md) — **63.7%** of everything concurrency buys arrives at W=2, **84.6%** by W=3 |
+| **Memory wall** — where the node would actually run out | **W≈33** | node RSS grows **+0.880 GiB per worker** (R² 0.9965) on 31.31 GiB | [the concurrency knee recheck §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
 
 **CPU binds, and it binds sixteen times sooner than memory does.** Per-process peak RSS is flat at
 **1.282–1.332 GiB across a 12× change in co-residency**, so adding pods does not make each one
@@ -546,7 +546,7 @@ does memory allow" is the wrong question — it allows about 33.
 
 **So why is `cap` 4 and not 2, if the knee is at 2?** Because a burst lane exists to drain a
 backlog, not to minimise any single file's turnaround, and past the knee the curve is flat rather
-than falling. Priced from `phaze-8r6t4` §5/§10:
+than falling. Priced from the concurrency knee recheck §5/§10:
 
 | cap | files/hour | % of the node's ceiling | per-file wall |
 | ---: | ---: | ---: | ---: |
@@ -564,7 +564,7 @@ cores** — a *deliberately oversubscribed* operating point, priced at **+9.2% a
 for +83.6% per-file latency** against W=2, taken knowingly, not free capacity.
 
 **`cap = 4` is safe because the operator sets `memory_limit`, not because 4 is a small number**
-([`phaze-8r6t4` §9b](spikes/phaze-8r6t4-concurrency-knee-recheck.md)). Four pods each bounded at
+([the concurrency knee recheck §9b](spikes/phaze-8r6t4-concurrency-knee-recheck.md)). Four pods each bounded at
 `4Gi` is 16 GiB against 31.21 GiB allocatable and ~2 GiB of k0s stack, so the node-scoped
 `CONSTRAINT_NONE` OOM that [ADR-0005](design/0005-analyze-job-memory-limits.md) exists to prevent
 is unreachable. On a deployment that leaves `memory_limit` unset (the code default), the same
@@ -585,9 +585,9 @@ are derived by phaze at runtime and need no operator action at all:
 | intra-op / inter-op / OMP thread counts | **TensorFlow thread pools** | **derived at runtime**, env-overridable | same function, applied by `apply_thread_env` at import | **4 / 1 / 4** |
 
 **Do NOT set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` in the
-`phaze-agent-env` ConfigMap (§6).** `phaze-3j67` recommendation 2 originally asked for exactly
-that; `phaze-rvcn` then moved the derivation into the code, and
-[`phaze-8r6t4` §10 / recommendation 2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires
+`phaze-agent-env` ConfigMap (§6).** the concurrent extractor measurement recommendation 2 originally asked for exactly
+that; host-derived analysis sizing then moved the derivation into the code, and
+[the concurrency knee recheck §10 / recommendation 2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires
 that recommendation**: all 222 analyze children in its sweep derived `4 / 1 / 4` from the host with
 nothing set. Pinning the values would freeze the measurement host's numbers onto every future burst node and undo
 the portability the derivation exists to provide. phaze never overwrites an operator-set value, so
@@ -597,9 +597,9 @@ setting them is silent rather than loud — which is what makes it a trap.
 
 Two published numbers look like a contradiction and are not:
 
-- [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md) recommends **`cap = 4`**
+- [the concurrent extractor measurement §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md) recommends **`cap = 4`**
   on the 4-physical-core node, and calls it a deliberately oversubscribed operating point.
-- `phaze-rvcn` derives **concurrency = 1** on that same node: `physical_cores // intra_op` =
+- host-derived analysis sizing derives **concurrency = 1** on that same node: `physical_cores // intra_op` =
   `4 // 4` = 1.
 
 **They are different knobs at different layers, and they compose rather than compete.** Worked
@@ -660,15 +660,15 @@ generation:
 
 | figure | value | measured by | code generation |
 | --- | ---: | --- | --- |
-| **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | `phaze-5lop`, end to end through the real `analyze_file` on the measurement host; `VmHWM` read once at process exit | the **shipped** pipeline — `phaze-0582` (batch 32), `phaze-rvcn` (host-derived threads), `phaze-ap8y`, and `phaze-5lop`'s streaming decode all present |
+| **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | streaming decode, end to end through the real `analyze_file` on the measurement host; `VmHWM` read once at process exit | the **shipped** pipeline — batch-size tuning (batch 32), host-derived analysis sizing (host-derived threads), bounded analysis buffers, and streaming decode's streaming decode all present |
 | `memory_request` | **`3Gi`** | derived from the row above — **1.73×** the measured peak | same |
 | `memory_limit` | **`4Gi`** | derived from the row above — **2.30×**; opt-in, no code default (ADR-0005 (analyze job memory limits)) | same |
-| `cpu_request` | **`1500m`** | [`phaze-3j67` §9](spikes/phaze-3j67-concurrent-extractor-capacity.md), unchanged | post-`phaze-15sw` image; not re-litigated by `phaze-8r6t4` §10 |
-| `cap` | **4** | [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), **re-measured and confirmed** by [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07), 222 analyze processes, digest-gated | `release/2026.8.1-prep` overlaid on `job:2026.8.0` |
-| throughput knee | **W=2** | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md); reproduces `phaze-3j67` §3 inside 2% | same |
-| memory wall | **W≈33** | [`phaze-8r6t4` §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) | same |
+| `cpu_request` | **`1500m`** | [the concurrent extractor measurement §9](spikes/phaze-3j67-concurrent-extractor-capacity.md), unchanged | post-model-major inference image; not re-litigated by the concurrency knee recheck §10 |
+| `cap` | **4** | [the concurrent extractor measurement §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), **re-measured and confirmed** by [the concurrency knee recheck §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07), 222 analyze processes, digest-gated | `release/2026.8.1-prep` overlaid on `job:2026.8.0` |
+| throughput knee | **W=2** | [the concurrency knee recheck §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md); reproduces the concurrent extractor measurement §3 inside 2% | same |
+| memory wall | **W≈33** | [the concurrency knee recheck §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) | same |
 | ClusterQueue quota | **`6`** cpu / **`12Gi`** memory | lockstep with `cap` × request — arithmetic, not measurement | — |
-| intra-op / inter-op / OMP | **4 / 1 / 4** | `phaze-rvcn` — **derived at runtime**, never set | current; `analysis_sizing.py` |
+| intra-op / inter-op / OMP | **4 / 1 / 4** | host-derived analysis sizing — **derived at runtime**, never set | current; `analysis_sizing.py` |
 
 Three things worth pulling out of that table:
 
@@ -676,22 +676,22 @@ Three things worth pulling out of that table:
   Every superseded figure in the next section is a *stage* or *envelope* number. This one is
   `VmHWM` for a whole `analyze_file` — decode, both tiers, the 34-graph sweep, assembly — read once
   at process exit, the same quantity `analyze_file` itself logs (`_log_job_peak_rss`). The largest
-  per-process peak measured anywhere in `phaze-8r6t4`'s 222-process sweep was **1.4522 GiB**,
+  per-process peak measured anywhere in the concurrency knee recheck's 222-process sweep was **1.4522 GiB**,
   comfortably inside it.
-- **Nothing about the file predicts peak memory — the model set does.** `phaze-5lop` measured
+- **Nothing about the file predicts peak memory — the model set does.** streaming decode measured
   **1.3381 GiB** at 10 minutes against **1.7383 GiB** at 60: a 6× duration span for a 1.30× peak,
   and the gap was the *cap*, not the duration, since the 60-minute file was the first to saturate
-  `fine_cap`. **That conclusion survives phaze-w55w1 unchanged, for a re-derived reason:** the caps
+  `fine_cap`. **That conclusion survives exhaustive analysis unchanged, for a re-derived reason:** the caps
   are gone (every file is now analyzed exhaustively, ADR-0007 (windowed analysis) §7), but the tiers process bounded
   CHUNKS whose sizes are exactly the old cap values, so the per-tier residency the figure above
   reflects (~317 MB fine / ~345 MB coarse) is identical and still independent of duration.
   **Do not size `memory_request` or `memory_limit` on file duration or file size** —
   duration-derived requests were considered and explicitly **rejected** in
   [ADR-0005](design/0005-analyze-job-memory-limits.md) (Decision, point 4).
-- **`3Gi`/`4Gi` are PROVISIONAL, and deliberately not being tightened.** `phaze-7i0k` §6d found 20
+- **`3Gi`/`4Gi` are PROVISIONAL, and deliberately not being tightened.** the Linux memory measurement §6d found 20
   production kernel-OOM kills clustering at roughly **2×/3×/4×** a ~7.7 GiB pre-restructure working
   set, with a hard floor at 15.27 GiB — a real, unexplained, multiplicative population, tracked as
-  bead `phaze-wcrb` (mechanism) and `phaze-6ck1` (growth). Those kills predate the 69% working-set
+  the OOM multiplier investigation (mechanism) and the runaway-memory investigation (growth). Those kills predate the 69% working-set
   reduction, so whether the mechanism recurs at a proportionally lower absolute floor is unknown.
   The margin is what a limit is for. Re-derive both figures — do not just re-read them — if
   production monitoring on the shipped image surfaces kills near either.
@@ -703,7 +703,7 @@ does not:
 
 | quantity | transfers? | why |
 | --- | --- | --- |
-| `memory_request` / `memory_limit` | **yes, on any host phaze's derivation runs on** | peak is decoupled from host core count **only because the pools are pinned**. `phaze-rvcn` measured derived peak flat at **1.1273–1.1527 GiB — a 2.3% spread with no trend** while the derived thread count moved 4 → 3 → 2 → 1 underneath it. An *unpinned* process does not have this property (see below) |
+| `memory_request` / `memory_limit` | **yes, on any host phaze's derivation runs on** | peak is decoupled from host core count **only because the pools are pinned**. host-derived analysis sizing measured derived peak flat at **1.1273–1.1527 GiB — a 2.3% spread with no trend** while the derived thread count moved 4 → 3 → 2 → 1 underneath it. An *unpinned* process does not have this property (see below) |
 | `cap` | **no — re-derive per node** | the ceiling is 4 Haswell cores. A node with more real cores has a proportionally higher ceiling and a knee at a different W. `cap` is a **per-backend** setting; each cluster in the mesh is sized from its own hardware |
 | ClusterQueue quota | **no** | it is `cap` × request, so it moves with `cap` |
 | lane concurrency + thread counts | **n/a — computed on each host** | `derive_sizing` reads the host at import; nothing to transfer |
@@ -713,7 +713,7 @@ To size `cap` on other hardware, re-measure the knee on that node — the shape 
 measured peak. Re-measure **when the node changes, not when the code changes**: three changes that
 between them cut long-file decode 17.9×, per-process memory 38%, and thread footprint 42% moved the
 throughput plateau **+1.4%** and the knee **not at all**
-([`phaze-8r6t4` §12](spikes/phaze-8r6t4-concurrency-knee-recheck.md)).
+([the concurrency knee recheck §12](spikes/phaze-8r6t4-concurrency-knee-recheck.md)).
 
 The pinning is load-bearing for the memory row. TensorFlow sizes both of its thread pools from the
 machine's core count and each pool thread carries allocation arena, so an *unpinned* analyze process
@@ -734,20 +734,20 @@ so a stale value is identifiable **as** stale:
 
 | pair (request / limit) | where it came from | why it died |
 | --- | --- | --- |
-| **`8Gi`** request, no limit | pre-investigation, the value production actually ran | **Wrong, not merely stale.** `phaze-esut` measured peak *above* it for **every** file tested, including a 3.3-minute one (9.73 GiB). With no limit, the overshoot became a node-scoped `CONSTRAINT_NONE` OOM that killed `coredns`, `metrics-server`, and `local-path-provisioner` — the failure that started this whole line of work ([ADR-0005](design/0005-analyze-job-memory-limits.md), Context) |
-| **`12Gi` / `16Gi`** | interim, sized from `phaze-esut`'s **macOS** 8.5–10.5 GiB floor plus an assumed Linux allocator ratchet | **`phaze-7i0k` refuted the ratchet.** Linux measured 7.92–7.99 GiB — *cheaper* than macOS, not dearer. The pair was sized against a penalty that does not exist |
-| **`9Gi` / `12Gi`** | `phaze-7i0k`, against an ~8.0 GiB Linux floor with all 34 graphs co-resident (window-major) | **Superseded by the code shape changing.** `phaze-15sw` made `_run_model_sets` iterate models-major, so exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%** (7.986 → 2.482 GiB). Predates `phaze-0582` (batch 32), `phaze-rvcn` and `phaze-5lop` as well |
-| **`3Gi` / `4Gi`** against a **2.482–2.57 GiB** design peak | `phaze-7i0k` §7c / `phaze-3j67` §9b — the same pair, a different basis | **The pair is current; its stated basis is not.** These were envelope maxima on the pre-`phaze-5lop` pipeline. The pair survived re-derivation against `phaze-5lop`'s 1.7383 GiB end-to-end peak, so the ratio is now 1.73× rather than the ~1.17× originally quoted. If you find `3Gi` justified as "design peak × 1.13" or "× 1.17", the number is right and the sentence is one generation stale |
-| **thread env in the ConfigMap** (`4 / 1 / 4`) | `phaze-3j67` recommendation 2 | **Retired by `phaze-8r6t4` recommendation 2.** `phaze-rvcn` made it a runtime derivation; pinning it now is a portability regression, not a memory win |
+| **`8Gi`** request, no limit | pre-investigation, the value production actually ran | **Wrong, not merely stale.** the analysis memory profile measured peak *above* it for **every** file tested, including a 3.3-minute one (9.73 GiB). With no limit, the overshoot became a node-scoped `CONSTRAINT_NONE` OOM that killed `coredns`, `metrics-server`, and `local-path-provisioner` — the failure that started this whole line of work ([ADR-0005](design/0005-analyze-job-memory-limits.md), Context) |
+| **`12Gi` / `16Gi`** | interim, sized from the analysis memory profile's **macOS** 8.5–10.5 GiB floor plus an assumed Linux allocator ratchet | **the Linux memory measurement refuted the ratchet.** Linux measured 7.92–7.99 GiB — *cheaper* than macOS, not dearer. The pair was sized against a penalty that does not exist |
+| **`9Gi` / `12Gi`** | the Linux memory measurement, against an ~8.0 GiB Linux floor with all 34 graphs co-resident (window-major) | **Superseded by the code shape changing.** model-major inference made `_run_model_sets` iterate models-major, so exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%** (7.986 → 2.482 GiB). Predates batch-size tuning (batch 32), host-derived analysis sizing and streaming decode as well |
+| **`3Gi` / `4Gi`** against a **2.482–2.57 GiB** design peak | the Linux memory measurement §7c / the concurrent extractor measurement §9b — the same pair, a different basis | **The pair is current; its stated basis is not.** These were envelope maxima on the pre-streaming decode pipeline. The pair survived re-derivation against streaming decode's 1.7383 GiB end-to-end peak, so the ratio is now 1.73× rather than the ~1.17× originally quoted. If you find `3Gi` justified as "design peak × 1.13" or "× 1.17", the number is right and the sentence is one generation stale |
+| **thread env in the ConfigMap** (`4 / 1 / 4`) | the concurrent extractor measurement recommendation 2 | **Retired by the concurrency knee recheck recommendation 2.** host-derived analysis sizing made it a runtime derivation; pinning it now is a portability regression, not a memory win |
 
 The superseded rows are not wrong measurements of what they measured — they are correct
 measurements of code shapes that no longer exist. **The only pair you should set today is
 `3Gi`/`4Gi`**, and only with the basis the [provenance table](#provenance) gives it; the last row
 is a knob you should not set at all.
 
-> `phaze-5lop` also **discharges `phaze-rc1q` recommendation 7**, which required a joint
+> streaming decode also **discharges the streaming decoder evaluation recommendation 7**, which required a joint
 > measurement of the batch-size and streaming-decode changes before anyone touched this sizing.
-> The prediction it guarded against was real: `phaze-rc1q`'s own prototype measured **3.584 GiB**,
+> The prediction it guarded against was real: the streaming decoder evaluation's own prototype measured **3.584 GiB**,
 > which would have breached `3Gi`. The shipped implementation is 1.7383 GiB because it carries
 > the two mitigations that prototype did not.
 
@@ -778,7 +778,7 @@ concurrency      = physical_cores // intra_op_threads
 
 `physical_cores` is the count of SMT sibling groups among the CPUs in this process's
 `sched_getaffinity` mask, clamped by the cgroup v2 `cpu.max` quota — **physical, not `nproc`**
-([`phaze-3j67` §4](spikes/phaze-3j67-concurrent-extractor-capacity.md): throughput per busy
+([the concurrent extractor measurement §4](spikes/phaze-3j67-concurrent-extractor-capacity.md): throughput per busy
 logical core splits 2:1 at exactly the physical count, so SMT is not free capacity here).
 Both knobs come out of one function (`services/analysis_sizing.py::derive_sizing`) because
 they are not independent: capping intra-op moves the concurrency knee, so a concurrency chosen
@@ -793,19 +793,19 @@ knobs together) or any individual variable (phaze never overwrites an operator v
 | host-store (compose lanes) | 8 | 4 | 2 |
 | a 32-core upgrade | 32 | 4 | 8 |
 
-#### What was measured (`phaze-rvcn`, 2026-08-06)
+#### What was measured (host-derived analysis sizing, 2026-08-06)
 
 Deployed image `job:2026.8.0` with `main`'s `services/analysis.py` (model-major +
 `batchSize=32`) and the new `analysis_sizing.py` overlaid; deployed `phaze-models` PVC
 read-only; synthetic 300 s ffmpeg sine pair; **one exec'd process per arm**; peak =
 `/proc/self/status:VmHWM` read once at exit (a kernel high-water mark, not a sampled curve —
-`phaze-7i0k` §9); node idle and out of the backend registry. Effective core count varied with
+the Linux memory measurement §9); node idle and out of the backend registry. Effective core count varied with
 `sched_setaffinity` over the E3-1271 v3 sibling map `(0,4)(1,5)(2,6)(3,7)`, since a second
 machine is not available. Repeatability: **0.17% on peak, 0.44% on wall** across a repeated
 arm pair.
 
 **1. Each variable's independent contribution** (4 physical cores, everything else at TF's
-defaults). This **corrects** `phaze-7i0k` §5 and `phaze-3j67` §5, which set all three together
+defaults). This **corrects** the Linux memory measurement §5 and the concurrent extractor measurement §5, which set all three together
 against essentia's default batch of 64 and attributed the saving to intra-op:
 
 | set | peak (GiB) | Δ peak | wall (s) | Δ wall |
@@ -817,8 +817,8 @@ against essentia's default batch of 64 and attributed the saving to intra-op:
 | all three (4 / 1 / 4) | 1.1509 | −13.8% | 174.4 | +8.5% |
 
 **The memory belongs to the inter-op pool.** Intra-op and OpenMP are memory-neutral in the
-1–8 range now that `phaze-0582` took the batch to 32 and removed the arena the pool was
-multiplying. The +8.5% wall for the full set reproduces `phaze-7i0k` §5's +8.2%.
+1–8 range now that batch-size tuning took the batch to 32 and removed the arena the pool was
+multiplying. The +8.5% wall for the full set reproduces the Linux memory measurement §5's +8.2%.
 
 **2. The knee is a property of the derivation, not of the measurement host** (inter-op pinned at 1, OMP =
 intra-op). The wall-clock floor is reached at intra-op = physical cores at **both** core
@@ -858,15 +858,15 @@ Unpinned peak is 1.2936–1.3371 GiB and sits 10.9–15.7% higher at every core 
   not be extrapolated eightfold. **That unmeasurability is the argument for pinning, not
   against it:** `inter_op = 1` is a constant and `intra_op ≤ 4` is a bound, so the question
   stops being a property of hardware nobody has yet.
-- **It did not itself re-measure concurrency — `phaze-8r6t4` since has.** Every `phaze-rvcn` arm
-  is one process, so the concurrency half of the relation was carried over from `phaze-3j67`
-  §3–§5. [`phaze-8r6t4`](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07) closed that
+- **It did not itself re-measure concurrency — the concurrency knee recheck since has.** Every host-derived analysis sizing arm
+  is one process, so the concurrency half of the relation was carried over from the concurrent extractor measurement
+  §3–§5. [the concurrency knee recheck](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07) closed that
   gap on the shipping code: it swept concurrency 1 → 12 at four thread widths and found the knee
   **still at W=2**, the joint intra-op × pod-count surface **flat within 3.6%** at the W=4
   operating point, and `cap = 4` **confirmed**. The derivation is the non-oversubscribed default;
   `cap` in `backends.toml` stays operator-owned, is a deliberate oversubscription
   (+9.2% throughput for +83.6% per-file wall against W=2), and still wins.
-- **Synthetic audio is inherited, not re-validated.** `phaze-7i0k` §6b established that peak
+- **Synthetic audio is inherited, not re-validated.** the Linux memory measurement §6b established that peak
   is content-independent (real and sine agree to 0.9%) because it is a function of window
   *shape*. Wall-clock figures should be read as relative comparisons between arms.
 
@@ -902,12 +902,12 @@ cluster-wide**:
 |----------|----------|-------|-----|
 | `batch` | `jobs` | `create`, `get`, `delete` | `submit_job` / `get_job` / `delete_job` |
 | `kueue.x-k8s.io` | `workloads` | `get`, `watch`, `list` | `get_workload_for` only `list`s today; `get`/`watch` are the conservative spec |
-| `kueue.x-k8s.io` | `localqueues` | `get` | **the Phase 56 startup reachability probe** GETs the LocalQueue |
+| `kueue.x-k8s.io` | `localqueues` | `get` | **the controller startup reachability probe** GETs the LocalQueue |
 
 > **`localqueues: get` is load-bearing.** Without it every live probe of that cluster's
-> LocalQueue 403s -- both the Phase 56 controller startup probe (log-only since phaze-6r39) and
+> LocalQueue 403s -- both the controller startup controller startup probe (log-only since startup probe degradation) and
 > the per-poll probe `get_backend_lane_snapshot` runs on every 5s `/pipeline/stats` tick -- and
-> the dashboard reports "K8s LocalQueue unreachable" for as long as the 403 persists (phaze-6r39:
+> the dashboard reports "K8s LocalQueue unreachable" for as long as the 403 persists (startup probe degradation:
 > no longer "forever" -- it is live-derived, so restoring the verb clears the banner on the next
 > poll with no restart needed). The
 > `tests/agents/deployment/test_k8s_runbook.py::test_rbac_covers_call_graph` guard asserts this
@@ -943,7 +943,7 @@ rules:
   verbs: ["get", "watch", "list"]           # get_workload_for (.list); get/watch = conservative spec
 - apiGroups: ["kueue.x-k8s.io"]
   resources: ["localqueues"]
-  verbs: ["get"]                            # the Phase 56 startup reachability probe
+  verbs: ["get"]                            # the controller startup reachability probe
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -974,7 +974,7 @@ authenticates), then paste the token into the Secret. The pod consumes it as **`
 injected by `envFrom.secretRef` from this Secret — `envFrom` projects each Secret key under its own
 name, so the key below must be spelled exactly that.
 
-> **Corrected 2026-08-22 (phaze-frq98).** This paragraph previously said the pod consumes the token
+> **Corrected 2026-08-22.** This paragraph previously said the pod consumes the token
 > via `PHAZE_AGENT_TOKEN_FILE`, "the `_FILE` convention". That is the **fileserver agent's**
 > docker-compose arrangement, not this one, and it contradicted the YAML directly below it. An
 > operator who followed the prose and named the key `PHAZE_AGENT_TOKEN_FILE` would have shipped a
@@ -986,7 +986,7 @@ name, so the key below must be spelled exactly that.
 
 ```bash
 # On the control plane: mint the compute-agent token, then paste it into secret.yaml below.
-# `uv run` is required (phaze-u5k0d) — see docs/deployment.md Step 3 for why.
+# `uv run` is required  — see docs/deployment.md Step 3 for why.
 docker compose exec api uv run phaze agents add --kind compute
 kubectl apply -f secret.yaml
 ```
@@ -1055,7 +1055,7 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   one-shot analyze pod is a `"compute"` agent (it owns no scan roots — it analyzes exactly the one
   file named by `PHAZE_JOB_FILE_ID` and calls back), and `AgentSettings.kind` defaults to
   `"fileserver"`; without `PHAZE_AGENT_KIND=compute` the pod fails settings validation before it can
-  call back at all (phaze-4xks). `build_job_manifest` code-injects the literal `compute` value into
+  call back at all. `build_job_manifest` code-injects the literal `compute` value into
   the container `env` alongside `PHAZE_JOB_FILE_ID` and `PHAZE_AGENT_CA_FILE`, so it is present
   regardless of what this ConfigMap carries. Do **not** add `PHAZE_AGENT_KIND` to the ConfigMap
   above — the code-injected value always wins on conflict (`env` overrides `envFrom` of the same
@@ -1071,13 +1071,13 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   record](telemetry/concurrent-identity.md)). phaze therefore allocates the slot **per submit** in
   the controller — the only seat that can see the other in-flight Jobs — persists it on
   `cloud_job.telemetry_slot`, and code-injects both keys into the container `env` beside
-  `PHAZE_JOB_FILE_ID` (phaze-w15ju). `PHAZE_TELEMETRY_INSTANCE` is the key that **is** yours: it
+  `PHAZE_JOB_FILE_ID`. `PHAZE_TELEMETRY_INSTANCE` is the key that **is** yours: it
   names the host or service the slot is appended to. Setting it per host does not help here, because
   all of a node's burst pods share the host.
 - **`PHAZE_TELEMETRY_LANE` does NOT belong in this ConfigMap either, and needs no operator action.**
   `build_job_manifest` code-injects `PHAZE_TELEMETRY_LANE=burst` into **every** Job's `env`, so a
   burst pod's identity is `<base>-burst-<slot>`, e.g. `phaze-analysis-burst-1`, never the host-lane
-  child's `phaze-analysis-1` (phaze-7nl67). Both lanes number their slots from 0 and neither can see
+  child's `phaze-analysis-1`. Both lanes number their slots from 0 and neither can see
   the other's, so without the lane a host child and a burst pod on the same index merged at the
   collector. The value is a closed set: anything else is refused. The code-injected value always wins
   on conflict, so an entry here would be dead weight. For the same reason, a `burst` segment in an
@@ -1087,10 +1087,10 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   `PHAZE_TELEMETRY_INSTANCE` ([exporter §3](telemetry/exporter.md)).
 - **`TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` do NOT belong in this
   ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
-  derives all three from the host at import (`phaze-rvcn`, `apply_thread_env`) and **never
+  derives all three from the host at import (host-derived analysis sizing, `apply_thread_env`) and **never
   overwrites an operator-set value**, so pinning them here silently replaces the derivation with
-  the measurement host's numbers on every burst node the ConfigMap is copied to. `phaze-3j67` recommendation 2
-  originally asked for `4 / 1 / 4` here; [`phaze-8r6t4` recommendation
+  the measurement host's numbers on every burst node the ConfigMap is copied to. the concurrent extractor measurement recommendation 2
+  originally asked for `4 / 1 / 4` here; [the concurrency knee recheck recommendation
   2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires that** — all 222 of its analyze
   children derived `4 / 1 / 4` with nothing set. See
   [The knobs, and who owns each](#the-knobs-and-who-owns-each).
@@ -1117,7 +1117,7 @@ backend's `[backends.kube].models_pvc_name`. When set, `build_job_manifest` moun
 
 **One-time populate Job.** Create the PVC and fill it once with a short RW Job that runs the
 explicit provisioning tool (the analyze pods, like the compose workers, never download models —
-phaze-ynv6w), then leave the volume read-only forever after:
+model provisioning validation), then leave the volume read-only forever after:
 
 ```yaml
 # PVC the weights live on. Size for the essentia model set; the StorageClass must support
@@ -1175,15 +1175,14 @@ models_pvc_name = "phaze-essentia-models"   # mounted read-only at /models on ev
 ### 7 — Internal-CA Secret (the control-plane TLS trust anchor)
 
 The one-shot pod calls back to the control plane over HTTPS and verifies its TLS chain against the
-**internal CA** — never `verify=False`. That CA is **not baked into the Job image** (Phase 56,
-KDEPLOY-06, reversing the original KJOB-05 bake): the internal CA is generated **per deployment** at
+**internal CA** — never `verify=False`. That CA is **not baked into the Job image**: the internal CA is generated **per deployment** at
 runtime by `cert_bootstrap` on the app-server (the public `./certs/phaze-ca.crt`, mode 0644) and is
 unique to your install, so there is no canonical CA a published image could carry. Instead, the
 operator creates a `core/v1` Secret holding that public CA cert, and the suspended Job mounts it
 **read-only** at `/certs`; the container's `PHAZE_AGENT_CA_FILE` points at `/certs/phaze-ca.crt`.
 phaze references this Secret **by name only** (the backend's `[backends.kube].ca_secret_name`,
 default `phaze-internal-ca`) — like the LocalQueue, RBAC, and bearer-token objects, **phaze does not
-create it** (KDEPLOY-01).
+create it**.
 
 ```bash
 # On the control plane: create the CA Secret from the public CA cert generated by
@@ -1248,7 +1247,7 @@ mandatory. Re-check the operator's installed Kueue release at deploy time; Kueue
 
 ## Transport-agnostic connectivity
 
-Connectivity is **transport-agnostic** (KDEPLOY-03). phaze consumes **operator-provided
+Connectivity is **transport-agnostic**. phaze consumes **operator-provided
 reachable endpoints only** — it has **zero mesh-specific code or assumptions**. Whether the
 control plane reaches the cluster over **Tailscale**, **WireGuard**, a VPN, or a routed private
 network is entirely the operator's choice; phaze just needs the endpoints below to resolve and
@@ -1303,42 +1302,42 @@ with the per-host SSH steps for the worker host and the control-plane host — i
 No CI cluster exists — this checklist is the live apply verification on the operator-owned
 cluster:
 
-- [ ] **Manifests apply clean.** `kubectl apply` of the ResourceFlavor, ClusterQueue,
+- [] **Manifests apply clean.** `kubectl apply` of the ResourceFlavor, ClusterQueue,
       LocalQueue, RBAC, agent-env ConfigMap, and Secrets returns no error (a `dry-run=server`
       apply is a good pre-check: `kubectl apply --dry-run=server -f <manifest>`).
-- [ ] **Kueue admits the queues.** `kubectl get clusterqueue phaze-cq` and
+- [] **Kueue admits the queues.** `kubectl get clusterqueue phaze-cq` and
       `kubectl get localqueue -n phaze phaze-lq` show the objects; the ClusterQueue reports
       `Active`.
-- [ ] **The ServiceAccount can submit a Job.** Using the `phaze-submitter` SA, a test
+- [] **The ServiceAccount can submit a Job.** Using the `phaze-submitter` SA, a test
       `batch/v1` Job labeled `kueue.x-k8s.io/queue-name: phaze-lq` is created and admitted by
       Kueue (`kubectl get workloads -n phaze` shows it `Admitted`).
-- [ ] **The availability probe is happy.** With the `kind="kueue"` entry added and the control
+- [] **The availability probe is happy.** With the `kind="kueue"` entry added and the control
       plane restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert (the
       probe GETs the LocalQueue via each backend's `context` — confirms `localqueues: get` is
       granted). **The alert is aggregate, not per-backend:** it lights when **any** configured
-      cluster is unreachable. Since phaze-6r39 the flag is derived **live** from the same per-lane
+      cluster is unreachable. Since startup probe degradation the flag is derived **live** from the same per-lane
       probe `get_backend_lane_snapshot` already runs on every 5s `/pipeline/stats` poll — not a
       Redis key written once at controller startup — so it tracks reality on every tick: one bad
       cluster lights the alert immediately, and fixing that cluster clears it on the next poll with
       **no control-plane restart needed**. The controller's own startup probe still runs and still
       logs a WARNING per unreachable cluster at boot (useful for naming which cluster failed early),
       but it no longer owns the dashboard's state.
-- [ ] **A long file routes through Kueue.** Trigger analysis on a set whose duration ≥
+- [] **A long file routes through Kueue.** Trigger analysis on a set whose duration ≥
       `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the tiered drain picks the lowest-rank available
       backend, the file stages to that backend's `pick_bucket` choice (recorded on
       `cloud_job.staging_bucket`), a `phaze-analyze-<file_id>` Job is submitted, the pod analyzes
       it, and the result reconciles by `file_id` (the `/api/internal/agent/analysis/{file_id}`
       callback writes it).
-- [ ] **Spillover works.** Fill the rank-N backend (or take it offline) and confirm the next
+- [] **Spillover works.** Fill the rank-N backend (or take it offline) and confirm the next
       candidate spills to the next-rank Kueue lane, then staleness-gated to local after
       `cloud_spill_to_local_after_seconds` when every cloud lane is online-but-full.
-- [ ] **All-local reverts cleanly.** Remove the non-local `[[backends]]` entries (or set the
-      Phase 71 force-local override), then either a restart or a hot reload (see below);
+- [] **All-local reverts cleanly.** Remove the non-local `[[backends]]` entries (or set the
+      force-local routing force-local override), then either a restart or a hot reload (see below);
       `cloud_enabled` is False, a new long file routes **local**, and no kube Job is submitted.
 
 ## Hot-reload and burst Jobs
 
-Since `phaze-mvq8z` (2026-09) the **control plane's** `backends.toml` — including the
+Since runtime configuration hot reload (2026-09) the **control plane's** `backends.toml` — including the
 `[[backends]] kind="kueue"` entries and `[[buckets]]` this page's registry example declares — is
 hot-reloadable without a control-plane restart: an edit via the watched config directory, a
 `docker compose kill -s HUP worker api`, or the admin API/UI all re-validate and swap the
@@ -1364,13 +1363,13 @@ operator-applied, cluster-admin-owned objects exactly as documented above.
 ## See also
 
 - [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md)
-  — the ready-to-paste homelab apply steps + deploy ordering (D-02).
+  — the ready-to-paste homelab apply steps + deploy ordering.
 - [configuration.md → Backend registry (`backends.toml`)](configuration.md#backend-registry-backendstoml)
   — the canonical per-field reference for `[[backends]]` / `[backends.kube]` / `[[buckets]]`
   (inline `*_file` secrets, defaults, startup invariants). The flat `PHAZE_KUBE_*` / `PHAZE_S3_*`
-  tables it retains from Phase 54/53 are a **historical** reference only, superseded by the registry.
+  tables it retains from Kubernetes burst / S3 staging are a **historical** reference only, superseded by the registry.
 - [deployment.md](deployment.md) — the two-host base deployment + the all-local revert
-  (remove the non-local backends, or the Phase 71 force-local override).
+  (remove the non-local backends, or the force-local routing force-local override).
 - [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (a `kind="compute"`
   backend in the same registry).
 - [configuration.md → Runtime config hot-reload](configuration.md#runtime-config-hot-reload)

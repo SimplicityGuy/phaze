@@ -165,7 +165,12 @@ async def _upsert_rows(session: AsyncSession, raw_records: list[dict[str, Any]])
     return result.all()
 
 
-@router.post("", status_code=status.HTTP_200_OK, response_model=FileUpsertResponse)
+@router.post(
+    "",
+    status_code=status.HTTP_200_OK,
+    response_model=FileUpsertResponse,
+    description="Idempotently upsert a chunk of FileRecord rows for the calling agent.",
+)
 async def upsert_files(
     body: FileUpsertChunk,
     request: Request,
@@ -204,7 +209,12 @@ async def upsert_files(
     )
 
 
-@router.post("/move", status_code=status.HTTP_200_OK, response_model=FileMoveResponse)
+@router.post(
+    "/move",
+    status_code=status.HTTP_200_OK,
+    response_model=FileMoveResponse,
+    description="Record a settled file that arrived by an in-tree move: keep ONE row for it, at its new path.",
+)
 async def move_file(
     body: FileMoveRequest,
     request: Request,
@@ -350,7 +360,12 @@ async def _close_breaker_on_presign(session: AsyncSession, backend_id: str) -> N
         await session.rollback()
 
 
-@router.post("/{file_id}/presign-download", status_code=status.HTTP_200_OK, response_model=PresignDownloadResponse)
+@router.post(
+    "/{file_id}/presign-download",
+    status_code=status.HTTP_200_OK,
+    response_model=PresignDownloadResponse,
+    description="Mint a just-in-time presigned GET URL for a file's staged bytes.",
+)
 async def presign_download(
     file_id: uuid.UUID,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],

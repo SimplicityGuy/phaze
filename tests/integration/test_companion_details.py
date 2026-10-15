@@ -1,7 +1,10 @@
 """Real bounded stored detail projections and exact historical membership."""
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import uuid
 
 from httpx import AsyncClient
@@ -12,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.provider_source import ProviderRecordingSelection, ProviderSelectionEvent, ProviderSourceObservation
+from phaze.routers import record
 from phaze.schemas.companion_details import CompanionAttemptSummary, DetailPage, StoredTextRequest
 from phaze.services.companion_details import (
     get_companion_details,
@@ -483,3 +487,37 @@ async def test_live_membership_and_reverse_use_current_owners(session: AsyncSess
         update(FileRecord).where(FileRecord.id == media.id).values(agent_id="test-fileserver").execution_options(synchronize_session=False)
     )
     assert (await get_companion_media(session, companion.id)).media == ()
+
+
+async def test_linked_media_json_returns_current_association(client: AsyncClient, session: AsyncSession) -> None:
+    media, companion = file("set.mp3"), file("notes.nfo", "nfo")
+    session.add_all([media, companion])
+    await session.flush()
+    session.add(FileCompanion(media_id=media.id, companion_id=companion.id))
+    await session.flush()
+
+    response = await client.get(f"/files/{companion.id}/linked-media", headers={"Accept": "application/json"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["media"][0]["media_id"] == str(media.id)
+
+
+async def test_refresh_refuses_revision_changed_during_dispatch(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    @asynccontextmanager
+    async def route_session():
+        yield session
+
+    baseline = AsyncMock(return_value=SimpleNamespace(revision="a" * 64))
+    enqueue = AsyncMock(return_value=SimpleNamespace(target=SimpleNamespace(expected_sha256="b" * 64)))
+    monkeypatch.setattr(record, "async_session", route_session)
+    monkeypatch.setattr(record, "capture_refresh_baseline", baseline)
+    monkeypatch.setattr(record, "enqueue_companion_capture", enqueue)
+    media_id, companion_id = uuid.uuid4(), uuid.uuid4()
+
+    response = await client.post(f"/files/{media_id}/companions/{companion_id}/refresh", headers={"Origin": "http://test"})
+    assert response.status_code == 200
+    assert "Companion revision changed while dispatching" in response.text
+    assert "update the stored view before retrying" in response.text
+    assert "since=" not in response.text
+    baseline.assert_awaited_once_with(session, media_id, companion_id)
+    assert enqueue.await_count == 1

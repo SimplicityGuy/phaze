@@ -290,7 +290,7 @@ def _compute_increments(body: ExecBatchProgressPayload) -> dict[str, int]:
     return inc
 
 
-@router.post("/{batch_id}/progress", status_code=status.HTTP_200_OK)
+@router.post("/{batch_id}/progress", status_code=status.HTTP_200_OK, description="Per-proposal terminal-state event handler.")
 async def post_exec_batch_progress(
     batch_id: uuid.UUID,
     body: ExecBatchProgressPayload,

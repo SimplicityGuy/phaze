@@ -146,7 +146,7 @@ async def test_failed_enqueue_restores_the_failure_marker(
     # ``session`` would not see it either -- ``verify`` proves it actually committed.
     failing_row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == failing_file.id))).scalar_one()
     assert failing_row.failed_at is not None, "a file whose enqueue failed must be restored to the failed bucket, not vanish"
-    assert failing_row.error_message is not None and "phaze-4ter" in failing_row.error_message
+    assert failing_row.error_message is not None and "retry_analysis_failed: enqueue error, see agent logs" in failing_row.error_message
 
     ok_row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == ok_file.id))).scalar_one()
     assert ok_row.failed_at is None, "the file whose enqueue succeeded must stay cleared"

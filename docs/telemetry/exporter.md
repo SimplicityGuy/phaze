@@ -134,7 +134,7 @@ bound the child enforces is always the bound its slot was drawn from. Expect ano
 A slot outside the bound is refused and logged, and the process falls back to the shared
 identity — bad, but bounded, which is the safer of the two failure directions.
 
-**The burst lane is covered too, and an operator sets nothing for it** (`phaze-w15ju`). A one-shot
+**The burst lane is covered too, and an operator sets nothing for it**. A one-shot
 Kueue pod cannot allocate a slot against its peers — it is Postgres-less and shares no memory with
 them — so the **controller** allocates one per in-flight burst Job at submit time, from the same
 `cloud_job` rows it already uses to enforce the per-backend cap, and code-injects
@@ -145,7 +145,7 @@ pod shares that object, so a value there would give every pod one identity, whic
 itself. See ADR-0017 (telemetry export topology) §8d.
 
 **The two lanes also get separate identity spaces, and an operator sets nothing for that either**
-(`phaze-7nl67`). Both lanes number their slots from 0 and neither can see the other's, so on a shared
+. Both lanes number their slots from 0 and neither can see the other's, so on a shared
 base a host-lane child on slot 1 and a burst pod on slot 1 used to both report `phaze-analysis-1`
 and merge. Every burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the
 lane between the base and the slot: `phaze-analysis-burst-1`. Host-lane and burst-lane identities
@@ -284,7 +284,7 @@ Both are artifacts you may adopt; neither is deployed from this repo.
   importing all four into a running **Grafana 12.3.1** against a datasource whose uid was
   chosen to be unrelated to anything this repo provisions, and running every panel's PromQL
   through the query API: **30 of 30 panels returned real data**
-  (`measurements/dashboard-verification.md`). That measurement did NOT catch phaze-cxg9v (the
+  (`measurements/dashboard-verification.md`). That measurement did NOT catch the identity visibility fix (the
   `$job` variable seeded from an analysis-only metric blanked every panel on an idle
   deployment): the panel-query step strips `job=~"$job"` out of each expr before querying, so
   it never resolved the variable itself, and the corpus behind the 30/30 run already held

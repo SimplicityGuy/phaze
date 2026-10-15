@@ -14,11 +14,13 @@ import enum
 
 
 class ExecutionStatus(enum.StrEnum):
-    """Status of a file operation execution.
+    """Status of a file operation execution."""
 
-    Monotonic ladder enforced at the PATCH /execution-log/{id} router
-    (D-15): PENDING < IN_PROGRESS < COMPLETED < FAILED.
-    """
+    # Status of a file operation execution.
+    #
+    #     Monotonic ladder enforced at the PATCH /execution-log/{id} router
+    #     (D-15): PENDING < IN_PROGRESS < COMPLETED < FAILED.
+    #
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"

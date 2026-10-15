@@ -97,7 +97,7 @@ async def test_per_file_retry_enqueue_failure_restores_the_failure_marker(
     # ``verify`` proves it is durable rather than merely visible on the request's own session.
     row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
     assert row.failed_at is not None, "a file whose enqueue failed must be restored to the failed bucket, not vanish"
-    assert row.error_message is not None and "phaze-gcdih" in row.error_message
+    assert row.error_message is not None and "retry_analysis_failed_file: enqueue error, see agent logs" in row.error_message
     # The XOR CHECK invariant still holds.
     assert row.analysis_completed_at is None
 
@@ -167,7 +167,7 @@ async def test_per_file_retry_blocked_collision_restores_marker_and_reports_bloc
 
     row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
     assert row.failed_at is not None, "a blocked retry must restore the failure marker, not vanish"
-    assert row.error_message is not None and "phaze-k0rv9" in row.error_message
+    assert row.error_message is not None and "retry_analysis_failed_file: blocked by a dead job holding the key" in row.error_message
     assert row.analysis_completed_at is None
 
 

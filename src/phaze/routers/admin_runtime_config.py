@@ -186,7 +186,11 @@ async def set_override(
     return await _render_table(request, session)
 
 
-@router.delete("/{key}", response_class=HTMLResponse)
+@router.delete(
+    "/{key}",
+    response_class=HTMLResponse,
+    description="Clear ``key``'s DB override: it falls back to the next layer (``file`` / ``env`` / ``default``).",
+)
 async def clear_override(
     request: Request, key: Annotated[str, PathParam(max_length=_KEY_MAX_LENGTH)], session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:

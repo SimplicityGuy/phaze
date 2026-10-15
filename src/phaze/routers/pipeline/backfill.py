@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from phaze.config import ControlSettings
 
 
-@router.post("/pipeline/backfill-cloud", response_class=HTMLResponse)
+@router.post("/pipeline/backfill-cloud", response_class=HTMLResponse, description="HTMX endpoint: backfill the timed-out long files to the cloud.")
 async def trigger_backfill_cloud(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -114,7 +114,7 @@ async def trigger_backfill_cloud(
         if skipped:
             candidates = [(file, dur) for file, dur in candidates if process_file_job_key(file.id) not in live_keys]
             logger.info(
-                "backfill_cloud: skipped files with a LIVE process_file job (phaze-l1km double-dispatch guard)",
+                "backfill_cloud: skipped files with a LIVE process_file job (double-dispatch guard)",
                 skipped=[str(file.id) for file in skipped],
             )
     # The response count reflects the files actually acted on (live-job files were excluded above).

@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 router = APIRouter(tags=["preview"])
 
 
-@router.get("/preview/", response_class=HTMLResponse)
+@router.get("/preview/", response_class=HTMLResponse, description="Redirect the legacy directory-tree preview into the v7.0 shell Move workspace.")
 async def tree_preview() -> RedirectResponse:
     """Redirect the legacy directory-tree preview into the v7.0 shell Move workspace.
 

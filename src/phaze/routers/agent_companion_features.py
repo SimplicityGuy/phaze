@@ -27,7 +27,12 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/internal/agent/companion-features", tags=["agent-internal"])
 
 
-@router.post("", status_code=status.HTTP_200_OK, response_model=CompanionFeaturesResponse)
+@router.post(
+    "",
+    status_code=status.HTTP_200_OK,
+    response_model=CompanionFeaturesResponse,
+    description="Upsert one chunk of companion content features and refresh the stamp verdicts they touch.",
+)
 async def post_companion_features(
     body: CompanionFeaturesChunk,
     request: Request,

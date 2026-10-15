@@ -54,4 +54,4 @@ reconciliation apply, feature enqueue, or association apply approval.
 
 Synthetic filesystem/Postgres tests verify this implementation and its consumer boundaries. They do
 not replace the separately authorized production reconciliation and post-repair verification on
-phaze-st1ty.
+the fan-out attribution fix.

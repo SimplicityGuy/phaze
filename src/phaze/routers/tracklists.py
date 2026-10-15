@@ -24,7 +24,7 @@ from fastapi.responses import RedirectResponse
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
 
 
-@router.get("/", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse, description="Resolve a legacy ``/tracklists/`` bookmark into the v7.0 shell.")
 async def list_tracklists() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/tracklists/`` bookmark into the v7.0 shell.
 

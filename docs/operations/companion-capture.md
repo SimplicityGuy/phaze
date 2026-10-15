@@ -1,6 +1,6 @@
 # Companion source capture
 
-Date: 2026-10-09. Bead: phaze-p2qah. Epic: phaze-kf7jr.
+Date: 2026-10-09.
 
 Capture persists companion text independently of the shortened text used in proposal prompts.
 It reads no archive files on the controller and performs no parsing, tracklist selection, tag

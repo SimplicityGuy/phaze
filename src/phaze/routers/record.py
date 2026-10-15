@@ -394,7 +394,7 @@ async def file_record(
     )
 
 
-@router.get("/files/{file_id}", response_class=HTMLResponse)
+@router.get("/files/{file_id}", response_class=HTMLResponse, description="Return an addressable full page backed by the canonical record context.")
 async def file_record_page(
     request: Request,
     file_id: uuid.UUID,
@@ -430,7 +430,7 @@ async def file_record_page(
     )
 
 
-@router.get("/files/{file_id}/poster.svg")
+@router.get("/files/{file_id}/poster.svg", description="Render the one-page printable poster: the energy arc, the Camelot wheel, the tracklist.")
 async def file_poster_svg(
     file_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),

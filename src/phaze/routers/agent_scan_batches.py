@@ -126,7 +126,12 @@ def _pre_mutation_guard(batch: ScanBatch, cur: ScanStatus, body: ScanBatchPatch,
     return None
 
 
-@router.patch("/{batch_id}", status_code=status.HTTP_200_OK, response_model=ScanBatchPatchResponse)
+@router.patch(
+    "/{batch_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ScanBatchPatchResponse,
+    description="Update a ScanBatch row. Cross-tenant guard runs BEFORE state-machine evaluation.",
+)
 async def patch_scan_batch(
     batch_id: uuid.UUID,
     body: ScanBatchPatch,

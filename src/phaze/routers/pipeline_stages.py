@@ -79,7 +79,7 @@ def _response(row: PipelineStageControl) -> dict[str, Any]:
     return {"stage": row.stage, "priority": row.priority, "paused": row.paused}
 
 
-@router.post("/pipeline/stages/{stage}/priority")
+@router.post("/pipeline/stages/{stage}/priority", description="Apply a clamped priority delta to ``stage`` and reorder its queued backlog.")
 async def set_priority(
     stage: str,
     delta: Annotated[int, Form()],

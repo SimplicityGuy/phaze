@@ -129,7 +129,7 @@ FILES_SORT = SortContract(
 )
 
 
-@router.get("/pipeline/files", response_class=HTMLResponse)
+@router.get("/pipeline/files", response_class=HTMLResponse, description="Render the paginated, per-row-derived files table.")
 async def pipeline_files(
     request: Request,
     page: int = Query(1, ge=1),
@@ -213,7 +213,11 @@ async def pipeline_files(
     )
 
 
-@router.get("/pipeline/analyze-files", response_class=HTMLResponse)
+@router.get(
+    "/pipeline/analyze-files",
+    response_class=HTMLResponse,
+    description="Render the Analyze per-file table fragment: the bounded default working set OR a filtered page.",
+)
 async def analyze_files_fragment(
     request: Request,
     page: int = Query(1, ge=1),
@@ -270,7 +274,7 @@ async def analyze_files_fragment(
 _PENDING_STAGES: dict[str, Stage] = {"metadata": Stage.METADATA}
 
 
-@router.get("/pipeline/pending-files", response_class=HTMLResponse)
+@router.get("/pipeline/pending-files", response_class=HTMLResponse, description="Render ONE bounded page of an enrich workspace's pending set.")
 async def pending_files_fragment(
     request: Request,
     stage: str = Query("metadata"),
@@ -313,7 +317,7 @@ async def pending_files_fragment(
     )
 
 
-@router.get("/pipeline/tracklist-sets", response_class=HTMLResponse)
+@router.get("/pipeline/tracklist-sets", response_class=HTMLResponse, description="Render ONE bounded page of the per-set Tracklist coverage table.")
 async def tracklist_sets_fragment(
     request: Request,
     page: int = Query(1, ge=1),

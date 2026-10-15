@@ -93,7 +93,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False, onl
         inflight = await count_inflight_jobs(session)
         detected_loss = inflight == 0
         if not force and not detected_loss:
-            logger.info("recover_orphaned_work no-op: queue durable (Phase-36 restart)", inflight=inflight)
+            logger.info("recover_orphaned_work no-op: queue durable (Postgres broker restart)", inflight=inflight)
             return {"detected_loss": False, "forced": False, "unreplayable": 0, "stages": {}}
 
         rows = _scope_recovery_rows(await get_ledger_rows(session), only_keys)
@@ -119,7 +119,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False, onl
     unreplayable = sum(tally["unreplayable"] for tally in stages.values())
     if unreplayable:
         logger.warning(
-            "recover_orphaned_work: some orphaned work was NOT re-enqueued (phaze-71nz). These stages are NOT covered by "
+            "recover_orphaned_work: some orphaned work was NOT re-enqueued. These stages are NOT covered by "
             "this run -- see the per-row warnings above for each row's reason.",
             unreplayable=unreplayable,
             stages=sorted(function for function, tally in stages.items() if tally["unreplayable"]),

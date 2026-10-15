@@ -70,15 +70,17 @@ class PushMismatchRequest(BaseModel):
 
 
 class PushMismatchResponse(BaseModel):
-    """Echo confirming the mismatch was recorded and the disposition chosen.
+    """Echo confirming the mismatch was recorded and the disposition chosen."""
 
-    ``cleared`` is True when ``push_max_attempts`` was reached and the file moved
-    to a terminal failure (the ``push_file`` ledger entry was cleared); False when
-    control will re-drive the push (the PUSHING slot is kept, D-12).
-
-    RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
-    ( convention) for the same forward-compat reason as ``PushedResponse``.
-    """
+    # Echo confirming the mismatch was recorded and the disposition chosen.
+    #
+    #     ``cleared`` is True when ``push_max_attempts`` was reached and the file moved
+    #     to a terminal failure (the ``push_file`` ledger entry was cleared); False when
+    #     control will re-drive the push (the PUSHING slot is kept, D-12).
+    #
+    #     RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
+    #     ( convention) for the same forward-compat reason as ``PushedResponse``.
+    #
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
 
@@ -88,12 +90,14 @@ class PushMismatchResponse(BaseModel):
 
 
 class PushFailedRequest(BaseModel):
-    """Body the fileserver agent POSTs when ``push_file`` exhausts its SAQ retries (phaze-c53x).
+    """Body the fileserver agent POSTs when ``push_file`` exhausts its SAQ retries."""
 
-    ``file_id`` is on the path (AUTH-01); the body carries only optional
-    diagnostics. ``detail`` is a bounded free-text string (``max_length`` caps the
-    DoS-via-huge-string threat) and MUST NOT carry identity.
-    """
+    # Body the fileserver agent POSTs when ``push_file`` exhausts its SAQ retries (phaze-c53x).
+    #
+    #     ``file_id`` is on the path (AUTH-01); the body carries only optional
+    #     diagnostics. ``detail`` is a bounded free-text string (``max_length`` caps the
+    #     DoS-via-huge-string threat) and MUST NOT carry identity.
+    #
 
     model_config = ConfigDict(extra="forbid")
 

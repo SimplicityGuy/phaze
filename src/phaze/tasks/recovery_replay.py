@@ -34,7 +34,7 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
     if violations:
         logger.error(
             "recover_orphaned_work: REFUSING to replay a ledger payload carrying time-limited material -- "
-            "a scheduling_ledger payload must be replayable at an arbitrary future time (phaze-71nz). "
+            "a scheduling_ledger payload must be replayable at an arbitrary future time. "
             "Replaying it would enqueue a job guaranteed to fail at the credential check. Declare this "
             "producer in replay_safety.LEDGER_REPLAY_REGENERATED and register a regenerator in "
             "reenqueue._REPLAY_REGENERATORS, or stop storing the derived material in the payload.",
@@ -124,7 +124,7 @@ _REPLAY_REGENERATORS: dict[str, Callable[[AsyncSession, Any, _RegenTarget, dict[
 
 if set(_REPLAY_REGENERATORS) != LEDGER_REPLAY_REGENERATED:
     raise RuntimeError(
-        "replay-safety drift (phaze-71nz): reenqueue._REPLAY_REGENERATORS "
+        "replay-safety drift: reenqueue._REPLAY_REGENERATORS "
         f"{sorted(_REPLAY_REGENERATORS)} != replay_safety.LEDGER_REPLAY_REGENERATED {sorted(LEDGER_REPLAY_REGENERATED)}"
     )
 
@@ -197,7 +197,7 @@ async def _replay_agent_rows_by_owner(
     plan = _plan_owner_groups(rows)
     if plan.ownerless:
         logger.warning(
-            "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
+            "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted ",
             functions=sorted({row.function for row in plan.ownerless}),
             rows=len(plan.ownerless),
         )
@@ -210,7 +210,7 @@ async def _replay_agent_rows_by_owner(
         agent = owners.get(group.owner_id)
         if agent is None:
             logger.warning(
-                "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted (phaze-fjii)",
+                "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted ",
                 agent_id=group.owner_id,
                 required_kind=required_kind,
                 functions=sorted({row.function for row in group.rows}),

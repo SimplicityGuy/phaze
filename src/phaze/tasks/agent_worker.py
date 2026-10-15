@@ -544,7 +544,7 @@ _base = os.environ.get("PHAZE_AGENT_QUEUE")
 if not _base:
     # Module-import-time failure surface -- container exits before SAQ event loop starts.
     # Common during local dev when env isn't set; clearer than a runtime "queue is empty" mystery.
-    msg = "PHAZE_AGENT_QUEUE env var is required for agent_worker. Expected form: phaze-agent-<agent_id>. See Phase 26 D-16."
+    msg = "PHAZE_AGENT_QUEUE env var is required for agent_worker. Expected form: phaze-agent-<agent_id>."
     raise RuntimeError(msg)
 
 # quick-260707-dh1: registration entry per SAQ task name. Plain function objects register

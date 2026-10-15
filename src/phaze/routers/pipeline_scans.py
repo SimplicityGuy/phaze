@@ -195,7 +195,7 @@ async def agent_roots_swap(
     )
 
 
-@router.get("/recent", response_class=HTMLResponse)
+@router.get("/recent", response_class=HTMLResponse, description="HTMX poll endpoint: re-render the Recent Scans mini-table.")
 async def recent_scans_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -242,7 +242,7 @@ async def recent_scans_partial(
     )
 
 
-@router.get("/{batch_id}", response_class=HTMLResponse)
+@router.get("/{batch_id}", response_class=HTMLResponse, description="HTMX poll endpoint: return `scan_progress_card.html`.")
 async def scan_progress(
     request: Request,
     batch_id: uuid.UUID,
@@ -348,7 +348,7 @@ async def build_recent_scans(session: AsyncSession, sort: SortState | None = Non
     return rows
 
 
-@router.delete("/{batch_id}", response_class=HTMLResponse)
+@router.delete("/{batch_id}", response_class=HTMLResponse, description="Delete a terminal scan + all associated DB data, then re-render the table.")
 async def delete_scan(
     request: Request,
     batch_id: uuid.UUID,

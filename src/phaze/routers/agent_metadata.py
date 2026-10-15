@@ -49,7 +49,12 @@ _ERROR_MESSAGE_MAX = 2000
 _BODYLESS_FAILURE_MESSAGE = "metadata extraction failed (no detail -- legacy agent)"
 
 
-@router.put("/{file_id}", status_code=status.HTTP_200_OK, response_model=MetadataWriteResponse)
+@router.put(
+    "/{file_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=MetadataWriteResponse,
+    description="Idempotently replace tag-metadata for a file. Natural key: metadata.file_id (UQ from models/metadata.py:19).",
+)
 async def put_metadata(
     file_id: uuid.UUID,
     body: MetadataWriteRequest,
@@ -134,7 +139,12 @@ async def put_metadata(
     return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)
 
 
-@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=MetadataFailureResponse)
+@router.post(
+    "/{file_id}/failed",
+    status_code=status.HTTP_200_OK,
+    response_model=MetadataFailureResponse,
+    description="Terminal-ack for a retries-exhausted ``extract_file_metadata`` run.",
+)
 async def report_metadata_failed(
     file_id: uuid.UUID,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],

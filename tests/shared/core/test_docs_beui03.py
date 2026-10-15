@@ -135,14 +135,16 @@ def test_runbook_prints_no_literal_secret_values() -> None:
 
 
 def test_configuration_states_cloud_target_removed() -> None:
-    """T-71-12: configuration.md says cloud_target was REMOVED in Phase 67 (no live-selector).
+    """T-71-12: configuration.md says cloud_target was removed without a live-selector shim.
 
     The ``### Cloud target`` section must present it as removed and point at the registry — it must
     NOT still describe ``PHAZE_CLOUD_TARGET`` as a live "single routing selector".
     """
     text = _read(_CONFIGURATION)
     lowered = text.lower()
-    assert "removed in" in lowered and "phase 67" in lowered, "configuration.md must state cloud_target was removed in Phase 67"
+    assert "removed in 2026.7.1" in lowered and "no back-compat shim" in lowered, (
+        "configuration.md must state the release that removed cloud_target and the absence of a shim"
+    )
     assert "backend registry" in lowered or "backends.toml" in lowered, "configuration.md must point cloud_target readers at the backend registry"
     # The stale live-selector framing must be gone from the Cloud target section heading.
     assert "### Cloud target (`PHAZE_CLOUD_TARGET`)" not in text, (

@@ -83,7 +83,9 @@ class ProposalStatePatch(BaseModel):
 
 
 class ProposalStateResponse(BaseModel):
-    """Success body of PATCH /proposals/{id}/state (D-28)."""
+    """Success body of PATCH /proposals/{id}/state."""
+
+    # Success body of PATCH /proposals/{id}/state (D-28).
 
     proposal_id: uuid.UUID
     proposal_state: str

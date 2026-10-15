@@ -170,7 +170,7 @@ def _warn_if_payload_is_time_limited(function: str, key: str, kwargs: dict[str, 
         return
     logger.error(
         "scheduling-ledger payload carries TIME-LIMITED material but its producer is declared replay-safe -- "
-        "recovery will refuse to replay this row (phaze-71nz). A scheduling_ledger payload must be replayable "
+        "recovery will refuse to replay this row. A scheduling_ledger payload must be replayable "
         "at an arbitrary future time: store the durable inputs and re-derive, or declare the function in "
         "replay_safety.LEDGER_REPLAY_REGENERATED with a regenerator in reenqueue._REPLAY_REGENERATORS.",
         function=function,

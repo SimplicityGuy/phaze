@@ -56,7 +56,7 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
    The defaults in `.env.example` work for single-host local development out of the box
    (the `DATABASE_URL` and `REDIS_URL` already point at the `postgres` and `redis`
    Docker service names; `PHAZE_QUEUE_URL` defaults to the Postgres DSN, since the SAQ task
-   broker has run on Postgres — not Redis — since Phase 36). Before going further, review:
+   broker has run on Postgres — not Redis — since Postgres broker migration). Before going further, review:
 
    - `SCAN_PATH` — the music directory mounted into the containers for scanning
      (default `/data/music`).
@@ -70,7 +70,7 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 
 4. **Provision the essentia audio-analysis models.**
 
-   phaze never downloads models on its own (phaze-ynv6w): the worker validates the directory
+   phaze never downloads models on its own: the worker validates the directory
    `MODELS_PATH` names at boot and exits naming the missing files otherwise. If you already
    hold the consolidated model directory, point `MODELS_PATH` in `.env` at it. Otherwise
    provision the default bind source once:
@@ -236,7 +236,7 @@ drops it at session teardown, so two pytest processes on the same database destr
 whichever finishes first pulls the schema out from under the other, and the loser fails with
 hundreds of `relation "…" does not exist` errors that all pass on isolated re-run.
 
-Since phaze-ieqg that is prevented rather than merely documented: `pytest_sessionstart` takes a
+Since the pytest session lock that is prevented rather than merely documented: `pytest_sessionstart` takes a
 Postgres advisory lock on the resolved database and holds it for the whole run. A second process is
 refused **before collection** with `SharedTestDatabaseError`, naming the holder's pid. That error
 comes from `tests/db_guard.py`; it is a harness precondition, not a bug in the suite.
@@ -279,7 +279,7 @@ just test-db-reclaim          # dry run: which seats a sweep would free (--apply
 
 If allocation ever refuses because the space is full, `just test-db-reclaim` is the answer.
 **Never `just test-db-down`** — it removes the containers every other seat is using and destroys
-their databases mid-run (phaze-ieqg, phaze-68wky).
+their databases mid-run.
 
 Every run prints its resolved target in the pytest header — check it before trusting a green run.
 `exclusive` means this process holds the lock; `unlocked` means it does not, and the run is
@@ -289,7 +289,7 @@ unprotected. See [CLAUDE.md](../CLAUDE.md) for the full rules.
 
 - **The worker exits with `essentia models are not provisioned at /models`.**
   The analyze stage needs the pre-trained TensorFlow models, and phaze never downloads
-  them (phaze-ynv6w). The message lists every missing or wrong-size file. Point
+  them. The message lists every missing or wrong-size file. Point
   `MODELS_PATH` at the consolidated model directory, or provision the default one:
 
   ```bash

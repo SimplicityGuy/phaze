@@ -253,7 +253,7 @@ async def shell_operations_redirect() -> RedirectResponse:
     return RedirectResponse(url="/s/runtime-config", status_code=307)
 
 
-@router.get("/s/{stage}", response_class=HTMLResponse)
+@router.get("/s/{stage}", response_class=HTMLResponse, description="GET /s/{stage} -- a single rail-node workspace.")
 async def shell_stage(request: Request, stage: str, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """GET /s/{stage} -- a single rail-node workspace.
 

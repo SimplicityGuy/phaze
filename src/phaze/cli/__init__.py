@@ -295,14 +295,14 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_sub = queue_grp.add_subparsers(dest="queue_command", required=True)
     status = queue_sub.add_parser(
         "status",
-        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun vs STRANDED; exit 1 on the phaze-o0n6 alarm.",
+        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun vs STRANDED; exit 1 on the stranded-job alarm.",
         description=(
             "SAQ marks a row 'active' at dequeue and buffers it in-process; only 'concurrency' rows "
             "actually run at once, so a raw 'active' count over-reports. This splits it using the "
             "attempts signal: attempts>=1 is genuinely running, attempts=0 is claimed-but-unrun. "
             "It ALSO reports 'stranded' -- rows past their own timeout plus the reap slack, i.e. "
             "exactly what reap_stranded_active_jobs will delete -- and EXITS 1 when that count "
-            "exceeds the lane's concurrency (phaze-o0n6). A lane can have at most 'concurrency' rows "
+            "exceeds the lane's concurrency. A lane can have at most 'concurrency' rows "
             "legitimately running, so more stranded than that is abandoned claims holding "
             "deterministic keys hostage: their files cannot be re-enqueued by any path until reaped. "
             "Run it from a monitor so the next occurrence is detected, not discovered 2,400 rows later."
@@ -328,7 +328,7 @@ def _build_parser() -> argparse.ArgumentParser:
     backfill_sub = backfill_grp.add_subparsers(dest="backfill_command", required=True)
     backfill_sub.add_parser(
         "reenqueue-incomplete-analyses",
-        help="Re-enqueue every file whose prior analysis did not cover the whole file (phaze-kj8dl).",
+        help="Re-enqueue every file whose prior analysis did not cover the whole file.",
         description=(
             "Selects every file whose AnalysisResult windows coverage is incomplete "
             "(fine_windows_analyzed < fine_windows_total OR the coarse equivalent -- never the "
@@ -336,7 +336,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "already in the cloud pipeline is skipped, a long file (>= the duration threshold, cloud "
             "enabled, not force-localed) is HELD for the bounded cloud drain, and everything else is "
             "enqueued through the standard per-agent process_file funnel. Idempotent: safe to re-run. "
-            "See docs/runbook.md's phaze-kj8dl section for the full deployment ordering and the "
+            "See docs/runbook.md's exhaustive-analysis re-enqueue backfill section for the full deployment ordering and the "
             "per-outcome remediation guide."
         ),
     )
@@ -348,7 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # docstring for the full selection contract.
     backfill_sub.add_parser(
         "set-projection",
-        help="Backfill energy/camelot/mood_scores + set_profile from stored JSONB, no re-analysis (phaze-x1qr3.3).",
+        help="Backfill energy/camelot/mood_scores + set_profile from stored JSONB, no re-analysis.",
         description=(
             "Walks every file with analysis_window rows whose set_profile is missing or behind the "
             "current projection_version, computes the per-window energy/camelot/mood_scores and the "
@@ -359,14 +359,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     stranded = backfill_sub.add_parser(
         "recover-stranded-analyses",
-        help="Count incomplete fine-tier analyses with lost queue keys; --enqueue replays only those keys (phaze-hia9z).",
+        help="Count incomplete fine-tier analyses with lost queue keys; --enqueue replays only those keys.",
     )
     stranded.add_argument("--enqueue", action="store_true", help="Replay the selected keys; without this flag the command reads and counts only.")
     # phaze-ww6yk: reset the cloud attempts an infrastructure fault spent. Every scope parameter is a
     # required flag, so the command names one incident and cannot drift onto rows it was not asked about.
     reset = backfill_sub.add_parser(
         "reset-cloud-attempts",
-        help="Reset cloud attempts spent by an infrastructure fault, for one backend and time window (phaze-ww6yk). Dry run unless --apply.",
+        help="Reset cloud attempts spent by an infrastructure fault, for one backend and time window. Dry run unless --apply.",
         description=(
             "Selects cloud_job rows with status='awaiting', attempts >= --attempts-floor, backend_id = --backend and "
             "updated_at inside [--window-start, --window-end]. It excludes rows whose analysis is done, in flight or "
@@ -403,13 +403,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # phaze-oxn2m: the candidates -> agent existence check -> retire pipeline (module docstring).
     twins = backfill_sub.add_parser(
         "moved-twin-candidates",
-        help="Print, as JSON, every group of an agent's rows sharing a filename and size (phaze-oxn2m step 1 of 3).",
+        help="Print, as JSON, every group of an agent's rows sharing a filename and size (step 1 of 3).",
     )
     twins.add_argument("--agent", dest="agent_id", required=True, help="The fileserver agent whose rows to group.")
     retire = backfill_sub.add_parser(
         "retire-moved-twins",
-        help="Retire rows whose file is gone and whose moved-to twin exists, from the agent-checked JSON on stdin (phaze-oxn2m step 3). "
-        "Dry run unless --apply.",
+        help="Retire rows whose file is gone and whose moved-to twin exists, from the agent-checked JSON on stdin (step 3). Dry run unless --apply.",
         description=(
             "Reads the document `python -m phaze.agent_watcher check-paths` printed on the agent. In each group, a row whose path "
             "is gone is retired (deleted with its derived rows) only when exactly one other row of the group exists on disk; that "
@@ -424,14 +423,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # phaze-5rfev: the candidates -> agent locate -> reconcile pipeline (module docstring).
     stale = backfill_sub.add_parser(
         "stale-row-candidates",
-        help="Print, as JSON, an agent's rows for the agent-side `locate-stale` check (phaze-5rfev step 1 of 3).",
+        help="Print, as JSON, an agent's rows for the agent-side `locate-stale` check (step 1 of 3).",
     )
     stale.add_argument("--agent", dest="agent_id", required=True, help="The fileserver agent whose rows to check.")
     stale.add_argument("--under", dest="under", default=None, help="Only rows whose current path is at or below this path.")
     reconcile = backfill_sub.add_parser(
         "reconcile-stale-rows",
-        help="Re-point, merge or mark missing the rows `locate-stale` found gone, from its JSON on stdin (phaze-5rfev step 3). "
-        "Dry run unless --apply.",
+        help="Re-point, merge or mark missing the rows `locate-stale` found gone, from its JSON on stdin (step 3). Dry run unless --apply.",
         description=(
             "Reads the document `python -m phaze.agent_watcher locate-stale` printed on the agent. A gone row whose bytes are at "
             "exactly one other path is re-pointed there, or merged with the row a scan already made for that path (the older row "
@@ -447,7 +445,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # phaze-osy6j: companion content features for rows ingested before the agents reported them.
     features = backfill_sub.add_parser(
         "companion-features",
-        help="Count companion rows without current content features; --apply has each owning agent read them (phaze-osy6j). Dry run unless --apply.",
+        help="Count companion rows without current content features; --apply has each owning agent read them. Dry run unless --apply.",
     )
     features_mode = features.add_mutually_exclusive_group()
     features_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
@@ -463,7 +461,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # phaze-bk5jp: the junk-companion detector.
     junk = backfill_sub.add_parser(
         "junk-review",
-        help="Count the pending junk-review rows the detector would create per agent and reason; --apply writes them (phaze-bk5jp).",
+        help="Count the pending junk-review rows the detector would create per agent and reason; --apply writes them.",
     )
     junk_mode = junk.add_mutually_exclusive_group()
     junk_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
@@ -472,7 +470,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # phaze-spd83: link the companions association never reached while it ran only on demand.
     links = backfill_sub.add_parser(
         "companion-links",
-        help="Count the companion links an association run would add, remove and keep per agent; --apply runs it (phaze-spd83).",
+        help="Count the companion links an association run would add, remove and keep per agent; --apply runs it.",
     )
     links_mode = links.add_mutually_exclusive_group()
     links_mode.add_argument("--dry-run", dest="apply", action="store_false", help="Count only, read-only (the default).")
@@ -493,7 +491,7 @@ def _build_parser() -> argparse.ArgumentParser:
     junk_sub = junk_grp.add_subparsers(dest="junk_command", required=True)
     quarantine = junk_sub.add_parser(
         "quarantine",
-        help="List the approved junk companions and where each would be moved; --apply dispatches the moves (phaze-lwuf6).",
+        help="List the approved junk companions and where each would be moved; --apply dispatches the moves.",
     )
     quarantine_mode = quarantine.add_mutually_exclusive_group()
     quarantine_mode.add_argument("--dry-run", dest="apply", action="store_false", help="List only, read-only (the default).")
@@ -965,7 +963,7 @@ async def _run_reenqueue_incomplete_analyses() -> int:
     ``app_state`` needs only ``.task_router``), prints an auditable report, and returns
     :func:`~phaze.services.reanalysis_backfill.compute_exit_code`'s verdict. All selection/routing
     logic lives in ``phaze.services.reanalysis_backfill`` -- see its module docstring for the full
-    rationale, and ``docs/runbook.md``'s phaze-kj8dl section for the deployment ordering this command
+    rationale, and ``docs/runbook.md``'s exhaustive-analysis re-enqueue backfill section for the deployment ordering this command
     is step 4 of.
     """
     settings = get_settings()
@@ -975,7 +973,7 @@ async def _run_reenqueue_incomplete_analyses() -> int:
         async with async_session() as session:
             legacy_null_count = await count_null_windows_columns_rows(session)
             print(
-                f"{legacy_null_count} pre-Phase-43 legacy row(s) with all windows columns NULL -- "
+                f"{legacy_null_count} legacy row(s) from before bounded-window analysis with all windows columns NULL -- "
                 "deliberately SKIPPED (already exhaustive before caps existed; see "
                 "phaze.services.reanalysis_backfill module docstring for the recorded decision)"
             )

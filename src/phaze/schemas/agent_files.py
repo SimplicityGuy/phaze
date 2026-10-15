@@ -69,18 +69,20 @@ truncates), and the controller never acts on more than this many rows per reques
 
 
 class FileMoveRequest(BaseModel):
-    """Body of POST /api/internal/agent/files/move: a settled file that arrived by an in-tree move.
+    """Body of POST /api/internal/agent/files/move: a settled file that arrived by an in-tree move."""
 
-    phaze-oxn2m. ``previous_paths`` is the file's lineage, oldest first: every path it was moved
-    away from since it last settled. Usually one entry; more when it was renamed again before
-    settling, or while the post of its previous name was still in flight -- the controller cannot
-    know which of those names a row was last posted under, so the agent sends them all.
-
-    A separate endpoint rather than a new optional field on :class:`FileUpsertRecord`, whose
-    ``extra="forbid"`` would 422 a newer agent's whole upsert against an older control plane. An
-    older control plane answers this route 404 instead, and the watcher falls back to a plain
-    upsert of ``file`` -- exactly the pre-phaze-oxn2m behavior.
-    """
+    # Body of POST /api/internal/agent/files/move: a settled file that arrived by an in-tree move.
+    #
+    #     phaze-oxn2m. ``previous_paths`` is the file's lineage, oldest first: every path it was moved
+    #     away from since it last settled. Usually one entry; more when it was renamed again before
+    #     settling, or while the post of its previous name was still in flight -- the controller cannot
+    #     know which of those names a row was last posted under, so the agent sends them all.
+    #
+    #     A separate endpoint rather than a new optional field on :class:`FileUpsertRecord`, whose
+    #     ``extra="forbid"`` would 422 a newer agent's whole upsert against an older control plane. An
+    #     older control plane answers this route 404 instead, and the watcher falls back to a plain
+    #     upsert of ``file`` -- exactly the pre-phaze-oxn2m behavior.
+    #
 
     model_config = ConfigDict(extra="forbid")
 

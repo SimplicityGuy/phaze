@@ -43,7 +43,11 @@ if TYPE_CHECKING:
 # this phase: enrich-only (approval-bypass hazard, D-10), additive (never clears a failure marker, so
 # the Phase-79 shadow-compare gate stays green), reason required + sanitized (NUL-abort footgun), and
 # committed (get_session NEVER auto-commits).
-@router.post("/pipeline/files/{file_id}/skip/{stage}", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/files/{file_id}/skip/{stage}",
+    response_class=HTMLResponse,
+    description="Force-skip an ENRICH stage for one file: write a distinct ``skipped`` marker.",
+)
 async def force_skip_stage(
     file_id: uuid.UUID,
     stage: str,
@@ -362,7 +366,11 @@ async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, 
     return {"stage_label": label, "eligible": is_eligible, "verdict": verdict, "conjuncts": conjuncts, "unavailable": False}
 
 
-@router.get("/pipeline/files/{file_id}/trace/{stage}", response_class=HTMLResponse)
+@router.get(
+    "/pipeline/files/{file_id}/trace/{stage}",
+    response_class=HTMLResponse,
+    description="Per-file, per-stage eligibility trace — the diagnostic whose absence hid the deadlock.",
+)
 async def eligibility_trace(
     request: Request,
     file_id: uuid.UUID,

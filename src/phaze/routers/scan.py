@@ -325,7 +325,7 @@ async def _enqueue_scan_or_mark_failed(
     return None
 
 
-@router.post("", response_class=HTMLResponse)
+@router.post("", response_class=HTMLResponse, description="Form submit: validate, create ScanBatch, enqueue `scan_directory`.")
 async def trigger_scan(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

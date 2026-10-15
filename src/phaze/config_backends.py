@@ -65,7 +65,9 @@ def _resolve_inline_secret_files(data: Any, spec: dict[str, tuple[str, bool]]) -
 
 
 class LocalBackend(BaseModel):
-    """On-prem/all-local backend. Needs no connection config (REG-01)."""
+    """On-prem/all-local backend. Needs no connection config."""
+
+    # On-prem/all-local backend. Needs no connection config (REG-01).
 
     kind: Literal["local"]
     id: str
@@ -77,7 +79,9 @@ class LocalBackend(BaseModel):
 
 
 class ComputeBackend(BaseModel):
-    """Cloud compute (rsync/push) backend. Requires ``agent_ref`` (REG-02, D-13)."""
+    """Cloud compute (rsync/push) backend. Requires ``agent_ref``."""
+
+    # Cloud compute (rsync/push) backend. Requires ``agent_ref`` (REG-02, D-13).
 
     kind: Literal["compute"]
     id: str
@@ -123,7 +127,9 @@ class ComputeBackend(BaseModel):
 
 
 class KueueBackend(BaseModel):
-    """Kueue-cluster backend. Requires a nested ``[kube]`` config table (REG-02, D-13)."""
+    """Kueue-cluster backend. Requires a nested ``[kube]`` config table."""
+
+    # Kueue-cluster backend. Requires a nested ``[kube]`` config table (REG-02, D-13).
 
     kind: Literal["kueue"]
     id: str
@@ -223,11 +229,13 @@ class KubeConfig(BaseModel):
 
 
 class BucketConfig(BaseModel):
-    """S3 staging-bucket entry (REG-05, D-07).
+    """S3 staging-bucket entry."""
 
-    ``scope`` is a load-bearing sharing-cardinality invariant enforced across entries.
-    ``endpoint_url`` carries the per-bucket HTTP(S) SSRF guard.
-    """
+    # S3 staging-bucket entry (REG-05, D-07).
+    #
+    #     ``scope`` is a load-bearing sharing-cardinality invariant enforced across entries.
+    #     ``endpoint_url`` carries the per-bucket HTTP(S) SSRF guard.
+    #
 
     id: str
     scope: Literal["shared", "cluster-specific"]

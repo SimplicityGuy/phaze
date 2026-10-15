@@ -25,19 +25,21 @@ from phaze.schemas.wire_mixins import SanitizedErrorMessageMixin
 
 
 class ScanBatchPatch(SanitizedErrorMessageMixin):
-    """Partial-update body for PATCH /scan-batches/{id}.
+    """Partial-update body for PATCH /scan-batches/{id}."""
 
-    Status transitions (enforced by the router, mirroring D-15):
-    `RUNNING → COMPLETED` and `RUNNING → FAILED` are valid; same-state PATCH is
-    a 200 no-op; the LIVE sentinel state is the watcher's terminal own-state and
-    is intentionally NOT in this Literal — attempting `status="live"` on the
-    wire yields 422 at validation time (D-10 schema-layer guard).
-
-    `error_message` (sink: `ScanBatch.error_message`, Text) and its sanitize-on-write validator
-    come from `SanitizedErrorMessageMixin` (phaze-bk9el.14). Before that bead this was the ONE
-    agent PATCH endpoint whose sanitize copy diverged in comment only (phaze-hvve5 site 1) from
-    the byte-identical copies in `schemas/agent_execution.py` -- the clone `get_health` flagged.
-    """
+    # Partial-update body for PATCH /scan-batches/{id}.
+    #
+    #     Status transitions (enforced by the router, mirroring D-15):
+    #     `RUNNING → COMPLETED` and `RUNNING → FAILED` are valid; same-state PATCH is
+    #     a 200 no-op; the LIVE sentinel state is the watcher's terminal own-state and
+    #     is intentionally NOT in this Literal — attempting `status="live"` on the
+    #     wire yields 422 at validation time (D-10 schema-layer guard).
+    #
+    #     `error_message` (sink: `ScanBatch.error_message`, Text) and its sanitize-on-write validator
+    #     come from `SanitizedErrorMessageMixin` (phaze-bk9el.14). Before that bead this was the ONE
+    #     agent PATCH endpoint whose sanitize copy diverged in comment only (phaze-hvve5 site 1) from
+    #     the byte-identical copies in `schemas/agent_execution.py` -- the clone `get_health` flagged.
+    #
 
     model_config = ConfigDict(extra="forbid")
 
