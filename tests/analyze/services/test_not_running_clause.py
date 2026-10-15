@@ -33,6 +33,7 @@ from sqlalchemy.dialects import postgresql
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage
 from phaze.models.file import FileRecord
+from phaze.services.pipeline.buckets import _safe_orphan_split
 from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES
 from phaze.services.stage_status import (
     CLOUD_LANE_FUNCTIONS,
@@ -145,7 +146,7 @@ async def _keys(session: AsyncSession, stmt: Any) -> set[str]:
     return set((await session.execute(stmt)).scalars().all())
 
 
-async def test_rewrite_selects_the_identical_sets_for_every_consumer(session: AsyncSession) -> None:
+async def test_rewrite_selects_the_identical_sets_for_every_consumer(session: AsyncSession, monkeypatch: Any) -> None:
     """Old (``not_(running)``) vs new (``not_running_clause``) over the full state matrix, per consumer."""
     await _saq_table(session)
     total = await _seed_matrix(session)
@@ -155,6 +156,28 @@ async def test_rewrite_selects_the_identical_sets_for_every_consumer(session: As
         old, new = await _ids(session, _old_orphaned(stage)), await _ids(session, orphaned_clause(stage))
         assert new == old, f"orphaned_clause({stage.value}) drifted: +{len(new - old)} / -{len(old - new)}"
         assert 0 < len(new) < total, f"orphaned_clause({stage.value}) matrix cell is degenerate ({len(new)}/{total})"
+
+        # Capture the reporting consumer's REAL count statement, then select its member IDs.
+        # This pins the short-circuit query to the unchanged predicate across the full matrix,
+        # rather than merely asserting that two similarly sized sets have matching counts.
+        statements: list[Any] = []
+        execute = session.execute
+
+        async def record(statement: Any, *args: Any, _statements: list[Any] = statements, _execute: Any = execute, **kwargs: Any) -> Any:
+            _statements.append(statement)
+            return await _execute(statement, *args, **kwargs)
+
+        for agent in (None, "test-fileserver", "no-such-agent"):
+            counts = {"in_flight": total, "orphaned": 0}
+            statements.clear()
+            with monkeypatch.context() as scoped:
+                scoped.setattr(session, "execute", record)
+                await _safe_orphan_split(session, stage, counts, agent_id=agent)
+            assert len(statements) == 1
+            guarded_ids = set((await session.execute(statements[0].with_only_columns(FileRecord.id, maintain_column_froms=True))).scalars())
+            expected = set() if agent == "no-such-agent" else new
+            assert guarded_ids == expected
+            assert counts == {"in_flight": total - len(expected), "orphaned": len(expected)}
 
         func_name = STAGE_TO_FUNCTION[stage.value]
         old_keys = await _keys(session, select(ledger_key_for_function(func_name)).where(_old_resolved(stage)))
@@ -185,7 +208,11 @@ async def _explain_cost(session: AsyncSession, stmt: Any) -> float:
 
 
 def _orphan_split(clause: ColumnElement[bool]) -> Any:
-    """The exact ``_safe_orphan_split`` statement shape (services/pipeline/buckets.py)."""
+    """Underlying predicate shape, before the reporting-only CASE guard.
+
+    Keep the existing not_running_clause bloat/JIT regression independent of the reporting
+    guard; the real reporting statement's set equivalence is exercised above.
+    """
     return select(func.count()).select_from(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).where(clause)
 
 
