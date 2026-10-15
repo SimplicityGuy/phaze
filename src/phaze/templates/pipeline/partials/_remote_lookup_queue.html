@@ -1,0 +1,23 @@
+<section id="remote-lookup-queue" aria-labelledby="remote-queue-heading" class="space-y-3">
+<h2 id="remote-queue-heading" class="font-semibold">Discover candidate tracklists</h2>
+<p class="text-sm text-muted">Queue the complete active, searchable recording inventory without a reviewed tracklist selection, across all enabled remote providers. Missing recordings, unsupported media, recordings with no usable artist/event/date hint and reviewed selections are excluded. Display pagination does not limit the queue. Discovery holds candidates for review; it never selects a source. Linking stored tracks to Discogs is a separate action.</p>
+<p class="text-sm">{{ providers | selectattr('enabled') | list | length }} enabled provider(s). <a href="/s/runtime-config" class="text-link underline">Manage providers in Settings</a></p>
+<form hx-post="/pipeline/remote-lookup-queue" hx-target="#remote-lookup-queue" hx-swap="outerHTML"><button type="submit" disabled data-hx-guard class="rounded border px-3 py-2">Queue tracklist lookup</button></form>
+<button type="button" hx-get="/pipeline/remote-lookup-queue" hx-target="#remote-lookup-queue" hx-swap="outerHTML" class="text-link underline">Refresh batch status</button>
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
+{% for item in batches if item %}
+<div class="rounded border p-3 space-y-2">
+<p class="text-sm">Batch {{ item.batch.created_at }} UTC · {{ 'expanded' if item.batch.expanded else 'expanding recording inventory' }}</p>
+<p class="text-sm">{{ item.batch.selected }} new pairs · {{ item.batch.existing }} existing in-flight pairs · {{ item.batch.excluded }} excluded recordings.</p>
+{% if not item.batch.providers %}<p role="status">No enabled providers. Enable a provider in Settings, then queue a new batch.</p>{% elif item.batch.expanded and not item.work %}<p>No eligible recordings were found.</p>{% endif %}
+<p class="text-sm">{% for state in ['queued','running','deferred','blocked','completed','failed'] %}{{ state | capitalize }}: {{ item.counts.get(state,0) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+<ul class="text-sm space-y-1">{% for work in item.work %}
+{% set names = providers | selectattr('provider_id','equalto',work.provider_id) | list %}
+<li>{{ names[0].display_name if names else 'Unavailable provider' }} · {{ work.status }}{% if work.code %} · {{ work.code }}{% endif %}{% if work.not_before %} · Next eligible {{ work.not_before }} UTC{% endif %} · <a class="text-link underline" href="/files/{{ work.media_id }}">Review recording candidates</a>
+{% if work.result %}<p class="text-xs text-muted">{{ work.result.outcome.message }}</p>
+{% if work.result.scope %}<p class="text-xs text-muted">Searched scope: {{ work.result.scope.state }} · {{ work.result.scope.reason }}</p>{% endif %}
+{% for warning in work.result.warnings %}<p class="text-xs text-muted">{{ warning.message }}</p>{% endfor %}{% endif %}
+</li>
+{% endfor %}</ul><p class="text-xs text-muted">Showing at most 50 work items per batch; counts cover the complete batch. Deferred work resumes after pacing permits; blocked work waits for global policy or an audited stop clear.</p>
+</div>{% else %}<p class="text-sm text-muted">No lookup batch has been queued.</p>{% endfor %}
+</section>
