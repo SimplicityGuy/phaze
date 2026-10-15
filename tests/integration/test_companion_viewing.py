@@ -18,9 +18,11 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation
+from phaze.schemas.companion_details import DetailPage
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.companion_capture import store_capture_report
-from phaze.services.companion_view import source_review_context
+from phaze.services.companion_details import get_companion_details
+from phaze.services.companion_view import source_review_context, visible_parsed_content
 from phaze.services.local_source_import import decide_local_source, import_local_source
 from phaze.services.provider_persistence import add_candidate, store_snapshot
 from phaze.tracklist_providers.domain import LoadBudget, Snapshot
@@ -220,6 +222,104 @@ async def test_current_text_sections_warnings_and_native_mapping_visible_page_dr
     selected = await client.get(detail_url, headers=HX)
     rows = BeautifulSoup(selected.text, "html.parser").select("[data-local-track]")
     assert len(rows) == 1 and "[section 1]" in rows[0].get_text() and "Title unknown" in rows[0].get_text()
+
+
+@pytest.mark.parametrize(
+    "stored_sections",
+    ["missing", None, True, 7, "[]", {"ordinal": 1}, []],
+    ids=["missing", "null", "boolean", "number", "string", "object", "empty-array"],
+)
+async def test_legacy_sections_shapes_preserve_current_and_legacy_record_views(
+    client: AsyncClient, session: AsyncSession, stored_sections: object
+) -> None:
+    """Real JSONB rows must not turn absent or non-array historical sections into page failures."""
+    media, companion, raw = await inventory(session, "Artist: Example Artist\nPart 1: Opening\n01. Artist - First\n", "nfo")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    current_rows = [
+        await session.get(ProviderSourceObservation, identifier)
+        for identifier in (imported.tracklist_observation_id, imported.release_observation_id)
+    ]
+    expected = {}
+    retained_payloads = {}
+    for current in current_rows:
+        legacy_version = "local-release-v1" if current.parser_version == RELEASE_PARSER_VERSION else "local-tracklist-v1"
+        historical = Snapshot.model_validate({**current.payload, "retrieved_at": current.retrieved_at, "parser_version": legacy_version})
+        stored = await store_snapshot(session, historical, source_file_id=companion.id, channel="companion", parent_id=raw)
+        legacy = stored.observation
+        # These synthetic payloads represent persisted older data, without today's model defaults.
+        payload = {key: value for key, value in legacy.payload.items() if key != "sections"}
+        if stored_sections != "missing":
+            payload["sections"] = stored_sections
+        legacy.payload = payload
+        await add_candidate(
+            session, media.id, legacy.id, evidence=(f"kind:{'release_metadata' if legacy_version.startswith('local-release') else 'tracklist'}",)
+        )
+        expected[legacy.id] = (legacy_version, 0, ())
+        expected[current.id] = (
+            current.parser_version,
+            len(current.payload["sections"]),
+            tuple(item["ordinal"] for item in current.payload["sections"]),
+        )
+        retained_payloads[legacy.id] = payload.copy()
+    await session.flush()
+    details = await get_companion_details(session, media.id)
+    visible = await visible_parsed_content(session, details)
+    assert {item.summary.observation_id for item in visible} == set(expected)
+    assert [item.summary.parser_version for item in visible] == sorted(version for version, _count, _ordinals in expected.values())
+    for item in visible:
+        version, count, ordinals = expected[item.summary.observation_id]
+        assert item.summary.parser_version == version
+        assert item.section_count == count
+        assert tuple(section.ordinal for section in item.sections) == ordinals
+        assert item.summary.availability == "current"
+    for path in (f"/files/{media.id}", f"/record/{media.id}"):
+        response = await client.get(path)
+        assert response.status_code == 200
+        assert "First" in response.text and "Example Artist" in response.text
+    companion.sha256_hash = "b" * 64
+    await session.flush()
+    stale = await visible_parsed_content(session, details)
+    assert {item.summary.observation_id for item in stale} == set(expected)
+    assert {item.summary.availability for item in stale} == {"stale"}
+    outside_page = await get_companion_details(session, media.id, source_page=DetailPage(offset=100000))
+    assert outside_page.sources == () and await visible_parsed_content(session, outside_page) == ()
+    for identifier, payload in retained_payloads.items():
+        await session.refresh(await session.get(ProviderSourceObservation, identifier))
+        assert (await session.get(ProviderSourceObservation, identifier)).payload == payload
+
+
+async def test_valid_section_array_keeps_full_count_bounded_preview_and_other_pagination(client: AsyncClient, session: AsyncSession) -> None:
+    """Counting all valid sections must not expand the 64-section, 3-track or 6-fact previews."""
+    text = "Artist: Example Artist\nAlbum: Example Album\nGenre: Electronic\nSource: Soundboard\n" + TEXT
+    text = text.replace("02. Other - Finale", "02. Other - Finale\n03. Artist - Third\n04. Artist - Fourth")
+    media, _companion, raw = await inventory(session, text, "nfo")
+    imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
+    sections = [
+        {"ordinal": ordinal, "title": f"Section {ordinal}", "completeness": {"state": "complete", "reason": "Synthetic section"}}
+        for ordinal in range(1, 71)
+    ]
+    identifiers = {imported.tracklist_observation_id, imported.release_observation_id}
+    for identifier in identifiers:
+        observation = await session.get(ProviderSourceObservation, identifier)
+        observation.payload = {**observation.payload, "sections": sections}
+    await session.flush()
+    details = await get_companion_details(session, media.id)
+    visible = await visible_parsed_content(session, details)
+    assert {item.summary.observation_id for item in visible} == identifiers
+    for item in visible:
+        assert item.section_count == 70
+        assert tuple(section.ordinal for section in item.sections) == tuple(range(1, 65))
+        assert len(item.tracks) == min(3, item.summary.track_count)
+        assert len(item.release_facts) == min(6, item.summary.release_fact_count)
+        assert item.next_track_offset == (3 if item.summary.track_count > 3 else None)
+        assert item.next_fact_offset == (6 if item.summary.release_fact_count > 6 else None)
+    assert any(item.next_track_offset == 3 for item in visible)
+    assert any(item.next_fact_offset == 6 for item in visible)
+    for path in (f"/files/{media.id}", f"/record/{media.id}"):
+        response = await client.get(path)
+        assert response.status_code == 200
+        section_preview = BeautifulSoup(response.text, "html.parser").select_one("[data-visible-text-sections]")
+        assert "Section 64" in section_preview.get_text() and "Section 65" not in section_preview.get_text()
 
 
 async def test_json_and_form_contracts_selection_stale_errors_and_reimport(client, session):
