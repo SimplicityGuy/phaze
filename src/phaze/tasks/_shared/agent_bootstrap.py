@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 
 
 _WHOAMI_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
-"""Bounded retry budget for the /whoami startup probe (~63s total wall-clock)."""
+"""Outer retry budget for whoami: 63s total sleep, plus HTTP time and client retries."""
 
 
 def construct_agent_client(cfg: AgentSettings) -> PhazeAgentClient:

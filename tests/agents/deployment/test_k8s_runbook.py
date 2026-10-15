@@ -37,6 +37,7 @@ _YAML_FENCE = re.compile(r"```yaml\n(.*?)```", re.DOTALL)
 # Architecture). Keyed by (apiGroup, resource); each value is the MINIMUM verb set the Role must grant.
 # The runbook MAY grant more (e.g. workloads get/watch as the conservative spec) -- this is a subset gate.
 REQUIRED_RBAC: dict[tuple[str, str], set[str]] = {
+    ("", "pods"): {"list"},  # cloud reconciliation inspects pod observations
     ("batch", "jobs"): {"create", "get", "delete"},  # submit_job / get_job / delete_job
     ("kueue.x-k8s.io", "workloads"): {"list"},  # get_workload_for(.list); get/watch = conservative spec
     ("kueue.x-k8s.io", "localqueues"): {"get"},  # NEW: the Phase 56 startup reachability probe

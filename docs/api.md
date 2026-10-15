@@ -21,7 +21,7 @@ Both 404 into their own presentation's not-found rendering rather than raising; 
 that not-found section inside the shell.
 
 The record context reads the narrow migration-`063` projection rather than decoding each window's
-large `features` JSONB: `SetProfile` plus `AnalysisWindow.energy`, `.camelot`, and `.mood_scores`
+large `features` JSONB: `SetProfile` plus persisted `AnalysisWindow.energy` and `.mood_scores` (with `.camelot` computed at read time from `musical_key`, following migration `066`)
 feed the timeline, harmonic journey, record facts, track segments, glyph, poster, and deterministic
 similar-set ranking. There is no separate projection API; analysis completion writes it as part of
 the existing internal analysis callback, and the three record presentations are read-only.
@@ -57,7 +57,7 @@ Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) tha
 - `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer. The model carries two FURTHER fields that this local bulk path deliberately omits — `expected_sha256` and `scratch_path`, both defaulting to `None` so the local producer stays byte-identical under `extra="forbid"`. They are set only on the cloud push path: `expected_sha256` pins `FileRecord.sha256_hash` so the compute agent can verify the rsync'd copy before analysis, and `scratch_path is not None` is ITSELF the compute-read/ephemeral signal — there is no separate boolean flag.
 - `extract-metadata` → `extract_file_metadata` enqueues `ExtractMetadataPayload` (`file_id`, `original_path`, `file_type`, `agent_id`).
 
-The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook (35-01), letting a repeat enqueue of an in-flight file collapse to a no-op.
+The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook, letting a repeat enqueue of an in-flight file collapse to a no-op.
 
 **`process_file` liveness policy.** Every producer and recovery replay is normalized by
 `tasks/_shared/queue_defaults.py` to `timeout=0` (no elapsed-time kill), at most `retries=2`, and
@@ -71,62 +71,72 @@ still bounded.
 
 **Metadata extraction is operator-triggered only.** The `POST /api/internal/agent/files` discovery upsert no longer auto-enqueues metadata extraction — discovery only persists file rows. `extract-metadata` (JSON or HTMX) is now the sole producer of `extract_file_metadata` jobs, and it queues every music/video file regardless of state (backfill/re-extraction).
 
-**`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
+**`proposals` convergence gate.** The shared proposal producer requires Metadata and Analyze
+both satisfied (`done` or explicitly skipped), neither stage in flight, and no existing proposal.
+A row's mere existence is insufficient. Eligible files are batched using `llm_batch_size`
+(default 10); `generate_proposals` runs on the controller queue. Selected source facts are
+optional, but a selected binding must remain fresh and usable when the proposal consumes it.
 
-**External tracklist acquisition has been removed.** Stored tracklists remain available for review, Discogs matching and cue generation.
+
+**The legacy source-specific acquisition path is retired.** Stored tracklists remain available for review, Discogs matching and cue generation. Registered remote providers have a separate deliberate enablement and durable lookup workflow; see [Global tracklist providers](global-tracklist-providers.md).
 
 **Bulk match.** `POST /pipeline/match-tracklists` enqueues one `match_tracklist_to_discogs` job per **pending match** tracklist (every tracklist **not** reachable from `discogs_links` via the `version → track → link` walk — the complement of `match.done`). It is a **controller** task (task routing rule), routed through `enqueue_router.resolve_queue_for_task` to the **controller** queue — never the consumer-less default queue — and it never raises `NoActiveAgentError` (no agent empty-state). Already-linked tracklists are skipped, and the deterministic key `match_tracklist_to_discogs:<tracklist_id>` dedups in-flight replays, so a double-click/refresh cannot multiply the backlog. The button is gated disabled: **"Needs tracklist"** until at least one tracklist exists (`matchTotal === 0`); **"Matching…"** while a batch is in flight (`matchBusy > 0`, checked **before** the nothing-pending state so a running batch is always visible); and **"All matched"** once the pending set is empty. The endpoint enqueues nothing and returns 200 (rendering `No tracklists ready for matching`) when the pending set is empty. Manual only — no auto-trigger.
 
-**Recovery-only automation model.** Steady state produces **zero** automatic enqueues — every stage advances only when the operator clicks its trigger. The **only** automatic enqueue is a single gated recovery pass on controller startup: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Postgres broker migration the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (operator-triggered tracklist refresh made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net: `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the duplicate-enqueue failure class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
+**Explicit advancement and intent continuation.** Operators advance pipeline stages deliberately; the controller does not automatically chain Metadata → Analyze → Propose. Existing durable intent can continue automatically through cloud submission/reconciliation, lookup-batch continuation and companion import/recovery. A separate gated recovery pass on controller startup also exists: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Postgres broker migration the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (operator-triggered tracklist refresh made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net: `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the duplicate-enqueue failure class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
 
-**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (tracklist search, the Search-node in-flight gate), `agentOnline` (online-agent count, drives the header's "Agents · N" badge), `scrapeDone`/`scrapeTotal`, `scrapeBusy` (tracklist matching, the Scrape-node in-flight gate), `matchDone`/`matchTotal`, `matchBusy` (tracklist matching, the Match-node in-flight gate), `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The `agentOnline` (online-agent count) read runs inside a degrade-safe SAVEPOINT and falls back to `0` on any DB error. The DAG canvas mirrors these store keys.
+**DAG counts and worker inventory on the 5s poll.** `GET /pipeline/stats` emits the stats
+bar and OOB seeds from its live DAG context. The full-document seed uses the same producers;
+individual stage counts retain their DB-truth/degraded-counter policies.
 
+The Agents rail subtitle and Agents & Clusters heading share inventory policy from
+`services/worker_inventory.py`: non-revoked agents are visible, including offline ones, except
+compute callback identities that have never heartbeaten. Configured clusters are every non-local
+backend, including idle/offline entries; the legacy unattributed cloud row is not a configured
+cluster. `laneCount` includes local backends. This inventory is separate from `agentOnline` and
+`computeLanesActive`, which describe liveness and activity rather than registration.
+
+Full-document SSR seeds the same values that Alpine renders and the existing five-second
+`/pipeline/stats` poll refreshes through `dag-seed-<storeKey>` OOB targets. The keys
+`visibleAgentCount`/`visibleAgentCountKnown` and `clusterCount`/`clusterCountKnown` distinguish a
+measured zero from an unavailable source; global `seedKnown` also gates first paint. A failed
+source renders “Agents unavailable” or “Clusters unavailable”, never a fabricated inventory zero.
+Rail swaps preserve the shared store and pre-mounted poll targets; no second timer is added.
 ### Multi-cloud backend lanes (2026.7.1)
 
 Operator overrides and control-side agent callbacks for the pluggable multi-backend routing lanes (local → Kueue(N) → cloud-compute, cost-tier ranks). These extend the pipeline dashboard with cloud-lane controls and back the S3-staging / rsync-push transports.
 
 | Method | Path                                   | Description                                                                 |
 |--------|----------------------------------------|-----------------------------------------------------------------------------|
-| POST   | `/pipeline/backfill-cloud`             | Backfill timed-out long files (`ANALYSIS_FAILED ∧ duration ≥ threshold`) to the cloud lane (HTMX) |
+| POST   | `/pipeline/backfill-cloud`             | Backfill eligible long Analyze failures with orphaned scheduling intent to the cloud lane (HTMX) |
 | POST   | `/pipeline/routing/force-local`        | Flip the global force-local routing override (durable `route_control` `'global'` row) (HTMX) |
+
+`backfill-cloud` requires a derived Analyze failure, duration at or above the routing threshold and retained scheduling intent; active cloud or live broker ownership is excluded. It does not sweep every failed file.
 
 `force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` routes through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue) and honors the force-local / cloud-enabled gates.
 
 > **Removed:** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 (windowed analysis) §7). There is nothing left to deepen.
 
-**Control-side agent callbacks (`/api/internal/agent`).** The Postgres-free file-server / compute / pod agents cannot touch the ORM, so the S3-staging and rsync-push transports report outcomes through these token-authed internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
+**Control-side agent callbacks (`/api/internal/agent`).** File-server, compute and pod agents report S3-staging and rsync-push outcomes through these token-authenticated internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
 
 | Method | Path                                                | Description                                                                 |
 |--------|-----------------------------------------------------|-----------------------------------------------------------------------------|
 | POST   | `/api/internal/agent/s3/{file_id}/uploaded`         | S3-staging multipart-upload success ack (control completes the multipart, flips `cloud_job` `UPLOADING → UPLOADED`) |
 | POST   | `/api/internal/agent/s3/{file_id}/failed`           | S3-staging upload failure (bounded re-drive, or terminal cleanup + spill to `AWAITING_CLOUD` at the cap) |
-| POST   | `/api/internal/agent/push/{file_id}/pushed`         | rsync push success (`PUSHING → PUSHED` + ledger clear + `process_file` enqueue on the compute queue) |
+| POST   | `/api/internal/agent/push/{file_id}/pushed`         | rsync push success (`cloud_job.status` `submitted → succeeded` + ledger clear, committed before `process_file` enqueue on the compute queue) |
 | POST   | `/api/internal/agent/push/{file_id}/mismatch`       | rsync post-transfer sha256 mismatch (capped re-drive, or spill to `AWAITING_CLOUD` at the cap) |
 | POST   | `/api/internal/agent/push/{file_id}/failed`         | terminal `push_file` failure (SAQ retries exhausted): spill `cloud_job` to `AWAITING_CLOUD` with its cloud budget spent, routing the file to local |
 | POST   | `/api/internal/agent/files/{file_id}/presign-download` | Mint a fresh short-TTL presigned GET URL for a file's staged bytes (409 unless `cloud_job` is `UPLOADED`) |
 
-> **The names above are `cloud_job.status` values, not file states.** `PUSHING`/`PUSHED` read like
-> enum members but `CloudJobStatus` has none — its members are `awaiting`, `uploading`, `uploaded`,
-> `submitted`, `running`, `succeeded`, `failed`. per-stage status migration removed the `FileState` enum and the
-> `files.state` column entirely; stage and status are **derived** from the `cloud_job` sidecar plus
-> the output tables via `services/stage_status.py`. See the caveat in
-> [cloud-burst.md → walkthrough](cloud-burst.md) for the same point in operator terms.
+> **Transport state belongs to the `cloud_job` sidecar.** Its stored values are `awaiting`,
+> `uploading`, `uploaded`, `submitted`, `running`, `succeeded` and `failed`. The legacy labels
+> `PUSHING`/`PUSHED` are not enum members or stored file states. Compute push completion uses
+> the `submitted → succeeded` compare-and-set above. `files.state` and the `FileState` enum are
+> removed; `services/stage_status.py` derives stage status from sidecars and output tables.
+> See [the cloud-burst walkthrough](cloud-burst.md) for the operator sequence.
 
-```mermaid
-flowchart LR
-    D[DISCOVERED file] --> R{select_backend<br/>by cost-tier rank}
-    FL[/force-local override<br/>route_control 'global'/]:::override -.forces.-> R
-    R -->|rank 0| L[Local analyze]
-    R -->|rank 1..N| K[Kueue cluster 1..N<br/>S3 staging]
-    R -->|rank N+1| C[Cloud compute<br/>rsync push]
-    K -->|upload ack /s3/.../uploaded| KP[UPLOADED → submit_cloud_job]
-    C -->|push ack /push/.../pushed| CP[PUSHED → process_file]
-    K -. cap exhausted .-> SP[spill AWAITING_CLOUD → local]
-    C -. cap exhausted .-> SP
-    L -.timeout ANALYSIS_FAILED.-> BF[/backfill-cloud<br/>re-route long files/]:::override
-    BF --> R
-    classDef override fill:#fde68a,stroke:#b45309,color:#000;
-```
+![Multi-cloud backend lanes](diagrams/api-1.png)
+
+[Open the interactive-size HTML](diagrams/api-1.html) · [Download SVG](diagrams/api-1.svg)
 
 ### Per-stage pause / priority controls (drain scheduler)
 
@@ -149,9 +159,9 @@ Operator controls that steer the two agent pipeline stages (`metadata` / `analyz
 | GET    | `/pipeline/lanes/{backend_id}`                      | Lane-detail body fragment for a backend lane (local/Kueue/cloud)           |
 | GET    | `/pipeline/files/{file_id}/trace/{stage}`           | Per-file, per-stage eligibility trace (diagnostic)                        |
 | POST   | `/pipeline/files/{file_id}/skip/{stage}`            | Force-skip an ENRICH stage for one file (writes a `StageSkip` marker)      |
-| POST   | `/pipeline/analysis-failed/retry`                   | Bulk retry of every terminally `ANALYSIS_FAILED` file                     |
+| POST   | `/pipeline/analysis-failed/retry`                   | Bulk retry of terminal Analyze failures derived from `analysis.failed_at`                     |
 | POST   | `/pipeline/metadata-failed/retry`                   | Bulk retry of every terminally-failed metadata file                       |
-| POST   | `/pipeline/files/{file_id}/analysis-failed/retry`   | Per-file retry of one `ANALYSIS_FAILED` file                              |
+| POST   | `/pipeline/files/{file_id}/analysis-failed/retry`   | Per-file retry of one terminal Analyze failure                              |
 | POST   | `/pipeline/files/{file_id}/metadata-failed/retry`   | Per-file retry of one terminally-failed metadata file                     |
 
 ## Pipeline Scans (`/pipeline/scans`)
@@ -166,7 +176,7 @@ Admin-UI endpoints that drive the user-initiated scan flow on the pipeline dashb
 | GET    | `/pipeline/scans/{batch_id}`   | Scan-batch progress (HTMX poll partial)            |
 | DELETE | `/pipeline/scans/{batch_id}`   | Delete a terminal scan + all associated DB data (HTMX) |
 
-Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs an ordered transactional cascade that removes the `ScanBatch` and every row that hangs off its files (metadata, analysis, proposals + execution log, tracklists → versions → tracks → discogs links, tag-write log, file companions, files), scoped strictly to that batch. A `running` scan or the `live` watcher sentinel is never deleted. It does **not** return 409: the endpoint answers **200** (`response_shape.RENDERABLE_ALERT_STATUS`) and swaps in the refreshed table carrying an `alert_message` — "Cannot delete a running scan; wait for it to complete or fail." or "The live watcher batch cannot be deleted." (an already-gone batch likewise renders "That scan is already gone — table refreshed."). This is deliberate and is contract rule 3 in `routers/response_shape.py`: htmx 2.x's default `responseHandling` does not swap 4xx/5xx bodies, so a 409 here would fetch the `role="alert"` markup and then discard it — the operator would see the spinner flash and no indication the delete was refused. The error semantics live in the BODY, not the status line. This is not a general "errors are 200" rule: an unparseable request is still 422 (`request_guards.MALFORMED_PAYLOAD_STATUS`). On success the endpoint returns the re-rendered Recent Scans table for an HTMX `outerHTML` swap into `#recent-scans`.
+Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs an ordered transactional cascade that removes the `ScanBatch` and the file-bound rows (metadata, analysis, proposals + execution log, tracklists → versions → tracks → discogs links, tag-write log, file companions, files), scoped strictly to that batch. Provider source observations and selection events retain their evidence history: deleting a source file clears its optional source binding, while recording-bound candidates and current selections follow their file foreign keys (`models/provider_source.py`). A `running` scan or the `live` watcher sentinel is never deleted. It does **not** return 409: the endpoint answers **200** (`response_shape.RENDERABLE_ALERT_STATUS`) and swaps in the refreshed table carrying an `alert_message` — "Cannot delete a running scan; wait for it to complete or fail." or "The live watcher batch cannot be deleted." (an already-gone batch likewise renders "That scan is already gone — table refreshed."). This is deliberate and is contract rule 3 in `routers/response_shape.py`: htmx 2.x's default `responseHandling` does not swap 4xx/5xx bodies, so a 409 here would fetch the `role="alert"` markup and then discard it — the operator would see the spinner flash and no indication the delete was refused. The error semantics live in the BODY, not the status line. This is not a general "errors are 200" rule: an unparseable request is still 422 (`request_guards.MALFORMED_PAYLOAD_STATUS`). On success the endpoint returns the re-rendered Recent Scans table for an HTMX `outerHTML` swap into `#recent-scans`.
 
 ## Proposals (`/proposals`)
 
@@ -184,8 +194,8 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 > **Removed:** `PATCH /proposals/bulk-approve-high-confidence`. The
 > server-predicate bulk approve (confidence ≥ 0.9) lost its only two callers when the review selection change /
 > ADR-0008 (changes review approval boundary) consolidated the Rename and Move workspaces into Changes Review, which bulk-approves a
-> reviewed *selection* through `/proposals/bulk` instead. the approval boundary verification re-verified the whole chain
-> was unreachable from any template and deferred the call; this bead made it. The route, its
+> reviewed *selection* through `/proposals/bulk` instead. The old route had no remaining template caller
+> and was removed with its obsolete helpers. The route, its
 > `_BULK_HIGH_CONFIDENCE_TARGETS` map, the OOB row branch,
 > `_bulk_approve_high_confidence_response.html` and the `approve_pending_above_confidence` service
 > function are all gone. phaze is a single-user admin tool on a private network with no external API
@@ -196,7 +206,7 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 
 | Method | Path                              | Description                          |
 |--------|-----------------------------------|--------------------------------------|
-| POST   | `/execution/start`                | Start batch execution (copy-verify-delete) |
+| POST   | `/execution/start`                | Run approved guarded filesystem moves |
 | GET    | `/execution/progress/{batch_id}`  | SSE stream with real-time progress   |
 | GET    | `/execution/agents-table`         | Per-agent execution table re-sorted by a header-chosen column (`?batch_id=&sort=&order=`, HTMX partial) |
 | GET    | `/audit/`                         | Audit log (HTML, filterable)         |
@@ -250,10 +260,8 @@ The page is the shell workspace `/s/junk`; these routes are its excerpt fragment
 
 **Approve, then run.** Approving only marks a group approved; the separate `quarantine` action is the
 only caller of `services/junk_quarantine.enqueue_quarantine`, and it dispatches only approved copies.
-Once a copy is handed to quarantine it can no longer be undone. Operator decision 2026-10-07
-(dispatch session, AskUserQuestion), recorded as a comment on bead `phaze-l1j35`: asked how approve
-and undo should work given that approval queued the moves immediately, the operator chose "Approve,
-then a separate Run step (Recommended)".
+Undo returns approved-but-not-run copies to pending; once a copy is executing it can no longer
+be undone. The [`junk-review routes`](../src/phaze/routers/junk_review.py) enforce this boundary.
 
 **Every action carries the card's review token**, the tags review's optimistic-concurrency
 pattern: the route recomputes a digest of the group's live `companion_junk_review` rows and answers
@@ -327,7 +335,13 @@ Operator-facing liveness page for registered worker agents. Read-only; these end
 
 ## SAQ Monitoring UI (`/saq`)
 
-SAQ's built-in queue-monitoring dashboard, mounted into the `phaze-api` app at the `/saq` subpath (not the standalone `saq --web` server, no extra bound port). It is wired up during app startup and reuses the lifespan-created SAQ `PostgresQueue` instances — the named **controller** queue plus, for each non-revoked `kind="fileserver"` agent, its three lane queues (analyze/meta/io) and its legacy base queue — so it opens no extra broker connections beyond opening those queues' psycopg pools. Kueue-routed `kind="compute"` agents bypass SAQ entirely and are not mounted. The Pipeline Dashboard links to it via a **Queue Monitor ↗** link in the page header.
+SAQ's built-in queue-monitoring dashboard is mounted in the API at `/saq`, with no separate
+web-server port. It uses the controller queue and opens the three lane queues plus legacy base
+queue for each non-revoked `kind=fileserver` agent. The dashboard does not list compute-agent
+queues; this selection does not mean long-lived compute workers bypass the Postgres SAQ broker.
+One-shot Kueue pods are the separate worker-free execution path. Each opened queue owns its
+configured psycopg pool; cached handles are disconnected at application shutdown. See the
+[architecture queue boundary](architecture.md) for the application/broker split.
 
 The mount is gated by `PHAZE_ENABLE_SAQ_UI` (default on; see [configuration.md](configuration.md)). When disabled, no `/saq` route is registered.
 
@@ -339,7 +353,7 @@ The mount is gated by `PHAZE_ENABLE_SAQ_UI` (default on; see [configuration.md](
 
 ## Distributed Agent API (`/api/internal/agent`)
 
-These endpoints form the HTTP contract used by remote worker agents. They back the distributed-execution work added in HTTP agent worker / agent security (HTTP-backed agent worker, watcher service, and distributed execution dispatch): a remote agent walks the filesystem and analyzes audio, and reports results back to the central server over this API rather than touching the database directly.
+These endpoints form the HTTP contract used by remote worker agents. They back the distributed-execution work added in HTTP agent worker / agent security (HTTP-backed agent worker, watcher service, and distributed execution dispatch): a remote agent walks the filesystem and analyzes audio, and reports results back to the central server over this API rather than opening application ORM sessions. Long-lived workers independently connect to the Postgres SAQ broker; one-shot Kueue pods do not run a SAQ worker.
 
 **Authentication:** Every endpoint in this section requires a per-agent bearer token. Send it in the `Authorization` header:
 
@@ -353,14 +367,14 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 |--------|-------------------------------------------------------|----------------------------------------------------------------------------|
 | GET    | `/api/internal/agent/whoami`                          | Agent identity probe (returns the calling agent's identity)                 |
 | POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content). `HeartbeatRequest` may carry an optional `effective_config` (the agent's own resolved reloadable-config snapshot, agent effective configuration) |
-| GET    | `/api/internal/agent/config`                          | The DB-override layer for reloadable keys only (not per-agent); polled on the heartbeat cadence and reloaded locally only when the digest changes (agent effective configuration, ADR-0019 (runtime config hot-reload) §14) |
+| GET    | `/api/internal/agent/config`                          | DB overrides for reloadable keys (not per-agent), with a content digest; current clients request typed values with `X-Phaze-Config-Version: 2`, while absent/version-1 requests retain the legacy key envelope |
 | POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per manual pipeline advancement) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
 | POST   | `/api/internal/agent/metadata/{file_id}/failed`       | Terminal-ack for a retries-exhausted `extract_file_metadata` run (clears the ledger row) |
 | PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent analysis/window upsert; also derives and stores the migration-`063` set projection |
 | POST   | `/api/internal/agent/analysis/{file_id}/progress`     | Counter-only mid-flight progress upsert (fine-window counts; no completion side effects) |
-| POST   | `/api/internal/agent/analysis/{file_id}/failed`       | Mark a file's analysis terminally failed (`ANALYSIS_FAILED`)                |
-| PATCH  | `/api/internal/agent/proposals/{proposal_id}/state`   | Joint Proposal + FileRecord state transition in one transaction            |
+| POST   | `/api/internal/agent/analysis/{file_id}/failed`       | Record terminal analysis failure in `analysis.failed_at` (derived stage status)                |
+| PATCH  | `/api/internal/agent/proposals/{proposal_id}/state`   | Proposal-status transition and optional `FileRecord.current_path` update in one transaction; no stored file-state cascade            |
 | POST   | `/api/internal/agent/execution-log`                   | Create an execution-log (audit-trail) row; agent supplies the row `id`      |
 | PATCH  | `/api/internal/agent/execution-log/{execution_log_id}`| Update an existing execution-log row                                        |
 | POST   | `/api/internal/agent/exec-batches/{batch_id}/progress`| Report a per-proposal terminal-state event for an execution batch           |
@@ -369,3 +383,9 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued`  |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`**  |
 | PATCH  | `/api/internal/agent/junk-quarantine/{review_id}`     | Outcome of an on-agent junk quarantine move: `quarantined` marks the `executing` review row and retires the moved file's `files` row, `failed` records the agent's reason; only the owning agent's rows, idempotent  |
+
+Long-lived workers poll the config endpoint with their heartbeat cadence; heartbeat-disabled
+workers and the watcher have independent config polling. A rejected or failed fetch retains
+last-good policy. One-shot Kueue jobs fetch once at startup before work and do not start a
+worker heartbeat loop. `tasks/heartbeat.py`, `agent_watcher/__main__.py` and `job_runner.py` own
+these distinct schedules; the shared `runtime_config_agent.py` helper owns validation/reload.

@@ -1,0 +1,35 @@
+{
+  "css_source": "https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap",
+  "fonts": [
+    {
+      "family": "Inter",
+      "file": "inter-400.woff2",
+      "sha256": "c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4",
+      "source": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2",
+      "weight": 400
+    },
+    {
+      "family": "Inter",
+      "file": "inter-600.woff2",
+      "sha256": "c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4",
+      "source": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2",
+      "weight": 600
+    },
+    {
+      "family": "Jura",
+      "file": "jura-300.woff2",
+      "sha256": "dcb4e5401409219aafd399def1f7077059722f83391e062cb38ade16e96b1d71",
+      "source": "https://fonts.gstatic.com/s/jura/v34/z7NbdRfiaC4VXcRJUQZA3Jw.woff2",
+      "weight": 300
+    },
+    {
+      "family": "Jura",
+      "file": "jura-500.woff2",
+      "sha256": "dcb4e5401409219aafd399def1f7077059722f83391e062cb38ade16e96b1d71",
+      "source": "https://fonts.gstatic.com/s/jura/v34/z7NbdRfiaC4VXcRJUQZA3Jw.woff2",
+      "weight": 500
+    }
+  ],
+  "license": "SIL Open Font License 1.1",
+  "subset": "latin"
+}

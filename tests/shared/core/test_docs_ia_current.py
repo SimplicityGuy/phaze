@@ -1,7 +1,7 @@
 """Present-tense integrity guards for maintained architecture and UI documentation.
 
 These filesystem-only tests keep maintained docs aligned with the live package inventory,
-migration head, import boundaries, ``process_file`` policy, and source-cited Mermaid diagrams.
+migration head, import boundaries, ``process_file`` policy, and source-cited diagram assets.
 They follow the prose-guard pattern in ``tests/shared/core/test_dead_template_guard.py`` and
 ``tests/shared/core/test_base_html_sri.py`` and remain in the fast, fixture-free lane.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 from functools import cache
-from itertools import chain
 from pathlib import Path
 import re
 
@@ -42,9 +41,6 @@ _MAINTAINED_ARCHITECTURE_DOCS: tuple[Path, ...] = (
 )
 _PACKAGE_AREAS: tuple[str, ...] = ("agent_watcher", "cli", "enums", "models", "routers", "schemas", "services", "tasks", "telemetry", "utils", "web")
 _BOX_DRAWING = frozenset("┌┐└┘├┤┬┴┼│─")
-_MERMAID_BLOCK = re.compile(r"```mermaid\n(?P<body>.*?)\n```", re.DOTALL)
-_MERMAID_EDGE = re.compile(r"(?m)^(?!\s*%%)(?P<edge>\s*[^\n]*--[^\n]*)$")
-_EVIDENCED_MERMAID_EDGE = re.compile(r"(?m)^\s*%% evidence:\s*(?P<paths>[^\n]+)\n(?P<edge>\s*(?!%%)[^\n]*--[^\n]*)$")
 # phaze-mvq8z.12: the "### Reloadable keys" table in docs/configuration.md, up to the next
 # heading. A markdown table row whose first cell is a backtick-quoted key, e.g.
 # "| `log_level` | ... |".
@@ -91,23 +87,6 @@ def _read_text(path: Path) -> str:
 
 def _box_drawing_symbols(path: Path) -> list[str]:
     return sorted(set(_read_text(path)) & _BOX_DRAWING)
-
-
-def _evidence_claims_for_block(doc: Path, body: str) -> tuple[tuple[Path, tuple[str, ...]], ...]:
-    matches = tuple(_EVIDENCED_MERMAID_EDGE.finditer(body))
-    assert len(matches) == len(_MERMAID_EDGE.findall(body)), f"{doc.name} Mermaid edge lacks an immediately preceding evidence citation"
-    return tuple((doc, tuple(path.strip() for path in match.group("paths").split(";"))) for match in matches)
-
-
-def _mermaid_evidence_claims(doc: Path) -> tuple[tuple[Path, tuple[str, ...]], ...]:
-    bodies = tuple(match.group("body") for match in _MERMAID_BLOCK.finditer(_read_text(doc)))
-    evidenced_bodies = (body for body in bodies if "%% evidence:" in body)
-    return tuple(chain.from_iterable(_evidence_claims_for_block(doc, body) for body in evidenced_bodies))
-
-
-def _missing_evidence_paths(claims: tuple[tuple[Path, tuple[str, ...]], ...]) -> tuple[str, ...]:
-    paths = chain.from_iterable(paths for _, paths in claims)
-    return tuple(path for path in paths if not (_REPO_ROOT / path).is_file())
 
 
 def _is_model_import(node: ast.AST) -> bool:
@@ -159,7 +138,7 @@ def test_project_structure_maps_shell_templates() -> None:
 
 
 def test_maintained_architecture_docs_have_no_box_drawing_diagrams() -> None:
-    """Maintained architecture is renderable Mermaid/tables, never a stale hand-drawn tree."""
+    """Maintained architecture is renderable SVG/tables, never a stale hand-drawn tree."""
     symbols = {doc.name: _box_drawing_symbols(doc) for doc in _MAINTAINED_ARCHITECTURE_DOCS}
     offenders = {name: found for name, found in symbols.items() if found}
     assert not offenders, f"maintained docs contain box-drawing architecture: {offenders}"
@@ -169,6 +148,8 @@ def test_project_structure_generated_inventory_matches_live_packages() -> None:
     """The concise package table is generated from the live recursive Python-file counts."""
     text = _read_text(_PROJECT_STRUCTURE)
     package_root = _REPO_ROOT / "src" / "phaze"
+    root_count = sum(1 for _ in package_root.glob("*.py"))
+    assert f"{root_count} Python modules live directly under `src/phaze/`" in text
     for area in _PACKAGE_AREAS:
         count = sum(1 for _ in (package_root / area).rglob("*.py"))
         assert f"| `{area}/` | {count} |" in text, f"project inventory is stale for src/phaze/{area}: expected {count} Python files"
@@ -205,13 +186,13 @@ def test_configuration_reloadable_keys_table_matches_the_code_exactly() -> None:
     )
 
 
-def test_documented_mermaid_claims_have_resolvable_live_evidence() -> None:
-    """Every maintained Mermaid dependency line added here cites existing source paths."""
-    docs = (_ARCHITECTURE, _DATABASE, _PROJECT_STRUCTURE)
-    claims = tuple(chain.from_iterable(_mermaid_evidence_claims(doc) for doc in docs))
-    missing = _missing_evidence_paths(claims)
-    assert not missing, f"maintained Mermaid diagrams cite missing source evidence: {missing}"
-    assert len(claims) >= 30, "too few source-backed Mermaid dependency claims were checked"
+def test_documented_diagram_claims_have_resolvable_live_evidence() -> None:
+    """Every diagram edge cites source and every original relation has a disposition."""
+    from scripts.check_diagram_assets import check_diagram_assets
+
+    report = check_diagram_assets(_REPO_ROOT)
+    assert report["errors"] == []
+    assert report["relationships"] > 0
 
 
 def test_database_reference_tracks_migration_head_and_set_profile_relationship() -> None:
@@ -221,6 +202,15 @@ def test_database_reference_tracks_migration_head_and_set_profile_relationship()
     assert heads == {"092"}
     assert "head, **`092`**" in text
     assert "| `set_profile`" in text
+
+    from phaze.models.base import Base
+
+    schema_section = text.split("## Schema", 1)[1].split("\n### ", 1)[0]
+    documented_tables = set(re.findall(r"^\| `([^`]+)`\s*\|", schema_section, re.M))
+    assert documented_tables == set(Base.metadata.tables)
+    table_count = len(Base.metadata.tables)
+    foreign_key_count = sum(len(table.foreign_keys) for table in Base.metadata.tables.values())
+    assert f"**{table_count} tables\nand {foreign_key_count} foreign keys**" in text
 
     from phaze.models.file import FileRecord
     from phaze.models.set_profile import SetProfile

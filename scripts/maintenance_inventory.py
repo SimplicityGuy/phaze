@@ -118,7 +118,7 @@ def is_documentation_surface(path: str) -> bool:
     return (
         path.startswith((".planning/", "design/", "docs/"))
         or pure.suffix in _PROSE_SUFFIXES
-        or path in {"LICENSE", "alembic/README"}
+        or path in {"LICENSE", "alembic/README", "scripts/vendor/diagram_design/LICENSE"}
         or path.startswith(".env.example")
     )
 

@@ -8,15 +8,10 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import html
 import json
-import os
 from pathlib import Path
 import re
-import shutil
-import signal
 import subprocess  # nosec B404 -- fixed local tooling and repository reads only
 import sys
-import tempfile
-import time
 from typing import TYPE_CHECKING, NamedTuple, cast
 from urllib.parse import unquote, urldefrag, urlsplit
 
@@ -33,12 +28,10 @@ if str(REPO_ROOT) not in sys.path:
 
 # isort: off
 from scripts.audit_historical_evidence import forbidden_identifiers, link_targets, mermaid_blocks  # noqa: E402
+from scripts.check_diagram_assets import check_diagram_assets  # noqa: E402
 from scripts.maintenance_inventory import documentation_class, is_documentation_surface  # noqa: E402
 # isort: on
 
-MERMAID_CLI_VERSION = "11.12.0"
-_RENDER_EXIT_GRACE_SECONDS = 2.0
-_RENDER_TIMEOUT_SECONDS = 60.0
 _GENERATOR_MARKER = re.compile(r"^<!-- generated-by:\s*([^>]+?)\s*-->$", re.MULTILINE)
 _HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _HTML_ANCHOR = re.compile(r"<[^>]+\b(?:id|name)=[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE)
@@ -47,10 +40,6 @@ _MARKDOWN_LINK_LABEL = re.compile(r"!?\[([^]]+)]\([^)]*\)")
 _MARKDOWN_DECORATION = re.compile(r"[`*~]")
 _MIGRATION_CLAIM = re.compile(r"\bhead,\s+\*\*`([^`]+)`\*\*", re.IGNORECASE)
 _TEXT_SUFFIXES = frozenset({".adoc", ".md", ".mdx", ".rst", ".txt"})
-_CHROME_CANDIDATES = (
-    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-)
 
 
 class LinkResolution(NamedTuple):
@@ -59,37 +48,6 @@ class LinkResolution(NamedTuple):
     kind: str
     path: Path | None
     fragment: str
-
-
-class MermaidSource(NamedTuple):
-    """One maintained Mermaid body and its source location."""
-
-    path: str
-    lineno: int
-    body: str
-
-
-class MermaidRenderResult(NamedTuple):
-    """The outcome of one real Mermaid renderer process."""
-
-    error: str | None
-    terminated_after_render: bool
-
-
-class MermaidRenderReport(NamedTuple):
-    """All renderer failures and explicit forced-cleanup locations."""
-
-    errors: tuple[str, ...]
-    terminated_after_render: tuple[str, ...]
-
-
-class MermaidProcessOutcome(NamedTuple):
-    """Renderer lifecycle facts needed to classify one process result."""
-
-    timed_out: bool
-    stopped_after_complete: bool
-    cleaned_lingering_group: bool
-    cleanup_error: str | None
 
 
 class CheckedLink(NamedTuple):
@@ -367,167 +325,13 @@ def _forbidden_errors(maintained: Sequence[str], texts: Mapping[str, str]) -> tu
     return tuple(sorted(errors))
 
 
-def _mermaid_sources(maintained: Sequence[str], texts: Mapping[str, str]) -> tuple[tuple[MermaidSource, ...], tuple[str, ...]]:
-    sources: list[MermaidSource] = []
+def _mermaid_sources(maintained: Sequence[str], texts: Mapping[str, str]) -> tuple[str, ...]:
     errors: list[str] = []
     for path in maintained:
-        if not path.endswith((".md", ".mdx")):
-            continue
-        for block in mermaid_blocks(texts[path]):
-            if not block.closed:
-                errors.append(f"{path}:{block.lineno}: unclosed Mermaid fence")
-            else:
-                sources.append(MermaidSource(path, block.lineno, block.body))
-    return tuple(sources), tuple(errors)
-
-
-def _chrome_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    if environment.get("PUPPETEER_EXECUTABLE_PATH"):
-        return environment
-    for candidate in _CHROME_CANDIDATES:
-        if candidate.is_file():
-            environment["PUPPETEER_EXECUTABLE_PATH"] = str(candidate)
-            return environment
-    for executable in ("google-chrome", "chromium", "chromium-browser"):
-        if found := shutil.which(executable):
-            environment["PUPPETEER_EXECUTABLE_PATH"] = found
-            break
-    return environment
-
-
-def _renderer_command(renderer: str | None) -> tuple[str, ...]:
-    if renderer is not None:
-        return (renderer,)
-    npx = shutil.which("npx")
-    if npx is None:
-        raise RuntimeError("npx is required to run the pinned Mermaid CLI")
-    return (npx, "--yes", f"@mermaid-js/mermaid-cli@{MERMAID_CLI_VERSION}")
-
-
-def _complete_svg(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    contents = path.read_text(encoding="utf-8")
-    return "<svg" in contents and "</svg>" in contents
-
-
-def _process_group_exists(group_id: int) -> bool:
-    try:
-        os.killpg(group_id, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _stop_renderer(process: subprocess.Popen[str]) -> str | None:
-    """Stop the renderer and its browser after the complete output is durable."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return None
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
-    deadline = time.monotonic() + 5
-    while _process_group_exists(process.pid):
-        if time.monotonic() >= deadline:
-            return "renderer process group remained alive after termination"
-        time.sleep(0.05)
-    return None
-
-
-def _wait_for_renderer(process: subprocess.Popen[str], output_path: Path) -> MermaidProcessOutcome:
-    """Wait for a complete SVG or a bounded renderer failure."""
-    deadline = time.monotonic() + _RENDER_TIMEOUT_SECONDS
-    exit_grace_deadline: float | None = None
-    while process.poll() is None:
-        now = time.monotonic()
-        complete = _complete_svg(output_path)
-        if complete:
-            if exit_grace_deadline is None:
-                exit_grace_deadline = now + _RENDER_EXIT_GRACE_SECONDS
-            elif now >= exit_grace_deadline:
-                return MermaidProcessOutcome(False, True, False, _stop_renderer(process))
-        elif now >= deadline:
-            return MermaidProcessOutcome(True, False, False, _stop_renderer(process))
-        time.sleep(0.1)
-
-    cleaned_lingering_group = _process_group_exists(process.pid)
-    cleanup_error = _stop_renderer(process) if cleaned_lingering_group else None
-    return MermaidProcessOutcome(False, False, cleaned_lingering_group, cleanup_error)
-
-
-def _diagnostic(stderr: str, stdout: str, fallback: str) -> str:
-    for candidate in (stderr.strip(), stdout.strip(), fallback):
-        if candidate:
-            return candidate
-    return fallback
-
-
-def _unexpected_exit(process: subprocess.Popen[str], outcome: MermaidProcessOutcome) -> bool:
-    return not outcome.stopped_after_complete and process.returncode != 0
-
-
-def _classify_renderer_result(
-    source: MermaidSource,
-    process: subprocess.Popen[str],
-    output_path: Path,
-    outcome: MermaidProcessOutcome,
-) -> MermaidRenderResult:
-    stdout, stderr = process.communicate()
-    if outcome.cleanup_error:
-        return MermaidRenderResult(f"{source.path}:{source.lineno}: {outcome.cleanup_error}", False)
-    if outcome.timed_out:
-        detail = _diagnostic(stderr, stdout, f"timed out after {_RENDER_TIMEOUT_SECONDS:g} seconds")
-        return MermaidRenderResult(f"{source.path}:{source.lineno}: Mermaid renderer failed: {detail}", False)
-    if _unexpected_exit(process, outcome):
-        detail = _diagnostic(stderr, stdout, f"exit {process.returncode}")
-        return MermaidRenderResult(f"{source.path}:{source.lineno}: Mermaid renderer failed: {detail}", False)
-    if not _complete_svg(output_path):
-        return MermaidRenderResult(f"{source.path}:{source.lineno}: Mermaid renderer produced no complete SVG", False)
-    terminated_after_render = outcome.stopped_after_complete
-    if outcome.cleaned_lingering_group:
-        terminated_after_render = True
-    return MermaidRenderResult(None, terminated_after_render)
-
-
-def _render_source(source: MermaidSource, command: Sequence[str], directory: Path) -> MermaidRenderResult:
-    stem = f"{Path(source.path).stem}-{source.lineno}"
-    input_path = directory / f"{stem}.mmd"
-    output_path = directory / f"{stem}.svg"
-    input_path.write_text(source.body, encoding="utf-8")
-    try:
-        process = subprocess.Popen(  # noqa: S603  # nosec B603 -- explicit renderer path or pinned npx package
-            [*command, "-i", str(input_path), "-o", str(output_path)],
-            start_new_session=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=_chrome_environment(),
-            text=True,
-        )
-    except OSError as error:
-        return MermaidRenderResult(f"{source.path}:{source.lineno}: Mermaid renderer failed: {error}", False)
-    return _classify_renderer_result(source, process, output_path, _wait_for_renderer(process, output_path))
-
-
-def render_mermaid_sources(sources: Sequence[MermaidSource], renderer: str | None = None) -> MermaidRenderReport:
-    """Render each block independently to bound Chrome lifecycle and isolate failures."""
-    try:
-        command = _renderer_command(renderer)
-    except RuntimeError as reason:
-        return MermaidRenderReport((str(reason),), ())
-    results: list[tuple[MermaidSource, MermaidRenderResult]] = []
-    with tempfile.TemporaryDirectory(prefix="phaze-mermaid-") as temporary:
-        for source in sources:
-            with tempfile.TemporaryDirectory(prefix="block-", dir=temporary) as block_temporary:
-                results.append((source, _render_source(source, command, Path(block_temporary))))
-    return MermaidRenderReport(
-        tuple(result.error for _, result in results if result.error is not None),
-        tuple(f"{source.path}:{source.lineno}" for source, result in results if result.terminated_after_render),
-    )
+        if path.endswith((".md", ".mdx")):
+            for block in mermaid_blocks(texts[path]):
+                errors.append(f"{path}:{block.lineno}: maintained Mermaid fence must use a source-cited diagram asset")
+    return tuple(errors)
 
 
 def _check_external_url(target: str) -> str | None:
@@ -569,8 +373,6 @@ def check_external_targets(
 def check_documentation(
     root: Path = REPO_ROOT,
     *,
-    render_mermaid: bool = False,
-    renderer: str | None = None,
     check_external: bool = False,
     external_checker: Callable[[str], str | None] = _check_external_url,
 ) -> dict[str, object]:
@@ -580,8 +382,7 @@ def check_documentation(
     generated = _generated_paths(texts)
     maintained = _maintained_paths(paths, generated)
     local_count, local_errors, external_targets = _local_link_errors(root, maintained, texts)
-    mermaid_sources, mermaid_structure_errors = _mermaid_sources(maintained, texts)
-    mermaid_render_report = render_mermaid_sources(mermaid_sources, renderer) if render_mermaid else MermaidRenderReport((), ())
+    diagram_report = check_diagram_assets(root)
     errors = tuple(
         sorted(
             (
@@ -590,6 +391,8 @@ def check_documentation(
                 *_migration_errors(root),
                 *_forbidden_errors(maintained, texts),
                 *local_errors,
+                *_mermaid_sources(maintained, texts),
+                *diagram_report["errors"],
             )
         )
     )
@@ -603,19 +406,14 @@ def check_documentation(
         "external_errors": list(external_errors),
         "generator_markers": len(generated),
         "migration_heads": sorted(migration_heads(root)),
-        "mermaid_blocks": len(mermaid_sources),
-        "mermaid_cli_version": MERMAID_CLI_VERSION,
-        "mermaid_rendered": len(mermaid_sources) - len(mermaid_render_report.errors) if render_mermaid else 0,
-        "mermaid_terminated_after_render": list(mermaid_render_report.terminated_after_render),
-        "mermaid_errors": sorted((*mermaid_structure_errors, *mermaid_render_report.errors)),
+        "diagrams": diagram_report["diagrams"],
+        "diagram_relationships": diagram_report["relationships"],
         "errors": list(errors),
     }
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--render-mermaid", action="store_true", help="render every maintained Mermaid block with the pinned real renderer")
-    parser.add_argument("--mermaid-cli", help="path to an existing mmdc executable (default: pinned package through npx)")
     parser.add_argument("--check-external", action="store_true", help="check external HTTP links separately from deterministic local checks")
     return parser.parse_args(argv)
 
@@ -623,12 +421,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     report = check_documentation(
-        render_mermaid=args.render_mermaid,
-        renderer=args.mermaid_cli,
         check_external=args.check_external,
     )
     print(json.dumps(report, indent=2, sort_keys=True))  # noqa: T201
-    if report["errors"] or report["mermaid_errors"]:
+    if report["errors"]:
         return 1
     return 2 if report["external_errors"] else 0
 

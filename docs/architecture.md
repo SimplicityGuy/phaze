@@ -24,7 +24,7 @@ end-to-end flow is:
    proposal, validated by Pydantic and stored as a `RenameProposal`.
 5. **Review** — every proposal is queued for human review in the web UI; nothing proceeds
    without an explicit approve/reject.
-6. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
+6. **Execute** — approved proposals run through a **guarded publish → verify (SHA-256) → unlink**
    protocol with a write-ahead audit log.
 
 > Audio fingerprinting (two engines: audfprint landmark + Panako tempo-robust) was a stage
@@ -40,7 +40,7 @@ The system is layered and asynchronous: a FastAPI application server owns the da
 the UI, while CPU- and disk-bound work runs in SAQ workers backed by a **Postgres-broker
 queue** (`PostgresQueue`, since Postgres broker migration — Redis is cache/rate-limit/exec-progress only). As
 of v4.0, that worker tier can be **distributed** across remote file-server hosts that reach
-the application server only over an authenticated HTTP boundary.
+the application server over authenticated HTTP for application data and separately over Postgres for the SAQ broker.
 
 ## 📐 Service Architecture
 
@@ -51,39 +51,11 @@ a filesystem watcher — with **no database of its own**.
 
 Every dependency line in this maintained diagram carries an `evidence:` comment naming the live
 source that establishes it. `tests/shared/core/test_docs_ia_current.py` resolves those paths and
-checks the import claims; Mermaid CLI rendering is part of this document's focused validation.
+checks the import claims; The diagram manifest records those citations, and browser rendering is part of documentation validation.
 
-```mermaid
-flowchart LR
-    %% evidence: src/phaze/templates/shell/shell.html; src/phaze/main.py
-    browser["Browser UI"] --> api["FastAPI routers<br/>UI + internal agent API"]
-    %% evidence: src/phaze/routers/record.py; src/phaze/database.py
-    api --> orm["SQLAlchemy application ORM"]
-    %% evidence: src/phaze/models/__init__.py; alembic/versions/063_set_projection.py
-    orm --> appdb[("Postgres application tables")]
-    %% evidence: src/phaze/services/agent_task_router.py; src/phaze/tasks/_shared/queue_factory.py
-    api --> broker["SAQ PostgresQueue"]
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/_shared/queue_factory.py
-    controller["Controller worker"] --> broker
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/database.py
-    controller --> orm
-    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/_shared/queue_factory.py
-    agent["Agent lane worker"] --> broker
-    %% evidence: src/phaze/tasks/functions.py; src/phaze/services/agent_client.py
-    agent --> api
-    %% evidence: src/phaze/agent_watcher/poster.py; src/phaze/services/agent_client.py
-    watcher["Filesystem watcher"] --> api
-    %% evidence: src/phaze/tasks/functions.py; src/phaze/services/analysis_exec.py; src/phaze/analysis_child.py
-    agent --> child["Per-file analysis child"]
-    %% evidence: src/phaze/services/pipeline_counters.py; src/phaze/tasks/_shared/queue_factory.py
-    api --> redis[("Redis cache and progress")]
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/_shared/queue_factory.py
-    controller --> redis
-    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/_shared/queue_factory.py
-    agent --> redis
-    %% evidence: src/phaze/tasks/_shared/queue_factory.py; src/phaze/services/stage_control.py
-    broker --> jobs[("saq_jobs")]
-```
+![Service Architecture](diagrams/architecture-1.png)
+
+[Open the interactive-size HTML](diagrams/architecture-1.html) · [Download SVG](diagrams/architecture-1.svg)
 
 | Service | Port | Role | Application ORM | SAQ broker | Entry point |
 | ------- | ---- | ---- | --------------- | ---------- | ----------- |
@@ -100,6 +72,13 @@ transitively import `phaze.database`, `phaze.models`, or SQLAlchemy at runtime. 
 write application state through `/api/internal/agent/*`, while the worker separately connects to
 the SAQ broker through `PHAZE_QUEUE_URL` and SAQ's psycopg-backed `PostgresQueue`. The subprocess
 guards in `tests/shared/core/test_task_split.py` enforce the ORM-free import surface.
+
+Queue construction supplies psycopg with the configured pool bounds and `open=False` before
+SAQ can open connections; SAQ owns the normal pool lifecycle. Factory defaults are one to four
+connections, while control-side dispatch queues normally use configured zero-to-two bounds.
+These are per-pool limits: cached agent/lane handles, controller and SQLAlchemy pools, and each
+application process contribute separately to deployment connection demand. The router closes
+its cached handles at shutdown; it does not evict distinct agent identities during normal use.
 
 ## 🔄 File-Processing Pipeline
 
@@ -122,17 +101,9 @@ one of five **statuses** (`Status` StrEnum) under the precedence ladder
 `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started` — the durable `SchedulingLedger` is the
 authoritative `in_flight` source (guarding the 2026-06-18 over-enqueue class).
 
-```mermaid
-flowchart TD
-    DISC[discovered] --> META[metadata: mutagen]
-    META --> AN[analyze: essentia]
-    META -.long file, cloud/compute routed.-> CLOUD[(cloud_job sidecar)]
-    CLOUD --> AN
-    AN --> PROP[propose: LLM via litellm]
-    PROP --> REV[review: human approve / reject]
-    PROP -.duplicate.-> DUP[(dedup_resolution)]
-    REV --> APPLY[apply: copy-verify-delete]
-```
+![File-Processing Pipeline](diagrams/architecture-2.png)
+
+[Open the interactive-size HTML](diagrams/architecture-2.html) · [Download SVG](diagrams/architecture-2.svg)
 
 The long-file cloud-burst / tiered-drain detour off `analyze` is **not** a set of file-state
 members anymore — it is tracked by the standalone `cloud_job` sidecar row, whose
@@ -180,9 +151,8 @@ Tracing one music file from disk to a finished move:
    `done` is derived on read from the existence of the `proposals` row itself.
 5. **Human review.** Proposals appear at `GET /proposals/` (`routers/proposals.py`) for
    approve/reject — see the [Approval Pipeline](#-approval-pipeline) below.
-6. **Execution.** Approved proposals run copy-verify-delete on the owning agent
-   (`tasks/execution.py::execute_approved_batch`), writing a write-ahead `ExecutionLog`
-   entry before each operation.
+6. **Execution.** Approved proposals run guarded filesystem execution on the owning agent (same-filesystem hard-link publication or bounded cross-filesystem copy, followed by verification before source unlink)
+   (`tasks/execution.py::execute_approved_batch`), attempting a start `ExecutionLog` record per proposal and reporting its terminal outcome.
 
 ## ✅ Approval Pipeline
 
@@ -197,24 +167,26 @@ copies, renames, or deletes a file while a proposal is `PENDING` or `REJECTED`.
   (`ProposalStatus` in `models/proposal.py`). Only `APPROVED` proposals are picked up by
   execution; `get_approved_proposals_grouped_by_agent` (`services/execution_dispatch.py`)
   selects and groups them per owning agent for dispatch.
-- **Safe execution.** The per-agent batch executor `execute_approved_batch`
-  (`tasks/execution.py`) resolves each path through `_resolve_and_check_containment`
-  (containment guard against `..`/symlink escape) and performs three logged steps:
-  1. **COPY** — write the bytes to the destination (parent dirs created on demand); aborts
-     if the destination already exists.
-  2. **VERIFY** — recompute SHA-256 of the source and compare to the supplied hash. On
-     mismatch the operation aborts before the original is touched, and the file is marked
-     `FAILED`.
-  3. **DELETE** — remove the original only after the copy + verification pass; the
-     `FileRecord` then advances (proposal `executed` / file `moved`) with `current_path`
-     updated.
-- **Audit trail.** Every step writes an `ExecutionLog` row **before** running (write-ahead),
-  so a crash leaves a durable `IN_PROGRESS` record. The append-only log is browsable in the
-  execution dashboard.
+- **Safe execution.** `tasks/execution.py` delegates filesystem work to
+  `tasks/execution_filesystem.py`. Source and destination are resolved within allowed roots;
+  path traversal and symlink escapes are rejected. When an expected SHA-256 exists, the source
+  is checked before mutation. A new destination is claimed without overwriting another file.
+  On the same filesystem, publication uses a hard link followed by source unlink (with explicit
+  same-entry/case-only handling). Across filesystems, a bounded temporary copy is fsynced and
+  published, the destination is reverified when a hash is supplied, and the commit marker plus
+  destination-directory durability barrier precede source unlink. Directory fsync is best effort
+  on filesystems that do not support it; file fsync is mandatory. Replay requires corroborating
+  move state or the per-proposal marker rather than treating an arbitrary destination as success.
+- **Audit/reporting.** The task attempts one `ExecutionLog` start record per proposal with
+  `IN_PROGRESS`, then patches its terminal outcome; it does not create a row for every internal
+  copy/verify/delete step. A start-log API failure is logged and execution can proceed; terminal
+  reporting repairs a missing audit row. A committed move whose inventory report is not
+  acknowledged retries reporting with replay protection. An audit row is therefore not a hard
+  prerequisite guaranteeing every mutation was durably logged first.
 
 ## 🧮 Pipeline Determinism & Observability
 
-Every pipeline stage is **operator-triggered** from its DAG-rail stage workspace and made
+Pipeline stage advancement is **operator-triggered** from its DAG-rail workspace; continuation of already persisted cloud, companion or lookup intent is separate. Enqueueing is made
 **idempotent by construction**, so a repeat click or a reboot re-enqueue collapses to a
 no-op instead of doubling work (the lesson of the 2026-06-11 queue-doubling incident).
 
@@ -283,6 +255,46 @@ lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via 
 subtitle and each Recent Scans row a per-agent `→ N unique · M deduped` annotation, both shown only
 when `deduped > 0` and degrade-safe (None / `{}` → hidden).
 
+### Request-scoped display reads
+
+A healthy Summary request supplies its current stage-progress snapshot to the full-document
+rail seed, so its overview and rail use the same read. The seed still reads its other DAG inputs.
+A degraded Summary source leaves the seed free to retry independently; there is no snapshot
+cache across requests, and the five-second poll remains a fresh read. Analyze continues to
+reuse the stats and DAG context it already builds. `routers/shell/summary.py` and
+`routers/shell/store_seed.py` own these request boundaries.
+
+The reporting orphan aggregate guards its existing predicate with a SQL `CASE` on the required
+scheduling intent. Unscheduled files avoid the expensive retry/completion/broker checks;
+eligibility, recovery and displayed bucket definitions retain their existing predicates and
+SAVEPOINT degradation (`services/pipeline/buckets.py`). The
+[dated dashboard experiment](spikes/dashboard-polling-latency.md) records the measured effect
+and remaining shared-count cost; it is not a deployment latency guarantee.
+
+The Files query materializes a bounded ID-only membership CTE before deriving badges and
+history. Membership filters, sorting, offset and the page-plus-sentinel limit share one SQL
+statement and snapshot with the outer derivation. The outer query repeats ordering, and one
+additional bulk profile load remains bounded to those IDs. Stage filters and stage sorting
+still require corpus-wide predicate work; this is not a persisted status cache or a promise
+that every read is proportional only to page size. See the
+[Files workspace contract and dated measurements](performance/files-workspace.md).
+
+### Worker inventory in the shell
+
+The Agents rail subtitle and Agents & Clusters heading share inventory policy from
+`services/worker_inventory.py`: non-revoked agents are visible, including offline ones, except
+compute callback identities that have never heartbeaten. Configured clusters are every non-local
+backend, including idle/offline entries; the legacy unattributed cloud row is not a configured
+cluster. `laneCount` includes local backends. This inventory is separate from `agentOnline` and
+`computeLanesActive`, which describe liveness and activity rather than registration.
+
+Full-document SSR seeds the same values that Alpine renders and the existing five-second
+`/pipeline/stats` poll refreshes through `dag-seed-<storeKey>` OOB targets. The keys
+`visibleAgentCount`/`visibleAgentCountKnown` and `clusterCount`/`clusterCountKnown` distinguish a
+measured zero from an unavailable source; global `seedKnown` also gates first paint. A failed
+source renders “Agents unavailable” or “Clusters unavailable”, never a fabricated inventory zero.
+Rail swaps preserve the shared store and pre-mounted poll targets; no second timer is added.
+
 ### DAG rail & stage workspaces
 
 `_build_dag_context` (`routers/pipeline/dashboard_stats.py`) reconciles three sources per node:
@@ -294,7 +306,7 @@ counters (a degrade backstop via `_reconciled_done`, capped at the node total), 
 is the **left rail** (`templates/shell/partials/rail.html`) — the navigation spine — where
 each node shows its live count (bound to `$store.pipeline`) and clicking a node swaps its
 workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone pipeline
-dashboard page and its single-partial DAG canvas were removed in; the
+dashboard page and its single-partial DAG canvas were removed; the
 underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
 `build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
 `/pipeline/` is a pure 302 redirect into the shell root `/`, which now renders the actionable
@@ -349,49 +361,38 @@ lifespan as `app.state.task_router`.
 - **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **9**
   file-bound functions: `process_file`, `extract_file_metadata`,
   `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`,
-  `read_companion_files` (the three archive-touching operations agent-side file writes /  moved off
-  the fileless api+controller onto the agent that actually mounts the media), `push_file`
+  `read_companion_files`, `capture_companion_source`, `extract_companion_features`,
+  and `quarantine_companion` (archive operations run on the agent that mounts the media), `push_file`
   (SSH file transfer — the fileserver rsync-over-SSH push of a long file to the compute agent's scratch
   dir), and `s3_upload` (S3 staging — the multipart-PUT upload to presigned S3 URLs; registered
   under an explicit `(name, func)` tuple so its SAQ name stays `s3_upload`). With
   `PHAZE_AGENT_LANE` set, the worker registers **only that lane's subset** — `analyze` / `meta` /
   `io` per `LANE_TASKS` (`services/enqueue_router.py`, the single source of truth for
-  task→lane membership); all-mode registers all 9, and the union of the three lanes equals
+  task→lane membership); all-mode registers all 12, and the union of the three lanes equals
   `AGENT_TASKS` (asserted in `tests/shared/core/test_task_split.py`).
   Its startup hook
-  authenticates against the application server, downloads essentia weights if missing, sizes
+  authenticates against the application server, validates pre-provisioned essentia weights without downloading them, sizes
   the per-file analysis
   concurrency semaphore (`analysis_semaphore`, from `worker_process_pool_size` — analysis subprocess
   retired the earlier pebble process pool), and launches the liveness heartbeat as an
   asyncio background task.
 
-### Registration, heartbeat, and liveness
+### Startup identity, heartbeat, and liveness
 
-```mermaid
-sequenceDiagram
-    participant W as Agent Worker
-    participant API as Application Server
-    participant DB as Postgres
-    W->>API: GET /whoami (bearer token, retry up to ~63s)
-    API->>DB: resolve Agent by token_hash
-    API-->>W: AgentIdentity (agent_id, scan_roots)
-    Note over W: assert agent_id == PHAZE_AGENT_QUEUE suffix
-    loop every 30s (asyncio background task)
-        W->>API: POST /api/internal/agent/heartbeat
-        API->>DB: update last_seen_at + last_status
-    end
-    Note over API,DB: admin UI classifies alive / stale / dead
-```
+![Startup identity and heartbeat](diagrams/architecture-3.png)
+
+[Open the interactive-size HTML](diagrams/architecture-3.html) · [Download SVG](diagrams/architecture-3.svg)
 
 - **Bootstrap.** `tasks/agent_worker.startup` calls `whoami_with_retry` with bounded
-  exponential backoff and refuses to start if the token-derived `agent_id` does not match
+  exponential backoff (six sleeps totalling 63 seconds across seven outer calls; each call also has the HTTP client retry/request budget, so 63 seconds is not a wall-clock cap) and refuses to start if the token-derived `agent_id` does not match
   the operator-supplied `PHAZE_AGENT_QUEUE` suffix (anti-misconfiguration guard). For fresh
   dev stacks, `services/agent_bootstrap.ensure_dev_agent` idempotently seeds a `dev-agent`
   row at API startup (gated by `dev_seed_agent`).
 - **HTTP client.** `services/agent_client.py` (`PhazeAgentClient`) wraps a single
   `httpx.AsyncClient` and funnels every call through a tenacity retry loop: 5xx and
-  transient network errors retry three times with exponential jitter, while **4xx is never
-  retried** (auth/validation failures surface immediately). It exposes a 4-class exception
+  transient network errors receive up to three total attempts with exponential jitter, while
+  **4xx is never retried** (auth/validation failures surface immediately). Config polls deliberately
+  use one short-timeout attempt so a failed fetch does not consume the heartbeat budget. It exposes a 4-class exception
   hierarchy (`AgentApiError` base, plus auth / client / server subclasses).
 - **Heartbeat.** `tasks/heartbeat._heartbeat_loop` is an in-process asyncio background task
   (launched in the agent worker `startup` hook, cancelled on `shutdown`) that calls
@@ -461,7 +462,7 @@ in-place on their owning file-server agent as before; only the long-file lane is
 
 Backends are declared in a **`backends.toml`** file (pointed at by `PHAZE_BACKENDS_CONFIG_FILE`,
 default `/etc/phaze/backends.toml`). An absent file means an **implicit local-only** registry
-(one `kind=local` backend, `id=local`, `rank=99`, `cap=1`). The file is a typed `[[backends]]`
+(one `kind=local` backend, `id=local`, `rank=99`, host-derived `cap`). The file is a typed `[[backends]]`
 list discriminated by `kind` — `local | compute | kueue` — each carrying a cost-tier `rank`
 (ascending = preferred first; local sits last at rank 99) and a concurrency `cap`. The registry
 schema (pydantic v2 discriminated union + `[kube]` / `[[buckets]]` tables) lives in
@@ -475,35 +476,9 @@ client and are **failure-isolated** — one unreachable cluster never blocks the
 each backend stages its per-file bytes through its own S3 bucket (`CloudJob` tracks per-file
 staging).
 
-```mermaid
-graph TD
-    CTRL["🎛️ Control Plane<br/>stage_cloud_window · select_backend<br/>submit_cloud_job · reconcile_cloud_jobs"]
-    REG["📄 backends.toml<br/>[[backends]] kind · rank · cap<br/>PHAZE_BACKENDS_CONFIG_FILE"]
-    LOCAL["🏠 LocalBackend<br/>rank 99 · cap N<br/>process_file (on-prem)"]
-    KUE1["☸️ KueueBackend #1<br/>rank r · cap N · own kr8s client"]
-    KUEn["☸️ KueueBackend #N<br/>rank r' · cap N · own kr8s client"]
-    CMP1["🖥️ ComputeAgentBackend<br/>rank r'' · cap N · rsync push"]
-    S3A[("🪣 S3 bucket<br/>per-backend staging")]
-    S3B[("🪣 S3 bucket<br/>per-backend staging")]
+![Backend registry](diagrams/architecture-4.png)
 
-    REG -.resolves.-> CTRL
-    CTRL -->|rank-first dispatch| LOCAL
-    CTRL -->|submit suspended Job| KUE1
-    CTRL -->|submit suspended Job| KUEn
-    CTRL -->|push_file rsync| CMP1
-    KUE1 --> S3A
-    KUEn --> S3A
-    CMP1 --> S3B
-
-    style CTRL fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style REG fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style LOCAL fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style KUE1 fill:#ede7f6,stroke:#311b92,stroke-width:2px
-    style KUEn fill:#ede7f6,stroke:#311b92,stroke-width:2px
-    style CMP1 fill:#fff8e1,stroke:#f57f17,stroke-width:2px
-    style S3A fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style S3B fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-```
+[Open the interactive-size HTML](diagrams/architecture-4.html) · [Download SVG](diagrams/architecture-4.svg)
 
 ### Tiered drain & backend selection
 
@@ -535,30 +510,9 @@ An operator can hard-override the whole subsystem: `POST /pipeline/routing/force
 writes a durable `route_control` row; while set, the **effective** `cloud_enabled` is
 `registry cloud_enabled AND NOT force_local`, so every file routes to the local backend.
 
-```mermaid
-flowchart TD
-    START([held AWAITING_CLOUD file]) --> RANK[take next backend by ascending rank]
-    RANK --> AVAIL{backend available?}
-    AVAIL -->|no| NEXT[skip to next rank]
-    AVAIL -->|yes| SLOT{in_flight < cap?}
-    SLOT -->|yes| PICK[dispatch to this backend]
-    SLOT -->|no, full| MORE{more non-local ranks?}
-    MORE -->|yes| NEXT
-    NEXT --> RANK
-    MORE -->|no| OFFLINE{all non-local offline?}
-    OFFLINE -->|yes| LOCALNOW[spill to local immediately]
-    OFFLINE -->|no, just full| STALE{waited past<br/>cloud_spill_to_local_after_seconds?}
-    STALE -->|yes| LOCALNOW
-    STALE -->|no| HOLD([hold for next tick])
-    PICK --> DONE([backend.dispatch — decrement remaining])
-    LOCALNOW --> DONE
+![Tiered drain & backend selection](diagrams/architecture-5.png)
 
-    style START fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style PICK fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style LOCALNOW fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style HOLD fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style DONE fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-```
+[Open the interactive-size HTML](diagrams/architecture-5.html) · [Download SVG](diagrams/architecture-5.svg)
 
 ## 🪵 Observability / logging
 
@@ -716,7 +670,7 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (9-task registry) + `after_process` completed-counter hook |
+| `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (13-function registry) + `after_process` completed-counter hook |
 | Control settings | `controller.py` | SAQ entry for fileless jobs; on boot runs the gated `recover_orphaned_work` (queue-loss recovery, no-op on a durable restart) — no steady-state auto-advance cron  |
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs; the liveness heartbeat runs as a startup asyncio background task, not a cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
@@ -751,7 +705,7 @@ dated v7 design specifications describe the original cutover, not every later re
 
   Two consolidations produced the grouping above, and both are easy to mis-read from an older
   revision of this file. The Enrich group lost its Fingerprint node and the Identify group its
-  Track-ID node when fingerprint removal removed fingerprinting (2026-07-28). Then the review selection change /
+  Track-ID node when audio fingerprinting was removed (2026-07-28). Then the review selection change /
   ADR-0008 (changes review approval boundary) replaced the three separate Rename / Path, Tag write and Move files nodes with the
   single **Changes Review** destination — the only surface that authorizes filename/destination
   proposals and the separate, reversible tag-write decisions — taking the rail from sixteen

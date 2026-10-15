@@ -236,17 +236,9 @@ sha256 verified before it is made executable (the same discipline as the Tailwin
 The arm64 image is built, parity-checked against an x86 golden, and pushed to GHCR
 **only after parity passes**. A parity-divergent image never reaches the registry.
 
-```mermaid
-flowchart LR
-  build["build-arm64<br/>(native ubuntu-24.04-arm)<br/>single-stage build → 4 spike fixes baked in<br/>load + import-smoke, warm scope=arm64 cache<br/>NO push"]
-  golden["parity-golden-x86<br/>dump_analysis.py in x86 api image<br/>→ golden-x86.json"]
-  guard["parity-guard<br/>rebuild arm64 from cache (identical digest)<br/>dump via python3 → compare vs golden<br/>BPM/key exact · scores within --atol"]
-  push["gated push<br/>push:true + provenance + sbom<br/>-arm64 tags + OCI labels"]
-  build --> guard
-  golden --> guard
-  guard -->|"compare PASS (non-PR)"| push
-  guard -->|"non-zero exit"| fail["build FAILS<br/>divergent image never pushed"]
-```
+![Parity workflow (CLOUDIMG-03) — the gate before publish](diagrams/arm64-agent-image-1.png)
+
+[Open the interactive-size HTML](diagrams/arm64-agent-image-1.html) · [Download SVG](diagrams/arm64-agent-image-1.svg)
 
 | Tool | What it does |
 |------|--------------|
@@ -272,17 +264,17 @@ flowchart LR
    (`load: true`, identical digest), runs the **same** `dump_analysis.py` (via
    `python3`) over `reference.wav`, and compares against the downloaded golden. A
    non-zero `compare_analysis.py` exit **fails the build before the push step runs**, so
-   a divergent image is never pushed (CLOUDIMG-03 / ).
+   a divergent image is never pushed.
 3. **Gated push** (a later step in the same job, `if: github.event_name !=
    'pull_request'`) — pushes the validated image with `push: true`, `provenance: true`,
    `sbom: true`, the same `-arm64` tags **and** the OCI source/revision/version
-   **labels** the x86 image carries (`needs.build-arm64.outputs.labels` — ).
+   **labels** the x86 image carries (`needs.build-arm64.outputs.labels`).
    Reached only when the compare passes.
 
 Because this guard drives **real audio** through the actual `analyze_file`
 (MonoLoader + RhythmExtractor2013 + KeyExtractor + musicnn/vggish/effnet + numpy
 aggregation), a green run is the runtime proof that **fix #4** (dual-OpenMP) holds on
-real workloads — not the spike's `np.sin` ( / CLOUDIMG-01). If it SIGSEGVs
+the exercised real-audio workload; the spike's `np.sin` check alone did not establish that. If it SIGSEGVs
 (faulthandler native stack names `libgomp`/`libomp`), apply the `LD_PRELOAD` fallback
 from fix #4 above.
 
@@ -298,7 +290,7 @@ investigate**, not a tolerance to widen.
 
 The image is published as `ghcr.io/<owner>/phaze:<tag>-arm64` — `latest-arm64` on the
 default branch and `<version>-arm64` (e.g. `2026.8.4-arm64`) on a release tag (via
-`flavor: suffix=-arm64,onlatest=true`). The **cloud agent deployment cloud-agent compose** defaults to
+`flavor: suffix=-arm64,onlatest=true`). The **cloud-agent Compose file** defaults to
 `${PHAZE_IMAGE_TAG:-latest}-arm64` — i.e. **`latest-arm64` unless pinned**
 ([`docker-compose.cloud-agent.yml`](../docker-compose.cloud-agent.yml)). Production should
 **pin a specific `<version>-arm64`** by setting `PHAZE_IMAGE_TAG=2026.8.4` in the A1's `.env`,

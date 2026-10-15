@@ -147,8 +147,9 @@ def _client(bucket: BucketConfig) -> Any:
     default 30s). Botocore's minute-scale defaults plus its retry policy let a wedged/blackholed S3
     endpoint hang a control-side S3 call (complete/abort/delete multipart) for minutes; on the control
     plane those calls run from HTTP staging callbacks, so an unbounded hang pins resources far longer
-    than necessary. ``retries={"max_attempts": 1}`` keeps the worst-case bound at a single
-    connect+read window instead of the default exponential-backoff retry chain. Presigning is a local
+    than necessary. ``retries={"max_attempts": 1}`` permits the initial request plus one SDK retry.
+    These are per-client connect/read limits, not a task wall-clock cap; they are separate
+    from the agent HTTP multipart transfer guards and serialized SAQ job envelope. Presigning is a local
     signing op (no network round-trip), so the timeout only ever bounds the real S3 verbs.
     """
     timeout = current().s3_client_timeout_sec

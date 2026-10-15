@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[3]
 # evidence and instructions for developers, not current product guidance.
 CURRENT_DOCS = (
     "README.md",
+    "src/phaze/agent_watcher/README.md",
     "docs/README.md",
     "docs/multi-compute.md",
     "docs/k8s-burst.md",
@@ -39,6 +40,8 @@ CURRENT_DOCS = (
     "docs/cloud-burst.md",
     "docs/deployment.md",
     "docs/configuration.md",
+    "docs/configuration-inventory.md",
+    "docs/global-tracklist-providers.md",
     "docs/analysis-evaluation-upcloud-runbook.md",
     "docs/agent-queue-lanes.md",
     "docs/arm64-agent-image.md",
@@ -71,10 +74,8 @@ EVIDENCE_TARGET = re.compile(r"\]\([^\n)]*\)|(?:docs/)?(?:spikes|design)/[^\s)`]
 WIRE_TOKEN = re.compile(r"(?<![\w-])X-Phaze-Config-Version(?![\w-])")
 # Exact historical record markers, each scoped to its paragraph rather than exempting a guide.
 HISTORICAL_RECORDS = {
-    "docs/k8s-burst.md": ("Operator decision 2026-09-27 (`AskUserQuestion`)",),
     "docs/telemetry/alerting.md": ("Question as put, with host identifiers replaced by role descriptions",),
     "docs/telemetry/overhead.md": ("Question as put, 2026-08-26",),
-    "docs/api.md": ("dispatch session, AskUserQuestion",),
     "docs/degenerate-audio.md": ("> For phaze-nkucu",),
     "docs/analysis-evaluation.md": ("Question as put",),
 }

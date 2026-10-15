@@ -71,7 +71,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 
 | Document | Purpose |
 | -------- | ------- |
-| **[Architecture Overview](architecture.md)** | 🏛️ System design, data flow, distributed agents, and Mermaid diagrams |
+| **[Architecture Overview](architecture.md)** | 🏛️ System design, data flow, distributed agents, and source-cited HTML/SVG diagrams |
 | **[API Reference](api.md)** | 🔌 REST and HTMX UI endpoints, plus the distributed Agent API |
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Companion Source Capture](operations/companion-capture.md)** | Revision-bound owning-agent text capture and immutable offline observations |
@@ -149,3 +149,10 @@ ______________________________________________________________________
 <div align="center">
 ↩️ Back to the <a href="../README.md">main README</a>
 </div>
+
+## Documentation maintenance
+
+- [Diagram authoring, offline exports and upstream provenance](diagram-authoring.md)
+- [Phaze diagram checker style profile](../scripts/vendor/diagram_design/skills/diagram-design/references/style-guide.md)
+- [Current-design review and per-guide evidence scope](audits/current-design-review.md)
+- [Classified documentation inventory](audits/documentation-inventory.tsv)
