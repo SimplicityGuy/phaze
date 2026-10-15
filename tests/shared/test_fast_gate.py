@@ -129,7 +129,10 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # phaze-5rvda (test_runbook_log_greps.py, which reads tracked docs/runbook.md, joined the floor):
 # 25 modules, 381 passed + the cap test itself failing as expected, 94.68 s pytest / 99.99 s wall
 # on a heavily loaded machine (seat `phaze-5rvda`, direct pytest; the new module itself runs in 0.4 s).
-MAX_DOCS_FLOOR_MODULES = 25
+# phaze-6q6x2: 26 prose-floor modules measured on the isolated operator-copy seat:
+# 390 passed / 3 copy-related guard failures, 95.13 s pytest; failures were repaired, and
+# this cap was the intentional third failure. The new authored-copy module adds 9 focused tests.
+MAX_DOCS_FLOOR_MODULES = 26
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the local docs

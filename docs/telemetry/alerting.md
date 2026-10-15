@@ -4,7 +4,7 @@
 rules file you may load. **Nothing in this repo deploys it**; wiring, routing and any
 Alertmanager are yours.
 
-A single-operator home server does not need a pager. `phaze-m1drf.5` made "conclude that
+A single-operator home server does not need a pager. the telemetry identity verification made "conclude that
 dashboards are enough and ship nothing" a first-class outcome, and the conclusion reached
 is in between: **three rules survive the bar that every threshold must trace to a measured
 baseline, and four candidates do not.** The four are documented here at the same length as
@@ -45,7 +45,7 @@ ______________________________________________________________________
 completed anywhere** in that hour, sustained for 30 minutes.
 
 **Why 1 hour, and why not a completion-rate alert.** The analysis child's own stall
-watchdog (D-08, `analysis_stall_timeout_sec`) kills a child after **1800 s** of total
+watchdog (`analysis_stall_timeout_sec`) kills a child after **1800 s** of total
 silence. One hour is that existing production constant doubled — not a round number chosen
 for comfort. It is deliberately **not** built on completions: at the measured **2.4480
 files/hour** a single 12 h 04 m file takes roughly 18 hours of wall clock at **1.4951×**, so
@@ -67,7 +67,7 @@ the burst node reachable. This rule cannot distinguish those (see *the burst nod
 more than 40 runs, sustained for 30 minutes.
 
 **Where 5% comes from.** The measured baseline is **4 hard failures against 4,383 completed
-analyses — 0.0913%** (`phaze-zaf2l` §2: three `AnalysisDecodeError`, one
+analyses — 0.0913%** (the analysis cost measurement §2: three `AnalysisDecodeError`, one
 `AnalysisProbeError`). 5% is about **55×** that.
 
 **Where the >40 guard comes from, and why it is not padding.** Without it a *single* failure
@@ -84,13 +84,13 @@ failure isolation — is a successful analysis. These are file-level failures on
 **Fires when:** the p99 of per-chunk peak RSS exceeds **3.5 GiB**, sustained for 15 minutes.
 
 **Where 3.5 GiB comes from.** The deployed pod limit is **4Gi = 4,294,967,296 B**
-(`docs/design/0005-analyze-job-memory-limits.md`, `backends.toml`). The measured post-D-09
+(`docs/design/0005-analyze-job-memory-limits.md`, `backends.toml`). The measured after streaming teardown
 whole-process peak on the burst node is **1.50 / 1.65 / 1.67 GiB** at 1:00 / 4:00 / 12:04 of
 audio (`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`). 3.5 GiB is 87.5% of the limit and
 more than **twice** the measured peak: nothing healthy reaches it, and a breach is a warning
 rather than an OOMKill that already happened.
 
-**What it is really watching for.** Duration-linear growth. `phaze-b2qs9` measured
+**What it is really watching for.** Duration-linear growth. the exhaustive analysis measurement measured
 **+0.31 GiB per fine chunk** (R² 0.99959), reaching **10.28 GiB at 12 h**, and every file
 past ~3 hours OOMKilled. **If this fires, the fix is the chunk teardown, not a larger limit.**
 Growth is a bug, never a sizing input.
@@ -140,7 +140,7 @@ ______________________________________________________________________
 > memory.
 
 So an 8,079-file `awaiting` queue and a 137.5-day projected drain are the expected state,
-not a fault — that is the 2026-08-26 decision on bead `phaze-m1drf.5` quoted above. An alert
+not a fault — that is the 2026-08-26 decision on the telemetry identity verification quoted above. An alert
 firing on a settled decision is worse than no alert: it teaches the operator that phaze's
 alerts are noise.
 
@@ -154,9 +154,9 @@ The decision's scope is exactly what was asked and no wider: it settles that the
 is acceptable. It says nothing about whether analysis should ever *stop*, which is what
 `PhazeAnalysisProgressStalled` above is for.
 
-### An analysis "running too long" — the phaze-1b39 incident
+### An analysis "running too long" — the stalled analysis incident
 
-`phaze-1b39` is the incident where a wall-clock bound SIGTERM'd legitimate 2–6 hour analyses
+the stalled analysis incident is the incident where a wall-clock bound SIGTERM'd legitimate 2–6 hour analyses
 and stalled the whole burst lane. A multi-hour concert set is **expected** to take hours;
 liveness is progress-based and never elapsed-based. Moving that same false premise up to the
 monitoring layer would page instead of kill — still wrong, and trained on the same mistake.
@@ -178,8 +178,8 @@ to homelab.**
 ### Window skip rate — no measured baseline exists yet
 
 Windows skipped by per-window failure isolation are coverage quietly eroding, and a rising
-skip rate is worth knowing about. But `phaze-zaf2l` did not measure a skip-rate baseline, and
-`phaze-m1drf.5` acceptance 3 requires every threshold to trace to one. **Inventing a number
+skip rate is worth knowing about. But the analysis cost measurement did not measure a skip-rate baseline, and
+the telemetry identity verification acceptance 3 requires every threshold to trace to one. **Inventing a number
 here would be exactly the unmeasured arithmetic these rules exist to avoid.**
 
 The dashboard panel *Windows skipped / min* on **phaze / Analysis pipeline (live)** shows the

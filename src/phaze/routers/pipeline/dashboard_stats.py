@@ -593,7 +593,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     }
 
 
-@router.get("/pipeline/", response_class=HTMLResponse)
+@router.get("/pipeline/", response_class=HTMLResponse, description="Redirect the legacy ``/pipeline/`` route to the v7.0 shell root.")
 async def dashboard() -> RedirectResponse:
     """Redirect the legacy ``/pipeline/`` route to the v7.0 shell root.
 
@@ -608,7 +608,7 @@ async def dashboard() -> RedirectResponse:
     return RedirectResponse(url="/", status_code=302)
 
 
-@router.get("/pipeline/stats", response_class=HTMLResponse)
+@router.get("/pipeline/stats", response_class=HTMLResponse, description="Return the stats bar partial for HTMX polling refresh.")
 async def pipeline_stats_partial(
     request: Request,
     lane: str | None = Query(None),

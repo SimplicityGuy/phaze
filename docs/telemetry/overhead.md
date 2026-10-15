@@ -1,6 +1,6 @@
 # What the instrumentation costs
 
-`phaze-m1drf.1` acceptance 6: *"Instrumentation overhead measured on a real multi-hour file
+the telemetry identity audit acceptance 6: *"Instrumentation overhead measured on a real multi-hour file
 and stated as a percentage of wall clock. Peak RSS must not grow with duration. If overhead
 cannot be shown negligible, that is the finding."*
 
@@ -30,9 +30,9 @@ in comments.
 > token-stream comparison for a code identity; do not use an AST dump for either.
 
 **The rig is calibrated against a recorded value, not free-floating.**
-`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md` records **1.50 GiB at 1:00** post-D-09, on
+`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md` records **1.50 GiB at 1:00** after streaming teardown, on
 this node, on the deployed image. This run measured **1.4956 GiB at 59 m 39 s** — agreement to
-**0.3%**. That is an independent reproduction of the post-D-09 baseline, and it is what makes
+**0.3%**. That is an independent reproduction of the after streaming teardown baseline, and it is what makes
 every other number here trustworthy.
 
 **A multi-hour pair (10 h 03 m 02 s, 36,182.359 s) is running on the same rig**; those figures
@@ -61,7 +61,7 @@ duration-independence observation stands on its own — but see §3.
 
 `scripts/telemetry_overhead.py`, run 2026-08-26 on the local MacBookPro18,1 (macOS,
 10 cores, 32 GiB), against the **real** `analyze_file` — real essentia, the real 34-graph
-model set, the real D-07 chunk loop.
+model set, the real chunk loop.
 
 - **Each arm is its own process**, so one arm's peak-RSS high-water mark cannot contaminate
   the next.
@@ -112,14 +112,14 @@ Across all six runs peak RSS spans **4.4798 – 4.9988 GiB**, a spread of **0.51
 six is an *instrumented* 30-minute run; the highest is an *instrumented* 60-minute one. Six
 values from a 6× duration range that interleave like that are one population, not a trend.
 
-For contrast, the shape this is watching for: `phaze-b2qs9` measured **+0.31 GiB per fine
+For contrast, the shape this is watching for: the exhaustive analysis measurement measured **+0.31 GiB per fine
 chunk** with **R² 0.99959** — an unmistakable straight line, reaching 10.28 GiB at 12 hours.
 Nothing here resembles that.
 
 > **These absolute figures are macOS and are NOT the production numbers — now demonstrated
 > rather than argued.** The same code, on a comparable duration, measures **1.4956 GiB on the
 > burst node** (§ header) against **4.48–5.00 GiB here**: a factor of three. The measured
-> post-D-09 Linux baseline is **1.50 / 1.65 / 1.67 GiB** at 1:00 / 4:00 / 12:04
+> after streaming teardown Linux baseline is **1.50 / 1.65 / 1.67 GiB** at 1:00 / 4:00 / 12:04
 > (`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`). Thread sizing and the allocator differ,
 > and there is no cgroup here at all; ~4.7 GiB on this machine is **not** a breach of the 4Gi
 > pod limit, because nothing here runs under that pod. A reader who sees 4.7 next to 4 and

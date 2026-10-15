@@ -15,7 +15,7 @@ import phaze
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.routers.proposals import _diff_facet_fields
+from phaze.routers.proposals import _diff_facet_fields, _parse_bulk_selection
 from phaze.services.analysis_timeline import BpmSpark, bpm_spark
 from phaze.services.proposal_queries import proposal_review_digest
 
@@ -1107,6 +1107,23 @@ async def test_proposals_history_restore_does_not_return_a_fragment(client: Asyn
     response = await client.get("/proposals/?status=pending", headers=_RESTORE_HEADERS)
     assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
     assert response.headers["location"] == "/s/propose"
+
+
+def test_bulk_selection_deduplicates_legacy_ids_against_reviewed_tokens() -> None:
+    proposal_id = uuid.uuid4()
+    token = f"{proposal_id}|2026-01-01T00:00:00+00:00|synthetic-digest"
+    reviewed, selected = _parse_bulk_selection([token], [str(proposal_id), str(proposal_id)])
+    assert len(reviewed) == 1
+    assert selected == [proposal_id]
+
+
+@pytest.mark.asyncio
+async def test_bulk_preview_falls_back_to_reviewable_status(client: AsyncClient) -> None:
+    response = await client.post("/proposals/bulk/preview?status=unknown", data={"scope": "filtered"})
+    assert response.status_code == 200
+    body = response.json()
+    assert "status=needs_review" in body["view_query"]
+    assert body["eligible_count"] == 0
 
 
 @pytest.mark.asyncio

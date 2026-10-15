@@ -229,7 +229,7 @@ def test_duplicate_top_level_bucket_id_fails_fast_with_id(backends_toml_env) -> 
     )
     with pytest.raises(ValueError, match=r"duplicate bucket ids in registry.*dup-id") as exc_info:
         ControlSettings()
-    assert "REG-05" in str(exc_info.value)
+    assert "each [[buckets]] id must be unique" in str(exc_info.value)
 
 
 def test_malformed_registry_with_unknown_backend_kind_fails_fast(backends_toml_env) -> None:  # type: ignore[no-untyped-def]

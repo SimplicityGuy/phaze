@@ -44,7 +44,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     queue_url: str = Field(
         default="postgresql://phaze:phaze@postgres:5432/phaze",
         validation_alias=AliasChoices("PHAZE_QUEUE_URL", "queue_url"),
-        description="psycopg3 (libpq) DSN for the PostgresQueue broker (Phase 36).",
+        description="psycopg3 (libpq) DSN for the PostgresQueue broker.",
     )
 
     @field_validator("queue_url", mode="before")
@@ -116,7 +116,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     active_reap_slack_seconds: int = Field(
         default=900,
         validation_alias=AliasChoices("PHAZE_ACTIVE_REAP_SLACK_SECONDS", "active_reap_slack_seconds"),
-        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT — that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value — a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status (phaze-o0n6).",
+        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT — that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value — a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status.",
     )
 
     # Both roles share one progress-silence bound: the agent arms the watchdog and control derives
@@ -127,7 +127,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         gt=0,
         lt=86400,
         validation_alias=AliasChoices("PHAZE_ANALYSIS_STALL_TIMEOUT_SEC", "analysis_stall_timeout_sec"),
-        description="Seconds of NO reported analysis progress before the analysis child is killed as stalled (phaze-w55w1). Bounds silence, never runtime: a progressing analysis is never killed by elapsed time. Default 1800 (30 min).",
+        description="Seconds of NO reported analysis progress before the analysis child is killed as stalled. Bounds silence, never runtime: a progressing analysis is never killed by elapsed time. Default 1800 (30 min).",
     )
 
     @property
@@ -145,37 +145,37 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     db_pool_size: int = Field(
         default=5,
         validation_alias=AliasChoices("PHAZE_DB_POOL_SIZE", "db_pool_size"),
-        description="SQLAlchemy engine pool_size for the api + control-worker engines (quick-260707-ryn). Default 5.",
+        description="SQLAlchemy engine pool_size for the api + control-worker engines. Default 5.",
     )
     db_max_overflow: int = Field(
         default=5,
         validation_alias=AliasChoices("PHAZE_DB_MAX_OVERFLOW", "db_max_overflow"),
-        description="SQLAlchemy engine max_overflow for the api + control-worker engines (quick-260707-ryn). Default 5.",
+        description="SQLAlchemy engine max_overflow for the api + control-worker engines. Default 5.",
     )
     db_pool_timeout: int = Field(
         default=10,
         validation_alias=AliasChoices("PHAZE_DB_POOL_TIMEOUT", "db_pool_timeout"),
-        description="Seconds to wait for a pooled connection before failing fast (quick-260707-ryn). Default 10.",
+        description="Seconds to wait for a pooled connection before failing fast. Default 10.",
     )
     db_pool_recycle: int = Field(
         default=1800,
         validation_alias=AliasChoices("PHAZE_DB_POOL_RECYCLE", "db_pool_recycle"),
-        description="Recycle a pooled connection after this many seconds so idle server slots are freed (quick-260707-ryn). Default 1800 (30 min).",
+        description="Recycle a pooled connection after this many seconds so idle server slots are freed. Default 1800 (30 min).",
     )
     db_pool_pre_ping: bool = Field(
         default=True,
         validation_alias=AliasChoices("PHAZE_DB_POOL_PRE_PING", "db_pool_pre_ping"),
-        description="Validate a pooled connection before checkout, dropping dead server conns (quick-260707-ryn). Default True.",
+        description="Validate a pooled connection before checkout, dropping dead server conns. Default True.",
     )
     dispatch_queue_min_size: int = Field(
         default=0,
         validation_alias=AliasChoices("PHAZE_DISPATCH_QUEUE_MIN_SIZE", "dispatch_queue_min_size"),
-        description="psycopg3 min_size for each control-side per-(agent,lane) dispatch queue (quick-260707-ryn). Default 0 keeps zero idle server conns pinned.",
+        description="psycopg3 min_size for each control-side per-(agent,lane) dispatch queue. Default 0 keeps zero idle server conns pinned.",
     )
     dispatch_queue_max_size: int = Field(
         default=2,
         validation_alias=AliasChoices("PHAZE_DISPATCH_QUEUE_MAX_SIZE", "dispatch_queue_max_size"),
-        description="psycopg3 max_size for each control-side per-(agent,lane) dispatch queue (quick-260707-ryn). Default 2 caps the enqueue burst.",
+        description="psycopg3 max_size for each control-side per-(agent,lane) dispatch queue. Default 2 caps the enqueue burst.",
     )
 
     # Discogsography service URL (shared base; concurrency-tunable on Control)
@@ -196,7 +196,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
     enable_saq_ui: bool = Field(
         default=True,
         validation_alias=AliasChoices("PHAZE_ENABLE_SAQ_UI", "enable_saq_ui"),
-        description="Mount the SAQ monitoring dashboard at /saq in the API (Phase 33).",
+        description="Mount the SAQ monitoring dashboard at /saq in the API.",
     )
 
     # An explicit token makes a development seed reproducible; otherwise startup generates one.
@@ -251,7 +251,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
         validation_alias=AliasChoices("PHAZE_RUNTIME_CONFIG_WATCH_POLLING", "runtime_config_watch_polling"),
         description=(
             "Use watchdog's PollingObserver instead of the native inotify/FSEvents backend to watch "
-            "runtime_config_dir. Defaults to true: phaze-mvq8z.3 measured the native backend "
+            "runtime_config_dir. Defaults to true: deployment testing measured the native backend "
             "silently seeing ZERO host edits through a Colima/virtiofs bind mount (no error, just "
             "no reload), and Docker Desktop / a native Linux host mount are unverified either way — "
             "a silent miss is worse than polling's modest, bounded cost. Set false only once native "
@@ -272,7 +272,7 @@ class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
             "Quiet period after the last filesystem event on runtime.toml before its content is "
             "re-hashed and, if changed, reload('file') runs. Coalesces the delete+create pair a "
             "rename-into-place edit produces (both the native and the polling backend report a "
-            "rename this way, never a single moved event — phaze-mvq8z.3) into one reload."
+            "rename this way, never a single moved event) into one reload."
         ),
     )
 

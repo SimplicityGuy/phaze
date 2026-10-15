@@ -31,7 +31,7 @@ ClusterSpecificReferences = dict[str, list[str]]
 def validate_non_empty_registry(backends: Sequence[BackendConfig]) -> None:
     """Reject a present-but-empty registry before every other cross-entry check."""
     if not backends:
-        raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
+        raise ValueError("backend registry resolved to empty — refusing to start")
 
 
 def validate_unique_registry_ids(backends: Sequence[BackendConfig], buckets: Sequence[BucketConfig]) -> None:
@@ -43,7 +43,7 @@ def validate_unique_registry_ids(backends: Sequence[BackendConfig], buckets: Seq
     """
     bucket_dupes = sorted(bucket_id for bucket_id, count in Counter(bucket.id for bucket in buckets).items() if count > 1)
     if bucket_dupes:
-        raise ValueError(f"duplicate bucket ids in registry: {bucket_dupes} — each [[buckets]] id must be unique (REG-05)")
+        raise ValueError(f"duplicate bucket ids in registry: {bucket_dupes} — each [[buckets]] id must be unique")
 
     # phaze-1sgee: the backend-id Counter below is deliberately KIND-AGNOSTIC — keyed on `backend.id`
     # alone, NOT on `(id, kind)`. `resolve_compute_backend` (services/backends.py) builds a
@@ -87,7 +87,7 @@ def validate_unique_compute_agent_refs(backends: Sequence[BackendConfig]) -> Non
         for agent_ref in agent_dupes
     }
     raise ValueError(
-        f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref (D-04)"
+        f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref"
     )
 
 
@@ -108,7 +108,7 @@ def validate_backend_bucket_lists(
             continue
         missing = [bucket_id for bucket_id in backend.buckets if bucket_id not in bucket_by_id]
         if missing:
-            raise ValueError(f"backend {backend.id!r} references unknown bucket ids {missing} (D-08)")
+            raise ValueError(f"backend {backend.id!r} references unknown bucket ids {missing} ")
         # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets` list (a
         # copy-paste duplicate, not a cross-backend share). Left unchecked, resolving `backend.buckets`
         # positionally below appends `backend.id` once per LIST ENTRY into `cluster_specific_refs`, so a
@@ -123,7 +123,7 @@ def validate_backend_bucket_lists(
             )
         resolved = [bucket_by_id[bucket_id] for bucket_id in backend.buckets]
         if not resolved:
-            raise ValueError(f"backend {backend.id!r} (kueue) resolves to an empty bucket set (D-08)")
+            raise ValueError(f"backend {backend.id!r} (kueue) resolves to an empty bucket set ")
         for bucket in resolved:
             if bucket.scope == "cluster-specific":
                 cluster_specific_refs.setdefault(bucket.id, []).append(backend.id)
@@ -135,5 +135,5 @@ def validate_cluster_specific_sharing(cluster_specific_refs: ClusterSpecificRefe
     for bucket_id, refs in cluster_specific_refs.items():
         if len(refs) > 1:
             raise ValueError(
-                f"bucket {bucket_id!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
+                f"bucket {bucket_id!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed"
             )

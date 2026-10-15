@@ -1,6 +1,6 @@
 # Viewing companion sources
 
-Date: 2026-10-10. Beads: phaze-517k9, phaze-yjuzv, phaze-89019. Epic: phaze-kf7jr.
+Date: 2026-10-10.
 
 Open a music or video file's detail page, or its Details drawer. Both presentations show local
 tracklist previews and attributed release fields beside extracted tags. Track parsing and release

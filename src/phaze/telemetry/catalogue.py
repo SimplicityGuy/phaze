@@ -200,7 +200,7 @@ MODEL_VARIANT = LabelSpec(
 CLASSIFIER_TYPE = LabelSpec(
     name="classifier_type",
     cardinality=3,
-    description="Inference family -- the dimension phaze-8ifq8 asks per-model cost to be split by.",
+    description="Inference family -- the dimension used to split per-model cost.",
     values=("musicnn", "vggish", "effnet_discogs"),
 )
 MODEL_LABELS: tuple[LabelSpec, ...] = (MODEL_NAME, MODEL_VARIANT, CLASSIFIER_TYPE)
@@ -433,8 +433,8 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="s",
         description=(
             "Wall clock of one complete tier. The fine/coarse split this measures is the "
-            "5.31% / 94.69% figure phaze-zaf2l had to reconstruct from log timestamps for ONE 4,761.835 s file. "
-            "That split is duration-dependent (phaze-bg115); this metric measures whatever the current file actually is."
+            "5.31% / 94.69% figure previously reconstructed from log timestamps for ONE 4,761.835 s file. "
+            "That split is duration-dependent; this metric measures whatever the current file actually is."
         ),
         labels=(TIER,),
         buckets=BUCKETS_RUN,
@@ -443,7 +443,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         name="phaze.analysis.chunk.decode.duration",
         kind="histogram",
         unit="s",
-        description="Wall clock of one D-07 chunk's streaming decode pass, per tier.",
+        description="Wall clock of one chunk's streaming decode pass, per tier.",
         labels=(TIER,),
         buckets=BUCKETS_CHUNK,
     ),
@@ -480,7 +480,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="s",
         description=(
             "One model's inference on ONE coarse window -- the per-model cost by classifier_type "
-            "that phaze-8ifq8 asks for. Recorded per window and per model; the WINDOW is not a label."
+            "used for cost attribution. Recorded per window and per model; the WINDOW is not a label."
         ),
         labels=MODEL_LABELS,
         buckets=BUCKETS_INFERENCE,
@@ -491,7 +491,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         kind="histogram",
         unit="s",
         description=(
-            "Constructing one TensorflowPredict* graph. D-07 pays this once per model PER CHUNK "
+            "Constructing one TensorflowPredict* graph. Chunked analysis pays this once per model PER CHUNK "
             "rather than once per file, which is the cost the chunking trades for a duration-independent peak."
         ),
         labels=MODEL_LABELS,
@@ -502,7 +502,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         name="phaze.analysis.model.graph.release.duration",
         kind="histogram",
         unit="s",
-        description="Releasing one TensorflowPredict* graph -- the phaze-15sw one-graph-resident invariant's other half.",
+        description="Releasing one TensorflowPredict* graph -- the one-graph-resident invariant's other half.",
         labels=MODEL_LABELS,
         buckets=BUCKETS_GRAPH_OP,
         realized_combinations=MODEL_COMBINATIONS,
@@ -527,7 +527,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         name="phaze.analysis.chunks",
         kind="counter",
         unit="{chunks}",
-        description="D-07 chunks completed, per tier.",
+        description="Analysis chunks completed, per tier.",
         labels=(TIER,),
     ),
     MetricSpec(
@@ -536,7 +536,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="s",
         description=(
             "Audio-seconds admitted for analysis. Divided by wall clock this is the "
-            "audio-hours-per-wall-hour throughput phaze-zaf2l derived by joining "
+            "audio-hours-per-wall-hour throughput previously derived by joining "
             "analysis_completed_at to metadata.duration by hand."
         ),
         labels=(OUTCOME,),
@@ -585,7 +585,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         kind="gauge",
         unit="{jobs}",
         description=(
-            "SAQ rows queued and active, by pipeline STAGE. phaze-zaf2l sampled this by hand from "
+            "SAQ rows queued and active, by pipeline STAGE. An earlier measurement sampled this by hand from "
             "`saq_jobs` every 120 s for the length of a spike; it is the read that settled 'SAQ is not "
             "a bottleneck' (depth held at 9 across 28 samples against a burst capacity of 318.3 jobs/s). "
             "Labelled by STAGE and not by QUEUE deliberately: the only sampler phaze has is the stage "
@@ -612,7 +612,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="{statements}",
         description=(
             "Statements executed, by leading keyword. Divided by request count this is the "
-            "per-request fan-out phaze-zaf2l measured with pg_stat_user_tables deltas."
+            "per-request fan-out previously measured with pg_stat_user_tables deltas."
         ),
         labels=(DB_OPERATION,),
     ),
@@ -635,11 +635,11 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="{files}",
         description=(
             "Files waiting in each pipeline waiting-room -- the 8,079-row `cloud_job` awaiting "
-            "backlog phaze-zaf2l had to count in psql, among others. "
+            "backlog previously counted in psql, among others. "
             "POLL-DRIVEN, and that limitation is deliberate rather than hidden: it is sampled by the "
             "admin UI's own /pipeline/stats read, so it goes STALE when no admin tab is open. Read it "
             "on a dashboard, never alert on it -- and note that backlog DEPTH is a settled operator "
-            "decision (repowise decision e1e3374e, the current drain rate is ACCEPTED) and is not a "
+            "decision (the current drain rate is ACCEPTED) and is not a "
             "fault condition in the first place."
         ),
         labels=(BACKLOG_QUEUE,),

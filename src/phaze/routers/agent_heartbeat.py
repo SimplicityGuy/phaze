@@ -99,7 +99,7 @@ for a real-Postgres regression reproducing the pre-fix clobber and proving the f
 """
 
 
-@router.post("", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("", status_code=status.HTTP_204_NO_CONTENT, description="Update agents.last_seen_at and last_status. Returns 204 No Content.")
 async def post_heartbeat(
     body: HeartbeatRequest,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],

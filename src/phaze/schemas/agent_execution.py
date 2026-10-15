@@ -20,17 +20,19 @@ from phaze.services.pg_text import contains_pg_invalid_chars
 
 
 class ExecutionLogCreate(SanitizedErrorMessageMixin):
-    """Agent-supplied ExecutionLog row to insert.
+    """Agent-supplied ExecutionLog row to insert."""
 
-    The agent generates `id` (uuid.uuid4 on the agent) and persists
-    it in SAQ job state. Server does `INSERT ... ON CONFLICT (id) DO NOTHING`
-    so retries are silent no-ops. `agent_id` is NEVER part of the body --
-    handlers source it from `Depends(get_authenticated_agent)` only (AUTH-01).
-
-    `error_message` (sink: `ExecutionLog.error_message`, Text) and its sanitize-on-write
-    validator come from `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see that class's
-    docstring for the `CharacterNotInRepertoireError` this guards against.
-    """
+    # Agent-supplied ExecutionLog row to insert.
+    #
+    #     The agent generates `id` (uuid.uuid4 on the agent) and persists
+    #     it in SAQ job state. Server does `INSERT ... ON CONFLICT (id) DO NOTHING`
+    #     so retries are silent no-ops. `agent_id` is NEVER part of the body --
+    #     handlers source it from `Depends(get_authenticated_agent)` only (AUTH-01).
+    #
+    #     `error_message` (sink: `ExecutionLog.error_message`, Text) and its sanitize-on-write
+    #     validator come from `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see that class's
+    #     docstring for the `CharacterNotInRepertoireError` this guards against.
+    #
 
     model_config = ConfigDict(extra="forbid")
 
@@ -58,18 +60,20 @@ class ExecutionLogCreate(SanitizedErrorMessageMixin):
 
 
 class ExecutionLogPatch(SanitizedErrorMessageMixin):
-    """Partial-update body for PATCH /execution-log/{id}.
+    """Partial-update body for PATCH /execution-log/{id}."""
 
-    Status transitions enforced monotonic per D-15: PENDING(0) < IN_PROGRESS(1)
-    < COMPLETED(2) < FAILED(3). Same-status PATCH is allowed (idempotent retry);
-    backward transitions return 409 with detail `"execution-log status would
-    regress"`; PATCH against a terminal row returns 409 with detail
-    `"execution-log status is terminal"`.
-
-    `error_message` and its sanitize-on-write validator come from
-    `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see `ExecutionLogCreate` and that class's
-    docstring; `patch_execution_log`'s `setattr` loop applies the same sink.
-    """
+    # Partial-update body for PATCH /execution-log/{id}.
+    #
+    #     Status transitions enforced monotonic per D-15: PENDING(0) < IN_PROGRESS(1)
+    #     < COMPLETED(2) < FAILED(3). Same-status PATCH is allowed (idempotent retry);
+    #     backward transitions return 409 with detail `"execution-log status would
+    #     regress"`; PATCH against a terminal row returns 409 with detail
+    #     `"execution-log status is terminal"`.
+    #
+    #     `error_message` and its sanitize-on-write validator come from
+    #     `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see `ExecutionLogCreate` and that class's
+    #     docstring; `patch_execution_log`'s `setattr` loop applies the same sink.
+    #
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,14 +100,18 @@ class ExecutionLogPatch(SanitizedErrorMessageMixin):
 
 
 class ExecutionLogCreateResponse(BaseModel):
-    """Minimal echo response confirming the create (or replay no-op) (D-19)."""
+    """Minimal echo response confirming the create (or replay no-op)."""
+
+    # Minimal echo response confirming the create (or replay no-op) (D-19).
 
     agent_id: str
     execution_log_id: uuid.UUID
 
 
 class ExecutionLogPatchResponse(BaseModel):
-    """Minimal echo response confirming the patch (D-19)."""
+    """Minimal echo response confirming the patch."""
+
+    # Minimal echo response confirming the patch (D-19).
 
     agent_id: str
     execution_log_id: uuid.UUID

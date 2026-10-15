@@ -216,7 +216,7 @@ def _require_push_config(cfg: AgentSettings) -> None:
     # "@host:..." remote spec.
     missing = [name for name in ("push_ssh_user", "push_ssh_key", "push_known_hosts") if not getattr(cfg, name)]
     if missing:
-        msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned in Phase 51)"
+        msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned)"
         raise RuntimeError(msg)
     # WR-03: the timeout layering MUST stay inner(rsync) < outer(asyncio) < SAQ-net, otherwise a SAQ
     # CancelledError reaps the rsync child before the asyncio guard's secret-shredding finally runs.
@@ -232,7 +232,7 @@ def _require_push_config(cfg: AgentSettings) -> None:
             f"{_OUTER_TIMEOUT_BUFFER_SEC}={outer_guard}s) must be STRICTLY BELOW the control-side SAQ "
             f"net timeout PUSH_FILE_SAQ_TIMEOUT_SEC ({PUSH_FILE_SAQ_TIMEOUT_SEC}s). You raised "
             f"PHAZE_PUSH_TIMEOUT_SEC on the agent without raising the control-side margin — SAQ would "
-            f"cancel healthy long transfers before the rsync child is reaped (WR-03)."
+            f"cancel healthy long transfers before the rsync child is reaped."
         )
         raise RuntimeError(msg)
 

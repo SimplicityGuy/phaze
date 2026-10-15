@@ -416,7 +416,7 @@ def _tagwrite_stale_toast_response(request: Request, toast_message: str) -> HTML
     )
 
 
-@router.get("/", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse, description="Resolve a legacy ``/tags/`` bookmark into the v7.0 shell.")
 async def list_tags() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/tags/`` bookmark into the v7.0 shell.
 
@@ -455,7 +455,7 @@ def _tagwrite_dispatch_toast(status: str, filename: str, agent_id: str, error_me
     )
 
 
-@router.post("/{file_id}/write", response_class=HTMLResponse)
+@router.post("/{file_id}/write", response_class=HTMLResponse, description="Execute tag write for a file using form-submitted proposed values.")
 async def write_file_tags(
     request: Request,
     file_id: uuid.UUID,
@@ -855,7 +855,9 @@ async def _bulk_write_response(
     )
 
 
-@router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
+@router.post(
+    "/bulk-write-no-discrepancies", response_class=HTMLResponse, description="Write tags for every qualifying applied file, server-re-queried."
+)
 async def bulk_write_no_discrepancies(
     request: Request,
     review_tokens: list[TagReviewTokenWire] = Form(..., max_length=_MAX_BULK_TAG_WRITE),
@@ -1014,7 +1016,7 @@ def _undo_dispatch_outcome(log_entry: TagWriteLog, file_record: FileRecord) -> t
     return toast_message, row_state
 
 
-@router.post("/{file_id}/undo", response_class=HTMLResponse)
+@router.post("/{file_id}/undo", response_class=HTMLResponse, description="Revert a tag write by re-applying ``TagWriteLog.before_tags``.")
 async def undo_tag_write(
     request: Request,
     file_id: uuid.UUID,

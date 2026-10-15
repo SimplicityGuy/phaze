@@ -40,7 +40,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Analysis and Worker Hunt](quality-assessment/analysis-hunt.md)** | Exhaustive analysis and orchestration slice, verified recovery/liveness findings, real-consumer limits and round metrics |
 | **[Companion Persistence and Consumer Hunt](quality-assessment/companion-hunt.md)** | Complete third-round slice, synthetic attribution failure, deferred source-only finding and browser limits |
 | **[Stronger Assertion Proposal](quality-assessment/assertion-proposal.md)** | Six canonical failing regressions, independent guard operands, real consumer oracles and bounded controls |
-| **[Implementation Design and Final Decision](quality-assessment/implementation-plan.md)** | Complete evidence synthesis, proposed dependency graph, task dispositions and operator GO design decision on 2026-10-11 UTC (`phaze-9dxnh`) |
+| **[Implementation Design and Final Decision](quality-assessment/implementation-plan.md)** | Complete evidence synthesis, proposed dependency graph, task dispositions and operator GO design decision on 2026-10-11 UTC  |
 | **[Focused Coverage Proposal](quality-assessment/coverage-proposal.md)** | Specific failure oracles, module line targets, negative controls and runtime classes for proposed backfills |
 | **[Bead Feedback Measurement](bead-feedback-measurement.md)** | ⏱️ Retained gate attempts, escalation causes, reuse, queue latency, and the reproducible quality-assessment recipe |
 | **[Selection and Evidence Proposal](quality-assessment/selector-proposal.md)** | Safe coverage refresh ownership, real consumer mappings, preserved floors and measured bead-velocity rollout |
@@ -54,9 +54,10 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Telemetry Capture Disposition](quality-implementation/telemetry-capture-disposition.md)** | Independent real SDK producers retained; bounded exclusion, stale baseline and unmeasured runtime limits |
 | **[Optional Pilot Disposition Manifest](quality-implementation/pilot-disposition-manifest.md)** | Every optional pilot adopted, excluded or deferred before final assembled verification; R4 matched-CI evidence and cohort limits |
 | **[Final Union Verification](quality-implementation/final-union-verification.md)** | G0 canonical A-row fault receipts, oracle-gap controls, harness bounds and what the assembled gate must show |
-| **[Quality Implementation Outcome](quality-implementation/implementation-outcome.md)** | A0 requirement audit, measured coverage/runtime by run, unproven claims, operator decisions and open follow-ups |
+| **[Quality Implementation Outcome](quality-implementation/implementation-outcome.md)** | A0 requirement audit, measured coverage/runtime by run, unproven claims, documented choices and open follow-ups |
 | **[Git Topology and Verification](git-topology-and-verification.md)** | 🌳 Worktree topology, verification fidelity, and operator-attribution rules |
 | **[Public Just Recipe Contract](just-recipe-contract.md)** | 🔧 Complete executable inventory of public recipes and their consumers |
+| **[Operator Copy Inventory](operator-copy-inventory.md)** | Authored presentation boundaries, retained historical/support provenance and focused regression checks |
 | **[Repository Maintenance Contract](repository-maintenance-contract.md)** | 🧹 Reproducible code-comment and documentation inventory/classification rules |
 | **[Maintenance Audit — 2026-09-10](maintenance-audit-2026-09-10.md)** | ✅ Final inventory, dispositions, limitations, and validation evidence for the maintenance sprint |
 | **[Structural Maintenance Rebaseline — 2026-09-11](structural-maintenance-rebaseline-2026-09-11.md)** | 🧭 Post-maintenance boundaries, compatibility inventories, invariants, and GO dispositions for the structural follow-on |
@@ -78,7 +79,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Local Tracklist Syntax](design/local-tracklist-parser-implementation.md)** | Narrow CUE/text grammars, source origins, excluded lines and exact timing evidence |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
-| **[Degenerate Audio](degenerate-audio.md)** | 🔇 Measured signal-quality failure, operator decision (phaze-nkucu, 2026-10-03), and absent measurement semantics |
+| **[Degenerate Audio](degenerate-audio.md)** | 🔇 Measured signal-quality failure, historical operator record (2026-10-03), and absent measurement semantics |
 | **[Analysis Evaluation](analysis-evaluation.md)** | 📊 Result contract, quality and performance criteria, and paired UpCloud corpus |
 | **[UpCloud Evaluation Handoff](analysis-evaluation-upcloud-runbook.md)** | 🧪 Completed baselines, frozen DB reference, staged candidate launcher, and exact remaining steps |
 | **[One-Variant Analysis Candidate](analysis-evaluation-one-variant-candidate.md)** | ⚡ Essentia-based single-variant experiment, output coverage, and measured speed |

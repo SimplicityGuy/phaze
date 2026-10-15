@@ -22,7 +22,7 @@ from phaze.schemas.agent_identity import AgentIdentity
 router = APIRouter(prefix="/api/internal/agent/whoami", tags=["agent-internal"])
 
 
-@router.get("", status_code=status.HTTP_200_OK, response_model=AgentIdentity)
+@router.get("", status_code=status.HTTP_200_OK, response_model=AgentIdentity, description="Return the calling agent's identity.")
 async def whoami(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
 ) -> AgentIdentity:

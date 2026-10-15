@@ -49,7 +49,7 @@ unbounded *across the archive*, which is the scale a Prometheus series lives at.
 exactly **34** models — 11 characteristic sets × 3 variants, plus the genre model — and
 `test_model_label_bound_matches_the_registry` pins that number against
 `services/analysis_models.py` rather than trusting a comment. It is also the dimension the
-whole epic exists to expose, because `classifier_type` is what `phaze-8ifq8` needs per-model
+whole epic exists to expose, because `classifier_type` is what per-model telemetry needs per-model
 cost split by.
 
 ## 2. Two things that are NOT labels but behave like them
@@ -144,7 +144,7 @@ else here changes.
 A burst-lane analysis runs in a one-shot Kueue pod, so its concurrency is not
 `worker_process_pool_size` — no process bounds it. It is the **per-backend in-flight `cap`** the
 controller enforces, and the controller allocates the slot at submit time and injects it into the
-Job env (`phaze-w15ju`, [ADR-0017 §8d](../design/0017-telemetry-export-topology.md)). The bound is
+Job env (the verification experiment, [ADR-0017 §8d](../design/0017-telemetry-export-topology.md)). The bound is
 the **sum of the configured kueue backends' `cap` values**, because two clusters' pods both
 reporting `phaze-analysis-2` merge at a shared collector exactly as two pods in one cluster would.
 
@@ -156,15 +156,15 @@ So the analysis block's real multiplier is:
 | Σ kueue `cap` (burst lane) | 4 |
 | distinct analysis identities | **8** |
 
-**The two lanes have SEPARATE identity spaces, so they add** (`phaze-7nl67`). Both lanes number
+**The two lanes have SEPARATE identity spaces, so they add**. Both lanes number
 their slots from 0 and neither can see the other's allocations, and they used to append their index
 to the same base. So a host-lane child and a burst pod on the same index both reported
 `phaze-analysis-<n>` and merged at the collector, whenever `PHAZE_TELEMETRY_INSTANCE` was unset. Every
 burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the lane between the
 base and the slot (`phaze-analysis-burst-<n>`). The analysis block is therefore
 `2,290 × (worker_process_pool_size + Σ kueue cap)` = `2,290 × 8` = **18,320**, and the ceiling is
-**24,642** (24,617 when this was decided; the runtime-config reload family, `phaze-mvq8z.4`, added
-22 per-instance series to reach 24,639, and `phaze-co6ad` adds three controller gauges). Before this change the lanes shared one slot space, and the block was
+**24,642** (24,617 when this was decided; the runtime-config reload family, config snapshots, added
+22 per-instance series to reach 24,639, and the controller reload fix adds three controller gauges). Before this change the lanes shared one slot space, and the block was
 `2,290 × max(worker_process_pool_size, Σ kueue cap)` = 9,160, with a ceiling of 15,457. That lower
 figure came from the merge itself: 9,160 more series is the price of not merging. **No
 collision-free design costs less, because 8 concurrent producers need 8 identities.** Two producers
@@ -220,7 +220,7 @@ instruments pay that thirty-four times over.
 
 | ladder | range | used by | what sized it |
 | --- | --- | --- | --- |
-| `BUCKETS_MODEL_OP` | 1 ms – 60 s | per-inference, per-graph build/release, fine window | a graph release is sub-millisecond; `phaze-zaf2l` measured 2.379–2.694 s per fine window with a 5.845 s outlier |
+| `BUCKETS_MODEL_OP` | 1 ms – 60 s | per-inference, per-graph build/release, fine window | a graph release is sub-millisecond; the analysis cost measurement measured 2.379–2.694 s per fine window with a 5.845 s outlier |
 | `BUCKETS_CHUNK` | 0.5 s – 30 min | chunk decode, chunk derive, one model's sweep over a chunk | a coarse chunk is 30 windows × 180 s of audio; the tier it belongs to measured 6,741.207 s |
 | `BUCKETS_RUN` | 10 s – 24 h | whole tier, whole file | the archive's longest file is **43,466.880 s** (12 h 04 m 27 s) and at 1.4951× costs ~18 h of wall clock, so the ladder must reach past it or the p99 is `+Inf` exactly where it matters |
 | `BUCKETS_REQUEST` | 5 ms – 10 s | HTTP handlers, SQL statements | dense across 100 ms – 2 s rather than the default's 5–100 ms, because the admin UI's two heavy partials measure **534.0 ms** and **1,378.6 ms** |
@@ -240,7 +240,7 @@ worse than having one that binds.
 
 Everything in this section was read off a **live
 `otel/opentelemetry-collector-contrib` 0.140.0** fed by a **real 30-minute analysis** — real
-essentia, the real 34-graph model set, the real D-07 chunk loop. Recorded output:
+essentia, the real 34-graph model set, the real chunk loop. Recorded output:
 `measurements/metric-contract-2026-08-26.md`. `measurements/analysis-run.json` is committed
 alongside it but carries no run data — that invocation used `scripts/measure_metric_contract.py
 --scrape-only`, which reads the collector's already-exposed series instead of driving a fresh
@@ -338,7 +338,7 @@ the first weeks of real telemetry are what will confirm or refute them.
 
 ## 6. The guard that fails loudly
 
-`phaze-m1drf.3` acceptance 4 asks for a check that fires if a high-cardinality label is ever
+the telemetry identity change acceptance 4 asks for a check that fires if a high-cardinality label is ever
 introduced. It has two halves, and it needs both.
 
 **Static** — `tests/shared/telemetry/test_metric_catalogue.py`:

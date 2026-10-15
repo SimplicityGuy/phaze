@@ -1,6 +1,6 @@
 # Tracklist acquisition retirement
 
-The external acquisition support was removed in phaze-7muoo after the operator received an explicit response that scraping is not allowed and no programmatic API is offered.
+The external acquisition support was removed in external tracklist retirement after the operator received an explicit response that scraping is not allowed and no programmatic API is offered.
 
 Search, detail rendering, parsing, automatic drain continuation, refresh/prioritization endpoints, captured provider fixtures and acquisition scripts are removed. The production image no longer installs Patchright, Chrome or Xvfb. Playwright remains a development-only browser testing dependency.
 

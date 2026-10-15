@@ -72,7 +72,7 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     try:
         result = await recover_orphaned_work(ctx, force=True)
     except Exception:
-        logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced (phaze-o1xx)")
+        logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced ")
         _recovery_state.update(running=False, result=None, failed=True)
         return
     _recovery_state.update(running=False, result=result, failed=False)
@@ -84,7 +84,7 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     )
 
 
-@router.post("/pipeline/recover", response_class=HTMLResponse)
+@router.post("/pipeline/recover", response_class=HTMLResponse, description="HTMX endpoint: manually trigger the gated all-stages recovery pass.")
 async def trigger_recover_ui(request: Request) -> HTMLResponse:
     """HTMX endpoint: manually trigger the gated all-stages recovery pass (Phase 42, D-02/D-05).
 
@@ -122,7 +122,11 @@ async def trigger_recover_ui(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/pipeline/recover/status", response_class=HTMLResponse)
+@router.get(
+    "/pipeline/recover/status",
+    response_class=HTMLResponse,
+    description="HTMX poll target: the OUTCOME of the most recent operator-triggered recovery.",
+)
 async def recover_status_ui(request: Request) -> HTMLResponse:
     """HTMX poll target: the OUTCOME of the most recent operator-triggered recovery (phaze-71nz).
 

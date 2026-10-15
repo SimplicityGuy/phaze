@@ -78,7 +78,7 @@ async def test_run_reenqueue_incomplete_analyses_prints_report_and_exits_zero_on
 
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "3 pre-Phase-43 legacy row(s)" in out
+    assert "3 legacy row(s) from before bounded-window analysis" in out
     assert "2 file(s) with incomplete prior coverage already executed/moved" in out
     assert "0 file(s) with incomplete prior analysis coverage routed" in out
     _stub_io.assert_awaited_once()
@@ -158,6 +158,21 @@ def test_main_backfill_propagates_nonzero_exit_code(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
 
     assert cli.main(["backfill", "reenqueue-incomplete-analyses"]) == 1
+
+
+def test_companion_import_dispatch_preserves_status_cursor_and_apply_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = AsyncMock(return_value=0)
+    monkeypatch.setattr(cli, "run_companion_import", runner)
+    monkeypatch.setattr(cli, "configure_logging", lambda: None)
+    run_id, after = uuid.uuid4(), uuid.uuid4()
+
+    assert (
+        cli.main(
+            ["backfill", "companion-import", "--agent", "test-fileserver", "--run", str(run_id), "--after", str(after), "--page-size", "7", "--apply"]
+        )
+        == 0
+    )
+    runner.assert_awaited_once_with(apply=True, agent_id="test-fileserver", run_id=run_id, page_size=7, after=after)
 
 
 def test_stranded_recovery_requires_explicit_enqueue_flag() -> None:

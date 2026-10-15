@@ -34,24 +34,26 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class ExecBatchProgressPayload(BaseModel):
-    """Per-proposal terminal-state progress event (D-06).
+    """Per-proposal terminal-state progress event."""
 
-    The cross-field invariant on ``failed_at_step``/``terminal_step`` is the
-    schema's single non-trivial rule -- everything else is straightforward
-    Literal-narrowing + ``extra="forbid"``. The validator is ``mode="after"``
-    so it sees the fully-populated instance (defaults applied) and can return
-    a ``ValueError`` whose message points at the field name -- the
-    422-from-FastAPI surface preserves the field name for the agent's error
-    log without leaking handler internals.
-
-    Threat model (T-28-02-V, ASVS V13):
-    - ``extra="forbid"`` blocks every flavour of "ride-along field" attack.
-    - The Literal narrowing on ``terminal_step``/``failed_at_step`` makes
-      out-of-range values 422 at parse time -- before the handler sees them.
-    - The cross-field validator closes the gap where Literal alone would
-      accept a structurally-valid-but-semantically-broken pairing like
-      ``terminal_step="copied"`` + ``failed_at_step="verify"``.
-    """
+    # Per-proposal terminal-state progress event (D-06).
+    #
+    #     The cross-field invariant on ``failed_at_step``/``terminal_step`` is the
+    #     schema's single non-trivial rule -- everything else is straightforward
+    #     Literal-narrowing + ``extra="forbid"``. The validator is ``mode="after"``
+    #     so it sees the fully-populated instance (defaults applied) and can return
+    #     a ``ValueError`` whose message points at the field name -- the
+    #     422-from-FastAPI surface preserves the field name for the agent's error
+    #     log without leaking handler internals.
+    #
+    #     Threat model (T-28-02-V, ASVS V13):
+    #     - ``extra="forbid"`` blocks every flavour of "ride-along field" attack.
+    #     - The Literal narrowing on ``terminal_step``/``failed_at_step`` makes
+    #       out-of-range values 422 at parse time -- before the handler sees them.
+    #     - The cross-field validator closes the gap where Literal alone would
+    #       accept a structurally-valid-but-semantically-broken pairing like
+    #       ``terminal_step="copied"`` + ``failed_at_step="verify"``.
+    #
 
     model_config = ConfigDict(extra="forbid")
 

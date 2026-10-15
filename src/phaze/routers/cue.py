@@ -92,7 +92,7 @@ async def _load_tracklist_with_file(session: AsyncSession, tracklist_id: uuid.UU
     return row[0], row[1]
 
 
-@router.get("/", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse, description="Resolve a legacy ``/cue/`` bookmark into the v7.0 shell.")
 async def list_cue() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/cue/`` bookmark into the v7.0 shell.
 
@@ -167,7 +167,7 @@ async def generate_selected_cue(
     )
 
 
-@router.post("/{tracklist_id}/generate", response_class=HTMLResponse)
+@router.post("/{tracklist_id}/generate", response_class=HTMLResponse, description="Generate a CUE file for a specific tracklist.")
 async def generate_cue(
     request: Request,
     tracklist_id: uuid.UUID,

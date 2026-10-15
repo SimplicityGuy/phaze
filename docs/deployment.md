@@ -48,7 +48,7 @@ flowchart TB
         k2 --- s2
     end
 
-    fs -->|"HTTPS :8000 API (DIST-04)"| api
+    fs -->|"HTTPS:8000 API "| api
     fs -->|"Postgres :5432 SAQ broker"| pg
     fs -->|"Redis :6379 cache"| rd
     cloud -->|"HTTPS :8000 API"| api
@@ -66,10 +66,10 @@ The repo ships three deployment compose files plus a dev overlay:
 
 | File | Host | Services | Notes |
 |------|------|----------|-------|
-| `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
+| `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api`. |
 | `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-meta`, `worker-io` (three per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher` | All services pull from GHCR via `PHAZE_IMAGE_TAG` (`ghcr.io/simplicityguy/phaze`). See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
 | `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, host-bound scratch directory. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
-| `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
+| `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (explicit dev compose overlays: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
 ### Deployment version inventory
 
@@ -89,7 +89,7 @@ The collector uses Docker Compose's `com.docker.compose.project.working_dir` lab
 |---------|---------------|---------|-------|------|
 | `api` | build `Dockerfile` | `uv run python -m phaze.entrypoint` | `${API_PORT:-8000}:8000` | FastAPI + admin UI behind TLS. Mounts `${CA_PATH:-./certs}:/certs:rw` for the cert bootstrap. |
 | `worker` | build `Dockerfile` | `uv run saq phaze.tasks.controller.settings` | — | Control-role SAQ worker (`PHAZE_ROLE=control`). Fileless; no volume mounts. |
-| `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7). `shm_size: "256m"` (phaze-knwk) — Docker's 64 MB `/dev/shm` default starves Postgres's parallel dynamic-shared-memory allocations, which surfaces as failed parallel queries and index builds rather than as an obvious out-of-memory; `justfile:21` mirrors the same value for the test container. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
+| `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset. `shm_size: "256m"`  — Docker's 64 MB `/dev/shm` default starves Postgres's parallel dynamic-shared-memory allocations, which surfaces as failed parallel queries and index builds rather than as an obvious out-of-memory; `justfile:21` mirrors the same value for the test container. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
 | `redis` | `valkey/valkey:9-alpine` | `valkey-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
 
 `api` and `worker` are built from the same `Dockerfile` and differ only by their `command`: `api` runs the cert-bootstrap entrypoint then uvicorn; `worker` runs the controller SAQ worker with `PHAZE_ROLE=control`.
@@ -105,7 +105,7 @@ The pinned Postgres image lives in **exactly three** places, and all three must 
 | 3 | `.github/workflows/tests.yml` (`services.postgres.image`) | `image: postgres:18-alpine` (CI service) |
 
 `tests/agents/deployment/test_postgres_image_pin.py` fails the build if they disagree, so a
-partial bump is caught in CI rather than in production. This is the phaze-tcqq outcome: the tag
+partial bump is caught in CI rather than in production. This is the archive rollout outcome: the tag
 was previously hardcoded in **10** places — four of them `echo` strings, so a partial bump would
 happily *print* the old tag while *running* the new one. That was consolidated to these three
 sites plus the guard test, not to a single source of truth, because Compose and GitHub Actions
@@ -113,7 +113,7 @@ cannot read a `justfile` variable.
 
 #### The `redis` service runs Valkey
 
-The `redis` service runs `valkey/valkey:9-alpine` (bead `phaze-8o294`) — the same image as the
+The `redis` service runs `valkey/valkey:9-alpine`  — the same image as the
 local test harness (`test_redis_image` in the `justfile`), both CI service containers, and the
 real-server test fixtures; `tests/agents/deployment/test_redis_image_pin.py` fails the build if any
 of them drift. The service keeps its name, port and `REDIS_PASSWORD`, and the app keeps redis-py, so
@@ -138,7 +138,7 @@ docker compose logs --since 5m api worker | grep -c NOAUTH   # expect 0
 
 | Service | Image / build | Command | Role |
 |---------|---------------|---------|------|
-| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; host-derived concurrency, replacing the retired fixed default 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all three lane workers, phaze-30fo). |
+| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; host-derived concurrency, replacing the retired fixed default 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all three lane workers, per-lane agent heartbeats). |
 | `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`execute_approved_batch`; default concurrency 2). Heartbeats with `lane=meta`. |
 | `worker-io` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `io` lane (`s3_upload`/`push_file`; default concurrency 4). Heartbeats with `lane=io`. |
 | `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. The only worker with `PHAZE_AGENT_HEARTBEAT=false`: it is unlaned, so an untagged beat would wipe the per-lane breakdown the three lane workers maintain. |
@@ -148,9 +148,9 @@ Every service uses the fail-fast `${SCAN_PATH:?SCAN_PATH required}` source. `wor
 because its lane owns archive mutations; the off-by-default all-mode `worker-drain` also mounts it
 `rw` because it registers those same functions. `worker-analyze`, `worker-io`, and `watcher` mount it
 `ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis
-(cache/counters) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker**
+(cache/counters) and, as of the Postgres queue-backend migration, the app-server's **Postgres broker**
 directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still
-reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service;
+reached only via the HTTP API — and there is **no `DATABASE_URL`** on any agent service;
 the agent's only Postgres connection is the SAQ broker pool. See
 [agent-queue-lanes.md](agent-queue-lanes.md) for the full lane topology, concurrency knobs, and the
 legacy-queue drain runbook.
@@ -161,7 +161,7 @@ Cloud offload is **optional and additive**. The control plane discovers its exec
 `backends.toml` file mounted into the `api` + `worker` (control) services and loaded via
 `PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`). **If no file is mounted, the app
 resolves an implicit local-only registry and cloud offload is off** — there is no env master toggle
-to set. (As of Phase 67, the old `PHAZE_CLOUD_TARGET=local|a1|k8s` selector and the flat
+to set. (As of backend registry migration, the old `PHAZE_CLOUD_TARGET=local|a1|k8s` selector and the flat
 `kube_*` / `s3_*` / `compute_*` fields are **removed with no back-compat**; the app-server compose
 comments document the mount that replaces them.)
 
@@ -176,7 +176,7 @@ comments document the mount that replaces them.)
 
 Per-backend S3 staging is declared in `[[buckets]]` entries bound to backends by id. Each bucket
 carries a `scope` — `shared` (referenceable by any number of kueue backends) or `cluster-specific`
-(the sharing-cardinality invariant D-09 fails fast if a `cluster-specific` bucket is referenced by
+(the sharing-cardinality invariant fails fast if a `cluster-specific` bucket is referenced by
 more than one kueue backend). Bucket `endpoint_url` values carry a per-bucket http(s) SSRF guard.
 
 Cloud on/off is therefore **derived** from the registry (`cloud_enabled` is true iff at least one
@@ -206,11 +206,11 @@ Because on/off is derived from the registry, disabling cloud offload means **rem
 entries from `backends.toml`** (or unmounting the file entirely, which resolves the implicit
 local-only registry).
 
-**Since `phaze-mvq8z` (2026-09), `backends.toml` is hot-reloadable** — see
+**Since runtime configuration hot reload (2026-09), `backends.toml` is hot-reloadable** — see
 [Runtime config hot-reload](#runtime-config-hot-reload) below. A restart is no longer
 required: an edit that lands via the watched directory, or a `docker compose kill -s HUP worker
 api`, re-validates and swaps the registry live. A **restart still works** too
-(`docker compose up -d --force-recreate worker api`) and is the only option pre-`phaze-mvq8z`
+(`docker compose up -d --force-recreate worker api`) and is the only option pre-runtime configuration hot reload
 images. Either way, the change is subject to the same removal-safety rule as any other hot
 reload: a `backends.toml` edit that would remove a backend still referenced by an in-flight
 `cloud_job` row is **rejected outright** — the reload fails closed with the blocked backend(s)
@@ -226,7 +226,7 @@ reload (or a restart), with no re-provisioning.
 
 ## Runtime config hot-reload
 
-Since `phaze-mvq8z` (2026-09) a subset of settings — worker/lane concurrency, the analysis
+Since runtime configuration hot reload (2026-09) a subset of settings — worker/lane concurrency, the analysis
 process-pool size, analysis thread counts for new children, the analysis stall timeout, the
 cloud route threshold, log level, and `backends.toml` — can be changed on a **running**
 deployment without a restart and without dropping in-flight jobs. Design rationale and the full
@@ -253,7 +253,7 @@ section is the deployment-side mount/trigger reference.
 Docker bind mount pins the container's view to the **inode** that existed at mount time. The
 conventional *safe* way to update a config file — write to a temp file, then atomically `mv` it
 into place — replaces that inode at the host path, so the container keeps looking at the OLD
-(now-unlinked) inode and never observes the edit. It is not merely stale: `phaze-mvq8z.3`
+(now-unlinked) inode and never observes the edit. It is not merely stale: the filesystem reload measurement
 measured a single-file-mounted path go from "reads fine" to `cat: ...: No such file or
 directory` after exactly this rename, because the bind-mount reference broke outright. A
 Kubernetes `subPath` ConfigMap mount has the equivalent failure shape for a different reason:
@@ -280,7 +280,7 @@ the directory mount is *for* — both the native watcher backend and the polling
 rename-into-place as a delete+create pair (never a single "moved" event) and coalesce it into one
 debounced reload.
 
-**Polling default, and why.** `phaze-mvq8z.3` measured, inside a real container on this
+**Polling default, and why.** the filesystem reload measurement measured, inside a real container on this
 project's macOS/Colima development setup, that the native `watchdog` backend sees **zero** host
 edits through a Colima/virtiofs directory bind mount — for either the atomic-rename or the
 in-place edit pattern — with no error of any kind: the process boots clean, the watch appears to
@@ -315,7 +315,7 @@ docker compose -f docker-compose.agent.yml kill -s HUP worker-analyze
 `docker compose kill -s HUP <service>` delivers the signal to the container's PID 1. Every
 container here runs `uv run ...`, and `uv` **forks** rather than `exec`-replacing itself for a
 single-hop command (the worker and watcher services), or execs into a second `uv run` for the
-api's double-hop entrypoint chain — `phaze-mvq8z.3` verified, against the real `uv` image and
+api's double-hop entrypoint chain — the filesystem reload measurement verified, against the real `uv` image and
 both process shapes, that `SIGHUP` sent to the container reaches the innermost phaze process
 either way, so the plain `docker compose kill -s HUP` form above is sufficient; no extra
 `--signal`/exec-form plumbing is needed in any compose file here.
@@ -339,8 +339,8 @@ it was the whole of the separate Routing page, which was removed — `/s/operati
 The DB-override table is created by Alembic migration `073_runtime_config_override` (chained
 after main's `072_cloud_job_redrive_after`, current head `076` — see
 [database.md](database.md) for the full migration chain); its downgrade drops the table, which is
-why the whole `phaze-mvq8z` molecule was deliberately landed as a single `--no-ff` merge to
-`main` — an operator decision (2026-09-27, epic `phaze-mvq8z`) — so a single `git revert -m 1`
+why the whole runtime configuration hot reload molecule was deliberately landed as a single `--no-ff` merge to
+`main` — the recorded rollback boundary (2026-09-27) — so a single `git revert -m 1`
 cleanly removes both the code and the migration together.
 
 ## Controller vs Agent roles
@@ -376,10 +376,10 @@ The env vars that gate this bootstrap on the agent side are `PHAZE_AGENT_CA_FILE
 
 - Docker Engine 20.10+ and `docker compose` v2.x on both hosts
 - `just` installed on both hosts (or run `docker compose` directly)
-- Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Phase 36), or 8000 (API) between them
+- Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Postgres broker migration), or 8000 (API) between them
 - Postgres + Redis are NOT directly exposed to the public internet (LAN-only; the agent→Postgres:5432 edge is private-LAN scoped)
-- On the app-server host: `./certs/` (materialized by `git clone` via a committed `.gitkeep`, then cert-populated on first start; must be owned by uid 1000 — phaze-he8m), `.env`
-- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (or whatever `MODELS_PATH` names) **already holding the essentia model set** — the worker validates it at boot and never downloads it (phaze-ynv6w); both owned by uid 1000 — phaze-he8m), `.env`
+- On the app-server host: `./certs/` (materialized by `git clone` via a committed `.gitkeep`, then cert-populated on first start; must be owned by uid 1000 — bind-mount ownership provisioning), `.env`
+- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (or whatever `MODELS_PATH` names) **already holding the essentia model set** — the worker validates it at boot and never downloads it; both owned by uid 1000 — bind-mount ownership provisioning), `.env`
 
 ## Step 1 — Bring up the application server
 
@@ -396,14 +396,14 @@ cp .env.example .env
 # Edit .env: set REDIS_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10)
 # Edit .env: set PHAZE_QUEUE_URL (raw libpq postgresql:// DSN) — the SAQ Postgres broker.
 #            Defaults to the in-compose `postgres` service; treat as a secret (PHAZE_QUEUE_URL_FILE).
-mkdir -p certs   # phaze-he8m: own ./certs as the operator (uid 1000) BEFORE `up`
+mkdir -p certs   # bind-mount ownership provisioning: own ./certs as the operator (uid 1000) BEFORE `up`
 just up
 ```
 
 `just up` runs `docker compose -f docker-compose.yml up -d` (base compose only, so the dev overlay
-is never auto-merged — phaze-476w; it also runs `mkdir -p certs` for you). The `api` container
+is never auto-merged — explicit dev compose overlays; it also runs `mkdir -p certs` for you). The `api` container
 bind-mounts `./certs:/certs:rw` and runs as the non-root `phaze` user (uid 1000). **The `./certs`
-dir must exist and be owned by uid 1000 before `up`** (phaze-he8m): on a rootful Linux docker engine
+dir must exist and be owned by uid 1000 before `up`**: on a rootful Linux docker engine
 a *missing* bind-mount source is auto-created by the daemon as `root:root`, and the uid-1000 cert
 bootstrap then dies with `PermissionError` writing `/certs/phaze-ca.crt` before uvicorn binds — an
 opaque crash-loop. A fresh `git clone` already materializes `./certs/` (it ships a committed
@@ -460,7 +460,7 @@ docker compose exec api uv run phaze agents add \
     --scan-roots /data/music,/data/concerts
 ```
 
-> **`uv run` is required, not optional (phaze-u5k0d).** The `api`/`worker` containers' `CMD`
+> **`uv run` is required, not optional.** The `api`/`worker` containers' `CMD`
 > is `uv run ...` — the project resolves through uv's environment rather than an installed
 > system Python — so a bare `docker compose exec api phaze agents add ...` fails with
 > `executable file not found in $PATH` (verified against a deployed container, image
@@ -525,15 +525,15 @@ On the **file-server host**, get the compose file and the `.env` template. All a
 git clone https://github.com/simplicityguy/phaze.git
 cd phaze
 cp .env.example.agent .env
-mkdir -p models certs   # phaze-he8m: own ./models and ./certs as uid 1000
+mkdir -p models certs   # bind-mount ownership provisioning: own ./models and ./certs as uid 1000
 ```
 
 The `mkdir -p models certs` (also run for you by `just up-agent`) is required for the same
-reason as Step 1 (phaze-he8m): both bind-mount sources must exist owned by uid 1000 before
+reason as Step 1: both bind-mount sources must exist owned by uid 1000 before
 `up`, otherwise rootful dockerd creates them `root:root`. A `git clone` already materializes
 both via committed `.gitkeep` files.
 
-**The models must be there before the first `up`.** Since phaze-ynv6w the worker mounts
+**The models must be there before the first `up`.** Since model provisioning validation the worker mounts
 `MODELS_PATH` read-only (`./models:/models:ro`) and only **validates** it at boot — every one
 of the 68 `.pb`/`.json` files at its pinned byte size — and exits naming the directory and the
 missing files otherwise. It never downloads them. Either set `MODELS_PATH` in `.env` to a
@@ -545,10 +545,10 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `PHAZE_AGENT_API_URL=https://<app-server-lan-ip>:8000`
 - `PHAZE_REDIS_URL=redis://<app-server-lan-ip>:6379/0` + `REDIS_PASSWORD=<the app-server's REDIS_PASSWORD>` (cache only — no longer the SAQ broker). **Prefer this split form over hand-typing
   `redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0`**: `config.py`'s `_apply_redis_password`
-  percent-encodes `REDIS_PASSWORD` into the URL for you (phaze-1g89i), so a strong password
+  percent-encodes `REDIS_PASSWORD` into the URL for you, so a strong password
   containing `/`, `#`, `?`, or `%` can't corrupt the DSN the way pasting it directly into the URL
   would.
-- `PHAZE_QUEUE_URL=postgresql://<user>:<password>@<app-server-lan-ip>:5432/phaze` — the SAQ Postgres broker DSN (**raw libpq form**, NOT `postgresql+asyncpg://`). The agent now opens a psycopg3 pool to the app-server Postgres, so its host must be reachable on 5432 (new firewall edge relaxing D-25). Treat it as a secret — prefer `PHAZE_QUEUE_URL_FILE=/run/secrets/phaze_queue_url`.
+- `PHAZE_QUEUE_URL=postgresql://<user>:<password>@<app-server-lan-ip>:5432/phaze` — the SAQ Postgres broker DSN (**raw libpq form**, NOT `postgresql+asyncpg://`). The agent now opens a psycopg3 pool to the app-server Postgres, so its host must be reachable on 5432 (requires broker access through the firewall). Treat it as a secret — prefer `PHAZE_QUEUE_URL_FILE=/run/secrets/phaze_queue_url`.
 - `PHAZE_AGENT_ID=fileserver-east`
 - `PHAZE_AGENT_TOKEN=<the plaintext token from Step 3>`
 - `PHAZE_AGENT_QUEUE=phaze-agent-fileserver-east` — by convention this MUST equal `phaze-agent-<agent_id>` (the value `phaze agents add` printed in Step 3). There is no queue column on the `agents` table; the worker derives the expected name from the token's agent_id and exits non-zero on mismatch.
@@ -556,7 +556,7 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `PHAZE_AGENT_ENV=production`
 - `SCAN_PATH=/path/to/your/music/library`
 - `MODELS_PATH=./models` — a HOST path only; it picks the bind-mount source. Every worker +
-  watcher service pins its own container-side `MODELS_PATH=/models` (phaze-bvkah), so this
+  watcher service pins its own container-side `MODELS_PATH=/models`, so this
   value never changes where the container looks for models — only which host directory
   backs `/models`.
 - `CA_PATH=./certs`
@@ -573,7 +573,7 @@ On the **file-server host**:
 just up-agent
 ```
 
-`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, the lane workers call `/api/internal/agent/whoami` to verify their token and validate ~3.1 GB of essentia weights (68 model/config files) in the read-only `./models/` mount — a per-file size check that takes well under a second. A lane that finds a file missing or wrong-size exits naming it and is restarted until the set is provisioned; nothing is downloaded (phaze-ynv6w). The watcher comes up in parallel.
+`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, the lane workers call `/api/internal/agent/whoami` to verify their token and validate ~3.1 GB of essentia weights (68 model/config files) in the read-only `./models/` mount — a per-file size check that takes well under a second. A lane that finds a file missing or wrong-size exits naming it and is restarted until the set is provisioned; nothing is downloaded. The watcher comes up in parallel.
 
 Watch any lane's logs. Every active lane worker publishes its own heartbeat; `worker-analyze` is
 usually the most useful stream when checking audio-analysis startup:
@@ -593,7 +593,7 @@ You should see (per lane worker; `lane=` varies by service):
 
 After each lane completes startup, its heartbeat — an asyncio background task in **each** of the three lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
 
-> **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation (DIST-01).
+> **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation.
 
 ## Step 6 — Verify on the admin page
 
@@ -618,7 +618,7 @@ You should see the agent reach **alive** within ~60s of `just up-agent`.
 
 If the row shows **never**: the agent worker has not completed startup yet. Check the worker logs.
 
-If the row shows **stale** then **dead**: the worker is up but heartbeats are not reaching the app-server. Check the agent worker logs for `heartbeat failed: ...` WARNING lines, and verify the agent can reach `https://<app-server>:8000/api/internal/agent/heartbeat` with the correct CA cert and token. If a **busy** worker (high CPU, actively analyzing) still appears stale/dead, confirm the agent image carries the Phase 46 build — before it, the heartbeat ran as a SAQ cron job that competed for the `worker_max_jobs` dispatch slots and was starved by multi-hour `process_file` jobs; the fix runs the heartbeat as an in-process asyncio background task that cannot be starved.
+If the row shows **stale** then **dead**: the worker is up but heartbeats are not reaching the app-server. Check the agent worker logs for `heartbeat failed:...` WARNING lines, and verify the agent can reach `https://<app-server>:8000/api/internal/agent/heartbeat` with the correct CA cert and token. If a **busy** worker (high CPU, actively analyzing) still appears stale/dead, confirm the agent image carries the background heartbeat build — before it, the heartbeat ran as a SAQ cron job that competed for the `worker_max_jobs` dispatch slots and was starved by multi-hour `process_file` jobs; the fix runs the heartbeat as an in-process asyncio background task that cannot be starved.
 
 ## The watcher service
 
@@ -659,7 +659,7 @@ This workflow produces **three** GHCR artifacts across three build stages (`push
 | `ghcr.io/simplicityguy/phaze:*-arm64` | `Dockerfile.agent-arm64` | arm64 | `docker-compose.cloud-agent.yml` cloud-compute agent (`kind=compute`); parity-gated push |
 | `ghcr.io/simplicityguy/phaze/job` | `Dockerfile.job` | amd64 | Kueue backend (`kind=kueue`) one-shot Jobs submitted by the control plane |
 
-- The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s three lane workers + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
+- The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s three lane workers + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a former publishing convention — it is no longer published and must NOT be pulled or referenced.
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:<version>`.
 - Release tags MUST be 3-part CalVer (`YYYY.M.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
@@ -689,13 +689,13 @@ The `Dockerfile` is multi-stage. A `css-builder` stage (`FROM python:3.14-slim A
 
 You can also build/push manually with `just`: `just docker-build`, `just docker-validate` (hadolint), `just docker-compose-validate`, and `just image-push` (requires a `gh` token with `packages:write`).
 
-### Static asset caching (phaze-315t)
+### Static asset caching
 
-Every `/static/...` URL the app's templates emit (`app.css`, favicons, `site.webmanifest`, `og_image.png`) carries a `?v=<content-hash>` query parameter — `phaze.web.static.STATIC_VERSION`, a SHA-256 fingerprint over the content of every file under `src/phaze/static/`, computed once at process import time. `shell/shell.html` (which also renders the full record page, with `record/_record_page_body.html` as its workspace partial) builds these URLs via the `static_url(...)` Jinja global, registered per-router on each router's own `Jinja2Templates` instance in `shell.py`, `record.py`, `execution.py` and `pipeline/_common.py`. (`base.html` was deleted in `phaze-uvmcr.5` once audit/agents/files moved onto the shell and it had zero remaining callers; `shell/shell.html` is now the only full page layout; the full record page at `/files/<id>` renders inside it.)
+Every `/static/...` URL the app's templates emit (`app.css`, favicons, `site.webmanifest`, `og_image.png`) carries a `?v=<content-hash>` query parameter — `phaze.web.static.STATIC_VERSION`, a SHA-256 fingerprint over the content of every file under `src/phaze/static/`, computed once at process import time. `shell/shell.html` (which also renders the full record page, with `record/_record_page_body.html` as its workspace partial) builds these URLs via the `static_url(...)` Jinja global, registered per-router on each router's own `Jinja2Templates` instance in `shell.py`, `record.py`, `execution.py` and `pipeline/_common.py`. (`base.html` was deleted in the console recovery summary once audit/agents/files moved onto the shell and it had zero remaining callers; `shell/shell.html` is now the only full page layout; the full record page at `/files/<id>` renders inside it.)
 
 `RevalidatingStaticFiles` (`src/phaze/web/static.py`, mounted at `/static` in `main.py`) answers a request whose `?v=` matches the CURRENT `STATIC_VERSION` with `Cache-Control: max-age=31536000, immutable` — safe forever, because that exact URL can never later serve different bytes: if the content changes, the fingerprint changes too, and the browser fetches the new URL instead of reusing anything. Any other request (a stale fingerprint from a previous deploy, or a direct request with no `?v=` at all — e.g. a browser's automatic `/favicon.ico` probe, or the icon paths inside `site.webmanifest` itself, which is static JSON and not template-rendered) falls back to `Cache-Control: no-cache`, forcing a cheap conditional-request/304 revalidation instead of a stale heuristic hit.
 
-This replaces phaze-mw9l's no-cache-only fix (every hit, even an unchanged file, paid a round trip) and closes the defect it was filed against: a browser that had visited the site before a CSS-changing deploy previously kept rendering the OLD stylesheet against the NEW server HTML on an ordinary reload, because stock `StaticFiles` sent no `Cache-Control` at all and browsers applied heuristic freshness across deploys. Because the compiled `src/phaze/static/css/app.css` is produced by the Dockerfile's `css-builder` stage and `COPY --from=css-builder`'d into the final image (never a stale local copy — see `.dockerignore`), `STATIC_VERSION` computed at container startup always reflects exactly what that specific deployed image serves.
+This replaces the earlier cache fix's no-cache-only fix (every hit, even an unchanged file, paid a round trip) and closes the defect it was filed against: a browser that had visited the site before a CSS-changing deploy previously kept rendering the OLD stylesheet against the NEW server HTML on an ordinary reload, because stock `StaticFiles` sent no `Cache-Control` at all and browsers applied heuristic freshness across deploys. Because the compiled `src/phaze/static/css/app.css` is produced by the Dockerfile's `css-builder` stage and `COPY --from=css-builder`'d into the final image (never a stale local copy — see `.dockerignore`), `STATIC_VERSION` computed at container startup always reflects exactly what that specific deployed image serves.
 
 ## Environment Setup
 
@@ -705,12 +705,12 @@ Production-critical variables:
 
 | Variable | Host | Why it matters |
 |----------|------|----------------|
-| `POSTGRES_PASSWORD` | app-server | `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7); there is no weak silent default. Use a strong unique value and keep `DATABASE_URL` / `PHAZE_QUEUE_URL` in sync with it. |
+| `POSTGRES_PASSWORD` | app-server | `${POSTGRES_PASSWORD:?}` — compose parse fails if unset; there is no weak silent default. Use a strong unique value and keep `DATABASE_URL` / `PHAZE_QUEUE_URL` in sync with it. |
 | `POSTGRES_BIND_IP` | app-server | Interface the published `:5432` binds to. Must be the app-server's private LAN IP so agents can open their `PHAZE_QUEUE_URL` psycopg3 pool to the broker — at the `127.0.0.1` default they cannot reach it. Never `0.0.0.0`, never a public IP. Mirrors `REDIS_BIND_IP`. |
 | `REDIS_PASSWORD` | app-server | `valkey-server --requirepass`; compose parse fails if unset. Use a unique high-entropy value (>= 32 chars). |
 | `REDIS_BIND_IP` | app-server | Must be the app-server's private LAN IP so agents on other hosts can reach Redis. Never `0.0.0.0`, never a public IP. |
-| `PHAZE_QUEUE_URL` | app-server + file-server | The SAQ Postgres broker DSN (**raw libpq** `postgresql://…`, NOT `+asyncpg`). On agents it points at the app-server Postgres LAN IP:5432 — open that firewall edge (relaxes D-25). Carries DB credentials; use the `_FILE` secret form. Keep the per-queue pool budget under Postgres `max_connections`. |
-| `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
+| `PHAZE_QUEUE_URL` | app-server + file-server | The SAQ Postgres broker DSN (**raw libpq** `postgresql://…`, NOT `+asyncpg`). On agents it points at the app-server Postgres LAN IP:5432 — open that firewall edge (relaxes). Carries DB credentials; use the `_FILE` secret form. Keep the per-queue pool budget under Postgres `max_connections`. |
+| `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url`  and passwordless `redis_url`. Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
 | `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (for example, `2026.8.4`) in production rather than `latest`. |
@@ -766,9 +766,9 @@ To stop and restart cleanly without rebuilding: `just down` (`docker compose dow
 
 > Do **not** `rm -rf ./certs/` as part of a rollback — that triggers a full CA regeneration and breaks every agent until the new `phaze-ca.crt` is re-distributed (see CA Rotation below).
 
-## One-time cleanup after the Phase 46 heartbeat fix
+## One-time cleanup after the background heartbeat fix
 
-Builds **before** Phase 46 registered the heartbeat as a SAQ `CronJob` with `unique=True`, which parks a deterministic row keyed `cron:heartbeat_tick` in the Postgres broker (`saq_jobs`). After you redeploy the new agent image, nothing re-schedules that row (the heartbeat now runs as an in-process asyncio background task), so it lingers as a stale parked entry. Run this one-time cleanup **after the new agent image is deployed**, against the queue database (`PHAZE_QUEUE_URL`):
+Builds **before** background heartbeat registered the heartbeat as a SAQ `CronJob` with `unique=True`, which parks a deterministic row keyed `cron:heartbeat_tick` in the Postgres broker (`saq_jobs`). After you redeploy the new agent image, nothing re-schedules that row (the heartbeat now runs as an in-process asyncio background task), so it lingers as a stale parked entry. Run this one-time cleanup **after the new agent image is deployed**, against the queue database (`PHAZE_QUEUE_URL`):
 
 ```sql
 DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
@@ -787,28 +787,28 @@ docker compose exec api uv run phaze backfill set-projection
 
 The command is idempotent — it re-derives only the `SetProfile` rows whose `projection_version` is behind the code's current value, never the whole corpus, so re-running it costs nothing. It prints a report including files scanned/projected/skipped/failed and the wall-clock duration; record the derived rows/s and that wall-clock figure as a dated amendment under the ADR's §10, the same way prior version bumps were recorded.
 
-## Historical: sidecar volume chown runbook (removed, phaze-0jpe)
+## Historical: sidecar volume chown runbook (removed, fingerprint removal)
 
 Prior revisions of this guide carried a one-time volume-ownership repair for the `audfprint`/
 `panako` fingerprint sidecars (a uid-999-to-1000 mismatch on pre-`7b9adec` hosts). Both engines
-and their sidecars were removed in full — 2026-07-28, epic phaze-0jpe; see
+and their sidecars were removed in full — 2026-07-28, fingerprint removal; see
 [docs/design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) for why — so the
 runbook no longer applies to a current checkout and has been deleted from this guide. The live
 `audfprint_data`/`panako_data` Docker volumes on any already-deployed file server are **not**
 touched by this removal; their disposal is a separate, explicitly-approved operator step (see
-`docs/runbook.md`, phaze-0jpe.6) because they are the only surviving evidence for the two
+`docs/runbook.md`, the fingerprint runtime dependency verification) because they are the only surviving evidence for the two
 production outages the ADR cites.
 
 ## Monitoring & Health
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
-- **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention (phaze-30fo): pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
+- **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs. Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention: pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
 - **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
 - **Logging and optional telemetry:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. OpenTelemetry export is disabled when no OTLP endpoint is configured; set the standard `OTEL_EXPORTER_OTLP_*` variables to push metrics and traces to the operator-owned collector. `docker-compose.telemetry.example.yml` is a development illustration only, not part of the production topology. See [telemetry/exporter.md](telemetry/exporter.md).
 
-## Filesystem-Isolation Smoke (D-20)
+## Filesystem-Isolation Smoke
 
-To verify DIST-01 (the app-server has no way to read or write music files), exec into the api container and try to read a file:
+To verify  (the app-server has no way to read or write music files), exec into the api container and try to read a file:
 
 ```bash
 docker compose exec api ls -la /data/music
@@ -836,7 +836,7 @@ docker compose restart api            # cert_bootstrap regenerates + prints the 
 
 Every file-server agent will fail to connect until you re-distribute the new `phaze-ca.crt`. The loud banner is the only safeguard — do not delete the certs directory casually.
 
-> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from the operator-created `core/v1` Secret named by `[backends.kube].ca_secret_name` (default `phaze-internal-ca`) read-only at `/certs` (KDEPLOY-06). After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
+> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from the operator-created `core/v1` Secret named by `[backends.kube].ca_secret_name` (default `phaze-internal-ca`) read-only at `/certs`. After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
 
 ## Pinning the agent image for production
 
@@ -851,7 +851,7 @@ Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workfl
 
 ## Provisioning models
 
-phaze never downloads models at runtime (phaze-ynv6w): the worker validates the set it is
+phaze never downloads models at runtime: the worker validates the set it is
 given and refuses to start without it. On a host that has no copy, provision one explicitly
 **before** `just up-agent`:
 
@@ -869,19 +869,19 @@ pulls ~3.1 GB by default). On a host that already holds the consolidated model d
 
 Before shipping a file-server host to production:
 
-- [ ] `POSTGRES_PASSWORD` set to a strong unique value — `docker compose` fails to parse without it (phaze-rnh7); `DATABASE_URL` / `PHAZE_QUEUE_URL` updated to match
-- [ ] `POSTGRES_BIND_IP` set to the app-server's private LAN IP — at the `127.0.0.1` default agents cannot reach the `PHAZE_QUEUE_URL` broker on `:5432` (never `0.0.0.0`, never the public IP)
-- [ ] `REDIS_PASSWORD` set to a unique high-entropy value (>= 32 chars) — never the default
-- [ ] `REDIS_BIND_IP` set to the app-server's private LAN IP (never `0.0.0.0`, never the public IP)
-- [ ] `PHAZE_AGENT_ENV=production` — enables the redis-password-required and https-required guards in `AgentSettings`
-- [ ] `PHAZE_AGENT_TOKEN` generated via `secrets.token_urlsafe(32)`, not a placeholder
-- [ ] `phaze-ca.crt` distributed via secure channel (scp over SSH, not email/chat)
-- [ ] `phaze-ca.key` NEVER copied off the app-server host
-- [ ] `PHAZE_IMAGE_TAG` pinned to a specific release (for example, `2026.8.4`), not `latest`
-- [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
-- [ ] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint (phaze-476w)
-- [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
-- [ ] `/admin/agents` page shows **alive** status within ~60s of `just up-agent`
+- [] `POSTGRES_PASSWORD` set to a strong unique value — `docker compose` fails to parse without it; `DATABASE_URL` / `PHAZE_QUEUE_URL` updated to match
+- [] `POSTGRES_BIND_IP` set to the app-server's private LAN IP — at the `127.0.0.1` default agents cannot reach the `PHAZE_QUEUE_URL` broker on `:5432` (never `0.0.0.0`, never the public IP)
+- [] `REDIS_PASSWORD` set to a unique high-entropy value (>= 32 chars) — never the default
+- [] `REDIS_BIND_IP` set to the app-server's private LAN IP (never `0.0.0.0`, never the public IP)
+- [] `PHAZE_AGENT_ENV=production` — enables the redis-password-required and https-required guards in `AgentSettings`
+- [] `PHAZE_AGENT_TOKEN` generated via `secrets.token_urlsafe(32)`, not a placeholder
+- [] `phaze-ca.crt` distributed via secure channel (scp over SSH, not email/chat)
+- [] `phaze-ca.key` NEVER copied off the app-server host
+- [] `PHAZE_IMAGE_TAG` pinned to a specific release (for example, `2026.8.4`), not `latest`
+- [] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
+- [] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint
+- [] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
+- [] `/admin/agents` page shows **alive** status within ~60s of `just up-agent`
 
 ## See also
 

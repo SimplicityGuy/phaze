@@ -95,7 +95,7 @@ def _to_int(value: Any) -> int:
         msg = (
             f"pipeline counters read back {type(value).__name__}, not str: read_counters requires the "
             "decode_responses=True client (app.state.redis, main.py:161), never a byte-mode client "
-            "(queue.cache_redis, queue_factory.py:95). See phaze-ooe68."
+            "(queue.cache_redis, queue_factory.py:95)."
         )
         raise TypeError(msg)
     return int(value)

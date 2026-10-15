@@ -1,4 +1,4 @@
-# Stranded analysis diagnosis (`phaze-hia9z`)
+# Stranded analysis diagnosis
 
 Read-only production measurements on 2026-09-21. The source population and throughput baseline
 come from [the earlier timing spike](spikes/phaze-zaf2l-where-phaze-spends-time.md), §§2, 3, and 6.
@@ -48,7 +48,7 @@ The progress POST persists a partial row without changing the completion or fail
 `_finalize_analysis_outcome` in the same module). The terminal failure callback stamps `failed_at`
 and clears the ledger. A job that stops after progress but before either callback therefore leaves
 exactly the observed partial row and ledger entry. The derived file state remains `discovered`
-because neither terminal marker exists; the old `files.state` write was removed (the D-09 comments
+because neither terminal marker exists; the old `files.state` write was removed (the streaming teardown comments
 beside those handlers).
 
 The missing broker key makes each ledger row a recovery candidate. However,
@@ -72,7 +72,7 @@ claiming a cause the available evidence cannot distinguish.
 
 The earlier spike correctly reported invisibility at its measurement date. The current code has
 since added an amber `analyzeOrphan` badge on the global rail
-(`src/phaze/templates/shell/partials/rail.html`; **removed 2026-10-05, phaze-640na** -- orphaned work is now surfaced on the Summary page's
+(`src/phaze/templates/shell/partials/rail.html`; **removed 2026-10-05, orphaned-work recovery** -- orphaned work is now surfaced on the Summary page's
 Needs Attention card and the workspace recovery UI, not the rail). Its count comes from
 `src/phaze/services/pipeline/orphans.py::get_stage_orphan_counts`, which deliberately reuses the
 same live-job, completion, and cloud-ownership exclusions as recovery. The badge counts recovery
@@ -94,7 +94,7 @@ fine-tier equality, missing cloud and live-job owners, and the executed-move exc
 **661** against production in a read-only dry run. Focused tests pin those exclusions, the default
 read-only CLI behavior, and that scoped recovery never sweeps unrelated ledger rows.
 
-**Decision, 2026-09-21 (`phaze-hia9z`): do not queue from an unreviewed worktree or use the global
+**Decision, 2026-09-21: do not queue from an unreviewed worktree or use the global
 Recover action.** Keep the 661 pending until the scoped command has passed review and reached the
 deployed image. At that point its count-only run must still select the intended population before
 the operator schedules the **82.4 wall-hour** replay. This preserves the durable ledger entries

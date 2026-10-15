@@ -10,18 +10,20 @@ from phaze.config_base import BaseSettings
 
 
 class AgentSettings(BaseSettings):
-    """File-server role: HTTP client to the application server, file-bound SAQ tasks.
+    """File-server role: HTTP client to the application server, file-bound SAQ tasks."""
 
-    Per D-14: `agent_api_url`, `agent_token`, and `scan_roots` are required when
-    `PHAZE_ROLE=agent`. The validator raises ValueError at construction time if
-    any is missing/empty so the agent worker fails fast with a clear error rather
-    than silently producing 401s or path-traversal rejections at runtime.
-
-    Env var names use the documented `PHAZE_AGENT_*` / `PHAZE_AGENT_SCAN_ROOTS`
-    naming via `validation_alias=AliasChoices(...)` per field. The bare field
-    names (e.g., `AGENT_API_URL`) are also accepted for in-process / pytest
-    monkeypatch convenience.
-    """
+    # File-server role: HTTP client to the application server, file-bound SAQ tasks.
+    #
+    #     Per D-14: `agent_api_url`, `agent_token`, and `scan_roots` are required when
+    #     `PHAZE_ROLE=agent`. The validator raises ValueError at construction time if
+    #     any is missing/empty so the agent worker fails fast with a clear error rather
+    #     than silently producing 401s or path-traversal rejections at runtime.
+    #
+    #     Env var names use the documented `PHAZE_AGENT_*` / `PHAZE_AGENT_SCAN_ROOTS`
+    #     naming via `validation_alias=AliasChoices(...)` per field. The bare field
+    #     names (e.g., `AGENT_API_URL`) are also accepted for in-process / pytest
+    #     monkeypatch convenience.
+    #
 
     # The shared resolver handles the bearer token and SSH files; never log their values.
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"agent_token", "push_ssh_key", "push_known_hosts"}
@@ -49,13 +51,13 @@ class AgentSettings(BaseSettings):
     agent_env: Literal["dev", "production"] = Field(
         default="dev",
         validation_alias=AliasChoices("PHAZE_AGENT_ENV", "agent_env"),
-        description="Deployment mode. Production refuses passwordless Redis URLs (Phase 29 D-06).",
+        description="Deployment mode. Production refuses passwordless Redis URLs.",
     )
     # CLI choices and the database CHECK bracket this config-layer kind constraint.
     kind: Literal["fileserver", "compute"] = Field(
         default="fileserver",
         validation_alias=AliasChoices("PHAZE_AGENT_KIND", "kind"),
-        description="Agent kind. 'compute' (cloud) agents own no scan roots; relaxes the empty-scan-roots gate (Phase 48).",
+        description="Agent kind. 'compute' (cloud) agents own no scan roots; relaxes the empty-scan-roots gate.",
     )
     scan_roots: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
@@ -73,17 +75,17 @@ class AgentSettings(BaseSettings):
     watcher_settle_seconds: int = Field(
         default=10,
         validation_alias=AliasChoices("PHAZE_WATCHER_SETTLE_SECONDS", "watcher_settle_seconds"),
-        description="Seconds a file's mtime must be stable before the watcher posts it (D-01).",
+        description="Seconds a file's mtime must be stable before the watcher posts it.",
     )
     watcher_max_pending_seconds: int = Field(
         default=3600,
         validation_alias=AliasChoices("PHAZE_WATCHER_MAX_PENDING_SECONDS", "watcher_max_pending_seconds"),
-        description="Stuck-file cap; entries older than this are evicted from the pending set (D-02).",
+        description="Stuck-file cap; entries older than this are evicted from the pending set.",
     )
     watcher_sweep_interval_seconds: int = Field(
         default=2,
         validation_alias=AliasChoices("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds"),
-        description="How often the watcher's sweep task checks for settled files (D-01).",
+        description="How often the watcher's sweep task checks for settled files.",
     )
     watcher_polling_mode: bool = Field(
         default=False,
@@ -98,7 +100,7 @@ class AgentSettings(BaseSettings):
     scan_chunk_size: int = Field(
         default=500,
         validation_alias=AliasChoices("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size"),
-        description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
+        description="Number of FileUpsertRecord rows per chunk in scan_directory.",
     )
 
     # The monotonic throttle collapses per-window progress bursts but always flushes the final count.
@@ -106,49 +108,49 @@ class AgentSettings(BaseSettings):
         default=5.0,
         ge=0.0,
         validation_alias=AliasChoices("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "analysis_progress_interval_sec"),
-        description="Minimum seconds between mid-flight analyze-progress POSTs (Phase 57.1 D-04). The final count is always flushed regardless; 0 disables throttling.",
+        description="Minimum seconds between mid-flight analyze-progress POSTs. The final count is always flushed regardless; 0 disables throttling.",
     )
 
     agent_ca_file: str = Field(
         default="/certs/phaze-ca.crt",
         validation_alias=AliasChoices("PHAZE_AGENT_CA_FILE", "agent_ca_file"),
-        description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint (Phase 29 D-03).",
+        description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint.",
     )
 
     push_ssh_user: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_PUSH_SSH_USER", "push_ssh_user"),
-        description="SSH username for the rsync push target (Phase 50, D-05).",
+        description="SSH username for the rsync push target.",
     )
     cloud_scratch_dir: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_CLOUD_SCRATCH_DIR", "cloud_scratch_dir"),
-        description="Remote scratch directory on the compute agent where pushed files land and are later read by process_file. MUST match the control-plane compute backend's scratch_dir in backends.toml (Phase 50, D-07; Phase 67).",
+        description="Remote scratch directory on the compute agent where pushed files land and are later read by process_file. MUST match the control-plane compute backend's scratch_dir in backends.toml.",
     )
     push_timeout_sec: int = Field(
         default=600,
         gt=0,
         lt=86400,
         validation_alias=AliasChoices("PHAZE_PUSH_TIMEOUT_SEC", "push_timeout_sec"),
-        description="rsync I/O-stall timeout (seconds) for a single push_file transfer; MUST stay below the SAQ push_file job timeout so the kill is deterministic (Phase 50). Default 600; bounded gt=0, lt=86400.",
+        description="rsync I/O-stall timeout (seconds) for a single push_file transfer; MUST stay below the SAQ push_file job timeout so the kill is deterministic. Default 600; bounded gt=0, lt=86400.",
     )
     push_connect_timeout_sec: int = Field(
         default=30,
         gt=0,
         lt=3600,
         validation_alias=AliasChoices("PHAZE_PUSH_CONNECT_TIMEOUT_SEC", "push_connect_timeout_sec"),
-        description="SSH connect-handshake timeout (seconds) for the rsync push (Phase 50). Default 30; bounded gt=0, lt=3600.",
+        description="SSH connect-handshake timeout (seconds) for the rsync push. Default 30; bounded gt=0, lt=3600.",
     )
     # D-05/D-07 file-mounted secrets — resolved via SECRET_FILE_FIELDS above. NEVER log (D-13).
     push_ssh_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_PUSH_SSH_KEY", "push_ssh_key"),
-        description="SSH identity private key for the rsync push, file-mounted via PHAZE_PUSH_SSH_KEY_FILE (Phase 50, D-05). Never logged.",
+        description="SSH identity private key for the rsync push, file-mounted via PHAZE_PUSH_SSH_KEY_FILE. Never logged.",
     )
     push_known_hosts: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_PUSH_KNOWN_HOSTS", "push_known_hosts"),
-        description="Pinned known_hosts for strict SSH host-key checking of the push target, file-mounted via PHAZE_PUSH_KNOWN_HOSTS_FILE (Phase 50, D-07). Never logged.",
+        description="Pinned known_hosts for strict SSH host-key checking of the push target, file-mounted via PHAZE_PUSH_KNOWN_HOSTS_FILE. Never logged.",
     )
 
     @field_validator("scan_roots", mode="before")
@@ -204,7 +206,7 @@ class AgentSettings(BaseSettings):
         HTTP would carry the bearer token in plaintext on the LAN.
         """
         if self.agent_env == "production" and not self.agent_api_url.lower().startswith("https://"):
-            raise ValueError("agent_env=production requires https:// for agent_api_url (Phase 29 CR-01)")
+            raise ValueError("agent_env=production requires https:// for agent_api_url ")
         return self
 
     @model_validator(mode="after")
@@ -224,7 +226,7 @@ class AgentSettings(BaseSettings):
         if self.agent_env == "production":
             parsed = urlparse(self.redis_url)
             if not parsed.password:
-                raise ValueError("agent_env=production requires a password in redis_url (Phase 29 D-06)")
+                raise ValueError("agent_env=production requires a password in redis_url ")
         return self
 
 

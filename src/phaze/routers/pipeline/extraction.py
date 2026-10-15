@@ -76,7 +76,7 @@ async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id
         )
 
 
-@router.post("/api/v1/extract-metadata")
+@router.post("/api/v1/extract-metadata", description="Enqueue extract_file_metadata jobs for eligible music/video files.")
 async def trigger_metadata_extraction(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -147,7 +147,11 @@ async def trigger_extraction_ui(
     )
 
 
-@router.post("/pipeline/metadata-failed/retry", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/metadata-failed/retry",
+    response_class=HTMLResponse,
+    description="HTMX endpoint: operator-gated BULK retry of every terminally-failed metadata file .",
+)
 async def retry_metadata_failed(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -224,7 +228,11 @@ async def retry_metadata_failed(
     )
 
 
-@router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
+@router.post(
+    "/pipeline/files/{file_id}/metadata-failed/retry",
+    response_class=HTMLResponse,
+    description="HTMX endpoint: operator-gated PER-FILE retry of ONE terminally-failed metadata file.",
+)
 async def retry_metadata_failed_file(
     request: Request,
     file_id: uuid.UUID,

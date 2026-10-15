@@ -44,7 +44,12 @@ async def _require_file_owner(session: AsyncSession, file_id: uuid.UUID, agent: 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tag write log does not belong to authenticated agent")
 
 
-@router.patch("/{log_id}", status_code=status.HTTP_200_OK, response_model=TagWriteResultResponse)
+@router.patch(
+    "/{log_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=TagWriteResultResponse,
+    description="Move a ``queued`` ``TagWriteLog`` row to the terminal status the agent observed on disk.",
+)
 async def patch_tag_write(
     log_id: uuid.UUID,
     body: TagWriteResultPayload,
@@ -174,7 +179,11 @@ async def patch_tag_write(
 
 
 @router.patch(
-    "/{log_id}/before-snapshot", status_code=status.HTTP_200_OK, response_model=TagWriteBeforeSnapshotResponse, response_model_exclude_none=True
+    "/{log_id}/before-snapshot",
+    status_code=status.HTTP_200_OK,
+    response_model=TagWriteBeforeSnapshotResponse,
+    response_model_exclude_none=True,
+    description="Durably record the pre-write on-disk snapshot, first-write-wins.",
 )
 async def record_tag_write_before_snapshot(
     log_id: uuid.UUID,

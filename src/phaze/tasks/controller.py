@@ -166,7 +166,7 @@ async def _probe_kueue_local_queues(control_cfg: ControlSettings) -> None:
         except Exception:
             logger.warning(
                 "phaze.controller startup: a Kueue LocalQueue is unreachable -- check cluster connectivity "
-                "and the backend's [kube] local_queue configuration; control plane boots regardless (D-05)"
+                "and the backend's [kube] local_queue configuration; control plane boots regardless "
             )
 
 
@@ -189,7 +189,7 @@ async def _push_bucket_lifecycle_ttls(control_cfg: ControlSettings) -> set[str]:
         except Exception as exc:
             cause = exc.__cause__ or exc
             logger.warning(
-                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
+                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless ",
                 bucket_id=bucket.id,
                 error_type=type(cause).__name__,
                 operation=getattr(cause, "operation_name", None),

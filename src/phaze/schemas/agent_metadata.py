@@ -13,11 +13,13 @@ MAX_BITRATE_BPS = 1_000_000_000
 
 
 class MetadataWriteRequest(BaseModel):
-    """Tag-metadata write body. Mirrors FileMetadata column shape 1:1 (no agent_id, no file_id -- both come from path/auth).
+    """Tag-metadata write body. Mirrors FileMetadata column shape 1:1 (no agent_id, no file_id -- both come from path/auth)."""
 
-    Fields are all optional because the agent may have partial knowledge
-    depending on file format / read success. Last-write-wins per D-14.
-    """
+    # Tag-metadata write body. Mirrors FileMetadata column shape 1:1 (no agent_id, no file_id -- both come from path/auth).
+    #
+    #     Fields are all optional because the agent may have partial knowledge
+    #     depending on file format / read success. Last-write-wins per D-14.
+    #
 
     model_config = ConfigDict(extra="forbid")
 
@@ -63,17 +65,19 @@ class MetadataWriteResponse(BaseModel):
 
 
 class MetadataFailurePayload(BaseModel):
-    """Optional triage body for POST /metadata/{file_id}/failed (FAIL-02 / D-10).
+    """Optional triage body for POST /metadata/{file_id}/failed."""
 
-    Mirrors ``AnalysisFailurePayload`` (schemas/agent_analysis.py) verbatim: a new agent
-    image POSTs this so the persisted ``metadata`` failure row carries a triage
-    ``error_message``; an OLD (bodyless) agent still gets a 200 because
-    ``report_metadata_failed`` binds ``body: MetadataFailurePayload | None = None`` (CR-02
-    version-skew guard, D-10). ``reason`` is a ``Literal`` so the wire can only carry the
-    three classifications; ``error`` is a bounded free-text detail (``max_length`` caps the
-    DoS-via-huge-string threat, T-81-03-04). ``extra='forbid'`` rejects any attempt to
-    smuggle an ``agent_id``/``file_id`` in the body (AUTH-01, T-81-03-02 -> 422).
-    """
+    # Optional triage body for POST /metadata/{file_id}/failed (FAIL-02 / D-10).
+    #
+    #     Mirrors ``AnalysisFailurePayload`` (schemas/agent_analysis.py) verbatim: a new agent
+    #     image POSTs this so the persisted ``metadata`` failure row carries a triage
+    #     ``error_message``; an OLD (bodyless) agent still gets a 200 because
+    #     ``report_metadata_failed`` binds ``body: MetadataFailurePayload | None = None`` (CR-02
+    #     version-skew guard, D-10). ``reason`` is a ``Literal`` so the wire can only carry the
+    #     three classifications; ``error`` is a bounded free-text detail (``max_length`` caps the
+    #     DoS-via-huge-string threat, T-81-03-04). ``extra='forbid'`` rejects any attempt to
+    #     smuggle an ``agent_id``/``file_id`` in the body (AUTH-01, T-81-03-02 -> 422).
+    #
 
     model_config = ConfigDict(extra="forbid")
 
@@ -82,15 +86,17 @@ class MetadataFailurePayload(BaseModel):
 
 
 class MetadataFailureResponse(BaseModel):
-    """Success body of POST /metadata/{file_id}/failed (L-02 / CR-02).
+    """Success body of POST /metadata/{file_id}/failed."""
 
-    The terminal-ack endpoint the metadata task calls on a retries-exhausted
-    failure so every ``extract_file_metadata`` run clears its
-    ``extract_file_metadata:<file_id>`` scheduling-ledger row exactly once (the
-    success path clears via ``put_metadata``). ``cleared`` is always ``True`` --
-    the clear is a no-op when the row is already absent, but the ack semantics
-    are "the row is gone now" regardless.
-    """
+    # Success body of POST /metadata/{file_id}/failed (L-02 / CR-02).
+    #
+    #     The terminal-ack endpoint the metadata task calls on a retries-exhausted
+    #     failure so every ``extract_file_metadata`` run clears its
+    #     ``extract_file_metadata:<file_id>`` scheduling-ledger row exactly once (the
+    #     success path clears via ``put_metadata``). ``cleared`` is always ``True`` --
+    #     the clear is a no-op when the row is already absent, but the ack semantics
+    #     are "the row is gone now" regardless.
+    #
 
     agent_id: str
     file_id: uuid.UUID

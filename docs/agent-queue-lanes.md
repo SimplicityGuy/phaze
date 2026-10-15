@@ -1,7 +1,6 @@
-<!-- gsd:doc quick-260707-dh1 -->
 # Agent Queue Lanes
 
-**Status:** implemented (quick-260707-dh1) — code + compose only; a homelab redeploy lands it in prod.
+**Status:** implemented — code + compose only; a homelab redeploy lands it in prod.
 **Scope:** the file-server (`host-store`) SAQ agent worker. **k8s burst clusters are unaffected** (burst pods are one-shot `phaze.job_runner`, not the persistent SAQ worker).
 
 ## Why
@@ -17,7 +16,7 @@ The `host-store` agent used to run a **single** SAQ worker with one shared concu
 
 Splitting into per-type **lanes** buys **fairness / no head-of-line blocking** — not unlimited
 parallelism. `host-store` has **8 physical cores**; CPU-bound lanes must sum to ≈ cores -- which is
-now derived rather than asserted (phaze-rvcn: `intra_op_threads x concurrency ~= physical_cores`).
+now derived rather than asserted (host-derived analysis sizing: `intra_op_threads x concurrency ~= physical_cores`).
 
 ## Lane topology
 
@@ -33,7 +32,7 @@ consumer (the lane worker settings) derive from it.
 | `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
 
-**Sizing note — the `meta` default of 2 now covers interactive work.** phaze-6bkk (DIST-01)
+**Sizing note — the `meta` default of 2 now covers interactive work.** agent-side file writes
 moved `write_file_tags`, `write_cue_sheet` and `read_companion_files` onto this lane, so the
 lane that was sized for background metadata extraction and scans now also carries
 operator-facing tag writes, CUE generation and companion-file reads. Those are the tasks a
@@ -43,28 +42,28 @@ I/O-light, so it costs little against the CPU budget.
 
 ### Core-budget rationale
 
-The `analyze` lane's default is **derived from the host** since phaze-rvcn:
+The `analyze` lane's default is **derived from the host** since host-derived analysis sizing:
 `physical_cores // min(4, physical_cores)`, which is 2 CPU-bound slots on `host-store`'s 8 physical
-cores, each running a 4-thread extractor (phaze-0jpe removed the `fingerprint` lane's 2
+cores, each running a 4-thread extractor (fingerprint removal removed the `fingerprint` lane's 2
 slots). That leaves headroom for the fast `meta` lane and the OS, and it keeps the lane in
 lockstep with the thread cap instead of restating a literal that can drift from it -- see
-[Thread sizing](#thread-sizing--derived-not-pinned-phaze-rvcn) below. The `io` lane is
+[Thread sizing](#thread-sizing--derived-not-pinned) below. The `io` lane is
 network-bound and runs **off** the CPU budget. All concurrencies are env-overridable.
 
-**`WORKER_MAX_JOBS` is a ceiling in lane mode (quick-260707-g84).** In lane mode the per-lane
+**`WORKER_MAX_JOBS` is a ceiling in lane mode.** In lane mode the per-lane
 concurrency knob (`PHAZE_LANE_<LANE>_CONCURRENCY`) **governs** the worker's concurrency, and
 `WORKER_MAX_JOBS` acts only as an upper bound: `concurrency = min(lane knob, worker_max_jobs)`.
 So an explicit, lower `WORKER_MAX_JOBS` is authoritative and clamps every lane, but setting
 `WORKER_MAX_JOBS` alone does **not** raise a lane above its knob. On the file-server defaults
 (`host-store`: derived analyze lane 2, `worker_max_jobs` 8) the ceiling never bites and behavior is
 unchanged. The effective concurrency, the lane, and whether the ceiling clamped it are logged
-once at worker startup. **One interaction to know about on very large hosts (phaze-rvcn):**
+once at worker startup. **One interaction to know about on very large hosts:**
 the derived analyze concurrency is `physical_cores // 4`, so past **32 physical cores** it
 reaches the default `worker_max_jobs` of 8 and past that the ceiling — not the derivation —
 becomes the binding constraint. Raise `WORKER_MAX_JOBS` alongside, or the extra cores go
 unused.
 
-### Thread sizing — derived, not pinned (phaze-rvcn)
+### Thread sizing — derived, not pinned
 
 **Superseded 2026-08-06.** The lane used to pin `OMP_NUM_THREADS=1`,
 `TF_NUM_INTRAOP_THREADS=1`, `TF_NUM_INTEROP_THREADS=1` in `docker-compose.agent.yml` so one
@@ -91,13 +90,13 @@ the same 8-core budget, spent where the measurement says it is worth spending. T
 file passes all four variables through as bare names, so any value an operator exports still
 wins; `PHAZE_LANE_ANALYZE_CONCURRENCY` overrides the concurrency half exactly as before.
 
-## Heartbeat — every lane beats, tagged with its lane (phaze-30fo)
+## Heartbeat — every lane beats, tagged with its lane
 
-The liveness heartbeat (Phase 46 asyncio background task) runs in **every** lane worker —
+The liveness heartbeat (background heartbeat asyncio background task) runs in **every** lane worker —
 `PHAZE_AGENT_HEARTBEAT=true` on all three (`docker-compose.agent.yml`) — and each beat carries a
 `lane` tag (`analyze` | `meta` | `io`).
 
-This **replaced** the original quick-260707-dh1 convention (heartbeat on exactly `worker-analyze`,
+This **replaced** the original worker convention (heartbeat on exactly `worker-analyze`,
 false on the others). Pinning the agent's entire liveness signal to one process meant that when
 that process stalled, the agent was classified DEAD after 300s while its other lanes were
 actively working (observed on `host-store`, 2026-07-18). That was never only a display bug:
@@ -137,7 +136,7 @@ target lane-suffixed queue names uniformly, the compute agent consumes the **sin
 head-of-line problems the lane split solves are file-server-only. Single lane ⇒ single heartbeat (its
 `PHAZE_AGENT_HEARTBEAT` is left unset → default true). k8s burst pods are untouched.
 
-**Memory-safety cap (quick-260707-g84).** The OCI Ampere A1 compute host has only 12 GB RAM and a
+**Memory-safety cap.** The OCI Ampere A1 compute host has only 12 GB RAM and a
 single `process_file` job peaks ~8 GB, so the `analyze` lane is pinned to **1** concurrent job via
 `PHAZE_LANE_ANALYZE_CONCURRENCY=1` in `docker-compose.cloud-agent.yml`. This is the knob that
 actually governs a lane worker; setting only `WORKER_MAX_JOBS=1` is **inert in lane mode** (it is a
@@ -154,7 +153,7 @@ Why not re-enqueue: re-driving an already-**active** multi-hour `process_file` o
 duplicate a running job (deterministic-key dedup guards *queued* enqueues, not an *active* job on a
 different queue name). Finishing in place has no duplicate-active hazard, and any legitimate retry stays
 idempotent via the deterministic key (`s3_upload:<file_id>`, `push_file:<file_id>`, `process_file:<file_id>`,
-and — from phaze-6bkk — `write_file_tags:<log_id>`).
+and — from agent-side file writes — `write_file_tags:<log_id>`).
 
 > **`write_file_tags` is keyed on `log_id`, not `file_id`** (`tasks/_shared/deterministic_key.py`).
 > A duplicate dispatch of one operator click re-enqueues the same `TagWriteLog` id and dedups to

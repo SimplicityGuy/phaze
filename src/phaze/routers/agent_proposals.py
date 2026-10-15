@@ -54,7 +54,12 @@ _PROPOSAL_TRANSITIONS: dict[ProposalStatus, frozenset[ProposalStatus]] = {
 _ERROR_MESSAGE_MAX = 2000
 
 
-@router.patch("/{proposal_id}/state", status_code=status.HTTP_200_OK, response_model=ProposalStateResponse)
+@router.patch(
+    "/{proposal_id}/state",
+    status_code=status.HTTP_200_OK,
+    response_model=ProposalStateResponse,
+    description="Proposal status transition, plus an optional FileRecord.current_path update, in one transaction.",
+)
 async def patch_proposal_state(
     proposal_id: uuid.UUID,
     body: ProposalStatePatch,
