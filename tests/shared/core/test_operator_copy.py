@@ -65,6 +65,9 @@ PRODUCT_TOKEN = re.compile(
     r"\bphaze-(?:agent|server|internal|stage|models|border|panel|theme|muted|accent|primary|secondary|danger|surface|analysis|pipeline|files|decode|push|committed|telemetry|staging|essentia|alerts|cloud|owned|controller|watcher|submitter|analyze|tracklist|quarantine)(?:[-_a-zA-Z0-9/<>{}.]*)"
 )
 EVIDENCE_TARGET = re.compile(r"\]\([^\n)]*\)|(?:docs/)?(?:spikes|design)/[^\s)`]+")
+# Exact negotiated wire header introduced by the typed agent-config policy. Similar prose and
+# different header names remain guarded; never rename this machine-consumed API identifier.
+WIRE_TOKEN = re.compile(r"(?<![\w-])X-Phaze-Config-Version(?![\w-])")
 # Exact historical record markers, each scoped to its paragraph rather than exempting a guide.
 HISTORICAL_RECORDS = {
     "docs/k8s-burst.md": ("Operator decision 2026-09-27 (`AskUserQuestion`)",),
@@ -93,7 +96,7 @@ CANONICAL_PROVENANCE = {
 def leaks(text: str) -> list[str]:
     """Find tracking vocabulary in authored text, keeping evidence links and product tokens."""
     text = text.replace('<a id="removing-fingerprint-era-data-phaze-0jpe"></a>', "").replace("Phaze-representative", "")
-    return TRACKING.findall(PRODUCT_TOKEN.sub("", EVIDENCE_TARGET.sub("", text)))
+    return TRACKING.findall(PRODUCT_TOKEN.sub("", EVIDENCE_TARGET.sub("", WIRE_TOKEN.sub("", text))))
 
 
 def template_copy(text: str) -> str:
@@ -315,3 +318,23 @@ async def test_documented_sql_onboarding_and_quarantine_execute(session: AsyncSe
 def test_inline_callable_references_preserve_call_syntax(name: str, expression: str) -> None:
     assert f"`{expression}`" in (ROOT / name).read_text()
     assert any(isinstance(node, ast.Call) for node in ast.walk(ast.parse(expression, mode="eval")))
+
+
+def test_agent_config_wire_header_is_an_exact_machine_identifier() -> None:
+    # Same assignment shape as schemas/agent_config.py in the reviewed config assembly.
+    declaration = 'CONFIG_VERSION_HEADER = "X-Phaze-Config-Version"'
+    assert [(literal, leaks(literal)) for literal in authored_literals(declaration)] == [("X-Phaze-Config-Version", [])]
+    assert leaks("Send X-Phaze-Config-Version: 2 to negotiate typed policy") == []
+    assert leaks("X-Phaze-Config-Version-Extra") == ["Phaze-Config"]
+    assert leaks("The phaze-config requirement") == ["phaze-config"]
+
+
+def test_config_integration_preserves_reviewed_live_policy_semantics() -> None:
+    guide = (ROOT / "docs/configuration.md").read_text()
+    reload_paragraph = next(line for line in guide.splitlines() if line.startswith("> **Superseded in 2026.7.1:**"))
+    assert "remain supported environment inputs; the reload timing above identifies which controls apply without restart" in reload_paragraph
+    batch_row = next(line for line in guide.splitlines() if line.startswith("| `PHAZE_ANALYSIS_TF_BATCH_SIZE` |"))
+    assert "11 in the current default strategy; 33 in the full ensemble" in batch_row
+    assert "exported process environment establishes the host ceiling" in batch_row
+    assert "live `analysis_tf_batch_size` policy may lower it for new children" in batch_row
+    assert "Raising beyond that ceiling requires a deployment change and restart" in batch_row

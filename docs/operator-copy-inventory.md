@@ -92,6 +92,14 @@ not a label in current functional guidance. Link labels use the measurement/deci
 | `src/phaze/tracklist_providers/trackid.py:RIGHTS_EVIDENCE` | `phaze-gyr3l` | Exact historical authorization tuple serialized into provider snapshots and retained observations; independently pinned by the provider test. |
 | `src/phaze/tracklist_providers/mixesdb.py:RIGHTS_EVIDENCE` | `phaze-gyr3l` | Exact historical authorization tuple retained as canonical source-read evidence. |
 
+The negotiated `X-Phaze-Config-Version` header is an exact machine API identifier, not a
+development label. The guard exempts only that complete, case-sensitive header token, while
+similar prose and suffixed header names remain checked. Integration preparation follows the
+reviewed configuration implementation `c4608099`, assembled as `956eed9a`: the supported-input
+paragraph retains per-control reload timing, and the inference-batch row retains the exported
+host ceiling, reduce-only live policy and 11-default/33-ensemble graph distinction. Only the
+development tracking suffixes are removed from those reviewed descriptions.
+
 ## Excluded by purpose
 
 - `tracklist_providers/trackid.py` and `mixesdb.py` retain the exact named `RIGHTS_EVIDENCE` tuple as a canonical historical operator record. These values are serialized into provider snapshots and retained observations, so rephrasing them can change persisted semantic identity. The guard exempts only those top-level record assignments, independently pinned by provider tests; current help/config/error literals in the same modules remain guarded.
