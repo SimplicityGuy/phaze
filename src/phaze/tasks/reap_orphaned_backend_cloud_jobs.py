@@ -82,6 +82,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.runtime_config import effective_settings
 from phaze.services.backends.admission import hold_awaiting_cloud
 from phaze.services.backends.base import STAGING
 from phaze.services.pipeline import get_live_job_keys
@@ -259,7 +260,7 @@ async def reap_orphaned_backend_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int
     """
     from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred, mirrors reconcile_cloud_jobs.reconcile_cloud_jobs
 
-    cfg = cast("ControlSettings", get_settings())
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
     resolved_ids = {backend.id for backend in resolve_backends(cfg)}
 
     async with ctx["async_session"]() as session:

@@ -207,6 +207,7 @@ async def run_analysis_subprocess(
     stall_timeout: float | None = None,
     intra_op_threads: int | None = None,
     omp_threads: int | None = None,
+    tf_batch_size: int | None = None,
 ) -> dict[str, Any]:
     """Run one exhaustive analysis in the child CLI; return the ``analyze_file`` dict.
 
@@ -268,6 +269,8 @@ async def run_analysis_subprocess(
             environ[INTRA_OP_ENV] = str(intra_op_threads)
         if omp_threads is not None:
             environ[OMP_ENV] = str(omp_threads)
+        if tf_batch_size is not None:
+            environ["PHAZE_ANALYSIS_TF_BATCH_SIZE"] = str(tf_batch_size)
         try:
             return await _run_analysis_subprocess_traced(
                 argv,

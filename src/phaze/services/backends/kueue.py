@@ -18,6 +18,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.runtime_config import effective_settings
 from phaze.services import kube_staging, s3_staging
 from phaze.services.backends.admission import hold_awaiting_cloud
 from phaze.services.backends.base import STAGING, _BaseBackend
@@ -132,7 +133,7 @@ class KueueBackend(_BaseBackend):
         rollback and a post-commit flush failure leaves the committed UPLOADING row for the age-bounded
         ``_reap_stranded_staging`` reaper (phaze-ul2v).
         """
-        cfg = cast("ControlSettings", get_settings())
+        cfg = cast("ControlSettings", effective_settings(get_settings()))
         # D-06: deterministic per-file bucket over this backend's bound set; the returned id is authoritative.
         # Pure/no-DB: pick + resolve mutate nothing, so a resolution failure here is also mutation-free.
         bucket_ids = list(getattr(self.config, "buckets", []) or [])
@@ -215,7 +216,7 @@ class KueueBackend(_BaseBackend):
         ``except`` rolls back so one bad row never aborts the tick. Every skip path rolls back too, which
         releases the xact lock rather than holding it across the whole sweep.
         """
-        cfg = cast("ControlSettings", get_settings())
+        cfg = cast("ControlSettings", effective_settings(get_settings()))
         now = datetime.now(UTC)
         rows = (
             (
@@ -444,7 +445,7 @@ class KueueBackend(_BaseBackend):
         hold cap slots but have no Kueue object to read, so they are aged out instead. The extra
         ``staging_reaped`` tally key aggregates in the cron via its ``tally.get(key, 0) + value`` fold.
         """
-        cfg = cast("ControlSettings", get_settings())
+        cfg = cast("ControlSettings", effective_settings(get_settings()))
         cap = cfg.cloud_submit_max_attempts
         tally = {
             "reconciled": 0,

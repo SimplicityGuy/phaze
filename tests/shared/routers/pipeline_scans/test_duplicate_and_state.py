@@ -469,7 +469,7 @@ def test_is_scan_stalled_true_when_quiet_past_warn_threshold(monkeypatch: pytest
 
     from phaze.routers.pipeline_scans import is_scan_stalled
 
-    monkeypatch.setattr(pipeline_scans, "get_settings", lambda: SimpleNamespace(scan_stall_seconds=600))
+    monkeypatch.setattr(pipeline_scans, "current", lambda: SimpleNamespace(scan_stall_seconds=600))
     b = _running_batch(datetime.now(UTC) - timedelta(seconds=400))
     assert is_scan_stalled(b) is True
 

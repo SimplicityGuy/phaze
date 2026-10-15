@@ -13,6 +13,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.provider_source import ProviderRecordingSelection, ProviderSourceObject, ProviderSourceObservation
+from phaze.runtime_config import current, effective_settings
 from phaze.services.date_convention import annotate_date_conventions
 from phaze.services.proposal import (
     MalformedCompletionError,
@@ -53,7 +54,7 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     Returns:
         Dict with batch index, count of proposals stored, and status.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     # phaze-6fvu: DO NOT hold a DB connection across the rate-limit backoff and the LLM call.
     # check_rate_limit loops `asyncio.sleep(2.0)` while the shared window is over llm_max_rpm, and
     # generate_batch is a full LLM round-trip (routinely 30-120s). A pipeline drain enqueues one job
@@ -172,7 +173,7 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     # broker is Postgres now, so `ctx["queue"]` (a PostgresQueue) has no `.redis`. The
     # control worker stashes a decoupled cache client at `ctx["redis"]` (controller.startup).
     # NO DB connection is held across this backoff loop (phaze-6fvu).
-    await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
+    await check_rate_limit(ctx["redis"], lambda: current().llm_max_rpm)
 
     # 3. Call LLM -- also with NO DB connection held (phaze-6fvu).
     proposal_service: ProposalService = ctx["proposal_service"]
@@ -183,7 +184,7 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     # untouched, and this is logging only, NOT the exception handling the seam finding described as
     # absent. `MalformedCompletionError` deliberately escapes to fail the job loudly.
     try:
-        batch_response = await proposal_service.generate_batch(files_context)
+        batch_response = await proposal_service.generate_batch(files_context, model=settings.llm_model)
     except MalformedCompletionError as exc:
         logger.error(
             "generate_proposals: batch lost to an unparseable LLM completion",

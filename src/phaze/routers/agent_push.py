@@ -74,6 +74,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.runtime_config import effective_settings
 from phaze.schemas.agent_push import PushedResponse, PushFailedRequest, PushFailedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
@@ -124,7 +125,7 @@ async def report_pushed(
     warning log below is the operator-visible signal in place of silent disk growth; a follow-up bead
     should add either a remote-delete task or a scratch-dir TTL reaper.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
 
     # Load the file first: the pinned payload needs sha256_hash + file_type (D-11). Reading before
     # the state flip is fine -- both fields are immutable here and untouched by the UPDATE below.
@@ -298,7 +299,7 @@ async def report_push_failed(
     ``file_id`` is the PATH value only; ``agent`` from the token dependency (AUTH-01). ``body.detail`` is
     a bounded optional diagnostic that carries no identity.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
 
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
     if file is None:
@@ -601,7 +602,7 @@ async def report_push_mismatch(
 
     ``file_id`` is the PATH value only; ``agent`` from the token dependency (AUTH-01).
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     ledger_key = f"push_file:{file_id}"
 
     # D-06 + D-07 (record-don't-rederive + reporter authorization, T-73-07): resolve the file's OWN compute

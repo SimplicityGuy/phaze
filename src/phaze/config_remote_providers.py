@@ -115,3 +115,10 @@ def disabled_provider_ids(descriptors: Iterable[ProviderDescriptor], settings: M
         for descriptor in descriptors
         if Capability.REMOTE_TRANSPORT in descriptor.capabilities and not (descriptor.id in settings and settings[descriptor.id].enabled)
     )
+
+
+def provider_policy_keys() -> frozenset[str]:
+    """Exact registered policy row names; credential names never enter this set."""
+    from phaze.services.remote_providers import REMOTE_PROVIDERS  # noqa: PLC0415 -- composition import avoids cycle
+
+    return frozenset(f"provider_{binding.profile.provider_id}_policy" for binding in REMOTE_PROVIDERS)

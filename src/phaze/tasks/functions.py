@@ -34,7 +34,7 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.runtime_config import RuntimeConfig, current as current_runtime_config
+from phaze.runtime_config import RuntimeConfig, current as current_runtime_config, effective_settings
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
@@ -71,14 +71,14 @@ def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (Phase 43).
 
     ``process_file`` is registered ONLY on the agent worker (``PHAZE_ROLE=agent``), so
-    ``get_settings()`` returns an :class:`AgentSettings`. The module-level ``settings``
+    ``effective_settings(get_settings())`` returns an :class:`AgentSettings`. The module-level ``settings``
     singleton is ``ControlSettings``-typed and intentionally lacks the agent-only
-    ``analysis_*`` fields (config.py docstring), so we MUST resolve via ``get_settings()``
+    ``analysis_*`` fields (config.py docstring), so we MUST resolve via ``effective_settings(get_settings())``
     and narrow — mirroring the agent_worker startup invariant.
     """
-    cfg = get_settings()
+    cfg = effective_settings(get_settings())
     if not isinstance(cfg, AgentSettings):  # pragma: no cover - defensive; worker always agent-role
-        msg = f"process_file requires PHAZE_ROLE=agent; get_settings() returned {type(cfg).__name__}"
+        msg = f"process_file requires PHAZE_ROLE=agent; effective_settings(get_settings()) returned {type(cfg).__name__}"
         raise RuntimeError(msg)
     return cfg
 
@@ -276,6 +276,7 @@ async def _run_analysis_with_progress(
             stall_timeout=runtime_cfg.analysis_stall_timeout_sec,
             intra_op_threads=runtime_cfg.analysis_intra_op_threads,
             omp_threads=runtime_cfg.analysis_omp_threads,
+            tf_batch_size=runtime_cfg.analysis_tf_batch_size,
         )
     finally:
         # Bounded, kill-safe teardown on every exit path (success, timeout kill, crash,

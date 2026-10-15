@@ -54,6 +54,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord
+from phaze.runtime_config import effective_settings
 from phaze.services import backend_breaker, cloud_staging
 from phaze.services.cloud_budget import CloudBudgetState
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
@@ -636,8 +637,8 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     its own ``snapshot`` / ``state`` references, which is what the CR-02 rollback path reads.
     """
     # ControlSettings-scoped: this cron is registered ONLY on the control worker (PHAZE_ROLE=control),
-    # so get_settings() returns ControlSettings here (mirrors controller.startup's config access).
-    cfg = cast("ControlSettings", get_settings())
+    # so effective_settings(get_settings()) returns ControlSettings here (mirrors controller.startup's config access).
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
     # Phase 67 (D-14, REG-04): registry on/off gate. An all-local registry (cloud_enabled False) ->
     # clean no-op BEFORE the advisory lock + snapshot, so the cron introduces NO new dispatch work.
     if not cfg.cloud_enabled:

@@ -223,7 +223,9 @@ async def test_generate_proposals_calls_rate_limit(
 
     await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
 
-    mock_rate_limit.assert_called_once_with(ctx["redis"], 30)  # settings.llm_max_rpm default
+    mock_rate_limit.assert_called_once()
+    assert mock_rate_limit.call_args.args[0] is ctx["redis"]
+    assert mock_rate_limit.call_args.args[1]() == 30  # live resolver, baseline ceiling
 
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
