@@ -111,6 +111,7 @@ def thread_env_analyze(
     after its one beat, so a test can hold this child "in flight" across a later env change and
     then prove ITS OWN env -- captured at spawn, before the gate ever opened -- was unaffected.
     """
+    from phaze.services.analysis_models import GENRE_MODEL, MODEL_SETS, _resolve_tf_batch_size
     from phaze.services.analysis_sizing import INTRA_OP_ENV, OMP_ENV  # child-side import
 
     if progress_cb is not None:
@@ -120,6 +121,9 @@ def thread_env_analyze(
     result = _result(file_path, models_dir, **windowing)
     result["echo"].update(
         {
+            "tf_batch_size_env": os.environ.get("PHAZE_ANALYSIS_TF_BATCH_SIZE", ""),
+            "tunable_batch": _resolve_tf_batch_size(MODEL_SETS[0].models[0]),
+            "fixed_batch": _resolve_tf_batch_size(GENRE_MODEL),
             "intra_op_threads_env": os.environ.get(INTRA_OP_ENV, ""),
             "omp_threads_env": os.environ.get(OMP_ENV, ""),
         }
