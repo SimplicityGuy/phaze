@@ -166,23 +166,3 @@ async def remote_decision_action(request: Request, file_id: uuid.UUID, session: 
         "reopen": "Candidate reopened and returned to review.",
     }[command.action]
     return await _render(request, session, file_id, PanelNotice(message=message))
-
-
-@router.post("/files/{file_id}/remote-lookup/clear-stop", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
-async def remote_clear_stop_action(request: Request, file_id: uuid.UUID, session: Annotated[AsyncSession, Depends(get_session)]) -> HTMLResponse:
-    """The explicit operator action that lifts a provider's stop. Records who cleared it and why."""
-    service = _service(request)
-    if service is None:
-        return await _render(request, session, file_id, PanelNotice(message="Remote look-up is not configured.", failed=True))
-    values = await _form(request, "provider_id", "reason")
-    reason = (values.get("reason") or "").strip()
-    try:
-        if not reason:
-            raise ValueError("Clearing a stop requires a reason")
-        if len(reason) > 512:
-            raise ValueError("The reason must be 512 characters or fewer")
-        cleared = await service.clear_stop(values.get("provider_id", ""), operator=_ACTOR, reason=reason)
-    except ValueError as exc:
-        return await _render(request, session, file_id, _failure(exc))
-    message = "Stop cleared. The next request is still paced." if cleared else "That provider was not stopped."
-    return await _render(request, session, file_id, PanelNotice(message=message))

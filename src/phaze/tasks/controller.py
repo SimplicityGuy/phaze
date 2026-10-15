@@ -52,6 +52,7 @@ from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
+from phaze.services.remote_lookup import build_remote_lookup
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.live_worker import install_live_concurrency
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
@@ -68,6 +69,7 @@ from phaze.tasks.reap_orphaned_backend_cloud_jobs import reap_orphaned_backend_c
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
+from phaze.tasks.remote_lookup import expand_remote_lookup_batch, lookup_remote_tracklist, resume_remote_lookup_batches
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.staging_cleanup import reap_expired_staging
@@ -269,6 +271,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     task_engine = build_async_engine(cfg)
     instrument_engine(task_engine)
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
+    ctx["remote_lookup"] = build_remote_lookup(cfg.database_url, ctx["async_session"])
     ctx["task_engine"] = task_engine
 
     # phaze-mvq8z.8: the backends.toml registry hook + its own directory watch, now that
@@ -372,6 +375,8 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (SAQ shutdown hook)."""
     logger.info("phaze.controller shutdown")
+    if "remote_lookup" in ctx:
+        await ctx["remote_lookup"].aclose()
 
     # phaze-mvq8z.6: stop the LISTEN connection + fallback poll before the engine it reloads
     # through goes away. Reverse of construction: built LAST in startup (after the backends
@@ -443,6 +448,9 @@ settings = {
     "before_process": telemetry_before_process,
     "after_process": [after_process_chain(increment_completed)],
     "functions": [
+        expand_remote_lookup_batch,
+        lookup_remote_tracklist,
+        resume_remote_lookup_batches,
         generate_proposals,
         match_tracklist_to_discogs,
         match_recording_source_to_discogs,
@@ -494,6 +502,7 @@ settings = {
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
+        CronJob(resume_remote_lookup_batches, cron="* * * * *"),  # type: ignore[type-var]
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]

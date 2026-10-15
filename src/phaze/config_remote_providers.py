@@ -13,9 +13,9 @@ One pattern for every remote provider, not one settings block per provider: a pr
 * ``..._MIN_INTERVAL_SECONDS`` and ``..._MAX_REQUESTS_PER_RUN`` override the pacing and budget the
   transport applies. Unset means the transport's own conservative default, never "unlimited".
 
-These keys are restart-only (ADR-0019 (runtime config hot-reload)): none is in ``RELOADABLE_KEYS``, so a runtime.toml or admin-API
-attempt to set one is rejected by name. Enabling a remote provider, and changing its credentials, is a
-deliberate operator act that should not happen live.
+Credentials are restart-only. Enablement and pacing/budget defaults may be overridden live through
+global provider Settings; durable provider policy rows are validated by ``services.remote_policy``
+(docs/design/0019-runtime-config-hot-reload.md and docs/design/0025-remote-provider-sources.md).
 """
 
 from collections.abc import Iterable, Mapping

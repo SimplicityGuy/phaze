@@ -37,6 +37,10 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `provider_acquisition_attempts` | Immutable physical-read attempts with received order, separate from deduplicated source observations |
 | `remote_transport_ledgers` | One row per remote provider: reservation counter, pacing anchor, Retry-After not-before and the persistent stop only an operator clears (phaze-gan2z) |
 | `remote_transport_attempts` | One row per remote request, committed before it is sent; the evidence the ledger is checked against, and the rolling-window budget count |
+| `remote_lookup_batches` | Durable operator-created batch scope, expansion cursor and counts |
+| `remote_lookup_work` | One active recording/provider pair, conserved run identity, deferred retry time and typed result |
+| `remote_lookup_memberships` | Retained membership of new or existing in-flight pairs in each batch |
+| `remote_lookup_reads` | Bounded successful transport responses replayed during the same durable run without new requests |
 | `companion_import_runs` | Fixed inventory boundary and durable continuation for a per-agent import run |
 | `companion_import_items` | Bounded resumable source work, lease and per-kind outcome checkpoints |
 | `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired (phaze-7muoo) |
@@ -268,10 +272,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-091)
+### Post-baseline chain (040-092)
 
 `alembic/versions/` holds **53** files: the `039` baseline plus a linear chain to the current
-head, **`091`**.
+head, **`092`**.
 
 | Rev | Change |
 |-----|--------|
@@ -326,7 +330,8 @@ head, **`091`**.
 | `088` | Bind Discogs links to exactly one legacy track or immutable provider observation/position, preserving accepted UUIDs (phaze-c5v4x) |
 | `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists (phaze-gan2z) |
 | `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists (phaze-b6430) |
-| `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`) (phaze-z9ea3) — **head** |
+| `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`) (phaze-z9ea3) |
+| `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

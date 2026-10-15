@@ -41,7 +41,6 @@ from phaze.tracklist_providers.matching import AssessedSubject, assess_recording
 from tests.integration.test_remote_lookup import (
     EXAMPLE,
     EXAMPLE_PROFILE,
-    SECOND,
     SECOND_PROFILE,
     ExampleCatalog,
     ExampleUpstream,
@@ -104,31 +103,24 @@ async def test_lookup_action_lists_only_enabled_providers(committed_db: Any) -> 
         media = await seed(h.sessions)
         async with client_for(h) as client:
             html = soup(await client.get(page(media.id)))
-    on = html.select_one(f'[data-provider="{EXAMPLE}"]')
-    off = html.select_one(f'[data-provider="{SECOND}"]')
-    assert on is not None and off is not None, "a disabled provider is still listed, as off"
-    assert on["data-provider-enabled"] == "true" and off["data-provider-enabled"] == "false"
-    # The operator-visible name is the descriptor's display_name, not an id.
-    assert "Fictional example catalog" in on.get_text() and "Fictional second catalog" in off.get_text()
-    [button] = on.select("[data-lookup-form] button")
-    assert "Look up on Fictional example catalog" in button.get_text()
-    assert off.select_one("[data-provider-off]") is not None
-    assert off.select("form") == [] and off.select("button") == [], "a disabled provider offers no action"
-    assert [form["hx-post"] for form in html.select("[data-lookup-form]")] == [page(media.id, "/lookup")]
+    assert html.select("[data-provider-list]") == [], "global inventory belongs in Settings"
+    assert html.select("[data-clear-stop-form]") == []
+    [button] = html.select("[data-lookup-form] button")
+    assert "Fictional example catalog" in button.get_text()
+    assert "Settings" in html.get_text()
     assert h.socket.requests == []
 
 
 async def test_the_shipped_providers_are_all_listed_as_off_with_no_action_until_enabled(committed_db: Any) -> None:
-    assert len(REMOTE_PROVIDERS) >= 2, "the shipped registry holds more than one provider"
+    assert len(REMOTE_PROVIDERS) >= 2
     async with harness(committed_db, {}, bindings=tuple(REMOTE_PROVIDERS), settings={}) as h:
         media = await seed(h.sessions)
         async with client_for(h) as client:
-            html = soup(await client.get(page(media.id)))
-    listed = html.select("[data-provider]")
-    assert {item["data-provider"] for item in listed} == {binding.profile.provider_id for binding in REMOTE_PROVIDERS}
-    for item in listed:
-        assert item["data-provider-enabled"] == "false" and item.select_one("[data-provider-off]") is not None
-        assert item.select("form") == [] and item.select("button") == [], "a provider with no settings entry fails closed"
+            html = soup(await client.get("/admin/remote-providers"))
+            recording = soup(await client.get(page(media.id)))
+    assert {item["data-provider"] for item in html.select("[data-provider]")} == {binding.profile.provider_id for binding in REMOTE_PROVIDERS}
+    assert "Disabled" in html.get_text()
+    assert recording.select("[data-lookup-form]") == []
     assert h.socket.requests == []
 
 
@@ -312,37 +304,18 @@ async def test_a_stopped_provider_shows_its_stop_code_and_an_operator_clears_it_
         media = await seed(h.sessions)
         async with client_for(h) as client:
             first = soup(await client.post(page(media.id, "/lookup"), data={"provider_id": EXAMPLE}, headers=ORIGIN))
-            outcome = first.select_one("[data-outcome-code]")
-            assert outcome is not None and outcome["data-outcome-code"] == "http_403" and outcome["data-outcome-status"] == "unavailable"
-            stop = first.select_one("[data-provider-stop]")
-            assert stop is not None and stop.select_one("[data-stop-code]").get_text() == "http_403"
-            assert first.select("[data-lookup-form]") == [], "no lookup action while stopped"
-
-            # Forcing the POST anyway returns the typed unavailable outcome and contacts nobody.
-            sent = len(h.socket.requests)
-            forced = soup(await client.post(page(media.id, "/lookup"), data={"provider_id": EXAMPLE}, headers=ORIGIN))
-            code = forced.select_one("[data-outcome-code]")
-            assert (
-                code is not None
-                and code["data-outcome-code"] == "transport_stopped"
-                and "http_403" in forced.select_one("[data-remote-notice]").get_text()
+            assert first.select_one("[data-outcome-code]")["data-outcome-code"] == "http_403"
+            assert first.select("[data-clear-stop-form]") == [], "global clear action moved to Settings"
+            settings = soup(await client.get("/admin/remote-providers"))
+            assert "Stopped: http_403" in settings.get_text()
+            response = await client.post(
+                f"/admin/remote-providers/{EXAMPLE}/clear-stop", data={"reason": "Synthetic test: access restored"}, headers=ORIGIN
             )
-            assert len(h.socket.requests) == sent
-            assert forced.select_one("[data-no-candidates]") is not None
-
-            clear = form_fields(forced.select_one("[data-clear-stop-form]"))
-            for reason in (None, "", "  "):
-                data = clear if reason is None else {**clear, "reason": reason}
-                blank = soup(await client.post(page(media.id, "/clear-stop"), data=data, headers=ORIGIN))
-                assert "requires a reason" in blank.select_one("[data-remote-notice][role=alert]").get_text()
-                assert blank.select_one("[data-provider-stop]") is not None
-            upstream.search_reply = None
-            cleared = soup(await client.post(page(media.id, "/clear-stop"), data={**clear, "reason": "403 investigated"}, headers=ORIGIN))
-            assert "Stop cleared" in cleared.select_one("[data-remote-notice]").get_text()
-            assert cleared.select_one("[data-provider-stop]") is None and cleared.select_one("[data-lookup-form]") is not None
-            assert "by admin" in cleared.get_text() and "403 investigated" in cleared.get_text()
-            ok = soup(await client.post(page(media.id, "/lookup"), data={"provider_id": EXAMPLE}, headers=ORIGIN))
-            assert ok.select_one('[data-outcome-status="candidates"]') is not None
+            assert "Stop cleared" in soup(response).get_text()
+            status = (await h.lookup.provider_status())[0]
+            assert not status.stopped and status.cleared_by == "admin"
+            assert status.clear_reason == "Synthetic test: access restored"
+            assert len(h.socket.requests) == 1
 
 
 async def test_attribution_links_open_in_a_new_tab_and_unsafe_urls_never_become_links(committed_db: Any) -> None:
@@ -378,7 +351,6 @@ async def test_a_cross_origin_or_unmarked_post_sends_nothing(committed_db: Any) 
                 ("/lookup", {"provider_id": EXAMPLE}),
                 ("/load", {"candidate_id": str(uuid.uuid4())}),
                 ("/decision", {"action": "reject"}),
-                ("/clear-stop", {"provider_id": EXAMPLE, "reason": "x"}),
             ):
                 for headers in ({"origin": "https://elsewhere.invalid", "sec-fetch-site": "cross-site"}, {}):
                     assert (await client.post(page(media.id, path), data=data, headers=headers)).status_code == 403, (path, headers)

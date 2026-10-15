@@ -28,6 +28,7 @@ from phaze.models.provider_source import (
     ProviderSourceObservation,
     ProviderSourceRead,
 )
+from phaze.models.remote_lookup_batch import RemoteLookupBatch, RemoteLookupMembership, RemoteLookupRead, RemoteLookupWork
 from phaze.models.remote_transport import RemoteTransportAttempt, RemoteTransportLedger
 from phaze.models.route_control import RouteControl
 from phaze.models.runtime_config_override import RuntimeConfigOverride
@@ -71,6 +72,10 @@ __all__ = [
     "ProviderSourceObject",
     "ProviderSourceObservation",
     "ProviderSourceRead",
+    "RemoteLookupBatch",
+    "RemoteLookupMembership",
+    "RemoteLookupRead",
+    "RemoteLookupWork",
     "RemoteTransportAttempt",
     "RemoteTransportLedger",
     "RenameProposal",

@@ -183,12 +183,14 @@ async def test_a_recording_with_only_a_year_sends_nothing(committed_db: Any) -> 
         assert "nothing was sent" in result.outcome.message and h.socket.requests == []
 
 
-async def test_enabled_without_its_credential_is_disabled_and_a_malformed_one_stops_startup_without_echoing_it(committed_db: Any) -> None:
+async def test_enabled_without_its_credential_is_unavailable_and_a_malformed_one_stops_startup_without_echoing_it(committed_db: Any) -> None:
     missing = {"trackid": RemoteProviderSettings(provider_id="trackid", enabled=True)}
     async with harness(committed_db, Upstream().routes(), bindings=REMOTE_PROVIDERS, settings=missing) as h:
         media = await seed(h.sessions)
         result = await h.lookup.lookup(LookupCommand(media_id=media.id, provider_id="trackid"))
-        assert result.outcome.code == "disabled_provider" and h.socket.requests == []
+        assert result.outcome.code == "credential_missing" and result.outcome.status == "unavailable" and h.socket.requests == []
+        status = next(status for status in await h.lookup.provider_status() if status.provider_id == "trackid")
+        assert status.enabled and not status.available and status.unavailable_reason == "credential_missing"
     bad = {"trackid": RemoteProviderSettings(provider_id="trackid", enabled=True, credentials={"client_credentials": SecretStr("a:b:c-leaky-value")})}
     engine, sessions = committed_db
     with pytest.raises(ValueError, match="PHAZE_PROVIDER_TRACKID_CLIENT_CREDENTIALS") as raised:

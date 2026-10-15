@@ -7,6 +7,7 @@
     "GET /admin/agents/_table",
     "GET /admin/agents/compute-lanes/{backend_id}",
     "GET /admin/agents/{agent_id}/_activity",
+    "GET /admin/remote-providers",
     "GET /admin/runtime-config/_table",
     "GET /api/internal/agent/config",
     "GET /api/internal/agent/whoami",
@@ -41,6 +42,7 @@
     "GET /pipeline/local-source-sets",
     "GET /pipeline/pending-files",
     "GET /pipeline/recover/status",
+    "GET /pipeline/remote-lookup-queue",
     "GET /pipeline/scans/agent-roots",
     "GET /pipeline/scans/recent",
     "GET /pipeline/scans/{batch_id}",
@@ -70,6 +72,8 @@
     "PATCH /proposals/{proposal_id}/edit",
     "PATCH /proposals/{proposal_id}/reject",
     "PATCH /proposals/{proposal_id}/undo",
+    "POST /admin/remote-providers/{provider_id}/clear-stop",
+    "POST /admin/remote-providers/{provider_id}/policy",
     "POST /admin/runtime-config/{key}",
     "POST /api/internal/agent/analysis/{file_id}/failed",
     "POST /api/internal/agent/analysis/{file_id}/progress",
@@ -112,7 +116,6 @@
     "POST /duplicates/{group_hash}/undo",
     "POST /execution/start",
     "POST /files/{file_id}/companions/{companion_id}/refresh",
-    "POST /files/{file_id}/remote-lookup/clear-stop",
     "POST /files/{file_id}/remote-lookup/decision",
     "POST /files/{file_id}/remote-lookup/load",
     "POST /files/{file_id}/remote-lookup/lookup",
@@ -129,6 +132,7 @@
     "POST /pipeline/metadata-failed/retry",
     "POST /pipeline/proposals",
     "POST /pipeline/recover",
+    "POST /pipeline/remote-lookup-queue",
     "POST /pipeline/routing/force-local",
     "POST /pipeline/scans",
     "POST /pipeline/stages/{stage}/pause",
@@ -2406,6 +2410,11 @@
       ],
       [
         "div",
+        "",
+        "{\"hx-get\": \"/admin/remote-providers\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "div",
         "pipeline-stats",
         "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
       ],
@@ -2984,6 +2993,11 @@
         "button",
         "attention-pill",
         "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
+        "div",
+        "",
+        "{\"hx-get\": \"/pipeline/remote-lookup-queue\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
       ],
       [
         "div",
