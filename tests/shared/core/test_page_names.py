@@ -52,7 +52,7 @@ async def test_sidebar_h1_and_document_title_agree_for_every_stage(client: Async
     link = soup.select_one(f'a[data-rail-stage="{rail_stage}"]')
     assert link is not None
     # Config opens from the header gear (an icon with an aria-label); every other page from a rail row.
-    label = link.get("aria-label") if stage == "runtime-config" else link.select_one("span.flex-1").get_text(strip=True)  # type: ignore[union-attr]
+    label = link.get("aria-label") if stage == "runtime-config" else link.select_one("[data-rail-label]").get_text(strip=True)  # type: ignore[union-attr]
     assert label == PAGE_NAMES[rail_stage] == expected
 
 
@@ -71,7 +71,7 @@ async def test_palette_lists_every_navigable_page_under_its_sidebar_name(client:
     # ...and each name is what the rail shows for that destination.
     rail = BeautifulSoup((await client.get("/")).text, "html.parser")
     for stage in navigable - {"runtime-config"}:
-        rail_link = rail.select_one(f'nav a[data-rail-stage="{stage}"] span.flex-1')
+        rail_link = rail.select_one(f'nav a[data-rail-stage="{stage}"] [data-rail-label]')
         assert rail_link is not None
         assert rail_link.get_text(strip=True) == rows[f"/s/{stage}"]
 

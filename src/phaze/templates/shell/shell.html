@@ -173,7 +173,8 @@
                 // A read-only derived int seeded onto the dag dict server-side;
                 // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
                 computeLanesActive: 0,
-                laneCount: 0, clusterCount: 0,
+                laneCount: 0, clusterCount: 0, clusterCountKnown: 0,
+                visibleAgentCount: 0, visibleAgentCountKnown: 0,
                 // phaze-uvmcr.5: Phase 87 (87-08, UI-05) per-enrich-stage orphaned/stuck
                 // (recovery-candidate) counts. These two keys lived only in the now-deleted
                 // base.html, which never had a live caller once audit/agents moved onto this

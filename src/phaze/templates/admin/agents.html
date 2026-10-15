@@ -32,8 +32,8 @@
    tags), and it includes _workspace_poll_seeds.html so the shell's one persistent /pipeline/stats
    poll has landing targets here too, exactly like every other UTILITY_PANES/STAGE_PARTIALS host. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set worker_counts %}{{ agent_count | thousands }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count | thousands }} cluster{{ '' if compute_lane_count == 1 else 's' }}{% endset %}
-{% call ws.workspace(title=page_name('agents'), subcount=worker_counts|tojson|forceescape) %}
+{% set worker_counts %}($store.pipeline.seedKnown && $store.pipeline.visibleAgentCountKnown ? formatCount($store.pipeline.visibleAgentCount) + ($store.pipeline.visibleAgentCount === 1 ? ' agent' : ' agents') : 'Agents unavailable') + ' · ' + ($store.pipeline.seedKnown && $store.pipeline.clusterCountKnown ? formatCount($store.pipeline.clusterCount) + ($store.pipeline.clusterCount === 1 ? ' cluster' : ' clusters') : 'Clusters unavailable'){% endset %}
+{% call ws.workspace(title=page_name('agents'), subcount=worker_counts|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="text-sm text-muted ">
             Agents report heartbeats; clusters report job activity. Each cluster is a non-local scheduler lane. Refreshes every 5 seconds.

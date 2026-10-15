@@ -33,12 +33,16 @@ def _seed(**values: int) -> dict[str, int]:
         **dict.fromkeys(_REVIEW_COUNTS.values(), 12345),
         "executedDone": 1234,
         "executedTotal": 12000,
-        "agentOnline": 1234,
+        "agentOnline": 99,
+        "visibleAgentCount": 1234,
+        "visibleAgentCountKnown": 1,
+        "clusterCount": 5678,
+        "clusterCountKnown": 1,
         **values,
     }
 
 
-@pytest.mark.parametrize("route", [*_REVIEW_COUNTS, "apply", "agents"])
+@pytest.mark.parametrize("route", [*_REVIEW_COUNTS, "apply"])
 def test_review_and_operations_counts_have_identical_formatted_accessible_labels(route: str) -> None:
     count = _render_rail(_seed()).select_one(f'a[data-rail-stage="{route}"] span[x-text]')
     assert count is not None
@@ -46,7 +50,7 @@ def test_review_and_operations_counts_have_identical_formatted_accessible_labels
     assert "seedKnown" in count["x-text"]
     assert count[":title"] == count[":aria-label"]
     assert "formatCount(" in count[":title"]
-    assert count.get_text(strip=True) == ("1,234 / 12,000" if route == "apply" else "1,234" if route == "agents" else "12,345")
+    assert count.get_text(strip=True) == ("1,234 / 12,000" if route == "apply" else "12,345")
 
 
 @pytest.mark.parametrize("seed", [None, _seed(seedKnown=0), _seed(reviewCountsKnown=0)])
@@ -76,12 +80,61 @@ def test_amber_is_only_a_known_nonempty_review_queue(amount: int) -> None:
 
 
 @pytest.mark.parametrize("seed", [None, _seed(seedKnown=0)])
-def test_execution_and_agents_unknown_have_no_fabricated_zero(seed: dict[str, int] | None) -> None:
+def test_execution_unknown_has_no_fabricated_zero(seed: dict[str, int] | None) -> None:
     soup = _render_rail(seed)
-    for route, expected in (("apply", "— / —"), ("agents", "—")):
+    for route, expected in (("apply", "— / —"),):
         count = soup.select_one(f'a[data-rail-stage="{route}"] span[x-text]')
         assert count is not None
         assert count.get_text(strip=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("agents", "clusters", "expected"),
+    [
+        (0, 0, "0 agents · 0 clusters"),
+        (1, 1, "1 agent · 1 cluster"),
+        (1, 2, "1 agent · 2 clusters"),
+        (1234, 5678, "1,234 agents · 5,678 clusters"),
+    ],
+)
+def test_agents_inventory_summary_is_formatted_visible_link_text(agents: int, clusters: int, expected: str) -> None:
+    soup = _render_rail(_seed(visibleAgentCount=agents, clusterCount=clusters))
+    link = soup.select_one('a[data-rail-stage="agents"]')
+    assert link is not None
+    label = link.select_one("[data-rail-label]")
+    summary = link.select_one("[data-worker-inventory]")
+    assert label is not None and summary is not None
+    assert label.get_text(strip=True) == "Agents & clusters"
+    assert summary.get_text(strip=True) == expected
+    assert link.get_text(" ", strip=True) == f"Agents & clusters {expected}"
+    assert label.find_next_sibling() == summary  # The count is beneath its label.
+    assert "block" in summary["class"]
+    assert "formatCount(" in summary["x-text"]
+    assert "visibleAgentCount" in summary["x-text"]
+    assert "clusterCount" in summary["x-text"]
+    assert "agentOnline" not in summary["x-text"]  # Activity must not stand in for inventory.
+
+
+@pytest.mark.parametrize(
+    ("seed", "expected"),
+    [
+        (None, "Agents unavailable · Clusters unavailable"),
+        (_seed(seedKnown=0), "Agents unavailable · Clusters unavailable"),
+        (_seed(visibleAgentCountKnown=0), "Agents unavailable · 5,678 clusters"),
+        (_seed(clusterCountKnown=0), "1,234 agents · Clusters unavailable"),
+        (_seed(visibleAgentCountKnown=0, clusterCountKnown=0), "Agents unavailable · Clusters unavailable"),
+    ],
+)
+def test_agents_inventory_unknown_components_never_show_retained_counts(seed: dict[str, int] | None, expected: str) -> None:
+    soup = _render_rail(seed)
+    link = soup.select_one('a[data-rail-stage="agents"]')
+    assert link is not None
+    summary = link.select_one("[data-worker-inventory]")
+    assert summary is not None
+    assert summary.get_text(strip=True) == expected
+    assert link.get_text(" ", strip=True) == f"Agents & clusters {expected}"
+    assert "visibleAgentCountKnown" in summary["x-text"]
+    assert "clusterCountKnown" in summary["x-text"]
 
 
 def _workspace(stage: str) -> str:
