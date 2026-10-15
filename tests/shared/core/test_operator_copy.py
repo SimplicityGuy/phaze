@@ -56,6 +56,7 @@ CURRENT_DOCS = (
     "docs/operations/companion-availability.md",
     "docs/operations/companion-capture.md",
     "docs/project-structure.md",
+    "docs/performance/files-workspace.md",
     "docs/ui-design-reference.md",
 )
 TRACKING = re.compile(

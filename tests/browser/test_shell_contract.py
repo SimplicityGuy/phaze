@@ -224,17 +224,37 @@ async def test_rail_queue_counts_follow_known_state_without_overflow(page_at: An
         await page.evaluate("htmx.remove(document.getElementById('pipeline-stats'))")
         await page.evaluate("""() => Object.assign(Alpine.store('pipeline'), {
             seedKnown: 1, reviewCountsKnown: 1, reviewPending: 12345, reviewDedupe: 12345,
-            reviewJunk: 12345, reviewCue: 12345, executedDone: 1234, executedTotal: 12000, agentOnline: 1234
+            reviewJunk: 12345, reviewCue: 12345, executedDone: 1234, executedTotal: 12000, agentOnline: 99,
+            visibleAgentCount: 1234, visibleAgentCountKnown: 1, clusterCount: 5678, clusterCountKnown: 1
         })""")
-        for route in ("rename", "dedupe", "junk", "cue", "apply", "agents"):
+        for route in ("rename", "dedupe", "junk", "cue", "apply"):
             count = rail.locator(f'a[data-rail-stage="{route}"] span[x-text]')
-            expected = "1,234 / 12,000" if route == "apply" else "1,234" if route == "agents" else "12,345"
+            expected = "1,234 / 12,000" if route == "apply" else "12,345"
             await page.wait_for_function(
                 "([selector, text]) => document.querySelector(selector).textContent === text",
                 arg=[f'a[data-rail-stage="{route}"] span[x-text]', expected],
             )
             assert await count.get_attribute("title") == await count.get_attribute("aria-label")
             assert await count.evaluate("node => node.getBoundingClientRect().right <= node.closest('a').getBoundingClientRect().right")
+        inventory = rail.locator("[data-worker-inventory]")
+        agents_link = rail.locator('a[data-rail-stage="agents"]')
+        await page.wait_for_function("document.querySelector('[data-worker-inventory]').textContent === '1,234 agents · 5,678 clusters'")
+        assert "Agents & clusters" in await agents_link.inner_text()
+        assert "1,234 agents · 5,678 clusters" in await agents_link.inner_text()
+        assert await inventory.evaluate("node => node.getBoundingClientRect().right <= node.closest('a').getBoundingClientRect().right")
+        for key, expected in (
+            ("visibleAgentCountKnown", "Agents unavailable · 5,678 clusters"),
+            ("clusterCountKnown", "1,234 agents · Clusters unavailable"),
+        ):
+            await page.evaluate(
+                "key => { const s = Alpine.store('pipeline'); s.visibleAgentCountKnown = 1; s.clusterCountKnown = 1; s[key] = 0; }", key
+            )
+            await page.wait_for_function("text => document.querySelector('[data-worker-inventory]').textContent === text", arg=expected)
+            assert expected in await agents_link.inner_text()
+        await page.evaluate(
+            "Object.assign(Alpine.store('pipeline'), {visibleAgentCountKnown: 1, clusterCountKnown: 1, visibleAgentCount: 0, clusterCount: 1})"
+        )
+        await page.wait_for_function("document.querySelector('[data-worker-inventory]').textContent === '0 agents · 1 cluster'")
         assert await page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") <= 1
         assert await rail.evaluate("node => node.scrollWidth - node.clientWidth") <= 1
         pending = rail.locator('a[data-rail-stage="rename"] span[x-text]')

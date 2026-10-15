@@ -56,6 +56,7 @@ from phaze.services.pipeline.review_counts import get_cached_review_counts
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.stage_status import MISSING_BUCKET
+from phaze.services.worker_inventory import configured_backend_counts, count_visible_agents
 from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
 
@@ -278,9 +279,13 @@ async def _build_dag_context(
     # not an online worker). It rides the same dag.items() seed + OOB loop, no stats_bar.html edit.
     dag["computeLanesActive"] = sum(1 for lane in await derive_compute_lane_identities(session) if lane.state == "ACTIVE")
     # Configured inventory includes idle lanes and local; activity is a separate signal.
-    configured_backends = cast("ControlSettings", effective_settings(get_settings())).backends
-    dag["laneCount"] = len(configured_backends)
-    dag["clusterCount"] = sum(backend.kind != "local" for backend in configured_backends)
+    visible_agents = await count_visible_agents(session)
+    backend_counts = configured_backend_counts()
+    dag["visibleAgentCount"] = visible_agents if visible_agents is not None else 0
+    dag["visibleAgentCountKnown"] = int(visible_agents is not None)
+    dag["laneCount"] = backend_counts[0] if backend_counts is not None else 0
+    dag["clusterCount"] = backend_counts[1] if backend_counts is not None else 0
+    dag["clusterCountKnown"] = int(backend_counts is not None)
 
     # Phase 41 (REQ-41-3): the match_tracklist_to_discogs in-flight count gates the DAG Match trigger
     # node "busy" (Matching…). It is a controller task (NOT part of get_stage_busy_counts's agent

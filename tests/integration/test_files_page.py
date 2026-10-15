@@ -24,7 +24,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.enums.stage import Stage
@@ -32,7 +32,13 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import RenameProposal
+from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
+from phaze.models.tracklist import Tracklist
+from phaze.routers.pipeline import FILES_SORT
 from phaze.services.pipeline import _files_page_stmt, get_files_page
+from phaze.services.stage_status import display_status_case
 
 
 if TYPE_CHECKING:
@@ -96,13 +102,14 @@ async def _new_file(session: AsyncSession) -> uuid.UUID:
 async def test_files_page_is_bounded_and_emits_no_count(db_env: tuple[AsyncSession, AsyncEngine]) -> None:
     """The emitted SQL is LIMIT-bounded and contains NO ``COUNT(`` -- has_next rides a +1 sentinel."""
     session, engine = db_env
-    for _ in range(12):  # > page_size (min clamp is 10) so the sentinel row proves has_next
-        await _new_file(session)
+    file_ids = [await _new_file(session) for _ in range(12)]
 
     captured: list[str] = []
+    captured_params = []
 
     def _capture(conn, cursor, statement, parameters, context, executemany) -> None:
         captured.append(statement)
+        captured_params.append(parameters)
 
     event.listen(engine.sync_engine, "before_cursor_execute", _capture)
     try:
@@ -118,7 +125,18 @@ async def test_files_page_is_bounded_and_emits_no_count(db_env: tuple[AsyncSessi
     assert derivation_sql, f"no per-row derivation SELECT captured; saw: {captured}"
     # History is projected in that same bounded SELECT, not fetched separately for each row.
     assert len(derivation_sql) == 1
-    assert len([sql for sql in captured if sql.lstrip().lower().startswith("select")]) == 2
+    selects = [sql for sql in captured if sql.lstrip().lower().startswith(("select", "with"))]
+    assert len(selects) == 2
+    # Membership and badges share one MVCC statement snapshot; the second read is only the
+    # existing bounded profile loader. The barrier contains IDs/order/paging, never display work.
+    assert "files_page_members AS MATERIALIZED" in selects[0]
+    membership, enrichment = selects[0].split(")\n SELECT", 1)
+    assert "CASE" not in membership
+    assert "LIMIT" in membership and "OFFSET" in membership
+    assert "CASE" in enrichment and "JOIN files_page_members" in enrichment
+    assert "set_profile" in selects[1]
+    profile_params = next(params for statement, params in zip(captured, captured_params, strict=True) if "set_profile" in statement)
+    assert tuple(profile_params) == tuple(sorted(file_ids)[:11]), "profile loading must cover only this page plus its sentinel"
     assert "analysis_window" in derivation_sql[0].lower()
     assert all(row.stage_history == {"metadata": False, "analyze": False, "tracklist": False} for row in page.rows)
     for sql in derivation_sql:
@@ -137,6 +155,63 @@ async def test_files_page_last_page_has_no_next(db_env: tuple[AsyncSession, Asyn
     page = await get_files_page(session, page=2, page_size=10)
     assert len(page.rows) == 2  # 12 total, page 2 of 10 -> the remaining 2
     assert page.has_next is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sort_key", [column.key for column in FILES_SORT.columns])
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+async def test_bounded_membership_preserves_every_sort_and_page(db_env: tuple[AsyncSession, AsyncEngine], sort_key: str, direction: str) -> None:
+    """Compare every page to the full derived order, including ties and status precedence.
+
+    The independent reference has no paging barrier: paging its completed ordered result in
+    Python detects limiting before a stage sort, missing outer order, dropped ties, and a
+    repeated/omitted sentinel. Existing lens tests separately cover membership predicates.
+    """
+    session, _engine = db_env
+    from phaze.services.pipeline.files import _FILES_PAGE_STAGES
+
+    for index in range(23):
+        fid = await _new_file(session)
+        record = await session.get(FileRecord, fid)
+        assert record is not None
+        # Current paths may tie even when original paths are unique; every sort needs the ID suffix.
+        record.current_path = f"/synthetic/root-{index % 2}/track-{index // 4:02d}.mp3"
+        record.file_type = "txt" if index % 4 == 0 else "mp3"
+        if index % 3 == 0:
+            session.add(FileMetadata(file_id=fid, failed_at=datetime.now(UTC) if index % 6 == 0 else None))
+        if index % 4 == 0:
+            session.add(AnalysisResult(file_id=fid, analysis_completed_at=datetime.now(UTC)))
+        elif index % 4 == 1:
+            session.add(AnalysisResult(file_id=fid, failed_at=datetime.now(UTC)))
+        if index % 5 == 0:
+            session.add(SchedulingLedger(key=f"process_file:{fid}", function="process_file", routing="agent", payload={"file_id": str(fid)}))
+        if index % 7 == 0:
+            session.add(StageSkip(file_id=fid, stage="analyze", reason="Synthetic scope decision"))
+        session.add(
+            RenameProposal(
+                file_id=fid, proposed_filename="Synthetic.mp3", status=("pending", "approved", "rejected", "executed", "failed")[index % 5]
+            )
+        )
+        if index % 6 == 0:
+            session.add(Tracklist(file_id=fid, external_id=f"synthetic-{index}", source_url="https://example.invalid/source"))
+    await session.flush()
+
+    sort = FILES_SORT.resolve(sort=sort_key, order=direction, view_state={})
+    full = (
+        await session.execute(
+            select(FileRecord.id, *(display_status_case(stage) for stage in _FILES_PAGE_STAGES)).order_by(*sort.order_by(), FileRecord.id)
+        )
+    ).all()
+    assert len(full) == 23
+    seen: list[uuid.UUID] = []
+    for page_number in range(1, 5):
+        page = await get_files_page(session, page=page_number, page_size=10, sort=sort)
+        reference = full[(page_number - 1) * 10 : page_number * 10]
+        assert [row.file.id for row in page.rows] == [row[0] for row in reference]
+        assert [tuple(row.buckets[stage.value] for stage in _FILES_PAGE_STAGES) for row in page.rows] == [tuple(row[1:]) for row in reference]
+        assert page.has_next is (page_number * 10 < len(full))
+        seen.extend(row.file.id for row in page.rows)
+    assert seen == [row[0] for row in full]
 
 
 # Correlated per-page derivation matches the seeded markers.

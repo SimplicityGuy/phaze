@@ -19,7 +19,7 @@
    text colour at rest; blue wash + inset blue bar when current). `tone` is accepted for the call sites' sake and
    changes nothing: Review is told apart by its thin SECTION label and non-empty queue counts, never by tinting each
    item's text, which read as permanently highlighted and drowned the current page. #}
-{% macro nav_link(route, label, icon, tone='pipeline') %}
+{% macro nav_link(route, label, icon, tone='pipeline', secondary=false) %}
 <a href="/s/{{ route }}"
    data-rail-stage="{{ route }}"
    hx-get="/s/{{ route }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
@@ -27,8 +27,11 @@
    {% if stage == route or (route == 'rename' and stage in ('move', 'tagwrite')) %}aria-current="page"{% endif %}
    class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-info aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="{{ icon }}"/></svg>
-    <span class="flex-1 text-sm">{{ label }}</span>
-    {% if caller %}{{ caller() }}{% endif %}
+    <span class="flex-1 text-sm min-w-0">
+        <span data-rail-label class="block">{{ label }}</span>
+        {% if secondary and caller %}{{ caller() }}{% endif %}
+    </span>
+    {% if not secondary and caller %}{{ caller() }}{% endif %}
 </a>
 {% endmacro %}
 
@@ -105,10 +108,9 @@
     <section class="{{ group_class }}" aria-labelledby="nav-operations">
         <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
         {% call nav_link('audit', page_name('audit'), 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
-        {% call nav_link('agents', page_name('agents'), 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}
-            <span class="{{ count_class }}" x-text="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) : '—'"
-                  :title="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online' : 'Agent count unavailable'"
-                  :aria-label="$store.pipeline.seedKnown ? formatCount($store.pipeline.agentOnline) + ' agents online' : 'Agent count unavailable'">{{ (pipeline_seed.agentOnline if pipeline_seed and pipeline_seed.seedKnown else '—') | thousands }}</span>
+        {% call nav_link('agents', page_name('agents'), 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations', secondary=true) %}
+            <span data-worker-inventory class="block text-xs text-muted tabular-nums leading-relaxed"
+                  x-text="($store.pipeline.seedKnown && $store.pipeline.visibleAgentCountKnown ? formatCount($store.pipeline.visibleAgentCount) + ($store.pipeline.visibleAgentCount === 1 ? ' agent' : ' agents') : 'Agents unavailable') + ' · ' + ($store.pipeline.seedKnown && $store.pipeline.clusterCountKnown ? formatCount($store.pipeline.clusterCount) + ($store.pipeline.clusterCount === 1 ? ' cluster' : ' clusters') : 'Clusters unavailable')">{{ (pipeline_seed.visibleAgentCount | thousands) ~ (' agent' if pipeline_seed.visibleAgentCount == 1 else ' agents') if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.visibleAgentCountKnown else 'Agents unavailable' }} · {{ (pipeline_seed.clusterCount | thousands) ~ (' cluster' if pipeline_seed.clusterCount == 1 else ' clusters') if pipeline_seed and pipeline_seed.seedKnown and pipeline_seed.clusterCountKnown else 'Clusters unavailable' }}</span>
         {% endcall %}
     </section>
 </nav>

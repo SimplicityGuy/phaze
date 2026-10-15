@@ -187,7 +187,15 @@ async def test_shell_pane_renders_full_shell_with_agents_table(smoke: AsyncClien
     assert 'hx-swap="outerHTML"' in body
     assert "5 agents" in body
     assert "0 clusters" in body
-    assert 'x-text="&#34;5 agents \\u00b7 0 clusters&#34;"' in body
+    # The page subtitle must follow the same live inventory as the rail rather
+    # than freezing this first response's counts. Browser regressions exercise
+    # the rendered values before and after the ordinary stats/table polls.
+    from bs4 import BeautifulSoup
+
+    subtitle = BeautifulSoup(body, "html.parser").select_one("#stage-workspace-subcount [x-text]")
+    assert subtitle is not None
+    for key in ("visibleAgentCount", "visibleAgentCountKnown", "clusterCount", "clusterCountKnown"):
+        assert f"$store.pipeline.{key}" in subtitle["x-text"]
 
 
 @pytest.mark.asyncio

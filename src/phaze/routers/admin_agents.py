@@ -66,6 +66,7 @@ from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, 
 from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
+from phaze.services.worker_inventory import configured_backend_counts, visible_agent_clause
 from phaze.utils.humanize import relative_time
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
 
@@ -511,7 +512,7 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
     # Agent.id is the tiebreaker: an operator-chosen key ties heavily (every fileserver agent shares a
     # kind, most share a scan-root count), and without a unique tail those ties would re-shuffle between
     # 5s polls — rows visibly swapping places under a cursor that never moved.
-    stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(*sort.order_by(), Agent.id.asc())
+    stmt = select(Agent).where(visible_agent_clause()).order_by(*sort.order_by(), Agent.id.asc())
     result = await session.execute(stmt)
     rows = list(result.scalars().all())
     now = datetime.now(UTC)
@@ -521,9 +522,7 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
         # the DB and is safe even if a future migration adds a real
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
-    rows = [a for a in rows if not (a.kind == "compute" and a._status == "never")]  # type: ignore[attr-defined]
-    # No Python re-sort: the order arrived from SQL above. Filtering never reorders a list, so the
-    # shadow-row removal preserves the ORDER BY rather than needing it re-applied.
+    # The shared SQL visibility predicate preserves this ordering without a Python re-sort.
     return rows, now
 
 
@@ -567,6 +566,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     # CloudJob counts. Merged into the SAME row list as heartbeating agents below, so the existing 5s
     # self-poll refreshes lane rows too (no new loop, RESEARCH OQ-1).
     compute_lanes = await derive_compute_lane_identities(session)
+    backend_counts = configured_backend_counts()
     # The legacy unattributed diagnostic row has kind="cloud"; it is not a configured cluster.
     selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
     canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
@@ -577,7 +577,7 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
         "rows": rows,
         "deployments_by_host": deployments_by_host,
         "agent_count": len(agents),
-        "compute_lane_count": sum(lane.kind != "cloud" for lane in compute_lanes),
+        "compute_lane_count": backend_counts[1] if backend_counts is not None else None,
         "selection_kind": selection_kind,
         "now": now,
         "refreshed_at_iso": now.isoformat(),
@@ -661,6 +661,7 @@ async def table_partial(
     agents, now = await _load_agents(session, sort_state)
     deployments_by_host = await _load_deployments(session)
     compute_lanes = await derive_compute_lane_identities(session)
+    backend_counts = configured_backend_counts()
     # The legacy unattributed diagnostic row has kind="cloud"; it is not a configured cluster.
     selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
     canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
@@ -675,7 +676,7 @@ async def table_partial(
             "rows": rows,
             "deployments_by_host": deployments_by_host,
             "agent_count": len(agents),
-            "compute_lane_count": sum(lane.kind != "cloud" for lane in compute_lanes),
+            "compute_lane_count": backend_counts[1] if backend_counts is not None else None,
             "selection_kind": selection_kind,
             "now": now,
             "refreshed_at_iso": now.isoformat(),
