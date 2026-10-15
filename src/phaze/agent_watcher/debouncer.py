@@ -17,8 +17,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
+from typing import TYPE_CHECKING
 
 import structlog
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 logger = structlog.get_logger(__name__)
@@ -30,6 +35,7 @@ class _PendingEntry:
 
     first_seen_at: float
     last_change_at: float
+    policy: tuple[float, float] | None = None
     cap_grace_used: bool = False
     """phaze-kw36: set once this entry has already been given one grace extension at the
     ``max_pending`` cap (see ``Debouncer.sweep``). ``touch`` never resets this flag -- only
@@ -48,7 +54,8 @@ class Debouncer:
     consecutive ``max_pending`` windows is evicted, bounding growth by time.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, policy_provider: Callable[[], tuple[float, float]] | None = None) -> None:
+        self._policy_provider = policy_provider
         self._pending: dict[str, _PendingEntry] = {}
         # phaze-oxn2m: path -> the paths it was moved away from, oldest first. Held from the move
         # until the caller ``forget``s it after posting, so it outlives the pending entry for the
@@ -65,7 +72,9 @@ class Debouncer:
         now = time.monotonic()
         entry = self._pending.get(path)
         if entry is None:
-            self._pending[path] = _PendingEntry(first_seen_at=now, last_change_at=now)
+            self._pending[path] = _PendingEntry(
+                first_seen_at=now, last_change_at=now, policy=self._policy_provider() if self._policy_provider is not None else None
+            )
         else:
             entry.last_change_at = now
 
@@ -122,10 +131,11 @@ class Debouncer:
         ready: list[str] = []
         evicted: list[str] = []
         for path, entry in list(self._pending.items()):
-            if now - entry.last_change_at >= settle_period:
+            entry_settle, entry_cap = entry.policy if entry.policy is not None else (settle_period, max_pending)
+            if now - entry.last_change_at >= entry_settle:
                 ready.append(path)
                 del self._pending[path]
-            elif now - entry.first_seen_at > max_pending:
+            elif now - entry.first_seen_at > entry_cap:
                 if entry.cap_grace_used:
                     evicted.append(path)
                     del self._pending[path]

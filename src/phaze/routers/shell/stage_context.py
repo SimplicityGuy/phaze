@@ -40,6 +40,7 @@ from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.shell.stage_maps import _EMPTY_STATE_PARTIAL, CHANGES_LIST_CONTAINER_ID, PROPOSE_LIST_CONTAINER_ID, _stage_partial
 from phaze.routers.shell.summary import _build_summary_context
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
+from phaze.runtime_config import effective_settings
 from phaze.services.dedup import GROUP_PAGE_SIZE, count_duplicate_groups
 from phaze.services.execution_preflight import get_execution_preflight
 from phaze.services.junk_review_page import GROUP_PAGE_SIZE as JUNK_GROUP_PAGE_SIZE, count_open_groups, list_open_groups
@@ -115,7 +116,7 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
 
     Phase 60 (60-03, D-01): the Propose generation view over the shared RenameProposal source (NOT a
     diff). The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a
-    per-row value); a plain str off ``get_settings()``'s process-wide ``ControlSettings`` instance (no
+    per-row value); a plain str off ``effective_settings(get_settings())``'s process-wide ``ControlSettings`` instance (no
     DB, no enqueue). oob_counts stays False (Pitfall 5); the live sub-count rides the single chrome
     poll's OOB seeds.
 
@@ -140,7 +141,7 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     The returned mapping is merged into the caller's base context; it is never a whole context on
     its own (it carries no ``request``/chrome keys).
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     view = ListViewState.from_request(request)
     # phaze-a6hm.10: the ONE resolution of this table's sort. `view.sort`/`view.order` are still
     # untrusted here -- ListViewState is a total PARSER, not a validator, so it will happily hand

@@ -12,6 +12,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.runtime_config import effective_settings
 from phaze.services.discogs_matcher import DiscogsographyClient, match_track_to_discogs
 from phaze.services.selected_discogs import lock_recording_discogs_pin, read_recording_discogs_pin
 from phaze.services.selected_source_consumers import explicit_tracklist_clause
@@ -34,7 +35,7 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
 
     Uses asyncio.Semaphore to bound concurrent requests per discogs_match_concurrency setting.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     logger.info("discogs match started", tracklist_id=tracklist_id)
 
     # phaze-xdu1: the OLD shape opened ONE transaction that DELETEd every candidate link, then held
@@ -142,7 +143,7 @@ async def match_recording_source_to_discogs(
     ctx: dict[str, Any], *, media_id: str, expected_observation_id: str, expected_selection_token: str
 ) -> dict[str, Any]:
     """Match the reviewed target projection; never hold a database session across HTTP requests."""
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     try:
         async with ctx["async_session"]() as session:
             pin = await read_recording_discogs_pin(

@@ -24,6 +24,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.runtime_config import effective_settings
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.services import s3_staging
 from phaze.services.enqueue_router import lane_for_task, select_active_agent
@@ -391,7 +392,7 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
     an in-memory record on ``session.info`` (:func:`_park_s3_enqueue`), so no S3 call moved across a
     transaction boundary and none newly sits inside one.
     """
-    cfg = cast("ControlSettings", get_settings())
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
 
     # Gate on an online fileserver agent BEFORE mutating anything: with none available this is a
     # clean hold (NoActiveAgentError propagates) -- no multipart, no cloud_job, no parked enqueue.
@@ -535,7 +536,7 @@ async def redrive_upload(session: AsyncSession, file: FileRecord, task_router: A
       The genuine bucket/configuration problem, and the only one of the two that a later re-drive (or a
       config fix) can clear.
     """
-    cfg = cast("ControlSettings", get_settings())
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
     existing = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
     if existing is None:
         raise NoCloudJobToRedriveError(

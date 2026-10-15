@@ -1,104 +1,67 @@
 # Runtime setting audit
 
-Every currently displayed Settings key is listed below. A reader is the first source file containing the field name outside the declarations in `config_base.py`, `config_control.py`, or `config_agent.py`; the full tree was searched to confirm use. This is a static reader inventory, with source-specific behavior described in [configuration.md](configuration.md). All retained keys have a runtime source reference.
+The previous first-occurrence reader list is replaced by the [complete configuration inventory](configuration-inventory.md). A name occurrence alone does not establish a consumer or a restart requirement: for example, `debug` controls SQLAlchemy statement echo in `database.py`, whereas a watcher `logger.debug` call does not read that setting.
 
-## Live controls
+The Settings model still has **88 fields**. Runtime policy grows from **10 to 42 live keys** (39 model fields plus three native analysis controls); **47 fields** remain restart-only and **2 collections** use the separate live backend-registry path. No consumed setting is removed to satisfy a numerical target. Three inert deployment/example inputs are removed: `UID`, `GID`, and `PHAZE_DEBUG`. The first two were never wired to image users or Compose settings. The unnecessary `PHAZE_DEBUG` development-overlay input is removed because the accepted SQL echo input is `DEBUG`; use `PHAZE_LOG_LEVEL=DEBUG` for ordinary application diagnostics.
 
-| Key | Verdict | Reader |
-|---|---|---|
-| `analysis_intra_op_threads` | Keep: live control | `src/phaze/tasks/functions.py` |
-| `analysis_omp_threads` | Keep: live control | `src/phaze/tasks/functions.py` |
-| `analysis_stall_timeout_sec` | Keep: live control | `src/phaze/job_runner.py` |
-| `cloud_route_threshold_sec` | Keep: live control | `src/phaze/routers/pipeline/analysis.py` |
-| `lane_analyze_concurrency` | Keep: live control | `src/phaze/services/enqueue_router.py` |
-| `lane_io_concurrency` | Keep: live control | `src/phaze/services/enqueue_router.py` |
-| `lane_meta_concurrency` | Keep: live control | `src/phaze/services/enqueue_router.py` |
-| `log_level` | Keep: live control | `src/phaze/logging_config.py` |
-| `worker_max_jobs` | Keep: live control | `src/phaze/tasks/_shared/live_worker.py` |
-| `worker_process_pool_size` | Keep: live control | `src/phaze/tasks/agent_worker.py` |
+The inventory records purpose, defaults and validation, aliases and file-secret variants, roles, real consumers and per-setting timing/disposition. It also inventories nested registry fields, registered provider policy and credential names, direct entrypoint inputs and deployment/third-party knobs. Equal defaults are not proof of duplicate purpose: the ORM and broker URLs, throughput chunks and schema caps, and separate cloud/push/node-loss budgets remain distinct.
 
-## Restart-only settings
+`cloud_submit_max_attempts` was initially proposed as live and then retained as restart-only after examining the persisted spent-chain fold. The fold encodes exhaustion by comparing attempts with that ceiling; lowering it can miss the edge and raising it can charge the same chain twice. Safe live changes require persisted per-chain cap identity. Lifetime chain/node-loss ceilings and cooldowns remain live because they compare retained durable counts and timestamps without changing that edge identity.
 
-| Key | Verdict | Reader |
-|---|---|---|
-| `aborting_reap_slack_seconds` | Keep: read at startup | `src/phaze/tasks/aborting_reaper.py` |
-| `active_reap_slack_seconds` | Keep: read at startup | `src/phaze/services/queue_introspection.py` |
-| `agent_api_url` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `agent_ca_file` | Keep: read at startup | `src/phaze/tasks/_shared/agent_bootstrap.py` |
-| `agent_env` | Keep: read at startup | `src/phaze/config_agent.py` |
-| `agent_file_chunk_max` | Keep: read at startup | `src/phaze/schemas/agent_files.py` |
-| `agent_heartbeat_enabled` | Keep: read at startup | `src/phaze/tasks/agent_worker.py` |
-| `agent_token` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `agent_token_prefix` | Keep: read at startup | `src/phaze/services/agent_bootstrap.py` |
-| `analysis_progress_interval_sec` | Keep: read at startup | `src/phaze/job_runner.py` |
-| `anthropic_api_key` | Keep: read at startup | `src/phaze/tasks/controller.py` |
-| `auto_migrate` | Keep: read at startup | `src/phaze/database.py` |
-| `cloud_budget_cooldown_days` | Keep: read at startup | `src/phaze/services/cloud_budget.py` |
-| `cloud_budget_max_chains` | Keep: read at startup | `src/phaze/services/cloud_budget.py` |
-| `cloud_budget_max_node_loss` | Keep: read at startup | `src/phaze/services/cloud_budget.py` |
-| `cloud_node_loss_max_redrives` | Keep: read at startup | `src/phaze/tasks/reconcile_cloud_jobs.py` |
-| `cloud_redrive_backoff_sec` | Keep: read at startup | `src/phaze/tasks/reconcile_cloud_jobs.py` |
-| `cloud_scratch_dir` | Keep: read at startup | `src/phaze/tasks/agent_worker.py` |
-| `cloud_spill_to_local_after_seconds` | Keep: read at startup | `src/phaze/services/backend_selection.py` |
-| `cloud_submit_max_attempts` | Keep: read at startup | `src/phaze/routers/agent_push.py` |
-| `cloud_submitted_stale_after_sec` | Keep: read at startup | `src/phaze/services/backends/compute_agent.py` |
-| `cloud_uploaded_stale_after_sec` | Keep: read at startup | `src/phaze/services/backends/kueue.py` |
-| `cloud_uploading_stale_after_sec` | Keep: read at startup | `src/phaze/services/backends/kueue.py` |
-| `control_env` | Keep: read at startup | `src/phaze/config_control.py` |
-| `convention_date_fallback_enabled` | Keep: read at startup | `src/phaze/tasks/proposal.py` |
-| `convention_date_min_purity` | Keep: read at startup | `src/phaze/tasks/proposal.py` |
-| `convention_date_min_supporting` | Keep: read at startup | `src/phaze/tasks/proposal.py` |
-| `database_url` | Keep: read at startup | `src/phaze/database.py` |
-| `db_max_overflow` | Keep: read at startup | `src/phaze/database.py` |
-| `db_pool_pre_ping` | Keep: read at startup | `src/phaze/database.py` |
-| `db_pool_recycle` | Keep: read at startup | `src/phaze/database.py` |
-| `db_pool_size` | Keep: read at startup | `src/phaze/database.py` |
-| `db_pool_timeout` | Keep: read at startup | `src/phaze/database.py` |
-| `debug` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `dev_agent_token` | Keep: read at startup | `src/phaze/services/agent_bootstrap.py` |
-| `dev_seed_agent` | Keep: read at startup | `src/phaze/services/agent_bootstrap.py` |
-| `discogs_match_concurrency` | Keep: read at startup | `src/phaze/tasks/discogs.py` |
-| `discogsography_url` | Keep: read at startup | `src/phaze/tasks/controller.py` |
-| `dispatch_queue_max_size` | Keep: read at startup | `src/phaze/services/agent_task_router.py` |
-| `dispatch_queue_min_size` | Keep: read at startup | `src/phaze/services/agent_task_router.py` |
-| `enable_saq_ui` | Keep: read at startup | `src/phaze/main.py` |
-| `kind` | Keep: read at startup | `src/phaze/cli/__init__.py` |
-| `llm_batch_size` | Keep: read at startup | `src/phaze/routers/pipeline/dashboard_stats.py` |
-| `llm_max_companion_chars` | Keep: read at startup | `src/phaze/tasks/proposal.py` |
-| `llm_max_rpm` | Keep: read at startup | `src/phaze/tasks/controller.py` |
-| `llm_model` | Keep: read at startup | `src/phaze/routers/shell/stage_context.py` |
-| `log_json` | Keep: read at startup | `src/phaze/main.py` |
-| `models_path` | Keep: read at startup | `src/phaze/job_runner.py` |
-| `openai_api_key` | Keep: read at startup | `src/phaze/tasks/controller.py` |
-| `push_connect_timeout_sec` | Keep: read at startup | `src/phaze/tasks/push.py` |
-| `push_known_hosts` | Keep: read at startup | `src/phaze/tasks/push.py` |
-| `push_max_attempts` | Keep: read at startup | `src/phaze/routers/agent_push.py` |
-| `push_ssh_key` | Keep: read at startup | `src/phaze/tasks/push.py` |
-| `push_ssh_user` | Keep: read at startup | `src/phaze/tasks/push.py` |
-| `push_timeout_sec` | Keep: read at startup | `src/phaze/tasks/agent_worker.py` |
-| `queue_url` | Keep: read at startup | `src/phaze/cli/__init__.py` |
-| `redis_password` | Keep: read at startup | `src/phaze/config_redis.py` |
-| `redis_url` | Keep: read at startup | `src/phaze/cli/__init__.py` |
-| `runtime_config_dir` | Keep: read at startup | `src/phaze/runtime_config_triggers.py` |
-| `runtime_config_watch_debounce_seconds` | Keep: read at startup | `src/phaze/runtime_config_triggers.py` |
-| `runtime_config_watch_poll_interval_seconds` | Keep: read at startup | `src/phaze/runtime_config_triggers.py` |
-| `runtime_config_watch_polling` | Keep: read at startup | `src/phaze/runtime_config_triggers.py` |
-| `s3_client_timeout_sec` | Keep: read at startup | `src/phaze/services/s3_staging.py` |
-| `s3_lifecycle_ttl_days` | Keep: read at startup | `src/phaze/services/s3_staging.py` |
-| `s3_multipart_part_size_bytes` | Keep: read at startup | `src/phaze/services/cloud_staging.py` |
-| `s3_presign_get_ttl_sec` | Keep: read at startup | `src/phaze/services/s3_staging.py` |
-| `s3_presign_put_ttl_sec` | Keep: read at startup | `src/phaze/services/cloud_staging.py` |
-| `scan_chunk_size` | Keep: read at startup | `src/phaze/tasks/scan.py` |
-| `scan_path` | Keep: read at startup | `src/phaze/routers/agent_orphan_companions.py` |
-| `scan_roots` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `scan_stall_seconds` | Keep: read at startup | `src/phaze/routers/pipeline_scans.py` |
-| `watcher_max_pending_seconds` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `watcher_polling_mode` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `watcher_settle_seconds` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `watcher_sweep_interval_seconds` | Keep: read at startup | `src/phaze/agent_watcher/__main__.py` |
-| `worker_job_timeout` | Keep: read at startup | `src/phaze/tasks/_shared/queue_defaults.py` |
-| `worker_keep_result` | Keep: read at startup | `src/phaze/tasks/_shared/queue_defaults.py` |
-| `worker_max_retries` | Keep: read at startup | `src/phaze/tasks/_shared/queue_defaults.py` |
+## Working live policy
+
+Validated file/override values enter the existing atomic RuntimeConfig snapshot. API/controller notify and fallback poll behavior is unchanged; agent HTTP polling now carries booleans, fractions and retry-delay arrays without coercing them to integers. One-shot cloud jobs fetch the same validated layer before work. New operations capture policy together with their existing static credentials/registry identity. Running operations retain their captured policy and resources.
+
+| Key | Activation and operator effect |
+|---|---|
+| `aborting_reap_slack_seconds` | Grace added to each aborting job's own serialized timeout on the next reap. Changing it never changes job timeouts or progress-only analysis exclusions. |
+| `active_reap_slack_seconds` | Grace added to each stranded active job's own serialized timeout on the next reap. Progress-only heartbeat jobs remain excluded. |
+| `analysis_intra_op_threads` | TensorFlow intra-op threads in each newly spawned analysis child. More threads can increase CPU use; fewer reduce it. Running children keep their original value. TF_NUM_INTRAOP_THREADS in an agent's environment is a ceiling that live changes cannot exceed. |
+| `analysis_omp_threads` | OpenMP threads in each newly spawned analysis child. More threads can increase CPU use; fewer reduce it. Running children keep their original value. OMP_NUM_THREADS in an agent's environment is a ceiling that live changes cannot exceed. |
+| `analysis_progress_interval_sec` | Minimum seconds between progress reports for the next analysis job. Final progress always flushes; zero disables throttling. |
+| `analysis_stall_timeout_sec` | Time without analysis progress before a child is killed. Raising it tolerates longer silent work; lowering it detects stalls sooner. It applies to the next job, not one already running, and the outer job heartbeat is derived as twice this value. |
+| `analysis_tf_batch_size` | TensorFlow inference patches per batch in new analysis children. Smaller batches trade throughput for lower inference memory demand; measured peak RSS is flat below the default 32. Running children keep their original batch. Fixed-batch graphs retain their required size. An agent rejects live values above its deployment baseline (32 when unset); raising that ceiling requires deployment configuration and restart. The API host does not judge agent memory ceilings. |
+| `cloud_budget_cooldown_days` | Cloud cooldown checked at the next routing decision. Durable chain exhaustion timestamps remain intact; zero disables cooldown. |
+| `cloud_budget_max_chains` | Lifetime cloud-chain ceiling checked at the next routing decision. Spent chains remain recorded; zero disables the ceiling. Local remains eligible. |
+| `cloud_budget_max_node_loss` | Lifetime node-loss ceiling checked at the next routing decision. Spent redrives remain recorded; zero disables the ceiling. |
+| `cloud_node_loss_max_redrives` | Node-loss redrive ceiling at the next failure decision. Existing charges are retained. |
+| `cloud_redrive_backoff_sec` | JSON array of seconds before successive charged redrives. The last value repeats. New redrive decisions use it; already scheduled waits retain their deadline. |
+| `cloud_route_threshold_sec` | Duration threshold used when choosing local versus cloud analysis. Raising it keeps more files on the local path; lowering it offers more files to cloud capacity. The next routing decision reads the new value. |
+| `cloud_spill_to_local_after_seconds` | Waiting seconds before full cloud capacity permits local spill at the next routing decision. Existing waiting timestamps remain intact. |
+| `convention_date_fallback_enabled` | Include learned date conventions in the next proposal batch. Approval still gates filesystem changes. |
+| `convention_date_min_purity` | Minimum supporting share for a learned convention in the next proposal batch. One requires unanimity. |
+| `convention_date_min_supporting` | Minimum supporting files for a learned convention in the next proposal batch. |
+| `discogs_match_concurrency` | Matching concurrency in the next Discogs task. Running task semaphores drain normally. |
+| `lane_analyze_concurrency` | Analyze-lane job limit. Raising it admits more analysis jobs; lowering it drains by attrition. Effective lane capacity is also capped by worker_max_jobs; worker_process_pool_size separately caps simultaneous analysis children. Applies on the agent's next config poll. |
+| `lane_io_concurrency` | I/O-lane job limit for uploads and pushes. Raising it admits more transfers; lowering it lets current transfers finish. worker_max_jobs is a separate upper bound. Applies on the agent's next config poll. |
+| `lane_meta_concurrency` | Meta-lane job limit for scans, extraction, and execution. Raising it admits more jobs; lowering it lets current jobs finish. worker_max_jobs is a separate upper bound. Applies on the agent's next config poll. |
+| `llm_batch_size` | Proposal items per batch at the next Generate action. Already queued batches keep their item lists. |
+| `llm_max_companion_chars` | Companion context character cap for the next proposal batch. More characters supply more context and tokens. |
+| `llm_max_rpm` | LLM request ceiling per minute. Waiting callers recheck after each wait; the same Redis window and consumed requests remain intact. |
+| `llm_model` | Model for the next proposal batch. Already running calls and their parsers retain their model. |
+| `log_level` | Controls log detail across API, control worker, and agents. DEBUG emits more detail; ERROR or CRITICAL emits less. The new level applies immediately on each process after its config update. |
+| `push_connect_timeout_sec` | SSH connection seconds for the next push. Running handshakes retain their limit. |
+| `push_max_attempts` | Push redrive ceiling at the next failure decision. Existing attempt counters are retained. |
+| `push_timeout_sec` | I/O silence timeout for the next transfer. Live values cannot exceed the 600-second policy used by already queued multipart jobs. Running transfers retain their captured timeout. |
+| `s3_client_timeout_sec` | Connect and read seconds in newly constructed S3 clients. An active SDK operation retains its client and timeout. |
+| `s3_multipart_part_size_bytes` | Part size for the next staged upload. Existing upload manifests and part boundaries remain intact. |
+| `s3_presign_get_ttl_sec` | Lifetime of newly signed download URLs. Existing signatures retain their original lifetime. |
+| `s3_presign_put_ttl_sec` | Lifetime of newly signed upload URLs. Existing signatures remain valid for their original lifetime; upload job safety minimums still apply. |
+| `scan_chunk_size` | Files per chunk for the next scan. The server's separate chunk ceiling always clamps this value; running scans retain their chunk size. |
+| `scan_stall_seconds` | No-progress seconds before the next scan reap considers a running scan stalled. Progress timestamps are retained. |
+| `watcher_max_pending_seconds` | Maximum pending age before a newly discovered path receives its one grace extension. The standalone watcher adopts policy on its next bounded poll; existing pending entries retain their captured cap and grace state. |
+| `watcher_settle_seconds` | Quiet seconds required before a newly discovered path is posted. The standalone watcher adopts policy on its next bounded poll; existing pending files keep their captured settle/grace policy and lineage. |
+| `worker_job_timeout` | Default timeout for newly enqueued finite-duration jobs. Existing job limits remain serialized; exhaustive analysis always retains its zero wall-clock timeout. |
+| `worker_keep_result` | Retention seconds on newly enqueued job results. Existing jobs retain their serialized retention. |
+| `worker_max_jobs` | Maximum concurrent SAQ jobs per worker. Raising it starts more job loops immediately; lowering it lets running jobs finish. It caps each lane's effective concurrency, even when that lane's own limit is higher. |
+| `worker_max_retries` | Default retry budget on newly enqueued jobs. Explicit job limits and the analysis retry ceiling remain in force. |
+| `worker_process_pool_size` | Maximum simultaneous analysis child processes per agent. Raising it releases waiting analysis calls; lowering it waits for current children to finish. It also resizes telemetry worker slots and remains separate from SAQ job limits. Applies on the agent's next config poll. |
+
+## Evidence and safety
+
+Tests exercise every live key through real environment/file/override precedence and withdrawal. Consumer tests exercise new serialized SAQ defaults while preserving `process_file` timeout=0 and retry ceiling; per-operation S3 client timeouts with last-good rejection; persistent cloud budget thresholds without resetting spent counters; live scan chunking under the fixed request-schema cap; typed agent poll recovery; real child-process inference batch capture (old 32, new 8, fixed graph 64); transfer timeout/batch ceiling rejection before swap; concurrent proposal model/parser capture; and rate-limit wakeup against the same Redis request window and TTL.
+
+The retained resource controls have concrete restart reasons in the inventory. Credentials/connection authority, schema or router topology, observer replacement, native-model identity and destructive bucket/recovery deadlines are not represented as successful scalar reloads. Existing progress-only liveness and exhaustive analysis windows remain intact. No production/archive experiments were used.
 
 ## Removed inert Settings fields
 
@@ -111,3 +74,14 @@ Every currently displayed Settings key is listed below. A reader is the first so
 | `api_tls_sans` | No reader of the Settings field. `PHAZE_API_TLS_SANS` remains supported because `src/phaze/entrypoint.py` reads it directly when generating a certificate. |
 
 The removals affect Settings model introspection and the read-only Runtime Config inventory, not the still-consumed environment variables.
+
+## Shared agent policy boundary
+
+The bounded authenticated policy fetch now belongs to `runtime_config_agent.py`, independently of agent liveness. Heartbeat polling retains its existing deadline, retry/digest state and compatibility seams. One-shot jobs call the same poller without importing heartbeat/worker machinery or touching last-seen timestamps. The baseline had green typed-poll tests and a failing one-shot import guard after the initial wiring; the extraction preserves polling behavior and fixes that boundary. Targeted polling and import-boundary checks precede the configured hive gate.
+
+The standalone watcher polls policy every 30 seconds and supports SIGHUP for its local file layer. Each newly pending file captures its settle and maximum-pending timing together; existing entries retain their captured policy, grace flag and move lineage. Polling runs independently of discovery and is cancelled/drained before the HTTP client closes. Observer backend and emitter interval remain restart-only.
+
+New clients request the typed policy envelope with `X-Phaze-Config-Version: 2`. Unversioned clients receive the original ten scalar keys; their int/string parser remains operational even when persisted overrides contain booleans, fractions or retry arrays. This is tested through the real authenticated endpoint with a legacy response model.
+
+
+The shared transfer silence timeout has a live ceiling of 600 seconds, derived from the S3 producer's frozen per-part policy. An SSH-only increase can fit its single-transfer margin yet exceed the serialized sum for a multipart upload. Reload validation therefore checks both consumers before swapping the snapshot; it never resizes already queued jobs. Non-default startup settings retain their existing validation: a startup value above 600 may suit SSH-only use but is incompatible with default multipart envelopes unless producer and agent budgets are coordinated. Clearing an override restores that startup authority rather than changing its validation.

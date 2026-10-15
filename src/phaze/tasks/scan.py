@@ -27,8 +27,9 @@ import unicodedata
 
 import structlog
 
-from phaze.config import AgentSettings, get_settings
+from phaze.config import get_settings
 from phaze.constants import EXTENSION_MAP, INGESTIBLE_COMPANION_EXTENSIONS, QUARANTINE_DIRNAME, FileCategory, is_quarantined
+from phaze.runtime_config import current
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
@@ -146,7 +147,7 @@ def _resolve_chunk_size() -> int:
     default too.
     """
     cfg = get_settings()
-    raw_chunk_size = cfg.scan_chunk_size if isinstance(cfg, AgentSettings) else _DEFAULT_SCAN_CHUNK_SIZE
+    raw_chunk_size = current().scan_chunk_size
     return min(raw_chunk_size, cfg.agent_file_chunk_max)
 
 

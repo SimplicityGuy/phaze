@@ -586,7 +586,7 @@ async def test_physical_competing_sources_native_independent_choices_preserve_ma
             )
             llm_contexts = []
 
-            async def llm(contexts: list[dict[str, Any]]) -> BatchProposalResponse:
+            async def llm(contexts: list[dict[str, Any]], *, model: str | None = None) -> BatchProposalResponse:
                 llm_contexts.extend(contexts)
                 assert contexts[0]["reviewed_source_tags"]["artist"] == "Matched Artist"
                 assert contexts[0]["reviewed_source_tags"]["album"] == "Alternate Album"

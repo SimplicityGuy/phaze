@@ -39,9 +39,11 @@ class _CapturingProposalService:
 
     def __init__(self) -> None:
         self.seen: list[dict[str, Any]] = []
+        self.model: str | None = None
 
-    async def generate_batch(self, files_context: list[dict[str, Any]]) -> BatchProposalResponse:
+    async def generate_batch(self, files_context: list[dict[str, Any]], *, model: str | None = None) -> BatchProposalResponse:
         self.seen = files_context
+        self.model = model
         return BatchProposalResponse(
             proposals=[
                 FileProposalResponse(

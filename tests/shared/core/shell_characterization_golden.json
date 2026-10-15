@@ -2421,6 +2421,16 @@
       [
         "form",
         "",
+        "{\"hx-post\": \"/admin/runtime-config/aborting_reap_slack_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/active_reap_slack_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
         "{\"hx-post\": \"/admin/runtime-config/analysis_intra_op_threads\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
@@ -2431,12 +2441,72 @@
       [
         "form",
         "",
+        "{\"hx-post\": \"/admin/runtime-config/analysis_progress_interval_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
         "{\"hx-post\": \"/admin/runtime-config/analysis_stall_timeout_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
         "form",
         "",
+        "{\"hx-post\": \"/admin/runtime-config/analysis_tf_batch_size\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_budget_cooldown_days\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_budget_max_chains\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_budget_max_node_loss\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_node_loss_max_redrives\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_redrive_backoff_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
         "{\"hx-post\": \"/admin/runtime-config/cloud_route_threshold_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/cloud_spill_to_local_after_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/convention_date_fallback_enabled\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/convention_date_min_purity\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/convention_date_min_supporting\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/discogs_match_concurrency\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
         "form",
@@ -2456,12 +2526,102 @@
       [
         "form",
         "",
+        "{\"hx-post\": \"/admin/runtime-config/llm_batch_size\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/llm_max_companion_chars\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/llm_max_rpm\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/llm_model\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
         "{\"hx-post\": \"/admin/runtime-config/log_level\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
         "form",
         "",
+        "{\"hx-post\": \"/admin/runtime-config/push_connect_timeout_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/push_max_attempts\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/push_timeout_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/s3_client_timeout_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/s3_multipart_part_size_bytes\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/s3_presign_get_ttl_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/s3_presign_put_ttl_sec\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/scan_chunk_size\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/scan_stall_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/watcher_max_pending_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/watcher_settle_seconds\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/worker_job_timeout\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/worker_keep_result\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
         "{\"hx-post\": \"/admin/runtime-config/worker_max_jobs\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-post\": \"/admin/runtime-config/worker_max_retries\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#runtime-config-table\"}"
       ],
       [
         "form",

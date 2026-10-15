@@ -102,6 +102,7 @@ from typing import Any
 import structlog
 
 from phaze.config import get_settings
+from phaze.runtime_config import effective_settings
 from phaze.tasks._saq_reap import REAP_STRANDED_SQL, SAQ_DEFAULT_TIMEOUT_SECONDS
 
 
@@ -121,7 +122,7 @@ async def reap_stranded_active_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     docstring). Returns ``{"reaped": N}`` (0 when nothing is stranded). Never raises: a degraded
     read/parse rolls back the SAVEPOINT alone and returns ``reaped=0``.
     """
-    slack = get_settings().active_reap_slack_seconds
+    slack = effective_settings(get_settings()).active_reap_slack_seconds
 
     async with ctx["async_session"]() as session:
         try:

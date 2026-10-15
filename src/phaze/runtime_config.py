@@ -92,14 +92,16 @@ from pathlib import Path
 import time
 import tomllib
 from types import MappingProxyType
-from typing import Any, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 import structlog
 
 from phaze.config import AgentSettings, BaseSettings, ControlSettings, get_settings
 from phaze.config_base import derive_analysis_job_heartbeat_sec
+from phaze.config_remote_providers import provider_policy_keys
 from phaze.logging_config import KNOWN_LOG_LEVELS
+from phaze.services.analysis_models import _DEFAULT_TF_BATCH_SIZE, _TF_BATCH_SIZE_ENV
 from phaze.services.analysis_sizing import INTRA_OP_ENV, OMP_ENV, derive_sizing
 from phaze.telemetry.instruments import add, set_gauge
 
@@ -129,7 +131,7 @@ class RuntimeConfig(BaseModel):
     JSON override both carry real ints, and a string there is an operator mistake to report.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
 
     # Validated against phaze.logging_config.KNOWN_LOG_LEVELS -- a fixed set, not the
     # process-wide logging registry, so the accepted set is identical in every process type
@@ -144,8 +146,49 @@ class RuntimeConfig(BaseModel):
     # deliberately absent: it is pinned at 1 as the memory term (analysis_sizing._INTER_OP_THREADS).
     analysis_intra_op_threads: int = Field(ge=1)
     analysis_omp_threads: int = Field(ge=1)
+    analysis_tf_batch_size: int = Field(default=_DEFAULT_TF_BATCH_SIZE, ge=1)
     analysis_stall_timeout_sec: int = Field(gt=0, lt=86400)
     cloud_route_threshold_sec: int = Field(gt=0, lt=86400)
+
+    # Policy snapshots are captured at operation/job boundaries. Existing jobs retain their
+    # serialized limits and durable counters; reload never recreates a queue or resets history.
+    worker_job_timeout: int = Field(default=600, ge=0)
+    worker_max_retries: int = Field(default=4, ge=0)
+    worker_keep_result: int = 3600
+    aborting_reap_slack_seconds: int = Field(default=300, ge=0)
+    active_reap_slack_seconds: int = Field(default=900, ge=0)
+    scan_stall_seconds: int = Field(default=86400, gt=0)
+    scan_chunk_size: int = Field(default=500, gt=0)
+    watcher_settle_seconds: int = Field(default=10, ge=0)
+    watcher_max_pending_seconds: int = Field(default=3600, gt=0)
+    analysis_progress_interval_sec: float = Field(default=5.0, ge=0)
+    discogs_match_concurrency: int = Field(default=5, ge=1)
+    llm_model: str = Field(default="claude-sonnet-5", min_length=1, max_length=256)
+    llm_max_rpm: int = Field(default=30, ge=1)
+    llm_batch_size: int = Field(default=10, gt=0)
+    llm_max_companion_chars: int = Field(default=3000, ge=0)
+    convention_date_fallback_enabled: bool = True
+    convention_date_min_supporting: int = Field(default=50, ge=1)
+    convention_date_min_purity: float = Field(default=1.0, ge=0, le=1)
+    push_max_attempts: int = Field(default=3, gt=0, lt=20)
+    cloud_node_loss_max_redrives: int = Field(default=1, gt=0, lt=20)
+    cloud_redrive_backoff_sec: tuple[Annotated[int, Field(ge=0, le=86400)], ...] = Field(default=(120, 600, 1800), min_length=1)
+    cloud_budget_cooldown_days: float = Field(default=14.0, ge=0, le=3650)
+    cloud_budget_max_chains: int = Field(default=3, ge=0, lt=100)
+    cloud_budget_max_node_loss: int = Field(default=3, ge=0, lt=100)
+    cloud_spill_to_local_after_seconds: int = Field(default=900, gt=0, lt=86400)
+    s3_presign_put_ttl_sec: int = Field(default=3600, gt=0, lt=86400)
+    s3_presign_get_ttl_sec: int = Field(default=900, gt=0, lt=86400)
+    s3_multipart_part_size_bytes: int = Field(default=67108864, ge=5242880, lt=5368709120)
+    s3_client_timeout_sec: int = Field(default=30, gt=0, lt=600)
+    push_timeout_sec: int = Field(default=600, gt=0, lt=86400)
+    push_connect_timeout_sec: int = Field(default=30, gt=0, lt=3600)
+
+    @field_validator("cloud_redrive_backoff_sec", mode="before")
+    @classmethod
+    def _backoff_array(cls, value: Any) -> Any:
+        # TOML and JSON represent tuples as arrays. Preserve strict validation of each item.
+        return tuple(value) if isinstance(value, list) else value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -420,6 +463,22 @@ class RuntimeConfigStore:
             config = RuntimeConfig.model_validate(values)
         except ValidationError as exc:
             raise ReloadRejectedError(_format_validation_error(exc)) from exc
+        # Reducing the inference batch for new children can relieve memory pressure. A live
+        # raise beyond the host baseline needs a measured deployment change instead: this
+        # keeps the established process-memory bound while existing children finish normally.
+        if self._check_sizing_enabled and config.analysis_tf_batch_size > self._base_config.analysis_tf_batch_size:
+            raise ReloadRejectedError("analysis_tf_batch_size exceeds the host deployment ceiling; raise the environment baseline and restart")
+        if sources["push_timeout_sec"] in ("file", "override"):
+            from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC, push_transfer_budget_sec  # noqa: PLC0415 -- avoid config/consumer import cycle
+            from phaze.tasks.s3_upload import upload_file_saq_timeout_sec  # noqa: PLC0415 -- the same setting also bounds each multipart PUT
+
+            if push_transfer_budget_sec(0, io_stall_timeout_sec=config.push_timeout_sec) >= PUSH_FILE_SAQ_TIMEOUT_SEC or upload_file_saq_timeout_sec(
+                1, per_part_timeout_sec=config.push_timeout_sec
+            ) > upload_file_saq_timeout_sec(1):
+                # Multipart nets were serialized from the default per-part policy. Even a
+                # small increase compounds across parts and can consume their callback margin.
+                # Comparing the common per-part term protects every already queued part count.
+                raise ReloadRejectedError("push_timeout_sec would exceed existing queued transfers' job timeout safety margin")
         config = self._cap_at_thread_pins(config, sources)
         self._check_sizing(config, sources)
         return ConfigSnapshot(config, MappingProxyType(sources), config.digest())
@@ -505,14 +564,15 @@ class RuntimeConfigStore:
         sources: dict[str, Layer] = {}
         explicitly_set = settings.model_fields_set
         for key in RuntimeConfig.model_fields:
-            if key in _THREAD_ENV:
+            if key in _THREAD_ENV or key == "analysis_tf_batch_size":
                 continue
-            if key in type(settings).model_fields:
+            if key in settings.__class__.model_fields:
                 values[key] = getattr(settings, key)
                 sources[key] = "env" if key in explicitly_set else "default"
             else:
                 # A control-only key on an agent process: the control default, reported as such.
-                values[key] = ControlSettings.model_fields[key].default
+                fallback = ControlSettings.model_fields.get(key) or AgentSettings.model_fields[key]
+                values[key] = fallback.get_default(call_default_factory=True)
                 sources[key] = "default"
         # configure_logging falls back to INFO on an unknown name rather than raising, so the
         # base layer reports the level actually in force instead of refusing to start. Checked
@@ -537,6 +597,15 @@ class RuntimeConfigStore:
                     continue
             values[key] = derived[key]
             sources[key] = "default"
+        raw_batch = env.get(_TF_BATCH_SIZE_ENV, "").strip()
+        try:
+            batch = int(raw_batch)
+        except ValueError:
+            batch = 0
+        if raw_batch and batch < 1:
+            logger.warning("phaze.runtime_config ignoring a non-positive inference batch env var", env=_TF_BATCH_SIZE_ENV, value=raw_batch)
+        values["analysis_tf_batch_size"] = batch if batch > 0 else _DEFAULT_TF_BATCH_SIZE
+        sources["analysis_tf_batch_size"] = "env" if batch > 0 else "default"
         return values, sources
 
 
@@ -552,7 +621,8 @@ def partition_overrides(overrides: Mapping[str, Any]) -> tuple[dict[str, Any], t
     unknown keys are the operator's own typo on this host, and still reject.
     """
     reloadable = {key: value for key, value in overrides.items() if key in RELOADABLE_KEYS}
-    return reloadable, tuple(sorted(key for key in overrides if key not in RELOADABLE_KEYS))
+    known_policy_keys = provider_policy_keys()
+    return reloadable, tuple(sorted(key for key in overrides if key not in RELOADABLE_KEYS and key not in known_policy_keys))
 
 
 def _check_keys(offered: Mapping[str, Any]) -> None:
@@ -618,3 +688,21 @@ def get_runtime_config_store() -> RuntimeConfigStore:
 def current() -> RuntimeConfig:
     """The process's current reloadable config. Read it per use; never cache the result."""
     return get_runtime_config_store().current()
+
+
+def effective_settings[SettingsT: BaseSettings](settings: SettingsT) -> SettingsT:
+    """Capture live policy and static identity together at one operation boundary.
+
+    Resources, secrets and registry identities retain their existing owner. The copied settings
+    object is never installed globally: an in-flight operation can keep it while the next operation
+    captures the next validated snapshot. No resource or rate/budget history is reset here.
+    """
+    snapshot = get_runtime_config_store().snapshot()
+    # The role settings already contain the immutable env/default layers. Overlay only the
+    # mutable file/DB layers; clearing an override naturally restores the original role baseline.
+    updates = {
+        key: getattr(snapshot.config, key)
+        for key in RELOADABLE_KEYS
+        if snapshot.sources[key] in ("file", "override") and key in settings.__class__.model_fields
+    }
+    return settings.model_copy(update=updates) if updates else settings
