@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
+import pytest
 from sqlalchemy import func, select, text
 
 from phaze.enums.stage import Stage, Status, eligible, resolve_status
@@ -33,7 +34,8 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.pipeline import ORPHANED_BUCKET, _safe_bucket_counts
+from phaze.services.pipeline import ORPHANED_BUCKET, _safe_bucket_counts, buckets as bucket_mod
+from phaze.services.pipeline.common import capture_read_degradations
 from phaze.services.stage_status import _CLOUD_BUSY_STATUSES, stage_status_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -60,12 +62,10 @@ async def _saq_table(session: AsyncSession) -> None:
     await session.commit()
 
 
-_ANALYZE_FN = STAGE_TO_FUNCTION[Stage.ANALYZE.value]
-
-
-async def _ledger(session: AsyncSession, file: FileRecord) -> str:
-    key = f"{_ANALYZE_FN}:{file.id}"
-    session.add(SchedulingLedger(key=key, function=_ANALYZE_FN, routing="agent", payload={"file_id": str(file.id)}))
+async def _ledger(session: AsyncSession, file: FileRecord, stage: Stage = Stage.ANALYZE) -> str:
+    function = STAGE_TO_FUNCTION[stage.value]
+    key = f"{function}:{file.id}"
+    session.add(SchedulingLedger(key=key, function=function, routing="agent", payload={"file_id": str(file.id)}))
     await session.commit()
     return key
 
@@ -205,7 +205,9 @@ async def test_split_does_not_touch_the_derived_status_or_eligibility(session: A
     assert not eligible({Stage.ANALYZE: Status.IN_FLIGHT}, Stage.ANALYZE), "an orphan must stay out of the auto-enqueue set"
 
 
-async def test_degrades_to_pre_fix_numbers_without_saq_jobs(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE])
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_degrades_to_pre_fix_numbers_without_saq_jobs(session: AsyncSession, make_file, stage: Stage, scheduled: bool) -> None:  # type: ignore[no-untyped-def]
     """No ``saq_jobs`` table -> ``orphaned`` stays 0 and ``in_flight`` keeps its ledger-only value.
 
     The reason the split lives here and not inside ``stage_status_case``: a broker probe in the locked
@@ -214,12 +216,16 @@ async def test_degrades_to_pre_fix_numbers_without_saq_jobs(session: AsyncSessio
     """
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     await session.commit()
-    await _ledger(session, await make_file())
+    file = await make_file()
+    if scheduled:
+        await _ledger(session, file, stage)
 
-    buckets = await _safe_bucket_counts(session, Stage.ANALYZE)
+    with capture_read_degradations() as failures:
+        buckets = await _safe_bucket_counts(session, stage)
 
     assert buckets[ORPHANED_BUCKET] == 0
-    assert buckets[Status.IN_FLIGHT.value] == 1
+    assert buckets[Status.IN_FLIGHT.value] == int(scheduled)
+    assert "stage_orphan_split" in failures, "an absent source stays unavailable even when CASE would exclude every row"
 
 
 async def test_cloud_busy_statuses_track_the_backend_registry() -> None:
@@ -233,3 +239,26 @@ async def test_cloud_busy_statuses_track_the_backend_registry() -> None:
     from phaze.services.backends import IN_FLIGHT
 
     assert set(_CLOUD_BUSY_STATUSES) == {s.value for s in IN_FLIGHT} | {CloudJobStatus.AWAITING.value}
+
+
+async def test_orphan_probe_does_not_evaluate_the_unscheduled_population(session: AsyncSession, make_file, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Exercise real PostgreSQL CASE evaluation, without a brittle wall-time assertion.
+
+    The original orphan predicate already requires a ledger intent. Replacing only its expensive
+    branch with a row-dependent division makes evaluation on an unscheduled row fail observably;
+    a plain AND or redundant join can still evaluate that branch first. The reporting guard must
+    keep that irrelevant row out while evaluating the scheduled row normally.
+    """
+    await _saq_table(session)
+    scheduled = await make_file()
+    scheduled.file_size = 2048
+    await session.commit()
+    await make_file()
+    await _ledger(session, scheduled)
+    monkeypatch.setattr(bucket_mod, "orphaned_clause", lambda _stage: FileRecord.file_size / (FileRecord.file_size - 1024) > 0)
+
+    buckets = await _safe_bucket_counts(session, Stage.ANALYZE)
+
+    assert buckets[ORPHANED_BUCKET] == 1
+    assert buckets[Status.IN_FLIGHT.value] == 0
+    assert sum(buckets.values()) == 2

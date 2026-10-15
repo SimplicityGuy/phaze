@@ -19,15 +19,15 @@ What the factory guarantees on every returned queue:
   decoupling the cache from the now-Postgres broker is the whole point of this seam
   (36-RESEARCH Open Q3, LOCKED).
 
-Construction opens NO connection: ``PostgresQueue.from_url`` builds its ``AsyncConnectionPool``
-with ``open=False``, and ``redis.asyncio.Redis.from_url`` is lazy. The pool is opened later in
-the role startup (Plan 02), never here.
+Construction opens NO connection: the explicitly sized ``AsyncConnectionPool`` uses
+``open=False``, and ``redis.asyncio.Redis.from_url`` is lazy. SAQ owns the pool's later open/close.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from psycopg_pool import AsyncConnectionPool
 import redis.asyncio as aioredis
 from saq.queue.postgres import PostgresQueue  # noqa: TC002 -- resolved by runtime type-hint consumers
 import structlog
@@ -79,7 +79,11 @@ def build_pipeline_queue(
         ``before_enqueue`` callbacks and a ``cache_redis`` attribute set. No connection is
         opened at construction.
     """
-    q = ResilientPostgresQueue.from_url(url, name=name, min_size=min_size, max_size=max_size)
+    # SAQ opens its internally constructed pool BEFORE resizing it. That schedules the upstream
+    # default four connections even for min=0/max=2; resize does not retract those connections.
+    # Size our owned pool before it can open, retaining SAQ's connection check and lifecycle.
+    pool = AsyncConnectionPool(url, min_size=min_size, max_size=max_size, open=False, check=AsyncConnectionPool.check_connection)
+    q = ResilientPostgresQueue(pool=pool, name=name, min_size=min_size, max_size=max_size, manage_pool_lifecycle=True)
     q.register_before_enqueue(apply_project_job_defaults)
     q.register_before_enqueue(apply_deterministic_key)
     # Phase 37: stamp per-stage priority + park paused stage jobs. Registered THIRD, AFTER

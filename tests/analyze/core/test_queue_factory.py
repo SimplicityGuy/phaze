@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from psycopg_pool import AsyncConnectionPool
+import pytest
 import redis.asyncio as aioredis
 from saq.queue.postgres import PostgresQueue
 
@@ -61,8 +63,7 @@ def test_construction_opens_no_connection() -> None:
     """Test 4: constructing the factory opens NO connection.
 
     Two independent proofs: (a) AST-walk the factory body and assert it never calls
-    ``open``/``connect`` (the ``open=False`` pool flag lives in SAQ's own __init__, not
-    here); (b) at runtime the freshly-built pool reports ``closed`` — no socket opened."""
+    ``open``/``connect``; (b) at runtime the freshly-built pool reports ``closed`` — no socket opened."""
     source = Path(build_pipeline_queue.__code__.co_filename).read_text(encoding="utf-8")
     func = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == "build_pipeline_queue")
     called: set[str] = set()
@@ -78,3 +79,16 @@ def test_construction_opens_no_connection() -> None:
 
     q = build_pipeline_queue("controller", _PG_URL, cache_redis_url=_REDIS_URL)
     assert q.pool.closed is True
+
+
+@pytest.mark.parametrize(("minimum", "maximum"), [(0, 2), (1, 4), (2, 8)])
+def test_pool_has_its_requested_budget_before_saq_can_open_it(minimum: int, maximum: int) -> None:
+    """SAQ's open-before-resize must never schedule its default four connections first."""
+    queue = build_pipeline_queue("budget", _PG_URL, cache_redis_url=_REDIS_URL, min_size=minimum, max_size=maximum)
+    assert queue.pool.closed
+    assert queue.pool.min_size == queue.min_size == minimum
+    assert queue.pool.max_size == queue.max_size == maximum
+    assert queue.pool.get_stats()["pool_size"] == minimum
+    assert queue._manage_pool_lifecycle is True
+    assert queue.pool._check == AsyncConnectionPool.check_connection
+    assert queue.pool.kwargs["autocommit"] is True

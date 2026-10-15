@@ -15,12 +15,15 @@ from datetime import UTC, datetime
 import json
 import re
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
+from sqlalchemy import text
 
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
+from phaze.routers.shell import store_seed, summary as summary_mod
 from phaze.services.pipeline import orphans
 
 
@@ -206,3 +209,83 @@ async def test_a_stage_without_a_context_builder_still_renders_the_full_shell(cl
 
     assert resp.status_code == 200
     assert _seed_in_html(resp.text)["seedKnown"] == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_reuses_only_this_requests_progress_and_keeps_other_inputs_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh second request must get its own snapshot; no cross-request cache or frozen DAG."""
+    reread = AsyncMock(side_effect=AssertionError("healthy Summary progress must not be read twice"))
+    dag_read = AsyncMock(side_effect=[{"dag": {"agentOnline": 1}}, {"dag": {"agentOnline": 2}}])
+    monkeypatch.setattr(store_seed, "get_stage_progress", reread)
+    monkeypatch.setattr(store_seed, "_build_dag_context", dag_read)
+    monkeypatch.setattr(store_seed, "_derive_stats", lambda progress: progress["stats"])
+    first_progress = {"stats": {"discovered": 3, "analyzed": 1, "metadata_extracted": 2}}
+    second_progress = {"stats": {"discovered": 4, "analyzed": 2, "metadata_extracted": 3}}
+    state, session = object(), object()
+    first = await store_seed.build_pipeline_store_seed(state, session, {"_stage_progress": first_progress})  # type: ignore[arg-type]
+    second = await store_seed.build_pipeline_store_seed(state, session, {"_stage_progress": second_progress})  # type: ignore[arg-type]
+    assert first == {"discovered": 3, "analyzed": 1, "metadataExtracted": 2, "agentOnline": 1}
+    assert second == {"discovered": 4, "analyzed": 2, "metadataExtracted": 3, "agentOnline": 2}
+    assert dag_read.await_args_list[0].args == (state, session, {}, first_progress)
+    assert dag_read.await_args_list[1].args == (state, session, {}, second_progress)
+    reread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_summary_snapshot_retains_the_independent_seed_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    progress = {"stats": {"discovered": 3, "analyzed": 1, "metadata_extracted": 2}}
+    reread = AsyncMock(return_value=progress)
+    monkeypatch.setattr(store_seed, "get_stage_progress", reread)
+    monkeypatch.setattr(store_seed, "_derive_stats", lambda value: value["stats"])
+    monkeypatch.setattr(store_seed, "_build_dag_context", AsyncMock(return_value={"dag": {"seedKnown": 1}}))
+    seed = await store_seed.build_pipeline_store_seed(object(), object(), {"_stage_progress": None})  # type: ignore[arg-type]
+    assert seed == {"discovered": 3, "analyzed": 1, "metadataExtracted": 2, "seedKnown": 1}
+    reread.assert_awaited_once()
+
+
+@pytest.mark.parametrize("degraded", [False, True])
+async def test_full_summary_uses_one_healthy_progress_read_or_retries_a_degraded_one(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, degraded: bool
+) -> None:
+    """Exercise the real shell consumer and DB, including a fresh subsequent request."""
+    await _seed_archive(session)
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    await session.execute(text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"))
+    await session.commit()
+    actual = summary_mod.get_stage_progress
+
+    async def overview_read(*args: object, **kwargs: object) -> object:
+        result = await actual(*args, **kwargs)  # type: ignore[arg-type]
+        if degraded:
+            kwargs["read_failures"]["metadata_bucket"] = ("synthetic_stage_failure",)  # type: ignore[index]
+        return result
+
+    overview = AsyncMock(side_effect=overview_read)
+    seed_reread = AsyncMock(wraps=store_seed.get_stage_progress)
+    monkeypatch.setattr(summary_mod, "get_stage_progress", overview)
+    monkeypatch.setattr(store_seed, "get_stage_progress", seed_reread)
+    response = await client.get("/")
+    assert response.status_code == 200
+    assert _seed_in_html(response.text)["discovered"] == _FILES
+    assert overview.await_count == 1
+    assert seed_reread.await_count == int(degraded)
+
+    extra_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=extra_id,
+            sha256_hash=extra_id.hex * 2,
+            original_path="/synthetic/extra.mp3",
+            original_filename="extra.mp3",
+            current_path="/synthetic/extra.mp3",
+            file_type="mp3",
+            file_size=1024,
+            agent_id="fp-fileserver",
+        )
+    )
+    await session.commit()
+    second = await client.get("/")
+    assert second.status_code == 200
+    assert _seed_in_html(second.text)["discovered"] == _FILES + 1
+    assert overview.await_count == 2
+    assert seed_reread.await_count == 2 * int(degraded)

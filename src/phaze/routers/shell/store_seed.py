@@ -17,8 +17,10 @@ fan-out -- the same read the 5 s poll does every tick, and the slowest of the po
 remainder of ``_build_dag_context`` (stage controls, metadata selection summary, the SAQ stage-activity
 snapshot, three small agent/lane reads, the match-busy count), i.e. roughly the dag half of ONE poll tick
 and none of the other twelve reads. The orphan counts are an O(1) in-process cache read. The Analyze
-workspace already builds both inputs for its own render, so it is reused there instead of re-read, and
-the Summary page pays ``get_stage_progress`` twice (once for its own overview, once here).
+workspace already builds both inputs for its own render, so they are reused there instead of re-read.
+Summary supplies its healthy current-request stage-progress snapshot too, avoiding a second full
+count pass and keeping the first-paint rail consistent with that overview. Degraded Summary reads
+retain the independent seed reread; no snapshot survives the request or changes the five-second poll.
 
 DEGRADE. The seed is best-effort by construction: any failure returns ``None`` and the page renders the
 em-dash placeholder (``seedKnown`` stays 0), never a fabricated number. Nothing here may 500 a page load.
@@ -54,13 +56,16 @@ async def build_pipeline_store_seed(app_state: Any, session: AsyncSession, conte
     """Return the ``$store.pipeline`` seed for a full-document render, or ``None`` when it cannot be measured.
 
     ``context`` is the stage context already built for this render: when it carries the Analyze workspace's
-    ``stats`` and ``dag`` (``build_dashboard_context``), they are reused rather than re-read.
+    ``stats`` and ``dag`` (``build_dashboard_context``), they are reused rather than re-read. Summary
+    instead supplies ``_stage_progress`` after its healthy overview read; other DAG inputs stay live.
     """
     try:
         stats = context.get("stats")
         dag = context.get("dag")
         if not isinstance(stats, dict) or not isinstance(dag, dict):
-            stage_progress = await get_stage_progress(session)
+            stage_progress = context.get("_stage_progress")
+            if not isinstance(stage_progress, dict):
+                stage_progress = await get_stage_progress(session)
             stats = _derive_stats(stage_progress)
             dag = (await _build_dag_context(app_state, session, {}, stage_progress))["dag"]
         return _seed_from(stats, dag)
