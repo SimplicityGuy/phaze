@@ -85,6 +85,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[One-Variant Analysis Candidate](analysis-evaluation-one-variant-candidate.md)** | ⚡ Essentia-based single-variant experiment, output coverage, and measured speed |
 | **[Analysis Evaluation Report Template](analysis-evaluation-report-template.md)** | 📝 Comparable baseline and candidate measurements, coverage, and quality evidence |
 | **[Pipeline Stats Performance](pipeline-stats-performance.md)** | ⏱️ Current poll baseline, skip-probe diagnosis, and post-deployment verification |
+| **[Files Workspace Performance](performance/files-workspace.md)** | Synthetic list/navigation baseline, query boundaries and repeatable profiling |
 | **[Postgres JIT](postgres-jit.md)** | 🧮 Measured JIT cost vs benefit across every admin and worker statement, the 500,000-cost cliff, and the read-only host-prod confirmation script |
 | **[Global Tracklist Providers](global-tracklist-providers.md)** | Provider Settings, durable bulk discovery, deferred work and explicit candidate review |
 | **[Tracklist Acquisition Retirement](tracklist-retirement.md)** | Removal decision and upgrade instructions |
