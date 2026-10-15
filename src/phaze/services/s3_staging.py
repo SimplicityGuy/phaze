@@ -32,6 +32,7 @@ from botocore.exceptions import ClientError
 import structlog
 
 from phaze.config import get_settings
+from phaze.runtime_config import current
 
 
 if TYPE_CHECKING:
@@ -150,8 +151,7 @@ def _client(bucket: BucketConfig) -> Any:
     connect+read window instead of the default exponential-backoff retry chain. Presigning is a local
     signing op (no network round-trip), so the timeout only ever bounds the real S3 verbs.
     """
-    cfg = cast("ControlSettings", get_settings())
-    timeout = cfg.s3_client_timeout_sec
+    timeout = current().s3_client_timeout_sec
     session = get_session()
     return session.create_client(
         "s3",
@@ -216,7 +216,7 @@ async def presign_upload_parts(
     their PUT already past the fixed TTL, S3 returned 403, and the re-drive restarted from part 0 into
     the SAME expiry every attempt (a deterministic, budget-burning failure on exactly the large files
     the cloud path exists for). ``cloud_staging._stage_file_to_s3`` passes
-    ``max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))`` -- the SAME
+    ``max(current().s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))`` -- the SAME
     part-count-scaled budget already used to size the transfer's SAQ job-net timeout (phaze-g37f), so
     the presign TTL and the transfer's own sanctioned wall-clock budget can never drift apart again.
     Defaults to ``None`` (falls back to the flat ``s3_presign_put_ttl_sec`` knob) so every other
@@ -225,8 +225,7 @@ async def presign_upload_parts(
     """
     if part_count > S3_MAX_PART_COUNT:
         raise S3StagingError(f"refusing to presign {part_count} parts for {file_id}: exceeds S3's {S3_MAX_PART_COUNT}-part multipart limit")
-    cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
-    ttl = cfg.s3_presign_put_ttl_sec if expires_in_sec is None else expires_in_sec
+    ttl = current().s3_presign_put_ttl_sec if expires_in_sec is None else expires_in_sec
     ttl = max(1, min(ttl, S3_MAX_PRESIGN_EXPIRES_SEC))
     key = staged_object_key(file_id)
     urls: list[str] = []
@@ -300,14 +299,13 @@ async def presign_get(file_id: uuid.UUID, bucket: BucketConfig) -> str:
     WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
     error surface (see :func:`create_multipart_upload`).
     """
-    cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
     try:
         async with _client(bucket) as client:
             url: str = await client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": bucket.bucket, "Key": key},
-                ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
+                ExpiresIn=current().s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
             )
             return url
     except ClientError as exc:

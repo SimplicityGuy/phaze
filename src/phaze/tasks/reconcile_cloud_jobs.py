@@ -138,6 +138,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
+from phaze.runtime_config import effective_settings
 from phaze.services import backend_breaker, kube_staging, s3_staging
 from phaze.tasks.cloud_reconcile_observation import (
     NO_POD_PROBE_SECONDS as _NO_POD_PROBE_SECONDS,
@@ -705,7 +706,7 @@ async def _handle_no_callback_terminal(
     """
     cloud_job = row.cloud_job
     failure = _effective_failure(cloud_job, failure)
-    cfg = cast("ControlSettings", get_settings())
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
     # phaze-j0ixx: the pod said, by its own exit code, that it never reached the control plane. That is
     # the environment's fault on every file alike, so it spends no budget -- checked before the
     # node-loss choice below, since a pod that exited on its own was not taken by its node.
@@ -1173,7 +1174,7 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     """
     from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
 
-    cfg = cast("ControlSettings", get_settings())
+    cfg = cast("ControlSettings", effective_settings(get_settings()))
     tally = {
         "reconciled": 0,
         "succeeded": 0,

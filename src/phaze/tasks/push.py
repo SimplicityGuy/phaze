@@ -35,6 +35,7 @@ import tempfile
 from typing import TYPE_CHECKING, Any
 
 from phaze.config import AgentSettings, get_settings
+from phaze.runtime_config import effective_settings
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.media_path_resolve import resolve_media_path
 
@@ -110,13 +111,13 @@ def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (mirrors functions._agent_settings).
 
     ``push_file`` is registered ONLY on the agent worker (``PHAZE_ROLE=agent``), so
-    ``get_settings()`` returns an :class:`AgentSettings`. The module-level ``settings`` singleton is
+    ``effective_settings(get_settings())`` returns an :class:`AgentSettings`. The module-level ``settings`` singleton is
     ``ControlSettings``-typed and intentionally lacks the agent-only push_* fields, so we MUST
-    resolve via ``get_settings()`` and narrow.
+    resolve via ``effective_settings(get_settings())`` and narrow.
     """
-    cfg = get_settings()
+    cfg = effective_settings(get_settings())
     if not isinstance(cfg, AgentSettings):  # pragma: no cover - defensive; worker always agent-role
-        msg = f"push_file requires PHAZE_ROLE=agent; get_settings() returned {type(cfg).__name__}"
+        msg = f"push_file requires PHAZE_ROLE=agent; effective_settings(get_settings()) returned {type(cfg).__name__}"
         raise RuntimeError(msg)
     return cfg
 

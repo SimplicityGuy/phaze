@@ -283,7 +283,7 @@ class _HasLogLevel(Protocol):
     def log_level(self) -> str: ...
 
 
-def log_level_applier(*, json_logs: bool | None) -> Callable[[_HasLogLevel, _HasLogLevel], None]:
+def log_level_applier(*, json_logs: bool | None, friendly: bool | None = None) -> Callable[[_HasLogLevel, _HasLogLevel], None]:
     """The ``log_level`` runtime-config applier every process registers (phaze-mvq8z.8).
 
     ``json_logs`` is the process's own ``settings.log_json``, passed through on every re-apply:
@@ -295,6 +295,9 @@ def log_level_applier(*, json_logs: bool | None) -> Callable[[_HasLogLevel, _Has
 
     def _apply(old: _HasLogLevel, new: _HasLogLevel) -> None:
         if old.log_level != new.log_level:
-            configure_logging(level=new.log_level, json_logs=json_logs)
+            if friendly is None:
+                configure_logging(level=new.log_level, json_logs=json_logs)
+            else:
+                configure_logging(level=new.log_level, json_logs=json_logs, friendly=friendly)
 
     return _apply

@@ -68,7 +68,7 @@
                                 {% endfor %}
                             </select>
                             {% else %}
-                            <input id="rtc-value-{{ row.key }}" name="value" type="number" inputmode="numeric" required
+                            <input id="rtc-value-{{ row.key }}" name="value" type="text" required
                                    value="{{ row.value }}"
                                    class="w-24 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                             {% endif %}

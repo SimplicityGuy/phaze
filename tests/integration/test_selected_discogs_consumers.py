@@ -15,8 +15,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.provider_source import ProviderSelectionEvent, ProviderSourceObject, ProviderSourceObservation, ProviderSourceRead
+from phaze.models.provider_source import (
+    ProviderRecordingSelection,
+    ProviderSelectionEvent,
+    ProviderSourceObject,
+    ProviderSourceObservation,
+    ProviderSourceRead,
+)
 from phaze.models.tag_write_log import TagWriteLog
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.local_source_import import ImportLocalSource
 from phaze.services.cue_review import build_cue_tracks_for_file
 from phaze.services.local_source_import import decide_local_source, get_selected_recording_source, import_local_source
@@ -31,15 +38,15 @@ from phaze.services.tag_comparison import (
 )
 from phaze.services.tag_proposal import compute_proposed_tags
 from phaze.services.tag_writer import enqueue_tag_write
-from phaze.tasks.discogs import match_recording_source_to_discogs
+from phaze.tasks.discogs import match_recording_source_to_discogs, match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
 from tests._queue_fakes import install_fake_queues
 from tests.integration.test_local_source_import import decision, inventory
 from tests.integration.test_selected_source_consumers import CUE
 
 
-async def selected_inventory(session):
-    media, companion, raw = await inventory(session, CUE, "cue")
+async def selected_inventory(session, *, text=CUE):
+    media, companion, raw = await inventory(session, text, "cue")
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=raw))
     selected = await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
     await decide_local_source(session, decision(media, companion, imported.release_observation_id, kind="release_metadata"), actor="reviewer")
@@ -211,7 +218,7 @@ async def test_real_rename_task_uses_reviewed_facts_and_rechecks_after_llm(commi
     calls = []
     change_selection = False
 
-    async def llm(contexts):
+    async def llm(contexts, *, model=None):
         calls.append(contexts)
         assert contexts[0]["reviewed_source_tags"]["artist"] == "Reviewed Artist"
         assert contexts[0]["reviewed_source_tags"]["title"] == "Reviewed Set"
@@ -382,3 +389,165 @@ async def test_discogs_changed_projection_between_pin_reads_refuses_lock(committ
     with pytest.raises(ValueError, match="projection changed"):
         await selected_discogs.lock_recording_discogs_pin(session, pin)
     assert await session.scalar(select(func.count(DiscogsLink.id))) == 0
+
+
+async def test_selected_lookup_with_unknown_titles_does_not_issue_requests(committed_session, monkeypatch):
+    session = committed_session
+    text = CUE.replace(' TITLE "First"\n', "").replace(' TITLE "Second"\n', "")
+    media, _companion, selected = await selected_inventory(session, text=text)
+
+    def forbidden_request(request):
+        pytest.fail("unknown track titles must never become Discogs queries")
+
+    external_discogs(monkeypatch, forbidden_request)
+    result = await match_recording_source_to_discogs(
+        {"async_session": async_sessionmaker(session.bind, expire_on_commit=False)},
+        media_id=str(media.id),
+        expected_observation_id=str(selected.observation_id),
+        expected_selection_token=str(selected.selection_token),
+    )
+    assert result["status"] == "matched" and result["candidates_created"] == 0
+    assert await session.scalar(select(func.count(DiscogsLink.id))) == 0
+
+
+@pytest.mark.parametrize("change", ["before", "during", "discogs", "deleted"])
+async def test_proposals_cannot_use_ineligible_or_changed_review_authority(committed_session, change):
+    session = committed_session
+    media, companion, selected = await selected_inventory(session)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    if change == "before":
+        companion.sha256_hash = "b" * 64
+        await session.commit()
+
+    async def llm(contexts, *, model=None):
+        async with factory() as concurrent:
+            if change == "during":
+                row = await concurrent.get(FileRecord, companion.id)
+                row.sha256_hash = "b" * 64
+            elif change == "deleted":
+                await delete_file_cascade(concurrent, media.id)
+            else:
+                concurrent.add(
+                    DiscogsLink(
+                        source_observation_id=selected.observation_id,
+                        source_track_position=1,
+                        discogs_release_id="synthetic-new-authority",
+                        confidence=99,
+                        status="accepted",
+                    )
+                )
+            await concurrent.commit()
+        return BatchProposalResponse(
+            proposals=[FileProposalResponse(file_index=0, proposed_filename="Reviewed Artist - Set.mp3", confidence=95, reasoning="reviewed facts")]
+        )
+
+    service = SimpleNamespace(generate_batch=AsyncMock(side_effect=llm))
+    result = await generate_proposals(
+        {"async_session": factory, "redis": AsyncMock(eval=AsyncMock(return_value=1)), "proposal_service": service, "task_router": None},
+        file_ids=[str(media.id)],
+        batch_index=0,
+    )
+    assert result["status"] == ("empty" if change == "before" else "stale_source")
+    assert result["count"] == 0
+    assert await session.scalar(select(func.count(RenameProposal.id)).where(RenameProposal.file_id == media.id)) == 0
+    assert service.generate_batch.await_count == (0 if change == "before" else 1)
+
+
+async def test_null_external_facts_preserve_reviewed_proposal_tags(committed_session):
+    session = committed_session
+    media, _companion, selected = await selected_inventory(session)
+    session.add(
+        DiscogsLink(
+            source_observation_id=selected.observation_id,
+            source_track_position=1,
+            discogs_release_id="synthetic-incomplete",
+            confidence=99,
+            status="accepted",
+        )
+    )
+    await session.commit()
+
+    async def llm(contexts, *, model=None):
+        assert contexts[0]["reviewed_source_tags"]["artist"] == "Reviewed Artist"
+        assert contexts[0]["reviewed_source_tags"]["title"] == "Reviewed Set"
+        return BatchProposalResponse(
+            proposals=[FileProposalResponse(file_index=0, proposed_filename="Reviewed Artist - Set.mp3", confidence=95, reasoning="reviewed facts")]
+        )
+
+    result = await generate_proposals(
+        {
+            "async_session": async_sessionmaker(session.bind, expire_on_commit=False),
+            "redis": AsyncMock(eval=AsyncMock(return_value=1)),
+            "proposal_service": SimpleNamespace(generate_batch=llm),
+            "task_router": None,
+        },
+        file_ids=[str(media.id)],
+        batch_index=0,
+    )
+    assert result["status"] == "ok" and result["count"] == 1
+
+
+@pytest.mark.parametrize("state", ["selected", "empty", "selected_during_lookup"])
+async def test_legacy_discogs_matching_preserves_explicit_authority_and_empty_tracks(committed_session, monkeypatch, state):
+    session = committed_session
+    media, companion, selected = await selected_inventory(session)
+    if state != "selected":
+        await session.execute(delete(ProviderRecordingSelection).where(ProviderRecordingSelection.media_id == media.id))
+        await session.execute(delete(ProviderSelectionEvent).where(ProviderSelectionEvent.media_id == media.id))
+    legacy = Tracklist(file_id=media.id, source="manual", external_id="synthetic-legacy", source_url="", artist="Legacy Artist")
+    session.add(legacy)
+    await session.flush()
+    version = TracklistVersion(tracklist_id=legacy.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    legacy.latest_version_id = version.id
+    if state != "empty":
+        session.add(TracklistTrack(version_id=version.id, position=1, artist="Legacy Artist", title="Legacy Title"))
+    await session.commit()
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    requests = []
+
+    async def search(request):
+        requests.append(request)
+        assert state == "selected_during_lookup"
+        async with factory() as concurrent:
+            current_media = await concurrent.get(FileRecord, media.id)
+            current_companion = await concurrent.get(FileRecord, companion.id)
+            await decide_local_source(concurrent, decision(current_media, current_companion, selected.observation_id, ordinal=1), actor="reviewer")
+            await concurrent.commit()
+        return httpx.Response(200, json={"results": [{"id": "synthetic-legacy-result", "name": "Legacy Artist - Legacy Title", "relevance": 1}]})
+
+    external_discogs(monkeypatch, search)
+    result = await match_tracklist_to_discogs({"async_session": factory}, tracklist_id=str(legacy.id))
+    if state == "empty":
+        assert result["tracks_matched"] == 0 and result["candidates_created"] == 0
+    else:
+        assert result["status"] == ("selected_source" if state == "selected" else "stale_source")
+    assert len(requests) == (1 if state == "selected_during_lookup" else 0)
+    assert await session.scalar(select(func.count(DiscogsLink.id))) == 0
+
+
+async def test_proposal_write_guard_rejects_changed_accepted_discogs_facts(committed_session):
+    from phaze.services.selected_tag_sources import overlay_selected_tag_sources
+    from phaze.tasks.proposal import validate_selected_proposal_context
+
+    session = committed_session
+    media, _companion, selected = await selected_inventory(session)
+    source = (await overlay_selected_tag_sources(session, [media.id], {}))[media.id]
+    contexts = [{"reviewed_source_evidence": source.evidence, "reviewed_discogs_evidence": None}]
+    assert await validate_selected_proposal_context(session, [str(media.id)], contexts)
+    session.add(
+        DiscogsLink(
+            source_observation_id=selected.observation_id,
+            source_track_position=1,
+            discogs_release_id="synthetic-new-facts",
+            discogs_artist="External Artist",
+            discogs_title="External Title",
+            confidence=99,
+            status="accepted",
+        )
+    )
+    await session.commit()
+    refreshed = (await overlay_selected_tag_sources(session, [media.id], {}))[media.id]
+    assert refreshed.evidence == source.evidence and refreshed.eligible
+    assert not await validate_selected_proposal_context(session, [str(media.id)], contexts)

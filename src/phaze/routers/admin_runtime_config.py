@@ -21,6 +21,7 @@ validation refuses) is logged here instead, since it never reaches ``reload()`` 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -70,23 +71,32 @@ _KEY_MAX_LENGTH = 64
 #: JSONB column with no fixed width, but every real RELOADABLE_KEYS value is a short int or a
 #: log-level name (longest: "CRITICAL", 8 chars), so an operator form submission has no legitimate
 #: reason to be longer than this.
-_VALUE_MAX_LENGTH = 64
+_VALUE_MAX_LENGTH = 1024
 
 
 def _coerce(key: str, raw: str) -> Any:
     """Coerce a raw HTML-form string to the type ``RuntimeConfig`` (``strict=True``) expects.
 
     An HTML form field is always text; the ``file`` (TOML) layer supplies real ints/strings
-    natively, so this is where the override layer reconstructs the same typing. Every
-    ``RELOADABLE_KEYS`` field is either ``int`` or ``str`` (``log_level``) -- nothing else.
+    natively, so this is where the override layer reconstructs integers, fractions, booleans,
+    model names and retry arrays.
     """
-    if RuntimeConfig.model_fields[key].annotation is int:
-        try:
+    annotation = RuntimeConfig.model_fields[key].annotation
+    try:
+        if annotation is int:
             return int(raw.strip())
-        except ValueError as exc:
-            detail = f"{key}: expected an integer, got {raw!r}"
-            logger.warning("phaze.runtime_config_admin override rejected", key=key, attempted=raw, error=detail)
-            raise HTTPException(status_code=400, detail=detail) from exc
+        if annotation is float:
+            return float(raw.strip())
+        if annotation is bool:
+            if raw.strip().lower() not in {"true", "false"}:
+                raise ValueError("expected true or false")
+            return raw.strip().lower() == "true"
+        if key == "cloud_redrive_backoff_sec":
+            return json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        detail = f"{key}: invalid value ({exc})"
+        logger.warning("phaze.runtime_config_admin override rejected", key=key, error=detail)
+        raise HTTPException(status_code=400, detail=detail) from exc
     return raw
 
 
@@ -117,7 +127,14 @@ async def build_runtime_config_pane_context(session: AsyncSession) -> dict[str, 
         stale = ()
     snapshot = get_runtime_config_store().snapshot()
     reloadable = [
-        {"key": key, "value": getattr(snapshot.config, key), "source": snapshot.sources.get(key, "default"), "description": LIVE_HELP[key]}
+        {
+            "key": key,
+            "value": json.dumps(getattr(snapshot.config, key))
+            if isinstance(getattr(snapshot.config, key), (bool, tuple))
+            else getattr(snapshot.config, key),
+            "source": snapshot.sources.get(key, "default"),
+            "description": LIVE_HELP[key],
+        }
         for key in sorted(RELOADABLE_KEYS)
     ]
     return {

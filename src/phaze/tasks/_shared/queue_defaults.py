@@ -154,7 +154,7 @@ async def apply_project_job_defaults(job: Job) -> None:
     """
     # Resolve via the `phaze.config` module attribute (not a local import) so
     # tests can monkeypatch `phaze.config.get_settings` and see the override.
-    cfg = _config.get_settings()
+    cfg = _runtime_config.effective_settings(_config.get_settings())
 
     if job.timeout == _SAQ_DEFAULT_TIMEOUT:
         job.timeout = cfg.worker_job_timeout

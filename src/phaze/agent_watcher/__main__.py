@@ -38,7 +38,10 @@ from phaze.agent_watcher.locate import is_under, locate_stale
 from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
-from phaze.logging_config import configure_logging
+from phaze.logging_config import configure_logging, log_level_applier
+from phaze.runtime_config import RUNTIME_TOML_NAME, RuntimeConfigStore
+from phaze.runtime_config_agent import poll_agent_runtime_config
+from phaze.runtime_config_triggers import install_sighup_handler
 from phaze.services.media_path_resolve import resolve_media_path
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_with_retry
 from phaze.telemetry import configure_telemetry, shutdown_telemetry
@@ -139,6 +142,15 @@ async def _sweep_loop(
             await asyncio.wait_for(shutdown_event.wait(), timeout=sweep_interval)
 
 
+async def _policy_poll_loop(ctx: dict[str, Any], client: Any, shutdown_event: asyncio.Event) -> None:
+    """Recover missed policy updates without reporting agent liveness or blocking discovery."""
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=30.0)
+        except TimeoutError:
+            await poll_agent_runtime_config(ctx, client)
+
+
 def _configure_logging() -> None:
     """Configure the central structlog pipeline for the watcher process.
 
@@ -189,11 +201,22 @@ async def main() -> None:
 
         # The watcher loads no models; worker startup validates the provisioned set.
 
-        debouncer = Debouncer()
+        runtime_store = RuntimeConfigStore(cfg, runtime_toml=Path(cfg.runtime_config_dir) / RUNTIME_TOML_NAME, check_sizing=False)
+        runtime_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json))
+        await runtime_store.reload("startup")
+        policy_context = {"runtime_config_store": runtime_store}
+        await poll_agent_runtime_config(policy_context, client)
+
+        def discovery_policy() -> tuple[float, float]:
+            snapshot = runtime_store.current()
+            return float(snapshot.watcher_settle_seconds), float(snapshot.watcher_max_pending_seconds)
+
+        debouncer = Debouncer(policy_provider=discovery_policy)
         poster = Poster(client=client, agent_id=identity.agent_id)
         shutdown_event = asyncio.Event()
 
         loop = asyncio.get_running_loop()
+        install_sighup_handler(loop, runtime_store)
         # SIGINT / SIGTERM: both fire the same shutdown_event.set callback so the
         # graceful shutdown sequence is identical regardless of which signal arrives.
         try:
@@ -243,6 +266,7 @@ async def main() -> None:
                 failed_roots,
             )
 
+        policy_task = asyncio.create_task(_policy_poll_loop(policy_context, client, shutdown_event))
         try:
             await _sweep_loop(
                 debouncer=debouncer,
@@ -253,6 +277,9 @@ async def main() -> None:
                 shutdown_event=shutdown_event,
             )
         finally:
+            policy_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await policy_task
             # Bound each join to 10 s so one wedged filesystem cannot hold container shutdown.
             for _root, root_observer in observers:
                 root_observer.stop()
