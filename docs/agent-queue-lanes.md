@@ -29,11 +29,10 @@ consumer (the lane worker settings) derive from it.
 | Lane          | Tasks                                                                                 | Bound by                        | Concurrency env                          | Default |
 |---------------|---------------------------------------------------------------------------------------|---------------------------------|------------------------------------------|---------|
 | `analyze`     | `process_file`                                                                        | Host CPU (essentia child)       | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | *derived* (`host-store`: 2) |
-| `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
+| `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files`, `capture_companion_source`, `extract_companion_features`, `quarantine_companion` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
 
-**Sizing note — the `meta` default of 2 now covers interactive work.** agent-side file writes
-moved `write_file_tags`, `write_cue_sheet` and `read_companion_files` onto this lane, so the
+**Sizing note — the `meta` default of 2 covers interactive work.** Moving file writes to the agent placed `write_file_tags`, `write_cue_sheet` and `read_companion_files` onto this lane, so the
 lane that was sized for background metadata extraction and scans now also carries
 operator-facing tag writes, CUE generation and companion-file reads. Those are the tasks a
 human is actively waiting on, and at concurrency 2 they queue behind a `scan_directory` walk.
@@ -42,9 +41,9 @@ I/O-light, so it costs little against the CPU budget.
 
 ### Core-budget rationale
 
-The `analyze` lane's default is **derived from the host** since host-derived analysis sizing:
+The `analyze` lane's default is **derived from the host**:
 `physical_cores // min(4, physical_cores)`, which is 2 CPU-bound slots on `host-store`'s 8 physical
-cores, each running a 4-thread extractor (fingerprint removal removed the `fingerprint` lane's 2
+cores, each running a 4-thread extractor (removing the `fingerprint` lane released 2
 slots). That leaves headroom for the fast `meta` lane and the OS, and it keeps the lane in
 lockstep with the thread cap instead of restating a literal that can drift from it -- see
 [Thread sizing](#thread-sizing--derived-not-pinned) below. The `io` lane is
@@ -92,7 +91,7 @@ wins; `PHAZE_LANE_ANALYZE_CONCURRENCY` overrides the concurrency half exactly as
 
 ## Heartbeat — every lane beats, tagged with its lane
 
-The liveness heartbeat (background heartbeat asyncio background task) runs in **every** lane worker —
+The liveness heartbeat (an asyncio background task) runs in **every** lane worker —
 `PHAZE_AGENT_HEARTBEAT=true` on all three (`docker-compose.agent.yml`) — and each beat carries a
 `lane` tag (`analyze` | `meta` | `io`).
 
@@ -136,12 +135,13 @@ target lane-suffixed queue names uniformly, the compute agent consumes the **sin
 head-of-line problems the lane split solves are file-server-only. Single lane ⇒ single heartbeat (its
 `PHAZE_AGENT_HEARTBEAT` is left unset → default true). k8s burst pods are untouched.
 
-**Memory-safety cap.** The OCI Ampere A1 compute host has only 12 GB RAM and a
-single `process_file` job peaks ~8 GB, so the `analyze` lane is pinned to **1** concurrent job via
-`PHAZE_LANE_ANALYZE_CONCURRENCY=1` in `docker-compose.cloud-agent.yml`. This is the knob that
-actually governs a lane worker; setting only `WORKER_MAX_JOBS=1` is **inert in lane mode** (it is a
-ceiling — `concurrency = min(lane knob, worker_max_jobs)` — so it can never lift the analyze lane's
-default 4). Without this pin the compute agent silently ran 4 concurrent ~8 GB jobs and OOM-killed.
+**Compute-host cap.** The OCI Ampere A1 deployment retains
+`PHAZE_LANE_ANALYZE_CONCURRENCY=1` in `docker-compose.cloud-agent.yml`. That cap was selected
+against an older ~8 GB per-file peak on a 12 GB host. The current model-major, chunk-bounded
+implementation changed the memory lifetime; the old number is not a fresh A1 measurement.
+Effective concurrency is `min(lane knob, worker_max_jobs)`: a lower `WORKER_MAX_JOBS` clamps the
+lane, while increasing it alone cannot raise the lane above its own limit.
+
 
 ## Migration / drain runbook
 

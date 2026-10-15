@@ -1,0 +1,27 @@
+{
+  "dark": {
+    "accent": "#4dcae3",
+    "ink": "#f0f1f5",
+    "muted": "#99a1af",
+    "panel": "#10141c",
+    "paper": "#0a0c12",
+    "rule": "#232832"
+  },
+  "light": {
+    "accent": "#036b85",
+    "ink": "#1a1f2e",
+    "muted": "#5b6272",
+    "panel": "#ffffff",
+    "paper": "#f3f4f6",
+    "rule": "#d1d5db"
+  },
+  "name": "Phaze",
+  "revision": "d97c5c7477e54cee17cfa6459190610da0643a05",
+  "typography": {
+    "body": "Inter",
+    "offline": "Licensed Latin Inter 400/600 and Jura 300/500 are embedded in this HTML and its SVG export. Other glyphs use system sans-serif/monospace fallback. No network font request is required.",
+    "technical": "ui-monospace",
+    "title": "Jura"
+  },
+  "upstream": "https://github.com/cathrynlavery/diagram-design"
+}

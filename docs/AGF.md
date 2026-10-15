@@ -46,8 +46,7 @@ preserving the resulting tree.
 
 When a hive uses GitHub PR landing, publish the bead branch and open the PR after submission. Once
 GitHub reports the PR merged, `bh work land <id>` verifies that external state and closes the bead.
-Phaze currently uses local landing: only the merger runs `bh work merge <id>` after every required
-gate is resolved. Developers stop at submission and never approve or merge their own work.
+Phaze currently uses GitHub PR landing through its per-hive `work.landing: pr` override; that override takes precedence over a global local-landing default. The merge owner follows the effective hive workflow and calls `bh work land <id>` only after GitHub reports the required PR merged. Other hives can select a different landing policy. Developers stop at submission and never approve or merge their own work.
 
 ## Review and integration
 
@@ -57,8 +56,10 @@ bh work approve <id> --as <reviewer>  # or: bh work bounce <id>
 bh work merge <id>
 ```
 
-The reviewer should exercise the feature, not only read the diff. The merger owns conflict
-resolution and the integration slot; it escalates conflicts rather than discarding a bead's work.
+The reviewer should exercise the feature, not only read the diff. The merger coordinates the
+integration slot and supported automatic rebase/retry. A genuine conflict is recorded and bounced
+back to the developer for rework, or escalated if necessary; the merger does not hand-implement
+conflict resolution or discard work.
 Epic dispatch and grouped batches have additional molecule-level commands, so use the dispatcher
 role guide rather than applying the leaf sequence mechanically.
 
@@ -72,11 +73,11 @@ For a still-assigned `in_progress` bead, treat lease expiry as informational for
 decision. Current tooling also uses stale leases to guard explicit foreign-claim recovery via
 `bh work abandon`; expiry alone does not authorize reaping a live queued seat.
 
-Decision: option (c) is chosen. Lease expiry is informational for a still-assigned `in_progress`
-bead, and the agent layer is the authoritative liveness read. Option (c) chosen; re-claim fix
-tracked upstream at beadhive/beadhive#95.
+For a still-assigned `in_progress` bead, lease expiry is informational and the live agent layer
+is the authoritative liveness read. Re-claim is not proof of heartbeat renewal; the tooling fix
+is tracked in [beadhive/beadhive#95](https://github.com/beadhive/beadhive/issues/95).
 
-The historical measurement on `phaze-48ghg.4` (2026-08-26): a lease of ~4 minutes between
+The historical measurement (2026-08-26): a lease of ~4 minutes between
 heartbeats, `Lease: expires expired (heartbeat 26 mins ago)`, and a same-owner re-claim that left the
 heartbeat at exactly "26 mins ago", HEAD unchanged at `0bdfd198`, and the worktree clean. The bead
 remained `in_progress`, assigned to its developer, and absent from `bh work ready`. Serialization was

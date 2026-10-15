@@ -32,7 +32,7 @@ same trace rather than starting a second one.
 | `analysis.chunk` | chunk | `tier`, **`chunk_index`**, chunk window count |
 | `analysis.chunk.decode` | chunk | `tier`, `chunk_index` |
 | `analysis.chunk.derive` | coarse chunk | `tier`, `chunk_index` |
-| `analysis.model_sweep` | model × coarse chunk (34 per chunk) | model name, variant, classifier type, buffer count |
+| `analysis.model_sweep` | active model × coarse chunk (12 by default; 34 in `all` rollback mode) | model name, variant, classifier type, buffer count |
 
 **There are no per-window spans and no per-model-per-window spans.** That is deliberate: those
 costs are carried by histograms whose cardinality is bounded at 34. It is also what makes

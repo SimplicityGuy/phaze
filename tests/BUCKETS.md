@@ -4,8 +4,7 @@ The single source of truth for the bucket **names** is `tests/buckets.json`.
 This file records the explicit file->bucket assignment for the reorg, plus the
 pre-reorg baseline the reorg must preserve (CI-03).
 
-> **Note — "buckets" here means CI *test* partitions, not S3 buckets.** The 9
-> buckets below are the parallel-CI test partitions from Phase 63; they are
+> **Note — "buckets" here means CI *test* partitions, not S3 buckets.** There are currently **9** buckets in `tests/buckets.json`, including `browser`; the tables below preserve the earlier reorganization record. They are
 > unrelated to the S3 staging buckets. Phase 67 (REG-05) introduced the S3
 > **staging-bucket registry** as an array-of-tables (`[[buckets]]` with an `id`,
 > a `scope` of `shared` | `cluster-specific`, an `endpoint`, and per-bucket
@@ -18,10 +17,9 @@ pre-reorg baseline the reorg must preserve (CI-03).
 > `test_s3_settings.py` (rows below, retained as the Phase-63 reorg record) were
 > DELETED in Phase 67 because they asserted the now-removed flat cloud fields.
 >
-> **phaze-crq9k (2026-08-11): CI-shard split, NOT a bucket rename.** The 8 buckets below are
-> still the complete, unchanged set `tests/buckets.json` and the partition guard
-> (`test_partition_guard.py`) key off of — every test file still lives under exactly one of
-> these 8 top-level `tests/<bucket>/` directories. What changed is the CI **matrix**: the two
+> **Dated CI-shard split (2026-08-11).** At that point the 8 buckets below were the set in
+> `tests/buckets.json`; each test file belonged to one bucket. The later browser bucket is
+> separate from this historical record. That change concerned the CI **matrix**: the two
 > buckets that dominated the `test / Tests (*)` wall clock (`analyze` 551s, `shared` 301s,
 > vs. an ~195s flat mean across the other 6) are now each split into multiple parallel matrix
 > legs, driven by the NEW `tests/ci_shards.json` (see `tests/shared/test_ci_workflow_wiring.py`
@@ -41,7 +39,7 @@ pre-reorg baseline the reorg must preserve (CI-03).
 | Combined coverage | **96.89%** | `coverage report` over a full covered `--cov=phaze` run |
 | Collected test files | 213 | `find tests \( -name 'test_*.py' -o -name '*_test.py' \)` |
 
-The post-reorg full suite MUST report the same **2566 passed** (no test lost, none double-counted).
+That reorganization required the same **2566 passed** (no test lost, none double-counted). This is a dated acceptance baseline, not the expected count for the current suite.
 
 ## Buckets
 
@@ -65,7 +63,7 @@ The post-reorg full suite MUST report the same **2566 passed** (no test lost, no
 > `source=["phaze"]` coverage gates by design.
 >
 > **Removed (epic phaze-0jpe):** audio fingerprinting was removed from the product entirely, and
-> it took TWO buckets with it — `tests/buckets.json` is now the **8** entries listed above. Neither
+> it took TWO buckets with it — `tests/buckets.json` had **8** entries at that point; the later `browser` bucket brings the current total to **9**. Neither
 > removal is a rename; in both cases the directory the bucket existed to home is gone.
 >
 > * **`services`** (phaze-0jpe.3) — deleted along with `tests/services/` and the

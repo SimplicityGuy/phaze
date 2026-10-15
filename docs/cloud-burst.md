@@ -1,11 +1,12 @@
 # Cloud Burst — OCI A1 compute agent (v5.0)
 
 **Cloud burst** offloads **long** audio sets to a free, always-on **OCI Ampere A1 (arm64)
-compute agent** so they no longer monopolize the local file server's analysis lane. The control plane routes
-any file whose duration is at/above `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` to the compute agent: the
+compute agent** as one optional tier in ranked analysis routing. Files whose duration is
+at/above `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` are eligible for that routing; when this compute
+backend wins selection, the
 file server **pushes** it over **rsync-over-SSH across Tailscale**, the A1 worker
 analyzes it, and results reconcile by `file_id`. There is **NO object storage** — the transport
-is a direct rsync push to an ephemeral host-bound scratch directory that the agent deletes after analysis.
+is a direct rsync push to an ephemeral host-bound scratch directory. Terminal cleanup removes the staged file; a retryable analysis attempt retains scratch for its retry.
 
 This document is the single home for deploying and operating cloud burst: the compose
 walkthrough, the homelab provisioning runbook (OCI A1 + Tailscale ACL + Postgres broker role),
@@ -22,7 +23,7 @@ not duplicate that table.
 > **The feature ships OFF by default.** An **absent** `backends.toml` synthesizes an implicit
 > single `kind="local"` backend, so a fresh deploy behaves **all-local** with zero cloud activity
 > (`cloud_enabled` is derived `False`). Provision the infrastructure below first, then add a
-> `kind="compute"` entry to `backends.toml` and restart the control plane (Step 6). For the
+> `kind="compute"` entry to `backends.toml` and validate its live registry reload (Step 6). For the
 > Kubernetes (Kueue) lane declare a `kind="kueue"` backend instead — documented in its own
 > runbook, [k8s-burst.md](k8s-burst.md).
 
@@ -36,28 +37,9 @@ not duplicate that table.
 
 ## Architecture at a glance
 
-```mermaid
-flowchart LR
-  %% Tailscale tailnet (default-deny grants ACL)
-  subgraph store["host-store (file server)"]
-    storec["docker-compose.agent.yml<br/>(worker+watcher+media)"]
-  end
-  subgraph a1["OCI A1 (compute backend, rank R)"]
-    a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, host-bound scratch<br/>-arm64 image"]
-  end
-  subgraph control["host-prod (application server)"]
-    controlapi["api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)"]
-    controlworker["controller worker (stage_cloud_window drain — resolve_backends → select_backend)"]
-    controlbroker["broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)"]
-    controllocal["local backend (rank 99, safety net)"]
-  end
-  kueue["...N other backends (kind=kueue clusters, own ranks)"]
-  storec -->|"rsync over SSH (host-store → A1:22)"| a1c
-  a1c -->|"HTTP API + saq_jobs + cache (A1 → host-prod:{5432,6379,8000})"| controlapi
-  controlworker -.->|"rank-first dispatch"| a1c
-  controlworker -.->|"spill to next rank when a lane is FULL"| kueue
-  controlworker -.->|"staleness-gated spill (all cloud FULL, waited) / immediate (all cloud OFFLINE)"| controllocal
-```
+![Architecture at a glance](diagrams/cloud-burst-1.png)
+
+[Open the interactive-size HTML](diagrams/cloud-burst-1.html) · [Download SVG](diagrams/cloud-burst-1.svg)
 
 _The compute (A1) backend is **one rank-tiered lane among N** the registry resolves simultaneously.
 `cloud_enabled` derived `False` (no non-local backend) ⇒ long files route LOCAL, the drain no-ops,
@@ -87,7 +69,7 @@ it). The full ready-to-paste change request is in
 [`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v5.0-phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md);
 the reference spec is reproduced here.
 
-> **⚠️ Capacity gotcha (load-bearing).** As of **June 2026** the OCI Always-Free Ampere A1 limit
+> **⚠️ Capacity gotcha (load-bearing).** The **June 2026** deployment record states that the OCI Always-Free Ampere A1 limit
 > was reduced to **2 OCPU / 12 GB total** (previously 4 OCPU / 24 GB). Spec the A1 at **2 OCPU /
 > 12 GB**; `docker-compose.cloud-agent.yml` already pins the compute agent's `analyze` lane to a
 > single concurrent job via `PHAZE_LANE_ANALYZE_CONCURRENCY=1` (a single concurrent analysis is
@@ -104,7 +86,7 @@ resource "oci_core_instance" "phaze_compute_a1" {
   display_name        = "phaze-cloud-agent"
   shape               = "VM.Standard.A1.Flex"        # Always-Free eligible (Ampere arm64)
   shape_config {
-    ocpus         = 2                                 # current Always-Free limit (June 2026)
+    ocpus         = 2                                 # dated June 2026 sizing assumption; verify current provider quota
     memory_in_gbs = 12
   }
   source_details {
@@ -303,12 +285,11 @@ field in `backends.toml` (Step 6, host-prod control plane — the flat control-s
 `PHAZE_COMPUTE_SCRATCH_DIR` was removed in backend registry migration / multi-compute routing with no shim) and the host-bind mount
 path (Step 1) — a drift surfaces as a sha256/transfer failure, never silent corruption.
 
-## Step 6 — Declare the compute backend and restart the control plane (host-prod)
+## Step 6 — Declare the compute backend and verify registry reload (host-prod)
 
 On the **host-prod control plane**, add a `kind="compute"` entry to the
 [backend registry](configuration.md#backend-registry-backendstoml) TOML file
-(`PHAZE_BACKENDS_CONFIG_FILE`, default `/etc/phaze/backends.toml`) and restart so the registry is
-re-read. There is **no** `PHAZE_CLOUD_TARGET` env var — on/off is **derived** from whether the
+(`PHAZE_BACKENDS_CONFIG_FILE`, default `/etc/phaze/backends.toml`). Validate the saved file and verify the control-plane reload acknowledgement. There is **no** `PHAZE_CLOUD_TARGET` env var — on/off is **derived** from whether the
 registry holds any non-local backend (`cloud_enabled`).
 
 ```toml
@@ -327,7 +308,7 @@ cap  = 1
 id          = "a1"
 kind        = "compute"
 rank        = 10                 # cost-tier ordering — lower runs sooner
-cap         = 1                  # concurrency cap (RAM-bound single analysis on the 12 GB A1)
+cap         = 1                  # conservative single-file policy on the 12 GB A1
 agent_ref   = "<compute_agent_id>"   # REQUIRED — the registered compute `Agent.id` this lane
                                      # dispatches to (an Agent id, NOT a queue name — resolved via
                                      # select_agent_by_id(..., kind="compute"))
@@ -338,10 +319,9 @@ ssh_user    = "phaze"            # optional — falls back to the file server's 
 
 > **`push_host` is required, not optional.** A `kind="compute"` entry without `agent_ref`,
 > `push_host`, **and** `scratch_dir` fails **at construction** (`ComputeBackend._require_dispatch_fields`),
-> so the control plane refuses to boot on the restart this step instructs. Do not omit it.
+> so initial startup rejects it; an invalid live edit retains the last good registry. Do not omit it.
 
-The registry is **startup-read** — editing `backends.toml` on a running controller does **nothing**
-until the controller worker + api restart. Once the `compute` backend is declared, long files begin
+The registry is **live-reloaded after validation**; processes retain the last good registry when an edit fails. Backend-removal and in-flight handling follow [configuration.md](configuration.md#backend-registry-backendstoml). Once the `compute` backend is declared, long files begin
 routing to the A1 rank-first, and any files held from before the change (their `cloud_job` sidecar
 sitting at `status='awaiting'`) are released by the tiered drain. For the Kubernetes lane declare a
 `kind="kueue"` backend (with a
@@ -371,8 +351,8 @@ Confirm the end-to-end path with this checklist:
       scratch, analyzes it, and posts results that reconcile by `file_id`.
 - [] **Scratch is cleaned.** The pushed file is deleted from the A1 host-bound scratch directory after
       analysis (no scratch leak).
-- [] **Reverts cleanly (optional).** Engage the runtime **force-local** pill (no restart) — or
-      drop the `kind="compute"` entry from `backends.toml` and restart — and confirm a new long file
+- [] **Reverts cleanly (optional).** Use the **force-local** control in Config (no restart) — or
+      drop the `kind="compute"` entry from `backends.toml` and verify its live reload — and confirm a new long file
       routes **local** and the drain no-ops.
 
 ## Enabling the compute backend & runtime-state semantics
@@ -404,9 +384,8 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
   suspended Kueue Job. Requires the backend's `[backends.kube]` submodel and a `[[buckets]]` staging
   entry. Documented in its own runbook — [k8s-burst.md](k8s-burst.md). N Kueue clusters may be
   declared at once.
-- **Changing the registry requires a control-plane restart** (startup-read — Pitfall 6). The
-  controller worker + api must restart for a `backends.toml` edit to take effect. (For a
-  *no-restart* incident revert, use the force-local pill — see *Reverting to local* below.)
+- **Registry edits reload live** in the controller/API after validation; malformed edits retain the last good registry. Resource and credential changes remain governed by the per-field lifecycle in [configuration.md](configuration.md). (For a
+  *no-restart* incident revert, use the force-local control in Config — see *Reverting to local* below.)
 - **In-flight work drains; dropping a cloud backend only stops NEW cloud work.** Files already
   mid-flight (`cloud_job.status` in `uploading` / `uploaded` / `submitted` / `running`) finish
   across a restart (the sidecar is durable in Postgres); no mid-transfer/mid-analysis abort, no
@@ -440,13 +419,13 @@ through the pure `select_backend` policy:
 
 Two paths, matching the incident-vs-planned distinction:
 
-- **Incident revert (no restart).** Engage the pipeline header **force-local** pill : it
+- **Incident revert (no restart).** Use the **force-local** control in Config (the header pill is read-only status) : it
   writes a durable `route_control` row that gates both the drain and the duration router **live**.
   Files already held at `cloud_job.status='awaiting'` stay held (the drain no-ops); new long files
   route local.
   Reversible, no redeploy — see [runbook.md → Force-local incident revert](runbook.md#force-local-incident-revert).
 - **Planned revert.** Drop the `kind="compute"` (and/or `kind="kueue"`) entry from `backends.toml`
-  and restart the controller worker + api. `cloud_enabled` derives back to `False` and the deploy is
+  and verify registry reload/removal completion. If no non-local backend remains, `cloud_enabled` derives back to `False` and the deploy is
   all-local again.
 
 ### Declaring a `kind="kueue"` backend

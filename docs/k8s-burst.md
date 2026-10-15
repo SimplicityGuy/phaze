@@ -53,58 +53,17 @@ those tables.
 entry gets its own constructor-authed kr8s client (selected by its `[backends.kube].context`), its
 own LocalQueue, and its own `buckets` staging set:
 
-```mermaid
-flowchart LR
-  %% transport-agnostic mesh (Tailscale OR WireGuard)
-  subgraph control["host-prod / control plane"]
-    controlsvc["api(:8000) · Postgres · Redis"]
-    drain["stage_cloud_window (*/5 cron)<br/>tiered rank-first drain"]
-    selbk["select_backend (rank-first + spillover)"]
-    s3_staging["s3_staging (pick_bucket per file)"]
-    reconcile["reconcile_cloud_jobs (every-minute cron)<br/>per-backend, backend_id-scoped"]
-    kc_a["kr8s client A (context: kueue-a)"]
-    kc_b["kr8s client B (context: kueue-b)"]
-    callback["PUT /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
-  end
-  subgraph clusterA["Kueue backend A (rank 10, cap N_A)"]
-    lqA["LocalQueue phaze-lq"]
-    podA["one-shot pod (presign GET → analyze → PUT → exit)"]
-    bktA["buckets: A staging set"]
-  end
-  subgraph clusterB["Kueue backend B (rank 20, cap N_B)"]
-    lqB["LocalQueue phaze-lq"]
-    podB["one-shot pod (presign GET → analyze → PUT → exit)"]
-    bktB["buckets: B staging set"]
-  end
-  drain --> selbk
-  selbk -->|"rank-first pick"| kc_a
-  selbk -->|"spill on full/offline"| kc_b
-  kc_a -->|"kube POST suspended Job"| lqA
-  kc_b -->|"kube POST suspended Job"| lqB
-  s3_staging -->|"presign PUT/GET"| bktA
-  s3_staging -->|"presign PUT/GET"| bktB
-  lqA -->|"Kueue admits"| podA
-  lqB -->|"Kueue admits"| podB
-  podA -->|"PUT result (the ONLY result channel)"| callback
-  podB -->|"PUT result (the ONLY result channel)"| callback
-```
+![Architecture at a glance](diagrams/k8s-burst-1.png)
+
+[Open the interactive-size HTML](diagrams/k8s-burst-1.html) · [Download SVG](diagrams/k8s-burst-1.svg)
 
 **Rank-tiered spillover** — per candidate file, `select_backend` prefers the lowest-`rank`
 available Kueue lane with a free `cap` slot, spilling to the next rank when a lane is FULL or
 OFFLINE, and finally to slow local (staleness-gated):
 
-```mermaid
-flowchart TD
-  f["file with cloud_job status='awaiting'<br/>(oldest first)"] --> r1{"rank 10 Kueue<br/>available & slot free?"}
-  r1 -->|yes| d1["dispatch → stage to A's bucket + submit Job"]
-  r1 -->|"FULL or OFFLINE"| r2{"rank 20 Kueue<br/>available & slot free?"}
-  r2 -->|yes| d2["dispatch → stage to B's bucket + submit Job"]
-  r2 -->|"FULL or OFFLINE"| loc{"spill to local?"}
-  loc -->|"all cloud OFFLINE → immediately"| dl["route LOCAL (rank 99)"]
-  loc -->|"cloud online-but-FULL → after cloud_spill_to_local_after_seconds"| dl
-  loc -->|"cloud budget spent (attempts exhausted)"| dl
-  loc -->|"otherwise"| hold["hold at cloud_job status='awaiting' (next tick)"]
-```
+![Architecture at a glance](diagrams/k8s-burst-2.png)
+
+[Open the interactive-size HTML](diagrams/k8s-burst-2.html) · [Download SVG](diagrams/k8s-burst-2.svg)
 
 _A registry with no non-local backend (`cloud_enabled` False) ⇒ long files route LOCAL, no kube
 submit, no S3 staging. (all-local)_
@@ -225,7 +184,7 @@ control-plane pieces own this:
   `phaze-analyze-<file_id>`), upserts the `cloud_job` row to `SUBMITTED`, and returns in
   seconds. It never awaits analysis.
 - **`reconcile_cloud_jobs`** (the safety net, `phaze.tasks.reconcile_cloud_jobs`) — a
-  **cron-only** `*/5 * * * *` CronJob registered on the controller. There is **no live kube
+  **cron-only** `* * * * *` CronJob (every minute) registered on the controller. There is **no live kube
   watch**: each tick it re-reads the in-flight Jobs/Workloads and reconciles them.
 
 **The callback is the only result channel.** The one-shot pod `PUT`s its analysis
@@ -245,14 +204,15 @@ dropped/expired watch never loses or duplicates a result" true.
 - **S3 cleanup on a no-callback terminal** — a `Failed`/`Evicted`/lost Job (no callback landed)
   triggers `s3_staging.delete_staged_object(file_id)` before the Job delete. The **success**
   path does NOT delete S3 — the callback already deleted it inline.
-- **Bounded re-drive then spill to local (SCHED-03)** — a no-callback terminal under
+- **Bounded re-drive then spill to local** — a no-callback terminal under
   `cloud_submit_max_attempts` (default 3) increments `cloud_job.attempts` and re-drives a fresh
   `submit_cloud_job`. **At the cap the file is NOT hard-failed.** The sidecar is re-stamped
   `status='awaiting'` with `attempts` already equal to the cap, so the next drain tick's
   `select_backend` excludes every cloud backend (`attempts >= cap`) and routes the file to the
-  local safety net. A *local* failure — never cloud flakiness — is the only path into
-  `ANALYSIS_FAILED` (D-04).
-- **A node-loss re-drive has its OWN, tighter ceiling (phaze-1q4g)** — when the pod died *with its
+  local safety net. Submission or infrastructure exhaustion does not itself mark analysis terminally failed.
+  An actual analysis-class failure, including one reported by a one-shot cloud pod, records
+  `analysis.failed_at` through the authenticated failure callback.
+- **A node-loss re-drive has its OWN, tighter ceiling** — when the pod died *with its
   node* (`status.reason` of `NodeShutdown`/`NodeLost`/`Evicted`/…, or a `DisruptionTarget` pod
   condition) the re-drive charges `cloud_job.node_loss_redrives` against
   `cloud_node_loss_max_redrives` (default **1**) instead of `attempts`. The two causes stay
@@ -262,14 +222,13 @@ dropped/expired watch never loses or duplicates a result" true.
   the node-loss ceiling the row takes the **same** terminal as the attempts cap (spill to `'awaiting'`
   with `attempts` stamped to the cap → local). Before this, node loss charged nothing at all: one
   pathological file re-drove **8 times over 5 days**, crashing the burst node on every pod, while its
-  `attempts` never left 3 (spike `phaze-wcrb` §5). The other half of that defect was in the Job
+  `attempts` never left 3 ([the node-loss forensics](spikes/phaze-wcrb-oom-multiplier-forensics.md) §5). The other half of that defect was in the Job
   manifest — `backoffLimit: 0` bounds *counted failures*, not *pod creations*, so the default
   `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
   Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
   "one Job ⇒ one pod" actually true.
-- **Why the pod failed is recorded on the row (phaze-1xngw)** — reconcile deletes the Job on every
-  re-drive and spill, so the pod's exit status used to be gone within about a minute; spike
-  `phaze-79mu7` could read the burst's exit `10` (`EXIT_DOWNLOAD`) only from the node's containerd
+- **Why the pod failed is recorded on the row** — reconcile deletes the Job on every
+  re-drive and spill, so the pod's exit status used to be gone within about a minute; the incident investigation could read the burst's exit `10` (`EXIT_DOWNLOAD`) only from the node's containerd
   journal. Before that delete, reconcile now reads the analyze container's `state.terminated` and
   writes `cloud_job.last_exit_code` / `last_failure_reason` (the pod's `exitCode` / `reason`) and
   `last_failed_at`. With no terminated container the exit code is NULL and the reason says why:
@@ -277,12 +236,12 @@ dropped/expired watch never loses or duplicates a result" true.
   stamped within the pending-submit bound), `pod_not_found` (the Job read Failed/Evicted but listed no
   pod), or the pod-state summary (a wedged or node-lost pod). The `re-driving submit_cloud_job` and
   `submit cap reached` log lines carry the same `exit_code` and `reason`. The columns live on the
-  sidecar row, so the D-14 reaper below removes them with it once the spilled file's local analysis
+  sidecar row, so the analysis-terminal reaper below removes them with it once the spilled file's local analysis
   finishes.
-- **An unreachable control plane charges nothing, and holds the backend (phaze-j0ixx)** — exit `10`
+- **An unreachable control plane charges nothing, and holds the backend** — exit `10`
   used to cover both a presign request that never reached the control plane and a failed object GET,
   and reconcile charged both to `attempts`; two infrastructure faults on 2026-09-26/27 spent 302
-  healthy files' whole budget that way (spike `phaze-79mu7`). The pod now exits `14`
+  healthy files' whole budget that way. The pod now exits `14`
   (`EXIT_CONTROL_PLANE_UNREACHABLE`) when its presign request could not open a connection at all
   (DNS failure, refused, TLS/connect error, connect timeout); a request that reached the control plane
   and was refused, and every object GET failure, stay `10`. Reconcile charges neither `attempts` nor
@@ -293,14 +252,14 @@ dropped/expired watch never loses or duplicates a result" true.
   backend's `14` rows back to `'awaiting'` with `attempts` unchanged, and the Analyze lane card shows
   **HELD** with the reason. Every 15 minutes the drain grants the backend **one** probe slot; the
   breaker **closes** the first time the presign endpoint mints a URL for a pod on that backend. No
-  running pod is killed. Operator decision 2026-09-27 (`AskUserQuestion`): *"phaze-j0ixx: when cloud
-  pods fail because the control plane is unreachable (the 09-26 outage and the vox DNS loss), files
-  currently use up their 3 attempts. How should phaze respond instead?"* — answer as given: *"Both:
-  exit code + breaker (Recommended)"*; durable record: the bead `phaze-j0ixx` comment. The thresholds
-  and the probe are the implementer's choice, reasoned in `services/backend_breaker.py`.
-- **A charged re-drive waits out a backoff, holding its slot (phaze-d28sn)** — reconcile used to
+  running pod is killed. On 2026-09-27, after the 09-26 outage and control-plane DNS loss had consumed
+  files' 3 attempts, the operator chose both a distinct unreachable-control-plane exit code and a
+  backend breaker. The thresholds and probe policy are implemented in
+  [`services/backend_breaker.py`](../src/phaze/services/backend_breaker.py); reconciliation uses
+  [`tasks/reconcile_cloud_jobs.py`](../src/phaze/tasks/reconcile_cloud_jobs.py).
+- **A charged re-drive waits out a backoff, holding its slot** — reconcile used to
   enqueue the fresh submit on the tick that saw the failure, so a file spent one submit and three
-  re-drives in about three minutes (spike `phaze-79mu7`). A re-drive that charges `attempts` or
+  re-drives in about three minutes. A re-drive that charges `attempts` or
   `node_loss_redrives` now deletes the Job and charges the counter as before, then stamps
   `cloud_job.redrive_after` = `last_failed_at` + the `cloud_redrive_backoff_sec` entry for that
   re-drive (default 2 / 10 / 30 minutes) and enqueues nothing; the first tick past that instant
@@ -312,16 +271,15 @@ dropped/expired watch never loses or duplicates a result" true.
   row from a pending-confirmation one, so no schedule entry can age a row into the charged
   vanished-submit terminal. An exit `14` re-drive does not wait: it charges nothing, and the breaker
   above bounds it. No pod runs while a row waits, so nothing bounds a running analysis.
-- **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
-  `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
+- **The budget now OUTLIVES the sidecar row** — every budget above lives on the
+  `cloud_job` row, and `routers/agent_analysis`'s analysis-terminal reaper *deletes* that row
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
   seams. So a file that spent its whole cloud budget, spilled to local, and then failed *locally* lost
   its entire history: the next re-analysis started a fresh chain at `attempts = 0` and could spend the
-  whole budget again. That is what the forensics actually show — `713a368e`'s eight pods are **two
+  whole budget again. That is what the forensics actually show — `<set-01>`'s eight pods are **two
   chains of four** (07-24…07-25, then 07-29 after a four-day gap), not one runaway chain, while the
   other three affected files show exactly one chain each. The reaper is **unchanged** (retaining
-  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the `phaze-9sqa`
-  head-of-line poison it exists to prevent); the *budget* moved instead, to a durable per-file
+  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the head-of-line blocking it exists to prevent); the *budget* moved instead, to a durable per-file
   `cloud_budget` row the reaper cannot reach. `hold_awaiting_cloud` folds a chain into it exactly once,
   on the edge where `attempts` first crosses the cap, accumulating `attempts_spent` and
   `node_loss_spent` **separately** so the two causes stay legible across chains too. `select_backend`
@@ -331,9 +289,9 @@ dropped/expired watch never loses or duplicates a result" true.
   `cloud_budget_cooldown_days` (default **14**) bars cloud for a while after a burnout and is
   **self-clearing**, so a file grounded by one bad node is re-admitted on its own;
   `cloud_budget_max_chains` / `cloud_budget_max_node_loss` (default **3** each, `0` disables) are the
-  intrinsic-cause backstop behind it. `phaze-6ck1` has not yet established whether the ~4 runaway files
-  are intrinsically pathological or the victims of one bad node — when it does, the answer changes a
-  **default**, not the schema. Local (rank-99) is never excluded by any of these, so a budget-grounded
+  intrinsic-cause backstop behind it. The earlier ~4-file incident did not establish whether the files were intrinsically
+  pathological or victims of one bad node. That distinction informs policy **defaults**, not the
+  evidence schema; this guide does not claim a new diagnosis. Local (rank-99) is never excluded by any of these, so a budget-grounded
   file is still routed every tick and still reaches a terminal analyze outcome.
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
@@ -388,8 +346,7 @@ kubectl create namespace phaze
 
 ### 1 — CPU-only ResourceFlavor
 
-essentia analysis is **CPU-bound** — wall-clock is dominated by audio decode + native DSP, not
-TensorFlow inference — so the cluster nodes and Kueue requests target `cpu`/`memory` only (no
+The deployed analysis path uses CPU TensorFlow inference as well as decode and native DSP. Its measured throughput is CPU-bound; this deployment requests `cpu`/`memory` only (no
 GPU/Coral; see [PROJECT.md Key Decisions](../.planning/PROJECT.md)). A "CPU-only" flavor is
 simply a flavor with **no accelerator constraint**. An empty-spec flavor matches any node;
 uncomment `nodeLabels` only to pin the burst to a specific CPU node pool.
@@ -938,6 +895,9 @@ rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "get", "delete"]        # submit_job / get_job / delete_job
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]                           # reconcile_cloud_jobs inspects pod observations
 - apiGroups: ["kueue.x-k8s.io"]
   resources: ["workloads"]
   verbs: ["get", "watch", "list"]           # get_workload_for (.list); get/watch = conservative spec
@@ -969,7 +929,7 @@ roleRef:
 
 The one-shot pod authenticates its `/api/internal/agent/*` callback with a compute-agent bearer
 token — the **same** mechanism as the v5.0 fileserver/compute agents. Mint it on the control
-plane with `phaze agents add --kind compute` (this creates an `Agent` row so the callback
+plane with `phaze agents add --id burst-agent --kind compute` (this creates an `Agent` row so the callback
 authenticates), then paste the token into the Secret. The pod consumes it as **`PHAZE_AGENT_TOKEN`**,
 injected by `envFrom.secretRef` from this Secret — `envFrom` projects each Secret key under its own
 name, so the key below must be spelled exactly that.
@@ -987,7 +947,7 @@ name, so the key below must be spelled exactly that.
 ```bash
 # On the control plane: mint the compute-agent token, then paste it into secret.yaml below.
 # `uv run` is required  — see docs/deployment.md Step 3 for why.
-docker compose exec api uv run phaze agents add --kind compute
+docker compose exec api uv run phaze agents add --id burst-agent --kind compute
 kubectl apply -f secret.yaml
 ```
 
@@ -1131,7 +1091,7 @@ spec:
   accessModes: ["ReadWriteOnce"]   # RWO is enough for the one-time populate below
   resources:
     requests:
-      storage: 2Gi
+      storage: 5Gi  # 3,264,667,851 manifest bytes (3.040458868 GiB), plus provisioning margin
 ---
 # One-time populate Job: mount the SAME claim read-WRITE and run the downloader into /models.
 # Delete this Job once it completes; the analyze pods mount the claim read-only thereafter.
@@ -1156,6 +1116,11 @@ spec:
           persistentVolumeClaim:
             claimName: phaze-essentia-models
 ```
+
+The manifest contains 68 model/config files totalling **3,264,667,851 bytes**
+(**3.040458868 GiB**); the 5Gi example leaves provisioning margin. Read-only pod mounts do not
+change the storage class access-mode rules: a ReadWriteOnce claim does not promise cross-node
+ReadOnlyMany access. Choose a storage class and access mode compatible with the intended node placement.
 
 Then set the backend to reference the claim (a plain object name, **not** a secret):
 
@@ -1282,14 +1247,14 @@ with the per-host SSH steps for the worker host and the control-plane host — i
    ResourceFlavor → ClusterQueue → LocalQueue (runbook §1–§3), against that cluster's context.
 2. **Cluster (operator), per cluster:** `kubectl apply` the namespaced RBAC — ServiceAccount +
    Role + RoleBinding (runbook §4).
-3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --kind
+3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --id burst-agent --kind
    compute`); paste it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply`
    the agent-env ConfigMap and the internal-CA Secret (runbook §6–§7).
 4. **Control plane (the control-plane host):** add a `[[backends]] kind="kueue"` entry (with its
    `[backends.kube]` block + `buckets` list) and the referenced `[[buckets]]` entries to
    `backends.toml` (see the [Backend registry](configuration.md#backend-registry-backendstoml)),
-   then **restart** the controller worker + api — the registry is a startup-read; the running
-   process will not pick up the change until it restarts. `cloud_enabled` becomes True as soon as a
+   then verify the controller/API live reload acknowledgement. Invalid edits retain the last good
+   registry; backend removal follows the in-flight policy in the configuration guide. `cloud_enabled` becomes True as soon as a
    non-local backend is present.
 5. **Smoke test:** run the checklist below.
 

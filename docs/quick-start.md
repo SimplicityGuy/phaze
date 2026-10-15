@@ -42,9 +42,8 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
    uv sync          # just install does this PLUS builds the Tailwind app.css
    ```
 
-   > `just install` runs the `tailwind` recipe first (compiling `assets/src/app.css` →
-   > `src/phaze/static/css/app.css` with the standalone Tailwind binary, no Node) and *then*
-   > `uv sync`. Bare `uv sync` installs Python deps only and **skips the CSS build**, so prefer
+   > `just install` runs `setup` (including `uv sync`) and then `tailwind` (compiling `assets/src/app.css` →
+   > `src/phaze/static/css/app.css` with the standalone Tailwind binary, no Node). Bare `uv sync` installs Python deps only and **skips the CSS build**, so prefer
    > `just install` (or run `just tailwind` once) if you are serving the Web UI locally.
 
 3. **Create your environment file.**
@@ -85,11 +84,10 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 5. **Start the core services.**
 
    ```bash
-   just up                  # rebuilds app.css (tailwind), then docker compose up -d
+   just up                  # docker compose up -d
    ```
 
-   `just up` depends on the `tailwind` recipe, so it recompiles `app.css` before starting the
-   stack — you always serve fresh CSS. This launches four containers: `api` (FastAPI),
+   `just up` starts the core Compose stack; it does not run Tailwind. Container image builds compile CSS in their own build stage. For a host-served UI, run `just install` or `just tailwind` after stylesheet changes. This launches four containers: `api` (FastAPI),
    `worker` (SAQ), `postgres`, and `redis`.
 
 6. **Apply database migrations.**
@@ -148,14 +146,9 @@ on read from that stage's own output table (see [Database → Derived per-stage
 status](database.md#derived-per-stage-status)). The numbered steps below map 1:1 onto the
 stages:
 
-```mermaid
-flowchart LR
-    D[discovered] --> M[metadata]
-    M --> A[analyze]
-    A --> P[propose]
-    P --> R[review]
-    R --> E[apply]
-```
+![Your First Workflow](diagrams/quick-start-1.png)
+
+[Open the interactive-size HTML](diagrams/quick-start-1.html) · [Download SVG](diagrams/quick-start-1.svg)
 
 You drive each stage from the responsive console (`/` plus `/s/<stage>` workspaces; ⌘K to
 search or jump) or the documented HTTP endpoints.

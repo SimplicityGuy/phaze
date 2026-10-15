@@ -35,7 +35,15 @@ repos:
         # tests/vendor/): they are the upstream `yannh/kubernetes-json-schema` artifacts, checked
         # against a recorded sha256, and they ship with NO trailing newline -- so this hook WOULD
         # rewrite them and break that check.
-        exclude: &byte-identical ^(src/phaze/static/vendor/|docs/spikes/[^/]+/patches/|tests/vendor/)
+        # Diagram helper sources and font license notices also retain exact upstream bytes.
+        exclude: &byte-identical |
+          (?x)^(
+            src/phaze/static/vendor/|
+            scripts/vendor/diagram_design/|
+            docs/diagrams/fonts/(inter|jura)-OFL\.txt$|
+            docs/spikes/[^/]+/patches/|
+            tests/vendor/
+          )
       - id: mixed-line-ending
         exclude: *byte-identical
       - id: trailing-whitespace

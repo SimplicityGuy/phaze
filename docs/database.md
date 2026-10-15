@@ -1,12 +1,11 @@
 # Database
 
-> Historical source-neutral record. External acquisition is retired; this document does not authorize requests or implementation. See `docs/design/0024-tracklist-source-retirement.md`. Source-identifying wording has been removed; use the cited beads for original operator statements.
+> The legacy source-specific acquisition path is retired; [the retirement decision](design/0024-tracklist-source-retirement.md) preserves that boundary. Current registered-provider policy and durable global lookup are described in [Global tracklist providers](global-tracklist-providers.md). Historical evidence does not itself authorize external requests.
 
 
 phaze persists all state in PostgreSQL (18+) accessed asynchronously via SQLAlchemy 2.0
 (`postgresql+asyncpg://`). Models live in `src/phaze/models/`; schema changes are managed
-by Alembic using the async template (`alembic/`). All models inherit a `created_at` /
-`updated_at` `TimestampMixin` and share a constraint naming convention defined in
+by Alembic using the async template (`alembic/`). Mutable operational models use `created_at` / `updated_at` through `TimestampMixin`. Immutable observations, append-only events and association/cache records deliberately inherit `Base` directly. Models share the constraint naming convention defined in
 `src/phaze/models/base.py`.
 
 ## Schema
@@ -23,8 +22,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `analysis_window`     | Per-window time series plus nullable energy and mood score projections (1:many with `files`, `ON DELETE CASCADE`) |
 | `set_profile`         | Whole-set projection (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
-| `execution_log`       | Append-only audit trail for file rename/move operations               |
-| `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
+| `execution_log`       | Per-proposal execution attempts and terminal status, with source/destination evidence               |
+| `tag_write_log`       | Tag-write lifecycle and audit evidence (before/after tags)  |
 | `file_companions`     | Many-to-many: companion files to media files                          |
 | `companion_junk_review` | The junk-companion review queue, audit trail and tombstone: one row per proposal to quarantine one companion, keyed on `(agent_id, original_path, sha256_hash)`, with no foreign key so it outlives the `files` row  |
 | `companion_content_features` | What each companion file contains, read on its agent: encoding, media references, tracklist flag, junk class, content fingerprint (1:1 with `files`, `ON DELETE CASCADE`; companion feature extraction) |
@@ -43,7 +42,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `remote_lookup_reads` | Bounded successful transport responses replayed during the same durable run without new requests |
 | `companion_import_runs` | Fixed inventory boundary and durable continuation for a per-agent import run |
 | `companion_import_items` | Bounded resumable source work, lease and per-kind outcome checkpoints |
-| `tracklists`          | Stored tracklist metadata and historical provenance; external acquisition is retired  |
+| `tracklists`          | Stored tracklist metadata and historical provenance; legacy source-specific acquisition is retired  |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
@@ -57,6 +56,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
 | `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence  |
 | `dedup_review_plan` | Opaque, immutable keeper choice plus the complete reviewed membership snapshot (`group_hash`, `canonical_file_id`, `member_ids`), committed at most once via `committed_at` (migration `061`) |
+| `runtime_config_override` | Shared durable configuration storage: 42 typed scalar settings and separately validated `provider_<id>_policy` JSON records; distinct consumers, one physical table. |
 
 One further table shares the database but is **not** in the list above because it is not an
 Alembic-managed model: **`saq_jobs`**. Since Postgres broker migration the SAQ broker is a `PostgresQueue`, and
@@ -100,44 +100,12 @@ deleted); `analysis_window`, `set_profile`, and `file_companions` cascade with t
 tracklist chain use the default restricting FK (no cascade). `companion_junk_review` carries no foreign
 key at all, so neither scan nor file deletion can be blocked by it or erase it.
 
-```mermaid
-erDiagram
-    %% evidence: src/phaze/models/agent.py; src/phaze/models/file.py
-    agents ||--o{ files : "owns (RESTRICT)"
-    %% evidence: src/phaze/models/agent.py; src/phaze/models/scan_batch.py
-    agents ||--o{ scan_batches : "owns (RESTRICT)"
-    %% evidence: src/phaze/models/scan_batch.py; src/phaze/models/orphan_companion_diagnostic.py
-    scan_batches ||--o{ orphan_companion_diagnostics : "inventory (CASCADE)"
-    %% evidence: src/phaze/models/file.py; src/phaze/models/metadata.py
-    files ||--o| metadata : "optional 1:1"
-    %% evidence: src/phaze/models/file.py; src/phaze/models/analysis.py
-    files ||--o| analysis : "optional 1:1"
-    %% evidence: src/phaze/models/analysis.py
-    files ||--o{ analysis_window : "CASCADE"
-    %% evidence: src/phaze/models/file.py; src/phaze/models/set_profile.py
-    files ||--o| set_profile : "profile (CASCADE)"
-    %% evidence: src/phaze/models/file.py; src/phaze/models/proposal.py
-    files ||--o{ proposals : "rename/move"
-    %% evidence: src/phaze/models/cloud_job.py
-    files ||--o| cloud_job : "0..1 sidecar"
-    %% evidence: src/phaze/models/cloud_budget.py
-    files ||--o| cloud_budget : "0..1 durable budget (CASCADE)"
-    %% evidence: src/phaze/models/file_companion.py
-    files ||--o{ file_companions : "CASCADE"
-    %% evidence: src/phaze/models/companion_content.py
-    files ||--o| companion_content_features : "content features (CASCADE)"
-    %% evidence: src/phaze/models/tracklist.py
-    tracklists ||--o{ tracklist_versions : "versions"
-    %% evidence: src/phaze/models/tracklist.py
-    tracklist_versions ||--o{ tracklist_tracks : "tracks"
-    %% evidence: src/phaze/models/tracklist.py; src/phaze/models/discogs_link.py
-    tracklist_tracks ||--o{ discogs_links : "match candidates"
-    %% evidence: src/phaze/models/tracklist.py; src/phaze/models/file.py
-    tracklists }o--o| files : "optional link"
-```
+![Core file facts](diagrams/database-1.png)
+
+[Open the interactive-size HTML](diagrams/database-1.html) · [Download SVG](diagrams/database-1.svg)
 
 The `evidence:` comments are repo-relative citations. The docs integrity guard resolves every
-cited path, and the focused Mermaid render verifies this ER syntax.
+cited path, and the diagram asset gate verifies source citations and the browser export checks the rendered views.
 
 ### Set projection
 
@@ -209,7 +177,7 @@ from its output tables (`metadata`, `analysis`, `proposals`,
   off `analyze` on the standalone `cloud_job` sidecar row (not a file state).
 - `ScanStatus` (`scan_batch.py`): `running`, `completed`, `failed`, `live`.
 - `ProposalStatus` (`proposal.py`): `pending`, `approved`, `rejected`, `executed`, `failed`.
-- `TagWriteStatus` (`tag_write_log.py`, 5 members): `completed`, `failed`, `discrepancy`,
+- `TagWriteStatus` (`tag_write_log.py`, seven members): `queued`, `save_failed`, `completed`, `failed`, `discrepancy`,
   `verify_failed` (the startup serialization change — the on-disk write landed but the immediate verify re-read
   failed; distinct from `discrepancy`, where the write landed the *wrong* values, and from
   `failed`, where it never landed. Non-terminal, so the file resurfaces and a later submit
@@ -222,17 +190,9 @@ from its output tables (`metadata`, `analysis`, `proposals`,
 
 The conceptual per-file stage progression (each node's status is derived, never stored):
 
-```mermaid
-flowchart TD
-    discovered --> metadata
-    metadata --> analyze
-    metadata -.long file, cloud/compute routed.-> cloud_job[(cloud_job sidecar)]
-    cloud_job --> analyze
-    analyze --> propose
-    propose --> review
-    propose -.duplicate.-> dedup_resolution[(dedup_resolution)]
-    review --> apply
-```
+![Derived per-stage status](diagrams/database-2.png)
+
+[Open the interactive-size HTML](diagrams/database-2.html) · [Download SVG](diagrams/database-2.svg)
 
 ### Full-text search
 
@@ -273,7 +233,7 @@ of the `039` baseline rather than the retired `001`-`039` chain.
 
 ### Post-baseline chain (040-092)
 
-`alembic/versions/` holds **53** files: the `039` baseline plus a linear chain to the current
+`alembic/versions/` holds **54** files: the `039` baseline plus a linear chain to the current
 head, **`092`**.
 
 | Rev | Change |
@@ -320,7 +280,7 @@ head, **`092`**.
 | `079` | Create `companion_content_features` — per-companion encoding, media references, tracklist flag, junk class and content fingerprint, read on the owning agent; pure additive DDL, no backfill  |
 | `080` | Create `companion_junk_review` — the FK-free junk-companion review queue keyed on `(agent_id, original_path, sha256_hash)`, unique among non-terminal rows; pure additive DDL  |
 | `081` | Add `ix_files_agent_id_folder` on `(agent_id, regexp_replace(original_path, '/[^/]*$', ''))` — the files of one agent by folder, so the known-stamp grouping and the junk-review detector read a folder's media from `files` at decision time; index-only, built `CONCURRENTLY`  |
-| `082` | Retire retired external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual  |
+| `082` | Retire legacy external source acquisition: drop lookup/outcome/priority/drain-state tables, preserve stored tracklists, and default new sources to manual  |
 | `083` | Add nullable `files.missing_at` — stamped by `phaze backfill reconcile-stale-rows` on a row whose content is nowhere under its agent's scan roots; the row is kept and leaves the enrich pending sets, and any upsert of its path clears it; catalog-only DDL plus `ANALYZE files`, since `missing_at IS NULL` filters every enrich pending set; no backfill  |
 | `084` | Add nullable `files.companion_ambiguous_at` — confirmed-absent companions with multiple verified destinations retain inventory and history, separately reported from readable extraction; cleared with `missing_at` on reappearance; catalog-only DDL plus `ANALYZE files`; no backfill  |
 | `085` | Add provider-scoped source identity, immutable content/read observations, recording candidates, explicit selections and retained selection events; preserve legacy tracklist UUIDs and pointers; refuse evidence-losing rollback  |
@@ -351,3 +311,51 @@ the same three load-bearing properties:**
 are applied to the live deployment, so a fresh CI or test database (which always builds straight
 to `head`) can be several revisions ahead of production. Check the live position with
 `just db-current` before assuming either end matches `head`; do not assume the two are in sync.
+
+## Focused relationship views
+
+The overview above selects the core file facts. These views show related records without
+claiming to be a complete physical-schema export. Current ORM metadata declares **45 tables
+and 47 foreign keys**. Selected fields are shown; unlinked identifiers do not imply a SQL
+constraint. Provider observations and selection events preserve evidence; mutable work,
+memberships and read-cache rows have different lifetimes.
+
+### Inventory, companions and cloud state
+
+Selected entities and fields; cardinalities describe these relationships, not the complete physical schema.
+
+![Inventory, companions and cloud state](diagrams/database-companions.png)
+
+[Open HTML](diagrams/database-companions.html) · [Download SVG](diagrams/database-companions.svg)
+
+### Tracklist versions and candidates
+
+Selected entities and fields; cardinalities describe these relationships, not the complete physical schema.
+
+![Tracklist versions and candidates](diagrams/database-tracklists.png)
+
+[Open HTML](diagrams/database-tracklists.html) · [Download SVG](diagrams/database-tracklists.svg)
+
+### Provider observations and read evidence
+
+Selected physical references. Immutable evidence is distinct from mutable work. Unlinked keys are intentionally not invented as SQL foreign keys.
+
+![Provider observations and read evidence](diagrams/database-provider-evidence.png)
+
+[Open HTML](diagrams/database-provider-evidence.html) · [Download SVG](diagrams/database-provider-evidence.svg)
+
+### Global lookup work and policy
+
+Durable batches join reusable work through memberships; read.run_id refers to work. work.media_id and provider IDs are intentionally logical references without file/provider foreign keys. Provider policy is stored in runtime_config_override under provider_<id>_policy, separately from the 42 live scalar settings.
+
+![Global lookup work and policy](diagrams/database-lookup-work.png)
+
+[Open HTML](diagrams/database-lookup-work.html) · [Download SVG](diagrams/database-lookup-work.svg)
+
+### Approved execution and tag writes
+
+Selected physical references. Immutable evidence is distinct from mutable work. Unlinked keys are intentionally not invented as SQL foreign keys.
+
+![Approved execution and tag writes](diagrams/database-execution.png)
+
+[Open HTML](diagrams/database-execution.html) · [Download SVG](diagrams/database-execution.svg)

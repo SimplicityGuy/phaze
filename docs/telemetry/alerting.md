@@ -90,16 +90,18 @@ audio (`docs/spikes/phaze-u1n7j-host-compute-fix-verification.md`). 3.5 GiB is 8
 more than **twice** the measured peak: nothing healthy reaches it, and a breach is a warning
 rather than an OOMKill that already happened.
 
-**What it is really watching for.** Duration-linear growth. the exhaustive analysis measurement measured
+**Historical regression signal.** The pre-fix exhaustive analysis measurement measured
 **+0.31 GiB per fine chunk** (R² 0.99959), reaching **10.28 GiB at 12 h**, and every file
-past ~3 hours OOMKilled. **If this fires, the fix is the chunk teardown, not a larger limit.**
+past ~3 hours OOMKilled. The implemented streaming-decoder teardown fix removed that retention path. A new alert requires diagnosis against the current code; these dated measurements do not prove the cause of a future breach.
 Growth is a bug, never a sizing input.
 
 > **Do not evaluate this rule against a developer machine.** macOS reports a much higher
 > peak for identical work — measured locally at **4.51–4.87 GiB** for a 10-minute file,
 > against 1.50–1.67 GiB on the burst node — because thread sizing and the allocator differ.
-> The threshold is a statement about the Linux pod under its cgroup, and the rule's selector
-> scopes it to the analysis service for that reason.
+> The threshold was calibrated for the Linux pod under its cgroup. The committed selector is
+> `job=~"phaze/phaze-analysis.*"`; it selects analysis service identities, **not an OS or cgroup**.
+> The deployment must keep developer-machine telemetry out of this production alert evaluation
+> (or explicitly account for it in its own routing). The repository rule does not enforce that boundary.
 
 ______________________________________________________________________
 

@@ -68,7 +68,7 @@ not a label in current functional guidance. Link labels use the measurement/deci
 | `docs/k8s-burst.md:983` | `phaze-d2hgv.6` | Support/evidence path or link target |
 | `docs/k8s-burst.md:1094` | `phaze-8r6t4` | Support/evidence path or link target |
 | `docs/analysis-evaluation.md:14` | `phaze-b2qs9` | Support/evidence path or link target |
-| `docs/api.md:254` | `phaze-l1j35` | Verbatim historical operator record (paragraph-scoped exemption) |
+| Historical approval/Run record below | `phaze-l1j35` | Dated operator record retained in this developer audit; current API guidance describes behavior without tracking labels. |
 | `docs/stranded-analysis-recovery.md:4` | `phaze-zaf2l` | Support/evidence path or link target |
 | `docs/stranded-analysis-recovery.md:4` | `phaze-spends` | Support/evidence path or link target |
 | `docs/essentia-analysis.md:127` | `phaze-b2qs9` | Support/evidence path or link target |
@@ -135,3 +135,13 @@ Numeric review compares original/current numeric tokens after excluding removed 
 all operational quantities, dates, revisions and measured figures are preserved. Added digits in
 functional names such as S3/arm64 describe the same existing technologies; removed digits belong to
 bead/phase/decision labels. Tests and local-link verification are recorded in the developer handoff.
+
+## Historical approval and Run record
+
+Operator decision 2026-10-07 (dispatch session, AskUserQuestion), recorded as a comment on
+`phaze-l1j35`, amends its criterion "Approving a group queues quarantine for each pending member".
+Question as put: "...approving a group queues the quarantine moves immediately. So 'undo' can only
+reverse a rejection... How should approve and undo work?" Answer (selected label): "Approve, then
+a separate Run step (Recommended)". This record is preserved from the unchanged
+[`junk-review router` module docstring](../src/phaze/routers/junk_review.py); the API guide now
+describes the current approval, Undo and separate quarantine actions without internal tracking labels.

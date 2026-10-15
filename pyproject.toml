@@ -218,7 +218,7 @@ check_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_decorators = true
 disallow_untyped_defs = true
-exclude = "^(tests/|prototype/|services/|vulture_whitelist\\.py)"
+exclude = "^(tests/|prototype/|services/|scripts/vendor/diagram_design/|vulture_whitelist\\.py)"
 mypy_path = ["src"]
 no_implicit_optional = true
 python_version = "3.14"
@@ -307,7 +307,8 @@ target-version = "py313"
 # Nothing gated this (`just lint` is `ruff check`; the pre-commit ruff-format hook is Python-only),
 # so it never failed CI -- but a bare `uv run ruff format` by anyone churned 217 files. Excluding
 # markdown makes that impossible rather than merely unlikely.
-extend-exclude = ["*.md"]
+extend-exclude = ["*.md", "scripts/vendor/diagram_design/"]
+force-exclude = true
 
 [tool.ruff.format]
 docstring-code-format = false

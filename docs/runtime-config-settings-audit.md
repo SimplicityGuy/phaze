@@ -1,5 +1,7 @@
 # Runtime setting audit
 
+This is a maintained implementation summary of the integrated configuration design. The live-policy table is current; validation narratives below describe the implementation dispatch and do not claim new production measurements. For operator commands and the full per-field catalog, use [Configuration](configuration.md) and [Configuration inventory](configuration-inventory.md).
+
 The previous first-occurrence reader list is replaced by the [complete configuration inventory](configuration-inventory.md). A name occurrence alone does not establish a consumer or a restart requirement: for example, `debug` controls SQLAlchemy statement echo in `database.py`, whereas a watcher `logger.debug` call does not read that setting.
 
 The Settings model still has **88 fields**. Runtime policy grows from **10 to 42 live keys** (39 model fields plus three native analysis controls); **47 fields** remain restart-only and **2 collections** use the separate live backend-registry path. No consumed setting is removed to satisfy a numerical target. Three inert deployment/example inputs are removed: `UID`, `GID`, and `PHAZE_DEBUG`. The first two were never wired to image users or Compose settings. The unnecessary `PHAZE_DEBUG` development-overlay input is removed because the accepted SQL echo input is `DEBUG`; use `PHAZE_LOG_LEVEL=DEBUG` for ordinary application diagnostics.

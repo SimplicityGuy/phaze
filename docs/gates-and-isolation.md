@@ -9,6 +9,8 @@
 > its provenance decays into folklore. Cross-references to "above"/"below" are internal to this
 > document unless they name a `CLAUDE.md` section.
 
+> **Current-use boundary:** the versioned Beadhive tables and measured timings below remain dated evidence. Resolve current gate commands and landing policy from this hive's effective configuration and installed lifecycle; a global default can be overridden per hive. Current test recipes live in `justfile`. The historical tables do not establish today's effective policy.
+
 ## Which commands are gates, and which only look like one (phaze-jnj90 / phaze-nqawu / phaze-pv3kk)
 
 Read this before citing any command as evidence in a bead. Before 2026-08-21 `just check` ran no
